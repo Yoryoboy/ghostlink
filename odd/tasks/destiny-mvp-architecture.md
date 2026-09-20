@@ -67,7 +67,7 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
   - Route: delegated to `gentle-ai-worker`; bounded planning document and correction verification.
   - Outcome: initial plan created with ordered work units, dependencies, narrow ownership surfaces, test strategies, acceptance checks, exclusions, review notes, traceability, and readiness guidance; correction aligns the plan with single-call, explicit-intent-authorized MCP mutation and independent verifier findings.
   - Check: correction verification remains in progress; do not claim verification passed.
-  - Evidence: initial plan commit `a8cd132`; correction pending parent commit.
+  - Evidence: initial plan commit `a8cd132`; correction commit `cbed9cd` (`docs: simplify MCP mutation authorization`).
 
 - [ ] **DMA-005 — Review and close the architecture package**
   - Route: delegated to `gentle-ai-verify`; independent documentation verification because verification commands are delegated by policy.
@@ -93,8 +93,8 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - Baseline evidence was recorded in follow-up commit `38ca47b`.
 - DMA-002 research is now recorded in `docs/integration-assumptions.md`; implementation-time revalidation remains required for the moving MCP `main` branch, while DMA-003 resolves the MVP as a public-client deployment with an exact configured callback contract.
 - DMA-003 architecture is recorded in `docs/mvp-architecture.md`; commits `6cfd76d` and `b1f9e29` capture the initial design and prior MCP-mutation correction. The current single-call intent-authorized decision supersedes the earlier confirmation design.
-- DMA-004 implementation plan is recorded in `docs/mvp-implementation-plan.md`; initial plan commit `a8cd132` is recorded, and the correction remains in progress pending the parent commit and re-verification. The plan defines dependency-correct work units, offline baseline rules, internal review slices, traceability, and implementation-time official-source revalidation.
+- DMA-004 implementation plan is recorded in `docs/mvp-implementation-plan.md`; initial plan commit `a8cd132` and correction commit `cbed9cd` are recorded, with re-verification pending. The plan defines dependency-correct work units, offline baseline rules, internal review slices, traceability, and implementation-time official-source revalidation.
 
 ## Next step
 
-Parent commits the bounded correction, then reruns DMA-004 verification. DMA-005 remains open until that evidence is observed.
+Rerun DMA-004 verification against correction commit `cbed9cd`. DMA-005 remains open until that evidence is observed.
