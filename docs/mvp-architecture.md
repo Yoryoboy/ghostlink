@@ -1,6 +1,6 @@
 # Destiny MVP Architecture
 
-This document turns the product vision into one implementable vertical slice: authenticate a local user, synchronize enough Manifest and profile data to understand inventory, search and inspect that inventory through CLI or MCP, and safely move one item through the CLI. It uses `docs/integration-assumptions.md` as the external evidence boundary; provider facts and project decisions are kept distinct.
+This document turns the product vision into one implementable vertical slice: authenticate a local user, synchronize enough Manifest and profile data to understand inventory, search and inspect that inventory through CLI or MCP, and safely move one item through either CLI or MCP. It uses `docs/integration-assumptions.md` as the external evidence boundary; provider facts and project decisions are kept distinct.
 
 ## 1. MVP decision and scope
 
@@ -9,7 +9,7 @@ This document turns the product vision into one implementable vertical slice: au
 - Deliver a usable local Rust application with one shared application/core layer.
 - Authenticate with a local Bungie **Public** OAuth client: system browser, one fixed exactly registered callback URI, random CSRF state, no client secret, and no refresh token.
 - Synchronize Manifest definitions and the authenticated user's profile/inventory into a local cache and search index.
-- Support `list_characters`, `search_inventory`, and `inspect_item` through both CLI and MCP; support previewed, confirmed `move_item` execution through CLI only.
+- Support `list_characters`, `search_inventory`, and `inspect_item` through both CLI and MCP; support previewed, explicitly confirmed `move_item` execution through both CLI and MCP using one shared service.
 - Demonstrate the vertical journey: “Move The Last Word to my Warlock,” with preview, confirmation, fresh preflight, Bungie execution, refresh, and verification.
 
 ### Non-goals
@@ -23,25 +23,25 @@ World State/weekly rotation, equip/build engines, multi-item build plans, disman
 3. Manifest and profile synchronization populate local definitions and item projections.
 4. User searches for “The Last Word”; the core resolves the semantic result to a stable item instance and destination character.
 5. A move plan explains source, Vault intermediary if required, destination, and expected effects.
-6. The user explicitly confirms. The core refreshes the relevant profile immediately before execution, re-resolves the item, performs supported remote calls, refreshes afterward, and verifies the observed destination.
+6. The user explicitly confirms through the CLI, or the MCP host completes the two-step mutation contract. The core refreshes the relevant profile immediately before execution, re-resolves the item, performs supported remote calls, refreshes afterward, and verifies the observed destination.
 7. The adapter reports a semantic result or a safe, actionable error.
 
 ## 2. System context and boundaries
 
 ```mermaid
 flowchart LR
-  U[User / AI host] --> CLI[CLI adapter]
-  U --> MCP[MCP stdio adapter]
-  CLI --> APP[Application services]
-  MCP --> APP
-  APP --> CORE[Shared Rust domain/core]
-  CORE --> BA[Bungie adapter]
-  CORE --> MA[Manifest adapter]
-  CORE --> REPO[SQLite/cache/search repository]
-  CORE --> CS[Credential-store port]
-  BA --> B[Bungie API]
-  MA --> B
-  CS --> OS[OS credential store or approved fallback]
+  U[User / AI host] -->|runtime call| CLI[CLI adapter]
+  U -->|runtime call| MCP[MCP stdio adapter]
+  CLI -->|runtime call| APP[Application services]
+  MCP -->|runtime call| APP
+  APP -->|runtime call| CORE[Shared Rust domain/core]
+  CORE -->|runtime call| BA[Bungie adapter]
+  CORE -->|runtime call| MA[Manifest adapter]
+  CORE -->|runtime call| REPO[SQLite/cache/search repository]
+  CORE -->|runtime call| CS[Credential-store port]
+  BA -->|runtime call| B[Bungie API]
+  MA -->|runtime call| B
+  CS -->|runtime call| OS[OS credential store or approved fallback]
 ```
 
 | Boundary | Responsibility | Must not do |
@@ -57,11 +57,11 @@ flowchart LR
 
 ### Dependency direction
 
-`CLI` and `MCP` depend on application-service interfaces only. Application services depend inward on domain types and ports. Bungie, Manifest, SQLite, credential-store, terminal, and MCP implementations depend inward on those ports; the domain never depends on an adapter. Both adapters therefore execute the same search, planning, authorization, freshness, and mutation policy.
+The diagram arrows depict runtime calls, not source-code dependency direction. In source code, `CLI` and `MCP` depend on application-service interfaces only. Application services depend inward on domain types and ports. Bungie, Manifest, SQLite, credential-store, terminal, and MCP implementations depend inward through core-owned ports; the domain never depends on an adapter. Both adapters therefore execute the same search, planning, authorization, freshness, and mutation policy.
 
 ## 3. Minimal domain model and ports
 
-Stable external identifiers are opaque newtypes, not user-facing strings: `MembershipId`, `MembershipType`, `CharacterId`, `ItemInstanceId`, `ItemHash`, `BucketHash`, `DefinitionVersion`, and `SyncRevision`. `ItemHash` identifies a definition; `ItemInstanceId` identifies the user's concrete item. `CharacterId` and `MembershipId` are required for mutation targeting. `ItemLocation` is `Vault | Character(CharacterId) | Other(String)` with unknown locations preserved rather than guessed.
+Stable external identifiers are opaque newtypes, not user-facing strings: `MembershipId`, `MembershipType`, `CharacterId`, `ItemInstanceId`, `ItemHash`, `BucketHash`, `DefinitionVersion`, and `SyncRevision`. `SyncRevision` is a repository-generated opaque, monotonically increasing revision assigned to each successfully committed normalized snapshot replacement. An unchanged sync may retain the existing revision when the normalized content hash is unchanged. A plan binds to the revision covering its selected item's state. `ItemHash` identifies a definition; `ItemInstanceId` identifies the user's concrete item. `CharacterId` and `MembershipId` are required for mutation targeting. `ItemLocation` is `Vault | Character(CharacterId) | Other(String)` with unknown locations preserved rather than guessed.
 
 Core records include:
 
@@ -98,7 +98,7 @@ Bungie remains the source of truth. SQLite contains a rebuildable cache/search p
 
 Freshness is dataset-specific (Manifest, profile, character inventory) and policy-driven rather than a single global TTL. Reads may use a fresh projection; stale or missing data triggers synchronization before answering. A forced `sync` bypasses freshness. A mutation always performs a mandatory preflight refresh regardless of TTL, and post-action refresh is required before verification. Concurrent syncs use a per-dataset lock or equivalent single-flight policy; an interrupted transaction leaves the prior committed snapshot intact.
 
-Repeated syncs are idempotent at the projection level: the same Bungie state produces the same normalized rows and revision semantics. Remote mutations are not assumed globally idempotent. Each plan has a local `plan_id`, a bounded step identity, and an execution record so retries can re-read current state and avoid replaying a step whose postcondition is already true. Never claim atomicity across multiple Bungie calls.
+Repeated syncs are idempotent at the projection level: the same Bungie state produces the same normalized rows and revision semantics. A successful replacement with changed normalized content receives the next repository-generated `SyncRevision`; unchanged normalized content may retain its revision. Remote mutations are not assumed globally idempotent. Each plan has a local `plan_id`, a bounded step identity, and an execution record so retries can re-read current state and avoid replaying a step whose postcondition is already true. Never claim atomicity across multiple Bungie calls.
 
 ## 6. Read workflows
 
@@ -116,7 +116,14 @@ Repeated syncs are idempotent at the projection level: the same Bungie state pro
 6. **Post-action refresh:** fetch the affected profile/components and commit the resulting projection.
 7. **Verification:** require the item to be observed at the requested destination; return `verified`, `partial_failure`, or a typed failure.
 
-MCP mutation tools are disabled by default in the MVP. Read-only MCP tools are enabled; a future opt-in mutation mode must invoke the same plan, confirmation policy, preflight, execution, and verification service as CLI, never a separate MCP shortcut. This is safer for model-mediated calls and aligns the MVP with the source vision without granting an unreviewed agent write authority.
+### MCP mutation contract
+
+MCP move execution is enabled by default in the MVP, but it is never a one-call model write. The MCP adapter exposes the same shared mutation service as the CLI through two steps:
+
+1. `preview_move_item` resolves the semantic request without remote mutation and returns a short-lived `plan_id` plus the exact human-readable effects: item, source, destination, Vault intermediary if required, and expected steps.
+2. `execute_move_item` requires that `plan_id` and an explicit confirmation value bound to that plan. The shared service performs mandatory fresh preflight, invalidates the plan if it is expired or the bound `SyncRevision`/item assumptions changed, executes the supported calls, refreshes, and verifies.
+
+A model request, tool call, or natural-language intent alone is not confirmation. The confirmation value is issued by the application policy for the specific plan and must be explicitly supplied; adapters cannot forge or reinterpret it. CLI and MCP therefore share the same policy, executor, preflight, refresh, and verification path.
 
 ## 8. Errors, retries, and observability
 
@@ -126,25 +133,25 @@ Retry only transient transport, provider-unavailable, and rate-limit outcomes, w
 
 ## 9. Threat model and trust boundaries
 
-The user and Bungie are external trust boundaries. The system browser is trusted for user interaction but not for callback input; callback state and code validation protect against CSRF and unsolicited callbacks. The MCP host/model is untrusted with respect to credentials and mutation authority. SQLite is local but inspectable and therefore receives only non-secret projections. The OS credential store is the preferred secret boundary. Threats include malicious callback requests, state fixation, token leakage through diagnostics, stale-state destructive actions, prompt-injected mutation requests, and local-disk exposure. Mitigations are exact callback matching, one-time random state, no secrets in model-visible channels, mandatory preflight/confirmation, least-privilege read-only MCP default, restricted fallback policy, and post-action verification.
+The user and Bungie are external trust boundaries. The system browser is trusted for user interaction but not for callback input; callback state and code validation protect against CSRF and unsolicited callbacks. The MCP host/model is untrusted with respect to credentials and mutation authority. SQLite is local but inspectable and therefore receives only non-secret projections. The OS credential store is the preferred secret boundary. Threats include malicious callback requests, state fixation, token leakage through diagnostics, stale-state destructive actions, prompt-injected mutation requests, and local-disk exposure. Mitigations are exact callback matching, one-time random state, no secrets in model-visible channels, mandatory preflight/confirmation, explicit two-step MCP mutation, restricted fallback policy, and post-action verification.
 
 ## 10. Configuration and deployment
 
-The MVP is a local native process with a user-configured Bungie API key, public OAuth client ID, and fixed callback URI. The callback URI is configurable only as a whole exact value and must be validated against the registered value at startup; no wildcard, dynamic port, custom scheme, or PKCE behavior is assumed because the evidence does not establish those guarantees. The application uses system-browser authorization and local SQLite/cache paths selected by platform conventions. The selected `rmcp` 1.x version and feature set must be revalidated and pinned during implementation; the research artifact records the 1.5.0 evidence snapshot, not an eternal guarantee.
+The MVP is a local native process with a user-configured Bungie API key, public OAuth client ID, and callback URI. The callback URI is required configuration and is parsed into its exact scheme, host, port, and path. Startup validates it against the separately configured registered URI value; the callback listener binds that exact host and port and fails closed if unavailable. Packaged environments must separately register the exact URI and provide the matching application configuration. No dynamic port, wildcard, custom scheme, or PKCE support is assumed because the evidence does not establish those guarantees. The application uses system-browser authorization and local SQLite/cache paths selected by platform conventions. The selected `rmcp` 1.x version and feature set must be revalidated and pinned during implementation; the research artifact records the 1.5.0 evidence snapshot, not an eternal guarantee.
 
 ## 11. Adapter capabilities and result shapes
 
 The CLI is the operator-facing adapter. Its commands map one-to-one to application use cases, print concise human-readable summaries, and return non-zero status for typed failures. It may offer `--json` for scripting, but the JSON shape is a sanitized application result, not a Bungie response. Interactive authorization and confirmation are CLI concerns delegated to core policy inputs; the CLI never receives a token.
 
-The MCP adapter is a server-side stdio process. Its initial tools are `list_characters`, `search_inventory`, and `inspect_item`; an explicit `preview_move_item` may be exposed as read-only planning. Tool arguments are semantic names and filters, not endpoint parameters. Results contain definitions, locations, freshness markers, and bounded error codes. They do not contain headers, authorization URLs with secrets, authorization codes, tokens, API keys, or unbounded upstream payloads.
+The MCP adapter is a server-side stdio process. Its initial tools are `list_characters`, `search_inventory`, `inspect_item`, `preview_move_item`, and `execute_move_item`. Tool arguments are semantic names, filters, plan identity, and the explicit confirmation value—not endpoint parameters. Results contain definitions, locations, freshness markers, exact preview effects, and bounded error codes. They do not contain headers, authorization URLs with secrets, authorization codes, tokens, API keys, or unbounded upstream payloads.
 
 | Capability | CLI | MCP default | Shared service |
 |---|---:|---:|---|
 | Authenticate / reauthorize | yes, interactive | reports `reauthorization_required` | authorization service |
 | Sync Manifest/profile | yes | implicit when policy requires | synchronization service |
 | List/search/inspect | yes | yes | inventory query service |
-| Preview move | yes | optional read-only tool | mutation planning service |
-| Execute move | yes with confirmation | disabled | mutation policy and executor |
+| Preview move | yes | yes | mutation planning service |
+| Execute move | yes with confirmation | yes, two-step plan plus bound confirmation | mutation policy and executor |
 | Raw Bungie request | no | no | never exposed |
 
 Every use case returns either a typed success containing sanitized domain records and freshness, or a typed failure from the shared taxonomy. Adapters may translate wording and exit/status conventions, but cannot reinterpret a successful remote mutation or downgrade `verification_failed` to success.
@@ -160,11 +167,12 @@ The following invariants are implementation acceptance rules, not optional optim
 5. Local replacement transactions preserve the previous committed snapshot until the new one is complete.
 6. Reauthorization is surfaced to the caller rather than hidden behind repeated transport retries.
 7. All application paths use the same policy service, regardless of whether the request came from terminal input or an MCP host.
-8. Secret-bearing values are opaque at the application boundary and are unavailable to presentation serializers.
+8. MCP execution requires a current plan identity and confirmation value bound to that plan; adapters cannot manufacture confirmation.
+9. Secret-bearing values are opaque at the application boundary and are unavailable to presentation serializers.
 
 A synchronization run records dataset, requested reason (`stale`, `forced`, `preflight`, or `post_action`), start/end time, source revision when available, and outcome. These are operational markers only. A sync marker does not imply the remote state is immutable or that an unrelated dataset is fresh.
 
-A move plan is valid only for its selected membership, item instance, destination, source revision, and expiry window. If any changes during preflight, the plan becomes `stale_state`; the user must receive a new preview. This keeps human confirmation tied to the exact action being executed.
+A move plan is valid only for its selected membership, item instance, destination, source `SyncRevision`, and expiry window. If any of these assumptions change during preflight, the plan is invalidated and becomes `stale_state`; the user must receive a new preview. This keeps explicit confirmation tied to the exact action being executed.
 
 ## 13. Implementation seams and sequence
 
@@ -176,7 +184,7 @@ Implementation should proceed in vertical slices that preserve a runnable path:
 4. Build repository-backed character listing, semantic inventory search, and inspection against fixture snapshots.
 5. Wire the CLI to the application services and exercise the read journey end to end.
 6. Add move planning, confirmation policy, preflight refresh, remote execution boundary, post-action refresh, and verification using a Bungie adapter test double.
-7. Add the read-only MCP stdio adapter over the same service instances and compare its results with CLI results.
+7. Add the MCP stdio adapter, including the two-step move contract, over the same service instances and compare its results with CLI results.
 
 Each slice should test the port boundary rather than couple domain tests to HTTP, SQLite implementation details, or a particular credential-store library. Live Bungie testing is a separate integration check and must use a non-production account where possible. The first implementation plan should turn the open questions below into explicit decisions before adding endpoint-specific code.
 
@@ -185,20 +193,20 @@ Each slice should test the port boundary rather than couple domain tests to HTTP
 - [ ] A fresh local user can authenticate through the system browser using the exact registered callback and public-client exchange; no secret or refresh token is required.
 - [ ] CSRF state mismatch, denial, expiry, and 401 each produce the specified typed outcome, with 401/expiry reaching `reauthorization_required`.
 - [ ] Manifest and profile snapshots expose freshness, revision, and source markers and commit atomically.
-- [ ] CLI and read-only MCP return equivalent results through shared application services.
+- [ ] CLI and MCP return equivalent results through shared application services, including the two-step move contract.
 - [ ] Search and inspect resolve a concrete item instance and distinguish definition hash from instance ID.
 - [ ] `move_item` previews first, requires confirmation, refreshes before execution, handles partial failure honestly, refreshes afterward, and verifies destination.
-- [ ] MCP mutation remains disabled by default and cannot bypass the shared policy service when later enabled.
+- [ ] MCP move execution is enabled by default through `preview_move_item` and `execute_move_item`; it requires a current plan and bound explicit confirmation, cannot be forged by an adapter, and cannot bypass the shared policy service.
 - [ ] Secret scanning of logs, SQLite, MCP results, and command output finds no access token, API key, code, or refresh token.
 - [ ] A repeatable end-to-end test demonstrates the vertical journey without claiming multi-call atomicity.
 
 ## 15. Deferred implementation questions
 
 - Which platforms and OS credential stores are first-class, and what approved restricted fallback exists for each?
-- What exact fixed callback URI is registered for development and packaged release environments?
+- What exact callback URI values are registered for development and packaged release environments, and how are those exact values provisioned into application configuration?
 - Which Bungie profile components and transfer endpoint sequence are sufficient for the first supported move?
 - What rate-limit headers and provider error fields can be safely normalized?
 - Which exact `rmcp` version/features pass implementation-time compatibility checks?
-- What user-facing CLI confirmation and MCP-host opt-in protocol are acceptable for future mutations?
+- What user-facing CLI confirmation UX and MCP host presentation should wrap the required plan-bound confirmation value?
 - What dataset TTLs and synchronization concurrency limits are appropriate after observing real response sizes and latency?
 - Which privacy-preserving account identifiers, if any, may appear in local diagnostics?
