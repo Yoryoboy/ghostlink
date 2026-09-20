@@ -67,7 +67,7 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
   - Route: delegated to `gentle-ai-worker`; bounded planning document.
   - Outcome: created `docs/mvp-implementation-plan.md` with ordered work units, dependencies, narrow ownership surfaces, test strategies, acceptance checks, exclusions, review notes, traceability, and readiness guidance.
   - Check: documentation plan read back for dependency-correct vertical progress, all required architecture work areas, explicit public OAuth/MCP confirmation constraints, implementation-time provider revalidation, and architecture acceptance-criteria mapping.
-  - Evidence: pending commit.
+  - Evidence: commit `a8cd132` (`docs: plan Destiny MVP implementation`).
 
 - [ ] **DMA-005 — Review and close the architecture package**
   - Route: delegated to `gentle-ai-verify`; independent documentation verification because verification commands are delegated by policy.
