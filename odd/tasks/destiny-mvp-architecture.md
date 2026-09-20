@@ -55,7 +55,7 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
   - Route: delegated research outcome captured from the parent-supplied primary-source evidence.
   - Outcome: created `docs/integration-assumptions.md` with verified Bungie OAuth constraints, verified MCP Rust SDK facts, explicitly labeled inferences, unresolved deployment/version gaps, and a source register.
   - Check: read back the artifact for scope/date, primary-source traceability, confidence/freshness notes, and the required distinction between provider facts and project recommendations.
-  - Evidence: pending commit (parent-owned).
+  - Evidence: commit `1f32b0f` (`docs: validate Destiny integration assumptions`).
 
 - [ ] **DMA-003 — Write the MVP architecture**
   - Route: delegated to `gentle-ai-worker`; non-trivial architecture document informed by the research.
