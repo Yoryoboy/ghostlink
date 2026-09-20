@@ -63,11 +63,11 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
   - Check: `git diff --check` passed; independent correction verification passed with no findings.
   - Evidence: initial commit `6cfd76d` (`docs: define Destiny MVP architecture`); correction commit `b1f9e29` (`docs: reconcile MCP mutation architecture`).
 
-- [ ] **DMA-004 — Write the implementation work breakdown**
+- [x] **DMA-004 — Write the implementation work breakdown**
   - Route: delegated to `gentle-ai-worker`; bounded planning document.
-  - Outcome: create `docs/mvp-implementation-plan.md` with ordered work units, dependencies, per-unit acceptance checks, and explicit exclusions.
-  - Check: each work unit is independently reviewable and maps to an MVP acceptance criterion.
-  - Evidence: pending.
+  - Outcome: created `docs/mvp-implementation-plan.md` with ordered work units, dependencies, narrow ownership surfaces, test strategies, acceptance checks, exclusions, review notes, traceability, and readiness guidance.
+  - Check: documentation plan read back for dependency-correct vertical progress, all required architecture work areas, explicit public OAuth/MCP confirmation constraints, implementation-time provider revalidation, and architecture acceptance-criteria mapping.
+  - Evidence: pending commit.
 
 - [ ] **DMA-005 — Review and close the architecture package**
   - Route: delegated to `gentle-ai-verify`; independent documentation verification because verification commands are delegated by policy.
@@ -93,7 +93,8 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - Baseline evidence was recorded in follow-up commit `38ca47b`.
 - DMA-002 research is now recorded in `docs/integration-assumptions.md`; implementation-time revalidation remains required for the moving MCP `main` branch, while DMA-003 resolves the MVP as a public-client deployment with an exact configured callback contract.
 - DMA-003 architecture is recorded in `docs/mvp-architecture.md`; commits `6cfd76d` and `b1f9e29` capture the initial design and MCP-mutation correction, and independent correction verification passed with no findings.
+- DMA-004 implementation plan is recorded in `docs/mvp-implementation-plan.md`; the plan defines ordered work units, scaffold-established commands, test categories, review slicing, traceability, and remaining implementation-time revalidation blockers. Evidence is pending commit.
 
 ## Next step
 
-Proceed to DMA-004: write the ordered implementation work breakdown from the MVP architecture and integration assumptions.
+Proceed to DMA-005: review and close the architecture package.
