@@ -57,11 +57,11 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
   - Check: read back the artifact for scope/date, primary-source traceability, confidence/freshness notes, and the required distinction between provider facts and project recommendations.
   - Evidence: commit `1f32b0f` (`docs: validate Destiny integration assumptions`).
 
-- [ ] **DMA-003 — Write the MVP architecture**
+- [x] **DMA-003 — Write the MVP architecture**
   - Route: delegated to `gentle-ai-worker`; non-trivial architecture document informed by the research.
-  - Outcome: create `docs/mvp-architecture.md` with decisions, boundaries, contracts, workflows, security, failure semantics, and acceptance criteria.
-  - Check: readback against the source vision and verified research.
-  - Evidence: pending.
+  - Outcome: created `docs/mvp-architecture.md` with decisions, boundaries, contracts, workflows, security, failure semantics, and acceptance criteria for the public-client vertical MVP.
+  - Check: readback against the source vision and verified research; required verification is pending parent execution.
+  - Evidence: pending commit.
 
 - [ ] **DMA-004 — Write the implementation work breakdown**
   - Route: delegated to `gentle-ai-worker`; bounded planning document.
@@ -92,7 +92,8 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - `feature/destiny-mvp-architecture` now has baseline commit `108b08c`; its committed tree contains the intended three files and was clean immediately afterward.
 - Baseline evidence was recorded in follow-up commit `38ca47b`.
 - DMA-002 research is now recorded in `docs/integration-assumptions.md`; implementation-time revalidation remains required for the moving MCP `main` branch and the unresolved OAuth deployment choice.
+- DMA-003 architecture is now recorded in `docs/mvp-architecture.md`; verification and commit evidence remain pending the parent.
 
 ## Next step
 
-Proceed to DMA-003: write the MVP architecture using the integration assumptions artifact as its evidence boundary.
+Proceed to DMA-004: write the ordered implementation work breakdown from the MVP architecture and integration assumptions.
