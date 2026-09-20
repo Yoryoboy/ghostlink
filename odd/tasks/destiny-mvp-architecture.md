@@ -69,11 +69,11 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
   - Check: `git diff --check` passed; independent correction verification passed with no findings.
   - Evidence: initial plan commit `a8cd132`; correction commit `cbed9cd` (`docs: simplify MCP mutation authorization`).
 
-- [ ] **DMA-005 — Review and close the architecture package**
+- [x] **DMA-005 — Review and close the architecture package**
   - Route: delegated to `gentle-ai-verify`; independent documentation verification because verification commands are delegated by policy.
-  - Outcome: resolve remaining inconsistencies and report decisions, evidence gaps, and the recommended first implementation unit.
-  - Check: pending parent reverification after the DMA-004 correction.
-  - Evidence: pending.
+  - Outcome: final package review found no high or medium issues, identified only one tracker attribution error corrected during closure, and confirmed readiness for WU-001.
+  - Check: `git diff --check 108b08c..HEAD` passed; final review covered evidence boundaries, architecture consistency, implementation ordering, traceability, non-goals, and repository state.
+  - Evidence: final independent review observed at branch boundary `7ac3e7f`; closure commit pending.
 
 ## Acceptance criteria
 
@@ -92,9 +92,10 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - `feature/destiny-mvp-architecture` now has baseline commit `108b08c`; its committed tree contains the intended three files and was clean immediately afterward.
 - Baseline evidence was recorded in follow-up commit `38ca47b`.
 - DMA-002 research is now recorded in `docs/integration-assumptions.md`; implementation-time revalidation remains required for the moving MCP `main` branch, while DMA-003 resolves the MVP as a public-client deployment with an exact configured callback contract.
-- DMA-003 architecture is recorded in `docs/mvp-architecture.md`; commits `6cfd76d`, `b1f9e29`, and `cbed9cd` capture the initial design, review correction, and final single-call intent-authorized MCP decision.
+- DMA-003 architecture is recorded in `docs/mvp-architecture.md`; commits `6cfd76d` and `b1f9e29` capture its initial design and first review correction. The final single-call intent-authorized MCP decision was applied across architecture and plan in DMA-004 correction commit `cbed9cd`.
 - DMA-004 implementation plan is recorded in `docs/mvp-implementation-plan.md`; initial plan commit `a8cd132` and correction commit `cbed9cd` are recorded. Independent correction verification passed with no findings.
+- DMA-005 final review found no high or medium issues, corrected one commit-attribution error, and confirmed readiness to begin WU-001. Remaining provider gaps are explicitly scheduled for implementation-time validation.
 
 ## Next step
 
-Proceed to DMA-005: independently review and close the architecture package.
+Begin WU-001 — workspace, configuration, and error foundations — as a new implementation feature with its own ODD tracker.
