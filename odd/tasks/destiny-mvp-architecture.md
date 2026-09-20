@@ -51,11 +51,11 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
   - Check: `git status --short --branch` reported a clean feature branch; `git show --stat --oneline --summary HEAD` reported the three intended files.
   - Evidence: commit `108b08c` (`docs: establish Destiny companion vision`).
 
-- [ ] **DMA-002 — Validate official integration assumptions**
-  - Route: delegated to `gentle-ai-explore`; broad external research and context compression.
-  - Outcome: verify current Bungie OAuth/native-client constraints and the official MCP Rust SDK's package, maturity, and stdio support.
-  - Check: every material claim has a primary-source URL, publisher, retrieval date, and confidence/gap note.
-  - Evidence: blocked after three launch attempts. The subagent runtime rejected the current repository with `Select an existing worktree in the same Git clone as this session`, including after the repository gained commits, the current worktree was registered, and its canonical Git paths were verified.
+- [x] **DMA-002 — Validate official integration assumptions**
+  - Route: delegated research outcome captured from the parent-supplied primary-source evidence.
+  - Outcome: created `docs/integration-assumptions.md` with verified Bungie OAuth constraints, verified MCP Rust SDK facts, explicitly labeled inferences, unresolved deployment/version gaps, and a source register.
+  - Check: read back the artifact for scope/date, primary-source traceability, confidence/freshness notes, and the required distinction between provider facts and project recommendations.
+  - Evidence: pending commit (parent-owned).
 
 - [ ] **DMA-003 — Write the MVP architecture**
   - Route: delegated to `gentle-ai-worker`; non-trivial architecture document informed by the research.
@@ -88,12 +88,11 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 
 - User selected architecture-first MVP design.
 - Repository began with `.gitignore` and the source vision as untracked files and no commits.
-- Delegated research could not launch before a first Git commit because the subagent runtime requires an existing worktree.
 - User explicitly authorized an initial commit containing the documents.
 - `feature/destiny-mvp-architecture` now has baseline commit `108b08c`; its committed tree contains the intended three files and was clean immediately afterward.
 - Baseline evidence was recorded in follow-up commit `38ca47b`.
-- `gentle-ai-explore` still cannot launch because the runtime does not recognize the current repository as an eligible worktree, despite successful session registration and canonical Git validation.
+- DMA-002 research is now recorded in `docs/integration-assumptions.md`; implementation-time revalidation remains required for the moving MCP `main` branch and the unresolved OAuth deployment choice.
 
 ## Next step
 
-Resume in a fresh Pi session so the now-initialized Git worktree is discovered at session startup, then retry DMA-002 before writing architecture artifacts.
+Proceed to DMA-003: write the MVP architecture using the integration assumptions artifact as its evidence boundary.
