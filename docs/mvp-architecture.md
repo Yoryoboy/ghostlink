@@ -9,8 +9,8 @@ This document turns the product vision into one implementable vertical slice: au
 - Deliver a usable local Rust application with one shared application/core layer.
 - Authenticate with a local Bungie **Public** OAuth client: system browser, one fixed exactly registered callback URI, random CSRF state, no client secret, and no refresh token.
 - Synchronize Manifest definitions and the authenticated user's profile/inventory into a local cache and search index.
-- Support `list_characters`, `search_inventory`, and `inspect_item` through both CLI and MCP; support previewed, explicitly confirmed `move_item` execution through both CLI and MCP using one shared service.
-- Demonstrate the vertical journey: “Move The Last Word to my Warlock,” with preview, confirmation, fresh preflight, Bungie execution, refresh, and verification.
+- Support `list_characters`, `search_inventory`, and `inspect_item` through both CLI and MCP; support intent-authorized `move_item` execution through both CLI and MCP using one shared service.
+- Demonstrate the vertical journey: “Move The Last Word to my Warlock,” with semantic resolution, explicit-intent authorization for MCP, fresh preflight, Bungie execution, refresh, and verification.
 
 ### Non-goals
 
@@ -23,7 +23,7 @@ World State/weekly rotation, equip/build engines, multi-item build plans, disman
 3. Manifest and profile synchronization populate local definitions and item projections.
 4. User searches for “The Last Word”; the core resolves the semantic result to a stable item instance and destination character.
 5. A move plan explains source, Vault intermediary if required, destination, and expected effects.
-6. The user explicitly confirms through the CLI, or the MCP host completes the two-step mutation contract. The core refreshes the relevant profile immediately before execution, re-resolves the item, performs supported remote calls, refreshes afterward, and verifies the observed destination.
+6. The user explicitly confirms through the CLI, or explicit user intent authorizes one direct MCP `move_item` call. The core refreshes the relevant profile immediately before execution, re-resolves the item, performs the minimum supported remote calls, refreshes afterward, and verifies the observed destination.
 7. The adapter reports a semantic result or a safe, actionable error.
 
 ## 2. System context and boundaries
@@ -53,7 +53,7 @@ flowchart LR
 | SQLite/cache/search repository | Durable non-secret projections, indexes, sync metadata, plans/results | Store access tokens, API keys, authorization codes, or raw secret-bearing payloads |
 | Credential-store port | Save/load/delete opaque access-token material securely | Define a particular library or print credentials |
 | CLI adapter | Parse commands, display bounded results, request interactive confirmation | Reimplement policy or call Bungie directly |
-| MCP stdio adapter | Expose semantic read tools and safe mutation entry points | Put secrets in tool inputs/outputs or bypass confirmation/policy |
+| MCP stdio adapter | Expose semantic read tools and the intent-authorized mutation entry point | Put secrets in tool inputs/outputs or bypass semantic resolution, preflight, or mutation policy |
 
 ### Dependency direction
 
@@ -72,7 +72,7 @@ Core records include:
 - `Freshness { dataset, fetched_at, revision, status }`; and
 - `MovePlan { plan_id, item, source, destination, steps, created_at, expires_at }`.
 
-Architectural ports are intentionally behavioral: `BungieGateway` authenticates and reads/executes supported operations; `ManifestGateway` obtains a versioned definition set; `InventoryRepository` reads/replaces projections and sync metadata transactionally; `CredentialStore` protects opaque access state; `Clock` and `IdGenerator` make expiry and idempotency testable; `ConfirmationPolicy` decides whether an explicit confirmation is present and valid; `SearchRepository` resolves semantic queries to indexed items. Exact Rust traits and endpoint mappings belong to implementation planning.
+Architectural ports are intentionally behavioral: `BungieGateway` authenticates and reads/executes supported operations; `ManifestGateway` obtains a versioned definition set; `InventoryRepository` reads/replaces projections and sync metadata transactionally; `CredentialStore` protects opaque access state; `Clock` and `IdGenerator` make expiry and idempotency testable; `MutationPolicy` enforces semantic resolution, ambiguity rejection, preflight, and verification; `SearchRepository` resolves semantic queries to indexed items. Exact Rust traits and endpoint mappings belong to implementation planning.
 
 ## 4. Authentication and secret boundaries
 
@@ -108,9 +108,9 @@ Repeated syncs are idempotent at the projection level: the same Bungie state pro
 
 ## 7. Mutation workflow
 
-1. **Plan/preview:** resolve item and destination; validate supported location rules; produce a human-readable `MovePlan` with no remote mutation.
-2. **Explicit confirmation:** require a deliberate CLI confirmation or an equivalent policy-approved interaction. A natural-language request alone is not confirmation.
-3. **Mandatory preflight refresh:** fetch current profile state, re-resolve the item by stable identity, re-check destination, lock/availability and other applicable constraints, and invalidate the plan if assumptions changed.
+1. **Resolve and plan internally:** resolve item and destination semantically; reject ambiguity; validate supported location rules; create a short-lived `MovePlan` without remote mutation.
+2. **Authorization:** CLI may present its normal interactive confirmation UX, but MCP treats explicit user intent to move the item as sufficient authorization and calls the single `move_item` tool directly. MCP has no preview, confirmation token/value, approval ceremony, or two-step protocol.
+3. **Mandatory fresh preflight:** fetch current profile state, re-resolve the item by stable identity, re-check destination, lock/availability and other applicable constraints, and invalidate the plan if assumptions changed. Revalidate official/current lock, availability, and transfer constraints at implementation time before relying on provider behavior.
 4. **Execution:** call the minimum Bungie operations, using Vault as an intermediate only when required by Bungie semantics. Record step outcomes without recording secrets.
 5. **Partial failure:** stop on an unsafe failure, report completed and uncompleted steps, and do not claim rollback or atomicity. A retry must refresh and re-plan.
 6. **Post-action refresh:** fetch the affected profile/components and commit the resulting projection.
@@ -118,22 +118,19 @@ Repeated syncs are idempotent at the projection level: the same Bungie state pro
 
 ### MCP mutation contract
 
-MCP move execution is enabled by default in the MVP, but it is never a one-call model write. The MCP adapter exposes the same shared mutation service as the CLI through two steps:
+MCP move execution is enabled by default in the MVP and is authorized by explicit user intent. The MCP adapter exposes one semantic `move_item` tool. The tool resolves the item and destination, rejects ambiguity, creates any internal short-lived plan, performs the mandatory fresh preflight, executes the minimum supported remote calls, reports partial failure honestly, refreshes, and verifies before returning.
 
-1. `preview_move_item` resolves the semantic request without remote mutation and returns a short-lived `plan_id` plus the exact human-readable effects: item, source, destination, Vault intermediary if required, and expected steps.
-2. `execute_move_item` requires that `plan_id` and an explicit confirmation value bound to that plan. The shared service performs mandatory fresh preflight, invalidates the plan if it is expired or the bound `SyncRevision`/item assumptions changed, executes the supported calls, refreshes, and verifies.
-
-A model request, tool call, or natural-language intent alone is not confirmation. The confirmation value is issued by the application policy for the specific plan and must be explicitly supplied; adapters cannot forge or reinterpret it. CLI and MCP therefore share the same policy, executor, preflight, refresh, and verification path.
+There is no mandatory preview, confirmation token/value, CLI approval, local web approval, host confirmation ceremony, or two-step MCP protocol. The MCP adapter does not infer authority from vague or ambiguous input: explicit user intent to move an identified item to a destination is sufficient, while semantic resolution and ambiguity rejection remain mandatory. CLI may retain normal interactive confirmation as operator UX, but CLI UX does not define MCP authority. Both adapters use the same mutation service, preflight, execution, refresh, and verification path.
 
 ## 8. Errors, retries, and observability
 
 The taxonomy is stable and adapter-neutral: `authorization_required`, `reauthorization_required`, `authorization_denied`, `csrf_state_mismatch`, `credential_store_unavailable`, `provider_authentication`, `provider_rate_limit`, `provider_unavailable`, `provider_validation`, `stale_state`, `ambiguous_match`, `unsupported_operation`, `partial_failure`, `verification_failed`, `local_storage`, and `configuration_error`.
 
-Retry only transient transport, provider-unavailable, and rate-limit outcomes, with bounded exponential backoff and provider-aware limits. Do not retry authorization, validation, ambiguity, confirmation, or verification failures automatically. Before retrying a mutation, refresh and check the step postcondition. Correlation IDs and plan/step IDs support diagnosis; logs contain event type, timing, dataset, status, retry count, and redacted provider status. Never log URLs containing codes, headers, tokens, full payloads, or user-identifying data unless explicitly redacted and required for local debugging.
+Retry only transient transport, provider-unavailable, and rate-limit outcomes, with bounded exponential backoff and provider-aware limits. Do not retry authorization, validation, ambiguity, or verification failures automatically. Before retrying a mutation, refresh and check the step postcondition. Correlation IDs and plan/step IDs support diagnosis; logs contain event type, timing, dataset, status, retry count, and redacted provider status. Never log URLs containing codes, headers, tokens, full payloads, or user-identifying data unless explicitly redacted and required for local debugging.
 
 ## 9. Threat model and trust boundaries
 
-The user and Bungie are external trust boundaries. The system browser is trusted for user interaction but not for callback input; callback state and code validation protect against CSRF and unsolicited callbacks. The MCP host/model is untrusted with respect to credentials and mutation authority. SQLite is local but inspectable and therefore receives only non-secret projections. The OS credential store is the preferred secret boundary. Threats include malicious callback requests, state fixation, token leakage through diagnostics, stale-state destructive actions, prompt-injected mutation requests, and local-disk exposure. Mitigations are exact callback matching, one-time random state, no secrets in model-visible channels, mandatory preflight/confirmation, explicit two-step MCP mutation, restricted fallback policy, and post-action verification.
+The user and Bungie are external trust boundaries. The system browser is trusted for user interaction but not for callback input; callback state and code validation protect against CSRF and unsolicited callbacks. The MCP host/model is untrusted with respect to credentials and mutation authority. SQLite is local but inspectable and therefore receives only non-secret projections. The OS credential store is the preferred secret boundary. Threats include malicious callback requests, state fixation, token leakage through diagnostics, stale-state destructive actions, prompt-injected mutation requests, and local-disk exposure. Mitigations are exact callback matching, one-time random state, no secrets in model-visible channels, semantic resolution with ambiguity rejection, mandatory fresh preflight, single-call intent-authorized MCP mutation, restricted fallback policy, and post-action verification.
 
 ## 10. Configuration and deployment
 
@@ -143,15 +140,15 @@ The MVP is a local native process with a user-configured Bungie API key, public 
 
 The CLI is the operator-facing adapter. Its commands map one-to-one to application use cases, print concise human-readable summaries, and return non-zero status for typed failures. It may offer `--json` for scripting, but the JSON shape is a sanitized application result, not a Bungie response. Interactive authorization and confirmation are CLI concerns delegated to core policy inputs; the CLI never receives a token.
 
-The MCP adapter is a server-side stdio process. Its initial tools are `list_characters`, `search_inventory`, `inspect_item`, `preview_move_item`, and `execute_move_item`. Tool arguments are semantic names, filters, plan identity, and the explicit confirmation value—not endpoint parameters. Results contain definitions, locations, freshness markers, exact preview effects, and bounded error codes. They do not contain headers, authorization URLs with secrets, authorization codes, tokens, API keys, or unbounded upstream payloads.
+The MCP adapter is a server-side stdio process. Its initial tools are `list_characters`, `search_inventory`, `inspect_item`, and `move_item`. Tool arguments are semantic names, destination, and bounded intent—not endpoint parameters or approval artifacts. Results contain definitions, locations, freshness markers, bounded action effects, and typed error codes. They do not contain headers, authorization URLs with secrets, authorization codes, tokens, API keys, or unbounded upstream payloads.
 
 | Capability | CLI | MCP default | Shared service |
 |---|---:|---:|---|
 | Authenticate / reauthorize | yes, interactive | reports `reauthorization_required` | authorization service |
 | Sync Manifest/profile | yes | implicit when policy requires | synchronization service |
 | List/search/inspect | yes | yes | inventory query service |
-| Preview move | yes | yes | mutation planning service |
-| Execute move | yes with confirmation | yes, two-step plan plus bound confirmation | mutation policy and executor |
+| Move planning | internal/optional UX | internal to `move_item` | mutation planning service |
+| Execute move | yes, with normal CLI confirmation UX | yes, one direct intent-authorized call | mutation policy and executor |
 | Raw Bungie request | no | no | never exposed |
 
 Every use case returns either a typed success containing sanitized domain records and freshness, or a typed failure from the shared taxonomy. Adapters may translate wording and exit/status conventions, but cannot reinterpret a successful remote mutation or downgrade `verification_failed` to success.
@@ -167,12 +164,12 @@ The following invariants are implementation acceptance rules, not optional optim
 5. Local replacement transactions preserve the previous committed snapshot until the new one is complete.
 6. Reauthorization is surfaced to the caller rather than hidden behind repeated transport retries.
 7. All application paths use the same policy service, regardless of whether the request came from terminal input or an MCP host.
-8. MCP execution requires a current plan identity and confirmation value bound to that plan; adapters cannot manufacture confirmation.
+8. MCP execution requires explicit user intent plus semantic resolution, ambiguity rejection, and mandatory fresh preflight; adapters cannot bypass the shared mutation policy.
 9. Secret-bearing values are opaque at the application boundary and are unavailable to presentation serializers.
 
 A synchronization run records dataset, requested reason (`stale`, `forced`, `preflight`, or `post_action`), start/end time, source revision when available, and outcome. These are operational markers only. A sync marker does not imply the remote state is immutable or that an unrelated dataset is fresh.
 
-A move plan is valid only for its selected membership, item instance, destination, source `SyncRevision`, and expiry window. If any of these assumptions change during preflight, the plan is invalidated and becomes `stale_state`; the user must receive a new preview. This keeps explicit confirmation tied to the exact action being executed.
+A move plan is valid only for its selected membership, item instance, destination, source `SyncRevision`, and expiry window. If any of these assumptions change during preflight, execution stops with `stale_state`; the service reports that the action must be re-resolved. This prevents stale state from authorizing a mutation without imposing a second MCP approval step.
 
 ## 13. Implementation seams and sequence
 
@@ -183,8 +180,8 @@ Implementation should proceed in vertical slices that preserve a runnable path:
 3. Add Manifest versioning and transactional replacement, then profile normalization and freshness metadata.
 4. Build repository-backed character listing, semantic inventory search, and inspection against fixture snapshots.
 5. Wire the CLI to the application services and exercise the read journey end to end.
-6. Add move planning, confirmation policy, preflight refresh, remote execution boundary, post-action refresh, and verification using a Bungie adapter test double.
-7. Add the MCP stdio adapter, including the two-step move contract, over the same service instances and compare its results with CLI results.
+6. Add internal move planning, optional CLI confirmation UX, preflight refresh, remote execution boundary, post-action refresh, and verification using a Bungie adapter test double.
+7. Add the MCP stdio adapter, including the single-call intent-authorized `move_item` contract, over the same service instances and compare its results with CLI results.
 
 Each slice should test the port boundary rather than couple domain tests to HTTP, SQLite implementation details, or a particular credential-store library. Live Bungie testing is a separate integration check and must use a non-production account where possible. The first implementation plan should turn the open questions below into explicit decisions before adding endpoint-specific code.
 
@@ -193,12 +190,12 @@ Each slice should test the port boundary rather than couple domain tests to HTTP
 - [ ] A fresh local user can authenticate through the system browser using the exact registered callback and public-client exchange; no secret or refresh token is required.
 - [ ] CSRF state mismatch, denial, expiry, and 401 each produce the specified typed outcome, with 401/expiry reaching `reauthorization_required`.
 - [ ] Manifest and profile snapshots expose freshness, revision, and source markers and commit atomically.
-- [ ] CLI and MCP return equivalent results through shared application services, including the two-step move contract.
+- [ ] CLI and MCP return equivalent results through shared application services, with CLI confirmation remaining optional UX and MCP using one direct intent-authorized `move_item` call.
 - [ ] Search and inspect resolve a concrete item instance and distinguish definition hash from instance ID.
-- [ ] `move_item` previews first, requires confirmation, refreshes before execution, handles partial failure honestly, refreshes afterward, and verifies destination.
-- [ ] MCP move execution is enabled by default through `preview_move_item` and `execute_move_item`; it requires a current plan and bound explicit confirmation, cannot be forged by an adapter, and cannot bypass the shared policy service.
+- [ ] `move_item` resolves semantically, rejects ambiguity, applies CLI UX if used, refreshes before execution, handles partial failure honestly, refreshes afterward, and verifies destination.
+- [ ] MCP move execution is enabled by default through one direct intent-authorized `move_item` call; it has no mandatory preview, confirmation token/value, approval ceremony, or two-step protocol, and cannot bypass the shared policy service.
 - [ ] Secret scanning of logs, SQLite, MCP results, and command output finds no access token, API key, code, or refresh token.
-- [ ] A repeatable end-to-end test demonstrates the vertical journey without claiming multi-call atomicity.
+- [ ] A repeatable end-to-end test demonstrates the vertical journey, including one direct intent-authorized MCP mutation, without claiming multi-call atomicity.
 
 ## 15. Deferred implementation questions
 
@@ -207,6 +204,6 @@ Each slice should test the port boundary rather than couple domain tests to HTTP
 - Which Bungie profile components and transfer endpoint sequence are sufficient for the first supported move?
 - What rate-limit headers and provider error fields can be safely normalized?
 - Which exact `rmcp` version/features pass implementation-time compatibility checks?
-- What user-facing CLI confirmation UX and MCP host presentation should wrap the required plan-bound confirmation value?
+- What user-facing CLI confirmation UX is useful, while preserving explicit user intent as the sole MCP mutation authorization?
 - What dataset TTLs and synchronization concurrency limits are appropriate after observing real response sizes and latency?
 - Which privacy-preserving account identifiers, if any, may appear in local diagnostics?

@@ -24,7 +24,7 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - Bungie remains the source of truth; local SQLite data is a cache and search index.
 - CLI and MCP must remain thin adapters over one Rust core.
 - Secrets must not be exposed to MCP clients, model context, logs, or SQLite.
-- Mutating inventory actions must refresh before execution and verify afterward; CLI and MCP use the same mutation policy and executor.
+- Mutating inventory actions must use semantic resolution, ambiguity rejection, fresh preflight, current-state validation, minimum remote calls, honest partial-failure reporting, post-action refresh, and verification; CLI and MCP use the same mutation policy and executor. MCP explicit user intent authorizes one direct `move_item` call without a mandatory preview, confirmation token/value, approval ceremony, or two-step protocol.
 - Technical artifacts are written in English.
 - Use primary official sources for material external integration claims.
 - This is Organic Driven Development, not SDD/OpenSpec.
@@ -59,20 +59,20 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 
 - [x] **DMA-003 — Write the MVP architecture**
   - Route: delegated to `gentle-ai-worker`; non-trivial architecture document informed by the research, followed by a bounded correction from independent verification.
-  - Outcome: created `docs/mvp-architecture.md` with decisions, boundaries, contracts, workflows, security, failure semantics, and acceptance criteria for the public-client vertical MVP with plan-bound MCP mutation confirmation.
-  - Check: `git diff --check` passed; independent correction verification passed with no findings.
+  - Outcome: created `docs/mvp-architecture.md` with decisions, boundaries, contracts, workflows, security, failure semantics, and acceptance criteria for the public-client vertical MVP with single-call, explicit-intent-authorized MCP mutation.
+  - Check: initial checks passed; DMA-004 correction verification is in progress and has not passed.
   - Evidence: initial commit `6cfd76d` (`docs: define Destiny MVP architecture`); correction commit `b1f9e29` (`docs: reconcile MCP mutation architecture`).
 
-- [x] **DMA-004 — Write the implementation work breakdown**
-  - Route: delegated to `gentle-ai-worker`; bounded planning document.
-  - Outcome: created `docs/mvp-implementation-plan.md` with ordered work units, dependencies, narrow ownership surfaces, test strategies, acceptance checks, exclusions, review notes, traceability, and readiness guidance.
-  - Check: documentation plan read back for dependency-correct vertical progress, all required architecture work areas, explicit public OAuth/MCP confirmation constraints, implementation-time provider revalidation, and architecture acceptance-criteria mapping.
-  - Evidence: commit `a8cd132` (`docs: plan Destiny MVP implementation`).
+- [ ] **DMA-004 — Write and correct the implementation work breakdown**
+  - Route: delegated to `gentle-ai-worker`; bounded planning document and correction verification.
+  - Outcome: initial plan created with ordered work units, dependencies, narrow ownership surfaces, test strategies, acceptance checks, exclusions, review notes, traceability, and readiness guidance; correction aligns the plan with single-call, explicit-intent-authorized MCP mutation and independent verifier findings.
+  - Check: correction verification remains in progress; do not claim verification passed.
+  - Evidence: initial plan commit `a8cd132`; correction pending parent commit.
 
 - [ ] **DMA-005 — Review and close the architecture package**
   - Route: delegated to `gentle-ai-verify`; independent documentation verification because verification commands are delegated by policy.
-  - Outcome: resolve inconsistencies and report decisions, evidence gaps, and the recommended first implementation unit.
-  - Check: focused verification plus final repository readback.
+  - Outcome: resolve remaining inconsistencies and report decisions, evidence gaps, and the recommended first implementation unit.
+  - Check: pending parent reverification after the DMA-004 correction.
   - Evidence: pending.
 
 ## Acceptance criteria
@@ -80,7 +80,7 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - Current official integration assumptions are separated from recommendations and unknowns.
 - The architecture defines one vertical MVP and explicitly excludes later roadmap phases.
 - Core, CLI, MCP, Bungie, Manifest, SQLite, and credential boundaries are unambiguous.
-- Inventory mutation planning, execution, partial failure, and verification behavior are specified for both CLI and MCP, including plan-bound explicit confirmation.
+- Inventory mutation planning, execution, partial failure, and verification behavior are specified for both CLI and MCP, with explicit user intent as MCP authorization and no mandatory confirmation protocol.
 - The work breakdown can be implemented sequentially without rediscovering architectural decisions.
 - Every completed task records observed checks and a work-unit commit identity.
 
@@ -92,9 +92,9 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - `feature/destiny-mvp-architecture` now has baseline commit `108b08c`; its committed tree contains the intended three files and was clean immediately afterward.
 - Baseline evidence was recorded in follow-up commit `38ca47b`.
 - DMA-002 research is now recorded in `docs/integration-assumptions.md`; implementation-time revalidation remains required for the moving MCP `main` branch, while DMA-003 resolves the MVP as a public-client deployment with an exact configured callback contract.
-- DMA-003 architecture is recorded in `docs/mvp-architecture.md`; commits `6cfd76d` and `b1f9e29` capture the initial design and MCP-mutation correction, and independent correction verification passed with no findings.
-- DMA-004 implementation plan is recorded in `docs/mvp-implementation-plan.md`; the plan defines ordered work units, scaffold-established commands, test categories, review slicing, traceability, and remaining implementation-time revalidation blockers. Evidence is pending commit.
+- DMA-003 architecture is recorded in `docs/mvp-architecture.md`; commits `6cfd76d` and `b1f9e29` capture the initial design and prior MCP-mutation correction. The current single-call intent-authorized decision supersedes the earlier confirmation design.
+- DMA-004 implementation plan is recorded in `docs/mvp-implementation-plan.md`; initial plan commit `a8cd132` is recorded, and the correction remains in progress pending the parent commit and re-verification. The plan defines dependency-correct work units, offline baseline rules, internal review slices, traceability, and implementation-time official-source revalidation.
 
 ## Next step
 
-Proceed to DMA-005: review and close the architecture package.
+Parent commits the bounded correction, then reruns DMA-004 verification. DMA-005 remains open until that evidence is observed.
