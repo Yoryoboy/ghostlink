@@ -58,15 +58,15 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
   - Evidence: commit `1f32b0f` (`docs: validate Destiny integration assumptions`).
 
 - [x] **DMA-003 — Write the MVP architecture**
-  - Route: delegated to `gentle-ai-worker`; non-trivial architecture document informed by the research, followed by a bounded correction from independent verification.
+  - Route: delegated to `gentle-ai-worker`; non-trivial architecture document informed by the research, followed by bounded corrections from independent verification and the user's final MCP authorization decision.
   - Outcome: created `docs/mvp-architecture.md` with decisions, boundaries, contracts, workflows, security, failure semantics, and acceptance criteria for the public-client vertical MVP with single-call, explicit-intent-authorized MCP mutation.
-  - Check: initial checks passed; DMA-004 correction verification is in progress and has not passed.
+  - Check: initial and final correction verification passed with no findings.
   - Evidence: initial commit `6cfd76d` (`docs: define Destiny MVP architecture`); correction commit `b1f9e29` (`docs: reconcile MCP mutation architecture`).
 
-- [ ] **DMA-004 — Write and correct the implementation work breakdown**
+- [x] **DMA-004 — Write and correct the implementation work breakdown**
   - Route: delegated to `gentle-ai-worker`; bounded planning document and correction verification.
-  - Outcome: initial plan created with ordered work units, dependencies, narrow ownership surfaces, test strategies, acceptance checks, exclusions, review notes, traceability, and readiness guidance; correction aligns the plan with single-call, explicit-intent-authorized MCP mutation and independent verifier findings.
-  - Check: correction verification remains in progress; do not claim verification passed.
+  - Outcome: created an ordered implementation plan with dependencies, ownership surfaces, test strategies, acceptance checks, exclusions, internal review slices, traceability, and readiness guidance aligned with single-call, explicit-intent-authorized MCP mutation.
+  - Check: `git diff --check` passed; independent correction verification passed with no findings.
   - Evidence: initial plan commit `a8cd132`; correction commit `cbed9cd` (`docs: simplify MCP mutation authorization`).
 
 - [ ] **DMA-005 — Review and close the architecture package**
@@ -92,9 +92,9 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - `feature/destiny-mvp-architecture` now has baseline commit `108b08c`; its committed tree contains the intended three files and was clean immediately afterward.
 - Baseline evidence was recorded in follow-up commit `38ca47b`.
 - DMA-002 research is now recorded in `docs/integration-assumptions.md`; implementation-time revalidation remains required for the moving MCP `main` branch, while DMA-003 resolves the MVP as a public-client deployment with an exact configured callback contract.
-- DMA-003 architecture is recorded in `docs/mvp-architecture.md`; commits `6cfd76d` and `b1f9e29` capture the initial design and prior MCP-mutation correction. The current single-call intent-authorized decision supersedes the earlier confirmation design.
-- DMA-004 implementation plan is recorded in `docs/mvp-implementation-plan.md`; initial plan commit `a8cd132` and correction commit `cbed9cd` are recorded, with re-verification pending. The plan defines dependency-correct work units, offline baseline rules, internal review slices, traceability, and implementation-time official-source revalidation.
+- DMA-003 architecture is recorded in `docs/mvp-architecture.md`; commits `6cfd76d`, `b1f9e29`, and `cbed9cd` capture the initial design, review correction, and final single-call intent-authorized MCP decision.
+- DMA-004 implementation plan is recorded in `docs/mvp-implementation-plan.md`; initial plan commit `a8cd132` and correction commit `cbed9cd` are recorded. Independent correction verification passed with no findings.
 
 ## Next step
 
-Rerun DMA-004 verification against correction commit `cbed9cd`. DMA-005 remains open until that evidence is observed.
+Proceed to DMA-005: independently review and close the architecture package.
