@@ -73,7 +73,7 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
   - Route: delegated to `gentle-ai-verify`; independent documentation verification because verification commands are delegated by policy.
   - Outcome: final package review found no high or medium issues, identified only one tracker attribution error corrected during closure, and confirmed readiness for WU-001.
   - Check: `git diff --check 108b08c..HEAD` passed; final review covered evidence boundaries, architecture consistency, implementation ordering, traceability, non-goals, and repository state.
-  - Evidence: final independent review observed at branch boundary `7ac3e7f`; closure commit pending.
+  - Evidence: final independent review observed at branch boundary `7ac3e7f`; closure commit `7f730cc` (`docs: close Destiny architecture package`).
 
 ## Acceptance criteria
 
