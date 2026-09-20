@@ -45,11 +45,11 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 
 ## Tasks
 
-- [ ] **DMA-001 — Bootstrap the feature branch and baseline repository**
+- [x] **DMA-001 — Bootstrap the feature branch and baseline repository**
   - Route: inline; repository-state operation and one tracking file.
-  - Outcome: create a feature branch and commit `.gitignore`, the source vision, and this feature document as the recoverable baseline.
-  - Check: `git status --short --branch` and committed file list.
-  - Evidence: pending.
+  - Outcome: created `feature/destiny-mvp-architecture` and committed `.gitignore`, the source vision, and this feature document as the recoverable baseline.
+  - Check: `git status --short --branch` reported a clean feature branch; `git show --stat --oneline --summary HEAD` reported the three intended files.
+  - Evidence: commit `108b08c` (`docs: establish Destiny companion vision`).
 
 - [ ] **DMA-002 — Validate official integration assumptions**
   - Route: delegated to `gentle-ai-explore`; broad external research and context compression.
@@ -90,7 +90,8 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - Repository began with `.gitignore` and the source vision as untracked files and no commits.
 - Delegated research could not launch before a first Git commit because the subagent runtime requires an existing worktree.
 - User explicitly authorized an initial commit containing the documents.
+- `feature/destiny-mvp-architecture` now has baseline commit `108b08c`; its committed tree contains the intended three files and was clean immediately afterward.
 
 ## Next step
 
-Create the feature branch and baseline commit, then retry the delegated official-source research.
+Retry the delegated official-source research from the committed feature branch.
