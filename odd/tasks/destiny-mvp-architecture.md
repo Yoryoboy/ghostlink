@@ -57,10 +57,10 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
   - Check: read back the artifact for scope/date, primary-source traceability, confidence/freshness notes, and the required distinction between provider facts and project recommendations.
   - Evidence: commit `1f32b0f` (`docs: validate Destiny integration assumptions`).
 
-- [ ] **DMA-003 — Write the MVP architecture** *(correction verification in progress)*
+- [x] **DMA-003 — Write the MVP architecture**
   - Route: delegated to `gentle-ai-worker`; non-trivial architecture document informed by the research, followed by a bounded correction from independent verification.
   - Outcome: created `docs/mvp-architecture.md` with decisions, boundaries, contracts, workflows, security, failure semantics, and acceptance criteria for the public-client vertical MVP with plan-bound MCP mutation confirmation.
-  - Check: `git diff --check` passed; independent correction verification is pending.
+  - Check: `git diff --check` passed; independent correction verification passed with no findings.
   - Evidence: initial commit `6cfd76d` (`docs: define Destiny MVP architecture`); correction commit `b1f9e29` (`docs: reconcile MCP mutation architecture`).
 
 - [ ] **DMA-004 — Write the implementation work breakdown**
@@ -82,7 +82,7 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - Core, CLI, MCP, Bungie, Manifest, SQLite, and credential boundaries are unambiguous.
 - Inventory mutation planning, execution, partial failure, and verification behavior are specified for both CLI and MCP, including plan-bound explicit confirmation.
 - The work breakdown can be implemented sequentially without rediscovering architectural decisions.
-- Every completed task records observed checks and a work-unit commit identity; DMA-003 remains open until correction verification completes.
+- Every completed task records observed checks and a work-unit commit identity.
 
 ## Progress
 
@@ -92,7 +92,7 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - `feature/destiny-mvp-architecture` now has baseline commit `108b08c`; its committed tree contains the intended three files and was clean immediately afterward.
 - Baseline evidence was recorded in follow-up commit `38ca47b`.
 - DMA-002 research is now recorded in `docs/integration-assumptions.md`; implementation-time revalidation remains required for the moving MCP `main` branch, while DMA-003 resolves the MVP as a public-client deployment with an exact configured callback contract.
-- DMA-003 architecture is recorded in `docs/mvp-architecture.md`; commits `6cfd76d` and `b1f9e29` capture the initial design and MCP-mutation correction, with independent correction verification pending.
+- DMA-003 architecture is recorded in `docs/mvp-architecture.md`; commits `6cfd76d` and `b1f9e29` capture the initial design and MCP-mutation correction, and independent correction verification passed with no findings.
 
 ## Next step
 
