@@ -60,8 +60,8 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - [x] **DMA-003 — Write the MVP architecture**
   - Route: delegated to `gentle-ai-worker`; non-trivial architecture document informed by the research.
   - Outcome: created `docs/mvp-architecture.md` with decisions, boundaries, contracts, workflows, security, failure semantics, and acceptance criteria for the public-client vertical MVP.
-  - Check: readback against the source vision and verified research; required verification is pending parent execution.
-  - Evidence: pending commit.
+  - Check: readback against the source vision and verified research; `git diff --check` passed before commit.
+  - Evidence: commit `6cfd76d` (`docs: define Destiny MVP architecture`).
 
 - [ ] **DMA-004 — Write the implementation work breakdown**
   - Route: delegated to `gentle-ai-worker`; bounded planning document.
