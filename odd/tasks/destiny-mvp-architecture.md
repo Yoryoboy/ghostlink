@@ -55,7 +55,7 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
   - Route: delegated to `gentle-ai-explore`; broad external research and context compression.
   - Outcome: verify current Bungie OAuth/native-client constraints and the official MCP Rust SDK's package, maturity, and stdio support.
   - Check: every material claim has a primary-source URL, publisher, retrieval date, and confidence/gap note.
-  - Evidence: pending.
+  - Evidence: blocked after three launch attempts. The subagent runtime rejected the current repository with `Select an existing worktree in the same Git clone as this session`, including after the repository gained commits, the current worktree was registered, and its canonical Git paths were verified.
 
 - [ ] **DMA-003 — Write the MVP architecture**
   - Route: delegated to `gentle-ai-worker`; non-trivial architecture document informed by the research.
@@ -91,7 +91,9 @@ A narrow architecture baseline prevents the greenfield repository from coupling 
 - Delegated research could not launch before a first Git commit because the subagent runtime requires an existing worktree.
 - User explicitly authorized an initial commit containing the documents.
 - `feature/destiny-mvp-architecture` now has baseline commit `108b08c`; its committed tree contains the intended three files and was clean immediately afterward.
+- Baseline evidence was recorded in follow-up commit `38ca47b`.
+- `gentle-ai-explore` still cannot launch because the runtime does not recognize the current repository as an eligible worktree, despite successful session registration and canonical Git validation.
 
 ## Next step
 
-Retry the delegated official-source research from the committed feature branch.
+Resume in a fresh Pi session so the now-initialized Git worktree is discovered at session startup, then retry DMA-002 before writing architecture artifacts.
