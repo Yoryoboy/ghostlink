@@ -88,7 +88,7 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
   - Route: native read-only risk assessment plus delegated independent verification under clone-disabled RDD policy; parent reran a final diff/status spot check.
   - Outcome: WU-003 is complete at the committed branch state. Final review found no deterministic correctness or security blockers across authorization lifecycle, callback parsing/deadlines, desktop/headless boundaries, public-client exchange, redaction, logout/reauthorization, native credential storage, dependency features, or offline isolation. The known callback timeout test remains low-severity DOF-003 test-isolation debt rather than a product defect.
   - Check: assessment classified the full 17-file/4,982-line base diff high risk and required an independent verifier. `git diff --check`, fmt, clippy `-D warnings`, workspace tests (75 passed), all-features tests (94 passed on exact retry), adapters tests (47 passed), app test-support tests (32 passed), CLI/MCP help, dependency-duplicate review, source security review, and clean-status checks passed. The intermittent callback timeout test failed once in the parallel all-features run and once during repeated adapter runs, then passed on exact retries; it is unchanged since `aa6433c` and already tracked. Live Bungie OAuth, real OS-store checks, and first macOS/Windows backend compilation remain explicit manual/follow-up gates.
-  - Evidence: independent final verdict `passed`; no native review or receipt exists because RDD is disabled for this clone; closure commit recorded in the final evidence update.
+  - Evidence: independent final verdict `passed`; closure commit `3c6d496` (`docs: close Destiny OAuth foundations`); no native review or receipt exists because RDD is disabled for this clone.
 
 ## Acceptance criteria
 
@@ -103,7 +103,7 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
 
 ## Progress
 
-- WU-002 completed at `d477e4d`; this feature branch contains 10 cohesive commits before its closure evidence update.
+- WU-002 completed at `d477e4d`; this feature branch contains 10 cohesive implementation/evidence commits plus closure commit `3c6d496`.
 - DOF-001 established the evidence-backed UX contract in `1760aff`.
 - DOF-002 implemented the authorization state machine in `2e23da0`, corrected invariants in `8470683`, and recorded evidence in `4f3b2cb`.
 - DOF-003 implemented and hardened exact callback/browser/headless boundaries in `aa6433c`, with evidence in `3023b27`.
