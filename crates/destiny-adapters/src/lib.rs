@@ -3,6 +3,7 @@
 pub mod credential_store;
 pub mod manifest;
 pub mod oauth;
+pub mod sqlite;
 pub mod token;
 
 pub use credential_store::{CREDENTIAL_SERVICE, CREDENTIAL_USER, NativeCredentialStore};

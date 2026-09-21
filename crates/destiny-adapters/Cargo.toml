@@ -8,6 +8,7 @@ license.workspace = true
 destiny-core.workspace = true
 keyring-core.workspace = true
 reqwest.workspace = true
+rusqlite.workspace = true
 serde_json.workspace = true
 url.workspace = true
 
