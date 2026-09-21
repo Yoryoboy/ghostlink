@@ -1343,4 +1343,154 @@ mod transport_tests {
             assert!(!is_allowed_manifest_url(url), "should reject {url}");
         }
     }
+
+    #[test]
+    fn fixtures_publish_offline_and_replace_prior_definitions() {
+        use destiny_app::manifest::ManifestService;
+        use destiny_app::test_support::InMemoryDefinitionRepository;
+        use destiny_core::{
+            BucketHash, DefinitionRepository, DefinitionVersion, ItemDefinition, ItemHash,
+            Resolution,
+        };
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        const FIXTURE_VERSION: &str = "manifest-fixture-v1";
+        const FIXTURE_RECORD_COUNT: usize = 4;
+        const PRIOR_FAKE_HASH: i64 = 77_777;
+        const FIXTURE_COMPONENT_PATH: &str =
+            "/common/destiny2_content/json/en/DestinyInventoryItemDefinition-fixture.json";
+
+        struct SharedFakeTransport {
+            requests: Rc<RefCell<Vec<RecordedRequest>>>,
+            responses: VecDeque<QueuedResponse>,
+        }
+
+        impl ManifestTransport for SharedFakeTransport {
+            fn get(
+                &mut self,
+                request: &ManifestHttpRequest<'_>,
+            ) -> Result<ManifestHttpResponse, ManifestTransportError> {
+                self.requests.borrow_mut().push(RecordedRequest {
+                    url: request.url().to_owned(),
+                    has_api_key: request.api_key().is_some(),
+                });
+                self.responses
+                    .pop_front()
+                    .expect("fake transport has a queued response")
+            }
+        }
+
+        let fixture_response = |bytes: &[u8]| {
+            ManifestHttpResponse::new(
+                200,
+                Some(bytes.len() as u64),
+                Some("application/json".to_owned()),
+                Box::new(Cursor::new(bytes.to_vec())),
+            )
+        };
+
+        let index_fixture = include_bytes!("../tests/fixtures/manifest-index.json");
+        let component_fixture = include_bytes!("../tests/fixtures/inventory-items.json");
+
+        let fixture_records = serde_json::from_slice::<serde_json::Value>(component_fixture)
+            .expect("inventory fixture is JSON")
+            .as_object()
+            .expect("inventory fixture is an object")
+            .len();
+        assert_eq!(fixture_records, FIXTURE_RECORD_COUNT);
+        assert!(fixture_records <= 100_000);
+
+        let requests = Rc::new(RefCell::new(Vec::new()));
+        let transport = SharedFakeTransport {
+            requests: Rc::clone(&requests),
+            responses: VecDeque::from(vec![
+                Ok(fixture_response(index_fixture)),
+                Ok(fixture_response(component_fixture)),
+            ]),
+        };
+        let gateway = BungieManifestGateway::new(key(), transport);
+
+        let prior_version = DefinitionVersion::new("prior-fake-v1");
+        let repository = InMemoryDefinitionRepository::new(
+            prior_version.clone(),
+            vec![ItemDefinition {
+                hash: ItemHash::new(PRIOR_FAKE_HASH),
+                bucket_hash: None,
+                name: "Prior Fake".to_owned(),
+                item_type: None,
+                tier: None,
+                element: None,
+                tags: Vec::new(),
+                version: prior_version,
+            }],
+        );
+
+        let mut service = ManifestService::new(gateway, repository);
+        let outcome = service.acquire_and_publish().expect("offline publication");
+
+        assert_eq!(outcome.version.as_str(), FIXTURE_VERSION);
+        assert_eq!(outcome.definition_count, FIXTURE_RECORD_COUNT);
+
+        let recorded = requests.borrow();
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(recorded[0].url, MANIFEST_ENDPOINT);
+        assert!(recorded[0].has_api_key);
+        assert_eq!(
+            recorded[1].url,
+            format!("{MANIFEST_ORIGIN}{FIXTURE_COMPONENT_PATH}")
+        );
+        assert!(!recorded[1].has_api_key);
+
+        let repository = service.repository();
+        assert_eq!(
+            repository
+                .current_definition_version()
+                .expect("current version")
+                .as_str(),
+            FIXTURE_VERSION
+        );
+        assert_eq!(repository.definition_count(), FIXTURE_RECORD_COUNT);
+        assert_eq!(
+            repository
+                .lookup_definition(ItemHash::new(PRIOR_FAKE_HASH))
+                .expect("prior lookup"),
+            Resolution::Missing
+        );
+        assert_eq!(repository.publication_attempts(), 1);
+
+        let unique = |hash: i64| match repository
+            .lookup_definition(ItemHash::new(hash))
+            .expect("definition lookup")
+        {
+            Resolution::Unique(definition) => definition,
+            other => panic!("expected one normalized definition for {hash}: {other:?}"),
+        };
+
+        let suros = unique(2_522_695);
+        assert_eq!(suros.name, "Suros Regime");
+        assert_eq!(suros.item_type.as_deref(), Some("Auto Rifle"));
+        assert_eq!(suros.tier.as_deref(), Some("Exotic"));
+        assert_eq!(suros.bucket_hash, Some(BucketHash::new(1_498_876_634)));
+        assert_eq!(suros.version.as_str(), FIXTURE_VERSION);
+        assert!(suros.tags.is_empty());
+
+        let ghost = unique(999);
+        assert_eq!(ghost.name, "Ghost Shell");
+        assert_eq!(ghost.item_type, None);
+        assert_eq!(ghost.bucket_hash, None);
+        assert_eq!(ghost.tier, None);
+
+        let wrong_types = unique(42);
+        assert_eq!(wrong_types.name, "Wrong Types");
+        assert_eq!(wrong_types.item_type, None);
+        assert_eq!(wrong_types.bucket_hash, None);
+        assert_eq!(wrong_types.tier, None);
+
+        let missing = unique(1709);
+        assert_eq!(missing.name, "Missing Inventory Fields");
+        assert_eq!(missing.item_type.as_deref(), Some("Quest Step"));
+        assert_eq!(missing.bucket_hash, None);
+        assert_eq!(missing.tier, None);
+    }
 }

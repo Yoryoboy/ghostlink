@@ -1,0 +1,25 @@
+{
+  "2522695": {
+    "hash": 2522695,
+    "displayProperties": { "name": "Suros Regime" },
+    "itemTypeDisplayName": "Auto Rifle",
+    "inventory": { "bucketTypeHash": 1498876634, "tierTypeName": "Exotic" },
+    "tags": ["Authorized Only", "mixed-TAG"]
+  },
+  "999": {
+    "hash": 999,
+    "displayProperties": { "name": "Ghost Shell" }
+  },
+  "42": {
+    "hash": 42,
+    "displayProperties": { "name": "Wrong Types" },
+    "itemTypeDisplayName": 7,
+    "inventory": { "bucketTypeHash": "not-a-number", "tierTypeName": ["array"] }
+  },
+  "1709": {
+    "hash": 1709,
+    "displayProperties": { "name": "Missing Inventory Fields" },
+    "itemTypeDisplayName": "Quest Step",
+    "inventory": "wrong-type"
+  }
+}

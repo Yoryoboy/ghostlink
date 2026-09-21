@@ -1,0 +1,11 @@
+{
+  "ErrorCode": 1,
+  "Response": {
+    "version": "manifest-fixture-v1",
+    "jsonWorldComponentContentPaths": {
+      "en": {
+        "DestinyInventoryItemDefinition": "/common/destiny2_content/json/en/DestinyInventoryItemDefinition-fixture.json"
+      }
+    }
+  }
+}
