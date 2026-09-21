@@ -22,13 +22,17 @@
 //! Opening a database migrates it to [`LATEST_SCHEMA_VERSION`]. A database whose
 //! `PRAGMA user_version` is newer than this build fails closed instead of
 //! degrading silently. Repository modules in this tree share the connection and
-//! own their own transactions; the definition repository is the first of them.
+//! own their own transactions; the Manifest definition repository and the
+//! single-active profile inventory repository are the first two of them.
 
 mod definitions;
+mod inventory;
 mod migrations;
 
 #[cfg(test)]
 mod definition_tests;
+#[cfg(test)]
+mod inventory_tests;
 #[cfg(test)]
 mod tests;
 

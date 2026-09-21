@@ -1,10 +1,13 @@
 //! Minimal provider-neutral behavioral ports.
 
 use crate::auth::{AccessCredential, AuthorizationCallback, AuthorizationCode, AuthorizationState};
-use crate::domain::{Character, InventorySnapshot, ItemDefinition, ItemInstance, SyncMetadata};
+use crate::domain::{
+    Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, SyncMetadata,
+};
 use crate::error::AppError;
 use crate::ids::{BucketHash, DefinitionVersion, ItemHash, MembershipId, MembershipType, PlanId};
 use crate::state::{Resolution, SourceMarker, Timestamp};
+use std::collections::HashSet;
 use std::fmt;
 
 /// Supplies application time without coupling the core to a clock runtime.
@@ -49,9 +52,11 @@ pub trait PlanIdGenerator {
 /// `checked_at`, and it ignores `source` once the fixed dataset/source pairing
 /// has been validated. An identical refresh at a later `checked_at` retains the
 /// revision and refreshes the committed timestamp. `membership_id`,
-/// `membership_type`, `definition_version`, `characters`, and `items` remain part
-/// of revision identity, so any change to them advances the revision exactly
-/// once.
+/// `membership_type`, `definition_version`, and the character and item records
+/// remain part of revision identity, so any field change advances the revision
+/// exactly once. Characters and items are unordered sets keyed by their record
+/// identifiers, so a pure permutation of either collection is not a content
+/// change.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySnapshotInput {
     pub membership_id: MembershipId,
@@ -80,13 +85,69 @@ impl InventorySnapshotInput {
     ///
     /// `checked_at` and `source` are deliberately excluded: freshness alone never
     /// advances a revision, and `source` is validated against the dataset before
-    /// a replacement is accepted.
+    /// a replacement is accepted. Characters and items are compared as unordered
+    /// sets keyed by their record identifiers: both sides must carry the same
+    /// complete records, but a pure permutation of either collection is not a
+    /// content change. Records are sorted by identifier and compared in full
+    /// without hashing, so every [`Character`] field and every [`ItemInstance`]
+    /// field, including the typed [`ItemLocation`], participates in equality.
     pub fn content_eq(&self, other: &Self) -> bool {
-        self.membership_id == other.membership_id
-            && self.membership_type == other.membership_type
-            && self.definition_version == other.definition_version
-            && self.characters == other.characters
-            && self.items == other.items
+        if self.membership_id != other.membership_id
+            || self.membership_type != other.membership_type
+            || self.definition_version != other.definition_version
+            || self.characters.len() != other.characters.len()
+            || self.items.len() != other.items.len()
+        {
+            return false;
+        }
+
+        let mut left_characters: Vec<&Character> = self.characters.iter().collect();
+        let mut right_characters: Vec<&Character> = other.characters.iter().collect();
+        left_characters.sort_by(|left, right| left.id.cmp(&right.id));
+        right_characters.sort_by(|left, right| left.id.cmp(&right.id));
+        if left_characters != right_characters {
+            return false;
+        }
+
+        let mut left_items: Vec<&ItemInstance> = self.items.iter().collect();
+        let mut right_items: Vec<&ItemInstance> = other.items.iter().collect();
+        left_items.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+        right_items.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+        left_items == right_items
+    }
+
+    /// Reports whether the character and item collections form a complete,
+    /// internally consistent projection, independent of provenance.
+    ///
+    /// Character identifiers and item instance identifiers must each be unique,
+    /// and every [`ItemLocation::Character`] must reference a character present
+    /// in this same input. Empty character and item vectors are structurally
+    /// valid. This method deliberately does not validate `source`: requiring the
+    /// fixed dataset/source pairing is repository-specific policy, so a
+    /// repository validates provenance separately before mutating state.
+    pub fn is_structurally_valid(&self) -> bool {
+        let mut character_ids = HashSet::with_capacity(self.characters.len());
+        for character in &self.characters {
+            if !character_ids.insert(character.id.clone()) {
+                return false;
+            }
+        }
+
+        let mut instance_ids = HashSet::with_capacity(self.items.len());
+        for item in &self.items {
+            if !instance_ids.insert(item.instance_id.clone()) {
+                return false;
+            }
+        }
+
+        for item in &self.items {
+            if let ItemLocation::Character(character_id) = &item.location
+                && !character_ids.contains(character_id)
+            {
+                return false;
+            }
+        }
+        true
     }
 }
 

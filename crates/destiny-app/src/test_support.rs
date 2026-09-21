@@ -310,7 +310,16 @@ impl InMemoryInventoryRepository {
     }
 
     /// Constructs an overflow boundary state for repository contract tests.
-    pub fn with_revision_for_test(input: InventorySnapshotInput, revision: SyncRevision) -> Self {
+    pub fn with_revision_for_test(
+        mut input: InventorySnapshotInput,
+        revision: SyncRevision,
+    ) -> Self {
+        input
+            .characters
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        input
+            .items
+            .sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
         let snapshot = InventorySnapshot {
             metadata: SnapshotMetadata {
                 membership_id: input.membership_id.clone(),
@@ -342,16 +351,27 @@ impl InventoryRepository for InMemoryInventoryRepository {
 
     fn replace_current(
         &mut self,
-        input: InventorySnapshotInput,
+        mut input: InventorySnapshotInput,
     ) -> Result<InventorySnapshot, AppError> {
-        // Provenance is validated before any mutation so a mismatched source
-        // leaves the prior projection fully readable.
+        // Provenance and structural validity are validated before any mutation so
+        // a rejected replacement leaves the prior projection fully readable.
         if input.source != SourceMarker::Profile {
             return Err(AppError::new(ErrorCategory::ProviderValidation));
         }
-        // Revision identity is the normalized projection content: freshness
-        // metadata (`checked_at`, `source`) never advances a revision, but every
-        // successful replacement commits the new `checked_at`.
+        if !input.is_structurally_valid() {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        // Characters and items are unordered sets, so the committed and returned
+        // vectors are canonicalized by identifier. Revision identity is the
+        // normalized projection content through the shared `content_eq`:
+        // freshness metadata (`checked_at`, `source`) never advances a revision,
+        // but every successful replacement commits the new `checked_at`.
+        input
+            .characters
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        input
+            .items
+            .sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
         let revision = match (self.current.as_ref(), self.previous_input.as_ref()) {
             (Some(current), Some(previous)) if previous.content_eq(&input) => {
                 current.metadata.revision
@@ -362,7 +382,7 @@ impl InventoryRepository for InMemoryInventoryRepository {
                     .revision
                     .value()
                     .checked_add(1)
-                    .ok_or_else(|| AppError::new(destiny_core::ErrorCategory::LocalStorage))?,
+                    .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))?,
             ),
             (None, _) => SyncRevision::new(1),
         };
@@ -521,6 +541,65 @@ mod tests {
         }
     }
 
+    fn multi_input() -> InventorySnapshotInput {
+        InventorySnapshotInput {
+            membership_id: MembershipId::new("membership"),
+            membership_type: MembershipType::new(1),
+            definition_version: DefinitionVersion::new("definitions-v1"),
+            checked_at: Timestamp::new(200),
+            source: SourceMarker::Profile,
+            characters: vec![
+                Character {
+                    id: "character-1".into(),
+                    name: Some("name-1".into()),
+                    class: Some("class-1".into()),
+                    race: Some("race-1".into()),
+                    gender: Some("gender-1".into()),
+                    light: Some(100),
+                },
+                Character {
+                    id: "character-2".into(),
+                    name: Some("name-2".into()),
+                    class: Some("class-2".into()),
+                    race: Some("race-2".into()),
+                    gender: Some("gender-2".into()),
+                    light: Some(200),
+                },
+            ],
+            items: vec![
+                ItemInstance {
+                    instance_id: "instance-1".into(),
+                    item_hash: ItemHash::new(7),
+                    location: ItemLocation::Vault,
+                    quantity: 1,
+                    equipped: false,
+                    locked: false,
+                    power: Some(100),
+                },
+                ItemInstance {
+                    instance_id: "instance-2".into(),
+                    item_hash: ItemHash::new(8),
+                    location: ItemLocation::Other("postmaster".into()),
+                    quantity: 2,
+                    equipped: true,
+                    locked: true,
+                    power: Some(200),
+                },
+            ],
+        }
+    }
+
+    fn character_ids(characters: &[Character]) -> Vec<&str> {
+        characters
+            .iter()
+            .map(|character| character.id.as_str())
+            .collect()
+    }
+
+    fn instance_ids(items: &[ItemInstance]) -> Vec<&str> {
+        items.iter().map(|item| item.instance_id.as_str()).collect()
+    }
+
     fn item_definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
         ItemDefinition {
             hash: ItemHash::new(hash),
@@ -591,53 +670,9 @@ mod tests {
 
     #[test]
     fn every_normalized_field_participates_in_revision_equality() {
-        let base = InventorySnapshotInput {
-            membership_id: MembershipId::new("membership"),
-            membership_type: MembershipType::new(1),
-            definition_version: DefinitionVersion::new("definitions-v1"),
-            checked_at: Timestamp::new(200),
-            source: SourceMarker::Profile,
-            characters: vec![
-                Character {
-                    id: "character-1".into(),
-                    name: Some("name-1".into()),
-                    class: Some("class-1".into()),
-                    race: Some("race-1".into()),
-                    gender: Some("gender-1".into()),
-                    light: Some(100),
-                },
-                Character {
-                    id: "character-2".into(),
-                    name: Some("name-2".into()),
-                    class: Some("class-2".into()),
-                    race: Some("race-2".into()),
-                    gender: Some("gender-2".into()),
-                    light: Some(200),
-                },
-            ],
-            items: vec![
-                ItemInstance {
-                    instance_id: "instance-1".into(),
-                    item_hash: ItemHash::new(7),
-                    location: ItemLocation::Vault,
-                    quantity: 1,
-                    equipped: false,
-                    locked: false,
-                    power: Some(100),
-                },
-                ItemInstance {
-                    instance_id: "instance-2".into(),
-                    item_hash: ItemHash::new(8),
-                    location: ItemLocation::Other("postmaster".into()),
-                    quantity: 2,
-                    equipped: true,
-                    locked: true,
-                    power: Some(200),
-                },
-            ],
-        };
+        let base = multi_input();
 
-        let mutations: [RevisionMutation; 20] = [
+        let mutations: [RevisionMutation; 18] = [
             ("membership_id", |value| {
                 value.membership_id = MembershipId::new("membership-2");
             }),
@@ -689,14 +724,8 @@ mod tests {
             ("characters.membership", |value| {
                 value.characters.pop();
             }),
-            ("characters.order", |value| {
-                value.characters.swap(0, 1);
-            }),
             ("items.membership", |value| {
                 value.items.pop();
-            }),
-            ("items.order", |value| {
-                value.items.swap(0, 1);
             }),
         ];
 
@@ -805,6 +834,134 @@ mod tests {
 
         assert_eq!(repo.load_current().unwrap(), Some(snapshot));
         assert_eq!(repo.snapshot_metadata().unwrap(), Some(metadata));
+    }
+
+    #[test]
+    fn character_and_item_permutations_retain_revision_and_canonical_order() {
+        let mut repo = InMemoryInventoryRepository::new();
+        let first = repo.replace_current(multi_input()).unwrap();
+        assert_eq!(first.metadata.revision.value(), 1);
+        assert_eq!(
+            character_ids(&first.characters),
+            ["character-1", "character-2"]
+        );
+        assert_eq!(instance_ids(&first.items), ["instance-1", "instance-2"]);
+
+        let mut permuted = multi_input();
+        permuted.characters.reverse();
+        permuted.items.reverse();
+        let second = repo.replace_current(permuted).unwrap();
+
+        assert_eq!(second.metadata.revision.value(), 1);
+        assert_eq!(
+            character_ids(&second.characters),
+            ["character-1", "character-2"]
+        );
+        assert_eq!(instance_ids(&second.items), ["instance-1", "instance-2"]);
+        assert_eq!(repo.load_current().unwrap(), Some(second));
+    }
+
+    #[test]
+    fn permuted_content_with_later_checked_at_retains_revision_and_refreshes_metadata() {
+        let mut repo = InMemoryInventoryRepository::new();
+        repo.replace_current(multi_input()).unwrap();
+
+        let mut permuted = multi_input();
+        permuted.characters.reverse();
+        permuted.items.reverse();
+        permuted.checked_at = Timestamp::new(9_000);
+        let refreshed = repo.replace_current(permuted).unwrap();
+
+        assert_eq!(refreshed.metadata.revision.value(), 1);
+        assert_eq!(refreshed.metadata.checked_at, Timestamp::new(9_000));
+        assert_eq!(
+            character_ids(&refreshed.characters),
+            ["character-1", "character-2"]
+        );
+        assert_eq!(instance_ids(&refreshed.items), ["instance-1", "instance-2"]);
+    }
+
+    #[test]
+    fn snapshot_input_structural_validity_covers_emptiness_duplicates_and_locations() {
+        let mut candidate = multi_input();
+        assert!(candidate.is_structurally_valid());
+
+        candidate.characters.clear();
+        candidate.items.clear();
+        assert!(candidate.is_structurally_valid());
+
+        let mut duplicate_characters = multi_input();
+        duplicate_characters
+            .characters
+            .push(duplicate_characters.characters[0].clone());
+        assert!(!duplicate_characters.is_structurally_valid());
+
+        let mut duplicate_items = multi_input();
+        duplicate_items.items.push(duplicate_items.items[0].clone());
+        assert!(!duplicate_items.is_structurally_valid());
+
+        let mut dangling = multi_input();
+        dangling.items[0].location = ItemLocation::Character("missing-character".into());
+        assert!(!dangling.is_structurally_valid());
+    }
+
+    #[test]
+    fn duplicate_identifiers_are_rejected_and_preserve_the_prior_snapshot() {
+        let mut repo = InMemoryInventoryRepository::new();
+        let snapshot = repo.replace_current(input(1)).unwrap();
+        let metadata = snapshot.metadata.clone();
+
+        let mut duplicate_characters = multi_input();
+        duplicate_characters
+            .characters
+            .push(duplicate_characters.characters[0].clone());
+        assert_eq!(
+            repo.replace_current(duplicate_characters),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+
+        let mut duplicate_items = multi_input();
+        duplicate_items.items.push(duplicate_items.items[0].clone());
+        assert_eq!(
+            repo.replace_current(duplicate_items),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+
+        assert_eq!(repo.load_current().unwrap(), Some(snapshot));
+        assert_eq!(repo.snapshot_metadata().unwrap(), Some(metadata));
+    }
+
+    #[test]
+    fn dangling_item_location_is_rejected_and_preserves_the_prior_snapshot() {
+        let mut repo = InMemoryInventoryRepository::new();
+        let snapshot = repo.replace_current(input(1)).unwrap();
+        let metadata = snapshot.metadata.clone();
+
+        let mut dangling = multi_input();
+        dangling.items[0].location = ItemLocation::Character("missing-character".into());
+        assert_eq!(
+            repo.replace_current(dangling),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+
+        assert_eq!(repo.load_current().unwrap(), Some(snapshot));
+        assert_eq!(repo.snapshot_metadata().unwrap(), Some(metadata));
+    }
+
+    #[test]
+    fn present_character_location_is_accepted() {
+        let mut repo = InMemoryInventoryRepository::new();
+        repo.replace_current(input(1)).unwrap();
+
+        let mut referenced = multi_input();
+        referenced.items[0].location = ItemLocation::Character("character-2".into());
+        let committed = repo.replace_current(referenced).unwrap();
+
+        assert_eq!(committed.metadata.revision.value(), 2);
+        assert_eq!(
+            committed.items[0].location,
+            ItemLocation::Character("character-2".into())
+        );
     }
 
     #[test]
