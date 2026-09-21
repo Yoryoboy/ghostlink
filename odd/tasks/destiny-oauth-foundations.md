@@ -60,11 +60,11 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
   - Check: direct official-source fetch succeeded; unsupported-flow absence remains explicitly bounded to the official page; tracker and branch were clean after commit.
   - Evidence: commit `1760aff` (`chore: start Destiny OAuth foundations`).
 
-- [ ] **DOF-002 — Implement authorization state machine and boundaries**
-  - Route: delegated multi-file implementation.
-  - Outcome: add pending authorization, one-time state, expiry/replay/cancellation/denial/mismatch, exchange and credential/browser/callback behavioral ports, authorized/reauthorization/logout outcomes.
-  - Check: deterministic offline tests and secret-redaction review.
-  - Evidence: pending.
+- [x] **DOF-002 — Implement authorization state machine and boundaries**
+  - Route: delegated multi-file implementation followed by high-risk independent verification and a bounded invariant correction.
+  - Outcome: added opaque/redacted authorization values, provider-neutral browser/callback/random/exchange ports, and a deterministic authorization service covering pending state, one-time callback consumption, expiry, replay, denial, cancellation, mismatch, exchange/storage failure, authorized/reauthorization states, provider rejection, and atomic logout. Unsafe begin re-entry, missing behavioral coverage, ambiguous store failure, and status/state disagreement were corrected.
+  - Check: fmt, clippy, workspace/all-features/core/app test-support checks passed; independent correction verification passed with 40 all-features and 25 app test-support tests and no findings.
+  - Evidence: implementation commit `2e23da0`; correction commit `8470683` (`fix: enforce Destiny authorization invariants`); re-verification passed.
 
 - [ ] **DOF-003 — Implement exact callback and desktop/headless UX**
   - Route: delegated multi-file implementation.
@@ -107,7 +107,8 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
 - Official Bungie documentation was fetched directly; generic web search was unavailable, so absence claims are limited to the official page and prior evidence register.
 - User selected URL plus SSH tunnel guidance for headless mode and multiplatform native credential storage.
 - DOF-001 established the feature boundary and evidence-backed UX contract in `1760aff`.
+- DOF-002 implemented the offline authorization state machine in `2e23da0`; high-risk verification findings were corrected in `8470683`, and re-verification passed.
 
 ## Next step
 
-Implement DOF-002 authorization state machine and behavioral boundaries.
+Implement DOF-003 exact callback listener and desktop/headless authorization UX.
