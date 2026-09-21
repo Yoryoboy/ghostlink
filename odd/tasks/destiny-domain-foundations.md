@@ -50,11 +50,11 @@ A provider-free core and behaviorally useful fakes create the anti-coupling seam
 
 ## Tasks
 
-- [ ] **DDF-001 — Establish the feature boundary and domain decisions**
+- [x] **DDF-001 — Establish the feature boundary and domain decisions**
   - Route: delegated read-only mapping plus parent branch/tracker operations.
-  - Outcome: record the bounded domain decisions, exclusions, dependency direction, and delivery strategy.
-  - Check: clean chained feature boundary and tracker readback.
-  - Evidence: pending.
+  - Outcome: recorded the bounded domain decisions, exclusions, dependency direction, delivery strategy, and five implementation tasks on a branch chained from completed WU-001.
+  - Check: tracker readback passed and branch status was clean after commit.
+  - Evidence: commit `076277a` (`chore: start Destiny domain foundations`).
 
 - [ ] **DDF-002 — Implement opaque IDs and foundational records**
   - Route: delegated to `gentle-ai-worker`; multi-file implementation.
@@ -96,7 +96,8 @@ A provider-free core and behaviorally useful fakes create the anti-coupling seam
 - WU-001 completed at `12783e2`.
 - Read-only exploration mapped WU-002 contracts, dependencies, tests, and exclusions.
 - The implementation decisions above resolve shape ambiguities conservatively without inventing provider behavior.
+- DDF-001 established the chained feature boundary and recoverable implementation plan in commit `076277a`.
 
 ## Next step
 
-Commit DDF-001, then delegate DDF-002 as the first implementation slice.
+Delegate DDF-002 as the first implementation slice.
