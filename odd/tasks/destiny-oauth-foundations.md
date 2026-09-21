@@ -76,7 +76,7 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
   - Route: delegated multi-file implementation after dependency/API revalidation; deterministic parent-readback gaps received one bounded delegated correction; final independent verification ran under ordinary policy after the user explicitly disabled RDD for this clone.
   - Outcome: implemented a bounded form-encoded authorization-code exchange with `client_id` and exact `redirect_uri`; no secret/scope/refresh flow; hardened TLS/timeout/redirect/proxy/response-size/content-type handling; strict token decoding; typed 401/403 reauthorization; expiry and logout coordination.
   - Check: fmt and clippy passed; workspace and all-features tests passed; 39 adapter tests and 32 app tests passed; CLI/MCP help and diff check passed; focused token suite passed 21 tests. The independent verifier classified the intermittent callback timeout test as a pre-existing environment-dependent DOF-003 flake after 9/10 isolated passes; it found no DOF-004 correctness or security blocker. Live OAuth remains N/A.
-  - Evidence: implementation commit pending; ordinary independent verification passed and declared the candidate commit-ready. Native review was explicitly bypassed for this clone after the provider defect reported at `Gentleman-Programming/gentle-ai#4370` comment `5764097110`; no receipt exists.
+  - Evidence: implementation commit `000cc31` (`feat: add Destiny public token exchange`); ordinary independent verification passed and declared the candidate commit-ready. Native review was explicitly bypassed for this clone after the provider defect reported at `Gentleman-Programming/gentle-ai#4370` comment `5764097110`; no receipt exists.
 
 - [ ] **DOF-005 — Implement multiplatform native credential store**
   - Route: delegated multi-file implementation after explicit backend/version validation.
@@ -114,7 +114,8 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
 - Current stable `reqwest` 0.13.5 is configured with default features disabled and blocking/rustls only; redirects and proxies are disabled, total/connect deadlines and response-size caps are enforced, and crate metadata reports Rust 1.85 compatibility.
 - Native intended-untracked selection returned `schema-incompatible`; reconciliation also failed with `lineage_created: false`, and the equivalent provider defect occurrence was confirmed on issue `#4370` with comment `5764097110`.
 - The user explicitly disabled RDD for this clone to close DOF-004 through ordinary policy. A fresh independent verifier then ran every required command, found no DOF-004 blocker, and declared the candidate commit-ready. Its only finding was the pre-existing environment-dependent callback timeout flake in unchanged DOF-003 code.
+- DOF-004 closed in work-unit commit `000cc31`. Excluding the generated lockfile, the cohesive adapter/state/tests/docs unit contains 1,271 authored changed lines; it remains a dedicated feature-branch-chain slice rather than omitting security tests or splitting inseparable behavior.
 
 ## Next step
 
-Commit DOF-004 as one work unit, record its commit evidence, then begin DOF-005 native credential storage.
+Begin DOF-005 multiplatform native credential storage after dependency/backend revalidation.
