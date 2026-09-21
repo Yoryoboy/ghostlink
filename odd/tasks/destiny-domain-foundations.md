@@ -68,11 +68,11 @@ A provider-free core and behaviorally useful fakes create the anti-coupling seam
   - Check: fmt, clippy, workspace/all-features tests, focused core tests, and diff checks passed; correction re-verification passed all prior findings with 22 workspace and 15 focused core tests.
   - Evidence: implementation commit `dc78588` (`feat: add Destiny state policies`); correction commit `33553e9` (`fix: enforce Destiny state invariants`); re-verification passed.
 
-- [ ] **DDF-004 — Define ports, deterministic seams, and fakes**
-  - Route: delegated to `gentle-ai-worker`; multi-file implementation.
-  - Outcome: add provider-neutral behavioral ports, deterministic clock/ID generators, and application-owned behavior fakes/fixtures.
-  - Check: port/fake contract tests, deterministic behavior, no provider-shaped types or side effects.
-  - Evidence: pending.
+- [x] **DDF-004 — Define ports, deterministic seams, and fakes**
+  - Route: delegated to `gentle-ai-worker`; multi-file implementation plus bounded fake-contract and test-coverage corrections.
+  - Outcome: added provider-neutral ports, checked deterministic clock/plan-ID seams, structurally equal atomic inventory/definition repositories, queued profile/Manifest gateways, and an explicitly exposed but redacted credential boundary. The `test-support` feature remains offline. Verification findings about lossy snapshot fingerprints, unchecked exhaustion, missing contracts, and incomplete field coverage were corrected.
+  - Check: fmt, clippy, workspace/all-features, core, and app test-support checks passed. Final re-verification confirmed independent revision-advance coverage for all normalized membership/definition/character/item fields and collection changes, with no production changes in the final test correction.
+  - Evidence: implementation commit `19c6cfd`; contract correction `21cc670` (`fix: strengthen Destiny fake contracts`); exhaustive coverage commit `e9d98b4` (`test: cover Destiny snapshot revisions`); final re-verification passed.
 
 - [ ] **DDF-005 — Verify and close WU-002**
   - Route: native review/assessment and delegated verification as required by active RDD policy.
@@ -99,7 +99,8 @@ A provider-free core and behaviorally useful fakes create the anti-coupling seam
 - DDF-001 established the chained feature boundary and recoverable implementation plan in commit `076277a`.
 - DDF-002 established dependency-free core IDs and records in `431de4f`; independent verification found raw identifier formatting, corrected in `4db85c4`, and re-verification passed.
 - DDF-003 established dependency-free state and mutation policy in `dc78588`; verification findings about invalid states, freshness, expiry, classification, and source binding were corrected in `33553e9`, and re-verification passed.
+- DDF-004 established behavioral ports and offline fakes in `19c6cfd`; contract corrections landed in `21cc670`, exhaustive revision-field tests in `e9d98b4`, and final re-verification passed.
 
 ## Next step
 
-Delegate DDF-004 for behavioral ports, deterministic seams, and application-owned fakes.
+Complete DDF-005 with full-feature verification and native review handling.
