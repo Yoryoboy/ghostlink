@@ -54,14 +54,15 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
 
 ## Tasks
 
-- [ ] **DSF-001 — Establish evidence, decisions, and feature boundary** *(in progress)*
+- [x] **DSF-001 — Establish evidence, decisions, and feature boundary**
   - Route: delegated repository mapping plus parent primary-source dependency research and one user scope decision; mapping trigger fired because understanding spans more than four files.
-  - Outcome: create the chained branch/tracker, record rusqlite and schema decisions, defer plans/executions, define six bounded slices, forecast, exclusions, and checks.
-  - Check: tracker and Engram mirror readback; clean branch after the work-unit commit.
+  - Outcome: created the chained branch/tracker, recorded rusqlite and schema decisions, deferred plans/executions, and defined six bounded slices, forecast, exclusions, and checks.
+  - Check: tracker and Engram mirror readback passed; `git diff --check` passed; branch was clean after the work-unit commit.
+  - Evidence: commit `224c797` (`chore: start Destiny SQLite foundations`).
   - Rollback: remove only this branch and tracker before source implementation.
 
-- [ ] **DSF-002 — Add durable sync metadata and revision contracts/fakes**
-  - Route: delegated multi-file writer over core/app test-support surfaces.
+- [ ] **DSF-002 — Add durable sync metadata and revision contracts/fakes** *(in progress)*
+  - Route: delegated multi-file writer over core/app test-support surfaces; writer trigger fired because the slice touches multiple non-trivial files.
   - Outcome: evolve Manifest/profile repository inputs and outcomes to carry fetched-at/source/schema metadata, expose durable metadata reads, retain revisions only for complete structural equality, advance exactly once on change, fail atomically on overflow/invalid metadata, and keep provider details out of core.
   - Check: focused core/app contract tests covering freshness, source/dataset consistency, equal/changed input, overflow, and prior-state preservation.
   - Rollback: revert only WU-005 metadata/revision contract and fake changes.
@@ -108,6 +109,7 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
 - Repository mapping identified existing normalized domain types, freshness/revision policies, repository ports, and deterministic fakes but no SQLite dependency/module, no durable sync metadata contract, and no database-path configuration.
 - User selected deferral of plan/execution persistence to WU-009/010.
 - Current official research supports `rusqlite` 0.40.2 with bundled SQLite for this synchronous application-owned database.
+- DSF-001 established and committed the feature boundary in `224c797`.
 
 ## Verification evidence
 
@@ -115,4 +117,4 @@ Pending implementation.
 
 ## Next step
 
-Commit DSF-001, synchronize evidence, then delegate DSF-002 within exact core/app test-support surfaces.
+Delegate DSF-002 within exact core/app test-support surfaces.
