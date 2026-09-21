@@ -84,14 +84,16 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
   - Evidence: commit `4f2e735` (`feat: persist Manifest definitions in SQLite`).
   - Rollback: remove only definition repository modules/tests and the narrow shared content-equality parity correction while preserving the v1 schema and profile boundary.
 
-- [ ] **DSF-005 — Implement transactional SQLite profile projection repository** *(in progress)*
-  - Route: delegated bounded adapter writer; second internal WU-005 review slice; writer trigger fires across repository and contract-test modules.
-  - Outcome: implement the single-active-account `InventoryRepository`, normalized character/item/location mapping, complete structural revision retention/advance, atomic replacement, freshness/source metadata, and reopened reads without provider mapping.
-  - Check: round trips for every normalized field/location, membership replacement, equal/changed revisions, overflow, FK/invariant rejection, rollback preservation, and no orphan rows.
-  - Rollback: remove only profile tables/repository/migration portion and tests, leaving definition persistence intact.
+- [x] **DSF-005 — Implement transactional SQLite profile projection repository**
+  - Route: two broad writer attempts failed without changes, so the slice was decomposed into sequential delegated core/fake semantics and SQLite repository writers, then independently verified under the unavailable-native high-risk fallback. Independent review found one defensive corrupt-extra-anchor gap; the writer fixed it and the verifier rechecked it.
+  - Outcome: implemented the single-active-profile `InventoryRepository` with shared order-insensitive structural content identity, unique-ID/location-reference validation, canonical deterministic ordering, exact typed location and range reconstruction, all-or-none projection reads, one `IMMEDIATE` replacement transaction, revision retain/advance/overflow, metadata-only freshness refresh, complete stale-row removal, rollback preservation, file reopen durability, and Manifest dataset isolation. No profile provider mapping was added.
+  - Check: core 16 passed; app test-support 67 passed; 17 focused inventory tests; adapters 114 passed; workspace 197 passed; adapter all-target check/clippy passed. Full field/location round trips, 19 content mutations, permutations, invalid source/duplicates/dangling refs, overflow, mid-write rollback, corrupt/partial state, exact-one profile anchor, stale removal, reopen, secrecy, and Manifest coexistence independently passed.
+  - Review workload: 1,745 changed lines, including approximately 900 focused test lines. The slice contains one cohesive repository contract; provider profile normalization remains isolated to WU-006.
+  - Evidence: commit `20a0b5c` (`feat: persist profile projections in SQLite`).
+  - Rollback: remove only inventory repository modules/tests and shared profile content/validity semantics, leaving definition persistence and v1 schema intact.
 
-- [ ] **DSF-006 — Verify concurrency, secrecy, persistence, and close WU-005**
-  - Route: native committed-range assessment plus delegated independent verification; unassessable remains high risk.
+- [ ] **DSF-006 — Verify concurrency, secrecy, persistence, and close WU-005** *(in progress)*
+  - Route: native committed-range assessment plus delegated independent verification; unassessable remains high risk. Verification command execution is delegated.
   - Outcome: validate full migration/repository range, two-connection locking/single-flight behavior, temporary file close/reopen harness, schema/file-byte secret exclusion, dependency direction, rollback boundaries, manual gates, and closure.
   - Check: all baseline/focused commands, temporary file runtime harness, dependency tree, full diff/status, and independent correctness/security review.
   - Rollback: reset this feature branch to `e1f7688` to remove only WU-005.
@@ -118,6 +120,7 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
 - DSF-002 added durable provider-neutral metadata and collision-free revision semantics in `82b22ab`; repeated successful refreshes now update freshness without manufacturing content revisions.
 - DSF-003 added the exact bundled SQLite dependency, hardened connection policy, reversible migration runner, normalized STRICT schema, and 17 focused tests in `f96ad55` after fixing an independent-review blocker in canonical decimal bounds.
 - DSF-004 added atomic durable Manifest definition persistence in `4f2e735`, aligned complete-set order semantics with the in-memory fake, and proved rollback, overflow, corruption, and reopen behavior.
+- DSF-005 added atomic single-active-profile persistence in `20a0b5c`, aligned unordered projection semantics with the fake, and proved all-or-none reads, exact typed reconstruction, rollback, corruption, coexistence, and reopen behavior.
 
 ## Verification evidence
 
@@ -125,7 +128,8 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
 - DSF-002 writer and independent verifier both observed clean formatting, diff checks, focused tests, focused clippy, and the offline adapter fixture. Native assessment was unavailable/schema-incompatible, so the candidate followed the required high-risk fallback path.
 - DSF-003 writer and independent verifier observed clean formatting/check/clippy, 17 focused SQLite tests, 84 adapter tests, 160 workspace tests, reversible migrations, exact numeric bounds, schema secrecy, and dependency uniqueness. Independent review found and then cleared one blocking over-range decimal acceptance defect. Native assessment was unavailable, so the candidate followed the required high-risk fallback path.
 - DSF-004 writer and independent verifier observed clean formatting/check/clippy, 13 focused definition repository tests, 97 adapter tests, 174 workspace tests, transaction atomicity, structural revision parity, corruption fail-closed behavior, and file reopen persistence. Two non-blocking review findings were corrected and rechecked before commit.
+- DSF-005 sequential writers and the independent verifier observed clean formatting/check/clippy, 17 focused inventory tests, 114 adapter tests, 197 workspace tests, order-insensitive fake parity, transaction atomicity, corruption fail-closed behavior, Manifest coexistence, and file reopen persistence. One defensive extra-anchor finding was corrected and rechecked before commit.
 
 ## Next step
 
-Delegate DSF-005 for the single-active-profile transactional SQLite repository.
+Run DSF-006 full committed-range verification, including two-connection lock/visibility behavior, database-byte secrecy, runtime close/reopen harness, dependency direction, binaries, and final review.
