@@ -3,12 +3,14 @@
 pub mod auth;
 pub mod auth_ux;
 mod config;
+pub mod manifest;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
 pub use destiny_core::{AppError, ErrorCategory};
+pub use manifest::{ManifestService, normalize_manifest};
 
 /// Reports that the application foundation is available.
 pub fn foundation_ready() -> bool {

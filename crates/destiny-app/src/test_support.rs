@@ -7,8 +7,9 @@ use destiny_core::{
     AccessCredential, AppError, AuthorizationCallback, AuthorizationState, BrowserAuthorization,
     CallbackReceiver, Clock, CredentialMaterial, CredentialStore, DefinitionRepository,
     DefinitionVersion, ErrorCategory, InventoryRepository, InventorySnapshot,
-    InventorySnapshotInput, ItemDefinition, ItemHash, ManifestDefinitions, ManifestGateway, PlanId,
-    PlanIdGenerator, ProfileGateway, Resolution, SnapshotMetadata, SyncRevision, Timestamp,
+    InventorySnapshotInput, ItemDefinition, ItemHash, ManifestAcquisition, ManifestDefinitions,
+    ManifestGateway, PlanId, PlanIdGenerator, ProfileGateway, Resolution, SnapshotMetadata,
+    SyncRevision, Timestamp,
 };
 use std::collections::{HashSet, VecDeque};
 
@@ -331,7 +332,7 @@ impl ProfileGateway for QueuedProfileGateway {
 
 #[derive(Debug, Default)]
 pub struct QueuedManifestGateway {
-    outcomes: VecDeque<Result<ManifestDefinitions, AppError>>,
+    outcomes: VecDeque<Result<ManifestAcquisition, AppError>>,
     calls: usize,
 }
 
@@ -342,7 +343,7 @@ impl QueuedManifestGateway {
             calls: 0,
         }
     }
-    pub fn queue(&mut self, outcome: Result<ManifestDefinitions, AppError>) {
+    pub fn queue(&mut self, outcome: Result<ManifestAcquisition, AppError>) {
         self.outcomes.push_back(outcome);
     }
     pub const fn calls(&self) -> usize {
@@ -351,7 +352,7 @@ impl QueuedManifestGateway {
 }
 
 impl ManifestGateway for QueuedManifestGateway {
-    fn load_definitions(&mut self) -> Result<ManifestDefinitions, AppError> {
+    fn load_definitions(&mut self) -> Result<ManifestAcquisition, AppError> {
         self.calls += 1;
         self.outcomes.pop_front().unwrap_or_else(|| {
             Err(AppError::new(
@@ -725,13 +726,13 @@ mod tests {
         ));
 
         let mut manifest = QueuedManifestGateway::new();
-        let definitions = ManifestDefinitions {
+        let acquisition = ManifestAcquisition {
             version: DefinitionVersion::new("v1"),
             definitions: Vec::new(),
         };
-        manifest.queue(Ok(definitions.clone()));
+        manifest.queue(Ok(acquisition.clone()));
         manifest.queue(Err(AppError::new(ErrorCategory::ProviderValidation)));
-        assert_eq!(manifest.load_definitions().unwrap(), definitions);
+        assert_eq!(manifest.load_definitions().unwrap(), acquisition);
         assert_eq!(
             manifest.load_definitions().unwrap_err().category(),
             ErrorCategory::ProviderValidation

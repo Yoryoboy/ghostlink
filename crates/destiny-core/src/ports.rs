@@ -3,7 +3,7 @@
 use crate::auth::{AccessCredential, AuthorizationCallback, AuthorizationCode, AuthorizationState};
 use crate::domain::{Character, InventorySnapshot, ItemDefinition, ItemInstance};
 use crate::error::AppError;
-use crate::ids::{DefinitionVersion, ItemHash, MembershipId, MembershipType, PlanId};
+use crate::ids::{BucketHash, DefinitionVersion, ItemHash, MembershipId, MembershipType, PlanId};
 use crate::state::{Resolution, Timestamp};
 use std::fmt;
 
@@ -103,9 +103,42 @@ pub struct ManifestDefinitions {
     pub definitions: Vec<ItemDefinition>,
 }
 
-/// Returns normalized definitions, not locations, URLs, or serialized payloads.
+/// One untrusted, transport-neutral Manifest definition candidate.
+///
+/// An adapter maps an upstream payload into this provider-neutral shape, and the
+/// application Manifest service alone decides whether the values are bounded,
+/// complete, and internally consistent. The record mirrors the normalized
+/// [`ItemDefinition`] fields and is identified only by a definition
+/// [`ItemHash`]; definition and instance identity are separated by the type
+/// boundary, because a runtime instance identifier has no place in a Manifest
+/// record and needs no provider metadata to rule out.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManifestDefinitionCandidate {
+    pub hash: ItemHash,
+    pub bucket_hash: Option<BucketHash>,
+    pub name: String,
+    pub item_type: Option<String>,
+    pub tier: Option<String>,
+    pub element: Option<String>,
+    pub tags: Vec<String>,
+    pub version: DefinitionVersion,
+}
+
+/// One versioned batch of untrusted definition candidates from a Manifest gateway.
+///
+/// Neither the batch version nor its candidates are trusted: they may be blank,
+/// oversized, inconsistent, duplicated, or incomplete. The application Manifest
+/// service validates and normalizes the batch before any repository mutation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ManifestAcquisition {
+    pub version: DefinitionVersion,
+    pub definitions: Vec<ManifestDefinitionCandidate>,
+}
+
+/// Returns untrusted normalized-shape candidates, not locations, URLs, or
+/// serialized payloads.
 pub trait ManifestGateway {
-    fn load_definitions(&mut self) -> Result<ManifestDefinitions, AppError>;
+    fn load_definitions(&mut self) -> Result<ManifestAcquisition, AppError>;
 }
 
 /// Opaque credential material. Bytes are available only through the explicit
