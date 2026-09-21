@@ -80,15 +80,15 @@ Decision: WU-004 uses the bounded English `DestinyInventoryItemDefinition` path 
   - Evidence: commit `9001ce1` (`feat: add Manifest validation service`). The 784-line source slice exceeds the ~400 heuristic because the cohesive service and its 14 behavior/security tests cannot be separated without an unusable intermediate contract; it remains an independent work-unit commit and no tests/docs were compressed.
   - Rollback: remove `crates/destiny-app/src/manifest.rs` and revert only the DMF-003 acquisition-contract/module/fake updates in the other four touched files.
 
-- [ ] **DMF-004 — Implement bounded Bungie Manifest acquisition and mapping** *(in progress)*
-  - Route: delegated adapter slices plus independent high-risk fallback verification. The original broad worker failed three times from child-session reasoning/output exhaustion; incident diagnosis found and reverted the only dependency residue, then the task was decomposed into mapping, transport, and offline pipeline slices. Writer trigger remains active because the task touches multiple non-trivial files.
-  - Outcome: fetch and validate the Manifest index plus required English component through a bounded transport seam, map sanitized provider data to the application input contract, and prove the full offline fixture pipeline. Pure mapping is complete in `47a6890`: sanitized index/component decoding, strict exact versions, canonical u32 hash keys, same-origin content-path validation including control/percent/traversal defenses, bounded candidates, conservative optional-field mapping, and no instance identity.
-  - Check: mapping slice passed fmt, 9 adapter Manifest tests, focused clippy `-D warnings`, diff/untracked whitespace checks, and independent verification before and after defense-in-depth corrections. Remaining checks: transport security/limits and complete adapter-to-service-to-fake fixture harness.
-  - Evidence: mapping commit `47a6890` (`feat: map Bungie Manifest definitions`).
-  - Rollback: remove only the Manifest adapter/fixtures/declarations and task-owned dependency changes without touching SQLite or OAuth.
+- [x] **DMF-004 — Implement bounded Bungie Manifest acquisition and mapping**
+  - Route: delegated adapter slices plus independent high-risk fallback verification. Broad worker attempts repeatedly exhausted child reasoning/output, so incident diagnosis restored the clean boundary and the task was decomposed into mapping, transport, and offline pipeline slices. Each completed slice received independent verification.
+  - Outcome: implemented a production-capable blocking Manifest gateway over hardened reqwest/rustls: opaque redacted API key only on the fixed index request; same-origin component request without the key; redirects/proxies disabled; connect/total timeouts; strict JSON media type; streamed 1 MiB/64 MiB body bounds; sanitized status/transport mapping; and layered URL/path defenses. Provider index/component JSON maps conservatively into untrusted candidates with exact versions, canonical u32 keys, hash agreement, required names, optional field tolerance, no instance identity, and no raw payload exposure. A four-record sanitized fixture proves the complete fake-transport → gateway → `ManifestService` → in-memory repository path, replacement, idempotent normalized records, provider casing, version/count/lookups, and key omission.
+  - Check: mapping passed 9 tests; transport passed 19 tests; fixture pipeline passed 20 adapter Manifest tests plus 52 app test-support tests. All slices passed fmt, focused clippy `-D warnings`, diff/status checks, and independent verification. The fixture count is 4 and within the tested 100,000 safety ceiling. Live provider sizes and HTTP behavior remain a manual gate.
+  - Evidence: mapping `47a6890` (`feat: map Bungie Manifest definitions`); mapping evidence `393de7e`; bounded transport `9917c7e` (`feat: add bounded Manifest transport`); offline fixture pipeline `5b5305e` (`test: prove offline Manifest pipeline`). The larger transport source is cohesive security behavior plus contract tests; it was split from mapping and fixtures rather than compressed.
+  - Rollback: revert `47a6890`, `9917c7e`, and `5b5305e`, plus the adjacent mapping evidence commit, without touching SQLite, OAuth, or earlier core/app contracts.
 
-- [ ] **DMF-005 — Verify and close WU-004**
-  - Route: native read-only assessment followed by the required ordinary verification plan; delegate broad command execution.
+- [ ] **DMF-005 — Verify and close WU-004** *(in progress)*
+  - Route: native read-only assessment followed by the required ordinary verification plan; delegate broad command execution. Native assessment has been unavailable for prior slices, so unknown/unassessable is treated as high risk.
   - Outcome: independently verify the complete WU-004 range, record honest automated/manual gates, and close the feature.
   - Check: all baseline and focused commands, dependency/diff/security review, deterministic fixture harness, and final clean status.
   - Rollback: reset this feature branch to `84a7a16` to remove only WU-004 changes.
@@ -110,7 +110,9 @@ Decision: WU-004 uses the bounded English `DestinyInventoryItemDefinition` path 
 - Official evidence resolves the acquisition source: use the English per-component JSON path for `DestinyInventoryItemDefinition`, validate it on every index response, and avoid SQLite/all-definition payloads.
 - DMF-001 established and committed the feature boundary in `924ce89`.
 - DMF-002 added atomic, validated definition-set publication and the deterministic in-memory fake in `1827787`; independent verification passed all authorized checks with no blocking finding.
-- DMF-003 added and corrected the provider-neutral validation/normalization/publication service in `9001ce1`; final independent verification passed. The recorded feature-chain slices are DMF-001 (`924ce89`), DMF-002 (`1827787`), and DMF-003 (`9001ce1`), each with its adjacent evidence commit where present.
+- DMF-003 added and corrected the provider-neutral validation/normalization/publication service in `9001ce1`; final independent verification passed.
+- DMF-004 completed mapping (`47a6890`), bounded transport (`9917c7e`), and offline fixture pipeline (`5b5305e`) with independent verification after each boundary. The test-only adapters→app dependency is one-way, feature-gated, and introduces no production cycle.
+- Recorded implementation slice boundaries: DMF-001 `924ce89`; DMF-002 `1827787`; DMF-003 `9001ce1`; DMF-004 mapping `47a6890`, transport `9917c7e`, and fixture pipeline `5b5305e`, each with evidence commits where present.
 
 ## Verification evidence
 
@@ -118,4 +120,4 @@ Pending implementation.
 
 ## Next step
 
-Continue DMF-004 with the bounded HTTP transport slice, then add the offline adapter-to-service-to-fake fixture harness and validate its catalog size against the 100,000-candidate ceiling.
+Run DMF-005 full-range independent verification from `84a7a16` through the committed WU-004 head, record manual gates, and close the feature.
