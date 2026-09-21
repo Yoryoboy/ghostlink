@@ -66,11 +66,11 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
   - Check: fmt, clippy, workspace/all-features/core/app test-support checks passed; independent correction verification passed with 40 all-features and 25 app test-support tests and no findings.
   - Evidence: implementation commit `2e23da0`; correction commit `8470683` (`fix: enforce Destiny authorization invariants`); re-verification passed.
 
-- [ ] **DOF-003 — Implement exact callback and desktop/headless UX**
-  - Route: delegated multi-file implementation.
-  - Outcome: fixed loopback listener, exact path/state handling, browser launch, headless URL plus SSH-forward guidance, and sanitized startup/result mapping.
-  - Check: local socket integration tests, wrong path/state/replay tests, browser/headless contract tests.
-  - Evidence: pending.
+- [x] **DOF-003 — Implement exact callback and desktop/headless UX**
+  - Route: delegated multi-file implementation followed by repeated independent security verification and bounded corrections.
+  - Outcome: added exact fixed loopback callback handling, strict and bounded HTTP parsing with one request-wide deadline, IPv4/IPv6/localhost behavior, safe system-browser argv, OAuth URL construction, SSH-first auto detection, and shell-safe headless forwarding guidance. Corrections closed SSH injection, port-zero, dual-stack, parser ambiguity, socket timeout, test TOCTOU, and slow-drip risks.
+  - Check: final independent verification passed fmt, clippy, two 62-test all-features runs, 18 adapter tests, 29 app tests, both help commands, and diff check with no skips or findings.
+  - Evidence: commit `aa6433c` (`feat: add Destiny OAuth callback UX`); final independent verdict commit-ready.
 
 - [ ] **DOF-004 — Implement public-client token exchange and reauthorization**
   - Route: delegated multi-file implementation after dependency/API revalidation.
@@ -108,7 +108,8 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
 - User selected URL plus SSH tunnel guidance for headless mode and multiplatform native credential storage.
 - DOF-001 established the feature boundary and evidence-backed UX contract in `1760aff`.
 - DOF-002 implemented the offline authorization state machine in `2e23da0`; high-risk verification findings were corrected in `8470683`, and re-verification passed.
+- DOF-003 implemented and hardened exact callback/browser/headless UX in `aa6433c`; final independent verification passed after closing all security and flakiness findings.
 
 ## Next step
 
-Implement DOF-003 exact callback listener and desktop/headless authorization UX.
+Implement DOF-004 public-client token exchange and reauthorization mapping.
