@@ -1,0 +1,8 @@
+[package]
+name = "destiny-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+destiny-core.workspace = true

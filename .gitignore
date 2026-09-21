@@ -1,2 +1,6 @@
 # Local Pi runtime state
 .atl/
+.codegraph/
+
+# Rust build output
+target/
