@@ -1,0 +1,419 @@
+//! Transactional SQLite persistence for the normalized Manifest definition set.
+//!
+//! This module implements [`destiny_core::DefinitionRepository`] on the
+//! application-owned [`SqliteStore`]. It performs no provider I/O, no async
+//! work, and no serialization: every value it stores arrives already normalized,
+//! and every read reconstructs the provider-neutral core records from normalized
+//! columns, so no raw provider payload, SQL statement, or stored value can
+//! escape through a returned value or a failure.
+//!
+//! Publication is exactly one `IMMEDIATE` transaction. Inside it the repository
+//! reads the committed Manifest metadata and the committed catalog, decides
+//! whether the incoming complete set is a content change, allocates or retains
+//! the revision, replaces every definition and tag row, and upserts the
+//! committed metadata. Any failure, including a constraint failure partway
+//! through the replacement, drops the transaction, and rusqlite rolls the whole
+//! thing back, so the prior catalog, its tags, the metadata, the revision, and
+//! the version remain exactly readable.
+//!
+//! Revision identity is the complete normalized definition content and its
+//! version, compared structurally; there is no fingerprint or hash, because
+//! distinct normalized inputs can collide on a single `u64`. The committed
+//! catalog is reconstructed from the normalized columns and compared field by
+//! field. Definition order is deliberately not part of identity: the schema
+//! stores no definition ordinal and reads are ordered by primary key, so an
+//! identical set retains its revision regardless of input order. Tag order is
+//! part of identity because the normalized [`ItemDefinition`] carries an ordered
+//! `Vec`, and the schema preserves that order through `definition_tags.ordinal`.
+//! `checked_at` is committed freshness, never content identity, so an otherwise
+//! identical refresh retains the revision and refreshes only the timestamp.
+//!
+//! Validation that needs no storage runs before the transaction is opened and
+//! reports a sanitized provider-validation failure: the source marker must be
+//! the fixed Manifest marker, the set must be non-empty, every definition must
+//! carry the one exact set version, and hashes must be duplicate-free. Every
+//! failure after that is treated as local state and maps only to the sanitized
+//! [`ErrorCategory::LocalStorage`] category.
+
+use super::{SqliteStore, encode_decimal, parse_decimal, storage_failure};
+use destiny_core::{
+    AppError, BucketHash, Dataset, DefinitionReplacementInput, DefinitionRepository,
+    DefinitionVersion, ErrorCategory, ItemDefinition, ItemHash, ManifestDefinitions, Resolution,
+    SourceMarker, SyncMetadata, SyncRevision, Timestamp,
+};
+use rusqlite::{Connection, Error as SqlError, TransactionBehavior, params};
+use std::collections::{HashMap, HashSet};
+
+/// The fixed `sync_metadata` dataset row this repository owns.
+const MANIFEST_DATASET: &str = "manifest_definitions";
+
+/// The source marker the schema pairs with the Manifest dataset.
+const MANIFEST_SOURCE: &str = "manifest";
+
+fn provider_validation() -> AppError {
+    AppError::new(ErrorCategory::ProviderValidation)
+}
+
+impl DefinitionRepository for SqliteStore {
+    fn current_definition_version(&self) -> Result<DefinitionVersion, AppError> {
+        match read_manifest_metadata(self.connection())? {
+            Some(metadata) => Ok(metadata.definition_version),
+            None => Err(storage_failure()),
+        }
+    }
+
+    fn lookup_definition(&self, hash: ItemHash) -> Result<Resolution<ItemDefinition>, AppError> {
+        Ok(match read_definition(self.connection(), hash)? {
+            Some(definition) => Resolution::Unique(definition),
+            None => Resolution::Missing,
+        })
+    }
+
+    fn current_metadata(&self) -> Result<Option<SyncMetadata>, AppError> {
+        read_manifest_metadata(self.connection())
+    }
+
+    fn replace_definitions(
+        &mut self,
+        replacement: DefinitionReplacementInput,
+    ) -> Result<SyncMetadata, AppError> {
+        // Everything that can be rejected without touching storage is rejected
+        // here, before the transaction is opened, so the prior committed state
+        // stays readable and no write is ever attempted.
+        if replacement.source != SourceMarker::Manifest {
+            return Err(provider_validation());
+        }
+        validate_publication(&replacement.definitions)?;
+
+        // One IMMEDIATE transaction determines the prior state, allocates the
+        // revision, replaces the catalog, and upserts metadata. Rusqlite rolls
+        // the transaction back on drop, so any early return below leaves the
+        // prior committed state untouched.
+        let transaction = self
+            .connection_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| storage_failure())?;
+
+        let prior = read_manifest_metadata(&transaction)?;
+        let unchanged = match prior.as_ref() {
+            Some(_) => {
+                let committed = read_committed_content(&transaction)?;
+                contents_match(&committed, &replacement.definitions.definitions)
+            }
+            None => false,
+        };
+
+        // Revision allocation happens before any write. An overflow at the
+        // boundary therefore fails with the catalog, tags, and metadata intact.
+        let revision = if unchanged {
+            prior
+                .as_ref()
+                .map(|metadata| metadata.revision)
+                .ok_or_else(storage_failure)?
+        } else {
+            match prior.as_ref() {
+                Some(metadata) => SyncRevision::new(
+                    metadata
+                        .revision
+                        .value()
+                        .checked_add(1)
+                        .ok_or_else(storage_failure)?,
+                ),
+                None => SyncRevision::new(1),
+            }
+        };
+
+        // Unchanged content keeps the committed catalog and rewrites only the
+        // freshness metadata; changed content replaces every row.
+        if !unchanged {
+            replace_catalog(&transaction, &replacement.definitions.definitions)?;
+        }
+        upsert_metadata(&transaction, &replacement, revision)?;
+        transaction.commit().map_err(|_| storage_failure())?;
+
+        Ok(SyncMetadata {
+            dataset: Dataset::ManifestDefinitions,
+            checked_at: replacement.checked_at,
+            source: SourceMarker::Manifest,
+            revision,
+            definition_version: replacement.definitions.version,
+        })
+    }
+}
+
+/// Rejects a set that the application Manifest service should never publish.
+///
+/// A publishable set is non-empty, internally consistent with one exact version,
+/// and duplicate-free. This mirrors the deterministic fake so the two
+/// repositories accept and reject the same inputs before any durable mutation.
+fn validate_publication(definitions: &ManifestDefinitions) -> Result<(), AppError> {
+    if definitions.definitions.is_empty() {
+        return Err(provider_validation());
+    }
+    let mut seen = HashSet::with_capacity(definitions.definitions.len());
+    for definition in &definitions.definitions {
+        if definition.version != definitions.version || !seen.insert(definition.hash) {
+            return Err(provider_validation());
+        }
+    }
+    Ok(())
+}
+
+/// Compares the committed catalog with an incoming set as one normalized set.
+///
+/// Both sides are ordered by the definition primary key before comparison, so
+/// the result depends only on normalized content and never on input or storage
+/// order. Tag vectors are compared in their stored ordinal order, so tag
+/// reordering is a content change while definition reordering is not.
+fn contents_match(committed: &[ItemDefinition], incoming: &[ItemDefinition]) -> bool {
+    if committed.len() != incoming.len() {
+        return false;
+    }
+    let mut committed: Vec<&ItemDefinition> = committed.iter().collect();
+    let mut incoming: Vec<&ItemDefinition> = incoming.iter().collect();
+    committed.sort_by_key(|definition| definition.hash);
+    incoming.sort_by_key(|definition| definition.hash);
+    committed == incoming
+}
+
+/// Removes the complete prior catalog and writes the complete replacement.
+///
+/// Tags are cleared before definitions so the removal order is explicit and
+/// deterministic instead of relying on cascade, and the child rows are gone
+/// before the parent rows the foreign key points at.
+fn replace_catalog(
+    connection: &Connection,
+    definitions: &[ItemDefinition],
+) -> Result<(), AppError> {
+    connection
+        .execute("DELETE FROM definition_tags", [])
+        .map_err(|_| storage_failure())?;
+    connection
+        .execute("DELETE FROM definitions", [])
+        .map_err(|_| storage_failure())?;
+
+    for definition in definitions {
+        connection
+            .execute(
+                "INSERT INTO definitions \
+                 (hash, bucket_hash, name, item_type, tier, element, definition_version) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    definition.hash.value(),
+                    definition.bucket_hash.map(BucketHash::value),
+                    definition.name,
+                    definition.item_type,
+                    definition.tier,
+                    definition.element,
+                    definition.version.as_str(),
+                ],
+            )
+            .map_err(|_| storage_failure())?;
+
+        for (ordinal, tag) in definition.tags.iter().enumerate() {
+            let ordinal = i64::try_from(ordinal).map_err(|_| storage_failure())?;
+            connection
+                .execute(
+                    "INSERT INTO definition_tags (definition_hash, ordinal, tag) VALUES (?1, ?2, ?3)",
+                    params![definition.hash.value(), ordinal, tag],
+                )
+                .map_err(|_| storage_failure())?;
+        }
+    }
+    Ok(())
+}
+
+/// Inserts or refreshes the committed Manifest metadata row.
+///
+/// The row is the sole durable source of the committed revision, freshness
+/// timestamp, and definition version, so it is upserted on every successful
+/// publication, including one that retained the revision.
+fn upsert_metadata(
+    connection: &Connection,
+    replacement: &DefinitionReplacementInput,
+    revision: SyncRevision,
+) -> Result<(), AppError> {
+    let checked_at = encode_decimal(replacement.checked_at.seconds());
+    let revision_text = encode_decimal(revision.value());
+    connection
+        .execute(
+            "INSERT INTO sync_metadata \
+             (dataset, checked_at, source, revision, definition_version) \
+             VALUES (?1, ?2, ?3, ?4, ?5) \
+             ON CONFLICT(dataset) DO UPDATE SET \
+                 checked_at = excluded.checked_at, \
+                 source = excluded.source, \
+                 revision = excluded.revision, \
+                 definition_version = excluded.definition_version",
+            params![
+                MANIFEST_DATASET,
+                checked_at,
+                MANIFEST_SOURCE,
+                revision_text,
+                replacement.definitions.version.as_str(),
+            ],
+        )
+        .map_err(|_| storage_failure())?;
+    Ok(())
+}
+
+/// Reads the committed Manifest metadata, if any.
+///
+/// Canonical decimal values are parsed and range-checked rather than trusted,
+/// and any malformed or unexpected stored value is a sanitized local-storage
+/// failure, never a partially constructed core record.
+fn read_manifest_metadata(connection: &Connection) -> Result<Option<SyncMetadata>, AppError> {
+    let row = connection.query_row(
+        "SELECT checked_at, source, revision, definition_version \
+         FROM sync_metadata WHERE dataset = ?1",
+        [MANIFEST_DATASET],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        },
+    );
+
+    match row {
+        Ok((checked_at, source, revision, definition_version)) => {
+            if source != MANIFEST_SOURCE {
+                return Err(storage_failure());
+            }
+            Ok(Some(SyncMetadata {
+                dataset: Dataset::ManifestDefinitions,
+                checked_at: Timestamp::new(parse_decimal(&checked_at)?),
+                source: SourceMarker::Manifest,
+                revision: SyncRevision::new(parse_decimal(&revision)?),
+                definition_version: DefinitionVersion::new(definition_version),
+            }))
+        }
+        Err(SqlError::QueryReturnedNoRows) => Ok(None),
+        Err(_) => Err(storage_failure()),
+    }
+}
+
+/// Reconstructs one normalized definition with its ordered tags, if present.
+///
+/// The definition primary key makes the outcome `Missing` or `Unique`; the
+/// `Ambiguous` resolution the port allows cannot occur here.
+fn read_definition(
+    connection: &Connection,
+    hash: ItemHash,
+) -> Result<Option<ItemDefinition>, AppError> {
+    let row = connection.query_row(
+        "SELECT bucket_hash, name, item_type, tier, element, definition_version \
+         FROM definitions WHERE hash = ?1",
+        [hash.value()],
+        |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
+            ))
+        },
+    );
+
+    match row {
+        Ok((bucket_hash, name, item_type, tier, element, version)) => Ok(Some(ItemDefinition {
+            hash,
+            bucket_hash: bucket_hash.map(BucketHash::new),
+            name,
+            item_type,
+            tier,
+            element,
+            tags: read_tags(connection, hash.value())?,
+            version: DefinitionVersion::new(version),
+        })),
+        Err(SqlError::QueryReturnedNoRows) => Ok(None),
+        Err(_) => Err(storage_failure()),
+    }
+}
+
+/// Reads the tags of one definition in their stored ordinal order.
+fn read_tags(connection: &Connection, hash: i64) -> Result<Vec<String>, AppError> {
+    let mut statement = connection
+        .prepare("SELECT tag FROM definition_tags WHERE definition_hash = ?1 ORDER BY ordinal")
+        .map_err(|_| storage_failure())?;
+    let rows = statement
+        .query_map([hash], |row| row.get::<_, String>(0))
+        .map_err(|_| storage_failure())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|_| storage_failure())
+}
+
+/// Reconstructs the complete committed catalog, ordered by definition hash.
+///
+/// This is the structural-equality reference the unchanged check compares
+/// against. It reads only normalized columns, and tag rows are grouped by their
+/// definition hash and appended in ordinal order so tag order round-trips
+/// exactly. An orphan tag row is treated as corrupt local state.
+fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>, AppError> {
+    let mut definitions = Vec::new();
+    let mut positions = HashMap::new();
+
+    {
+        let mut statement = connection
+            .prepare(
+                "SELECT hash, bucket_hash, name, item_type, tier, element, definition_version \
+                 FROM definitions ORDER BY hash",
+            )
+            .map_err(|_| storage_failure())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            })
+            .map_err(|_| storage_failure())?;
+
+        for row in rows {
+            let (hash, bucket_hash, name, item_type, tier, element, version) =
+                row.map_err(|_| storage_failure())?;
+            positions.insert(hash, definitions.len());
+            definitions.push(ItemDefinition {
+                hash: ItemHash::new(hash),
+                bucket_hash: bucket_hash.map(BucketHash::new),
+                name,
+                item_type,
+                tier,
+                element,
+                tags: Vec::new(),
+                version: DefinitionVersion::new(version),
+            });
+        }
+    }
+
+    {
+        let mut statement = connection
+            .prepare(
+                "SELECT definition_hash, tag FROM definition_tags \
+                 ORDER BY definition_hash, ordinal",
+            )
+            .map_err(|_| storage_failure())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|_| storage_failure())?;
+
+        for row in rows {
+            let (hash, tag) = row.map_err(|_| storage_failure())?;
+            let position = *positions.get(&hash).ok_or_else(storage_failure)?;
+            definitions[position].tags.push(tag);
+        }
+    }
+
+    Ok(definitions)
+}

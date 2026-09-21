@@ -868,27 +868,28 @@ fn storage_failure_helper_is_sanitized() {
     );
 }
 
-/// Scope guard: this slice establishes storage and migrations only, so the
-/// module must not define repository behavior. The test inspects its own
-/// authored sources because a negative trait-impl assertion is not expressible
-/// without specialization or a new dependency.
+/// Migration-layer guard: the migration module is a pure schema and version
+/// authority and must stay free of repository behavior. Repository
+/// implementations live in sibling modules, so this guard inspects only
+/// `migrations.rs`. The negative assertion is expressed against its own authored
+/// source because it cannot be written as a trait-impl check without
+/// specialization or a new dependency.
 #[test]
-fn sqlite_module_defines_no_repository_implementation() {
-    for source in [include_str!("mod.rs"), include_str!("migrations.rs")] {
-        for marker in [
-            "impl DefinitionRepository",
-            "impl InventoryRepository",
-            "DefinitionRepository for",
-            "InventoryRepository for",
-            "fn replace_definitions",
-            "fn replace_current",
-            "fn lookup_definition",
-            "fn load_current",
-        ] {
-            assert!(
-                !source.contains(marker),
-                "unexpected repository surface in this slice: {marker}"
-            );
-        }
+fn migrations_module_remains_schema_only() {
+    let source = include_str!("migrations.rs");
+    for marker in [
+        "impl DefinitionRepository",
+        "impl InventoryRepository",
+        "DefinitionRepository for",
+        "InventoryRepository for",
+        "fn replace_definitions",
+        "fn replace_current",
+        "fn lookup_definition",
+        "fn load_current",
+    ] {
+        assert!(
+            !source.contains(marker),
+            "unexpected repository surface in the migration layer: {marker}"
+        );
     }
 }

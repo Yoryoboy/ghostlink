@@ -21,11 +21,14 @@
 //!
 //! Opening a database migrates it to [`LATEST_SCHEMA_VERSION`]. A database whose
 //! `PRAGMA user_version` is newer than this build fails closed instead of
-//! degrading silently. This slice establishes storage, connection policy, and
-//! migrations only; repositories arrive in later slices.
+//! degrading silently. Repository modules in this tree share the connection and
+//! own their own transactions; the definition repository is the first of them.
 
+mod definitions;
 mod migrations;
 
+#[cfg(test)]
+mod definition_tests;
 #[cfg(test)]
 mod tests;
 
@@ -133,4 +136,29 @@ impl SqliteStore {
 /// The single sanitized category every SQLite failure maps to.
 pub(crate) fn storage_failure() -> AppError {
     AppError::new(ErrorCategory::LocalStorage)
+}
+
+/// Encodes a `u64` as the canonical, unpadded decimal text the schema stores.
+///
+/// Canonical text is the only representation the canonical decimal `CHECK`
+/// constraints accept and the only one [`parse_decimal`] round-trips, so this is
+/// the single encoding used for stored `u64` values such as revisions and
+/// freshness timestamps.
+pub(crate) fn encode_decimal(value: u64) -> String {
+    value.to_string()
+}
+
+/// Parses canonical unsigned decimal text into a `u64`, range-checked.
+///
+/// Empty, non-digit, leading-zero, and out-of-range text is rejected as a
+/// sanitized local-storage failure, so a malformed stored value can never be
+/// reinterpreted as a valid revision or timestamp.
+pub(crate) fn parse_decimal(raw: &str) -> Result<u64, AppError> {
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(storage_failure());
+    }
+    if raw.len() > 1 && raw.starts_with('0') {
+        return Err(storage_failure());
+    }
+    raw.parse::<u64>().map_err(|_| storage_failure())
 }

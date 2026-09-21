@@ -1063,6 +1063,34 @@ mod tests {
     }
 
     #[test]
+    fn definition_revision_ignores_definition_order_but_not_tag_order() {
+        let mut alpha = item_definition(7, "Alpha", "manifest-v1");
+        alpha.tags = vec!["first".to_owned(), "second".to_owned()];
+        let beta = item_definition(8, "Beta", "manifest-v1");
+
+        let mut repository = InMemoryDefinitionRepository::default();
+        let base = replacement("manifest-v1", vec![alpha.clone(), beta.clone()]);
+        let first = repository.replace_definitions(base).unwrap();
+        assert_eq!(first.revision.value(), 1);
+
+        // A pure permutation of the complete set retains the revision: the port
+        // publishes a set and the durable schema stores no definition ordinal,
+        // so definition order is not content identity.
+        let permuted = replacement("manifest-v1", vec![beta.clone(), alpha.clone()]);
+        let retained = repository.replace_definitions(permuted).unwrap();
+        assert_eq!(retained.revision.value(), 1);
+
+        // Each record is compared in full, so tag order inside a record remains
+        // identity and advancing the revision exactly once.
+        let mut retagged = alpha;
+        retagged.tags = vec!["second".to_owned(), "first".to_owned()];
+        let advanced = repository
+            .replace_definitions(replacement("manifest-v1", vec![retagged, beta]))
+            .unwrap();
+        assert_eq!(advanced.revision.value(), 2);
+    }
+
+    #[test]
     fn definition_publication_retains_revision_and_refreshes_checked_at() {
         let mut repository = InMemoryDefinitionRepository::default();
         let base = replacement(

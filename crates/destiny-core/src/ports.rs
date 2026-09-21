@@ -145,8 +145,10 @@ pub struct ManifestDefinitions {
 /// freshness and provenance markers the repository commits atomically. The
 /// application service sets the Manifest source itself; a repository rejects a
 /// dataset whose source marker does not match. Revision identity is the
-/// normalized definition content alone; `checked_at` is committed freshness
-/// metadata that never advances a revision by itself.
+/// normalized definition content alone — an unordered complete set with each
+/// record compared in full; `checked_at` is committed freshness metadata that
+/// never advances a revision by itself, and tag order remains part of identity
+/// through each record's ordered `tags` vector.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DefinitionReplacementInput {
     pub definitions: ManifestDefinitions,
@@ -158,9 +160,24 @@ impl DefinitionReplacementInput {
     /// Compares the normalized projection content that determines revision identity.
     ///
     /// `checked_at` and `source` are deliberately excluded for the same reason as
-    /// [`InventorySnapshotInput::content_eq`].
+    /// [`InventorySnapshotInput::content_eq`]. The definition set is compared as
+    /// a set: both sides must carry the exact same version and the same complete
+    /// records, but a pure permutation of definitions is not a content change,
+    /// because the port publishes a complete set and the durable schema stores
+    /// no definition ordinal. Each [`ItemDefinition`] is compared in full, so
+    /// tag order inside a record remains part of identity through its ordered
+    /// `tags` vector.
     pub fn content_eq(&self, other: &Self) -> bool {
-        self.definitions == other.definitions
+        let left = &self.definitions;
+        let right = &other.definitions;
+        if left.version != right.version || left.definitions.len() != right.definitions.len() {
+            return false;
+        }
+        let mut left: Vec<&ItemDefinition> = left.definitions.iter().collect();
+        let mut right: Vec<&ItemDefinition> = right.definitions.iter().collect();
+        left.sort_by_key(|definition| definition.hash);
+        right.sort_by_key(|definition| definition.hash);
+        left == right
     }
 }
 
