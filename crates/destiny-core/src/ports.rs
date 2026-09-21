@@ -1,5 +1,6 @@
 //! Minimal provider-neutral behavioral ports.
 
+use crate::auth::{AccessCredential, AuthorizationCallback, AuthorizationCode, AuthorizationState};
 use crate::domain::{Character, InventorySnapshot, ItemDefinition, ItemInstance};
 use crate::error::AppError;
 use crate::ids::{DefinitionVersion, ItemHash, MembershipId, MembershipType, PlanId};
@@ -12,6 +13,31 @@ pub trait Clock {
 }
 
 /// Supplies opaque plan identifiers without prescribing an ID algorithm.
+/// Generates unpredictable, opaque authorization state values.
+pub trait SecureRandom {
+    fn generate_state(&mut self) -> Result<AuthorizationState, AppError>;
+}
+
+/// A provider-neutral request to begin browser authorization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorizationRequest {
+    pub state: AuthorizationState,
+    pub expires_at: Timestamp,
+}
+
+pub trait BrowserAuthorization {
+    fn open(&mut self, request: AuthorizationRequest) -> Result<(), AppError>;
+}
+
+pub trait CallbackReceiver {
+    fn receive(&mut self) -> Result<AuthorizationCallback, AppError>;
+}
+
+/// Exchanges a code for public-client access material; no refresh or secret API exists here.
+pub trait PublicTokenExchange {
+    fn exchange(&mut self, code: AuthorizationCode) -> Result<AccessCredential, AppError>;
+}
+
 pub trait PlanIdGenerator {
     fn next_plan_id(&mut self) -> Result<PlanId, AppError>;
 }

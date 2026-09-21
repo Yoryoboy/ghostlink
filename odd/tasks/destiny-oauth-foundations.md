@@ -54,11 +54,11 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
 
 ## Tasks
 
-- [ ] **DOF-001 — Establish evidence, feature boundary, and UX contract**
-  - Route: parent research/tracking and delegated read-only mapping.
-  - Outcome: record current official evidence, desktop/headless behavior, OS-store scope, exclusions, and slices.
-  - Check: source traceability, clean branch, tracker mirror/readback.
-  - Evidence: pending.
+- [x] **DOF-001 — Establish evidence, feature boundary, and UX contract**
+  - Route: parent primary-source research and tracking.
+  - Outcome: recorded current official evidence, desktop/headless behavior, OS-store scope, exclusions, and six bounded slices.
+  - Check: direct official-source fetch succeeded; unsupported-flow absence remains explicitly bounded to the official page; tracker and branch were clean after commit.
+  - Evidence: commit `1760aff` (`chore: start Destiny OAuth foundations`).
 
 - [ ] **DOF-002 — Implement authorization state machine and boundaries**
   - Route: delegated multi-file implementation.
@@ -106,7 +106,8 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
 - WU-002 completed at `d477e4d`.
 - Official Bungie documentation was fetched directly; generic web search was unavailable, so absence claims are limited to the official page and prior evidence register.
 - User selected URL plus SSH tunnel guidance for headless mode and multiplatform native credential storage.
+- DOF-001 established the feature boundary and evidence-backed UX contract in `1760aff`.
 
 ## Next step
 
-Commit DOF-001, then map current crate APIs and implement DOF-002.
+Implement DOF-002 authorization state machine and behavioral boundaries.

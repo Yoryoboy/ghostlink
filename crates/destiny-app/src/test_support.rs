@@ -4,12 +4,79 @@
 //! perform network, filesystem, serialization, or credential-provider work.
 
 use destiny_core::{
-    AppError, Clock, CredentialMaterial, CredentialStore, DefinitionRepository, DefinitionVersion,
-    InventoryRepository, InventorySnapshot, InventorySnapshotInput, ItemDefinition, ItemHash,
-    ManifestDefinitions, ManifestGateway, PlanId, PlanIdGenerator, ProfileGateway, Resolution,
-    SnapshotMetadata, SyncRevision, Timestamp,
+    AccessCredential, AppError, AuthorizationCallback, AuthorizationState, BrowserAuthorization,
+    CallbackReceiver, Clock, CredentialMaterial, CredentialStore, DefinitionRepository,
+    DefinitionVersion, InventoryRepository, InventorySnapshot, InventorySnapshotInput,
+    ItemDefinition, ItemHash, ManifestDefinitions, ManifestGateway, PlanId, PlanIdGenerator,
+    ProfileGateway, Resolution, SnapshotMetadata, SyncRevision, Timestamp,
 };
 use std::collections::VecDeque;
+
+#[derive(Debug)]
+pub struct DeterministicRandom {
+    states: VecDeque<AuthorizationState>,
+}
+
+impl DeterministicRandom {
+    pub fn new(states: impl IntoIterator<Item = AuthorizationState>) -> Self {
+        Self {
+            states: states.into_iter().collect(),
+        }
+    }
+}
+
+impl destiny_core::SecureRandom for DeterministicRandom {
+    fn generate_state(&mut self) -> Result<AuthorizationState, AppError> {
+        self.states
+            .pop_front()
+            .ok_or_else(|| AppError::new(destiny_core::ErrorCategory::LocalStorage))
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct RecordingBrowser {
+    pub requests: Vec<destiny_core::ports::AuthorizationRequest>,
+}
+
+impl BrowserAuthorization for RecordingBrowser {
+    fn open(&mut self, request: destiny_core::ports::AuthorizationRequest) -> Result<(), AppError> {
+        self.requests.push(request);
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct QueuedCallbackReceiver {
+    pub callbacks: VecDeque<Result<AuthorizationCallback, AppError>>,
+}
+
+impl CallbackReceiver for QueuedCallbackReceiver {
+    fn receive(&mut self) -> Result<AuthorizationCallback, AppError> {
+        self.callbacks.pop_front().unwrap_or_else(|| {
+            Err(AppError::new(
+                destiny_core::ErrorCategory::ProviderUnavailable,
+            ))
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct QueuedTokenExchange {
+    pub outcomes: VecDeque<Result<AccessCredential, AppError>>,
+}
+
+impl destiny_core::PublicTokenExchange for QueuedTokenExchange {
+    fn exchange(
+        &mut self,
+        _code: destiny_core::AuthorizationCode,
+    ) -> Result<AccessCredential, AppError> {
+        self.outcomes.pop_front().unwrap_or_else(|| {
+            Err(AppError::new(
+                destiny_core::ErrorCategory::ProviderUnavailable,
+            ))
+        })
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct FakeClock {

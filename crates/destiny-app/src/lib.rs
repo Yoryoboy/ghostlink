@@ -1,10 +1,12 @@
 //! Application-facing configuration, services, and sanitized diagnostics.
 
+pub mod auth;
 mod config;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
 pub use destiny_core::{AppError, ErrorCategory};
 
 /// Reports that the application foundation is available.

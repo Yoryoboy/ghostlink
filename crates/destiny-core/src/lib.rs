@@ -1,5 +1,6 @@
 //! Provider- and transport-free domain contracts.
 
+pub mod auth;
 pub mod domain;
 pub mod error;
 pub mod ids;
@@ -7,6 +8,10 @@ pub mod mutation;
 pub mod ports;
 pub mod state;
 
+pub use auth::{
+    AccessCredential, AccessCredentialMetadata, AuthorizationCallback, AuthorizationCode,
+    AuthorizationState, CallbackResult,
+};
 pub use domain::{
     Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, SnapshotMetadata,
 };
@@ -20,8 +25,10 @@ pub use mutation::{
     evaluate_mutation,
 };
 pub use ports::{
-    Clock, CredentialMaterial, CredentialStore, DefinitionRepository, InventoryRepository,
-    InventorySnapshotInput, ManifestDefinitions, ManifestGateway, PlanIdGenerator, ProfileGateway,
+    AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,
+    CredentialStore, DefinitionRepository, InventoryRepository, InventorySnapshotInput,
+    ManifestDefinitions, ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange,
+    SecureRandom,
 };
 pub use state::{
     Dataset, FreshnessInput, FreshnessPolicy, FreshnessStatus, Resolution, RevisionAllocation,
