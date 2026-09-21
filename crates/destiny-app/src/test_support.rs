@@ -45,6 +45,20 @@ impl BrowserAuthorization for RecordingBrowser {
     }
 }
 
+#[derive(Debug)]
+pub struct FailingBrowser {
+    pub error: AppError,
+}
+
+impl BrowserAuthorization for FailingBrowser {
+    fn open(
+        &mut self,
+        _request: destiny_core::ports::AuthorizationRequest,
+    ) -> Result<(), AppError> {
+        Err(self.error)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct QueuedCallbackReceiver {
     pub callbacks: VecDeque<Result<AuthorizationCallback, AppError>>,
@@ -320,6 +334,25 @@ impl CredentialStore for InMemoryCredentialStore {
     fn delete(&mut self) -> Result<(), AppError> {
         self.material = None;
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct FailingCredentialStore {
+    pub error: AppError,
+}
+
+impl CredentialStore for FailingCredentialStore {
+    fn save(&mut self, _material: CredentialMaterial) -> Result<(), AppError> {
+        Err(self.error)
+    }
+
+    fn load(&self) -> Result<Option<CredentialMaterial>, AppError> {
+        Err(self.error)
+    }
+
+    fn delete(&mut self) -> Result<(), AppError> {
+        Err(self.error)
     }
 }
 

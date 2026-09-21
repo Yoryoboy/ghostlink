@@ -7,6 +7,8 @@ use std::fmt;
 pub enum ErrorCategory {
     AuthorizationRequired,
     ReauthorizationRequired,
+    AlreadyAuthorizing,
+    AlreadyAuthorized,
     AuthorizationDenied,
     CsrfStateMismatch,
     CredentialStoreUnavailable,
@@ -50,6 +52,8 @@ impl fmt::Display for AppError {
         let message = match self.category {
             ErrorCategory::AuthorizationRequired => "authorization is required",
             ErrorCategory::ReauthorizationRequired => "reauthorization is required",
+            ErrorCategory::AlreadyAuthorizing => "authorization is already in progress",
+            ErrorCategory::AlreadyAuthorized => "authorization is already active",
             ErrorCategory::AuthorizationDenied => "authorization was denied",
             ErrorCategory::CsrfStateMismatch => "authorization state was rejected",
             ErrorCategory::CredentialStoreUnavailable => "credential storage is unavailable",
