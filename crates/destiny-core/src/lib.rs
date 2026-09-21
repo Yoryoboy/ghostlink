@@ -14,6 +14,7 @@ pub use auth::{
 };
 pub use domain::{
     Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, SnapshotMetadata,
+    SyncMetadata,
 };
 pub use error::{AppError, ErrorCategory};
 pub use ids::{
@@ -26,9 +27,9 @@ pub use mutation::{
 };
 pub use ports::{
     AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,
-    CredentialStore, DefinitionRepository, InventoryRepository, InventorySnapshotInput,
-    ManifestAcquisition, ManifestDefinitionCandidate, ManifestDefinitions, ManifestGateway,
-    PlanIdGenerator, ProfileGateway, PublicTokenExchange, SecureRandom,
+    CredentialStore, DefinitionReplacementInput, DefinitionRepository, InventoryRepository,
+    InventorySnapshotInput, ManifestAcquisition, ManifestDefinitionCandidate, ManifestDefinitions,
+    ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange, SecureRandom,
 };
 pub use state::{
     Dataset, FreshnessInput, FreshnessPolicy, FreshnessStatus, Resolution, RevisionAllocation,

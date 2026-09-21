@@ -5,11 +5,12 @@
 
 use destiny_core::{
     AccessCredential, AppError, AuthorizationCallback, AuthorizationState, BrowserAuthorization,
-    CallbackReceiver, Clock, CredentialMaterial, CredentialStore, DefinitionRepository,
-    DefinitionVersion, ErrorCategory, InventoryRepository, InventorySnapshot,
-    InventorySnapshotInput, ItemDefinition, ItemHash, ManifestAcquisition, ManifestDefinitions,
-    ManifestGateway, PlanId, PlanIdGenerator, ProfileGateway, Resolution, SnapshotMetadata,
-    SyncRevision, Timestamp,
+    CallbackReceiver, Clock, CredentialMaterial, CredentialStore, Dataset,
+    DefinitionReplacementInput, DefinitionRepository, DefinitionVersion, ErrorCategory,
+    InventoryRepository, InventorySnapshot, InventorySnapshotInput, ItemDefinition, ItemHash,
+    ManifestAcquisition, ManifestDefinitions, ManifestGateway, PlanId, PlanIdGenerator,
+    ProfileGateway, Resolution, SnapshotMetadata, SourceMarker, SyncMetadata, SyncRevision,
+    Timestamp,
 };
 use std::collections::{HashSet, VecDeque};
 
@@ -149,6 +150,8 @@ impl PlanIdGenerator for DeterministicPlanIds {
 pub struct InMemoryDefinitionRepository {
     version: Option<DefinitionVersion>,
     definitions: Vec<ItemDefinition>,
+    metadata: Option<SyncMetadata>,
+    previous_input: Option<DefinitionReplacementInput>,
     publication_failure: Option<AppError>,
     publication_attempts: usize,
 }
@@ -158,7 +161,8 @@ impl InMemoryDefinitionRepository {
     ///
     /// This bypasses publication validation on purpose so lookup behavior such
     /// as ambiguous matches stays directly testable. Publication always
-    /// validates the complete set before mutating state.
+    /// validates the complete set before mutating state, and the seeded state
+    /// carries no committed metadata until the first successful publication.
     pub fn new(version: DefinitionVersion, definitions: Vec<ItemDefinition>) -> Self {
         Self {
             version: Some(version),
@@ -171,6 +175,27 @@ impl InMemoryDefinitionRepository {
     pub fn with_publication_failure(mut self, error: AppError) -> Self {
         self.publication_failure = Some(error);
         self
+    }
+
+    /// Constructs a committed overflow boundary state for repository contract tests.
+    pub fn with_revision_for_test(
+        replacement: DefinitionReplacementInput,
+        revision: SyncRevision,
+    ) -> Self {
+        let metadata = SyncMetadata {
+            dataset: Dataset::ManifestDefinitions,
+            checked_at: replacement.checked_at,
+            source: replacement.source,
+            revision,
+            definition_version: replacement.definitions.version.clone(),
+        };
+        Self {
+            version: Some(replacement.definitions.version.clone()),
+            definitions: replacement.definitions.definitions.clone(),
+            metadata: Some(metadata),
+            previous_input: Some(replacement),
+            ..Self::default()
+        }
     }
 
     /// Counts publication attempts, including rejected ones.
@@ -219,15 +244,57 @@ impl DefinitionRepository for InMemoryDefinitionRepository {
         })
     }
 
-    fn replace_definitions(&mut self, definitions: ManifestDefinitions) -> Result<(), AppError> {
+    fn current_metadata(&self) -> Result<Option<SyncMetadata>, AppError> {
+        Ok(self.metadata.clone())
+    }
+
+    fn replace_definitions(
+        &mut self,
+        replacement: DefinitionReplacementInput,
+    ) -> Result<SyncMetadata, AppError> {
         self.publication_attempts += 1;
         if let Some(error) = self.publication_failure {
             return Err(error);
         }
-        Self::validate_publication(&definitions)?;
-        self.version = Some(definitions.version);
-        self.definitions = definitions.definitions;
-        Ok(())
+        if replacement.source != SourceMarker::Manifest {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        Self::validate_publication(&replacement.definitions)?;
+
+        // Revision identity is the normalized definition content alone. A later
+        // `checked_at` refreshes committed metadata but never advances the
+        // revision; a fingerprint would collide, so content equality is the only
+        // retention authority here.
+        let revision = match self.previous_input.as_ref() {
+            Some(previous) if previous.content_eq(&replacement) => self
+                .metadata
+                .as_ref()
+                .map(|metadata| metadata.revision)
+                .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))?,
+            _ => match self.metadata.as_ref() {
+                Some(metadata) => SyncRevision::new(
+                    metadata
+                        .revision
+                        .value()
+                        .checked_add(1)
+                        .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))?,
+                ),
+                None => SyncRevision::new(1),
+            },
+        };
+
+        let metadata = SyncMetadata {
+            dataset: Dataset::ManifestDefinitions,
+            checked_at: replacement.checked_at,
+            source: replacement.source,
+            revision,
+            definition_version: replacement.definitions.version.clone(),
+        };
+        self.version = Some(replacement.definitions.version.clone());
+        self.definitions = replacement.definitions.definitions.clone();
+        self.metadata = Some(metadata.clone());
+        self.previous_input = Some(replacement);
+        Ok(metadata)
     }
 }
 
@@ -250,6 +317,8 @@ impl InMemoryInventoryRepository {
                 membership_type: input.membership_type,
                 revision,
                 definition_version: input.definition_version.clone(),
+                checked_at: input.checked_at,
+                source: input.source,
             },
             characters: input.characters.clone(),
             items: input.items.clone(),
@@ -258,6 +327,11 @@ impl InMemoryInventoryRepository {
             current: Some(snapshot),
             previous_input: Some(input),
         }
+    }
+
+    /// Exposes the committed snapshot metadata, if any, without cloning the projection.
+    pub fn snapshot_metadata(&self) -> Result<Option<SnapshotMetadata>, AppError> {
+        Ok(self.load_current()?.map(|snapshot| snapshot.metadata))
     }
 }
 
@@ -270,8 +344,18 @@ impl InventoryRepository for InMemoryInventoryRepository {
         &mut self,
         input: InventorySnapshotInput,
     ) -> Result<InventorySnapshot, AppError> {
+        // Provenance is validated before any mutation so a mismatched source
+        // leaves the prior projection fully readable.
+        if input.source != SourceMarker::Profile {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        // Revision identity is the normalized projection content: freshness
+        // metadata (`checked_at`, `source`) never advances a revision, but every
+        // successful replacement commits the new `checked_at`.
         let revision = match (self.current.as_ref(), self.previous_input.as_ref()) {
-            (Some(current), Some(previous)) if previous == &input => current.metadata.revision,
+            (Some(current), Some(previous)) if previous.content_eq(&input) => {
+                current.metadata.revision
+            }
             (Some(current), _) => SyncRevision::new(
                 current
                     .metadata
@@ -288,6 +372,8 @@ impl InventoryRepository for InMemoryInventoryRepository {
                 membership_type: input.membership_type,
                 revision,
                 definition_version: input.definition_version,
+                checked_at: input.checked_at,
+                source: input.source,
             },
             characters: input.characters,
             items: input.items,
@@ -420,6 +506,8 @@ mod tests {
             membership_id: MembershipId::new("membership"),
             membership_type: MembershipType::new(1),
             definition_version: DefinitionVersion::new("definitions-v1"),
+            checked_at: Timestamp::new(200),
+            source: SourceMarker::Profile,
             characters: Vec::<Character>::new(),
             items: vec![ItemInstance {
                 instance_id: "instance".into(),
@@ -450,6 +538,14 @@ mod tests {
         ManifestDefinitions {
             version: DefinitionVersion::new(version),
             definitions,
+        }
+    }
+
+    fn replacement(version: &str, definitions: Vec<ItemDefinition>) -> DefinitionReplacementInput {
+        DefinitionReplacementInput {
+            definitions: definition_set(version, definitions),
+            checked_at: Timestamp::new(200),
+            source: SourceMarker::Manifest,
         }
     }
 
@@ -499,6 +595,8 @@ mod tests {
             membership_id: MembershipId::new("membership"),
             membership_type: MembershipType::new(1),
             definition_version: DefinitionVersion::new("definitions-v1"),
+            checked_at: Timestamp::new(200),
+            source: SourceMarker::Profile,
             characters: vec![
                 Character {
                     id: "character-1".into(),
@@ -621,6 +719,47 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_content_with_later_checked_at_retains_revision_and_refreshes_metadata() {
+        let mut repo = InMemoryInventoryRepository::new();
+        let first = repo.replace_current(input(1)).unwrap();
+        assert_eq!(first.metadata.revision.value(), 1);
+        assert_eq!(first.metadata.checked_at, Timestamp::new(200));
+
+        let mut refreshed = input(1);
+        refreshed.checked_at = Timestamp::new(9_000);
+        let second = repo.replace_current(refreshed).unwrap();
+
+        assert_eq!(second.metadata.revision.value(), 1);
+        assert_eq!(second.metadata.checked_at, Timestamp::new(9_000));
+        assert_eq!(second.metadata.source, SourceMarker::Profile);
+        assert_eq!(repo.snapshot_metadata().unwrap(), Some(second.metadata));
+    }
+
+    #[test]
+    fn inventory_overflow_requires_a_content_change() {
+        let original = input(1);
+        let mut repo = InMemoryInventoryRepository::with_revision_for_test(
+            original.clone(),
+            SyncRevision::new(u64::MAX),
+        );
+
+        // An unchanged refresh at a later timestamp must not overflow; it
+        // retains the revision and refreshes the committed timestamp.
+        let mut refreshed = original.clone();
+        refreshed.checked_at = Timestamp::new(9_000);
+        let retained = repo.replace_current(refreshed).unwrap();
+        assert_eq!(retained.metadata.revision.value(), u64::MAX);
+        assert_eq!(retained.metadata.checked_at, Timestamp::new(9_000));
+
+        // A genuine content change at the boundary fails atomically.
+        assert_eq!(
+            repo.replace_current(input(2)),
+            Err(AppError::new(ErrorCategory::LocalStorage))
+        );
+        assert_eq!(repo.load_current().unwrap().unwrap(), retained);
+    }
+
+    #[test]
     fn revision_overflow_is_atomic() {
         let original = input(1);
         let mut repo = InMemoryInventoryRepository::with_revision_for_test(
@@ -649,6 +788,23 @@ mod tests {
                 .value(),
             u64::MAX
         );
+    }
+
+    #[test]
+    fn invalid_source_is_rejected_and_preserves_the_prior_snapshot() {
+        let mut repo = InMemoryInventoryRepository::new();
+        let snapshot = repo.replace_current(input(1)).unwrap();
+        let metadata = snapshot.metadata.clone();
+
+        let mut mismatched = input(2);
+        mismatched.source = SourceMarker::Manifest;
+        assert_eq!(
+            repo.replace_current(mismatched),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+
+        assert_eq!(repo.load_current().unwrap(), Some(snapshot));
+        assert_eq!(repo.snapshot_metadata().unwrap(), Some(metadata));
     }
 
     #[test]
@@ -786,7 +942,7 @@ mod tests {
         assert_eq!(repository.definition_count(), 0);
 
         repository
-            .replace_definitions(definition_set(
+            .replace_definitions(replacement(
                 "manifest-v1",
                 vec![
                     item_definition(7, "Alpha", "manifest-v1"),
@@ -799,9 +955,18 @@ mod tests {
             "manifest-v1"
         );
         assert_eq!(repository.definition_count(), 2);
+        assert_eq!(
+            repository
+                .current_metadata()
+                .unwrap()
+                .unwrap()
+                .revision
+                .value(),
+            1
+        );
 
         repository
-            .replace_definitions(definition_set(
+            .replace_definitions(replacement(
                 "manifest-v2",
                 vec![item_definition(9, "Gamma", "manifest-v2")],
             ))
@@ -824,12 +989,17 @@ mod tests {
             Resolution::Unique(item_definition(9, "Gamma", "manifest-v2"))
         );
         assert_eq!(repository.publication_attempts(), 2);
+        let metadata = repository.current_metadata().unwrap().unwrap();
+        assert_eq!(metadata.dataset, Dataset::ManifestDefinitions);
+        assert_eq!(metadata.source, SourceMarker::Manifest);
+        assert_eq!(metadata.checked_at, Timestamp::new(200));
+        assert_eq!(metadata.revision.value(), 2);
     }
 
     #[test]
     fn definition_publication_is_idempotent_for_an_equal_normalized_set() {
         let mut repository = InMemoryDefinitionRepository::default();
-        let set = definition_set(
+        let input = replacement(
             "manifest-v1",
             vec![
                 item_definition(7, "Alpha", "manifest-v1"),
@@ -837,13 +1007,15 @@ mod tests {
             ],
         );
 
-        repository.replace_definitions(set.clone()).unwrap();
+        let first = repository.replace_definitions(input.clone()).unwrap();
         let version = repository.current_definition_version().unwrap();
         let alpha = repository.lookup_definition(ItemHash::new(7)).unwrap();
         let beta = repository.lookup_definition(ItemHash::new(8)).unwrap();
 
-        repository.replace_definitions(set).unwrap();
+        let second = repository.replace_definitions(input).unwrap();
 
+        assert_eq!(first, second);
+        assert_eq!(first.revision.value(), 1);
         assert_eq!(repository.current_definition_version().unwrap(), version);
         assert_eq!(
             repository.lookup_definition(ItemHash::new(7)).unwrap(),
@@ -860,13 +1032,142 @@ mod tests {
     }
 
     #[test]
+    fn definition_publication_advances_on_normalized_content_change() {
+        let base = replacement(
+            "manifest-v1",
+            vec![item_definition(7, "Alpha", "manifest-v1")],
+        );
+
+        let mut content_changed = base.clone();
+        content_changed.definitions.definitions[0].name = "Alpha Changed".into();
+
+        let mut version_changed = base.clone();
+        version_changed.definitions = definition_set(
+            "manifest-v2",
+            vec![item_definition(7, "Alpha", "manifest-v2")],
+        );
+
+        for (label, changed) in [("content", content_changed), ("version", version_changed)] {
+            let mut repository = InMemoryDefinitionRepository::default();
+            repository.replace_definitions(base.clone()).unwrap();
+
+            let metadata = repository.replace_definitions(changed).unwrap();
+
+            assert_eq!(
+                metadata.revision.value(),
+                2,
+                "changing {label} must advance"
+            );
+            assert_eq!(repository.publication_attempts(), 2);
+        }
+    }
+
+    #[test]
+    fn definition_publication_retains_revision_and_refreshes_checked_at() {
+        let mut repository = InMemoryDefinitionRepository::default();
+        let base = replacement(
+            "manifest-v1",
+            vec![item_definition(7, "Alpha", "manifest-v1")],
+        );
+        let first = repository.replace_definitions(base.clone()).unwrap();
+        assert_eq!(first.revision.value(), 1);
+        assert_eq!(first.checked_at, Timestamp::new(200));
+
+        let mut refreshed = base;
+        refreshed.checked_at = Timestamp::new(9_000);
+        let second = repository.replace_definitions(refreshed).unwrap();
+
+        assert_eq!(second.revision.value(), 1);
+        assert_eq!(second.checked_at, Timestamp::new(9_000));
+        assert_eq!(second.source, SourceMarker::Manifest);
+        assert_eq!(repository.current_metadata().unwrap(), Some(second));
+        assert_eq!(repository.publication_attempts(), 2);
+    }
+
+    #[test]
+    fn definition_publication_rejects_invalid_source_and_preserves_metadata() {
+        let mut repository = InMemoryDefinitionRepository::default();
+        let committed = repository
+            .replace_definitions(replacement(
+                "manifest-v1",
+                vec![item_definition(7, "Alpha", "manifest-v1")],
+            ))
+            .unwrap();
+
+        let mut mismatched = replacement(
+            "manifest-v2",
+            vec![item_definition(9, "Gamma", "manifest-v2")],
+        );
+        mismatched.source = SourceMarker::Profile;
+
+        assert_eq!(
+            repository.replace_definitions(mismatched),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+
+        assert_eq!(repository.current_metadata().unwrap(), Some(committed));
+        assert_eq!(
+            repository.current_definition_version().unwrap().as_str(),
+            "manifest-v1"
+        );
+        assert_eq!(repository.definition_count(), 1);
+        assert_eq!(
+            repository.lookup_definition(ItemHash::new(9)).unwrap(),
+            Resolution::Missing
+        );
+        assert_eq!(repository.publication_attempts(), 2);
+    }
+
+    #[test]
+    fn definition_publication_overflow_is_atomic() {
+        let original = replacement(
+            "manifest-v1",
+            vec![item_definition(7, "Alpha", "manifest-v1")],
+        );
+        let mut repository = InMemoryDefinitionRepository::with_revision_for_test(
+            original.clone(),
+            SyncRevision::new(u64::MAX),
+        );
+
+        // An unchanged refresh at the boundary retains the revision and refreshes
+        // the committed timestamp rather than overflowing.
+        let mut refreshed = original.clone();
+        refreshed.checked_at = Timestamp::new(9_000);
+        let retained = repository.replace_definitions(refreshed).unwrap();
+        assert_eq!(retained.revision.value(), u64::MAX);
+        assert_eq!(retained.checked_at, Timestamp::new(9_000));
+
+        let changed = replacement(
+            "manifest-v2",
+            vec![item_definition(9, "Gamma", "manifest-v2")],
+        );
+        assert_eq!(
+            repository.replace_definitions(changed),
+            Err(AppError::new(ErrorCategory::LocalStorage))
+        );
+
+        let metadata = repository.current_metadata().unwrap().unwrap();
+        assert_eq!(metadata.revision.value(), u64::MAX);
+        assert_eq!(
+            repository.current_definition_version().unwrap().as_str(),
+            "manifest-v1"
+        );
+        assert_eq!(repository.definition_count(), 1);
+        assert_eq!(repository.publication_attempts(), 2);
+
+        let retained = repository.replace_definitions(original).unwrap();
+        assert_eq!(retained.revision.value(), u64::MAX);
+        assert_eq!(repository.publication_attempts(), 3);
+    }
+
+    #[test]
     fn definition_publication_rejects_duplicate_hashes_before_mutation() {
         let mut repository = InMemoryDefinitionRepository::new(
             DefinitionVersion::new("manifest-v1"),
             vec![item_definition(7, "Alpha", "manifest-v1")],
         );
 
-        let error = repository.replace_definitions(definition_set(
+        let error = repository.replace_definitions(replacement(
             "manifest-v2",
             vec![
                 item_definition(7, "Alpha", "manifest-v2"),
@@ -895,14 +1196,14 @@ mod tests {
         );
 
         let candidates = [
-            definition_set(
+            replacement(
                 "manifest-v2",
                 vec![
                     item_definition(7, "Alpha", "manifest-v2"),
                     item_definition(8, "Beta", "manifest-v1"),
                 ],
             ),
-            definition_set("manifest-v2", Vec::new()),
+            replacement("manifest-v2", Vec::new()),
         ];
 
         for candidate in candidates {
@@ -925,13 +1226,15 @@ mod tests {
 
     #[test]
     fn injected_publication_failure_preserves_prior_state() {
-        let mut repository = InMemoryDefinitionRepository::new(
-            DefinitionVersion::new("manifest-v1"),
+        let seeded = replacement(
+            "manifest-v1",
             vec![item_definition(7, "Alpha", "manifest-v1")],
-        )
-        .with_publication_failure(AppError::new(ErrorCategory::ProviderUnavailable));
+        );
+        let mut repository =
+            InMemoryDefinitionRepository::with_revision_for_test(seeded, SyncRevision::new(3))
+                .with_publication_failure(AppError::new(ErrorCategory::ProviderUnavailable));
 
-        let error = repository.replace_definitions(definition_set(
+        let error = repository.replace_definitions(replacement(
             "manifest-v2",
             vec![item_definition(9, "Gamma", "manifest-v2")],
         ));
@@ -953,6 +1256,10 @@ mod tests {
             repository.lookup_definition(ItemHash::new(9)).unwrap(),
             Resolution::Missing
         );
+        let metadata = repository.current_metadata().unwrap().unwrap();
+        assert_eq!(metadata.revision.value(), 3);
+        assert_eq!(metadata.checked_at, Timestamp::new(200));
+        assert_eq!(metadata.source, SourceMarker::Manifest);
         assert_eq!(repository.publication_attempts(), 1);
     }
 

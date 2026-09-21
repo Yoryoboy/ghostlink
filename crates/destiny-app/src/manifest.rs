@@ -5,11 +5,14 @@
 //! them into core `ItemDefinition` records, and publishes one complete
 //! `ManifestDefinitions` set through the core-owned `DefinitionRepository`. It
 //! never retains or surfaces raw payloads, upstream messages, or transport
-//! details, and it allocates no durable revision.
+//! details. The caller supplies a `checked_at` timestamp explicitly: the
+//! service sets the Manifest source marker itself and delegates durable
+//! revision allocation to the repository.
 
 use destiny_core::{
-    AppError, DefinitionRepository, DefinitionVersion, ErrorCategory, ItemDefinition,
-    ManifestAcquisition, ManifestDefinitions, ManifestGateway,
+    AppError, DefinitionReplacementInput, DefinitionRepository, DefinitionVersion, ErrorCategory,
+    ItemDefinition, ManifestAcquisition, ManifestDefinitions, ManifestGateway, SourceMarker,
+    SyncRevision, Timestamp,
 };
 use std::collections::HashSet;
 
@@ -37,11 +40,13 @@ pub const MAX_TAG_LENGTH: usize = 64;
 ///
 /// The service returns this instead of the full definition set so a successful
 /// publication never clones the complete catalog. Callers read the published
-/// definitions back through the repository.
+/// definitions back through the repository. The committed `revision` comes from
+/// the repository, which owns retention and advancement.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PublicationOutcome {
     pub version: DefinitionVersion,
     pub definition_count: usize,
+    pub revision: SyncRevision,
 }
 
 /// Acquires, validates, normalizes, and atomically publishes Manifest definitions.
@@ -78,18 +83,32 @@ where
 
     /// Acquires one candidate batch and publishes its normalized complete set.
     ///
-    /// Returns a minimal [`PublicationOutcome`] rather than the full set, so the
-    /// complete catalog is never cloned during publication. A gateway failure or
-    /// any validation failure returns a sanitized [`AppError`] and performs no
-    /// repository mutation.
-    pub fn acquire_and_publish(&mut self) -> Result<PublicationOutcome, AppError> {
+    /// The caller supplies the explicit `checked_at` timestamp; the service
+    /// never reads an ambient clock. It sets the Manifest source marker and
+    /// publishes through [`DefinitionReplacementInput`]. Returns a minimal
+    /// [`PublicationOutcome`] carrying the committed revision rather than the
+    /// full set, so the complete catalog is never cloned during publication. A
+    /// gateway failure or any validation failure returns a sanitized
+    /// [`AppError`] and performs no repository mutation.
+    pub fn acquire_and_publish(
+        &mut self,
+        checked_at: Timestamp,
+    ) -> Result<PublicationOutcome, AppError> {
         let definitions = normalize_manifest(self.gateway.load_definitions()?)?;
-        let outcome = PublicationOutcome {
-            version: definitions.version.clone(),
-            definition_count: definitions.definitions.len(),
-        };
-        self.repository.replace_definitions(definitions)?;
-        Ok(outcome)
+        let version = definitions.version.clone();
+        let definition_count = definitions.definitions.len();
+        let metadata = self
+            .repository
+            .replace_definitions(DefinitionReplacementInput {
+                definitions,
+                checked_at,
+                source: SourceMarker::Manifest,
+            })?;
+        Ok(PublicationOutcome {
+            version,
+            definition_count,
+            revision: metadata.revision,
+        })
     }
 }
 
@@ -583,9 +602,11 @@ mod tests {
         use crate::manifest::ManifestService;
         use crate::test_support::{InMemoryDefinitionRepository, QueuedManifestGateway};
         use destiny_core::{
-            AppError, DefinitionRepository, DefinitionVersion, ErrorCategory, ItemDefinition,
-            ItemHash, ManifestAcquisition, Resolution,
+            AppError, Dataset, DefinitionRepository, DefinitionVersion, ErrorCategory,
+            ItemDefinition, ItemHash, ManifestAcquisition, Resolution, SourceMarker, Timestamp,
         };
+
+        const CHECKED_AT: Timestamp = Timestamp::new(1_000);
 
         fn item_definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
             ItemDefinition {
@@ -640,10 +661,11 @@ mod tests {
                 InMemoryDefinitionRepository::default(),
             );
 
-            let outcome = service.acquire_and_publish().unwrap();
+            let outcome = service.acquire_and_publish(CHECKED_AT).unwrap();
 
             assert_eq!(outcome.version.as_str(), VERSION);
             assert_eq!(outcome.definition_count, 2);
+            assert_eq!(outcome.revision.value(), 1);
 
             let repository = service.repository();
             assert_eq!(
@@ -652,6 +674,12 @@ mod tests {
             );
             assert_eq!(repository.definition_count(), 2);
             assert_eq!(repository.publication_attempts(), 1);
+            let metadata = repository.current_metadata().unwrap().unwrap();
+            assert_eq!(metadata.dataset, Dataset::ManifestDefinitions);
+            assert_eq!(metadata.source, SourceMarker::Manifest);
+            assert_eq!(metadata.checked_at, CHECKED_AT);
+            assert_eq!(metadata.revision, outcome.revision);
+            assert_eq!(metadata.definition_version.as_str(), VERSION);
             assert_eq!(
                 repository.lookup_definition(ItemHash::new(3)).unwrap(),
                 Resolution::Unique(item_definition(3, "Ri fle", VERSION))
@@ -674,17 +702,44 @@ mod tests {
                 InMemoryDefinitionRepository::default(),
             );
 
-            let first = service.acquire_and_publish().unwrap();
+            let first = service.acquire_and_publish(CHECKED_AT).unwrap();
             let version = service.repository().current_definition_version().unwrap();
-            let second = service.acquire_and_publish().unwrap();
+            let later = Timestamp::new(CHECKED_AT.seconds() + 1);
+            let second = service.acquire_and_publish(later).unwrap();
 
+            // An identical refresh at a later timestamp is idempotent: the
+            // revision is retained, so the minimal outcome is unchanged.
             assert_eq!(first, second);
+            assert_eq!(first.revision.value(), 1);
             assert_eq!(
                 service.repository().current_definition_version().unwrap(),
                 version
             );
             assert_eq!(service.repository().definition_count(), 2);
             assert_eq!(service.repository().publication_attempts(), 2);
+            let metadata = service.repository().current_metadata().unwrap().unwrap();
+            assert_eq!(metadata.revision.value(), 1);
+            assert_eq!(metadata.checked_at, later);
+        }
+
+        #[test]
+        fn changed_checked_at_retains_revision_and_refreshes_metadata() {
+            let batch = acquisition(VERSION, vec![candidate(1, "Alpha")]);
+            let mut service = queued_service(
+                [Ok(batch.clone()), Ok(batch)],
+                InMemoryDefinitionRepository::default(),
+            );
+
+            let first = service.acquire_and_publish(CHECKED_AT).unwrap();
+            let later = Timestamp::new(CHECKED_AT.seconds() + 1);
+            let second = service.acquire_and_publish(later).unwrap();
+
+            assert_eq!(first.revision.value(), 1);
+            assert_eq!(second.revision.value(), 1);
+            let metadata = service.repository().current_metadata().unwrap().unwrap();
+            assert_eq!(metadata.checked_at, later);
+            assert_eq!(metadata.revision, second.revision);
+            assert_eq!(metadata.source, SourceMarker::Manifest);
         }
 
         #[test]
@@ -695,7 +750,10 @@ mod tests {
             );
 
             assert_eq!(
-                service.acquire_and_publish().unwrap_err().category(),
+                service
+                    .acquire_and_publish(CHECKED_AT)
+                    .unwrap_err()
+                    .category(),
                 ErrorCategory::ProviderUnavailable
             );
             assert_eq!(service.repository().publication_attempts(), 0);
@@ -712,7 +770,10 @@ mod tests {
             );
 
             assert_eq!(
-                service.acquire_and_publish().unwrap_err().category(),
+                service
+                    .acquire_and_publish(CHECKED_AT)
+                    .unwrap_err()
+                    .category(),
                 ErrorCategory::ProviderUnavailable
             );
             assert_eq!(service.repository().publication_attempts(), 1);

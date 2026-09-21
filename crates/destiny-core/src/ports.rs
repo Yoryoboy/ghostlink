@@ -1,10 +1,10 @@
 //! Minimal provider-neutral behavioral ports.
 
 use crate::auth::{AccessCredential, AuthorizationCallback, AuthorizationCode, AuthorizationState};
-use crate::domain::{Character, InventorySnapshot, ItemDefinition, ItemInstance};
+use crate::domain::{Character, InventorySnapshot, ItemDefinition, ItemInstance, SyncMetadata};
 use crate::error::AppError;
 use crate::ids::{BucketHash, DefinitionVersion, ItemHash, MembershipId, MembershipType, PlanId};
-use crate::state::{Resolution, Timestamp};
+use crate::state::{Resolution, SourceMarker, Timestamp};
 use std::fmt;
 
 /// Supplies application time without coupling the core to a clock runtime.
@@ -43,11 +43,22 @@ pub trait PlanIdGenerator {
 }
 
 /// A normalized inventory value before repository-owned revision assignment.
+///
+/// `checked_at` and `source` are freshness and provenance metadata, not
+/// normalized projection content. Revision identity therefore ignores
+/// `checked_at`, and it ignores `source` once the fixed dataset/source pairing
+/// has been validated. An identical refresh at a later `checked_at` retains the
+/// revision and refreshes the committed timestamp. `membership_id`,
+/// `membership_type`, `definition_version`, `characters`, and `items` remain part
+/// of revision identity, so any change to them advances the revision exactly
+/// once.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySnapshotInput {
     pub membership_id: MembershipId,
     pub membership_type: MembershipType,
     pub definition_version: DefinitionVersion,
+    pub checked_at: Timestamp,
+    pub source: SourceMarker,
     pub characters: Vec<Character>,
     pub items: Vec<ItemInstance>,
 }
@@ -58,24 +69,49 @@ impl InventorySnapshotInput {
             membership_id: snapshot.metadata.membership_id.clone(),
             membership_type: snapshot.metadata.membership_type,
             definition_version: snapshot.metadata.definition_version.clone(),
+            checked_at: snapshot.metadata.checked_at,
+            source: snapshot.metadata.source,
             characters: snapshot.characters.clone(),
             items: snapshot.items.clone(),
         }
+    }
+
+    /// Compares the normalized projection content that determines revision identity.
+    ///
+    /// `checked_at` and `source` are deliberately excluded: freshness alone never
+    /// advances a revision, and `source` is validated against the dataset before
+    /// a replacement is accepted.
+    pub fn content_eq(&self, other: &Self) -> bool {
+        self.membership_id == other.membership_id
+            && self.membership_type == other.membership_type
+            && self.definition_version == other.definition_version
+            && self.characters == other.characters
+            && self.items == other.items
     }
 }
 
 /// Reads the active normalized definitions and publishes complete replacements.
 ///
 /// A publishable [`ManifestDefinitions`] set is complete, internally consistent,
-/// and revision-free. Publication replaces every previously visible definition,
-/// rejects an empty set, duplicate hashes, and mixed definition versions before
-/// mutating state, and leaves the prior set readable when it fails. Durable
-/// revision allocation remains WU-005 scope.
+/// and revision-free. A [`DefinitionReplacementInput`] adds the committed
+/// freshness and provenance markers. Publication replaces every previously
+/// visible definition, rejects an invalid source marker, an empty set, duplicate
+/// hashes, and mixed definition versions before mutating state, and leaves the
+/// prior set and its metadata readable when it fails. The repository owns durable
+/// revision allocation: normalized content equality (the complete definition set
+/// and its version) retains the revision, any content change advances it exactly
+/// once, and a later `checked_at` alone retains the revision while refreshing the
+/// committed metadata timestamp.
 pub trait DefinitionRepository {
     fn current_definition_version(&self) -> Result<DefinitionVersion, AppError>;
     fn lookup_definition(&self, hash: ItemHash) -> Result<Resolution<ItemDefinition>, AppError>;
-    /// Atomically publishes one complete normalized set, removing old definitions.
-    fn replace_definitions(&mut self, definitions: ManifestDefinitions) -> Result<(), AppError>;
+    /// Reads the committed metadata of the current definition projection, if any.
+    fn current_metadata(&self) -> Result<Option<SyncMetadata>, AppError>;
+    /// Atomically publishes one complete normalized set and returns its committed metadata.
+    fn replace_definitions(
+        &mut self,
+        replacement: DefinitionReplacementInput,
+    ) -> Result<SyncMetadata, AppError>;
 }
 
 /// Reads and atomically replaces the current normalized inventory projection.
@@ -95,12 +131,37 @@ pub trait ProfileGateway {
 
 /// A complete versioned normalized definition set published as one replacement.
 ///
-/// It carries no durable revision: normalized equality is deterministic, and
-/// revision allocation remains WU-005 scope.
+/// It carries no durable revision: normalized equality is deterministic, and the
+/// repository owns revision allocation by comparing the complete replacement.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestDefinitions {
     pub version: DefinitionVersion,
     pub definitions: Vec<ItemDefinition>,
+}
+
+/// A provider-neutral request to replace the complete definition projection.
+///
+/// It pairs one revision-free [`ManifestDefinitions`] snapshot with the
+/// freshness and provenance markers the repository commits atomically. The
+/// application service sets the Manifest source itself; a repository rejects a
+/// dataset whose source marker does not match. Revision identity is the
+/// normalized definition content alone; `checked_at` is committed freshness
+/// metadata that never advances a revision by itself.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DefinitionReplacementInput {
+    pub definitions: ManifestDefinitions,
+    pub checked_at: Timestamp,
+    pub source: SourceMarker,
+}
+
+impl DefinitionReplacementInput {
+    /// Compares the normalized projection content that determines revision identity.
+    ///
+    /// `checked_at` and `source` are deliberately excluded for the same reason as
+    /// [`InventorySnapshotInput::content_eq`].
+    pub fn content_eq(&self, other: &Self) -> bool {
+        self.definitions == other.definitions
+    }
 }
 
 /// One untrusted, transport-neutral Manifest definition candidate.

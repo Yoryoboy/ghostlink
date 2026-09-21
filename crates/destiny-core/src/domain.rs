@@ -4,6 +4,7 @@ use crate::ids::{
     BucketHash, CharacterId, DefinitionVersion, ItemHash, ItemInstanceId, MembershipId,
     MembershipType, SyncRevision,
 };
+use crate::state::{Dataset, SourceMarker, Timestamp};
 
 /// A location understood by the domain, or a preserved provider value with no inferred meaning.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,13 +60,38 @@ pub struct ItemDefinition {
     pub version: DefinitionVersion,
 }
 
-/// Snapshot identity and provenance markers, without freshness policy or timestamps.
+/// Snapshot identity, provenance markers, and committed freshness.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotMetadata {
     pub membership_id: MembershipId,
     pub membership_type: MembershipType,
     pub revision: SyncRevision,
     pub definition_version: DefinitionVersion,
+    pub checked_at: Timestamp,
+    pub source: SourceMarker,
+}
+
+/// The committed identity, freshness, and provenance of one dataset projection.
+///
+/// The record is provider-neutral: it carries no SQL statement, no schema or
+/// migration version, and no raw payload. The database migration version stays
+/// adapter-owned and is deliberately absent here. The dataset and its
+/// [`SourceMarker`] must agree; [`SyncMetadata::source_is_valid`] enforces that
+/// pairing without consulting a clock or a provider.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SyncMetadata {
+    pub dataset: Dataset,
+    pub checked_at: Timestamp,
+    pub source: SourceMarker,
+    pub revision: SyncRevision,
+    pub definition_version: DefinitionVersion,
+}
+
+impl SyncMetadata {
+    /// True when the source marker is the one this dataset requires.
+    pub fn source_is_valid(&self) -> bool {
+        self.source == self.dataset.expected_source()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,8 +103,9 @@ pub struct InventorySnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::{Character, InventorySnapshot, ItemLocation, SnapshotMetadata};
+    use super::{Character, InventorySnapshot, ItemLocation, SnapshotMetadata, SyncMetadata};
     use crate::ids::{CharacterId, DefinitionVersion, MembershipId, MembershipType, SyncRevision};
+    use crate::state::{Dataset, SourceMarker, Timestamp};
 
     #[test]
     fn locations_preserve_unknown_provider_values() {
@@ -99,6 +126,8 @@ mod tests {
                 membership_type: MembershipType::new(3),
                 revision: SyncRevision::new(1),
                 definition_version: DefinitionVersion::new("manifest-v1"),
+                checked_at: Timestamp::new(100),
+                source: SourceMarker::Profile,
             },
             characters: vec![Character {
                 id: CharacterId::new("warlock"),
@@ -113,5 +142,33 @@ mod tests {
 
         assert_eq!(snapshot.characters[0].id.as_str(), "warlock");
         assert_eq!(snapshot.metadata.revision.value(), 1);
+    }
+
+    #[test]
+    fn sync_metadata_pairs_each_dataset_with_its_single_source() {
+        let manifest = SyncMetadata {
+            dataset: Dataset::ManifestDefinitions,
+            checked_at: Timestamp::new(40),
+            source: SourceMarker::Manifest,
+            revision: SyncRevision::new(2),
+            definition_version: DefinitionVersion::new("manifest-v1"),
+        };
+        assert!(manifest.source_is_valid());
+
+        let profile = SyncMetadata {
+            dataset: Dataset::ProfileInventory,
+            source: SourceMarker::Profile,
+            ..manifest.clone()
+        };
+        assert!(profile.source_is_valid());
+
+        let mismatched = SyncMetadata {
+            source: SourceMarker::Profile,
+            ..manifest.clone()
+        };
+        assert!(!mismatched.source_is_valid());
+
+        assert_eq!(manifest.checked_at, Timestamp::new(40));
+        assert_eq!(manifest.revision, SyncRevision::new(2));
     }
 }

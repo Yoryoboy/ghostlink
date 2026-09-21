@@ -1349,13 +1349,14 @@ mod transport_tests {
         use destiny_app::manifest::ManifestService;
         use destiny_app::test_support::InMemoryDefinitionRepository;
         use destiny_core::{
-            BucketHash, DefinitionRepository, DefinitionVersion, ItemDefinition, ItemHash,
-            Resolution,
+            BucketHash, Dataset, DefinitionRepository, DefinitionVersion, ItemDefinition, ItemHash,
+            Resolution, SourceMarker, Timestamp,
         };
         use std::cell::RefCell;
         use std::rc::Rc;
 
         const FIXTURE_VERSION: &str = "manifest-fixture-v1";
+        const FIXTURE_CHECKED_AT: Timestamp = Timestamp::new(4_242);
         const FIXTURE_RECORD_COUNT: usize = 4;
         const PRIOR_FAKE_HASH: i64 = 77_777;
         const FIXTURE_COMPONENT_PATH: &str =
@@ -1427,10 +1428,13 @@ mod transport_tests {
         );
 
         let mut service = ManifestService::new(gateway, repository);
-        let outcome = service.acquire_and_publish().expect("offline publication");
+        let outcome = service
+            .acquire_and_publish(FIXTURE_CHECKED_AT)
+            .expect("offline publication");
 
         assert_eq!(outcome.version.as_str(), FIXTURE_VERSION);
         assert_eq!(outcome.definition_count, FIXTURE_RECORD_COUNT);
+        assert_eq!(outcome.revision.value(), 1);
 
         let recorded = requests.borrow();
         assert_eq!(recorded.len(), 2);
@@ -1451,6 +1455,15 @@ mod transport_tests {
             FIXTURE_VERSION
         );
         assert_eq!(repository.definition_count(), FIXTURE_RECORD_COUNT);
+        let metadata = repository
+            .current_metadata()
+            .expect("metadata read")
+            .expect("committed metadata");
+        assert_eq!(metadata.dataset, Dataset::ManifestDefinitions);
+        assert_eq!(metadata.source, SourceMarker::Manifest);
+        assert_eq!(metadata.checked_at, FIXTURE_CHECKED_AT);
+        assert_eq!(metadata.revision.value(), 1);
+        assert_eq!(metadata.definition_version.as_str(), FIXTURE_VERSION);
         assert_eq!(
             repository
                 .lookup_definition(ItemHash::new(PRIOR_FAKE_HASH))

@@ -33,6 +33,19 @@ pub enum SourceMarker {
     Profile,
 }
 
+impl Dataset {
+    /// The single source marker permitted to commit this dataset.
+    ///
+    /// Freshness checks and durable metadata validation share this pairing so a
+    /// dataset can never be committed under a mismatched provenance marker.
+    pub const fn expected_source(self) -> SourceMarker {
+        match self {
+            Dataset::ManifestDefinitions => SourceMarker::Manifest,
+            Dataset::ProfileInventory => SourceMarker::Profile,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FreshnessStatus {
     Missing,
@@ -56,11 +69,7 @@ impl FreshnessInput {
         let Some(checked_at) = self.checked_at else {
             return FreshnessStatus::Missing;
         };
-        let expected_source = match self.dataset {
-            Dataset::ManifestDefinitions => SourceMarker::Manifest,
-            Dataset::ProfileInventory => SourceMarker::Profile,
-        };
-        if self.source != Some(expected_source) {
+        if self.source != Some(self.dataset.expected_source()) {
             return FreshnessStatus::InvalidSource;
         }
         if checked_at.seconds() > self.now.seconds() {
@@ -91,6 +100,13 @@ pub struct RevisionAllocation {
 pub struct RevisionOverflow;
 
 /// Allocates repository revisions from normalized content identity only.
+///
+/// This compatibility helper predates durable metadata and remains exported for
+/// callers that still rely on it. Repository revision retention must compare the
+/// normalized projection content structurally and must not use a fingerprint
+/// here, because distinct normalized inputs can collide on a single `u64`.
+/// Freshness and provenance metadata (`checked_at`, `source`) are not content
+/// identity and must not participate in retention.
 pub fn allocate_revision(
     previous: Option<RevisionState>,
     normalized_fingerprint: u64,
