@@ -56,11 +56,11 @@ A provider-free core and behaviorally useful fakes create the anti-coupling seam
   - Check: tracker readback passed and branch status was clean after commit.
   - Evidence: commit `076277a` (`chore: start Destiny domain foundations`).
 
-- [ ] **DDF-002 — Implement opaque IDs and foundational records**
-  - Route: delegated to `gentle-ai-worker`; multi-file implementation.
-  - Outcome: add strongly separated IDs, locations, characters, items, definitions, and snapshot metadata with focused tests.
-  - Check: ID separation, definition-versus-instance semantics, unknown-location preservation, fmt/clippy/tests.
-  - Evidence: pending.
+- [x] **DDF-002 — Implement opaque IDs and foundational records**
+  - Route: delegated to `gentle-ai-worker`; multi-file implementation followed by a bounded identifier-formatting correction.
+  - Outcome: added strongly separated IDs, Vault/Character/unknown locations, normalized character/item/definition records, snapshot metadata, and focused tests without core dependencies. A verification finding about raw identifier formatting was corrected by removing raw `Display` and using redacted `Debug` for string-backed IDs while preserving explicit raw access.
+  - Check: fmt, clippy, workspace/all-features tests, and focused core tests passed; independent correction verification confirmed no raw formatting exposure and a clean worktree.
+  - Evidence: implementation commit `431de4f` (`feat: add Destiny domain records`); correction commit `4db85c4` (`fix: redact Destiny domain identifiers`); re-verification passed.
 
 - [ ] **DDF-003 — Implement freshness, revisions, and plan validity**
   - Route: delegated to `gentle-ai-worker`; multi-file implementation.
@@ -97,7 +97,8 @@ A provider-free core and behaviorally useful fakes create the anti-coupling seam
 - Read-only exploration mapped WU-002 contracts, dependencies, tests, and exclusions.
 - The implementation decisions above resolve shape ambiguities conservatively without inventing provider behavior.
 - DDF-001 established the chained feature boundary and recoverable implementation plan in commit `076277a`.
+- DDF-002 established dependency-free core IDs and records in `431de4f`; independent verification found raw identifier formatting, corrected in `4db85c4`, and re-verification passed.
 
 ## Next step
 
-Delegate DDF-002 as the first implementation slice.
+Delegate DDF-003 for freshness, revision, ambiguity, and plan-validity policy.
