@@ -61,14 +61,15 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
   - Evidence: commit `224c797` (`chore: start Destiny SQLite foundations`).
   - Rollback: remove only this branch and tracker before source implementation.
 
-- [ ] **DSF-002 — Add durable sync metadata and revision contracts/fakes** *(in progress)*
-  - Route: delegated multi-file writer over core/app test-support surfaces; writer trigger fired because the slice touches multiple non-trivial files.
-  - Outcome: evolve Manifest/profile repository inputs and outcomes to carry fetched-at/source/schema metadata, expose durable metadata reads, retain revisions only for complete structural equality, advance exactly once on change, fail atomically on overflow/invalid metadata, and keep provider details out of core.
-  - Check: focused core/app contract tests covering freshness, source/dataset consistency, equal/changed input, overflow, and prior-state preservation.
+- [x] **DSF-002 — Add durable sync metadata and revision contracts/fakes**
+  - Route: delegated multi-file writer over core/app test-support surfaces; writer trigger fired because the slice touched multiple non-trivial files. Native assessment was unavailable/schema-incompatible and therefore required high-risk independent verification.
+  - Outcome: added provider-neutral committed dataset metadata, explicit definition replacement input, repository metadata reads, explicit Manifest publication time/source/revision, and fake repository structural revision semantics. Revision identity includes every normalized content field but excludes freshness time after fixed source validation, so a successful refresh can update `checked_at` without creating a false content revision. Invalid source and overflow preserve prior committed state.
+  - Check: `cargo fmt --all -- --check`; core 16 passed; app test-support 60 passed; adapters 67 passed; focused all-target clippy with `-D warnings`; `git diff --check`; offline fixture pipeline; independent contract/atomicity/SQLite-implementability review passed with no candidate-caused high findings.
+  - Evidence: commit `82b22ab` (`feat: add durable sync metadata contracts`).
   - Rollback: revert only WU-005 metadata/revision contract and fake changes.
 
-- [ ] **DSF-003 — Add SQLite dependency, connection policy, and reversible migrations**
-  - Route: delegated adapter writer; first internal WU-005 review slice.
+- [ ] **DSF-003 — Add SQLite dependency, connection policy, and reversible migrations** *(in progress)*
+  - Route: delegated adapter writer; first internal WU-005 review slice; writer trigger fires across manifest, lockfile, module, and migration/test files.
   - Outcome: pin `rusqlite` 0.40.2 bundled, add `destiny-adapters::sqlite`, explicit schema migrations, schema-version validation, foreign keys, bounded busy timeout, file/in-memory constructors, and normalized secret-free tables for definitions, tags, sync metadata, active profile, characters, and items.
   - Check: migration from empty DB, repeated open, version mismatch/future-version refusal, foreign-key enforcement, rollback on failed migration, schema inspection, and dependency-direction checks.
   - Rollback: remove dependency/module/migration files and restore lock/manifests; WU-004 fake remains intact.
@@ -110,11 +111,13 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
 - User selected deferral of plan/execution persistence to WU-009/010.
 - Current official research supports `rusqlite` 0.40.2 with bundled SQLite for this synchronous application-owned database.
 - DSF-001 established and committed the feature boundary in `224c797`.
+- DSF-002 added durable provider-neutral metadata and collision-free revision semantics in `82b22ab`; repeated successful refreshes now update freshness without manufacturing content revisions.
 
 ## Verification evidence
 
-Pending implementation.
+- DSF-001 tracker readback and clean-branch checks passed.
+- DSF-002 writer and independent verifier both observed clean formatting, diff checks, focused tests, focused clippy, and the offline adapter fixture. Native assessment was unavailable/schema-incompatible, so the candidate followed the required high-risk fallback path.
 
 ## Next step
 
-Delegate DSF-002 within exact core/app test-support surfaces.
+Delegate DSF-003 for the pinned SQLite dependency, connection policy, migrations, schema inspection, and rollback/version tests.
