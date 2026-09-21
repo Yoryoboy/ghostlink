@@ -73,14 +73,15 @@ Decision: WU-004 uses the bounded English `DestinyInventoryItemDefinition` path 
   - Evidence: commit `1827787` (`feat: add Manifest definition repository publishing`).
   - Rollback: revert only `crates/destiny-core/src/ports.rs` and the DMF-002 publication behavior/tests in `crates/destiny-app/src/test_support.rs`.
 
-- [ ] **DMF-003 — Implement Manifest validation and normalization service** *(in progress)*
-  - Route: delegated multi-file writer; app/core contract surfaces; writer trigger fired because the slice touches multiple non-trivial files.
-  - Outcome: validate acquired versioned input, normalize bounded inventory definition/search fields, reject malformed/incomplete/duplicate data, distinguish static definitions from runtime instances, produce deterministic ordering, and publish only complete sets.
-  - Check: focused service tests for malformed/incomplete inputs, definition/instance distinction, deterministic/idempotent output, atomic failure, and raw-payload isolation.
-  - Rollback: remove only the application Manifest service and its tests while preserving repository contracts.
+- [x] **DMF-003 — Implement Manifest validation and normalization service**
+  - Route: delegated multi-file writer, independent high-risk fallback verification, one bounded correction, and repeated final verification; writer trigger fired because the slice touched multiple non-trivial files. Native assessment remained unavailable, so the separate verifier was required.
+  - Outcome: added provider-neutral untrusted acquisition candidates and an application `ManifestService` that validates exact versions, bounded complete sets, duplicate hashes, text/tags, and type-level definition identity before atomically publishing deterministic normalized definitions. Provider casing is preserved for display/classification values; opaque versions remain exact; only search tags lowercase. Output is hash-ordered, tags are sorted/deduplicated, transformed lengths are rechecked, and publication returns a minimal summary without cloning the catalog. Independent review removed an invented static-definition flag and corrected display/version lowercasing before acceptance.
+  - Check: final independent verification passed fmt, 15 core tests, 52 app test-support tests (14 Manifest tests), focused clippy `-D warnings`, diff/status checks, and commit-readiness review. Parent reran the focused 14-test Manifest harness and `git diff --check`; LSP diagnostics were clean. The 100,000-candidate safety ceiling has an exact boundary test and remains subject to real fixture validation in DMF-004.
+  - Evidence: commit `9001ce1` (`feat: add Manifest validation service`). The 784-line source slice exceeds the ~400 heuristic because the cohesive service and its 14 behavior/security tests cannot be separated without an unusable intermediate contract; it remains an independent work-unit commit and no tests/docs were compressed.
+  - Rollback: remove `crates/destiny-app/src/manifest.rs` and revert only the DMF-003 acquisition-contract/module/fake updates in the other four touched files.
 
-- [ ] **DMF-004 — Implement bounded Bungie Manifest acquisition and mapping**
-  - Route: delegated multi-file writer after dependency/API revalidation; adapter and fixture surfaces.
+- [ ] **DMF-004 — Implement bounded Bungie Manifest acquisition and mapping** *(in progress)*
+  - Route: delegated multi-file writer after dependency/API revalidation; adapter and fixture surfaces; writer trigger fired because the slice touches multiple non-trivial files.
   - Outcome: fetch and validate the Manifest index plus required English component through a bounded transport seam, map sanitized provider data to the application input contract, and prove the full offline fixture pipeline.
   - Check: focused adapter tests for request shape, success envelope, version/path selection, redirects/proxy/TLS/deadline/size/content type, malformed JSON, provider errors, mapping completeness, and sentinel redaction; full fixture harness into the fake repository.
   - Rollback: remove only the Manifest adapter/fixtures and declarations without touching SQLite or OAuth.
@@ -108,6 +109,7 @@ Decision: WU-004 uses the bounded English `DestinyInventoryItemDefinition` path 
 - Official evidence resolves the acquisition source: use the English per-component JSON path for `DestinyInventoryItemDefinition`, validate it on every index response, and avoid SQLite/all-definition payloads.
 - DMF-001 established and committed the feature boundary in `924ce89`.
 - DMF-002 added atomic, validated definition-set publication and the deterministic in-memory fake in `1827787`; independent verification passed all authorized checks with no blocking finding.
+- DMF-003 added and corrected the provider-neutral validation/normalization/publication service in `9001ce1`; final independent verification passed. The recorded feature-chain slices are DMF-001 (`924ce89`), DMF-002 (`1827787`), and DMF-003 (`9001ce1`), each with its adjacent evidence commit where present.
 
 ## Verification evidence
 
@@ -115,4 +117,4 @@ Pending implementation.
 
 ## Next step
 
-Delegate DMF-003 within the exact app/core edit surfaces.
+Delegate DMF-004 within the exact adapter/fixture edit surfaces and validate the real-catalog size assumption against the available offline fixture evidence.
