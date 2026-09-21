@@ -1,6 +1,7 @@
 //! Application-facing configuration, services, and sanitized diagnostics.
 
 pub mod auth;
+pub mod auth_ux;
 mod config;
 
 #[cfg(feature = "test-support")]

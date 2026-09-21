@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 destiny-core.workspace = true
+url.workspace = true

@@ -23,6 +23,7 @@ pub enum ErrorCategory {
     VerificationFailed,
     LocalStorage,
     ConfigurationError,
+    CallbackTimeout,
     ClockOverflow,
     PlanIdExhausted,
 }
@@ -70,6 +71,7 @@ impl fmt::Display for AppError {
             ErrorCategory::ConfigurationError => {
                 "required runtime configuration is missing or invalid"
             }
+            ErrorCategory::CallbackTimeout => "the authorization callback timed out",
             ErrorCategory::ClockOverflow => "clock value exceeded its supported range",
             ErrorCategory::PlanIdExhausted => "plan identifiers are exhausted",
         };
