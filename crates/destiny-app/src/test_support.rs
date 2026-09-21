@@ -6,11 +6,11 @@
 use destiny_core::{
     AccessCredential, AppError, AuthorizationCallback, AuthorizationState, BrowserAuthorization,
     CallbackReceiver, Clock, CredentialMaterial, CredentialStore, DefinitionRepository,
-    DefinitionVersion, InventoryRepository, InventorySnapshot, InventorySnapshotInput,
-    ItemDefinition, ItemHash, ManifestDefinitions, ManifestGateway, PlanId, PlanIdGenerator,
-    ProfileGateway, Resolution, SnapshotMetadata, SyncRevision, Timestamp,
+    DefinitionVersion, ErrorCategory, InventoryRepository, InventorySnapshot,
+    InventorySnapshotInput, ItemDefinition, ItemHash, ManifestDefinitions, ManifestGateway, PlanId,
+    PlanIdGenerator, ProfileGateway, Resolution, SnapshotMetadata, SyncRevision, Timestamp,
 };
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 #[derive(Debug)]
 pub struct DeterministicRandom {
@@ -148,14 +148,52 @@ impl PlanIdGenerator for DeterministicPlanIds {
 pub struct InMemoryDefinitionRepository {
     version: Option<DefinitionVersion>,
     definitions: Vec<ItemDefinition>,
+    publication_failure: Option<AppError>,
+    publication_attempts: usize,
 }
 
 impl InMemoryDefinitionRepository {
+    /// Seeds arbitrary state for read-path contract tests.
+    ///
+    /// This bypasses publication validation on purpose so lookup behavior such
+    /// as ambiguous matches stays directly testable. Publication always
+    /// validates the complete set before mutating state.
     pub fn new(version: DefinitionVersion, definitions: Vec<ItemDefinition>) -> Self {
         Self {
             version: Some(version),
             definitions,
+            ..Self::default()
         }
+    }
+
+    /// Injects a sanitized publication failure; reads keep serving prior state.
+    pub fn with_publication_failure(mut self, error: AppError) -> Self {
+        self.publication_failure = Some(error);
+        self
+    }
+
+    /// Counts publication attempts, including rejected ones.
+    pub const fn publication_attempts(&self) -> usize {
+        self.publication_attempts
+    }
+
+    /// Counts the definitions currently visible in the active set.
+    pub fn definition_count(&self) -> usize {
+        self.definitions.len()
+    }
+
+    /// A publishable set is non-empty, version-consistent, and duplicate-free.
+    fn validate_publication(definitions: &ManifestDefinitions) -> Result<(), AppError> {
+        if definitions.definitions.is_empty() {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        let mut seen = HashSet::with_capacity(definitions.definitions.len());
+        for definition in &definitions.definitions {
+            if definition.version != definitions.version || !seen.insert(definition.hash) {
+                return Err(AppError::new(ErrorCategory::ProviderValidation));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -163,7 +201,7 @@ impl DefinitionRepository for InMemoryDefinitionRepository {
     fn current_definition_version(&self) -> Result<DefinitionVersion, AppError> {
         self.version
             .clone()
-            .ok_or_else(|| AppError::new(destiny_core::ErrorCategory::LocalStorage))
+            .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))
     }
 
     fn lookup_definition(&self, hash: ItemHash) -> Result<Resolution<ItemDefinition>, AppError> {
@@ -178,6 +216,17 @@ impl DefinitionRepository for InMemoryDefinitionRepository {
             [definition] => Resolution::Unique(definition.clone()),
             _ => Resolution::Ambiguous(matches),
         })
+    }
+
+    fn replace_definitions(&mut self, definitions: ManifestDefinitions) -> Result<(), AppError> {
+        self.publication_attempts += 1;
+        if let Some(error) = self.publication_failure {
+            return Err(error);
+        }
+        Self::validate_publication(&definitions)?;
+        self.version = Some(definitions.version);
+        self.definitions = definitions.definitions;
+        Ok(())
     }
 }
 
@@ -380,6 +429,26 @@ mod tests {
                 locked: false,
                 power: None,
             }],
+        }
+    }
+
+    fn item_definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
+        ItemDefinition {
+            hash: ItemHash::new(hash),
+            bucket_hash: None,
+            name: name.into(),
+            item_type: None,
+            tier: None,
+            element: None,
+            tags: Vec::new(),
+            version: DefinitionVersion::new(version),
+        }
+    }
+
+    fn definition_set(version: &str, definitions: Vec<ItemDefinition>) -> ManifestDefinitions {
+        ManifestDefinitions {
+            version: DefinitionVersion::new(version),
+            definitions,
         }
     }
 
@@ -700,6 +769,215 @@ mod tests {
                 .value(),
             1
         );
+    }
+
+    #[test]
+    fn definition_publication_replaces_the_complete_set() {
+        let mut repository = InMemoryDefinitionRepository::default();
+        assert_eq!(
+            repository.current_definition_version(),
+            Err(AppError::new(ErrorCategory::LocalStorage))
+        );
+        assert_eq!(
+            repository.lookup_definition(ItemHash::new(7)).unwrap(),
+            Resolution::Missing
+        );
+        assert_eq!(repository.definition_count(), 0);
+
+        repository
+            .replace_definitions(definition_set(
+                "manifest-v1",
+                vec![
+                    item_definition(7, "Alpha", "manifest-v1"),
+                    item_definition(8, "Beta", "manifest-v1"),
+                ],
+            ))
+            .unwrap();
+        assert_eq!(
+            repository.current_definition_version().unwrap().as_str(),
+            "manifest-v1"
+        );
+        assert_eq!(repository.definition_count(), 2);
+
+        repository
+            .replace_definitions(definition_set(
+                "manifest-v2",
+                vec![item_definition(9, "Gamma", "manifest-v2")],
+            ))
+            .unwrap();
+        assert_eq!(
+            repository.current_definition_version().unwrap().as_str(),
+            "manifest-v2"
+        );
+        assert_eq!(repository.definition_count(), 1);
+        assert_eq!(
+            repository.lookup_definition(ItemHash::new(7)).unwrap(),
+            Resolution::Missing
+        );
+        assert_eq!(
+            repository.lookup_definition(ItemHash::new(8)).unwrap(),
+            Resolution::Missing
+        );
+        assert_eq!(
+            repository.lookup_definition(ItemHash::new(9)).unwrap(),
+            Resolution::Unique(item_definition(9, "Gamma", "manifest-v2"))
+        );
+        assert_eq!(repository.publication_attempts(), 2);
+    }
+
+    #[test]
+    fn definition_publication_is_idempotent_for_an_equal_normalized_set() {
+        let mut repository = InMemoryDefinitionRepository::default();
+        let set = definition_set(
+            "manifest-v1",
+            vec![
+                item_definition(7, "Alpha", "manifest-v1"),
+                item_definition(8, "Beta", "manifest-v1"),
+            ],
+        );
+
+        repository.replace_definitions(set.clone()).unwrap();
+        let version = repository.current_definition_version().unwrap();
+        let alpha = repository.lookup_definition(ItemHash::new(7)).unwrap();
+        let beta = repository.lookup_definition(ItemHash::new(8)).unwrap();
+
+        repository.replace_definitions(set).unwrap();
+
+        assert_eq!(repository.current_definition_version().unwrap(), version);
+        assert_eq!(
+            repository.lookup_definition(ItemHash::new(7)).unwrap(),
+            alpha
+        );
+        assert_eq!(
+            repository.lookup_definition(ItemHash::new(8)).unwrap(),
+            beta
+        );
+        assert_eq!(repository.definition_count(), 2);
+        assert!(matches!(alpha, Resolution::Unique(_)));
+        assert!(matches!(beta, Resolution::Unique(_)));
+        assert_eq!(repository.publication_attempts(), 2);
+    }
+
+    #[test]
+    fn definition_publication_rejects_duplicate_hashes_before_mutation() {
+        let mut repository = InMemoryDefinitionRepository::new(
+            DefinitionVersion::new("manifest-v1"),
+            vec![item_definition(7, "Alpha", "manifest-v1")],
+        );
+
+        let error = repository.replace_definitions(definition_set(
+            "manifest-v2",
+            vec![
+                item_definition(7, "Alpha", "manifest-v2"),
+                item_definition(7, "Alpha duplicate", "manifest-v2"),
+            ],
+        ));
+
+        assert_eq!(error, Err(AppError::new(ErrorCategory::ProviderValidation)));
+        assert_eq!(
+            repository.current_definition_version().unwrap().as_str(),
+            "manifest-v1"
+        );
+        assert_eq!(repository.definition_count(), 1);
+        assert_eq!(
+            repository.lookup_definition(ItemHash::new(7)).unwrap(),
+            Resolution::Unique(item_definition(7, "Alpha", "manifest-v1"))
+        );
+        assert_eq!(repository.publication_attempts(), 1);
+    }
+
+    #[test]
+    fn definition_publication_rejects_mixed_versions_and_empty_sets_before_mutation() {
+        let mut repository = InMemoryDefinitionRepository::new(
+            DefinitionVersion::new("manifest-v1"),
+            vec![item_definition(7, "Alpha", "manifest-v1")],
+        );
+
+        let candidates = [
+            definition_set(
+                "manifest-v2",
+                vec![
+                    item_definition(7, "Alpha", "manifest-v2"),
+                    item_definition(8, "Beta", "manifest-v1"),
+                ],
+            ),
+            definition_set("manifest-v2", Vec::new()),
+        ];
+
+        for candidate in candidates {
+            assert_eq!(
+                repository.replace_definitions(candidate),
+                Err(AppError::new(ErrorCategory::ProviderValidation))
+            );
+            assert_eq!(
+                repository.current_definition_version().unwrap().as_str(),
+                "manifest-v1"
+            );
+            assert_eq!(repository.definition_count(), 1);
+        }
+        assert_eq!(
+            repository.lookup_definition(ItemHash::new(7)).unwrap(),
+            Resolution::Unique(item_definition(7, "Alpha", "manifest-v1"))
+        );
+        assert_eq!(repository.publication_attempts(), 2);
+    }
+
+    #[test]
+    fn injected_publication_failure_preserves_prior_state() {
+        let mut repository = InMemoryDefinitionRepository::new(
+            DefinitionVersion::new("manifest-v1"),
+            vec![item_definition(7, "Alpha", "manifest-v1")],
+        )
+        .with_publication_failure(AppError::new(ErrorCategory::ProviderUnavailable));
+
+        let error = repository.replace_definitions(definition_set(
+            "manifest-v2",
+            vec![item_definition(9, "Gamma", "manifest-v2")],
+        ));
+
+        assert_eq!(
+            error,
+            Err(AppError::new(ErrorCategory::ProviderUnavailable))
+        );
+        assert_eq!(
+            repository.current_definition_version().unwrap().as_str(),
+            "manifest-v1"
+        );
+        assert_eq!(repository.definition_count(), 1);
+        assert_eq!(
+            repository.lookup_definition(ItemHash::new(7)).unwrap(),
+            Resolution::Unique(item_definition(7, "Alpha", "manifest-v1"))
+        );
+        assert_eq!(
+            repository.lookup_definition(ItemHash::new(9)).unwrap(),
+            Resolution::Missing
+        );
+        assert_eq!(repository.publication_attempts(), 1);
+    }
+
+    #[test]
+    fn published_lookup_and_version_reads_are_deterministic() {
+        let alpha = item_definition(7, "Alpha", "manifest-v1");
+        let beta = item_definition(7, "Beta", "manifest-v1");
+        let repository = InMemoryDefinitionRepository::new(
+            DefinitionVersion::new("manifest-v1"),
+            vec![alpha.clone(), beta.clone()],
+        );
+
+        for _ in 0..3 {
+            assert_eq!(
+                repository.current_definition_version().unwrap().as_str(),
+                "manifest-v1"
+            );
+            assert_eq!(
+                repository.lookup_definition(ItemHash::new(7)).unwrap(),
+                Resolution::Ambiguous(vec![alpha.clone(), beta.clone()])
+            );
+            assert_eq!(
+                repository.lookup_definition(ItemHash::new(99)).unwrap(),
+                Resolution::Missing
+            );
+        }
     }
 
     #[test]

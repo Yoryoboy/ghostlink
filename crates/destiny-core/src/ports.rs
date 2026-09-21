@@ -64,10 +64,18 @@ impl InventorySnapshotInput {
     }
 }
 
-/// Reads the active normalized definitions.
+/// Reads the active normalized definitions and publishes complete replacements.
+///
+/// A publishable [`ManifestDefinitions`] set is complete, internally consistent,
+/// and revision-free. Publication replaces every previously visible definition,
+/// rejects an empty set, duplicate hashes, and mixed definition versions before
+/// mutating state, and leaves the prior set readable when it fails. Durable
+/// revision allocation remains WU-005 scope.
 pub trait DefinitionRepository {
     fn current_definition_version(&self) -> Result<DefinitionVersion, AppError>;
     fn lookup_definition(&self, hash: ItemHash) -> Result<Resolution<ItemDefinition>, AppError>;
+    /// Atomically publishes one complete normalized set, removing old definitions.
+    fn replace_definitions(&mut self, definitions: ManifestDefinitions) -> Result<(), AppError>;
 }
 
 /// Reads and atomically replaces the current normalized inventory projection.
@@ -85,7 +93,10 @@ pub trait ProfileGateway {
     fn load_inventory(&mut self) -> Result<InventorySnapshotInput, AppError>;
 }
 
-/// Versioned normalized definitions returned by a manifest boundary.
+/// A complete versioned normalized definition set published as one replacement.
+///
+/// It carries no durable revision: normalized equality is deterministic, and
+/// revision allocation remains WU-005 scope.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestDefinitions {
     pub version: DefinitionVersion,
