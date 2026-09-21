@@ -20,6 +20,7 @@ pub struct CallbackUri {
     path: String,
 }
 
+#[allow(dead_code)]
 impl CallbackUri {
     pub fn parse(value: &str) -> Result<Self, AppError> {
         if value.is_empty() || value.trim() != value {
@@ -89,13 +90,14 @@ fn is_loopback(host: &str) -> bool {
 
 /// Required public-client configuration. No client secret is represented.
 #[derive(Clone, Eq, PartialEq)]
-pub struct Config {
+pub(crate) struct Config {
     api_key: String,
     public_client_id: String,
     callback_uri: CallbackUri,
     registered_callback_uri: CallbackUri,
 }
 
+#[allow(dead_code)]
 impl Config {
     pub fn from_env() -> Result<Self, AppError> {
         let values = std::env::vars().collect();
@@ -118,14 +120,6 @@ impl Config {
             callback_uri: callback,
             registered_callback_uri: registered,
         })
-    }
-
-    pub fn api_key(&self) -> &str {
-        &self.api_key
-    }
-
-    pub fn public_client_id(&self) -> &str {
-        &self.public_client_id
     }
 
     pub fn callback_uri(&self) -> &CallbackUri {

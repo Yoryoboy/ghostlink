@@ -1,50 +1,31 @@
 //! Application-facing configuration, services, and sanitized diagnostics.
 
-use std::fmt;
-
 mod config;
 
-pub use config::{CallbackUri, Config};
 pub use destiny_core::{AppError, ErrorCategory};
-
-/// A typed, adapter-neutral startup diagnostic.
-///
-/// Adapters can present this value without receiving configuration details or
-/// constructing their own error text.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StartupDiagnostic(AppError);
-
-impl StartupDiagnostic {
-    pub const fn from_error(error: AppError) -> Self {
-        Self(error)
-    }
-}
-
-impl fmt::Display for StartupDiagnostic {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "error: {}", self.0)
-    }
-}
-
-/// Converts an application error into the only startup diagnostic adapters
-/// should present.
-pub const fn startup_diagnostic(error: AppError) -> StartupDiagnostic {
-    StartupDiagnostic::from_error(error)
-}
 
 /// Reports that the application foundation is available.
 pub fn foundation_ready() -> bool {
     destiny_core::foundation_ready()
 }
 
-/// Loads and validates required runtime configuration.
-pub fn load_config() -> Result<Config, AppError> {
-    Config::from_env()
+/// Loads and validates required runtime configuration for application internals.
+///
+/// This remains crate-visible so future application services can consume the
+/// validated configuration without exposing provider credentials to adapters.
+pub(crate) fn load_config() -> Result<config::Config, AppError> {
+    config::Config::from_env()
+}
+
+/// Validates startup configuration and returns only a sanitized application
+/// error on failure.
+pub fn startup() -> Result<(), AppError> {
+    load_config().map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{AppError, startup_diagnostic};
+    use super::{AppError, startup};
     use crate::config::Config;
     use std::collections::HashMap;
 
@@ -67,10 +48,10 @@ mod tests {
             Err(error) => error,
         };
 
-        let diagnostic = startup_diagnostic(error).to_string();
+        let diagnostic = error.to_string();
         assert_eq!(
             diagnostic,
-            "error: required runtime configuration is missing or invalid"
+            "required runtime configuration is missing or invalid"
         );
         for supplied in [
             "secret-api-key",
@@ -86,10 +67,8 @@ mod tests {
     }
 
     #[test]
-    fn startup_diagnostic_accepts_only_sanitized_application_errors() {
-        assert_eq!(
-            startup_diagnostic(AppError::configuration()).to_string(),
-            "error: required runtime configuration is missing or invalid"
-        );
+    fn startup_exposes_only_the_sanitized_result_type() {
+        let startup_fn: fn() -> Result<(), AppError> = startup;
+        let _ = startup_fn;
     }
 }
