@@ -52,11 +52,11 @@ A small provider-free foundation makes dependency direction, configuration error
 
 ## Tasks
 
-- [ ] **DWF-001 — Establish the feature boundary and validate toolchain choices**
-  - Route: parent repository-state operations plus delegated read-only dependency/version validation if needed.
-  - Outcome: create the feature branch, confirm the local Rust toolchain, and select current compatible foundational crates without introducing provider SDKs.
-  - Check: record observed toolchain versions, selected dependency rationale, and clean starting boundary.
-  - Evidence: pending.
+- [x] **DWF-001 — Establish the feature boundary and validate toolchain choices**
+  - Route: parent repository-state operations; no separate dependency research was needed before the dependency-free scaffold slice.
+  - Outcome: created `feature/destiny-workspace-foundations` from the completed architecture boundary and confirmed the local Rust foundation before selecting implementation dependencies in the slice that uses them.
+  - Check: observed `rustc 1.98.1`, `cargo 1.98.1`, `rustfmt 1.9.0`, and `clippy 0.1.98`; branch status contained only the intentionally untracked local `.codegraph/` index after the tracker commit.
+  - Evidence: commit `3fe08e0` (`chore: start Destiny workspace foundations`).
 
 - [ ] **DWF-002 — Scaffold the workspace and crate boundaries**
   - Route: delegated to `gentle-ai-worker`; multi-file write trigger.
@@ -91,7 +91,8 @@ A small provider-free foundation makes dependency direction, configuration error
 - Architecture package and implementation plan are complete at the current branch boundary.
 - WU-001 was selected as the next implementation feature.
 - No Rust implementation files existed when this tracker was created.
+- DWF-001 established the feature branch and local Rust toolchain baseline in commit `3fe08e0`.
 
 ## Next step
 
-Complete DWF-001, then delegate DWF-002 as the first bounded multi-file implementation slice.
+Delegate DWF-002 as the first bounded multi-file implementation slice.
