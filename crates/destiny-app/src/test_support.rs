@@ -23,14 +23,20 @@ impl FakeClock {
     pub const fn now_value(&self) -> Timestamp {
         self.now
     }
-    pub const fn advance(&mut self, seconds: u64) {
-        self.now = Timestamp::new(self.now.seconds() + seconds);
+    pub fn advance(&mut self, seconds: u64) -> Result<(), AppError> {
+        let next = self
+            .now
+            .seconds()
+            .checked_add(seconds)
+            .ok_or_else(|| AppError::new(destiny_core::ErrorCategory::ClockOverflow))?;
+        self.now = Timestamp::new(next);
+        Ok(())
     }
 }
 
 impl Clock for FakeClock {
-    fn now(&self) -> Timestamp {
-        self.now
+    fn now(&self) -> Result<Timestamp, AppError> {
+        Ok(self.now)
     }
 }
 
@@ -46,10 +52,14 @@ impl DeterministicPlanIds {
 }
 
 impl PlanIdGenerator for DeterministicPlanIds {
-    fn next_plan_id(&mut self) -> PlanId {
+    fn next_plan_id(&mut self) -> Result<PlanId, AppError> {
+        let next = self
+            .next
+            .checked_add(1)
+            .ok_or_else(|| AppError::new(destiny_core::ErrorCategory::PlanIdExhausted))?;
         let id = PlanId::new(format!("plan-{}", self.next));
-        self.next += 1;
-        id
+        self.next = next;
+        Ok(id)
     }
 }
 
@@ -93,7 +103,7 @@ impl DefinitionRepository for InMemoryDefinitionRepository {
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryInventoryRepository {
     current: Option<InventorySnapshot>,
-    fingerprint: Option<u64>,
+    previous_input: Option<InventorySnapshotInput>,
 }
 
 impl InMemoryInventoryRepository {
@@ -101,32 +111,22 @@ impl InMemoryInventoryRepository {
         Self::default()
     }
 
-    fn fingerprint(input: &InventorySnapshotInput) -> u64 {
-        let mut value = 0xcbf29ce484222325u64;
-        fn add(value: &mut u64, bytes: &[u8]) {
-            for byte in bytes {
-                *value = value
-                    .wrapping_mul(0x100000001b3)
-                    .wrapping_add(u64::from(*byte));
-            }
+    /// Constructs an overflow boundary state for repository contract tests.
+    pub fn with_revision_for_test(input: InventorySnapshotInput, revision: SyncRevision) -> Self {
+        let snapshot = InventorySnapshot {
+            metadata: SnapshotMetadata {
+                membership_id: input.membership_id.clone(),
+                membership_type: input.membership_type,
+                revision,
+                definition_version: input.definition_version.clone(),
+            },
+            characters: input.characters.clone(),
+            items: input.items.clone(),
+        };
+        Self {
+            current: Some(snapshot),
+            previous_input: Some(input),
         }
-        add(&mut value, input.membership_id.as_str().as_bytes());
-        add(&mut value, &input.membership_type.value().to_le_bytes());
-        add(&mut value, input.definition_version.as_str().as_bytes());
-        for character in &input.characters {
-            add(&mut value, character.id.as_str().as_bytes());
-            add(
-                &mut value,
-                character.name.as_deref().unwrap_or("").as_bytes(),
-            );
-        }
-        for item in &input.items {
-            add(&mut value, item.instance_id.as_str().as_bytes());
-            add(&mut value, &item.item_hash.value().to_le_bytes());
-            add(&mut value, &item.quantity.to_le_bytes());
-            add(&mut value, &[item.equipped as u8, item.locked as u8]);
-        }
-        value
     }
 }
 
@@ -139,9 +139,8 @@ impl InventoryRepository for InMemoryInventoryRepository {
         &mut self,
         input: InventorySnapshotInput,
     ) -> Result<InventorySnapshot, AppError> {
-        let fingerprint = Self::fingerprint(&input);
-        let revision = match (self.current.as_ref(), self.fingerprint) {
-            (Some(current), Some(previous)) if previous == fingerprint => current.metadata.revision,
+        let revision = match (self.current.as_ref(), self.previous_input.as_ref()) {
+            (Some(current), Some(previous)) if previous == &input => current.metadata.revision,
             (Some(current), _) => SyncRevision::new(
                 current
                     .metadata
@@ -163,7 +162,7 @@ impl InventoryRepository for InMemoryInventoryRepository {
             items: input.items,
         };
         self.current = Some(snapshot.clone());
-        self.fingerprint = Some(fingerprint);
+        self.previous_input = Some(InventorySnapshotInput::with_metadata(&snapshot));
         Ok(snapshot)
     }
 }
@@ -285,12 +284,12 @@ mod tests {
     #[test]
     fn clock_and_ids_are_deterministic() {
         let mut clock = FakeClock::fixed(Timestamp::new(10));
-        assert_eq!(clock.now(), Timestamp::new(10));
-        clock.advance(5);
-        assert_eq!(clock.now(), Timestamp::new(15));
+        assert_eq!(clock.now().unwrap(), Timestamp::new(10));
+        clock.advance(5).unwrap();
+        assert_eq!(clock.now().unwrap(), Timestamp::new(15));
         let mut ids = DeterministicPlanIds::starting_at(4);
-        assert_eq!(ids.next_plan_id().as_str(), "plan-4");
-        assert_eq!(ids.next_plan_id().as_str(), "plan-5");
+        assert_eq!(ids.next_plan_id().unwrap().as_str(), "plan-4");
+        assert_eq!(ids.next_plan_id().unwrap().as_str(), "plan-5");
     }
 
     #[test]
@@ -323,6 +322,100 @@ mod tests {
     }
 
     #[test]
+    fn every_normalized_field_participates_in_revision_equality() {
+        let mut repo = InMemoryInventoryRepository::new();
+        let base = input(1);
+        repo.replace_current(base.clone()).unwrap();
+
+        let mut changed = base.clone();
+        changed.items[0].location = ItemLocation::Character("character".into());
+        assert_eq!(
+            repo.replace_current(changed.clone())
+                .unwrap()
+                .metadata
+                .revision
+                .value(),
+            2
+        );
+        changed.items[0].power = Some(1810);
+        assert_eq!(
+            repo.replace_current(changed.clone())
+                .unwrap()
+                .metadata
+                .revision
+                .value(),
+            3
+        );
+        changed.characters.push(Character {
+            id: "character".into(),
+            name: Some("name".into()),
+            class: None,
+            race: None,
+            gender: None,
+            light: Some(100),
+        });
+        assert_eq!(
+            repo.replace_current(changed)
+                .unwrap()
+                .metadata
+                .revision
+                .value(),
+            4
+        );
+    }
+
+    #[test]
+    fn revision_overflow_is_atomic() {
+        let original = input(1);
+        let mut repo = InMemoryInventoryRepository::with_revision_for_test(
+            original.clone(),
+            SyncRevision::new(u64::MAX),
+        );
+        let changed = input(2);
+        assert_eq!(
+            repo.replace_current(changed),
+            Err(AppError::new(ErrorCategory::LocalStorage))
+        );
+        assert_eq!(
+            repo.load_current()
+                .unwrap()
+                .unwrap()
+                .metadata
+                .revision
+                .value(),
+            u64::MAX
+        );
+        assert_eq!(
+            repo.replace_current(original)
+                .unwrap()
+                .metadata
+                .revision
+                .value(),
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn clock_and_plan_ids_report_exhaustion_without_wrap() {
+        let mut clock = FakeClock::fixed(Timestamp::new(u64::MAX));
+        assert_eq!(
+            clock.advance(1),
+            Err(AppError::new(ErrorCategory::ClockOverflow))
+        );
+        assert_eq!(clock.now().unwrap().seconds(), u64::MAX);
+
+        let mut ids = DeterministicPlanIds::starting_at(u64::MAX);
+        assert_eq!(
+            ids.next_plan_id(),
+            Err(AppError::new(ErrorCategory::PlanIdExhausted))
+        );
+        assert_eq!(
+            ids.next_plan_id(),
+            Err(AppError::new(ErrorCategory::PlanIdExhausted))
+        );
+    }
+
+    #[test]
     fn gateways_sequence_queued_failures_without_remote_side_effects() {
         let mut gateway = QueuedProfileGateway::new();
         gateway.queue(Err(AppError::new(ErrorCategory::ProviderUnavailable)));
@@ -339,13 +432,98 @@ mod tests {
     }
 
     #[test]
+    fn repositories_and_gateways_cover_contract_outcomes() {
+        let hash = ItemHash::new(7);
+        let definition = ItemDefinition {
+            hash,
+            bucket_hash: None,
+            name: "Item".into(),
+            item_type: None,
+            tier: None,
+            element: None,
+            tags: Vec::new(),
+            version: DefinitionVersion::new("definitions-v1"),
+        };
+        let repository = InMemoryDefinitionRepository::new(
+            DefinitionVersion::new("definitions-v1"),
+            vec![definition.clone(), definition.clone()],
+        );
+        assert_eq!(
+            repository.current_definition_version().unwrap().as_str(),
+            "definitions-v1"
+        );
+        assert!(matches!(
+            repository.lookup_definition(ItemHash::new(8)).unwrap(),
+            Resolution::Missing
+        ));
+        assert!(matches!(
+            repository.lookup_definition(hash).unwrap(),
+            Resolution::Ambiguous(_)
+        ));
+        let unique = InMemoryDefinitionRepository::new(
+            DefinitionVersion::new("definitions-v1"),
+            vec![definition],
+        );
+        assert!(matches!(
+            unique.lookup_definition(hash).unwrap(),
+            Resolution::Unique(_)
+        ));
+
+        let mut manifest = QueuedManifestGateway::new();
+        let definitions = ManifestDefinitions {
+            version: DefinitionVersion::new("v1"),
+            definitions: Vec::new(),
+        };
+        manifest.queue(Ok(definitions.clone()));
+        manifest.queue(Err(AppError::new(ErrorCategory::ProviderValidation)));
+        assert_eq!(manifest.load_definitions().unwrap(), definitions);
+        assert_eq!(
+            manifest.load_definitions().unwrap_err().category(),
+            ErrorCategory::ProviderValidation
+        );
+        assert_eq!(
+            manifest.load_definitions().unwrap_err().category(),
+            ErrorCategory::ProviderUnavailable
+        );
+        assert_eq!(manifest.calls(), 3);
+
+        let mut profile = QueuedProfileGateway::new();
+        profile.queue(Ok(input(1)));
+        profile.queue(Err(AppError::new(ErrorCategory::ProviderValidation)));
+        assert_eq!(profile.load_inventory().unwrap(), input(1));
+        assert_eq!(
+            profile.load_inventory().unwrap_err().category(),
+            ErrorCategory::ProviderValidation
+        );
+        assert_eq!(
+            profile.load_inventory().unwrap_err().category(),
+            ErrorCategory::ProviderUnavailable
+        );
+        assert_eq!(profile.calls(), 3);
+
+        let mut inventory = InMemoryInventoryRepository::new();
+        assert_eq!(inventory.load_current().unwrap(), None);
+        inventory.replace_current(input(1)).unwrap();
+        assert_eq!(
+            inventory
+                .load_current()
+                .unwrap()
+                .unwrap()
+                .metadata
+                .revision
+                .value(),
+            1
+        );
+    }
+
+    #[test]
     fn credential_material_is_redacted_and_never_displayable() {
         let material = CredentialMaterial::from_bytes(b"secret");
         assert_eq!(format!("{material:?}"), "CredentialMaterial");
         let mut store = InMemoryCredentialStore::default();
         store.save(material).unwrap();
         assert!(store.contains_material());
-        assert_eq!(store.load().unwrap().unwrap().as_bytes(), b"secret");
+        assert_eq!(store.load().unwrap().unwrap().expose_secret(), b"secret");
         store.delete().unwrap();
         assert!(!store.contains_material());
     }

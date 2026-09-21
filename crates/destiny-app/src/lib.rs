@@ -74,4 +74,20 @@ mod tests {
         let startup_fn: fn() -> Result<(), AppError> = startup;
         let _ = startup_fn;
     }
+
+    #[test]
+    fn presentation_crates_do_not_depend_directly_on_destiny_core() {
+        for manifest in [
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../destiny-cli/Cargo.toml"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../destiny-mcp/Cargo.toml"),
+        ] {
+            let contents = std::fs::read_to_string(manifest).expect("workspace manifest");
+            assert!(
+                !contents
+                    .lines()
+                    .any(|line| { line.trim_start().starts_with("destiny-core") }),
+                "presentation crate directly depends on destiny-core: {manifest}"
+            );
+        }
+    }
 }

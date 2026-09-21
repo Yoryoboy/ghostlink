@@ -8,12 +8,12 @@ use std::fmt;
 
 /// Supplies application time without coupling the core to a clock runtime.
 pub trait Clock {
-    fn now(&self) -> Timestamp;
+    fn now(&self) -> Result<Timestamp, AppError>;
 }
 
 /// Supplies opaque plan identifiers without prescribing an ID algorithm.
 pub trait PlanIdGenerator {
-    fn next_plan_id(&mut self) -> PlanId;
+    fn next_plan_id(&mut self) -> Result<PlanId, AppError>;
 }
 
 /// A normalized inventory value before repository-owned revision assignment.
@@ -71,7 +71,8 @@ pub trait ManifestGateway {
     fn load_definitions(&mut self) -> Result<ManifestDefinitions, AppError>;
 }
 
-/// Opaque credential material. Its bytes are intentionally unavailable to formatting APIs.
+/// Opaque credential material. Bytes are available only through the explicit
+/// trusted-adapter exposure boundary and are never available to formatting APIs.
 #[derive(Clone, Eq, PartialEq)]
 pub struct CredentialMaterial(Vec<u8>);
 
@@ -80,7 +81,8 @@ impl CredentialMaterial {
         Self(bytes.into())
     }
 
-    pub fn as_bytes(&self) -> &[u8] {
+    /// Exposes secret bytes to a trusted credential-store/provider adapter.
+    pub fn expose_secret(&self) -> &[u8] {
         &self.0
     }
 }

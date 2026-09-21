@@ -21,6 +21,8 @@ pub enum ErrorCategory {
     VerificationFailed,
     LocalStorage,
     ConfigurationError,
+    ClockOverflow,
+    PlanIdExhausted,
 }
 
 /// An application failure whose presentation is intentionally sanitized.
@@ -64,6 +66,8 @@ impl fmt::Display for AppError {
             ErrorCategory::ConfigurationError => {
                 "required runtime configuration is missing or invalid"
             }
+            ErrorCategory::ClockOverflow => "clock value exceeded its supported range",
+            ErrorCategory::PlanIdExhausted => "plan identifiers are exhausted",
         };
         formatter.write_str(message)
     }
