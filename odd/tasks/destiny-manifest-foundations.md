@@ -59,14 +59,15 @@ Decision: WU-004 uses the bounded English `DestinyInventoryItemDefinition` path 
 
 ## Tasks
 
-- [ ] **DMF-001 — Establish evidence and feature boundary** *(in progress)*
+- [x] **DMF-001 — Establish evidence and feature boundary**
   - Route: delegated repository mapping plus parent primary-source research and tracking; mapping trigger fired because understanding spans more than four files.
-  - Outcome: create the chained branch and durable ODD tracker; record official acquisition/schema evidence, bounded MVP definition scope, exclusions, task slices, forecast, and checks.
-  - Check: read back repository tracker and Engram mirror; verify clean branch state after the work-unit commit.
+  - Outcome: created the chained branch and durable ODD tracker; recorded official acquisition/schema evidence, bounded MVP definition scope, exclusions, task slices, forecast, and checks.
+  - Check: repository tracker and Engram mirror readback passed; `git diff --check` passed; branch was clean after the work-unit commit.
+  - Evidence: commit `924ce89` (`chore: start Destiny Manifest foundations`).
   - Rollback: remove only this feature branch and tracker before implementation begins.
 
-- [ ] **DMF-002 — Add publishable definition repository contracts and fake**
-  - Route: delegated multi-file writer; core/app/test-support surfaces.
+- [ ] **DMF-002 — Add publishable definition repository contracts and fake** *(in progress)*
+  - Route: delegated multi-file writer; core/app/test-support surfaces; writer trigger fired because the slice touches multiple non-trivial files.
   - Outcome: extend the provider-neutral repository contract for atomic complete-set publication and implement a deterministic in-memory fake with lookup, version, replacement, and idempotence contract coverage.
   - Check: focused core and app test-support commands plus formatter/clippy and writer readback.
   - Rollback: remove only the new publication contract/fake behavior and associated tests.
@@ -104,6 +105,7 @@ Decision: WU-004 uses the bounded English `DestinyInventoryItemDefinition` path 
 - WU-004 branch created from that exact completed boundary.
 - Repository mapping identified existing `ManifestGateway`, `ManifestDefinitions`, read-only `DefinitionRepository`, normalized `ItemDefinition`, `InMemoryDefinitionRepository`, and `QueuedManifestGateway` seams.
 - Official evidence resolves the acquisition source: use the English per-component JSON path for `DestinyInventoryItemDefinition`, validate it on every index response, and avoid SQLite/all-definition payloads.
+- DMF-001 established and committed the feature boundary in `924ce89`.
 
 ## Verification evidence
 
@@ -111,4 +113,4 @@ Pending implementation.
 
 ## Next step
 
-Commit DMF-001, synchronize its evidence, then delegate DMF-002 within the exact core/app/test-support edit surfaces.
+Delegate DMF-002 within the exact core/app/test-support edit surfaces.
