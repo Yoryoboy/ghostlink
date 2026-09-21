@@ -9,9 +9,15 @@ destiny-core <- destiny-adapters
 destiny-app <- destiny-mcp
 ```
 
-The five crates are intentionally minimal. Configuration, diagnostics, OAuth,
-HTTP, SQLite, MCP transport, and credential persistence are planned for later
-work units.
+The five crates are intentionally minimal. Runtime configuration is a Bungie
+public-client API key, public OAuth client ID, HTTP loopback callback URI, and
+a separately configured registered callback URI. The two callback values must
+match exactly, including case. There is no client-secret configuration.
+OAuth, HTTP calls, SQLite, MCP transport, and credential persistence are
+planned for later work units.
+
+Copy `config.example.env` and replace its obvious placeholders locally; do not
+commit credentials. Startup diagnostics are typed and sanitized.
 
 ## Baseline checks
 

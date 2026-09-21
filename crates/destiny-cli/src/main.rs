@@ -10,5 +10,8 @@ struct Cli;
 
 fn main() {
     let _ = Cli::parse();
-    let _ = destiny_app::foundation_ready();
+    if let Err(error) = destiny_app::load_config() {
+        eprintln!("{}", destiny_app::startup_diagnostic(error));
+        std::process::exit(1);
+    }
 }

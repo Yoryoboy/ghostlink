@@ -34,7 +34,7 @@ A small provider-free foundation makes dependency direction, configuration error
 
 - Strategy: `ask-on-risk`.
 - Forecast: approximately 350–500 authored changed lines across manifests, scaffold modules, tests, and documentation.
-- Chain strategy: pending only if the running authored-line count exceeds the review heuristic.
+- Chain strategy: `feature-branch-chain`, selected by the user after the running change exceeded the review heuristic.
 - Engram mirror topic: `odd/destiny-workspace-foundations/tasks`.
 - Branch: create `feature/destiny-workspace-foundations` from the completed architecture boundary before source implementation.
 
@@ -58,11 +58,11 @@ A small provider-free foundation makes dependency direction, configuration error
   - Check: observed `rustc 1.98.1`, `cargo 1.98.1`, `rustfmt 1.9.0`, and `clippy 0.1.98`; branch status contained only the intentionally untracked local `.codegraph/` index after the tracker commit.
   - Evidence: commit `3fe08e0` (`chore: start Destiny workspace foundations`).
 
-- [ ] **DWF-002 — Scaffold the workspace and crate boundaries**
+- [x] **DWF-002 — Scaffold the workspace and crate boundaries**
   - Route: delegated to `gentle-ai-worker`; multi-file write trigger.
-  - Outcome: create the workspace and five planned crates with visible inward dependency direction and help-capable CLI/MCP binaries.
-  - Check: workspace metadata/build checks plus both `--help` commands.
-  - Evidence: pending.
+  - Outcome: created the five planned provider-free crates with visible inward dependencies, Clap-based help-capable CLI/MCP binaries, a lockfile, and concise workspace documentation. Added Rust and local index outputs to `.gitignore` after verification generated `target/`.
+  - Check: the worker observed passing fmt, clippy, workspace tests, all-features tests, both `--help` commands, and the expected five-package `cargo metadata` graph; the parent independently reran `cargo metadata --no-deps --format-version 1` successfully and read back both binary entry points.
+  - Evidence: commit `9cd90b0` (`feat: scaffold Destiny Rust workspace`).
 
 - [ ] **DWF-003 — Implement configuration and sanitized error foundations**
   - Route: delegated to `gentle-ai-worker`; multi-file write trigger.
@@ -92,7 +92,9 @@ A small provider-free foundation makes dependency direction, configuration error
 - WU-001 was selected as the next implementation feature.
 - No Rust implementation files existed when this tracker was created.
 - DWF-001 established the feature branch and local Rust toolchain baseline in commit `3fe08e0`.
+- DWF-002 established the five-crate workspace and credential-free binary help paths in commit `9cd90b0`; all scaffold checks passed.
+- The user selected `feature-branch-chain` after the running WU-001 change crossed the review heuristic; DWF-003 remains the second slice on this branch.
 
 ## Next step
 
-Delegate DWF-002 as the first bounded multi-file implementation slice.
+Delegate DWF-003 to implement shared configuration and sanitized error foundations.
