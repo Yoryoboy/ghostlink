@@ -68,14 +68,16 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
   - Evidence: commit `82b22ab` (`feat: add durable sync metadata contracts`).
   - Rollback: revert only WU-005 metadata/revision contract and fake changes.
 
-- [ ] **DSF-003 — Add SQLite dependency, connection policy, and reversible migrations** *(in progress)*
-  - Route: delegated adapter writer; first internal WU-005 review slice; writer trigger fires across manifest, lockfile, module, and migration/test files.
-  - Outcome: pin `rusqlite` 0.40.2 bundled, add `destiny-adapters::sqlite`, explicit schema migrations, schema-version validation, foreign keys, bounded busy timeout, file/in-memory constructors, and normalized secret-free tables for definitions, tags, sync metadata, active profile, characters, and items.
-  - Check: migration from empty DB, repeated open, version mismatch/future-version refusal, foreign-key enforcement, rollback on failed migration, schema inspection, and dependency-direction checks.
+- [x] **DSF-003 — Add SQLite dependency, connection policy, and reversible migrations**
+  - Route: delegated adapter writer; first internal WU-005 review slice. Native assessment was unavailable and required independent high-risk verification. The initial independent review found a blocking canonical-decimal range hole; the writer added explicit maximum lengths, STRICT tables, integer storage guards, exact boundary tests, and an exact dependency requirement before independent re-verification passed.
+  - Outcome: pinned `rusqlite =0.40.2` with bundled SQLite, added a single-connection synchronous `destiny-adapters::sqlite::SqliteStore`, foreign keys, a 5-second busy timeout, trusted-schema hardening, file WAL policy, in-memory policy, explicit reversible v1 migrations, future-version refusal, and six normalized secret-free STRICT tables for metadata, definitions/tags, active profile, characters, and items. No repository implementation was added.
+  - Check: adapter check/clippy passed; 17 focused SQLite tests, 84 adapter tests, and 160 workspace tests passed; migration rollback/version atomicity, v1→v0→v1 reversibility, FK/CHECK enforcement, exact u64/u32 decimal bounds, integer storage, schema secrecy, reopen behavior, and one active rusqlite/libsqlite3-sys path were independently verified. One pre-existing OAuth timeout test failed once and then passed 6 isolated runs plus the final full-workspace rerun; it remains a non-blocking follow-up.
+  - Review workload: 1,415 changed lines, including 894 test lines and 100 lockfile lines. This exceeds the 400-line heuristic but stays within one indivisible migration/schema contract slice; repository behavior remains separated into DSF-004/005.
+  - Evidence: commit `f96ad55` (`feat: add SQLite schema migrations`).
   - Rollback: remove dependency/module/migration files and restore lock/manifests; WU-004 fake remains intact.
 
-- [ ] **DSF-004 — Implement transactional SQLite definition repository**
-  - Route: delegated bounded adapter writer.
+- [ ] **DSF-004 — Implement transactional SQLite definition repository** *(in progress)*
+  - Route: delegated bounded adapter writer; writer trigger fires across the repository module, module export, and contract tests.
   - Outcome: implement `DefinitionRepository` with complete-set transactional replacement, deterministic lookup/version/metadata, structural unchanged detection, revision retain/advance, tag rows, failure rollback, and reopen persistence.
   - Check: contract parity with fake; unchanged/changed replacement; duplicate/empty/mixed-version rejection; rollback; reopened file round trip; no stale rows; secret sentinels absent.
   - Rollback: remove only definition tables/repository/migration portion and tests while preserving profile schema boundary where independently valid.
@@ -112,12 +114,14 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
 - Current official research supports `rusqlite` 0.40.2 with bundled SQLite for this synchronous application-owned database.
 - DSF-001 established and committed the feature boundary in `224c797`.
 - DSF-002 added durable provider-neutral metadata and collision-free revision semantics in `82b22ab`; repeated successful refreshes now update freshness without manufacturing content revisions.
+- DSF-003 added the exact bundled SQLite dependency, hardened connection policy, reversible migration runner, normalized STRICT schema, and 17 focused tests in `f96ad55` after fixing an independent-review blocker in canonical decimal bounds.
 
 ## Verification evidence
 
 - DSF-001 tracker readback and clean-branch checks passed.
 - DSF-002 writer and independent verifier both observed clean formatting, diff checks, focused tests, focused clippy, and the offline adapter fixture. Native assessment was unavailable/schema-incompatible, so the candidate followed the required high-risk fallback path.
+- DSF-003 writer and independent verifier observed clean formatting/check/clippy, 17 focused SQLite tests, 84 adapter tests, 160 workspace tests, reversible migrations, exact numeric bounds, schema secrecy, and dependency uniqueness. Independent review found and then cleared one blocking over-range decimal acceptance defect. Native assessment was unavailable, so the candidate followed the required high-risk fallback path.
 
 ## Next step
 
-Delegate DSF-003 for the pinned SQLite dependency, connection policy, migrations, schema inspection, and rollback/version tests.
+Delegate DSF-004 for the transactional SQLite definition repository and contract parity with the in-memory fake.
