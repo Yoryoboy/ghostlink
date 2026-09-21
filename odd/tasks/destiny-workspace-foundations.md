@@ -70,11 +70,11 @@ A small provider-free foundation makes dependency direction, configuration error
   - Check: both workers reported the full baseline command set passing; the parent reran all-features tests plus fmt/clippy spot checks; independent verification reran every baseline command, both clean-environment startup failures, and `git diff --check` with no findings.
   - Evidence: commit `25fdfe6` (`feat: add Destiny configuration foundations`); independent verification passed with no findings.
 
-- [ ] **DWF-004 — Verify and close WU-001**
-  - Route: native review/assessment and delegated verification as required by the active RDD policy.
-  - Outcome: independently verify the committed work-unit candidate, record any correction, and close the feature when all required checks are observed.
-  - Check: final baseline commands, repository status, review outcome, and tracker evidence.
-  - Evidence: pending.
+- [x] **DWF-004 — Verify and close WU-001**
+  - Route: native review was offered and declined for this candidate; native risk assessment was unavailable/schema-incompatible, so the high-risk fallback used delegated independent verification and one bounded correction.
+  - Outcome: final full-range verification found one high presentation-boundary issue: public configuration getters exposed raw API key/client ID to CLI/MCP. Commit `33c8d6b` sealed the boundary by making configuration crate-private and exposing only sanitized `startup() -> Result<(), AppError>`; correction re-verification passed with no findings.
+  - Check: final verification observed passing fmt, clippy, workspace tests, all-features tests, both help commands, both clean-environment non-zero sanitized startup checks, Cargo metadata, and full-range/correction `git diff --check`; final worktree was clean.
+  - Evidence: tracker evidence commit `c10d06e`; correction commit `33c8d6b` (`fix: seal Destiny presentation config boundary`); native review outcome `declined_this_candidate`; independent correction verification passed.
 
 ## Acceptance criteria
 
@@ -94,8 +94,10 @@ A small provider-free foundation makes dependency direction, configuration error
 - DWF-001 established the feature branch and local Rust toolchain baseline in commit `3fe08e0`.
 - DWF-002 established the five-crate workspace and credential-free binary help paths in commit `9cd90b0`; all scaffold checks passed.
 - The user selected `feature-branch-chain` after the running WU-001 change crossed the review heuristic; DWF-003 is the second slice on this branch.
-- DWF-003 implemented and independently verified the configuration/error/diagnostics foundation in commit `25fdfe6`; all checks passed with no findings.
+- DWF-003 implemented and independently verified the configuration/error/diagnostics foundation in commit `25fdfe6`; all slice checks passed with no findings.
+- Full-feature verification then found a presentation-boundary leak in the public configuration API. Commit `33c8d6b` made configuration crate-private and exposed only sanitized startup results; focused re-verification passed.
+- Native review was offered for the full candidate and declined by the user; ordinary high-risk fallback verification completed successfully.
 
 ## Next step
 
-Complete DWF-004 with final branch verification and native review handling.
+WU-001 is complete. Begin WU-002 as a new ODD implementation feature.
