@@ -78,11 +78,11 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
   - Check: fmt and clippy passed; workspace and all-features tests passed; 39 adapter tests and 32 app tests passed; CLI/MCP help and diff check passed; focused token suite passed 21 tests. The independent verifier classified the intermittent callback timeout test as a pre-existing environment-dependent DOF-003 flake after 9/10 isolated passes; it found no DOF-004 correctness or security blocker. Live OAuth remains N/A.
   - Evidence: implementation commit `000cc31` (`feat: add Destiny public token exchange`); ordinary independent verification passed and declared the candidate commit-ready. Native review was explicitly bypassed for this clone after the provider defect reported at `Gentleman-Programming/gentle-ai#4370` comment `5764097110`; no receipt exists.
 
-- [ ] **DOF-005 — Implement multiplatform native credential store**
-  - Route: delegated multi-file implementation after explicit backend/version validation.
-  - Outcome: native secure-store adapters for supported desktop platforms with fail-closed capability detection and no plaintext fallback.
-  - Check: backend selection/compile tests, restricted fake integration, redaction/leak tests; real OS-store checks documented separately.
-  - Evidence: pending.
+- [x] **DOF-005 — Implement multiplatform native credential store**
+  - Route: parent primary-source backend/version revalidation, delegated multi-file implementation, parent readback, and independent verification under ordinary policy.
+  - Outcome: added `NativeCredentialStore` in destiny-adapters implementing the core `CredentialStore` port over `keyring-core` 1.0.0 with explicit target-gated production backends: `apple-native-keyring-store` 1.0.2 (`keychain`+`protected`) on macOS, `windows-native-keyring-store` 1.1.0 on Windows, and `dbus-secret-service-keyring-store` 1.0.1 with `crypto-rust` on Linux/FreeBSD. Binary secrets use `set_secret`/`get_secret` (no UTF-8 restriction) under fixed deployment-contract specifiers `CREDENTIAL_SERVICE`/`CREDENTIAL_USER`; unsupported targets and every backend failure map fail-closed to `CredentialStoreUnavailable` with no plaintext, filesystem, or in-memory fallback; `NoEntry` loads as `None` and delete is an idempotent no-op; keyring error payloads (which can carry secret bytes) are discarded whole and never formatted; tests inject the keyring-core mock store and never touch a real OS store.
+  - Check: fmt, clippy `-D warnings`, workspace/all-features tests (94 passed), focused adapters tests (47 passed), CLI/MCP help, and diff-scope check all passed. Independent verifier confirmed fail-closed, redaction (sentinel tests over `BadEncoding`/`BadDataFormat`/`PlatformFailure`), key-steering resistance, and offline test isolation against the vendored 1.0.0 sources, and declared the candidate commit-ready. Linux backend compiled and exercised via mock; macOS/Windows construction calls match published APIs but their compilation is deferred to first cross-platform CI (documented follow-up). Real OS-store checks remain a separate manual gate.
+  - Evidence: commit `93118a3` (`feat: add native credential store adapter`).
 
 - [ ] **DOF-006 — Verify and close WU-003**
   - Route: native review/assessment and delegated verification under active RDD policy.
@@ -115,7 +115,9 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
 - Native intended-untracked selection returned `schema-incompatible`; reconciliation also failed with `lineage_created: false`, and the equivalent provider defect occurrence was confirmed on issue `#4370` with comment `5764097110`.
 - The user explicitly disabled RDD for this clone to close DOF-004 through ordinary policy. A fresh independent verifier then ran every required command, found no DOF-004 blocker, and declared the candidate commit-ready. Its only finding was the pre-existing environment-dependent callback timeout flake in unchanged DOF-003 code.
 - DOF-004 closed in work-unit commit `000cc31`. Excluding the generated lockfile, the cohesive adapter/state/tests/docs unit contains 1,271 authored changed lines; it remains a dedicated feature-branch-chain slice rather than omitting security tests or splitting inseparable behavior.
+- DOF-005 backend revalidation on 2026-09-21 against crates.io, docs.rs, and the keyring-rs wiki confirmed the production pattern: link `keyring-core` 1.0.0 plus explicit per-platform store crates, not the all-in-one `keyring` facade. `keyring_core::Error` is `#[non_exhaustive]` with secret-bearing `BadEncoding`/`BadDataFormat`/`PlatformFailure` payloads; `set_secret`/`get_secret` provide binary storage without UTF-8 restriction.
+- DOF-005 closed in work-unit commit `93118a3` (686 changed lines including the generated lockfile). Independent verification passed with no blockers; the documented follow-up is a first macOS/Windows CI compile of the target-gated backends.
 
 ## Next step
 
-Begin DOF-005 multiplatform native credential storage after dependency/backend revalidation.
+Begin DOF-006 final WU-003 verification and closure.
