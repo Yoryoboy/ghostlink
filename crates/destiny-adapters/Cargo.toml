@@ -6,4 +6,6 @@ license.workspace = true
 
 [dependencies]
 destiny-core.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
 url.workspace = true

@@ -32,7 +32,7 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
 
 ## Evidence and decisions
 
-- Bungie official OAuth documentation currently establishes Authorization Code, a single registered redirect URL, exact matching, public-client `client_id`, no public `client_secret`, no public refresh token, random validated `state`, and system-browser authorization.
+- Bungie official OAuth documentation, revalidated on 2026-09-21, establishes Authorization Code, form-encoded token POSTs, required public-client `client_id`, optional exact `redirect_uri`, no public `client_secret`, no public refresh token, random validated `state`, and system-browser authorization.
 - No official evidence establishes device-code/headless OAuth. Headless support therefore reuses the exact browser/callback flow through SSH local forwarding.
 - The Rust `keyring` ecosystem documents native secure-store support across macOS, Windows, and *nix and recommends selecting explicit backend crates for production applications.
 - User decision: support desktop browser launch plus headless URL/SSH-tunnel guidance, and multiplatform native credential storage.
@@ -72,11 +72,11 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
   - Check: final independent verification passed fmt, clippy, two 62-test all-features runs, 18 adapter tests, 29 app tests, both help commands, and diff check with no skips or findings.
   - Evidence: commit `aa6433c` (`feat: add Destiny OAuth callback UX`); final independent verdict commit-ready.
 
-- [ ] **DOF-004 — Implement public-client token exchange and reauthorization**
-  - Route: delegated multi-file implementation after dependency/API revalidation.
-  - Outcome: form-encoded authorization-code exchange with `client_id`, no secret/scope/refresh flow, typed denial/exchange/401/expiry outcomes, and logout coordination.
-  - Check: fake HTTP contract tests and request-shape assertions; no live credentials.
-  - Evidence: pending.
+- [x] **DOF-004 — Implement public-client token exchange and reauthorization**
+  - Route: delegated multi-file implementation after dependency/API revalidation; deterministic parent-readback gaps received one bounded delegated correction; final independent verification ran under ordinary policy after the user explicitly disabled RDD for this clone.
+  - Outcome: implemented a bounded form-encoded authorization-code exchange with `client_id` and exact `redirect_uri`; no secret/scope/refresh flow; hardened TLS/timeout/redirect/proxy/response-size/content-type handling; strict token decoding; typed 401/403 reauthorization; expiry and logout coordination.
+  - Check: fmt and clippy passed; workspace and all-features tests passed; 39 adapter tests and 32 app tests passed; CLI/MCP help and diff check passed; focused token suite passed 21 tests. The independent verifier classified the intermittent callback timeout test as a pre-existing environment-dependent DOF-003 flake after 9/10 isolated passes; it found no DOF-004 correctness or security blocker. Live OAuth remains N/A.
+  - Evidence: implementation commit pending; ordinary independent verification passed and declared the candidate commit-ready. Native review was explicitly bypassed for this clone after the provider defect reported at `Gentleman-Programming/gentle-ai#4370` comment `5764097110`; no receipt exists.
 
 - [ ] **DOF-005 — Implement multiplatform native credential store**
   - Route: delegated multi-file implementation after explicit backend/version validation.
@@ -109,7 +109,12 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
 - DOF-001 established the feature boundary and evidence-backed UX contract in `1760aff`.
 - DOF-002 implemented the offline authorization state machine in `2e23da0`; high-risk verification findings were corrected in `8470683`, and re-verification passed.
 - DOF-003 implemented and hardened exact callback/browser/headless UX in `aa6433c`; final independent verification passed after closing all security and flakiness findings.
+- DOF-004 revalidated the official Bungie page on 2026-09-21: public exchange uses an `application/x-www-form-urlencoded` POST with `grant_type=authorization_code`, `code`, and `client_id`; `redirect_uri` is optional but exact when supplied; `scope` and public `client_secret` are forbidden; public clients receive no refresh token.
+- The uncommitted implementation adds the bounded HTTPS adapter, strict request/response contract, hardened reqwest client, typed reauthorization mapping, and offline tests. Parent readback found and corrected missing JSON Content-Type enforcement and an out-of-range floating `expires_in` saturation path.
+- Current stable `reqwest` 0.13.5 is configured with default features disabled and blocking/rustls only; redirects and proxies are disabled, total/connect deadlines and response-size caps are enforced, and crate metadata reports Rust 1.85 compatibility.
+- Native intended-untracked selection returned `schema-incompatible`; reconciliation also failed with `lineage_created: false`, and the equivalent provider defect occurrence was confirmed on issue `#4370` with comment `5764097110`.
+- The user explicitly disabled RDD for this clone to close DOF-004 through ordinary policy. A fresh independent verifier then ran every required command, found no DOF-004 blocker, and declared the candidate commit-ready. Its only finding was the pre-existing environment-dependent callback timeout flake in unchanged DOF-003 code.
 
 ## Next step
 
-Implement DOF-004 public-client token exchange and reauthorization mapping.
+Commit DOF-004 as one work unit, record its commit evidence, then begin DOF-005 native credential storage.

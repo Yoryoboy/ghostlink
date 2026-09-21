@@ -147,9 +147,16 @@ where
         };
         let credential = match self.exchange.exchange(code) {
             Ok(value) => value,
-            Err(_) => {
+            Err(error) => {
                 self.state = AuthState::ReauthorizationRequired;
-                return Ok(AuthorizationOutcome::ExchangeFailed);
+                let outcome = match error.category() {
+                    ErrorCategory::ProviderAuthentication
+                    | ErrorCategory::ReauthorizationRequired => {
+                        AuthorizationOutcome::ReauthorizationRequired
+                    }
+                    _ => AuthorizationOutcome::ExchangeFailed,
+                };
+                return Ok(outcome);
             }
         };
         let metadata = credential.metadata;
@@ -213,6 +220,28 @@ mod tests {
         use destiny_core::{
             AccessCredential, AuthorizationCode, CredentialMaterial, ErrorCategory,
         };
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct SharedCredentialStore {
+            material: Arc<Mutex<Option<CredentialMaterial>>>,
+        }
+
+        impl CredentialStore for SharedCredentialStore {
+            fn save(&mut self, material: CredentialMaterial) -> Result<(), AppError> {
+                *self.material.lock().expect("shared store lock") = Some(material);
+                Ok(())
+            }
+
+            fn load(&self) -> Result<Option<CredentialMaterial>, AppError> {
+                Ok(self.material.lock().expect("shared store lock").clone())
+            }
+
+            fn delete(&mut self) -> Result<(), AppError> {
+                *self.material.lock().expect("shared store lock") = None;
+                Ok(())
+            }
+        }
 
         fn credential(expires_at: u64) -> AccessCredential {
             AccessCredential {
@@ -458,6 +487,136 @@ mod tests {
                 .unwrap_err();
             assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
             assert_eq!(service.state(), &AuthState::ReauthorizationRequired);
+        }
+
+        #[test]
+        fn exchange_errors_categorize_into_reauthorization_or_exchange_failure() {
+            for (category, expected) in [
+                (
+                    ErrorCategory::ProviderAuthentication,
+                    AuthorizationOutcome::ReauthorizationRequired,
+                ),
+                (
+                    ErrorCategory::ReauthorizationRequired,
+                    AuthorizationOutcome::ReauthorizationRequired,
+                ),
+                (
+                    ErrorCategory::ProviderValidation,
+                    AuthorizationOutcome::ExchangeFailed,
+                ),
+                (
+                    ErrorCategory::ProviderUnavailable,
+                    AuthorizationOutcome::ExchangeFailed,
+                ),
+                (
+                    ErrorCategory::ProviderRateLimit,
+                    AuthorizationOutcome::ExchangeFailed,
+                ),
+                (
+                    ErrorCategory::AuthorizationDenied,
+                    AuthorizationOutcome::ExchangeFailed,
+                ),
+            ] {
+                let mut exchange = QueuedTokenExchange::default();
+                exchange.outcomes.push_back(Err(AppError::new(category)));
+                let mut service = AuthorizationService::new(
+                    DeterministicRandom::new([AuthorizationState::from_bytes(b"state")]),
+                    RecordingBrowser::default(),
+                    QueuedCallbackReceiver::default(),
+                    exchange,
+                    InMemoryCredentialStore::default(),
+                    FakeClock::fixed(Timestamp::new(10)),
+                    20,
+                );
+                service.begin().unwrap();
+                let state = match service.state() {
+                    AuthState::Authorizing { state, .. } => state.clone(),
+                    _ => unreachable!(),
+                };
+                let outcome = service
+                    .handle_callback(callback(
+                        &state,
+                        CallbackResult::Code(AuthorizationCode::from_bytes(b"code")),
+                    ))
+                    .unwrap();
+                assert_eq!(
+                    outcome, expected,
+                    "category {category:?} mapped incorrectly"
+                );
+                assert_ne!(outcome, AuthorizationOutcome::Denied);
+                assert_eq!(service.state(), &AuthState::ReauthorizationRequired);
+            }
+        }
+
+        #[test]
+        fn provider_authentication_exchange_error_restarts_after_reauthorization() {
+            let mut exchange = QueuedTokenExchange::default();
+            exchange
+                .outcomes
+                .push_back(Err(AppError::new(ErrorCategory::ProviderAuthentication)));
+            exchange.outcomes.push_back(Ok(credential(100)));
+            let mut service = AuthorizationService::new(
+                DeterministicRandom::new([
+                    AuthorizationState::from_bytes(b"state-first"),
+                    AuthorizationState::from_bytes(b"state-second"),
+                ]),
+                RecordingBrowser::default(),
+                QueuedCallbackReceiver::default(),
+                exchange,
+                InMemoryCredentialStore::default(),
+                FakeClock::fixed(Timestamp::new(10)),
+                20,
+            );
+            assert_eq!(service.begin(), Ok(AuthorizationOutcome::Started));
+            let state = match service.state() {
+                AuthState::Authorizing { state, .. } => state.clone(),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                service.handle_callback(callback(
+                    &state,
+                    CallbackResult::Code(AuthorizationCode::from_bytes(b"first-code"))
+                )),
+                Ok(AuthorizationOutcome::ReauthorizationRequired)
+            );
+            assert_eq!(service.state(), &AuthState::ReauthorizationRequired);
+
+            assert_eq!(service.begin(), Ok(AuthorizationOutcome::Started));
+            let state = match service.state() {
+                AuthState::Authorizing { state, .. } => state.clone(),
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                service.handle_callback(callback(
+                    &state,
+                    CallbackResult::Code(AuthorizationCode::from_bytes(b"second-code"))
+                )),
+                Ok(AuthorizationOutcome::Authorized(AccessCredentialMetadata {
+                    expires_at: Timestamp::new(100)
+                }))
+            );
+            assert!(matches!(service.state(), AuthState::Authorized { .. }));
+        }
+
+        #[test]
+        fn logout_after_authorization_deletes_the_stored_credential() {
+            let store = SharedCredentialStore::default();
+            let handle = store.clone();
+            let mut service = started_service(store);
+            let state = match service.state() {
+                AuthState::Authorizing { state, .. } => state.clone(),
+                _ => unreachable!(),
+            };
+            service
+                .handle_callback(callback(
+                    &state,
+                    CallbackResult::Code(AuthorizationCode::from_bytes(b"code")),
+                ))
+                .unwrap();
+            assert!(handle.material.lock().expect("shared store lock").is_some());
+            assert_eq!(service.logout(), Ok(AuthorizationOutcome::LoggedOut));
+            assert!(handle.material.lock().expect("shared store lock").is_none());
+            assert_eq!(service.state(), &AuthState::SignedOut);
         }
 
         #[test]

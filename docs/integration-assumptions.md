@@ -146,11 +146,32 @@ The following are design inferences from the verified facts, not provider guaran
 7. What secure local mechanism, if any, will hold public-client access state without
    placing secrets in MCP context, logs, or SQLite?
 
+## Implementation revalidation (2026-09-21)
+
+The DOF-004 public-client token-exchange slice revalidated the official Bungie OAuth
+page on 2026-09-21 before implementation. Within the bounded scope of that page, the
+revalidation confirms:
+
+- The token endpoint is `https://www.bungie.net/platform/app/oauth/token/`.
+- The token request is an `application/x-www-form-urlencoded` POST.
+- The public-client token request sends `grant_type=authorization_code`, `code`, and
+  `client_id`, and must not send `client_secret`.
+- `redirect_uri` is optional on the token request but must match the registered value
+  exactly when supplied; this implementation sends the same exact configured callback
+  used for authorization.
+- `scope` is omitted from token requests.
+- The public-client path receives no refresh token, so no refresh grant or
+  refresh-token storage is implemented.
+
+This note adds no claim beyond the official page. The explicit gaps and unresolved
+questions recorded below are unchanged.
+
 ## Source register
 
 | Source | Publisher | Retrieved | Confidence / freshness note |
 |---|---|---:|---|
 | [Bungie OAuth Documentation](https://github.com/Bungie-net/api/wiki/OAuth-Documentation) | Bungie-net | 2026-04-17 | High confidence for documented OAuth behavior; freshness is time-bounded to retrieval and silent on the explicit gaps listed above. |
+| [Bungie OAuth Documentation](https://github.com/Bungie-net/api/wiki/OAuth-Documentation) | Bungie-net | 2026-09-21 | Implementation revalidation for the public-client token exchange: form POST fields, optional exact `redirect_uri`, `scope` omission, no public `client_secret`, and no public refresh token. Limited to the official page. |
 | [`rmcp` crate metadata](https://crates.io/api/v1/crates/rmcp) | crates.io | 2026-04-17 | High confidence for the published-version record at retrieval; version availability may change. |
 | [RMCP repository README at `rmcp-v1.5.0`](https://raw.githubusercontent.com/modelcontextprotocol/rust-sdk/rmcp-v1.5.0/README.md) | Model Context Protocol project | 2026-04-17 | High confidence for the tagged snapshot's SDK, Tokio, target-spec, tools/macros, and stdio claims; not a guarantee about later `main`. |
 | [RMCP crate README at `rmcp-v1.5.0`](https://raw.githubusercontent.com/modelcontextprotocol/rust-sdk/rmcp-v1.5.0/crates/rmcp/README.md) | Model Context Protocol project | 2026-04-17 | High confidence for the tagged crate's transport names and server-side stdio description; revalidate against the pinned implementation version. |
