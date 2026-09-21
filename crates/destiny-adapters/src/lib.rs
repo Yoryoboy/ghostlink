@@ -1,6 +1,7 @@
 //! Provider integrations and local OAuth adapters.
 
 pub mod credential_store;
+pub mod manifest;
 pub mod oauth;
 pub mod token;
 
