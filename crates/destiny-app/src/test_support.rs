@@ -263,6 +263,8 @@ mod tests {
         Character, ErrorCategory, ItemInstance, ItemLocation, MembershipId, MembershipType,
     };
 
+    type RevisionMutation = (&'static str, fn(&mut InventorySnapshotInput));
+
     fn input(quantity: u32) -> InventorySnapshotInput {
         InventorySnapshotInput {
             membership_id: MembershipId::new("membership"),
@@ -323,45 +325,129 @@ mod tests {
 
     #[test]
     fn every_normalized_field_participates_in_revision_equality() {
-        let mut repo = InMemoryInventoryRepository::new();
-        let base = input(1);
-        repo.replace_current(base.clone()).unwrap();
+        let base = InventorySnapshotInput {
+            membership_id: MembershipId::new("membership"),
+            membership_type: MembershipType::new(1),
+            definition_version: DefinitionVersion::new("definitions-v1"),
+            characters: vec![
+                Character {
+                    id: "character-1".into(),
+                    name: Some("name-1".into()),
+                    class: Some("class-1".into()),
+                    race: Some("race-1".into()),
+                    gender: Some("gender-1".into()),
+                    light: Some(100),
+                },
+                Character {
+                    id: "character-2".into(),
+                    name: Some("name-2".into()),
+                    class: Some("class-2".into()),
+                    race: Some("race-2".into()),
+                    gender: Some("gender-2".into()),
+                    light: Some(200),
+                },
+            ],
+            items: vec![
+                ItemInstance {
+                    instance_id: "instance-1".into(),
+                    item_hash: ItemHash::new(7),
+                    location: ItemLocation::Vault,
+                    quantity: 1,
+                    equipped: false,
+                    locked: false,
+                    power: Some(100),
+                },
+                ItemInstance {
+                    instance_id: "instance-2".into(),
+                    item_hash: ItemHash::new(8),
+                    location: ItemLocation::Other("postmaster".into()),
+                    quantity: 2,
+                    equipped: true,
+                    locked: true,
+                    power: Some(200),
+                },
+            ],
+        };
 
-        let mut changed = base.clone();
-        changed.items[0].location = ItemLocation::Character("character".into());
-        assert_eq!(
-            repo.replace_current(changed.clone())
-                .unwrap()
-                .metadata
-                .revision
-                .value(),
-            2
-        );
-        changed.items[0].power = Some(1810);
-        assert_eq!(
-            repo.replace_current(changed.clone())
-                .unwrap()
-                .metadata
-                .revision
-                .value(),
-            3
-        );
-        changed.characters.push(Character {
-            id: "character".into(),
-            name: Some("name".into()),
-            class: None,
-            race: None,
-            gender: None,
-            light: Some(100),
-        });
-        assert_eq!(
-            repo.replace_current(changed)
-                .unwrap()
-                .metadata
-                .revision
-                .value(),
-            4
-        );
+        let mutations: [RevisionMutation; 20] = [
+            ("membership_id", |value| {
+                value.membership_id = MembershipId::new("membership-2");
+            }),
+            ("membership_type", |value| {
+                value.membership_type = MembershipType::new(2);
+            }),
+            ("definition_version", |value| {
+                value.definition_version = DefinitionVersion::new("definitions-v2");
+            }),
+            ("character.id", |value| {
+                value.characters[0].id = "character-1-changed".into();
+            }),
+            ("character.name", |value| {
+                value.characters[0].name = Some("name-1-changed".into());
+            }),
+            ("character.class", |value| {
+                value.characters[0].class = Some("class-1-changed".into());
+            }),
+            ("character.race", |value| {
+                value.characters[0].race = Some("race-1-changed".into());
+            }),
+            ("character.gender", |value| {
+                value.characters[0].gender = Some("gender-1-changed".into());
+            }),
+            ("character.light", |value| {
+                value.characters[0].light = Some(101);
+            }),
+            ("item.instance_id", |value| {
+                value.items[0].instance_id = "instance-1-changed".into();
+            }),
+            ("item.item_hash", |value| {
+                value.items[0].item_hash = ItemHash::new(9);
+            }),
+            ("item.location", |value| {
+                value.items[0].location = ItemLocation::Character("character-1".into());
+            }),
+            ("item.quantity", |value| {
+                value.items[0].quantity = 3;
+            }),
+            ("item.equipped", |value| {
+                value.items[0].equipped = true;
+            }),
+            ("item.locked", |value| {
+                value.items[0].locked = true;
+            }),
+            ("item.power", |value| {
+                value.items[0].power = Some(101);
+            }),
+            ("characters.membership", |value| {
+                value.characters.pop();
+            }),
+            ("characters.order", |value| {
+                value.characters.swap(0, 1);
+            }),
+            ("items.membership", |value| {
+                value.items.pop();
+            }),
+            ("items.order", |value| {
+                value.items.swap(0, 1);
+            }),
+        ];
+
+        for (field, mutate) in mutations {
+            let mut repo = InMemoryInventoryRepository::new();
+            repo.replace_current(base.clone()).unwrap();
+            let mut changed = base.clone();
+            mutate(&mut changed);
+
+            assert_eq!(
+                repo.replace_current(changed)
+                    .unwrap()
+                    .metadata
+                    .revision
+                    .value(),
+                2,
+                "changing {field} must advance the revision"
+            );
+        }
     }
 
     #[test]
