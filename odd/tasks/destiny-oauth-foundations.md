@@ -1,4 +1,4 @@
-# Destiny OAuth Foundations
+# Destiny OAuth Foundations — COMPLETE
 
 ## Objective
 
@@ -84,16 +84,16 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
   - Check: fmt, clippy `-D warnings`, workspace/all-features tests (94 passed), focused adapters tests (47 passed), CLI/MCP help, and diff-scope check all passed. Independent verifier confirmed fail-closed, redaction (sentinel tests over `BadEncoding`/`BadDataFormat`/`PlatformFailure`), key-steering resistance, and offline test isolation against the vendored 1.0.0 sources, and declared the candidate commit-ready. Linux backend compiled and exercised via mock; macOS/Windows construction calls match published APIs but their compilation is deferred to first cross-platform CI (documented follow-up). Real OS-store checks remain a separate manual gate.
   - Evidence: commit `93118a3` (`feat: add native credential store adapter`).
 
-- [ ] **DOF-006 — Verify and close WU-003**
-  - Route: native review/assessment and delegated verification under active RDD policy.
-  - Outcome: verify full feature, correct blockers, document live/manual limitations, and close WU-003.
-  - Check: baseline/focused commands, dependency/security review, repository status, and review outcome.
-  - Evidence: pending.
+- [x] **DOF-006 — Verify and close WU-003**
+  - Route: native read-only risk assessment plus delegated independent verification under clone-disabled RDD policy; parent reran a final diff/status spot check.
+  - Outcome: WU-003 is complete at the committed branch state. Final review found no deterministic correctness or security blockers across authorization lifecycle, callback parsing/deadlines, desktop/headless boundaries, public-client exchange, redaction, logout/reauthorization, native credential storage, dependency features, or offline isolation. The known callback timeout test remains low-severity DOF-003 test-isolation debt rather than a product defect.
+  - Check: assessment classified the full 17-file/4,982-line base diff high risk and required an independent verifier. `git diff --check`, fmt, clippy `-D warnings`, workspace tests (75 passed), all-features tests (94 passed on exact retry), adapters tests (47 passed), app test-support tests (32 passed), CLI/MCP help, dependency-duplicate review, source security review, and clean-status checks passed. The intermittent callback timeout test failed once in the parallel all-features run and once during repeated adapter runs, then passed on exact retries; it is unchanged since `aa6433c` and already tracked. Live Bungie OAuth, real OS-store checks, and first macOS/Windows backend compilation remain explicit manual/follow-up gates.
+  - Evidence: independent final verdict `passed`; no native review or receipt exists because RDD is disabled for this clone; closure commit recorded in the final evidence update.
 
 ## Acceptance criteria
 
 - Desktop mode launches the system browser when supported.
-- Headless mode prints a safe authorization URL and exact SSH local-forward guidance, then waits for the same exact callback; it never claims to create the client-side tunnel.
+- The headless UX boundary supplies a safe authorization URL and exact SSH local-forward guidance, then waits for the same exact callback; it never claims to create the client-side tunnel. CLI presentation wiring remains WU-008 scope.
 - Pending state is random, short-lived, single-use, and rejects mismatch/replay.
 - Public token exchange sends no client secret, scope, refresh grant, or credential-bearing diagnostics.
 - Expiry and 401 produce explicit reauthorization; logout removes stored credentials.
@@ -103,21 +103,27 @@ Authentication must work locally and on SSH/headless hosts without inventing an 
 
 ## Progress
 
-- WU-002 completed at `d477e4d`.
-- Official Bungie documentation was fetched directly; generic web search was unavailable, so absence claims are limited to the official page and prior evidence register.
-- User selected URL plus SSH tunnel guidance for headless mode and multiplatform native credential storage.
-- DOF-001 established the feature boundary and evidence-backed UX contract in `1760aff`.
-- DOF-002 implemented the offline authorization state machine in `2e23da0`; high-risk verification findings were corrected in `8470683`, and re-verification passed.
-- DOF-003 implemented and hardened exact callback/browser/headless UX in `aa6433c`; final independent verification passed after closing all security and flakiness findings.
-- DOF-004 revalidated the official Bungie page on 2026-09-21: public exchange uses an `application/x-www-form-urlencoded` POST with `grant_type=authorization_code`, `code`, and `client_id`; `redirect_uri` is optional but exact when supplied; `scope` and public `client_secret` are forbidden; public clients receive no refresh token.
-- The uncommitted implementation adds the bounded HTTPS adapter, strict request/response contract, hardened reqwest client, typed reauthorization mapping, and offline tests. Parent readback found and corrected missing JSON Content-Type enforcement and an out-of-range floating `expires_in` saturation path.
-- Current stable `reqwest` 0.13.5 is configured with default features disabled and blocking/rustls only; redirects and proxies are disabled, total/connect deadlines and response-size caps are enforced, and crate metadata reports Rust 1.85 compatibility.
-- Native intended-untracked selection returned `schema-incompatible`; reconciliation also failed with `lineage_created: false`, and the equivalent provider defect occurrence was confirmed on issue `#4370` with comment `5764097110`.
-- The user explicitly disabled RDD for this clone to close DOF-004 through ordinary policy. A fresh independent verifier then ran every required command, found no DOF-004 blocker, and declared the candidate commit-ready. Its only finding was the pre-existing environment-dependent callback timeout flake in unchanged DOF-003 code.
-- DOF-004 closed in work-unit commit `000cc31`. Excluding the generated lockfile, the cohesive adapter/state/tests/docs unit contains 1,271 authored changed lines; it remains a dedicated feature-branch-chain slice rather than omitting security tests or splitting inseparable behavior.
-- DOF-005 backend revalidation on 2026-09-21 against crates.io, docs.rs, and the keyring-rs wiki confirmed the production pattern: link `keyring-core` 1.0.0 plus explicit per-platform store crates, not the all-in-one `keyring` facade. `keyring_core::Error` is `#[non_exhaustive]` with secret-bearing `BadEncoding`/`BadDataFormat`/`PlatformFailure` payloads; `set_secret`/`get_secret` provide binary storage without UTF-8 restriction.
-- DOF-005 closed in work-unit commit `93118a3` (686 changed lines including the generated lockfile). Independent verification passed with no blockers; the documented follow-up is a first macOS/Windows CI compile of the target-gated backends.
+- WU-002 completed at `d477e4d`; this feature branch contains 10 cohesive commits before its closure evidence update.
+- DOF-001 established the evidence-backed UX contract in `1760aff`.
+- DOF-002 implemented the authorization state machine in `2e23da0`, corrected invariants in `8470683`, and recorded evidence in `4f3b2cb`.
+- DOF-003 implemented and hardened exact callback/browser/headless boundaries in `aa6433c`, with evidence in `3023b27`.
+- DOF-004 implemented the hardened public-client exchange in `000cc31`, with evidence in `1b2bf64`. It uses constrained `reqwest` 0.13.5 blocking/rustls features, disables redirects/proxies, bounds deadlines and response size, and rejects secret/scope/refresh behavior.
+- DOF-005 implemented fail-closed native credential storage in `93118a3`, with evidence in `c5a2c77`, using `keyring-core` 1.0.0 plus explicit target-gated store crates.
+- DOF-006 independently verified the complete `feature/destiny-domain-foundations...HEAD` feature range: 17 files, 4,953 insertions, and 29 deletions before closure documentation. The high-risk assessment required independent verification; all required checks passed, with only the known pre-existing callback timeout test-isolation flake observed and reproduced.
+- RDD remains disabled for this clone by explicit user decision after the reported native selection defect; WU-003 therefore closes under ordinary independent verification with no native receipt.
+- Manual/follow-up gates remain honest and separate: live Bungie OAuth, real OS credential stores, and first macOS/Windows CI compilation of target-gated backends.
+
+## Verification evidence
+
+- `cargo fmt --all --check`: passed.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
+- `cargo test --workspace --locked`: 75 passed.
+- `cargo test --workspace --all-features --locked`: 94 passed on exact retry after the known callback timeout flake.
+- `cargo test -p destiny-adapters --all-features --locked`: 47 passed; repeated runs reproduced the same known test-only flake once.
+- `cargo test -p destiny-app --features test-support --locked`: 32 passed.
+- CLI/MCP help, dependency-duplicate review, source security review, diff check, and final clean-status checks passed.
+- Rollback boundary: reset this feature branch to `feature/destiny-domain-foundations` (`d477e4d`) to remove only WU-003 authorization, callback, token, credential-store, dependency, test, and feature-document changes.
 
 ## Next step
 
-Begin DOF-006 final WU-003 verification and closure.
+Start WU-004 — Manifest acquisition, validation, normalization, and fake repository — on a new feature branch chained from this completed branch.
