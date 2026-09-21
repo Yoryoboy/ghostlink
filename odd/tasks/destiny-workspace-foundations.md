@@ -64,11 +64,11 @@ A small provider-free foundation makes dependency direction, configuration error
   - Check: the worker observed passing fmt, clippy, workspace tests, all-features tests, both `--help` commands, and the expected five-package `cargo metadata` graph; the parent independently reran `cargo metadata --no-deps --format-version 1` successfully and read back both binary entry points.
   - Evidence: commit `9cd90b0` (`feat: scaffold Destiny Rust workspace`).
 
-- [ ] **DWF-003 — Implement configuration and sanitized error foundations**
-  - Route: delegated to `gentle-ai-worker`; multi-file write trigger.
-  - Outcome: add shared public-client configuration parsing/validation, exact callback URI checks, adapter-neutral typed errors, sanitized diagnostics, and focused tests.
-  - Check: focused tests plus the full baseline command set and manual secret-redaction readback.
-  - Evidence: pending.
+- [x] **DWF-003 — Implement configuration and sanitized error foundations**
+  - Route: delegated to `gentle-ai-worker`; multi-file write trigger, followed by a bounded diagnostics correction worker.
+  - Outcome: added public-client environment configuration, exact registered callback matching, strict HTTP loopback callback parsing, adapter-neutral typed errors, one shared sanitized startup diagnostic boundary, placeholder documentation, and eight focused tests. No client-secret or provider integration path was added.
+  - Check: both workers reported the full baseline command set passing; the parent reran all-features tests plus fmt/clippy spot checks; independent verification reran every baseline command, both clean-environment startup failures, and `git diff --check` with no findings.
+  - Evidence: commit `25fdfe6` (`feat: add Destiny configuration foundations`); independent verification passed with no findings.
 
 - [ ] **DWF-004 — Verify and close WU-001**
   - Route: native review/assessment and delegated verification as required by the active RDD policy.
@@ -93,8 +93,9 @@ A small provider-free foundation makes dependency direction, configuration error
 - No Rust implementation files existed when this tracker was created.
 - DWF-001 established the feature branch and local Rust toolchain baseline in commit `3fe08e0`.
 - DWF-002 established the five-crate workspace and credential-free binary help paths in commit `9cd90b0`; all scaffold checks passed.
-- The user selected `feature-branch-chain` after the running WU-001 change crossed the review heuristic; DWF-003 remains the second slice on this branch.
+- The user selected `feature-branch-chain` after the running WU-001 change crossed the review heuristic; DWF-003 is the second slice on this branch.
+- DWF-003 implemented and independently verified the configuration/error/diagnostics foundation in commit `25fdfe6`; all checks passed with no findings.
 
 ## Next step
 
-Delegate DWF-003 to implement shared configuration and sanitized error foundations.
+Complete DWF-004 with final branch verification and native review handling.
