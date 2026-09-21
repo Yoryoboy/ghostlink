@@ -2,6 +2,9 @@
 
 mod config;
 
+#[cfg(feature = "test-support")]
+pub mod test_support;
+
 pub use destiny_core::{AppError, ErrorCategory};
 
 /// Reports that the application foundation is available.

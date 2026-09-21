@@ -62,11 +62,11 @@ A provider-free core and behaviorally useful fakes create the anti-coupling seam
   - Check: fmt, clippy, workspace/all-features tests, and focused core tests passed; independent correction verification confirmed no raw formatting exposure and a clean worktree.
   - Evidence: implementation commit `431de4f` (`feat: add Destiny domain records`); correction commit `4db85c4` (`fix: redact Destiny domain identifiers`); re-verification passed.
 
-- [ ] **DDF-003 — Implement freshness, revisions, and plan validity**
-  - Route: delegated to `gentle-ai-worker`; multi-file implementation.
-  - Outcome: add dataset freshness states, repository-generated revision semantics, ambiguity outcomes, plan expiry, and revision-bound mutation inputs.
-  - Check: boundary-time expiry, changed/unchanged revision behavior, stale/mismatch and ambiguity tests.
-  - Evidence: pending.
+- [x] **DDF-003 — Implement freshness, revisions, and plan validity**
+  - Route: delegated to `gentle-ai-worker`; multi-file implementation followed by a bounded invariant correction.
+  - Outcome: added deterministic timestamps, dataset/source-aware freshness, revision allocation/retention/overflow, semantic resolution, validated expiring plans, and pure mutation binding across membership, revision, source, item, and destination. Independent verification identified seven invalid-state/misclassification issues plus missing current-source binding; all were corrected.
+  - Check: fmt, clippy, workspace/all-features tests, focused core tests, and diff checks passed; correction re-verification passed all prior findings with 22 workspace and 15 focused core tests.
+  - Evidence: implementation commit `dc78588` (`feat: add Destiny state policies`); correction commit `33553e9` (`fix: enforce Destiny state invariants`); re-verification passed.
 
 - [ ] **DDF-004 — Define ports, deterministic seams, and fakes**
   - Route: delegated to `gentle-ai-worker`; multi-file implementation.
@@ -98,7 +98,8 @@ A provider-free core and behaviorally useful fakes create the anti-coupling seam
 - The implementation decisions above resolve shape ambiguities conservatively without inventing provider behavior.
 - DDF-001 established the chained feature boundary and recoverable implementation plan in commit `076277a`.
 - DDF-002 established dependency-free core IDs and records in `431de4f`; independent verification found raw identifier formatting, corrected in `4db85c4`, and re-verification passed.
+- DDF-003 established dependency-free state and mutation policy in `dc78588`; verification findings about invalid states, freshness, expiry, classification, and source binding were corrected in `33553e9`, and re-verification passed.
 
 ## Next step
 
-Delegate DDF-003 for freshness, revision, ambiguity, and plan-validity policy.
+Delegate DDF-004 for behavioral ports, deterministic seams, and application-owned fakes.

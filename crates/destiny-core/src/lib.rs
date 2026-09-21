@@ -4,6 +4,7 @@ pub mod domain;
 pub mod error;
 pub mod ids;
 pub mod mutation;
+pub mod ports;
 pub mod state;
 
 pub use domain::{
@@ -17,6 +18,10 @@ pub use ids::{
 pub use mutation::{
     MoveIntent, MovePlan, MovePlanValidation, MutationPolicyInput, MutationPolicyOutcome,
     evaluate_mutation,
+};
+pub use ports::{
+    Clock, CredentialMaterial, CredentialStore, DefinitionRepository, InventoryRepository,
+    InventorySnapshotInput, ManifestDefinitions, ManifestGateway, PlanIdGenerator, ProfileGateway,
 };
 pub use state::{
     Dataset, FreshnessInput, FreshnessPolicy, FreshnessStatus, Resolution, RevisionAllocation,
