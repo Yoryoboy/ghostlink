@@ -1,4 +1,4 @@
-# Destiny Manifest Foundations
+# Destiny Manifest Foundations — COMPLETE
 
 ## Objective
 
@@ -87,10 +87,11 @@ Decision: WU-004 uses the bounded English `DestinyInventoryItemDefinition` path 
   - Evidence: mapping `47a6890` (`feat: map Bungie Manifest definitions`); mapping evidence `393de7e`; bounded transport `9917c7e` (`feat: add bounded Manifest transport`); offline fixture pipeline `5b5305e` (`test: prove offline Manifest pipeline`). The larger transport source is cohesive security behavior plus contract tests; it was split from mapping and fixtures rather than compressed.
   - Rollback: revert `47a6890`, `9917c7e`, and `5b5305e`, plus the adjacent mapping evidence commit, without touching SQLite, OAuth, or earlier core/app contracts.
 
-- [ ] **DMF-005 — Verify and close WU-004** *(in progress)*
-  - Route: native read-only assessment followed by the required ordinary verification plan; delegate broad command execution. Native assessment has been unavailable for prior slices, so unknown/unassessable is treated as high risk.
-  - Outcome: independently verify the complete WU-004 range, record honest automated/manual gates, and close the feature.
-  - Check: all baseline and focused commands, dependency/diff/security review, deterministic fixture harness, and final clean status.
+- [x] **DMF-005 — Verify and close WU-004**
+  - Route: native committed-range assessment plus delegated high-risk independent full-range verification; native assessment was schema-incompatible/unassessable under clone-disabled RDD, so the separate verifier was mandatory. Parent reran the focused adapter Manifest harness and final diff/status spot check.
+  - Outcome: WU-004 is complete at the committed branch state. Full-range review found no blocking, high, or medium correctness/security findings across contracts, fake repository atomicity, normalization, mapping, transport, redaction, fixtures, dependency direction, and exclusions.
+  - Check: fmt and workspace clippy `-D warnings` passed; workspace and all-features suites each passed 134 tests; focused core/app/adapters suites passed 15/52/67 tests; CLI/MCP help passed; full-range diff check passed; branch was clean. Parent spot check passed 20 adapter Manifest tests plus range diff/status checks.
+  - Evidence: independent verdict `passed`; closure-ready range `84a7a166...ca3d863` before this closure update, 12 files with 2,725 insertions and 18 deletions. No native review or receipt exists because RDD is disabled for this clone.
   - Rollback: reset this feature branch to `84a7a16` to remove only WU-004 changes.
 
 ## Acceptance criteria
@@ -113,11 +114,24 @@ Decision: WU-004 uses the bounded English `DestinyInventoryItemDefinition` path 
 - DMF-003 added and corrected the provider-neutral validation/normalization/publication service in `9001ce1`; final independent verification passed.
 - DMF-004 completed mapping (`47a6890`), bounded transport (`9917c7e`), and offline fixture pipeline (`5b5305e`) with independent verification after each boundary. The test-only adapters→app dependency is one-way, feature-gated, and introduces no production cycle.
 - Recorded implementation slice boundaries: DMF-001 `924ce89`; DMF-002 `1827787`; DMF-003 `9001ce1`; DMF-004 mapping `47a6890`, transport `9917c7e`, and fixture pipeline `5b5305e`, each with evidence commits where present.
+- DMF-005 independently verified the complete WU-004 range and found no blocker; WU-004 is closed under ordinary policy with explicit live-provider manual gates.
 
 ## Verification evidence
 
-Pending implementation.
+- Native committed-range assessment was schema-incompatible/unassessable and therefore used the high-risk independent fallback.
+- Independent verifier reviewed the complete `84a7a166...ca3d863` range and returned `passed` with no blocking, high, or medium findings.
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: passed.
+- `cargo test --workspace --locked`: 134 passed.
+- `cargo test --workspace --all-features --locked`: 134 passed.
+- `cargo test -p destiny-core --locked`: 15 passed.
+- `cargo test -p destiny-app --features test-support --locked`: 52 passed.
+- `cargo test -p destiny-adapters --all-features --locked`: 67 passed.
+- CLI and MCP help commands passed.
+- Full-range `git diff --check` passed; parent focused spot check passed 20 adapter Manifest tests and the final branch was clean.
+- Live Bungie acquisition, real provider payload sizes against the 100,000/64 MiB limits, and production TLS/timeout behavior remain explicit manual gates.
+- RDD remains clone-disabled; no native review receipt exists.
 
 ## Next step
 
-Run DMF-005 full-range independent verification from `84a7a16` through the committed WU-004 head, record manual gates, and close the feature.
+Begin WU-005 — SQLite schema, migrations, projections, freshness, and revisions — on a new feature branch chained from this completed branch.
