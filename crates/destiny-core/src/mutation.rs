@@ -23,6 +23,7 @@ pub type MoveIntent = MovePlan;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MovePlanValidation {
     InvalidTimestamps,
+    SameLocation,
 }
 
 impl MovePlan {
@@ -37,8 +38,11 @@ impl MovePlan {
         created_at: Timestamp,
         expires_at: Timestamp,
     ) -> Result<Self, MovePlanValidation> {
-        if created_at > expires_at {
+        if created_at >= expires_at {
             return Err(MovePlanValidation::InvalidTimestamps);
+        }
+        if source == destination {
+            return Err(MovePlanValidation::SameLocation);
         }
         Ok(Self {
             plan_id,
@@ -252,12 +256,69 @@ mod tests {
             MembershipId::new("membership"),
             ItemInstanceId::new("item"),
             ItemLocation::Vault,
-            ItemLocation::Vault,
+            ItemLocation::Character(CharacterId::new("character")),
             SyncRevision::new(4),
             Timestamp::new(21),
             Timestamp::new(20),
         );
         assert_eq!(invalid, Err(MovePlanValidation::InvalidTimestamps));
+
+        let zero_duration = MovePlan::new(
+            PlanId::new("plan"),
+            MembershipId::new("membership"),
+            ItemInstanceId::new("item"),
+            ItemLocation::Vault,
+            ItemLocation::Character(CharacterId::new("character")),
+            SyncRevision::new(4),
+            Timestamp::new(20),
+            Timestamp::new(20),
+        );
+        assert_eq!(zero_duration, Err(MovePlanValidation::InvalidTimestamps));
+
+        for (source, destination) in [
+            (ItemLocation::Vault, ItemLocation::Vault),
+            (
+                ItemLocation::Character(CharacterId::new("same")),
+                ItemLocation::Character(CharacterId::new("same")),
+            ),
+        ] {
+            let no_op = MovePlan::new(
+                PlanId::new("plan"),
+                MembershipId::new("membership"),
+                ItemInstanceId::new("item"),
+                source,
+                destination,
+                SyncRevision::new(4),
+                Timestamp::new(10),
+                Timestamp::new(20),
+            );
+            assert_eq!(no_op, Err(MovePlanValidation::SameLocation));
+        }
+
+        for (source, destination) in [
+            (
+                ItemLocation::Vault,
+                ItemLocation::Character(CharacterId::new("character")),
+            ),
+            (
+                ItemLocation::Character(CharacterId::new("source")),
+                ItemLocation::Character(CharacterId::new("destination")),
+            ),
+        ] {
+            assert!(
+                MovePlan::new(
+                    PlanId::new("plan"),
+                    MembershipId::new("membership"),
+                    ItemInstanceId::new("item"),
+                    source,
+                    destination,
+                    SyncRevision::new(4),
+                    Timestamp::new(10),
+                    Timestamp::new(20),
+                )
+                .is_ok()
+            );
+        }
 
         let plan = plan();
         assert_eq!(
