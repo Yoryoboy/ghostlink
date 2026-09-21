@@ -76,14 +76,16 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
   - Evidence: commit `f96ad55` (`feat: add SQLite schema migrations`).
   - Rollback: remove dependency/module/migration files and restore lock/manifests; WU-004 fake remains intact.
 
-- [ ] **DSF-004 — Implement transactional SQLite definition repository** *(in progress)*
-  - Route: delegated bounded adapter writer; writer trigger fires across the repository module, module export, and contract tests.
-  - Outcome: implement `DefinitionRepository` with complete-set transactional replacement, deterministic lookup/version/metadata, structural unchanged detection, revision retain/advance, tag rows, failure rollback, and reopen persistence.
-  - Check: contract parity with fake; unchanged/changed replacement; duplicate/empty/mixed-version rejection; rollback; reopened file round trip; no stale rows; secret sentinels absent.
-  - Rollback: remove only definition tables/repository/migration portion and tests while preserving profile schema boundary where independently valid.
+- [x] **DSF-004 — Implement transactional SQLite definition repository**
+  - Route: delegated adapter writer plus independent high-risk verification because native assessment remained unavailable. Review identified a misleading committed scope guard and an order-identity divergence with the in-memory fake; both were corrected and independently rechecked before commit.
+  - Outcome: implemented `DefinitionRepository` for `SqliteStore` with deterministic reads, canonical decimal parsing, pre-transaction validation, one `IMMEDIATE` transaction, complete structural set comparison, metadata-only freshness refresh, revision retain/advance/overflow, full catalog/tag replacement, rollback-on-drop, and exact file reopen persistence. Definition order is not set identity; tag order remains identity across both fake and SQLite repositories.
+  - Check: core 16 passed; app test-support 61 passed; 13 focused definition tests; adapters 97 passed; workspace 174 passed; adapter all-target check/clippy passed; invalid input, mid-write constraint failure, overflow, corruption, stale-row removal, reopen, casing/tag determinism, error sanitization, and contract parity independently passed.
+  - Review workload: 1,256 changed lines, including 736 focused test lines. The implementation remains one transactional repository contract and does not include profile persistence.
+  - Evidence: commit `4f2e735` (`feat: persist Manifest definitions in SQLite`).
+  - Rollback: remove only definition repository modules/tests and the narrow shared content-equality parity correction while preserving the v1 schema and profile boundary.
 
-- [ ] **DSF-005 — Implement transactional SQLite profile projection repository**
-  - Route: delegated bounded adapter writer; second internal WU-005 review slice.
+- [ ] **DSF-005 — Implement transactional SQLite profile projection repository** *(in progress)*
+  - Route: delegated bounded adapter writer; second internal WU-005 review slice; writer trigger fires across repository and contract-test modules.
   - Outcome: implement the single-active-account `InventoryRepository`, normalized character/item/location mapping, complete structural revision retention/advance, atomic replacement, freshness/source metadata, and reopened reads without provider mapping.
   - Check: round trips for every normalized field/location, membership replacement, equal/changed revisions, overflow, FK/invariant rejection, rollback preservation, and no orphan rows.
   - Rollback: remove only profile tables/repository/migration portion and tests, leaving definition persistence intact.
@@ -115,13 +117,15 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
 - DSF-001 established and committed the feature boundary in `224c797`.
 - DSF-002 added durable provider-neutral metadata and collision-free revision semantics in `82b22ab`; repeated successful refreshes now update freshness without manufacturing content revisions.
 - DSF-003 added the exact bundled SQLite dependency, hardened connection policy, reversible migration runner, normalized STRICT schema, and 17 focused tests in `f96ad55` after fixing an independent-review blocker in canonical decimal bounds.
+- DSF-004 added atomic durable Manifest definition persistence in `4f2e735`, aligned complete-set order semantics with the in-memory fake, and proved rollback, overflow, corruption, and reopen behavior.
 
 ## Verification evidence
 
 - DSF-001 tracker readback and clean-branch checks passed.
 - DSF-002 writer and independent verifier both observed clean formatting, diff checks, focused tests, focused clippy, and the offline adapter fixture. Native assessment was unavailable/schema-incompatible, so the candidate followed the required high-risk fallback path.
 - DSF-003 writer and independent verifier observed clean formatting/check/clippy, 17 focused SQLite tests, 84 adapter tests, 160 workspace tests, reversible migrations, exact numeric bounds, schema secrecy, and dependency uniqueness. Independent review found and then cleared one blocking over-range decimal acceptance defect. Native assessment was unavailable, so the candidate followed the required high-risk fallback path.
+- DSF-004 writer and independent verifier observed clean formatting/check/clippy, 13 focused definition repository tests, 97 adapter tests, 174 workspace tests, transaction atomicity, structural revision parity, corruption fail-closed behavior, and file reopen persistence. Two non-blocking review findings were corrected and rechecked before commit.
 
 ## Next step
 
-Delegate DSF-004 for the transactional SQLite definition repository and contract parity with the in-memory fake.
+Delegate DSF-005 for the single-active-profile transactional SQLite repository.
