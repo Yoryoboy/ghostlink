@@ -4,7 +4,7 @@ use std::fmt;
 
 macro_rules! string_id {
     ($name:ident) => {
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(String);
 
         impl $name {
@@ -21,6 +21,12 @@ macro_rules! string_id {
             }
         }
 
+        impl fmt::Debug for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(stringify!($name))
+            }
+        }
+
         impl From<String> for $name {
             fn from(value: String) -> Self {
                 Self::new(value)
@@ -30,12 +36,6 @@ macro_rules! string_id {
         impl From<&str> for $name {
             fn from(value: &str) -> Self {
                 Self::new(value)
-            }
-        }
-
-        impl fmt::Display for $name {
-            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(&self.0)
             }
         }
     };
@@ -128,7 +128,9 @@ impl fmt::Display for SyncRevision {
 
 #[cfg(test)]
 mod tests {
-    use super::{CharacterId, ItemHash, ItemInstanceId, MembershipType, SyncRevision};
+    use super::{
+        CharacterId, ItemHash, ItemInstanceId, MembershipId, MembershipType, SyncRevision,
+    };
 
     #[test]
     fn identifiers_are_explicitly_constructed_and_read() {
@@ -143,5 +145,32 @@ mod tests {
         let instance = ItemInstanceId::new("123");
         assert_eq!(definition.value(), 123);
         assert_eq!(instance.as_str(), "123");
+    }
+
+    #[test]
+    fn string_backed_identifier_debug_is_redacted() {
+        let membership = MembershipId::new("membership-secret-sentinel");
+        let character = CharacterId::new("character-secret-sentinel");
+        let item = ItemInstanceId::new("item-secret-sentinel");
+
+        let membership_debug = format!("{membership:?}");
+        let character_debug = format!("{character:?}");
+        let item_debug = format!("{item:?}");
+
+        assert_eq!(membership_debug, "MembershipId");
+        assert_eq!(character_debug, "CharacterId");
+        assert_eq!(item_debug, "ItemInstanceId");
+        assert!(!membership_debug.contains("membership-secret-sentinel"));
+        assert!(!character_debug.contains("character-secret-sentinel"));
+        assert!(!item_debug.contains("item-secret-sentinel"));
+    }
+
+    #[test]
+    fn raw_identifier_access_remains_explicit() {
+        let character = CharacterId::new("character-secret-sentinel");
+        let item = ItemInstanceId::new("item-secret-sentinel");
+
+        assert_eq!(character.as_str(), "character-secret-sentinel");
+        assert_eq!(item.into_inner(), "item-secret-sentinel");
     }
 }
