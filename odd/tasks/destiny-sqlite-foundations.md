@@ -16,7 +16,7 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
 
 - Add a synchronous SQLite adapter using current `rusqlite` with bundled SQLite.
 - Add explicit, monotonic, reversible migration/version management.
-- Evolve core repository inputs/metadata so Manifest and profile replacement can atomically persist fetched-at/source/revision/schema markers.
+- Evolve core repository inputs/metadata so Manifest and profile replacement can atomically persist checked-at/source/revision markers, while the adapter owns and exposes the migration schema version separately.
 - Preserve the WU-004 provider-neutral Manifest boundary and in-memory fake semantics.
 - Persist normalized definitions/tags and one active MVP profile projection (membership, characters, item instances, locations, flags, quantities, power).
 - Allocate or retain repository revisions by complete structural equality, never collision-prone fingerprints.
@@ -92,10 +92,11 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
   - Evidence: commit `20a0b5c` (`feat: persist profile projections in SQLite`).
   - Rollback: remove only inventory repository modules/tests and shared profile content/validity semantics, leaving definition persistence and v1 schema intact.
 
-- [ ] **DSF-006 — Verify concurrency, secrecy, persistence, and close WU-005** *(in progress)*
-  - Route: native committed-range assessment plus delegated independent verification; unassessable remains high risk. Verification command execution is delegated.
-  - Outcome: validate full migration/repository range, two-connection locking/single-flight behavior, temporary file close/reopen harness, schema/file-byte secret exclusion, dependency direction, rollback boundaries, manual gates, and closure.
-  - Check: all baseline/focused commands, temporary file runtime harness, dependency tree, full diff/status, and independent correctness/security review.
+- [x] **DSF-006 — Verify concurrency, secrecy, persistence, and close WU-005**
+  - Route: delegated verification-harness writer plus full-range independent verifier because native committed-range assessment remained unavailable. The verifier identified a weak 1 ms lower-bound assertion in the lock-timeout evidence; the parent strengthened it to 100 ms for a 150 ms test timeout, and the verifier observed seven stable suite reruns plus one isolated rerun.
+  - Outcome: added four offline verification tests covering two-connection bounded lock failure, sanitized errors, WAL old-or-new visibility, combined definitions/profile close→reopen→change→reopen persistence, schema inspection, and database/sidecar byte secrecy with a positive control. Verified the full `e1f7688..f7de778` implementation range and closed WU-005.
+  - Check: `git diff --check`; fmt; workspace all-target/all-feature check; workspace tests and all-feature tests 201 passed; workspace all-target/all-feature clippy with `-D warnings`; 51 focused SQLite tests; dependency-tree uniqueness; CLI/MCP help; source/dependency scans; full diff/log/status; independent correctness/security review passed with no blocker/high/medium findings.
+  - Evidence: commit `f7de778` (`test: verify SQLite persistence boundaries`).
   - Rollback: reset this feature branch to `e1f7688` to remove only WU-005.
 
 ## Acceptance criteria
@@ -103,7 +104,7 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
 - A new or existing supported database migrates deterministically to the exact expected schema; unsupported future schema versions fail closed.
 - Definition and active-profile replacements are atomic: every row and metadata marker changes together or the previous committed state remains fully readable.
 - Unchanged complete normalized input retains its revision; any normalized field change advances exactly once; overflow fails without mutation.
-- Freshness metadata includes dataset, source, fetched-at, revision, definition version, and schema version and rejects inconsistent/future inputs according to core policy.
+- Freshness metadata includes dataset, source, checked-at, revision, and definition version; the adapter exposes the independently versioned migration schema through `SqliteStore::schema_version`, and inconsistent/future state fails closed.
 - Reopening a file-backed database restores definitions, profile projections, metadata, and revisions exactly.
 - Concurrent replacement attempts serialize or fail with a sanitized bounded storage error; no partial rows become visible.
 - Schema and database contents contain no credential/token/API-key/auth-code/callback/raw-payload fields or sentinel values.
@@ -121,6 +122,7 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
 - DSF-003 added the exact bundled SQLite dependency, hardened connection policy, reversible migration runner, normalized STRICT schema, and 17 focused tests in `f96ad55` after fixing an independent-review blocker in canonical decimal bounds.
 - DSF-004 added atomic durable Manifest definition persistence in `4f2e735`, aligned complete-set order semantics with the in-memory fake, and proved rollback, overflow, corruption, and reopen behavior.
 - DSF-005 added atomic single-active-profile persistence in `20a0b5c`, aligned unordered projection semantics with the fake, and proved all-or-none reads, exact typed reconstruction, rollback, corruption, coexistence, and reopen behavior.
+- DSF-006 added the concurrency/secrecy/combined-runtime harness in `f7de778`; final independent review found no blocker, high, or medium findings and observed 201 passing workspace tests in normal and all-feature modes.
 
 ## Verification evidence
 
@@ -129,7 +131,16 @@ Later profile synchronization, search/inspect, mutation preflight, and recovery 
 - DSF-003 writer and independent verifier observed clean formatting/check/clippy, 17 focused SQLite tests, 84 adapter tests, 160 workspace tests, reversible migrations, exact numeric bounds, schema secrecy, and dependency uniqueness. Independent review found and then cleared one blocking over-range decimal acceptance defect. Native assessment was unavailable, so the candidate followed the required high-risk fallback path.
 - DSF-004 writer and independent verifier observed clean formatting/check/clippy, 13 focused definition repository tests, 97 adapter tests, 174 workspace tests, transaction atomicity, structural revision parity, corruption fail-closed behavior, and file reopen persistence. Two non-blocking review findings were corrected and rechecked before commit.
 - DSF-005 sequential writers and the independent verifier observed clean formatting/check/clippy, 17 focused inventory tests, 114 adapter tests, 197 workspace tests, order-insensitive fake parity, transaction atomicity, corruption fail-closed behavior, Manifest coexistence, and file reopen persistence. One defensive extra-anchor finding was corrected and rechecked before commit.
+- DSF-006 final evidence: 4 verification-harness tests and 51 total focused SQLite tests; 118 adapter tests; 201 workspace tests in both default and all-feature modes; full workspace clippy/check; unique rusqlite/libsqlite3-sys path; CLI/MCP help; WAL visibility; bounded sanitized lock failure; combined dataset reopen/revision behavior; schema and database-byte secrecy. Full-range independent review passed with no blocker/high/medium findings.
+- The pre-existing OAuth callback timeout test failed intermittently twice during earlier full-suite runs, then passed repeated isolated runs and every final full-workspace/all-feature run. No WU-005 source touched that test; retain it as a separate follow-up.
+
+## Manual gates and follow-ups
+
+- Verified on Linux with bundled SQLite 3.53.4. Windows/macOS file locking, WAL sidecar cleanup, and filesystem semantics remain platform validation gates.
+- Platform data-directory/configuration composition remains intentionally deferred; WU-005 accepts explicit caller-owned paths.
+- Live Bungie/profile acquisition is not part of WU-005 and remains a WU-004/WU-006 manual integration gate.
+- Track the pre-existing OAuth callback timeout flake separately; it did not reproduce in final verification.
 
 ## Next step
 
-Run DSF-006 full committed-range verification, including two-connection lock/visibility behavior, database-byte secrecy, runtime close/reopen harness, dependency direction, binaries, and final review.
+Chain WU-006 — Bungie profile normalization and offline synchronization — from closure commit `f7de778` plus this tracker closure commit.
