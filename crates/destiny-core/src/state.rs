@@ -38,6 +38,7 @@ pub enum FreshnessStatus {
     Missing,
     Fresh,
     Stale,
+    InvalidSource,
 }
 
 /// The markers needed to evaluate one dataset without consulting a clock or provider.
@@ -51,24 +52,32 @@ pub struct FreshnessInput {
 }
 
 impl FreshnessInput {
-    pub const fn status(self) -> FreshnessStatus {
-        match self.checked_at {
-            None => FreshnessStatus::Missing,
-            Some(checked_at) => {
-                let age = self.now.seconds().saturating_sub(checked_at.seconds());
-                if age <= self.policy.ttl_seconds {
-                    FreshnessStatus::Fresh
-                } else {
-                    FreshnessStatus::Stale
-                }
-            }
+    pub fn status(self) -> FreshnessStatus {
+        let Some(checked_at) = self.checked_at else {
+            return FreshnessStatus::Missing;
+        };
+        let expected_source = match self.dataset {
+            Dataset::ManifestDefinitions => SourceMarker::Manifest,
+            Dataset::ProfileInventory => SourceMarker::Profile,
+        };
+        if self.source != Some(expected_source) {
+            return FreshnessStatus::InvalidSource;
+        }
+        if checked_at.seconds() > self.now.seconds() {
+            return FreshnessStatus::Stale;
+        }
+        let age = self.now.seconds() - checked_at.seconds();
+        if age <= self.policy.ttl_seconds {
+            FreshnessStatus::Fresh
+        } else {
+            FreshnessStatus::Stale
         }
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RevisionState {
-    pub revision: Option<SyncRevision>,
+    pub revision: SyncRevision,
     pub normalized_fingerprint: u64,
 }
 
@@ -93,12 +102,12 @@ pub fn allocate_revision(
         }),
         Some(previous) if previous.normalized_fingerprint == normalized_fingerprint => {
             Ok(RevisionAllocation {
-                revision: previous.revision.unwrap_or(SyncRevision::new(1)),
+                revision: previous.revision,
                 retained: true,
             })
         }
         Some(previous) => {
-            let current = previous.revision.unwrap_or(SyncRevision::new(1));
+            let current = previous.revision;
             let next = current.value().checked_add(1).ok_or(RevisionOverflow)?;
             Ok(RevisionAllocation {
                 revision: SyncRevision::new(next),
@@ -133,6 +142,14 @@ mod tests {
         assert_eq!(input.status(), FreshnessStatus::Fresh);
         assert_eq!(
             FreshnessInput {
+                now: Timestamp::new(9),
+                ..input
+            }
+            .status(),
+            FreshnessStatus::Stale
+        );
+        assert_eq!(
+            FreshnessInput {
                 now: Timestamp::new(21),
                 ..input
             }
@@ -150,12 +167,24 @@ mod tests {
     }
 
     #[test]
+    fn freshness_rejects_mismatched_source_without_details() {
+        let input = FreshnessInput {
+            dataset: Dataset::ManifestDefinitions,
+            checked_at: Some(Timestamp::new(10)),
+            source: Some(SourceMarker::Profile),
+            now: Timestamp::new(10),
+            policy: FreshnessPolicy { ttl_seconds: 10 },
+        };
+        assert_eq!(input.status(), FreshnessStatus::InvalidSource);
+    }
+
+    #[test]
     fn revisions_retain_advance_and_fail_on_overflow() {
         let first = allocate_revision(None, 7).unwrap();
         assert_eq!(first.revision.value(), 1);
         let same = allocate_revision(
             Some(RevisionState {
-                revision: Some(first.revision),
+                revision: first.revision,
                 normalized_fingerprint: 7,
             }),
             7,
@@ -164,7 +193,7 @@ mod tests {
         assert!(same.retained);
         let changed = allocate_revision(
             Some(RevisionState {
-                revision: Some(same.revision),
+                revision: same.revision,
                 normalized_fingerprint: 7,
             }),
             8,
@@ -174,7 +203,7 @@ mod tests {
         assert_eq!(
             allocate_revision(
                 Some(RevisionState {
-                    revision: Some(SyncRevision::new(u64::MAX)),
+                    revision: SyncRevision::new(u64::MAX),
                     normalized_fingerprint: 7
                 }),
                 8

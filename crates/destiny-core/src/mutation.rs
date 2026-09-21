@@ -14,15 +14,54 @@ pub struct MovePlan {
     pub source: ItemLocation,
     pub destination: ItemLocation,
     pub revision: SyncRevision,
-    pub created_at: Timestamp,
-    pub expires_at: Timestamp,
+    created_at: Timestamp,
+    expires_at: Timestamp,
 }
 
 pub type MoveIntent = MovePlan;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MovePlanValidation {
+    InvalidTimestamps,
+}
+
 impl MovePlan {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        plan_id: PlanId,
+        membership: MembershipId,
+        item: ItemInstanceId,
+        source: ItemLocation,
+        destination: ItemLocation,
+        revision: SyncRevision,
+        created_at: Timestamp,
+        expires_at: Timestamp,
+    ) -> Result<Self, MovePlanValidation> {
+        if created_at > expires_at {
+            return Err(MovePlanValidation::InvalidTimestamps);
+        }
+        Ok(Self {
+            plan_id,
+            membership,
+            item,
+            source,
+            destination,
+            revision,
+            created_at,
+            expires_at,
+        })
+    }
+
+    pub fn created_at(&self) -> Timestamp {
+        self.created_at
+    }
+
+    pub fn expires_at(&self) -> Timestamp {
+        self.expires_at
+    }
+
     pub fn is_expired(&self, now: Timestamp) -> bool {
-        now > self.expires_at
+        now >= self.expires_at
     }
 
     pub fn binding(&self, input: &MutationPolicyInput) -> PlanBinding {
@@ -34,6 +73,15 @@ impl MovePlan {
         }
         if input.membership != self.membership {
             return PlanBinding::WrongMembership;
+        }
+        if !supported_location(&self.source) {
+            return PlanBinding::UnsupportedLocation;
+        }
+        if !supported_location(&input.current_source) {
+            return PlanBinding::UnsupportedSource;
+        }
+        if input.current_source != self.source {
+            return PlanBinding::SourceMismatch;
         }
         match &input.resolved_item {
             Resolution::Missing => return PlanBinding::MissingResolution,
@@ -64,6 +112,8 @@ pub enum PlanBinding {
     WrongItem,
     WrongDestination,
     UnsupportedLocation,
+    UnsupportedSource,
+    SourceMismatch,
     MissingResolution,
     AmbiguousResolution,
 }
@@ -73,6 +123,7 @@ pub struct MutationPolicyInput {
     pub now: Timestamp,
     pub membership: MembershipId,
     pub current_revision: SyncRevision,
+    pub current_source: ItemLocation,
     pub resolved_item: Resolution<ItemInstanceId>,
     pub resolved_destination: Option<ItemLocation>,
 }
@@ -82,29 +133,27 @@ pub enum MutationPolicyOutcome {
     Valid,
     Expired,
     StaleRevision,
+    WrongMembership,
     WrongItem,
     WrongDestination,
     UnsupportedLocation,
+    UnsupportedSource,
+    SourceMismatch,
     AmbiguousResolution,
     MissingResolution,
 }
 
-pub fn evaluate_mutation(
-    plan: Option<&MovePlan>,
-    input: &MutationPolicyInput,
-) -> MutationPolicyOutcome {
-    let Some(plan) = plan else {
-        return MutationPolicyOutcome::MissingResolution;
-    };
+pub fn evaluate_mutation(plan: &MovePlan, input: &MutationPolicyInput) -> MutationPolicyOutcome {
     match plan.binding(input) {
         PlanBinding::Valid => MutationPolicyOutcome::Valid,
         PlanBinding::Expired => MutationPolicyOutcome::Expired,
         PlanBinding::StaleRevision => MutationPolicyOutcome::StaleRevision,
+        PlanBinding::WrongMembership => MutationPolicyOutcome::WrongMembership,
         PlanBinding::WrongItem => MutationPolicyOutcome::WrongItem,
-        PlanBinding::WrongDestination | PlanBinding::WrongMembership => {
-            MutationPolicyOutcome::WrongDestination
-        }
+        PlanBinding::WrongDestination => MutationPolicyOutcome::WrongDestination,
         PlanBinding::UnsupportedLocation => MutationPolicyOutcome::UnsupportedLocation,
+        PlanBinding::UnsupportedSource => MutationPolicyOutcome::UnsupportedSource,
+        PlanBinding::SourceMismatch => MutationPolicyOutcome::SourceMismatch,
         PlanBinding::AmbiguousResolution => MutationPolicyOutcome::AmbiguousResolution,
         PlanBinding::MissingResolution => MutationPolicyOutcome::MissingResolution,
     }
@@ -124,16 +173,17 @@ mod tests {
     };
 
     fn plan() -> MovePlan {
-        MovePlan {
-            plan_id: PlanId::new("plan"),
-            membership: MembershipId::new("membership"),
-            item: ItemInstanceId::new("item"),
-            source: ItemLocation::Vault,
-            destination: ItemLocation::Character(CharacterId::new("character")),
-            revision: SyncRevision::new(4),
-            created_at: Timestamp::new(10),
-            expires_at: Timestamp::new(20),
-        }
+        MovePlan::new(
+            PlanId::new("plan"),
+            MembershipId::new("membership"),
+            ItemInstanceId::new("item"),
+            ItemLocation::Vault,
+            ItemLocation::Character(CharacterId::new("character")),
+            SyncRevision::new(4),
+            Timestamp::new(10),
+            Timestamp::new(20),
+        )
+        .unwrap()
     }
 
     fn input(now: u64) -> MutationPolicyInput {
@@ -141,6 +191,7 @@ mod tests {
             now: Timestamp::new(now),
             membership: MembershipId::new("membership"),
             current_revision: SyncRevision::new(4),
+            current_source: ItemLocation::Vault,
             resolved_item: Resolution::Unique(ItemInstanceId::new("item")),
             resolved_destination: Some(ItemLocation::Character(CharacterId::new("character"))),
         }
@@ -150,12 +201,12 @@ mod tests {
     fn expiry_boundary_is_valid_then_expired() {
         let plan = plan();
         assert_eq!(
-            evaluate_mutation(Some(&plan), &input(20)),
-            MutationPolicyOutcome::Valid
+            evaluate_mutation(&plan, &input(20)),
+            MutationPolicyOutcome::Expired
         );
         assert_eq!(
-            evaluate_mutation(Some(&plan), &input(21)),
-            MutationPolicyOutcome::Expired
+            evaluate_mutation(&plan, &input(19)),
+            MutationPolicyOutcome::Valid
         );
     }
 
@@ -164,7 +215,7 @@ mod tests {
         let plan = plan();
         assert_eq!(
             evaluate_mutation(
-                Some(&plan),
+                &plan,
                 &MutationPolicyInput {
                     current_revision: SyncRevision::new(5),
                     ..input(10)
@@ -174,7 +225,7 @@ mod tests {
         );
         assert_eq!(
             evaluate_mutation(
-                Some(&plan),
+                &plan,
                 &MutationPolicyInput {
                     resolved_item: Resolution::Unique(ItemInstanceId::new("other")),
                     ..input(10)
@@ -184,7 +235,7 @@ mod tests {
         );
         assert_eq!(
             evaluate_mutation(
-                Some(&plan),
+                &plan,
                 &MutationPolicyInput {
                     resolved_destination: Some(ItemLocation::Vault),
                     ..input(10)
@@ -195,11 +246,58 @@ mod tests {
     }
 
     #[test]
+    fn validates_plan_time_window_and_source_binding() {
+        let invalid = MovePlan::new(
+            PlanId::new("plan"),
+            MembershipId::new("membership"),
+            ItemInstanceId::new("item"),
+            ItemLocation::Vault,
+            ItemLocation::Vault,
+            SyncRevision::new(4),
+            Timestamp::new(21),
+            Timestamp::new(20),
+        );
+        assert_eq!(invalid, Err(MovePlanValidation::InvalidTimestamps));
+
+        let plan = plan();
+        assert_eq!(
+            evaluate_mutation(
+                &plan,
+                &MutationPolicyInput {
+                    current_source: ItemLocation::Character(CharacterId::new("other")),
+                    ..input(10)
+                }
+            ),
+            MutationPolicyOutcome::SourceMismatch
+        );
+        assert_eq!(
+            evaluate_mutation(
+                &plan,
+                &MutationPolicyInput {
+                    current_source: ItemLocation::Other("unknown".into()),
+                    ..input(10)
+                }
+            ),
+            MutationPolicyOutcome::UnsupportedSource
+        );
+        assert_eq!(
+            evaluate_mutation(
+                &plan,
+                &MutationPolicyInput {
+                    membership: MembershipId::new("other"),
+                    ..input(10)
+                }
+            ),
+            MutationPolicyOutcome::WrongMembership
+        );
+    }
+
+    #[test]
     fn policy_reports_resolution_and_location_outcomes() {
         let plan = plan();
         assert_eq!(
             evaluate_mutation(
-                Some(&plan),
+                &plan,
                 &MutationPolicyInput {
                     resolved_item: Resolution::Missing,
                     ..input(10)
@@ -209,7 +307,7 @@ mod tests {
         );
         assert_eq!(
             evaluate_mutation(
-                Some(&plan),
+                &plan,
                 &MutationPolicyInput {
                     resolved_item: Resolution::Ambiguous(vec![
                         ItemInstanceId::new("a"),
@@ -220,12 +318,19 @@ mod tests {
             ),
             MutationPolicyOutcome::AmbiguousResolution
         );
-        let unsupported = MovePlan {
-            source: ItemLocation::Other("unknown".into()),
-            ..plan
-        };
+        let unsupported = MovePlan::new(
+            PlanId::new("plan"),
+            MembershipId::new("membership"),
+            ItemInstanceId::new("item"),
+            ItemLocation::Other("unknown".into()),
+            ItemLocation::Character(CharacterId::new("character")),
+            SyncRevision::new(4),
+            Timestamp::new(10),
+            Timestamp::new(20),
+        )
+        .unwrap();
         assert_eq!(
-            evaluate_mutation(Some(&unsupported), &input(10)),
+            evaluate_mutation(&unsupported, &input(10)),
             MutationPolicyOutcome::UnsupportedLocation
         );
     }

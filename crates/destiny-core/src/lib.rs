@@ -15,7 +15,8 @@ pub use ids::{
     MembershipType, PlanId, SyncRevision,
 };
 pub use mutation::{
-    MoveIntent, MovePlan, MutationPolicyInput, MutationPolicyOutcome, evaluate_mutation,
+    MoveIntent, MovePlan, MovePlanValidation, MutationPolicyInput, MutationPolicyOutcome,
+    evaluate_mutation,
 };
 pub use state::{
     Dataset, FreshnessInput, FreshnessPolicy, FreshnessStatus, Resolution, RevisionAllocation,
