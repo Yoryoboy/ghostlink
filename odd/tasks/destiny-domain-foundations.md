@@ -74,11 +74,11 @@ A provider-free core and behaviorally useful fakes create the anti-coupling seam
   - Check: fmt, clippy, workspace/all-features, core, and app test-support checks passed. Final re-verification confirmed independent revision-advance coverage for all normalized membership/definition/character/item fields and collection changes, with no production changes in the final test correction.
   - Evidence: implementation commit `19c6cfd`; contract correction `21cc670` (`fix: strengthen Destiny fake contracts`); exhaustive coverage commit `e9d98b4` (`test: cover Destiny snapshot revisions`); final re-verification passed.
 
-- [ ] **DDF-005 — Verify and close WU-002**
-  - Route: native review/assessment and delegated verification as required by active RDD policy.
-  - Outcome: verify the full committed feature, correct any blockers, and close the work unit.
-  - Check: baseline commands, structural dependency review, repository status, and review outcome.
-  - Evidence: pending.
+- [x] **DDF-005 — Verify and close WU-002**
+  - Route: native review was offered and declined for this candidate; native assessment was unavailable/schema-incompatible, so the high-risk fallback used full independent verification and one bounded final correction.
+  - Outcome: full verification confirmed all WU-002 contracts except that `MovePlan` allowed no-op and zero-duration plans. Commit `e1ce700` rejects equal source/destination and requires `created_at < expires_at`; independent correction verification passed with no findings.
+  - Check: final fmt, clippy, workspace/all-features, focused core/app test-support, Cargo metadata, full-range/correction diff checks, structural review, and clean worktree all passed. Live/provider checks were correctly excluded.
+  - Evidence: tracker evidence commit `4221d58`; correction commit `e1ce700` (`fix: reject invalid Destiny move plans`); native review outcome `declined_this_candidate`; independent correction verification passed.
 
 ## Acceptance criteria
 
@@ -100,7 +100,8 @@ A provider-free core and behaviorally useful fakes create the anti-coupling seam
 - DDF-002 established dependency-free core IDs and records in `431de4f`; independent verification found raw identifier formatting, corrected in `4db85c4`, and re-verification passed.
 - DDF-003 established dependency-free state and mutation policy in `dc78588`; verification findings about invalid states, freshness, expiry, classification, and source binding were corrected in `33553e9`, and re-verification passed.
 - DDF-004 established behavioral ports and offline fakes in `19c6cfd`; contract corrections landed in `21cc670`, exhaustive revision-field tests in `e9d98b4`, and final re-verification passed.
+- Full-feature verification found no-op and zero-duration move plans remained constructible. Commit `e1ce700` corrected plan construction, and independent re-verification passed. Native review was offered and declined for this candidate.
 
 ## Next step
 
-Complete DDF-005 with full-feature verification and native review handling.
+WU-002 is complete. Begin WU-003 as a new ODD implementation feature after revalidating callback provisioning and credential-store assumptions.
