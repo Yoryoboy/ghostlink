@@ -81,10 +81,11 @@ Decision: WU-004 uses the bounded English `DestinyInventoryItemDefinition` path 
   - Rollback: remove `crates/destiny-app/src/manifest.rs` and revert only the DMF-003 acquisition-contract/module/fake updates in the other four touched files.
 
 - [ ] **DMF-004 — Implement bounded Bungie Manifest acquisition and mapping** *(in progress)*
-  - Route: delegated multi-file writer after dependency/API revalidation; adapter and fixture surfaces; writer trigger fired because the slice touches multiple non-trivial files.
-  - Outcome: fetch and validate the Manifest index plus required English component through a bounded transport seam, map sanitized provider data to the application input contract, and prove the full offline fixture pipeline.
-  - Check: focused adapter tests for request shape, success envelope, version/path selection, redirects/proxy/TLS/deadline/size/content type, malformed JSON, provider errors, mapping completeness, and sentinel redaction; full fixture harness into the fake repository.
-  - Rollback: remove only the Manifest adapter/fixtures and declarations without touching SQLite or OAuth.
+  - Route: delegated adapter slices plus independent high-risk fallback verification. The original broad worker failed three times from child-session reasoning/output exhaustion; incident diagnosis found and reverted the only dependency residue, then the task was decomposed into mapping, transport, and offline pipeline slices. Writer trigger remains active because the task touches multiple non-trivial files.
+  - Outcome: fetch and validate the Manifest index plus required English component through a bounded transport seam, map sanitized provider data to the application input contract, and prove the full offline fixture pipeline. Pure mapping is complete in `47a6890`: sanitized index/component decoding, strict exact versions, canonical u32 hash keys, same-origin content-path validation including control/percent/traversal defenses, bounded candidates, conservative optional-field mapping, and no instance identity.
+  - Check: mapping slice passed fmt, 9 adapter Manifest tests, focused clippy `-D warnings`, diff/untracked whitespace checks, and independent verification before and after defense-in-depth corrections. Remaining checks: transport security/limits and complete adapter-to-service-to-fake fixture harness.
+  - Evidence: mapping commit `47a6890` (`feat: map Bungie Manifest definitions`).
+  - Rollback: remove only the Manifest adapter/fixtures/declarations and task-owned dependency changes without touching SQLite or OAuth.
 
 - [ ] **DMF-005 — Verify and close WU-004**
   - Route: native read-only assessment followed by the required ordinary verification plan; delegate broad command execution.
@@ -117,4 +118,4 @@ Pending implementation.
 
 ## Next step
 
-Delegate DMF-004 within the exact adapter/fixture edit surfaces and validate the real-catalog size assumption against the available offline fixture evidence.
+Continue DMF-004 with the bounded HTTP transport slice, then add the offline adapter-to-service-to-fake fixture harness and validate its catalog size against the 100,000-candidate ceiling.
