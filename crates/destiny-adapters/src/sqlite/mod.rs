@@ -35,6 +35,8 @@ mod definition_tests;
 mod inventory_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod verification_tests;
 
 use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
