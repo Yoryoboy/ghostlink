@@ -66,14 +66,15 @@ Decision: WU-004 uses the bounded English `DestinyInventoryItemDefinition` path 
   - Evidence: commit `924ce89` (`chore: start Destiny Manifest foundations`).
   - Rollback: remove only this feature branch and tracker before implementation begins.
 
-- [ ] **DMF-002 — Add publishable definition repository contracts and fake** *(in progress)*
-  - Route: delegated multi-file writer; core/app/test-support surfaces; writer trigger fired because the slice touches multiple non-trivial files.
-  - Outcome: extend the provider-neutral repository contract for atomic complete-set publication and implement a deterministic in-memory fake with lookup, version, replacement, and idempotence contract coverage.
-  - Check: focused core and app test-support commands plus formatter/clippy and writer readback.
-  - Rollback: remove only the new publication contract/fake behavior and associated tests.
+- [x] **DMF-002 — Add publishable definition repository contracts and fake**
+  - Route: delegated multi-file writer plus independent high-risk fallback verification; writer trigger fired because the slice touched multiple non-trivial files. Native assessment was schema-incompatible/unassessable under clone-disabled RDD, so the ordinary high-risk plan required a separate verifier.
+  - Outcome: extended `DefinitionRepository` with atomic complete-set publication and strengthened the test-support in-memory fake with complete replacement, equal-set idempotence, duplicate/empty/mixed-version rejection before mutation, deterministic reads, attempt/count observability, and injected sanitized publication failure that preserves prior state.
+  - Check: writer and independent verifier both passed fmt, 15 core tests, 38 app test-support tests, focused clippy `-D warnings`, and diff checks; LSP diagnostics were clean; parent readback and `git diff --check` passed. No blocking, major, or minor finding remained.
+  - Evidence: commit `1827787` (`feat: add Manifest definition repository publishing`).
+  - Rollback: revert only `crates/destiny-core/src/ports.rs` and the DMF-002 publication behavior/tests in `crates/destiny-app/src/test_support.rs`.
 
-- [ ] **DMF-003 — Implement Manifest validation and normalization service**
-  - Route: delegated multi-file writer; app/core contract surfaces.
+- [ ] **DMF-003 — Implement Manifest validation and normalization service** *(in progress)*
+  - Route: delegated multi-file writer; app/core contract surfaces; writer trigger fired because the slice touches multiple non-trivial files.
   - Outcome: validate acquired versioned input, normalize bounded inventory definition/search fields, reject malformed/incomplete/duplicate data, distinguish static definitions from runtime instances, produce deterministic ordering, and publish only complete sets.
   - Check: focused service tests for malformed/incomplete inputs, definition/instance distinction, deterministic/idempotent output, atomic failure, and raw-payload isolation.
   - Rollback: remove only the application Manifest service and its tests while preserving repository contracts.
@@ -106,6 +107,7 @@ Decision: WU-004 uses the bounded English `DestinyInventoryItemDefinition` path 
 - Repository mapping identified existing `ManifestGateway`, `ManifestDefinitions`, read-only `DefinitionRepository`, normalized `ItemDefinition`, `InMemoryDefinitionRepository`, and `QueuedManifestGateway` seams.
 - Official evidence resolves the acquisition source: use the English per-component JSON path for `DestinyInventoryItemDefinition`, validate it on every index response, and avoid SQLite/all-definition payloads.
 - DMF-001 established and committed the feature boundary in `924ce89`.
+- DMF-002 added atomic, validated definition-set publication and the deterministic in-memory fake in `1827787`; independent verification passed all authorized checks with no blocking finding.
 
 ## Verification evidence
 
@@ -113,4 +115,4 @@ Pending implementation.
 
 ## Next step
 
-Delegate DMF-002 within the exact core/app/test-support edit surfaces.
+Delegate DMF-003 within the exact app/core edit surfaces.
