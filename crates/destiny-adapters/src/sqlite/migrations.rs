@@ -15,8 +15,20 @@
 //! are stored as canonical decimal `TEXT` with `CHECK` constraints: digits only,
 //! no leading zero, an explicit maximum length, and, at that maximum length, an
 //! explicit value ceiling. Later repository modules parse and range-check those
-//! values; no unsigned value is ever written through SQLite's signed integer
-//! type, so nothing can truncate silently.
+//! values; no unsigned value wider than SQLite's signed integer capacity is
+//! written as `INTEGER`, while bounded `u32` values use exact range checks, so
+//! nothing can truncate silently.
+//!
+//! The version-2 schema adds the normalized, secret-free `item_perks` child
+//! projection. It is `STRICT` like every other table, is keyed by item instance
+//! plus a zero-based ordinal, references `items(instance_id)` with
+//! `ON DELETE CASCADE`, and constrains its perk hash to the exact unsigned
+//! `u32` range and its two state flags to the exact integers `0`/`1`. The up step
+//! only creates that table, so every version-1 row survives unchanged; the down
+//! step drops only that table, so a downgrade removes perk summaries without
+//! touching the version-1 profile projection. Ordinal uniqueness is supplied by
+//! the composite primary key, and the repository rejects non-contiguous ordinals
+//! when it reads them back.
 //!
 //! One coercion boundary is inherent to SQLite and documented rather than
 //! hidden: under `STRICT`, a fractional `REAL` or a `BLOB` is rejected for an
@@ -31,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 1;
+pub(crate) const LATEST_VERSION: u32 = 2;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -41,11 +53,18 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 1] = [Migration {
-    version: 1,
-    up: SCHEMA_V1_UP,
-    down: SCHEMA_V1_DOWN,
-}];
+const MIGRATIONS: [Migration; 2] = [
+    Migration {
+        version: 1,
+        up: SCHEMA_V1_UP,
+        down: SCHEMA_V1_DOWN,
+    },
+    Migration {
+        version: 2,
+        up: SCHEMA_V2_UP,
+        down: SCHEMA_V2_DOWN,
+    },
+];
 
 /// Version-1 schema: normalized sync metadata, definitions, one active profile,
 /// characters, and item instances.
@@ -201,6 +220,56 @@ DROP TABLE IF EXISTS items;
 DROP TABLE IF EXISTS characters;
 DROP TABLE IF EXISTS active_profile;
 DROP TABLE IF EXISTS sync_metadata;
+"#;
+
+/// Version-2 schema: one normalized, secret-free child projection of item perk
+/// summaries.
+///
+/// Deliberate properties:
+///
+/// - `item_perks` is keyed by `(instance_id, ordinal)`, so an item's ordered
+///   perk list can never contain two rows at the same ordinal, and the ordinal
+///   is the sole deterministic ordering key on read.
+/// - `instance_id` references `items(instance_id)` with `ON DELETE CASCADE`, so
+///   removing an item removes exactly its perk summaries and no orphan can be
+///   committed while foreign-key enforcement is on.
+/// - `ordinal` is a checked non-negative integer. The repository additionally
+///   requires a stored item's ordinals to run contiguously from zero, so a gap,
+///   a negative value, or a trailing extra row fails closed on read.
+/// - `perk_hash` is stored as the native signed `INTEGER` type but constrained to
+///   the exact unsigned `u32` range `0..=4294967295`, matching [`PerkHash`].
+/// - `active` and `visible` are constrained to the exact integers `0`/`1`, so no
+///   other value can be committed as a boolean.
+/// - The table is `STRICT` and integer columns additionally require
+///   `typeof(column) = 'integer'`, so a fractional `REAL` or a `BLOB` cannot be
+///   stored in an integer domain.
+/// - No display text, raw payload, socket, or credential column exists, and the
+///   perk hash is an opaque reference rather than a rendered string.
+///
+/// [`PerkHash`]: destiny_core::PerkHash
+const SCHEMA_V2_UP: &str = r#"
+CREATE TABLE item_perks (
+    instance_id TEXT NOT NULL
+        REFERENCES items(instance_id) ON DELETE CASCADE
+        CHECK (length(instance_id) BETWEEN 1 AND 128),
+    ordinal INTEGER NOT NULL
+        CHECK (typeof(ordinal) = 'integer' AND ordinal >= 0),
+    perk_hash INTEGER NOT NULL
+        CHECK (typeof(perk_hash) = 'integer' AND perk_hash BETWEEN 0 AND 4294967295),
+    active INTEGER NOT NULL
+        CHECK (typeof(active) = 'integer' AND active IN (0, 1)),
+    visible INTEGER NOT NULL
+        CHECK (typeof(visible) = 'integer' AND visible IN (0, 1)),
+    PRIMARY KEY (instance_id, ordinal)
+) STRICT;
+"#;
+
+/// Exact reverse of [`SCHEMA_V2_UP`].
+///
+/// It drops only the perk child table, so a version-2 database can return to the
+/// complete version-1 profile projection with every version-1 row intact.
+const SCHEMA_V2_DOWN: &str = r#"
+DROP TABLE IF EXISTS item_perks;
 "#;
 
 /// Reads the recorded schema version from `PRAGMA user_version`.

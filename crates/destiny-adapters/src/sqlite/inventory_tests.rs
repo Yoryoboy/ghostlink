@@ -8,8 +8,8 @@ use super::SqliteStore;
 use destiny_core::{
     AppError, Character, DefinitionReplacementInput, DefinitionRepository, DefinitionVersion,
     ErrorCategory, InventoryRepository, InventorySnapshotInput, ItemDefinition, ItemHash,
-    ItemInstance, ItemLocation, ManifestDefinitions, MembershipId, MembershipType, Resolution,
-    SourceMarker, Timestamp,
+    ItemInstance, ItemLocation, ManifestDefinitions, MembershipId, MembershipType, PerkHash,
+    PerkSummary, Resolution, SourceMarker, Timestamp,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,7 +51,9 @@ fn storage_error() -> AppError {
 }
 
 /// A complete projection covering every optional field, all three typed
-/// locations, and the exact numeric bounds of the schema columns.
+/// locations, the exact numeric bounds of the schema columns, and an ordered
+/// perk list that includes a duplicated hash, both state flags, both `u32` hash
+/// bounds, and an empty list.
 fn full_input() -> InventorySnapshotInput {
     InventorySnapshotInput {
         membership_id: MembershipId::new("membership-1"),
@@ -86,6 +88,25 @@ fn full_input() -> InventorySnapshotInput {
                 equipped: false,
                 locked: true,
                 power: Some(u16::MAX),
+                perks: vec![
+                    PerkSummary {
+                        perk_hash: PerkHash::new(0),
+                        active: true,
+                        visible: true,
+                    },
+                    PerkSummary {
+                        perk_hash: PerkHash::new(u32::MAX),
+                        active: false,
+                        visible: false,
+                    },
+                    // A duplicate hash is legal because a provider may summarize
+                    // the same perk from more than one source.
+                    PerkSummary {
+                        perk_hash: PerkHash::new(0),
+                        active: false,
+                        visible: true,
+                    },
+                ],
             },
             ItemInstance {
                 instance_id: "instance-2".into(),
@@ -95,6 +116,11 @@ fn full_input() -> InventorySnapshotInput {
                 equipped: true,
                 locked: false,
                 power: None,
+                perks: vec![PerkSummary {
+                    perk_hash: PerkHash::new(42),
+                    active: false,
+                    visible: true,
+                }],
             },
             ItemInstance {
                 instance_id: "instance-3".into(),
@@ -104,6 +130,7 @@ fn full_input() -> InventorySnapshotInput {
                 equipped: false,
                 locked: false,
                 power: Some(0),
+                perks: Vec::new(),
             },
         ],
     }
@@ -133,35 +160,7 @@ fn expected_characters() -> Vec<Character> {
 
 /// The canonical items `full_input` round-trips to, ordered by identifier.
 fn expected_items() -> Vec<ItemInstance> {
-    vec![
-        ItemInstance {
-            instance_id: "instance-1".into(),
-            item_hash: ItemHash::new(-42),
-            location: ItemLocation::Vault,
-            quantity: u32::MAX,
-            equipped: false,
-            locked: true,
-            power: Some(u16::MAX),
-        },
-        ItemInstance {
-            instance_id: "instance-2".into(),
-            item_hash: ItemHash::new(7),
-            location: ItemLocation::Character("character-1".into()),
-            quantity: 0,
-            equipped: true,
-            locked: false,
-            power: None,
-        },
-        ItemInstance {
-            instance_id: "instance-3".into(),
-            item_hash: ItemHash::new(8),
-            location: ItemLocation::Other("postmaster".into()),
-            quantity: 1,
-            equipped: false,
-            locked: false,
-            power: Some(0),
-        },
-    ]
+    full_input().items
 }
 
 fn seeded_store() -> SqliteStore {
@@ -184,6 +183,13 @@ fn item_count(store: &SqliteStore) -> i64 {
         .connection()
         .query_row("SELECT count(*) FROM items", [], |row| row.get(0))
         .expect("count items")
+}
+
+fn perk_count(store: &SqliteStore) -> i64 {
+    store
+        .connection()
+        .query_row("SELECT count(*) FROM item_perks", [], |row| row.get(0))
+        .expect("count perks")
 }
 
 fn metadata_row_count(store: &SqliteStore) -> i64 {
@@ -329,7 +335,7 @@ fn every_normalized_field_and_location_advances_exactly_once() {
 
     // Character index 1 is unreferenced, so renaming or removing it never makes
     // the candidate structurally invalid.
-    let mutations: [Mutation; 19] = [
+    let mutations: [Mutation; 24] = [
         ("membership_id", |value| {
             value.membership_id = MembershipId::new("membership-2");
         }),
@@ -380,6 +386,25 @@ fn every_normalized_field_and_location_advances_exactly_once() {
         }),
         ("item.power", |value| {
             value.items[0].power = Some(1);
+        }),
+        ("item.perks.order", |value| {
+            value.items[0].perks.reverse();
+        }),
+        ("item.perks.perk_hash", |value| {
+            value.items[0].perks[0].perk_hash = PerkHash::new(1);
+        }),
+        ("item.perks.active", |value| {
+            value.items[0].perks[0].active = false;
+        }),
+        ("item.perks.visible", |value| {
+            value.items[0].perks[0].visible = false;
+        }),
+        ("item.perks.from-empty", |value| {
+            value.items[2].perks.push(PerkSummary {
+                perk_hash: PerkHash::new(9),
+                active: false,
+                visible: true,
+            });
         }),
         ("characters.membership", |value| {
             value.characters.pop();
@@ -479,9 +504,221 @@ fn complete_replacement_removes_stale_rows_on_membership_and_set_change() {
     );
     assert_eq!(item_count(&store), 1, "stale items must be removed");
     assert_eq!(
+        perk_count(&store),
+        3,
+        "perks of removed items must be removed"
+    );
+    assert_eq!(
         store.load_current().expect("read projection"),
         Some(replaced)
     );
+}
+
+#[test]
+fn empty_perk_lists_round_trip_as_empty() {
+    let mut store = SqliteStore::open_in_memory().expect("open in-memory store");
+    let mut input = full_input();
+    for item in &mut input.items {
+        item.perks.clear();
+    }
+
+    let returned = store
+        .replace_current(input)
+        .expect("a projection with no perks publishes");
+
+    assert_eq!(returned.metadata.revision.value(), 1);
+    assert!(returned.items.iter().all(|item| item.perks.is_empty()));
+    assert_eq!(perk_count(&store), 0);
+    assert_eq!(
+        store.load_current().expect("read projection"),
+        Some(returned)
+    );
+}
+
+#[test]
+fn ordered_perks_round_trip_with_duplicates_and_both_hash_bounds() {
+    let mut store = SqliteStore::open_in_memory().expect("open in-memory store");
+    let returned = store
+        .replace_current(full_input())
+        .expect("publish the full perk projection");
+
+    assert_eq!(returned.items, expected_items());
+    assert_eq!(perk_count(&store), 4);
+    assert_eq!(returned.items[0].perks.len(), 3);
+    assert_eq!(returned.items[0].perks[0].perk_hash, PerkHash::new(0));
+    assert_eq!(
+        returned.items[0].perks[1].perk_hash,
+        PerkHash::new(u32::MAX)
+    );
+    assert_eq!(
+        returned.items[0].perks[2].perk_hash,
+        PerkHash::new(0),
+        "a duplicated perk hash must be preserved, not deduplicated"
+    );
+    assert!(returned.items[2].perks.is_empty());
+    assert_eq!(
+        store.load_current().expect("read projection"),
+        Some(returned)
+    );
+}
+
+#[test]
+fn unchanged_exact_perks_retain_the_revision() {
+    let mut store = seeded_store();
+    let mut refreshed = full_input();
+    refreshed.checked_at = Timestamp::new(9_000);
+
+    let retained = store
+        .replace_current(refreshed)
+        .expect("refresh the identical perks");
+
+    assert_eq!(retained.metadata.revision.value(), 1);
+    assert_eq!(retained.metadata.checked_at, Timestamp::new(9_000));
+    assert_eq!(retained.items, expected_items());
+}
+
+#[test]
+fn stale_perks_are_removed_when_items_shrink_or_lose_their_perks() {
+    let mut store = seeded_store();
+    assert_eq!(perk_count(&store), 4);
+
+    let mut shrunk = full_input();
+    shrunk.items[0].perks.truncate(1);
+    shrunk.items[1].perks.clear();
+    let replaced = store
+        .replace_current(shrunk)
+        .expect("publish the shrunk perk lists");
+    assert_eq!(replaced.metadata.revision.value(), 2);
+    assert_eq!(perk_count(&store), 1);
+    assert_eq!(replaced.items[0].perks.len(), 1);
+    assert!(replaced.items[1].perks.is_empty());
+
+    let mut cleared = full_input();
+    for item in &mut cleared.items {
+        item.perks.clear();
+    }
+    let replaced = store
+        .replace_current(cleared)
+        .expect("publish with every perk cleared");
+    assert_eq!(replaced.metadata.revision.value(), 3);
+    assert_eq!(perk_count(&store), 0);
+    assert_eq!(
+        store.load_current().expect("read projection"),
+        Some(replaced)
+    );
+}
+
+#[test]
+fn perk_write_failure_rolls_back_items_perks_and_metadata() {
+    let mut store = seeded_store();
+    let committed = store
+        .load_current()
+        .expect("read projection")
+        .expect("projection present");
+    assert_eq!(perk_count(&store), 4);
+
+    // The replacement changes membership, writes the perk-bearing first item and
+    // its three perks, and then fails on the second item's over-long unknown
+    // location. The whole transaction must roll back to the prior projection.
+    let mut failing = full_input();
+    failing.membership_id = MembershipId::new("membership-2");
+    failing.items[1].location = ItemLocation::Other("x".repeat(257));
+
+    let error = store
+        .replace_current(failing)
+        .expect_err("a constraint failure must not commit");
+    assert_eq!(error, storage_error());
+    assert_eq!(
+        store.load_current().expect("read projection"),
+        Some(committed),
+        "the prior projection must survive the rollback"
+    );
+    assert_eq!(
+        perk_count(&store),
+        4,
+        "rolled-back perk rows must not survive"
+    );
+    assert_eq!(item_count(&store), 3);
+}
+
+#[test]
+fn corrupt_perk_rows_fail_closed() {
+    // A non-contiguous ordinal list: deleting the zero ordinal leaves 1 and 2.
+    let store = seeded_store();
+    bypass_constraints(&store);
+    store
+        .connection()
+        .execute(
+            "DELETE FROM item_perks WHERE instance_id = 'instance-1' AND ordinal = 0",
+            [],
+        )
+        .expect("drop the first perk ordinal");
+    assert_eq!(store.load_current(), Err(storage_error()));
+
+    // A non-boolean active flag.
+    let store = seeded_store();
+    bypass_constraints(&store);
+    store
+        .connection()
+        .execute(
+            "UPDATE item_perks SET active = 2 WHERE instance_id = 'instance-1' AND ordinal = 0",
+            [],
+        )
+        .expect("write a non-boolean active flag");
+    assert_eq!(store.load_current(), Err(storage_error()));
+
+    // A non-boolean visible flag.
+    let store = seeded_store();
+    bypass_constraints(&store);
+    store
+        .connection()
+        .execute(
+            "UPDATE item_perks SET visible = -1 WHERE instance_id = 'instance-1' AND ordinal = 0",
+            [],
+        )
+        .expect("write a negative visible flag");
+    assert_eq!(store.load_current(), Err(storage_error()));
+
+    // An out-of-range perk hash.
+    let store = seeded_store();
+    bypass_constraints(&store);
+    store
+        .connection()
+        .execute(
+            "UPDATE item_perks SET perk_hash = 4294967296 \
+             WHERE instance_id = 'instance-1' AND ordinal = 0",
+            [],
+        )
+        .expect("write an out-of-range perk hash");
+    assert_eq!(store.load_current(), Err(storage_error()));
+
+    // A negative ordinal.
+    let store = seeded_store();
+    bypass_constraints(&store);
+    store
+        .connection()
+        .execute(
+            "UPDATE item_perks SET ordinal = -1 WHERE instance_id = 'instance-1' AND ordinal = 0",
+            [],
+        )
+        .expect("write a negative ordinal");
+    assert_eq!(store.load_current(), Err(storage_error()));
+
+    // A perk row that references an unknown item instance, foreign keys off.
+    let store = seeded_store();
+    store
+        .connection()
+        .execute_batch("PRAGMA foreign_keys = OFF")
+        .expect("disable foreign keys for the corrupt write");
+    store
+        .connection()
+        .execute(
+            "INSERT INTO item_perks (instance_id, ordinal, perk_hash, active, visible) \
+             VALUES ('ghost-item', 0, 1, 0, 0)",
+            [],
+        )
+        .expect("write an orphan perk row");
+    assert_eq!(store.load_current(), Err(storage_error()));
 }
 
 #[test]
@@ -597,6 +834,22 @@ fn partial_anchor_and_child_rows_fail_closed() {
             [],
         )
         .expect("insert an orphan item");
+    assert_eq!(store.load_current(), Err(storage_error()));
+
+    // Perk rows without any item, anchor, or metadata, foreign keys off.
+    let store = SqliteStore::open_in_memory().expect("open in-memory store");
+    store
+        .connection()
+        .execute_batch("PRAGMA foreign_keys = OFF")
+        .expect("disable foreign keys");
+    store
+        .connection()
+        .execute(
+            "INSERT INTO item_perks (instance_id, ordinal, perk_hash, active, visible) \
+             VALUES ('ghost-perk', 0, 1, 0, 1)",
+            [],
+        )
+        .expect("insert an orphan perk");
     assert_eq!(store.load_current(), Err(storage_error()));
 }
 

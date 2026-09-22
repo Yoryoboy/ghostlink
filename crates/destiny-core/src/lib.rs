@@ -13,13 +13,13 @@ pub use auth::{
     AuthorizationState, CallbackResult,
 };
 pub use domain::{
-    Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, SnapshotMetadata,
-    SyncMetadata,
+    Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, PerkSummary,
+    SnapshotMetadata, SyncMetadata,
 };
 pub use error::{AppError, ErrorCategory};
 pub use ids::{
     BucketHash, CharacterId, DefinitionVersion, ItemHash, ItemInstanceId, MembershipId,
-    MembershipType, PlanId, SyncRevision,
+    MembershipType, PerkHash, PlanId, SyncRevision,
 };
 pub use mutation::{
     MoveIntent, MovePlan, MovePlanValidation, MutationPolicyInput, MutationPolicyOutcome,

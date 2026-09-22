@@ -91,6 +91,13 @@ impl InventorySnapshotInput {
     /// content change. Records are sorted by identifier and compared in full
     /// without hashing, so every [`Character`] field and every [`ItemInstance`]
     /// field, including the typed [`ItemLocation`], participates in equality.
+    ///
+    /// An [`ItemInstance`]'s `perks` vector is compared in its stored order, so
+    /// every [`PerkSummary`] field and the exact perk order participate in
+    /// identity: a reordered perk list is a content change, while a pure
+    /// permutation of the *items* themselves is not.
+    ///
+    /// [`PerkSummary`]: crate::domain::PerkSummary
     pub fn content_eq(&self, other: &Self) -> bool {
         if self.membership_id != other.membership_id
             || self.membership_type != other.membership_type
@@ -125,6 +132,12 @@ impl InventorySnapshotInput {
     /// valid. This method deliberately does not validate `source`: requiring the
     /// fixed dataset/source pairing is repository-specific policy, so a
     /// repository validates provenance separately before mutating state.
+    ///
+    /// An [`ItemInstance`]'s `perks` vector has no unique key and every one of
+    /// its fields is already a valid typed value, so structural validity imposes
+    /// no additional restriction on it: duplicated perk hashes and any perk
+    /// order are structurally valid, and they are left to revision identity and
+    /// the durable repository's own storage constraints.
     pub fn is_structurally_valid(&self) -> bool {
         let mut character_ids = HashSet::with_capacity(self.characters.len());
         for character in &self.characters {

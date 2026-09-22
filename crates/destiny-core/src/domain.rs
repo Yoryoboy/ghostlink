@@ -2,7 +2,7 @@
 
 use crate::ids::{
     BucketHash, CharacterId, DefinitionVersion, ItemHash, ItemInstanceId, MembershipId,
-    MembershipType, SyncRevision,
+    MembershipType, PerkHash, SyncRevision,
 };
 use crate::state::{Dataset, SourceMarker, Timestamp};
 
@@ -37,6 +37,30 @@ pub struct Character {
     pub light: Option<u16>,
 }
 
+/// One provider-neutral summary of a perk the provider reports for an item instance.
+///
+/// The record deliberately retains only the perk's provider definition
+/// identifier and the two provider-reported state flags. It carries no provider
+/// display text, no description, no icon path, no socket or plug structure, and
+/// no raw provider payload: the Manifest definition layer owns every display
+/// string, and `perk_hash` is an opaque reference that callers must not render.
+///
+/// Field semantics:
+///
+/// - `perk_hash` identifies the perk definition. It is a [`PerkHash`] and must
+///   not be confused with an item or bucket definition hash.
+/// - `active` is true only when the provider reports the summarized perk as
+///   active/selected on this instance.
+/// - `visible` is true only when the provider reports the summarized perk as
+///   visible for this instance. It is independent of `active`, so a perk may be
+///   visible but inactive, active and visible, or neither.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PerkSummary {
+    pub perk_hash: PerkHash,
+    pub active: bool,
+    pub visible: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemInstance {
     pub instance_id: ItemInstanceId,
@@ -46,6 +70,15 @@ pub struct ItemInstance {
     pub equipped: bool,
     pub locked: bool,
     pub power: Option<u16>,
+    /// Ordered perk summaries for this instance.
+    ///
+    /// The order is semantic and deterministic: it is the order the provider
+    /// summarized the perks in, so a reordering is a content change. Duplicate
+    /// [`PerkSummary::perk_hash`] values are allowed, because the provider may
+    /// summarize the same perk from more than one source. An item with no
+    /// summarized perks carries an empty vector, which is distinct from any
+    /// non-empty list.
+    pub perks: Vec<PerkSummary>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

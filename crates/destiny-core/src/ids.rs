@@ -87,6 +87,32 @@ impl fmt::Display for ItemHash {
     }
 }
 
+/// A perk definition hash. It is deliberately distinct from an [`ItemHash`]
+/// and a [`BucketHash`], because a perk reference must never be confused with an
+/// item or bucket reference even though providers may reuse numeric spaces.
+///
+/// The width is `u32` rather than the signed `i64` used by item and bucket
+/// hashes: this is a provider-neutral perk identifier, and keeping it unsigned
+/// and narrow makes the durable projection's integer range check exact.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PerkHash(u32);
+
+impl PerkHash {
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u32 {
+        self.0
+    }
+}
+
+impl fmt::Display for PerkHash {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BucketHash(i64);
 
@@ -129,7 +155,7 @@ impl fmt::Display for SyncRevision {
 #[cfg(test)]
 mod tests {
     use super::{
-        CharacterId, ItemHash, ItemInstanceId, MembershipId, MembershipType, SyncRevision,
+        CharacterId, ItemHash, ItemInstanceId, MembershipId, MembershipType, PerkHash, SyncRevision,
     };
 
     #[test]
@@ -145,6 +171,19 @@ mod tests {
         let instance = ItemInstanceId::new("123");
         assert_eq!(definition.value(), 123);
         assert_eq!(instance.as_str(), "123");
+    }
+
+    #[test]
+    fn perk_hash_is_unsigned_and_distinct_from_item_and_bucket_hashes() {
+        assert_eq!(PerkHash::new(0).value(), 0);
+        assert_eq!(PerkHash::new(u32::MAX).value(), u32::MAX);
+        assert_eq!(PerkHash::new(u32::MAX).to_string(), "4294967295");
+
+        // The types are not interchangeable: the same numeric value in an item
+        // hash and a perk hash are different values with no cross conversion.
+        let item = ItemHash::new(7);
+        let perk = PerkHash::new(7);
+        assert_eq!(item.value(), i64::from(perk.value()));
     }
 
     #[test]

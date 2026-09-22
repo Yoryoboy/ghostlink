@@ -556,6 +556,7 @@ mod tests {
     use super::*;
     use destiny_core::{
         Character, ErrorCategory, ItemInstance, ItemLocation, MembershipId, MembershipType,
+        PerkHash, PerkSummary,
     };
 
     type RevisionMutation = (&'static str, fn(&mut InventorySnapshotInput));
@@ -576,6 +577,7 @@ mod tests {
                 equipped: false,
                 locked: false,
                 power: None,
+                perks: Vec::new(),
             }],
         }
     }
@@ -614,6 +616,18 @@ mod tests {
                     equipped: false,
                     locked: false,
                     power: Some(100),
+                    perks: vec![
+                        PerkSummary {
+                            perk_hash: PerkHash::new(10),
+                            active: true,
+                            visible: true,
+                        },
+                        PerkSummary {
+                            perk_hash: PerkHash::new(20),
+                            active: false,
+                            visible: false,
+                        },
+                    ],
                 },
                 ItemInstance {
                     instance_id: "instance-2".into(),
@@ -623,6 +637,7 @@ mod tests {
                     equipped: true,
                     locked: true,
                     power: Some(200),
+                    perks: Vec::new(),
                 },
             ],
         }
@@ -711,7 +726,7 @@ mod tests {
     fn every_normalized_field_participates_in_revision_equality() {
         let base = multi_input();
 
-        let mutations: [RevisionMutation; 18] = [
+        let mutations: [RevisionMutation; 22] = [
             ("membership_id", |value| {
                 value.membership_id = MembershipId::new("membership-2");
             }),
@@ -759,6 +774,18 @@ mod tests {
             }),
             ("item.power", |value| {
                 value.items[0].power = Some(101);
+            }),
+            ("item.perks.order", |value| {
+                value.items[0].perks.reverse();
+            }),
+            ("item.perks.perk_hash", |value| {
+                value.items[0].perks[0].perk_hash = PerkHash::new(11);
+            }),
+            ("item.perks.active", |value| {
+                value.items[0].perks[0].active = false;
+            }),
+            ("item.perks.visible", |value| {
+                value.items[0].perks[0].visible = false;
             }),
             ("characters.membership", |value| {
                 value.characters.pop();

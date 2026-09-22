@@ -10,11 +10,12 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 6] = [
+const EXPECTED_TABLE_NAMES: [&str; 7] = [
     "active_profile",
     "characters",
     "definition_tags",
     "definitions",
+    "item_perks",
     "items",
     "sync_metadata",
 ];
@@ -25,7 +26,7 @@ const EXPECTED_INDEX_NAMES: [&str; 2] = ["items_definition_hash_idx", "items_loc
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 33] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 38] = [
     ("active_profile", "singleton", "INTEGER"),
     ("active_profile", "membership_id", "TEXT"),
     ("active_profile", "membership_type", "TEXT"),
@@ -45,6 +46,11 @@ const EXPECTED_COLUMNS: [(&str, &str, &str); 33] = [
     ("definitions", "tier", "TEXT"),
     ("definitions", "element", "TEXT"),
     ("definitions", "definition_version", "TEXT"),
+    ("item_perks", "instance_id", "TEXT"),
+    ("item_perks", "ordinal", "INTEGER"),
+    ("item_perks", "perk_hash", "INTEGER"),
+    ("item_perks", "active", "INTEGER"),
+    ("item_perks", "visible", "INTEGER"),
     ("items", "instance_id", "TEXT"),
     ("items", "item_hash", "INTEGER"),
     ("items", "location_kind", "TEXT"),
@@ -196,6 +202,42 @@ fn table_sql(store: &SqliteStore, table: &str) -> String {
         .expect("read table SQL")
 }
 
+/// Counts every row in one table.
+fn row_count(store: &SqliteStore, table: &str) -> i64 {
+    store
+        .connection()
+        .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .expect("count rows")
+}
+
+/// Writes one complete version-1 profile projection with raw SQL.
+///
+/// A DPS-002A migration test cannot seed version-1 rows through the repository
+/// while the schema is still at version 1, because the repository writes the
+/// version-2 `item_perks` table. This helper therefore inserts the exact
+/// version-1 rows the version-1 schema accepts, so an up or down migration can
+/// be checked for row preservation without depending on repository code.
+fn seed_v1_projection(store: &SqliteStore) {
+    store
+        .connection()
+        .execute_batch(
+            "INSERT INTO active_profile (singleton, membership_id, membership_type) \
+             VALUES (1, '4611686018484639825', '3');\
+             INSERT INTO characters (character_id, name, class_name, race, gender, light) \
+             VALUES ('hunter-1', 'Nova', 'Hunter', 'Human', 'Female', 1810);\
+             INSERT INTO items \
+             (instance_id, item_hash, location_kind, location_character_id, location_other, \
+              quantity, equipped, locked, power) \
+             VALUES ('item-1', 2522695, 'character', 'hunter-1', NULL, 1, 1, 0, 1810);\
+             INSERT INTO sync_metadata \
+             (dataset, checked_at, source, revision, definition_version) \
+             VALUES ('profile_inventory', '100', 'profile', '1', 'defs-v1');",
+        )
+        .expect("seed a version-1 profile projection with raw SQL");
+}
+
 /// Inserts one canonical `sync_metadata` pair and asserts it round-trips exactly.
 fn accept_sync_metadata(store: &SqliteStore, checked_at: &str, revision: &str) {
     store
@@ -269,10 +311,10 @@ fn reject_membership_type(store: &SqliteStore, value: &str) {
 }
 
 #[test]
-fn empty_database_migrates_to_version_one_with_exact_schema() {
+fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 1);
+    assert_eq!(LATEST_SCHEMA_VERSION, 2);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION
@@ -402,6 +444,135 @@ fn downgrade_then_upgrade_is_reversible_without_stale_tables() {
         LATEST_SCHEMA_VERSION
     );
     assert_eq!(table_names(&store), strings(EXPECTED_TABLE_NAMES));
+}
+
+#[test]
+fn v2_up_migration_preserves_version_one_rows_and_starts_with_no_perks() {
+    let mut store = SqliteStore::open_in_memory().expect("open in-memory store");
+    store.migrate_to(1).expect("downgrade to version 1");
+    assert_eq!(store.schema_version().expect("read schema version"), 1);
+    assert!(!table_names(&store).contains(&"item_perks".to_owned()));
+    seed_v1_projection(&store);
+
+    store.migrate_to(2).expect("apply the version-2 up step");
+
+    assert_eq!(store.schema_version().expect("read schema version"), 2);
+    assert!(table_names(&store).contains(&"item_perks".to_owned()));
+    // Every version-1 row survives the up step, and the new child table starts
+    // empty because the up step only creates it.
+    assert_eq!(row_count(&store, "active_profile"), 1);
+    assert_eq!(row_count(&store, "characters"), 1);
+    assert_eq!(row_count(&store, "items"), 1);
+    assert_eq!(row_count(&store, "sync_metadata"), 1);
+    assert_eq!(row_count(&store, "item_perks"), 0);
+    let membership: String = store
+        .connection()
+        .query_row(
+            "SELECT membership_id FROM active_profile WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read the preserved anchor");
+    assert_eq!(membership, "4611686018484639825");
+    let revision: String = store
+        .connection()
+        .query_row(
+            "SELECT revision FROM sync_metadata WHERE dataset = 'profile_inventory'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read the preserved metadata");
+    assert_eq!(revision, "1");
+}
+
+#[test]
+fn v2_down_drops_only_item_perks_then_reapply_up_preserves_v1_rows() {
+    let temp = TempDatabase::new();
+    {
+        let mut store = SqliteStore::open(temp.path()).expect("open file store");
+        store.migrate_to(1).expect("downgrade to version 1");
+        seed_v1_projection(&store);
+        store.migrate_to(2).expect("upgrade to version 2");
+        store
+            .connection()
+            .execute(
+                "INSERT INTO item_perks (instance_id, ordinal, perk_hash, active, visible) \
+                 VALUES ('item-1', 0, 42, 1, 0), ('item-1', 1, 42, 0, 1)",
+                [],
+            )
+            .expect("seed two perk rows");
+        assert_eq!(row_count(&store, "item_perks"), 2);
+
+        // The down step drops exactly the perk child table.
+        store.migrate_to(1).expect("apply the version-2 down step");
+        assert_eq!(store.schema_version().expect("read schema version"), 1);
+        assert!(!table_names(&store).contains(&"item_perks".to_owned()));
+        assert_eq!(row_count(&store, "active_profile"), 1);
+        assert_eq!(row_count(&store, "characters"), 1);
+        assert_eq!(row_count(&store, "items"), 1);
+        assert_eq!(row_count(&store, "sync_metadata"), 1);
+
+        // Reapplying the up step succeeds and the version-1 rows are still there.
+        store.migrate_to(2).expect("reapply the version-2 up step");
+        assert_eq!(store.schema_version().expect("read schema version"), 2);
+        assert!(table_names(&store).contains(&"item_perks".to_owned()));
+        assert_eq!(row_count(&store, "item_perks"), 0);
+        assert_eq!(row_count(&store, "items"), 1);
+        assert_eq!(row_count(&store, "active_profile"), 1);
+    }
+
+    // The entire v1 -> v2 -> v1 -> v2 cycle stays durable across a reopen.
+    let store = SqliteStore::open(temp.path()).expect("reopen after the cycle");
+    assert_eq!(store.schema_version().expect("read schema version"), 2);
+    assert_eq!(row_count(&store, "items"), 1);
+    assert_eq!(row_count(&store, "item_perks"), 0);
+}
+
+#[test]
+fn item_perks_schema_cascades_and_rejects_invalid_rows() {
+    let store = SqliteStore::open_in_memory().expect("open in-memory store");
+    store
+        .connection()
+        .execute_batch(
+            "INSERT INTO characters (character_id, name) VALUES ('hunter-1', 'Nova');\
+             INSERT INTO items \
+             (instance_id, item_hash, location_kind, quantity, equipped, locked) \
+             VALUES ('item-1', 1, 'vault', 1, 0, 0);\
+             INSERT INTO item_perks (instance_id, ordinal, perk_hash, active, visible) \
+             VALUES ('item-1', 0, 1, 1, 1);",
+        )
+        .expect("seed an item and one perk");
+
+    // Out-of-range hashes, non-boolean flags, a negative ordinal, and a
+    // duplicated ordinal are all rejected by the schema itself.
+    for statement in [
+        "INSERT INTO item_perks (instance_id, ordinal, perk_hash, active, visible) VALUES ('item-1', 1, 4294967296, 0, 0)",
+        "INSERT INTO item_perks (instance_id, ordinal, perk_hash, active, visible) VALUES ('item-1', 1, -1, 0, 0)",
+        "INSERT INTO item_perks (instance_id, ordinal, perk_hash, active, visible) VALUES ('item-1', 1, 1, 2, 0)",
+        "INSERT INTO item_perks (instance_id, ordinal, perk_hash, active, visible) VALUES ('item-1', 1, 1, 0, -1)",
+        "INSERT INTO item_perks (instance_id, ordinal, perk_hash, active, visible) VALUES ('item-1', -1, 1, 0, 0)",
+        "INSERT INTO item_perks (instance_id, ordinal, perk_hash, active, visible) VALUES ('item-1', 0, 1, 0, 0)",
+    ] {
+        expect_rejected(&store, statement);
+    }
+
+    // A dangling instance reference is rejected while foreign keys are on.
+    expect_rejected(
+        &store,
+        "INSERT INTO item_perks (instance_id, ordinal, perk_hash, active, visible) \
+         VALUES ('missing-item', 0, 1, 0, 0)",
+    );
+
+    // Deleting the item cascades to its perks.
+    store
+        .connection()
+        .execute("DELETE FROM items WHERE instance_id = 'item-1'", [])
+        .expect("delete the item");
+    assert_eq!(
+        row_count(&store, "item_perks"),
+        0,
+        "deleting an item must cascade to its perk rows"
+    );
 }
 
 #[test]

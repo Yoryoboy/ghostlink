@@ -7,16 +7,18 @@
 //! columns, so no raw provider payload, SQL statement, or stored value can
 //! escape through a returned value or a failure.
 //!
-//! The projection is exactly four tables read as one unit: the singleton
-//! `active_profile` anchor, the `characters` rows, the `items` rows, and the
-//! single fixed `profile_inventory` row in `sync_metadata`. A projection exists
+//! The projection is exactly five tables read as one unit: the singleton
+//! `active_profile` anchor, the `characters` rows, the `items` rows, each item's
+//! ordered `item_perks` child rows, and the single fixed `profile_inventory` row
+//! in `sync_metadata`. A projection exists
 //! only when both the anchor and its metadata row are present, and the anchor
 //! must be exactly one row whose discriminator is `1`; a fully empty store
 //! reports `None`, and every partial or corrupt combination — metadata without
 //! the anchor or the anchor without metadata, child rows without both, an extra
-//! anchor row, or any malformed source, decimal, boolean, range, location, or
-//! reference value — fails closed as a sanitized local-storage error rather
-//! than returning a partially constructed snapshot.
+//! anchor row, or any malformed source, decimal, boolean, range, location,
+//! reference, perk ordinal, perk boolean, or perk hash value — fails closed as a
+//! sanitized local-storage error rather than returning a partially constructed
+//! snapshot.
 //!
 //! Publication is exactly one `IMMEDIATE` transaction. Inside it the repository
 //! reads the committed projection, decides whether the incoming complete
@@ -29,7 +31,9 @@
 //! Revision identity is the complete normalized projection content compared
 //! through the shared order-insensitive [`InventorySnapshotInput::content_eq`]:
 //! characters and items are unordered sets keyed by their record identifiers, so
-//! a pure permutation is not a content change. `checked_at` and `source` are
+//! a pure permutation is not a content change. An item's perk list is compared in
+//! its stored order, so perk order, perk hash, and both perk flags are part of
+//! revision identity. `checked_at` and `source` are
 //! freshness and provenance, never content identity, so an otherwise identical
 //! refresh retains the revision and refreshes only the committed timestamp.
 //! Validation that needs no storage runs before the transaction is opened and
@@ -41,8 +45,8 @@ use super::{SqliteStore, encode_decimal, parse_decimal, storage_failure};
 use destiny_core::{
     AppError, Character, CharacterId, Dataset, DefinitionVersion, ErrorCategory,
     InventoryRepository, InventorySnapshot, InventorySnapshotInput, ItemHash, ItemInstance,
-    ItemLocation, MembershipId, MembershipType, SnapshotMetadata, SourceMarker, SyncMetadata,
-    SyncRevision, Timestamp,
+    ItemLocation, MembershipId, MembershipType, PerkHash, PerkSummary, SnapshotMetadata,
+    SourceMarker, SyncMetadata, SyncRevision, Timestamp,
 };
 use rusqlite::{Connection, Error as SqlError, TransactionBehavior, params};
 use std::collections::HashSet;
@@ -297,7 +301,17 @@ fn projection_rows_exist(connection: &Connection) -> Result<bool, AppError> {
     let items: i64 = connection
         .query_row("SELECT count(*) FROM items", [], |row| row.get(0))
         .map_err(|_| storage_failure())?;
-    Ok(items > 0)
+    if items > 0 {
+        return Ok(true);
+    }
+    // Perk rows are children of items, so with foreign-key enforcement on they
+    // cannot outlive their item. They are still counted here so a database that
+    // was corrupted with enforcement off cannot hide orphaned perk rows behind
+    // an absent anchor.
+    let perks: i64 = connection
+        .query_row("SELECT count(*) FROM item_perks", [], |row| row.get(0))
+        .map_err(|_| storage_failure())?;
+    Ok(perks > 0)
 }
 
 /// Reconstructs every stored character with its optional fields, checked.
@@ -336,7 +350,14 @@ fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> 
     Ok(characters)
 }
 
-/// Reconstructs every stored item with its typed location and checked fields.
+/// Reconstructs every stored item with its typed location, checked fields, and
+/// its ordered perk summaries.
+///
+/// Items are read in instance-identifier order and perk rows are read in
+/// `(instance_id, ordinal)` order, so the two cursors advance together. A stored
+/// item's perk ordinals must run contiguously from zero: a gap, a negative or
+/// otherwise unexpected ordinal, an unknown item instance, or an unparseable perk
+/// value is corrupt local state and fails closed.
 fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
     let mut statement = connection
         .prepare(
@@ -394,9 +415,83 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
             equipped: decode_boolean(equipped)?,
             locked: decode_boolean(locked)?,
             power: decode_optional_u16(power)?,
+            perks: Vec::new(),
         });
     }
+
+    attach_perks(connection, &mut items)?;
     Ok(items)
+}
+
+/// One stored perk row before it is attached to its item.
+struct StoredPerk {
+    instance_id: String,
+    ordinal: i64,
+    perk_hash: i64,
+    active: i64,
+    visible: i64,
+}
+
+/// Reads every perk row in `(instance_id, ordinal)` order.
+fn read_perk_rows(connection: &Connection) -> Result<Vec<StoredPerk>, AppError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT instance_id, ordinal, perk_hash, active, visible \
+             FROM item_perks ORDER BY instance_id, ordinal",
+        )
+        .map_err(|_| storage_failure())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(StoredPerk {
+                instance_id: row.get(0)?,
+                ordinal: row.get(1)?,
+                perk_hash: row.get(2)?,
+                active: row.get(3)?,
+                visible: row.get(4)?,
+            })
+        })
+        .map_err(|_| storage_failure())?;
+
+    let mut perks = Vec::new();
+    for row in rows {
+        perks.push(row.map_err(|_| storage_failure())?);
+    }
+    Ok(perks)
+}
+
+/// Attaches each stored perk row to its item, preserving ordinal order.
+///
+/// Both collections are ordered by instance identifier, so one forward walk is
+/// enough. Every item's ordinals must be exactly `0..n-1`; a row whose instance
+/// has no item, or a stored order that skips or repeats an ordinal, is corrupt
+/// local state and fails closed.
+fn attach_perks(connection: &Connection, items: &mut [ItemInstance]) -> Result<(), AppError> {
+    let rows = read_perk_rows(connection)?;
+    let mut index = 0;
+    for item in items.iter_mut() {
+        let mut expected = 0_i64;
+        while index < rows.len() && rows[index].instance_id == item.instance_id.as_str() {
+            let row = &rows[index];
+            if row.ordinal != expected {
+                return Err(storage_failure());
+            }
+            item.perks.push(PerkSummary {
+                perk_hash: PerkHash::new(
+                    u32::try_from(row.perk_hash).map_err(|_| storage_failure())?,
+                ),
+                active: decode_boolean(row.active)?,
+                visible: decode_boolean(row.visible)?,
+            });
+            expected += 1;
+            index += 1;
+        }
+    }
+    if index != rows.len() {
+        // At least one perk row references an item instance this projection does
+        // not carry, so the rows do not form a complete projection.
+        return Err(storage_failure());
+    }
+    Ok(())
 }
 
 /// Decodes one stored integer boolean, accepting only the exact values `0`/`1`.
@@ -423,14 +518,20 @@ fn encode_boolean(value: bool) -> i64 {
 
 /// Removes the complete prior projection and writes the replacement rows.
 ///
-/// Items are deleted before characters so the removal order satisfies the
-/// character foreign key explicitly instead of relying on cascade, and
-/// characters are inserted before the items that reference them. Any failure
-/// partway through drops the transaction and rolls all of it back.
+/// Perk rows and items are deleted before characters so the removal order
+/// satisfies every foreign key explicitly instead of relying on cascade, and a
+/// stale perk row can never outlive the item it summarized. Characters are
+/// inserted before the items that reference them, and each item's perks are
+/// inserted after that item with contiguous zero-based ordinals that preserve the
+/// vector order. Any failure partway through drops the transaction and rolls all
+/// of it back.
 fn replace_projection(
     connection: &Connection,
     input: &InventorySnapshotInput,
 ) -> Result<(), AppError> {
+    connection
+        .execute("DELETE FROM item_perks", [])
+        .map_err(|_| storage_failure())?;
     connection
         .execute("DELETE FROM items", [])
         .map_err(|_| storage_failure())?;
@@ -496,6 +597,23 @@ fn replace_projection(
                 ],
             )
             .map_err(|_| storage_failure())?;
+
+        for (ordinal, perk) in item.perks.iter().enumerate() {
+            connection
+                .execute(
+                    "INSERT INTO item_perks \
+                     (instance_id, ordinal, perk_hash, active, visible) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        item.instance_id.as_str(),
+                        i64::try_from(ordinal).map_err(|_| storage_failure())?,
+                        i64::from(perk.perk_hash.value()),
+                        encode_boolean(perk.active),
+                        encode_boolean(perk.visible),
+                    ],
+                )
+                .map_err(|_| storage_failure())?;
+        }
     }
     Ok(())
 }

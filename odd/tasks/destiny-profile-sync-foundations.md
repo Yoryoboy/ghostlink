@@ -78,10 +78,12 @@ Search, inspection, mutation preflight, and later post-action verification need 
   - Evidence: commit `202f5df` (`feat: add profile sync contracts`).
   - Rollback: remove only WU-006 membership/sync contracts, re-exports, and fake changes while preserving WU-005 repository APIs.
 
-- [ ] **DPS-002A — Add durable instance perk summaries**
-  - Route: delegated multi-file core/SQLite writer.
-  - Outcome: add a provider-neutral perk summary record to `ItemInstance`, include it in structural identity/validation, and add a reversible v2 child projection with fake/SQLite parity. The summary retains provider perk hash plus active/visible state; it stores no display text or raw provider payload.
-  - Check: core/fake/SQLite round trips, revision mutation coverage, migration v1→v2→v1→v2, rollback/corruption/secrecy checks, focused check/clippy/tests.
+- [x] **DPS-002A — Add durable instance perk summaries**
+  - Route: delegated multi-file core/SQLite writer. The writer correctly stopped before edits when exhaustive schema expectations were outside its initial surface; the parent explicitly added only `sqlite/tests.rs`, then the continued writer completed the cohesive v2 slice. Native assessment remained schema-incompatible/unavailable, so independent high-risk verification was required.
+  - Outcome: added distinct `PerkHash` and ordered duplicate-tolerant `PerkSummary { perk_hash, active, visible }` values to every item; full structural identity now includes perk order and fields. Added a reversible STRICT v2 `item_perks` child table, atomic repository writes/reads, contiguous ordinal and corruption checks, stale removal, and fake/SQLite revision parity without provider text or raw payloads.
+  - Check: core 23 passed; app test-support 67 passed; 60 focused SQLite tests passed; focused all-target/all-feature clippy with `-D warnings`, fmt, and diff checks passed. Migration v1→v2 preservation, v2→v1→v2 reopen, constraint/FK/cascade behavior, ordered/duplicate round trips, every perk mutation, stale removal, mid-write rollback, corruption, combined reopen, and byte/schema secrecy passed. Independent verifier reproduced all checks and found no blocker/high/medium findings; parent then corrected one documentation wording nit and reran all 60 focused SQLite tests. LSP emitted the same stale `!bool`/pattern diagnostics contradicted by rustc and clippy.
+  - Review workload: 787 additions and 64 deletions across one indivisible domain/schema/repository contract plus its tests. The size exceeds the 400-line heuristic but keeps the reversible migration, persistence behavior, and verification together; DPS-003 provider normalization remains separate.
+  - Evidence: pending work-unit commit.
   - Rollback: revert the v2 migration and perk fields/tests while preserving the v1 profile projection and DPS-002 contracts.
 
 - [ ] **DPS-003 — Normalize complete Bungie profile fixtures**
@@ -124,7 +126,7 @@ Search, inspection, mutation preflight, and later post-action verification need 
 - WU-005 closed cleanly at `3aa8229` with durable atomic repositories and 201 passing workspace tests.
 - Read-only mapping identified existing repository/freshness contracts but no profile adapter, membership resolution, Bearer gateway, sync service, or fixtures.
 - The user selected instanced items only for WU-006.
-- Pre-normalization review found that the explicit perks-summary requirement needs a bounded reversible v2 projection migration; DPS-002A was added without expanding instance-less item scope.
+- Pre-normalization review found that the explicit perks-summary requirement needed a bounded reversible v2 projection migration; DPS-002A completed that domain/storage prerequisite without expanding instance-less item scope.
 - Official Bungie documentation confirms required membership discovery, Profile component requests, Cross Save metadata, and item-instance semantics.
 - DPS-001 established the feature boundary, user-selected instanced-only scope, strict completeness policy, API evidence, delivery strategy, and six implementation slices.
 - DPS-002 added provider-neutral membership/sync value contracts and deterministic fake support; independent high-risk verification passed.
@@ -133,6 +135,7 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 - DPS-001 tracker and Engram mirror readback passed; `git diff --check` passed.
 - DPS-002 writer verification: core 22 passed; app test-support 67 passed; fmt/clippy/diff checks passed. Independent verifier reproduced all checks and found no blocker/high issue; parent spot check reran core 22 successfully.
+- DPS-002A writer and independent verifier observed core 23, app 67, and 60 focused SQLite tests passing with clean fmt/clippy/diff checks; parent reran the 60 SQLite tests after the sole documentation correction.
 
 ## Manual gates and follow-ups
 
@@ -142,4 +145,4 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 ## Next step
 
-Delegate DPS-002A durable perk summaries, then continue to DPS-003 normalization.
+Commit DPS-002A, then delegate DPS-003 normalization.
