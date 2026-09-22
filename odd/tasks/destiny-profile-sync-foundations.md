@@ -74,7 +74,7 @@ Search, inspection, mutation preflight, and later post-action verification need 
   - Route: delegated multi-file writer. Two writer result emissions failed without changes; continuing the second writer session completed the bounded slice. Native assessment remained schema-incompatible/unavailable, so the candidate followed the required high-risk independent verification path.
   - Outcome: added validated/redacted `DestinyMembership`, split the existing `ProfileGateway` into explicit effective-membership resolution and complete inventory acquisition, added ordinary/forced/preflight/post-action reasons plus repository-metadata outcomes, and extended the deterministic fake with independent queues, counters, and requested-membership recording. No provider transport, JSON, credentials, persistence, or orchestration was added.
   - Check: fmt passed; core 22 passed; app test-support 67 passed; focused all-target/all-feature clippy with `-D warnings` passed; `git diff --check` passed; parent core-test spot check passed. Independent verification passed with no blocker/high findings and one accepted architectural medium: `state` now references `SnapshotMetadata` from `domain`, creating a legal intra-crate back-edge. DPS-005 must enforce that only ordinary sync can skip and that acquired membership identity matches the request before publication. LSP emitted pre-existing/stale type/name diagnostics contradicted by rustc and clippy.
-  - Evidence: pending work-unit commit.
+  - Evidence: commit `202f5df` (`feat: add profile sync contracts`).
   - Rollback: remove only WU-006 membership/sync contracts, re-exports, and fake changes while preserving WU-005 repository APIs.
 
 - [ ] **DPS-003 — Normalize complete Bungie profile fixtures**
@@ -134,4 +134,4 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 ## Next step
 
-Commit DPS-002, then delegate DPS-003 profile normalization and fixtures.
+Delegate DPS-003 profile normalization and fixtures.
