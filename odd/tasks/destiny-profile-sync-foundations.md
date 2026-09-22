@@ -104,11 +104,13 @@ Search, inspection, mutation preflight, and later post-action verification need 
   - Evidence: commit `6214bee` (`feat: add authenticated Bungie profile gateway`).
   - Rollback: remove `profile_gateway.rs` and its adapter module/re-exports while retaining pure profile normalization.
 
-- [ ] **DPS-005 — Orchestrate offline profile synchronization**
-  - Route: delegated app writer.
-  - Outcome: implement forced/stale/preflight/post-action decisions, skip fresh ordinary sync, acquire one complete candidate, atomically replace through `InventoryRepository`, and return sanitized outcome/revision metadata.
-  - Check: fake-driven reason/idempotency/change/error tests plus focused app/core verification.
-  - Rollback: remove only `destiny-app::sync` and its tests/fakes.
+- [x] **DPS-005 — Orchestrate offline profile synchronization**
+  - Route: delegated app writer plus independent read-only verifier. The parent applied one follow-up fix before freezing: the delegated module's test wrapper imported `super::*` unconditionally, which failed `cargo clippy --workspace --all-targets -- -D warnings` in the default-feature build because `test-support` is not a default feature; the wrapper is now `#[cfg(all(test, feature = "test-support"))]` and imports its own dependencies.
+  - Outcome: added `ProfileSyncService<G, R>` in `crates/destiny-app/src/sync.rs` with the caller-supplied `(reason, policy, now)` signature. It reads the committed projection, evaluates the core `FreshnessInput` for `Dataset::ProfileInventory`, and skips with `SkippedFresh` only for an `Ordinary` request over a `Fresh` projection, without calling the gateway or mutating the repository. Every other combination refreshes in a strict order: resolve the effective membership, load one complete candidate, verify the candidate's membership identifier and type against the resolved membership (rejecting with `ProviderValidation` before any publication), then commit through `replace_current` and return `Refreshed` with repository metadata. The service never sets `checked_at`/`source`/`definition_version`, never computes a revision, clones no projection on success, and propagates gateway and repository errors unchanged and sanitized.
+  - Check: 14 focused sync tests, 81 app all-feature tests, and 298 workspace all-feature tests passed; fmt, default-feature and all-feature all-target clippy with `-D warnings`, `git diff --check`, and the CLI/MCP help checks passed. Independent verification reconciled every test against the real `FreshnessInput::status()`, `InventorySnapshotInput::content_eq`, and `InMemoryInventoryRepository` semantics rather than test comments, confirmed scope was exactly the two candidate paths, and found no blocker/high/medium findings; two actionable lows were noted and need no change (the sanitization test covers only the service-generated error path, which is sufficient because the service never wraps propagated errors; the two mismatch tests do not re-assert `requested_memberships`, which is moot there). The known pre-existing OAuth timeout flake did not occur during verification.
+  - Review workload: 642 additions in one new module (about 160 production lines including docs plus 14 behavioral tests) and two additive `lib.rs` lines. Within the heuristic for this slice.
+  - Evidence: commit `528ddc8` (`feat: orchestrate offline profile sync`).
+  - Rollback: remove `crates/destiny-app/src/sync.rs` and the two additive `lib.rs` lines; the gateway, normalization, and repository contracts are unaffected.
 
 - [ ] **DPS-006 — Verify the offline end-to-end journey and close WU-006**
   - Route: delegated verification harness plus independent risk-gated verifier.
@@ -144,6 +146,8 @@ Search, inspection, mutation preflight, and later post-action verification need 
 - DPS-002 writer verification: core 22 passed; app test-support 67 passed; fmt/clippy/diff checks passed. Independent verifier reproduced all checks and found no blocker/high issue; parent spot check reran core 22 successfully.
 - DPS-002A writer and independent verifier observed core 23, app 67, and 60 focused SQLite tests passing with clean fmt/clippy/diff checks; parent reran the 60 SQLite tests after the sole documentation correction.
 - DPS-003 final evidence: 20 focused profile tests and 144 adapter tests passed with clean fmt/clippy/diff checks; independent final review found no blocker/high/medium findings; parent spot check reran all 20 focused tests.
+- DPS-004 final evidence: 50 focused gateway tests and 194 adapter tests passed with clean fmt/clippy/diff checks; independent verification found no blocker/high/medium findings after the official Cross Save selection and membership endpoint corrections.
+- DPS-005 final evidence: 14 focused sync tests, 81 app all-feature tests, and 298 workspace all-feature tests passed with clean fmt, default-feature and all-feature clippy, diff, and CLI/MCP help checks; independent verification reconciled every test against real core and fake semantics, confirmed the two-path scope, and found no blocker/high/medium findings. The known pre-existing OAuth timeout flake did not occur.
 
 ## Manual gates and follow-ups
 
@@ -153,4 +157,4 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 ## Next step
 
-Delegate DPS-005 offline profile synchronization orchestration.
+Delegate DPS-006 offline end-to-end journey verification and WU-006 closure.
