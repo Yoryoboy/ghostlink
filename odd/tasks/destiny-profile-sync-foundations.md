@@ -67,7 +67,7 @@ Search, inspection, mutation preflight, and later post-action verification need 
   - Route: delegated repository mapping plus parent official API research; mapping trigger fired because the work spans more than four files.
   - Outcome: created the chained feature branch/tracker and recorded the instanced-only user decision, strict complete-snapshot policy, Cross Save selection, six task slices, checks, exclusions, and forecast.
   - Check: tracker and Engram mirror readback passed; `git diff --check` passed; branch contained only the intended new tracker before commit.
-  - Evidence: pending work-unit commit.
+  - Evidence: commit `eeb5a78` (`chore: start Destiny profile sync foundations`).
   - Rollback: delete only this new branch and tracker before source implementation.
 
 - [ ] **DPS-002 — Add provider-neutral membership and sync contracts/fakes**
@@ -131,4 +131,4 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 ## Next step
 
-Commit DPS-001, then delegate DPS-002 contracts and fakes.
+Delegate DPS-002 contracts and fakes.
