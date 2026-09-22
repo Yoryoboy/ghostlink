@@ -27,14 +27,15 @@ pub use mutation::{
 };
 pub use ports::{
     AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,
-    CredentialStore, DefinitionReplacementInput, DefinitionRepository, InventoryRepository,
-    InventorySnapshotInput, ManifestAcquisition, ManifestDefinitionCandidate, ManifestDefinitions,
-    ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange, SecureRandom,
+    CredentialStore, DefinitionReplacementInput, DefinitionRepository, DestinyMembership,
+    InventoryRepository, InventorySnapshotInput, ManifestAcquisition, ManifestDefinitionCandidate,
+    ManifestDefinitions, ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange,
+    SecureRandom,
 };
 pub use state::{
-    Dataset, FreshnessInput, FreshnessPolicy, FreshnessStatus, Resolution, RevisionAllocation,
-    RevisionOverflow, RevisionState, SemanticResolution, SourceMarker, Timestamp,
-    allocate_revision,
+    Dataset, FreshnessInput, FreshnessPolicy, FreshnessStatus, ProfileSyncOutcome,
+    ProfileSyncReason, Resolution, RevisionAllocation, RevisionOverflow, RevisionState,
+    SemanticResolution, SourceMarker, Timestamp, allocate_revision,
 };
 
 /// Marker function for the initial provider-free foundation.

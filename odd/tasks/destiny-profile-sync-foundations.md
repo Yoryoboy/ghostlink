@@ -70,11 +70,12 @@ Search, inspection, mutation preflight, and later post-action verification need 
   - Evidence: commit `eeb5a78` (`chore: start Destiny profile sync foundations`).
   - Rollback: delete only this new branch and tracker before source implementation.
 
-- [ ] **DPS-002 — Add provider-neutral membership and sync contracts/fakes**
-  - Route: delegated multi-file writer.
-  - Outcome: add the minimal typed membership discovery/profile acquisition boundary and sync reason/outcome contracts without provider JSON or transport coupling; extend deterministic fakes.
-  - Check: focused core/app tests, check/clippy, diff check, structural readback.
-  - Rollback: remove only new WU-006 contracts/fakes while preserving WU-005 repository APIs.
+- [x] **DPS-002 — Add provider-neutral membership and sync contracts/fakes**
+  - Route: delegated multi-file writer. Two writer result emissions failed without changes; continuing the second writer session completed the bounded slice. Native assessment remained schema-incompatible/unavailable, so the candidate followed the required high-risk independent verification path.
+  - Outcome: added validated/redacted `DestinyMembership`, split the existing `ProfileGateway` into explicit effective-membership resolution and complete inventory acquisition, added ordinary/forced/preflight/post-action reasons plus repository-metadata outcomes, and extended the deterministic fake with independent queues, counters, and requested-membership recording. No provider transport, JSON, credentials, persistence, or orchestration was added.
+  - Check: fmt passed; core 22 passed; app test-support 67 passed; focused all-target/all-feature clippy with `-D warnings` passed; `git diff --check` passed; parent core-test spot check passed. Independent verification passed with no blocker/high findings and one accepted architectural medium: `state` now references `SnapshotMetadata` from `domain`, creating a legal intra-crate back-edge. DPS-005 must enforce that only ordinary sync can skip and that acquired membership identity matches the request before publication. LSP emitted pre-existing/stale type/name diagnostics contradicted by rustc and clippy.
+  - Evidence: pending work-unit commit.
+  - Rollback: remove only WU-006 membership/sync contracts, re-exports, and fake changes while preserving WU-005 repository APIs.
 
 - [ ] **DPS-003 — Normalize complete Bungie profile fixtures**
   - Route: delegated adapter writer.
@@ -118,10 +119,12 @@ Search, inspection, mutation preflight, and later post-action verification need 
 - The user selected instanced items only for WU-006.
 - Official Bungie documentation confirms required membership discovery, Profile component requests, Cross Save metadata, and item-instance semantics.
 - DPS-001 established the feature boundary, user-selected instanced-only scope, strict completeness policy, API evidence, delivery strategy, and six implementation slices.
+- DPS-002 added provider-neutral membership/sync value contracts and deterministic fake support; independent high-risk verification passed.
 
 ## Verification evidence
 
 - DPS-001 tracker and Engram mirror readback passed; `git diff --check` passed.
+- DPS-002 writer verification: core 22 passed; app test-support 67 passed; fmt/clippy/diff checks passed. Independent verifier reproduced all checks and found no blocker/high issue; parent spot check reran core 22 successfully.
 
 ## Manual gates and follow-ups
 
@@ -131,4 +134,4 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 ## Next step
 
-Delegate DPS-002 contracts and fakes.
+Commit DPS-002, then delegate DPS-003 profile normalization and fixtures.

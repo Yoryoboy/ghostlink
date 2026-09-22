@@ -6,9 +6,9 @@
 use destiny_core::{
     AccessCredential, AppError, AuthorizationCallback, AuthorizationState, BrowserAuthorization,
     CallbackReceiver, Clock, CredentialMaterial, CredentialStore, Dataset,
-    DefinitionReplacementInput, DefinitionRepository, DefinitionVersion, ErrorCategory,
-    InventoryRepository, InventorySnapshot, InventorySnapshotInput, ItemDefinition, ItemHash,
-    ManifestAcquisition, ManifestDefinitions, ManifestGateway, PlanId, PlanIdGenerator,
+    DefinitionReplacementInput, DefinitionRepository, DefinitionVersion, DestinyMembership,
+    ErrorCategory, InventoryRepository, InventorySnapshot, InventorySnapshotInput, ItemDefinition,
+    ItemHash, ManifestAcquisition, ManifestDefinitions, ManifestGateway, PlanId, PlanIdGenerator,
     ProfileGateway, Resolution, SnapshotMetadata, SourceMarker, SyncMetadata, SyncRevision,
     Timestamp,
 };
@@ -404,31 +404,70 @@ impl InventoryRepository for InMemoryInventoryRepository {
     }
 }
 
+/// Deterministically queues membership resolution and inventory acquisition
+/// outcomes and records how each port method was called.
+///
+/// The two queues are independent so a test can make resolution succeed while
+/// acquisition fails, or exercise resolution failure without ever requesting a
+/// snapshot. `requested_memberships` records the exact membership each
+/// acquisition was asked for, in call order.
 #[derive(Debug, Default)]
 pub struct QueuedProfileGateway {
-    outcomes: VecDeque<Result<InventorySnapshotInput, AppError>>,
-    calls: usize,
+    memberships: VecDeque<Result<DestinyMembership, AppError>>,
+    snapshots: VecDeque<Result<InventorySnapshotInput, AppError>>,
+    membership_calls: usize,
+    inventory_calls: usize,
+    requested_memberships: Vec<DestinyMembership>,
 }
 
 impl QueuedProfileGateway {
     pub fn new() -> Self {
-        Self {
-            outcomes: VecDeque::new(),
-            calls: 0,
-        }
+        Self::default()
     }
-    pub fn queue(&mut self, outcome: Result<InventorySnapshotInput, AppError>) {
-        self.outcomes.push_back(outcome);
+
+    /// Queues one membership resolution outcome.
+    pub fn queue_membership(&mut self, outcome: Result<DestinyMembership, AppError>) {
+        self.memberships.push_back(outcome);
     }
-    pub const fn calls(&self) -> usize {
-        self.calls
+
+    /// Queues one inventory acquisition outcome.
+    pub fn queue_inventory(&mut self, outcome: Result<InventorySnapshotInput, AppError>) {
+        self.snapshots.push_back(outcome);
+    }
+
+    /// Counts resolution attempts, including failures and exhausted queues.
+    pub const fn membership_calls(&self) -> usize {
+        self.membership_calls
+    }
+
+    /// Counts acquisition attempts, including failures and exhausted queues.
+    pub const fn inventory_calls(&self) -> usize {
+        self.inventory_calls
+    }
+
+    /// The memberships passed to `load_inventory`, in call order.
+    pub fn requested_memberships(&self) -> &[DestinyMembership] {
+        &self.requested_memberships
     }
 }
 
 impl ProfileGateway for QueuedProfileGateway {
-    fn load_inventory(&mut self) -> Result<InventorySnapshotInput, AppError> {
-        self.calls += 1;
-        self.outcomes.pop_front().unwrap_or_else(|| {
+    fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
+        self.membership_calls += 1;
+        self.memberships.pop_front().unwrap_or_else(|| {
+            Err(AppError::new(
+                destiny_core::ErrorCategory::ProviderUnavailable,
+            ))
+        })
+    }
+
+    fn load_inventory(
+        &mut self,
+        membership: &DestinyMembership,
+    ) -> Result<InventorySnapshotInput, AppError> {
+        self.inventory_calls += 1;
+        self.requested_memberships.push(membership.clone());
+        self.snapshots.pop_front().unwrap_or_else(|| {
             Err(AppError::new(
                 destiny_core::ErrorCategory::ProviderUnavailable,
             ))
@@ -987,17 +1026,25 @@ mod tests {
     #[test]
     fn gateways_sequence_queued_failures_without_remote_side_effects() {
         let mut gateway = QueuedProfileGateway::new();
-        gateway.queue(Err(AppError::new(ErrorCategory::ProviderUnavailable)));
+        gateway.queue_membership(Err(AppError::new(ErrorCategory::ProviderUnavailable)));
         assert_eq!(
-            gateway.load_inventory().unwrap_err().category(),
+            gateway.resolve_membership().unwrap_err().category(),
             ErrorCategory::ProviderUnavailable
         );
-        assert_eq!(gateway.calls(), 1);
+        assert_eq!(gateway.membership_calls(), 1);
         assert_eq!(
-            gateway.load_inventory().unwrap_err().category(),
+            gateway.resolve_membership().unwrap_err().category(),
             ErrorCategory::ProviderUnavailable
         );
-        assert_eq!(gateway.calls(), 2);
+        assert_eq!(gateway.membership_calls(), 2);
+        // An exhausted acquisition queue fails closed without inventing a snapshot.
+        let membership =
+            DestinyMembership::new(MembershipType::new(3), MembershipId::new("7")).unwrap();
+        assert_eq!(
+            gateway.load_inventory(&membership).unwrap_err().category(),
+            ErrorCategory::ProviderUnavailable
+        );
+        assert_eq!(gateway.inventory_calls(), 1);
     }
 
     #[test]
@@ -1057,18 +1104,28 @@ mod tests {
         assert_eq!(manifest.calls(), 3);
 
         let mut profile = QueuedProfileGateway::new();
-        profile.queue(Ok(input(1)));
-        profile.queue(Err(AppError::new(ErrorCategory::ProviderValidation)));
-        assert_eq!(profile.load_inventory().unwrap(), input(1));
+        let membership = DestinyMembership::new(
+            MembershipType::new(3),
+            MembershipId::new("4611686018484639825"),
+        )
+        .unwrap();
+        profile.queue_membership(Ok(membership.clone()));
+        profile.queue_inventory(Ok(input(1)));
+        profile.queue_inventory(Err(AppError::new(ErrorCategory::ProviderValidation)));
+        assert_eq!(profile.resolve_membership().unwrap(), membership);
+        assert_eq!(profile.load_inventory(&membership).unwrap(), input(1));
         assert_eq!(
-            profile.load_inventory().unwrap_err().category(),
+            profile.load_inventory(&membership).unwrap_err().category(),
             ErrorCategory::ProviderValidation
         );
         assert_eq!(
-            profile.load_inventory().unwrap_err().category(),
+            profile.load_inventory(&membership).unwrap_err().category(),
             ErrorCategory::ProviderUnavailable
         );
-        assert_eq!(profile.calls(), 3);
+        assert_eq!(profile.membership_calls(), 1);
+        assert_eq!(profile.inventory_calls(), 3);
+        let requested = vec![membership.clone(), membership.clone(), membership.clone()];
+        assert_eq!(profile.requested_memberships(), requested.as_slice());
 
         let mut inventory = InMemoryInventoryRepository::new();
         assert_eq!(inventory.load_current().unwrap(), None);

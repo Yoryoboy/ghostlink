@@ -1,5 +1,6 @@
 //! Provider-neutral freshness and repository revision policies.
 
+use crate::domain::SnapshotMetadata;
 use crate::ids::SyncRevision;
 
 /// A deterministic, injected-clock timestamp measured in seconds from an application epoch.
@@ -142,6 +143,64 @@ pub enum Resolution<T> {
 
 pub type SemanticResolution<T> = Resolution<T>;
 
+/// Why one profile synchronization was requested.
+///
+/// The reason is caller-supplied policy input, never provider data. `Ordinary`
+/// may skip acquisition when the committed projection is already fresh; every
+/// other reason refreshes regardless of freshness, because an explicit user
+/// action, a mutation preflight, or a just-completed action must never read a
+/// stale projection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProfileSyncReason {
+    Ordinary,
+    Forced,
+    Preflight,
+    PostAction,
+}
+
+impl ProfileSyncReason {
+    /// True when this reason must refresh even if the projection is fresh.
+    pub const fn forces_refresh(self) -> bool {
+        !matches!(self, Self::Ordinary)
+    }
+}
+
+/// The result of one profile synchronization decision.
+///
+/// The two variants are the only terminal shapes: `SkippedFresh` means the
+/// committed projection was fresh enough for an `Ordinary` request and no
+/// acquisition or repository mutation happened, while `Refreshed` means one
+/// complete candidate was acquired and committed. Both carry the
+/// [`SnapshotMetadata`] the repository reports, so revision, freshness, and
+/// provenance stay repository-owned and this type invents no parallel metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProfileSyncOutcome {
+    SkippedFresh { metadata: SnapshotMetadata },
+    Refreshed { metadata: SnapshotMetadata },
+}
+
+impl ProfileSyncOutcome {
+    /// The committed metadata that describes the projection after this decision.
+    pub fn metadata(&self) -> &SnapshotMetadata {
+        match self {
+            Self::SkippedFresh { metadata } | Self::Refreshed { metadata } => metadata,
+        }
+    }
+
+    /// The repository revision of the projection after this decision.
+    pub fn revision(&self) -> SyncRevision {
+        self.metadata().revision
+    }
+
+    /// True only when one complete candidate was acquired and committed.
+    pub fn refreshed(&self) -> bool {
+        match self {
+            Self::SkippedFresh { metadata: _ } => false,
+            Self::Refreshed { metadata: _ } => true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +294,58 @@ mod tests {
         assert_eq!(
             Resolution::Ambiguous(vec![1, 2]),
             Resolution::Ambiguous(vec![1, 2])
+        );
+    }
+
+    fn snapshot_metadata(revision: u64) -> SnapshotMetadata {
+        use crate::ids::{DefinitionVersion, MembershipId, MembershipType};
+
+        SnapshotMetadata {
+            membership_id: MembershipId::new("4611686018484639825"),
+            membership_type: MembershipType::new(3),
+            revision: SyncRevision::new(revision),
+            definition_version: DefinitionVersion::new("manifest-v1"),
+            checked_at: Timestamp::new(100),
+            source: SourceMarker::Profile,
+        }
+    }
+
+    #[test]
+    fn only_ordinary_sync_reason_may_skip_a_fresh_projection() {
+        assert!(!ProfileSyncReason::Ordinary.forces_refresh());
+        for reason in [
+            ProfileSyncReason::Forced,
+            ProfileSyncReason::Preflight,
+            ProfileSyncReason::PostAction,
+        ] {
+            assert!(reason.forces_refresh(), "{reason:?} must force a refresh");
+        }
+    }
+
+    #[test]
+    fn sync_outcome_separates_skipped_from_refreshed_and_carries_repository_metadata() {
+        let skipped = ProfileSyncOutcome::SkippedFresh {
+            metadata: snapshot_metadata(4),
+        };
+        assert!(!skipped.refreshed());
+        assert_eq!(skipped.revision(), SyncRevision::new(4));
+        assert_eq!(skipped.metadata(), &snapshot_metadata(4));
+
+        let refreshed = ProfileSyncOutcome::Refreshed {
+            metadata: snapshot_metadata(5),
+        };
+        assert!(refreshed.refreshed());
+        assert_eq!(refreshed.revision(), SyncRevision::new(5));
+        assert_eq!(refreshed.metadata().source, SourceMarker::Profile);
+
+        // Equal metadata never collapses the two terminal shapes.
+        assert_ne!(
+            ProfileSyncOutcome::SkippedFresh {
+                metadata: snapshot_metadata(5)
+            },
+            ProfileSyncOutcome::Refreshed {
+                metadata: snapshot_metadata(5)
+            }
         );
     }
 }

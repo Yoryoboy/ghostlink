@@ -4,7 +4,7 @@ use crate::auth::{AccessCredential, AuthorizationCallback, AuthorizationCode, Au
 use crate::domain::{
     Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, SyncMetadata,
 };
-use crate::error::AppError;
+use crate::error::{AppError, ErrorCategory};
 use crate::ids::{BucketHash, DefinitionVersion, ItemHash, MembershipId, MembershipType, PlanId};
 use crate::state::{Resolution, SourceMarker, Timestamp};
 use std::collections::HashSet;
@@ -185,9 +185,100 @@ pub trait InventoryRepository {
     ) -> Result<InventorySnapshot, AppError>;
 }
 
-/// Returns normalized account state; transport and payload types stop at the adapter.
+/// A validated, provider-neutral Destiny membership identity.
+///
+/// Some providers identify an account and a Destiny profile separately. This
+/// value is the resolved *effective* Destiny membership: the numeric provider
+/// membership type paired with the opaque decimal membership identifier that
+/// profile requests need. It carries no provider payload, no display name, and
+/// no credential material.
+///
+/// Construction validates the identifier once. It must be a non-empty run of
+/// ASCII decimal digits no longer than the bound the durable projection already
+/// accepts, so a value built here can always be persisted without a second
+/// shape check. The membership type stays open because providers may add values;
+/// it is a `u32` by construction and needs no further validation.
+///
+/// The identifier is opaque. [`fmt::Debug`] is implemented manually and redacts
+/// it, so a raw membership identifier never reaches logs or diagnostics; the
+/// membership type remains visible because it is a non-secret numeric value.
+/// Callers that genuinely need the identifier use [`Self::membership_id`].
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct DestinyMembership {
+    membership_type: MembershipType,
+    membership_id: MembershipId,
+}
+
+impl DestinyMembership {
+    /// The longest identifier the durable profile projection accepts.
+    const MAX_IDENTIFIER_LEN: usize = 128;
+
+    /// Validates and pairs one membership type with one opaque decimal identifier.
+    ///
+    /// An empty, oversized, or non-decimal identifier is rejected with a
+    /// sanitized [`ErrorCategory::ProviderValidation`] error; the rejected value
+    /// never appears in the error.
+    ///
+    /// [`ErrorCategory::ProviderValidation`]: crate::error::ErrorCategory::ProviderValidation
+    pub fn new(
+        membership_type: MembershipType,
+        membership_id: MembershipId,
+    ) -> Result<Self, AppError> {
+        let identifier = membership_id.as_str();
+        if identifier.is_empty()
+            || identifier.len() > Self::MAX_IDENTIFIER_LEN
+            || !identifier.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(Self {
+            membership_type,
+            membership_id,
+        })
+    }
+
+    /// The numeric provider membership type of the effective membership.
+    pub const fn membership_type(&self) -> MembershipType {
+        self.membership_type
+    }
+
+    /// The opaque decimal membership identifier of the effective membership.
+    pub const fn membership_id(&self) -> &MembershipId {
+        &self.membership_id
+    }
+}
+
+impl fmt::Debug for DestinyMembership {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DestinyMembership")
+            .field("membership_type", &self.membership_type)
+            .field("membership_id", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Resolves the effective Destiny membership and loads its normalized profile.
+///
+/// Transport, payload, and credential types stop at the adapter. An
+/// implementation resolves the authenticated account's single effective
+/// membership and then returns one complete normalized inventory candidate for
+/// that same membership. The core never receives provider JSON, and neither
+/// method exposes a credential value.
+///
+/// The two methods are deliberately explicit: resolution is a decision with its
+/// own failure mode (absent or ambiguous membership), and acquisition is a
+/// separate, retryable read. Keeping them separate lets the application resolve
+/// once, pass the result to acquisition, and verify that the returned candidate
+/// carries that membership identity before any repository mutation.
 pub trait ProfileGateway {
-    fn load_inventory(&mut self) -> Result<InventorySnapshotInput, AppError>;
+    /// Resolves the single effective membership, failing closed when none or several qualify.
+    fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError>;
+    /// Loads one complete normalized inventory candidate for the resolved membership.
+    fn load_inventory(
+        &mut self,
+        membership: &DestinyMembership,
+    ) -> Result<InventorySnapshotInput, AppError>;
 }
 
 /// A complete versioned normalized definition set published as one replacement.
@@ -307,4 +398,68 @@ pub trait CredentialStore {
     fn save(&mut self, material: CredentialMaterial) -> Result<(), AppError>;
     fn load(&self) -> Result<Option<CredentialMaterial>, AppError>;
     fn delete(&mut self) -> Result<(), AppError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DestinyMembership;
+    use crate::error::{AppError, ErrorCategory};
+    use crate::ids::{MembershipId, MembershipType};
+
+    const NUMERIC_ID: &str = "4611686018484639825";
+
+    #[test]
+    fn membership_accepts_numeric_identifiers_and_exposes_typed_fields() {
+        let membership =
+            DestinyMembership::new(MembershipType::new(3), MembershipId::new(NUMERIC_ID)).unwrap();
+        assert_eq!(membership.membership_type(), MembershipType::new(3));
+        assert_eq!(membership.membership_id().as_str(), NUMERIC_ID);
+    }
+
+    #[test]
+    fn membership_rejects_empty_non_decimal_and_oversized_identifiers() {
+        let oversized = "9".repeat(129);
+        for identifier in ["", "abc", "123a", " 123", "١٢٣", oversized.as_str()] {
+            assert_eq!(
+                DestinyMembership::new(MembershipType::new(3), MembershipId::new(identifier)),
+                Err(AppError::new(ErrorCategory::ProviderValidation)),
+                "identifier {identifier:?} must be rejected"
+            );
+        }
+        let boundary = "9".repeat(128);
+        assert!(
+            DestinyMembership::new(MembershipType::new(3), MembershipId::new(boundary)).is_ok(),
+            "the durable identifier bound must be inclusive"
+        );
+    }
+
+    #[test]
+    fn membership_debug_redacts_the_identifier_but_keeps_the_type() {
+        let membership =
+            DestinyMembership::new(MembershipType::new(254), MembershipId::new(NUMERIC_ID))
+                .unwrap();
+        let rendered = format!("{membership:?}");
+        assert!(rendered.contains("DestinyMembership"));
+        assert!(rendered.contains("254"));
+        assert!(
+            !rendered.contains(NUMERIC_ID),
+            "debug output leaked the membership identifier"
+        );
+    }
+
+    #[test]
+    fn membership_equality_covers_both_fields() {
+        let base =
+            DestinyMembership::new(MembershipType::new(3), MembershipId::new(NUMERIC_ID)).unwrap();
+        let same =
+            DestinyMembership::new(MembershipType::new(3), MembershipId::new(NUMERIC_ID)).unwrap();
+        let other_type =
+            DestinyMembership::new(MembershipType::new(2), MembershipId::new(NUMERIC_ID)).unwrap();
+        let other_id =
+            DestinyMembership::new(MembershipType::new(3), MembershipId::new("7")).unwrap();
+
+        assert_eq!(base, same);
+        assert_ne!(base, other_type);
+        assert_ne!(base, other_id);
+    }
 }
