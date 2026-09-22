@@ -93,7 +93,7 @@ Search, inspection, mutation preflight, and later post-action verification need 
   - Outcome: added a pure `decode_profile` boundary and complete synthetic fixture. It strictly validates the success envelope and required component wrappers, rejects private/disabled/partial/malformed/conflicting input, normalizes canonical bounded string-or-u64 identifiers, character enums with forward-compatible `Unknown(n)`, instanced-only Vault/character/unknown locations, Postmaster omission, equipment agreement, lock/quantity/power, and ordered duplicate perk summaries. Caller membership/version/time remain authoritative; output fixes `SourceMarker::Profile`; errors are category-only and retain no raw provider payload.
   - Check: 20 focused profile tests and 144 adapter tests passed; fmt, all-target/all-feature clippy with `-D warnings`, and diff checks passed. Independent review first caught enum-forward-compatibility and ID-form gaps, then official-source revalidation corrected the perk `visible` field from a mistaken numeric assumption to boolean. Final review found no blocker/high/medium issues. Deterministic mixed-length numeric ordering, canonical IDs, exact u32/u16 bounds, ComponentPrivacySetting, ItemLocation 0–4, missing components, duplicates, conflicts, secrecy, and fixture output are covered. The known pre-existing OAuth timeout test flaked once in the writer's first full run, then passed the immediate full rerun, isolated repeats, and every verifier/final run.
   - Review workload: approximately 1,485 authored lines, including about 758 in-module test lines and a 160-line synthetic fixture. This exceeds the heuristic but remains one pure decoder contract; HTTP transport and application orchestration are still separate DPS-004/005 slices.
-  - Evidence: pending work-unit commit.
+  - Evidence: commit `9cba845` (`feat: normalize Bungie profile snapshots`).
   - Rollback: remove `profile.rs`, its fixture, and the two adapter re-export lines without affecting existing HTTP or repositories.
 
 - [ ] **DPS-004 — Implement bounded authenticated Bungie profile gateway**
@@ -151,4 +151,4 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 ## Next step
 
-Commit DPS-003, then delegate DPS-004 authenticated membership/profile transport.
+Delegate DPS-004 authenticated membership/profile transport.
