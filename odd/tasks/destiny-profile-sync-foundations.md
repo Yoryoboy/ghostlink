@@ -83,7 +83,7 @@ Search, inspection, mutation preflight, and later post-action verification need 
   - Outcome: added distinct `PerkHash` and ordered duplicate-tolerant `PerkSummary { perk_hash, active, visible }` values to every item; full structural identity now includes perk order and fields. Added a reversible STRICT v2 `item_perks` child table, atomic repository writes/reads, contiguous ordinal and corruption checks, stale removal, and fake/SQLite revision parity without provider text or raw payloads.
   - Check: core 23 passed; app test-support 67 passed; 60 focused SQLite tests passed; focused all-target/all-feature clippy with `-D warnings`, fmt, and diff checks passed. Migration v1→v2 preservation, v2→v1→v2 reopen, constraint/FK/cascade behavior, ordered/duplicate round trips, every perk mutation, stale removal, mid-write rollback, corruption, combined reopen, and byte/schema secrecy passed. Independent verifier reproduced all checks and found no blocker/high/medium findings; parent then corrected one documentation wording nit and reran all 60 focused SQLite tests. LSP emitted the same stale `!bool`/pattern diagnostics contradicted by rustc and clippy.
   - Review workload: 787 additions and 64 deletions across one indivisible domain/schema/repository contract plus its tests. The size exceeds the 400-line heuristic but keeps the reversible migration, persistence behavior, and verification together; DPS-003 provider normalization remains separate.
-  - Evidence: pending work-unit commit.
+  - Evidence: commit `19cadc6` (`feat: persist instance perk summaries`).
   - Rollback: revert the v2 migration and perk fields/tests while preserving the v1 profile projection and DPS-002 contracts.
 
 - [ ] **DPS-003 — Normalize complete Bungie profile fixtures**
@@ -145,4 +145,4 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 ## Next step
 
-Commit DPS-002A, then delegate DPS-003 normalization.
+Delegate DPS-003 profile normalization and fixtures.
