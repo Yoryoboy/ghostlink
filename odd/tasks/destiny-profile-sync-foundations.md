@@ -25,7 +25,8 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 ## Constraints and decisions
 
-- User decision: WU-006 synchronizes instanced items only. Instance-less stackable materials and consumables are excluded; no synthetic IDs and no WU-005 schema migration.
+- User decision: WU-006 synchronizes instanced items only. Instance-less stackable materials and consumables are excluded; no synthetic IDs and no schema change is made to represent them.
+- The architecture and WU-006 checks require persisted instance perk summaries, which WU-005 intentionally did not model. WU-006 adds a bounded reversible v2 projection migration for normalized perk references before provider normalization.
 - Bungie remains provider authority; SQLite remains a rebuildable local projection.
 - The OAuth token response membership ID identifies the Bungie.net account, not the Destiny profile. Membership discovery uses `User.GetMembershipDataForCurrentUser`, then profile acquisition uses `Destiny2.GetProfile` with a non-Bungie membership type and Destiny membership ID.
 - Cross Save selection must be deterministic. Overridden memberships are ignored; exactly one effective membership is required. Zero or multiple effective memberships produce a sanitized validation error rather than guessing.
@@ -52,7 +53,7 @@ Search, inspection, mutation preflight, and later post-action verification need 
 - Chain strategy: `feature-branch-chain`, continuing the existing WU chain from WU-005 closure `3aa8229`.
 - Branch: `feature/destiny-profile-sync-foundations`.
 - Engram mirror topic: `odd/destiny-profile-sync-foundations/tasks`.
-- Review slices: membership/contracts; normalization; transport; orchestration; final offline journey.
+- Review slices: membership/contracts; perk projection v2; normalization; transport; orchestration; final offline journey.
 - Native RDD: disabled for this clone by prior explicit user decision; ordinary risk-gated verification applies.
 
 ## Effective checks
@@ -76,6 +77,12 @@ Search, inspection, mutation preflight, and later post-action verification need 
   - Check: fmt passed; core 22 passed; app test-support 67 passed; focused all-target/all-feature clippy with `-D warnings` passed; `git diff --check` passed; parent core-test spot check passed. Independent verification passed with no blocker/high findings and one accepted architectural medium: `state` now references `SnapshotMetadata` from `domain`, creating a legal intra-crate back-edge. DPS-005 must enforce that only ordinary sync can skip and that acquired membership identity matches the request before publication. LSP emitted pre-existing/stale type/name diagnostics contradicted by rustc and clippy.
   - Evidence: commit `202f5df` (`feat: add profile sync contracts`).
   - Rollback: remove only WU-006 membership/sync contracts, re-exports, and fake changes while preserving WU-005 repository APIs.
+
+- [ ] **DPS-002A — Add durable instance perk summaries**
+  - Route: delegated multi-file core/SQLite writer.
+  - Outcome: add a provider-neutral perk summary record to `ItemInstance`, include it in structural identity/validation, and add a reversible v2 child projection with fake/SQLite parity. The summary retains provider perk hash plus active/visible state; it stores no display text or raw provider payload.
+  - Check: core/fake/SQLite round trips, revision mutation coverage, migration v1→v2→v1→v2, rollback/corruption/secrecy checks, focused check/clippy/tests.
+  - Rollback: revert the v2 migration and perk fields/tests while preserving the v1 profile projection and DPS-002 contracts.
 
 - [ ] **DPS-003 — Normalize complete Bungie profile fixtures**
   - Route: delegated adapter writer.
@@ -117,6 +124,7 @@ Search, inspection, mutation preflight, and later post-action verification need 
 - WU-005 closed cleanly at `3aa8229` with durable atomic repositories and 201 passing workspace tests.
 - Read-only mapping identified existing repository/freshness contracts but no profile adapter, membership resolution, Bearer gateway, sync service, or fixtures.
 - The user selected instanced items only for WU-006.
+- Pre-normalization review found that the explicit perks-summary requirement needs a bounded reversible v2 projection migration; DPS-002A was added without expanding instance-less item scope.
 - Official Bungie documentation confirms required membership discovery, Profile component requests, Cross Save metadata, and item-instance semantics.
 - DPS-001 established the feature boundary, user-selected instanced-only scope, strict completeness policy, API evidence, delivery strategy, and six implementation slices.
 - DPS-002 added provider-neutral membership/sync value contracts and deterministic fake support; independent high-risk verification passed.
@@ -134,4 +142,4 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 ## Next step
 
-Delegate DPS-003 profile normalization and fixtures.
+Delegate DPS-002A durable perk summaries, then continue to DPS-003 normalization.
