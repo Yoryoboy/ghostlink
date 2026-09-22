@@ -112,11 +112,13 @@ Search, inspection, mutation preflight, and later post-action verification need 
   - Evidence: commit `528ddc8` (`feat: orchestrate offline profile sync`).
   - Rollback: remove `crates/destiny-app/src/sync.rs` and the two additive `lib.rs` lines; the gateway, normalization, and repository contracts are unaffected.
 
-- [ ] **DPS-006 — Verify the offline end-to-end journey and close WU-006**
-  - Route: delegated verification harness plus independent risk-gated verifier.
-  - Outcome: prove scripted membership/profile acquisition → normalization → SQLite publication/reopen, idempotent refresh, revision advance, strict partial failure preservation, and secrecy; close the tracker.
-  - Check: full effective check set, dependency/source scans, fixture secrecy scan, independent full-range review.
-  - Rollback: reset this feature branch to `3aa8229` to remove only WU-006.
+- [x] **DPS-006 — Verify the offline end-to-end journey and close WU-006**
+  - Route: delegated journey-harness writer plus independent read-only verifier.
+  - Outcome: added `crates/destiny-adapters/tests/profile_sync_journey.rs`, one integration test that composes the real `BungieProfileGateway`, the real `SqliteStore`, and the real `ProfileSyncService`, with fakes limited to the two dependency-injection seams the production gateway already takes (a scripted `ProfileTransport` and an explicit `Clock`). Seven tests prove the cold publish through SQLite, durable persistence across a real reopen of the same database file, an ordinary fresh skip that performs no transport request, identical-content refresh retaining the revision while refreshing `checked_at`, materially changed content advancing the revision exactly once, non-success/missing-component/privacy-denied responses preserving the prior projection at the same revision, and API-key/bearer/raw-payload sentinels absent from error renderings, the committed projection, and the on-disk database plus sidecars.
+  - Check: the full effective set passed: `cargo fmt --all -- --check`; `cargo check --workspace --all-targets --all-features`; default-feature and all-feature all-target clippy with `-D warnings`; workspace locked tests (305 passed, 9 suites) and workspace all-feature locked tests (305 passed); CLI and MCP help; `git diff --check`. Fixture secrecy scan found no secret, token, or credential markers in any fixture, and neither presentation crate depends directly on `destiny-core`. Independent verification read the whole file, reconciled every assertion against the real decoder, repository, and orchestration sources rather than the test comments, confirmed the real components are used and the composition is not faked, verified the fixture-derived counts against decoder drop rules (two instance-less stackables and one Postmaster item are excluded, leaving six retained items), and found no blocker/high/medium findings; three actionable lows were noted and need no change. The known pre-existing OAuth timeout flake did not occur.
+  - Review workload: 696 additions in one new integration test file; a single cohesive journey slice.
+  - Evidence: commit `31c3e08` (`test: prove offline profile sync journey`).
+  - Rollback: remove the journey test file; the gateway, normalization, orchestration, and repository contracts are unaffected.
 
 ## Acceptance criteria
 
@@ -148,6 +150,12 @@ Search, inspection, mutation preflight, and later post-action verification need 
 - DPS-003 final evidence: 20 focused profile tests and 144 adapter tests passed with clean fmt/clippy/diff checks; independent final review found no blocker/high/medium findings; parent spot check reran all 20 focused tests.
 - DPS-004 final evidence: 50 focused gateway tests and 194 adapter tests passed with clean fmt/clippy/diff checks; independent verification found no blocker/high/medium findings after the official Cross Save selection and membership endpoint corrections.
 - DPS-005 final evidence: 14 focused sync tests, 81 app all-feature tests, and 298 workspace all-feature tests passed with clean fmt, default-feature and all-feature clippy, diff, and CLI/MCP help checks; independent verification reconciled every test against real core and fake semantics, confirmed the two-path scope, and found no blocker/high/medium findings. The known pre-existing OAuth timeout flake did not occur.
+- DPS-006 final evidence: the seven journey tests passed in the default and all-feature configurations; workspace locked tests and workspace all-feature locked tests both reported 305 passed across 9 suites; `cargo check --workspace --all-targets --all-features`, both clippy variants with `-D warnings`, fmt, CLI/MCP help, and `git diff --check` were clean. Fixture secrecy scan found no secret, token, or credential marker, and neither presentation crate depends directly on `destiny-core`. Independent verification confirmed the real gateway, SQLite store, and sync service compose without substitution and found no blocker/high/medium findings. The known pre-existing OAuth timeout flake did not occur.
+
+## Closure
+
+- WU-006 is complete on `feature/destiny-profile-sync-foundations` with all six slices committed and independently verified: DPS-001 `eeb5a78`, DPS-002 `202f5df`, DPS-002A `19cadc6`, DPS-003 `9cba845`, DPS-004 `6214bee`, DPS-005 `528ddc8`, DPS-006 `31c3e08`, plus the paired evidence commits.
+- Delivery remains a separate human decision: this branch is committed, not pushed, and no pull request was opened.
 
 ## Manual gates and follow-ups
 
@@ -157,4 +165,4 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 ## Next step
 
-Delegate DPS-006 offline end-to-end journey verification and WU-006 closure.
+WU-006 is complete and closed; the next work unit is WU-007 from `docs/mvp-implementation-plan.md`, and delivery (push or pull request) remains the user's decision.
