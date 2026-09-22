@@ -96,11 +96,13 @@ Search, inspection, mutation preflight, and later post-action verification need 
   - Evidence: commit `9cba845` (`feat: normalize Bungie profile snapshots`).
   - Rollback: remove `profile.rs`, its fixture, and the two adapter re-export lines without affecting existing HTTP or repositories.
 
-- [ ] **DPS-004 — Implement bounded authenticated Bungie profile gateway**
-  - Route: delegated adapter writer.
-  - Outcome: add hardened current-user membership discovery and profile GET transport with exact URLs/components, Bearer/API-key handling, redirect refusal, bounded bodies/timeouts, status mapping, Cross Save selection, and sanitized errors.
-  - Check: scripted request-contract tests plus adapter check/clippy/tests; no live calls.
-  - Rollback: remove only the WU-006 gateway/transport integration while retaining pure normalization.
+- [x] **DPS-004 — Implement bounded authenticated Bungie profile gateway**
+  - Route: delegated adapter writer with independent read-only verification. The work was split into membership decoding, transport, and gateway wiring after repeated monolithic worker response failures, then reconciled as one work unit.
+  - Outcome: added hardened current-user membership discovery and profile GET transport with exact allowlisted URLs/components, Bearer/API-key handling, redirect refusal, bounded bodies/timeouts, strict declared-versus-observed length checks, status mapping, injected-clock expiry enforcement, and sanitized errors. Cross Save selection uses the required-but-nullable `primaryMembershipId` and validates `crossSaveOverride`/`applicableMembershipTypes`; non-Cross-Save responses require exactly one unambiguous membership. The documented operation name remains `User.GetMembershipDataForCurrentUser`, while the exact endpoint path is `/Platform/User/GetMembershipsForCurrentUser/`.
+  - Check: 50 focused gateway tests and all 194 adapter tests passed; fmt, all-target/all-feature clippy with `-D warnings`, and diff checks passed. No live calls were made. Independent verification found no blocker/high/medium findings after the official Cross Save and endpoint corrections.
+  - Review workload: 2,574 additions across the gateway module, its in-module contract tests, and adapter exports. This exceeds the heuristic but keeps the mutually dependent membership selection, hardened request transport, secret-handling boundary, and gateway behavior together; application orchestration remains separate DPS-005.
+  - Evidence: commit `6214bee` (`feat: add authenticated Bungie profile gateway`).
+  - Rollback: remove `profile_gateway.rs` and its adapter module/re-exports while retaining pure profile normalization.
 
 - [ ] **DPS-005 — Orchestrate offline profile synchronization**
   - Route: delegated app writer.
@@ -151,4 +153,4 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 ## Next step
 
-Delegate DPS-004 authenticated membership/profile transport.
+Delegate DPS-005 offline profile synchronization orchestration.
