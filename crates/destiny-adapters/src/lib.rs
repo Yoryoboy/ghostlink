@@ -3,6 +3,7 @@
 pub mod credential_store;
 pub mod manifest;
 pub mod oauth;
+pub mod profile;
 pub mod sqlite;
 pub mod token;
 
@@ -12,6 +13,7 @@ pub use oauth::{
     HeadlessBrowserAuthorization, LoopbackCallbackReceiver, SshTarget, SystemCommandLauncher,
     authorization_url, browser_command,
 };
+pub use profile::decode_profile;
 pub use token::{
     BungieTokenExchange, HttpTokenTransport, TOKEN_ENDPOINT, TokenHttpResponse, TokenRequest,
     TokenTransport, TokenTransportError,

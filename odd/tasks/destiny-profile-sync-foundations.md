@@ -44,6 +44,8 @@ Search, inspection, mutation preflight, and later post-action verification need 
 - Bungie component enum and inventory semantics: <https://bungie-net.github.io/multi/schema_Destiny-DestinyComponentType.html>.
 - Bungie profile response component contracts: <https://bungie-net.github.io/multi/schema_Destiny-Responses-DestinyProfileResponse.html>.
 - Bungie item instance semantics: <https://bungie-net.github.io/multi/schema_Destiny-Entities-Items-DestinyItemInstanceComponent.html>.
+- Bungie perk reference semantics (`visible` and `isActive` are booleans): <https://bungie-net.github.io/multi/schema_Destiny-Perks-DestinyPerkReference.html>.
+- Bungie item location enum (0 Unknown, 1 Inventory, 2 Vault, 3 Vendor, 4 Postmaster): <https://bungie-net.github.io/multi/schema_Destiny-ItemLocation.html>.
 - Bungie Cross Save membership semantics: <https://bungie-net.github.io/multi/schema_User-CrossSaveUserMembership.html>.
 
 ## Delivery
@@ -86,11 +88,13 @@ Search, inspection, mutation preflight, and later post-action verification need 
   - Evidence: commit `19cadc6` (`feat: persist instance perk summaries`).
   - Rollback: revert the v2 migration and perk fields/tests while preserving the v1 profile projection and DPS-002 contracts.
 
-- [ ] **DPS-003 — Normalize complete Bungie profile fixtures**
-  - Route: delegated adapter writer.
-  - Outcome: decode required components and normalize characters plus instanced items, locations, equipment, locks, quantities, power, and bounded perk summaries; reject malformed/private/partial candidates.
-  - Check: fixture-driven adapter tests and stable sanitized snapshots covering every required semantic and failure mode.
-  - Rollback: remove profile decoder/fixtures without affecting existing HTTP or repositories.
+- [x] **DPS-003 — Normalize complete Bungie profile fixtures**
+  - Route: delegated adapter writer. Three initial writer response emissions failed with a clean tree; continuing the final worker session completed the slice. Native assessment was unavailable, so independent high-risk verification ran through two correction rounds and a final pass.
+  - Outcome: added a pure `decode_profile` boundary and complete synthetic fixture. It strictly validates the success envelope and required component wrappers, rejects private/disabled/partial/malformed/conflicting input, normalizes canonical bounded string-or-u64 identifiers, character enums with forward-compatible `Unknown(n)`, instanced-only Vault/character/unknown locations, Postmaster omission, equipment agreement, lock/quantity/power, and ordered duplicate perk summaries. Caller membership/version/time remain authoritative; output fixes `SourceMarker::Profile`; errors are category-only and retain no raw provider payload.
+  - Check: 20 focused profile tests and 144 adapter tests passed; fmt, all-target/all-feature clippy with `-D warnings`, and diff checks passed. Independent review first caught enum-forward-compatibility and ID-form gaps, then official-source revalidation corrected the perk `visible` field from a mistaken numeric assumption to boolean. Final review found no blocker/high/medium issues. Deterministic mixed-length numeric ordering, canonical IDs, exact u32/u16 bounds, ComponentPrivacySetting, ItemLocation 0–4, missing components, duplicates, conflicts, secrecy, and fixture output are covered. The known pre-existing OAuth timeout test flaked once in the writer's first full run, then passed the immediate full rerun, isolated repeats, and every verifier/final run.
+  - Review workload: approximately 1,485 authored lines, including about 758 in-module test lines and a 160-line synthetic fixture. This exceeds the heuristic but remains one pure decoder contract; HTTP transport and application orchestration are still separate DPS-004/005 slices.
+  - Evidence: pending work-unit commit.
+  - Rollback: remove `profile.rs`, its fixture, and the two adapter re-export lines without affecting existing HTTP or repositories.
 
 - [ ] **DPS-004 — Implement bounded authenticated Bungie profile gateway**
   - Route: delegated adapter writer.
@@ -130,12 +134,14 @@ Search, inspection, mutation preflight, and later post-action verification need 
 - Official Bungie documentation confirms required membership discovery, Profile component requests, Cross Save metadata, and item-instance semantics.
 - DPS-001 established the feature boundary, user-selected instanced-only scope, strict completeness policy, API evidence, delivery strategy, and six implementation slices.
 - DPS-002 added provider-neutral membership/sync value contracts and deterministic fake support; independent high-risk verification passed.
+- DPS-003 added and fully verified the strict pure Bungie profile decoder and representative complete fixture after official-source correction of perk visibility.
 
 ## Verification evidence
 
 - DPS-001 tracker and Engram mirror readback passed; `git diff --check` passed.
 - DPS-002 writer verification: core 22 passed; app test-support 67 passed; fmt/clippy/diff checks passed. Independent verifier reproduced all checks and found no blocker/high issue; parent spot check reran core 22 successfully.
 - DPS-002A writer and independent verifier observed core 23, app 67, and 60 focused SQLite tests passing with clean fmt/clippy/diff checks; parent reran the 60 SQLite tests after the sole documentation correction.
+- DPS-003 final evidence: 20 focused profile tests and 144 adapter tests passed with clean fmt/clippy/diff checks; independent final review found no blocker/high/medium findings; parent spot check reran all 20 focused tests.
 
 ## Manual gates and follow-ups
 
@@ -145,4 +151,4 @@ Search, inspection, mutation preflight, and later post-action verification need 
 
 ## Next step
 
-Delegate DPS-003 profile normalization and fixtures.
+Commit DPS-003, then delegate DPS-004 authenticated membership/profile transport.

@@ -1,0 +1,1322 @@
+//! Pure mapping from a Bungie `Destiny2.GetProfile` response to the
+//! provider-neutral [`InventorySnapshotInput`] in `destiny-core`.
+//!
+//! This module performs no I/O, no scheduling, and no provider calls. It
+//! validates one complete profile response and normalizes the characters and
+//! instanced items it contains. The application profile service still decides
+//! whether to publish the candidate and owns revision, freshness, and
+//! provenance; this decoder only attaches the caller-supplied membership,
+//! definition version, timestamp, and the fixed [`SourceMarker::Profile`].
+//!
+//! Input is handled as `serde_json::Value` only; the adapter never
+//! deserializes into provider structs. The candidate is strict and complete:
+//! every required component wrapper must be present with `data`, no component
+//! may be `disabled`, and a component whose privacy is `2` (Private) is
+//! rejected. Characters, profile inventories, character inventories, character
+//! equipment, item instances, and item perks must all be internally
+//! consistent, so a partial, private, or malformed response never yields a
+//! candidate.
+//!
+//! Every failure is a sanitized `ErrorCategory::ProviderValidation` error.
+//! Neither raw provider JSON nor any provider message, identifier, or path can
+//! escape through the failure path, because the only payload an error carries
+//! is its category.
+//!
+//! Normalization rules:
+//!
+//! - Items are retained only when they carry a provider `itemInstanceId`.
+//!   Missing and `null` instance identifiers are intentionally omitted, so
+//!   instance-less materials and consumables never enter the projection.
+//! - A profile item whose `location` is Postmaster (`4`) is omitted. Vault
+//!   (`2`) maps to [`ItemLocation::Vault`]. Every other profile location is
+//!   preserved verbatim as
+//!   `Other("bungie-profile-location:<n>")`.
+//! - Character inventory and equipment items map to their owning character,
+//!   and equipment items are marked equipped.
+//! - State bit `1` marks an item locked. An item's equipment status must agree
+//!   with the provider `isEquipped` flag, so a vault item or a character
+//!   inventory item can never be equipped while an equipment item must be.
+//! - `primaryStat.value` maps to an optional `u16` power and `light` maps to an
+//!   optional `u16`.
+//! - Perk summaries preserve provider order and duplicate hashes. Per the
+//!   official `Destiny.Perks.DestinyPerkReference` contract, `perkHash` is a
+//!   `uint32` and `isActive` and `visible` are booleans; both flags are kept
+//!   independently of each other.
+//! - Characters and items are emitted in ascending numeric decimal-identifier
+//!   order. Accepted identifiers are canonical, so every identifier is either
+//!   the literal `0` or has a nonzero leading digit.
+
+use destiny_core::{
+    AppError, Character, CharacterId, DefinitionVersion, DestinyMembership, ErrorCategory,
+    InventorySnapshotInput, ItemHash, ItemInstance, ItemInstanceId, ItemLocation, PerkHash,
+    PerkSummary, SourceMarker, Timestamp,
+};
+use serde_json::{Map, Value};
+use std::cmp::Ordering;
+use std::collections::{BTreeSet, HashSet};
+
+/// The only success code Bungie returns for a fulfilled request.
+const SUCCESS_ERROR_CODE: u64 = 1;
+
+/// Provider privacy values that are accepted when present.
+const PRIVACY_NONE: u64 = 0;
+const PRIVACY_PUBLIC: u64 = 1;
+
+/// The longest decimal identifier the durable profile projection accepts.
+const MAX_IDENTIFIER_DIGITS: usize = 128;
+
+/// Official provider profile locations (`Destiny.DestinyItemLocation`).
+///
+/// `Unknown = 0`, `Inventory = 1`, `Vendor = 3`, and any future value above
+/// `Postmaster` are preserved verbatim as `Other`; `Vault = 2` maps to
+/// [`ItemLocation::Vault`]; `Postmaster = 4` is intentionally omitted because
+/// Postmaster items are out of the MVP transaction scope.
+const LOCATION_VAULT: u32 = 2;
+const LOCATION_POSTMASTER: u32 = 4;
+
+fn provider_validation() -> AppError {
+    AppError::new(ErrorCategory::ProviderValidation)
+}
+
+/// Decodes one complete Bungie profile response into a normalized candidate.
+///
+/// The caller owns the resolved [`DestinyMembership`], the current
+/// [`DefinitionVersion`], and the acquisition [`Timestamp`]; the decoder
+/// attaches them unchanged and fixes the source to [`SourceMarker::Profile`].
+/// Any missing, private, disabled, duplicated, mismatched, or malformed input
+/// is a sanitized [`ErrorCategory::ProviderValidation`] failure.
+///
+/// [`ErrorCategory::ProviderValidation`]: destiny_core::ErrorCategory::ProviderValidation
+pub fn decode_profile(
+    bytes: &[u8],
+    membership: &DestinyMembership,
+    definition_version: DefinitionVersion,
+    checked_at: Timestamp,
+) -> Result<InventorySnapshotInput, AppError> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| provider_validation())?;
+    let root = value.as_object().ok_or_else(provider_validation)?;
+
+    if root.get("ErrorCode").and_then(Value::as_u64) != Some(SUCCESS_ERROR_CODE) {
+        return Err(provider_validation());
+    }
+
+    let response = root
+        .get("Response")
+        .and_then(Value::as_object)
+        .ok_or_else(provider_validation)?;
+
+    let characters = decode_characters(required_component(response, "characters")?)?;
+    let character_ids: BTreeSet<String> = characters
+        .iter()
+        .map(|character| character.id.as_str().to_owned())
+        .collect();
+
+    let mut raw_items = decode_profile_items(required_component(response, "profileInventory")?)?;
+    raw_items.extend(decode_character_items(
+        required_component(response, "characterInventories")?,
+        &character_ids,
+        false,
+    )?);
+    raw_items.extend(decode_character_items(
+        required_component(response, "characterEquipment")?,
+        &character_ids,
+        true,
+    )?);
+
+    let item_components = response
+        .get("itemComponents")
+        .and_then(Value::as_object)
+        .ok_or_else(provider_validation)?;
+    let instances = component_data(
+        item_components
+            .get("instances")
+            .ok_or_else(provider_validation)?,
+    )?;
+    let perks = component_data(
+        item_components
+            .get("perks")
+            .ok_or_else(provider_validation)?,
+    )?;
+
+    let mut seen = HashSet::with_capacity(raw_items.len());
+    let mut items = Vec::with_capacity(raw_items.len());
+    for raw in raw_items {
+        if !seen.insert(raw.instance_id.clone()) {
+            return Err(provider_validation());
+        }
+
+        let instance = instances
+            .get(&raw.instance_id)
+            .and_then(Value::as_object)
+            .ok_or_else(provider_validation)?;
+        let is_equipped = instance
+            .get("isEquipped")
+            .and_then(Value::as_bool)
+            .ok_or_else(provider_validation)?;
+        if is_equipped != raw.equipped {
+            return Err(provider_validation());
+        }
+        let power = decode_power(instance)?;
+        let item_perks = decode_perks(perks, &raw.instance_id)?;
+
+        items.push(ItemInstance {
+            instance_id: ItemInstanceId::new(raw.instance_id),
+            item_hash: raw.item_hash,
+            location: raw.location,
+            quantity: raw.quantity,
+            equipped: is_equipped,
+            locked: raw.locked,
+            power,
+            perks: item_perks,
+        });
+    }
+
+    let mut characters = characters;
+    characters.sort_by(|left, right| decimal_id_order(left.id.as_str(), right.id.as_str()));
+    items.sort_by(|left, right| {
+        decimal_id_order(left.instance_id.as_str(), right.instance_id.as_str())
+    });
+
+    let snapshot = InventorySnapshotInput {
+        membership_id: membership.membership_id().clone(),
+        membership_type: membership.membership_type(),
+        definition_version,
+        checked_at,
+        source: SourceMarker::Profile,
+        characters,
+        items,
+    };
+
+    if snapshot.is_structurally_valid() {
+        Ok(snapshot)
+    } else {
+        Err(provider_validation())
+    }
+}
+
+/// One retained item before its instance and perk components are resolved.
+struct RawItem {
+    instance_id: String,
+    item_hash: ItemHash,
+    quantity: u32,
+    locked: bool,
+    location: ItemLocation,
+    /// The equipment status implied by the component the item arrived in.
+    equipped: bool,
+}
+
+/// The component a decoded item arrived in, which fixes its location and status.
+enum ItemOrigin<'a> {
+    /// A profile-level item whose location must be decoded from the payload.
+    Profile,
+    /// A character inventory or equipment item owned by one character.
+    Character { id: &'a str, equipped: bool },
+}
+
+fn required_component<'a>(
+    response: &'a Map<String, Value>,
+    key: &str,
+) -> Result<&'a Value, AppError> {
+    response.get(key).ok_or_else(provider_validation)
+}
+
+/// Validates one component wrapper and returns its `data` object.
+///
+/// A wrapper must be an object with an object `data`. It must not be
+/// `disabled`, and a present `privacy` value must be `0` (None) or `1`
+/// (Public); `2` (Private) and any other value are rejected. An absent
+/// `privacy` is accepted.
+fn component_data(value: &Value) -> Result<&Map<String, Value>, AppError> {
+    let wrapper = value.as_object().ok_or_else(provider_validation)?;
+
+    if !matches!(wrapper.get("disabled"), None | Some(Value::Bool(false))) {
+        return Err(provider_validation());
+    }
+
+    if let Some(privacy) = wrapper.get("privacy") {
+        let privacy = privacy.as_u64().ok_or_else(provider_validation)?;
+        if privacy != PRIVACY_NONE && privacy != PRIVACY_PUBLIC {
+            return Err(provider_validation());
+        }
+    }
+
+    wrapper
+        .get("data")
+        .and_then(Value::as_object)
+        .ok_or_else(provider_validation)
+}
+
+fn decode_characters(value: &Value) -> Result<Vec<Character>, AppError> {
+    let data = component_data(value)?;
+    let mut characters = Vec::with_capacity(data.len());
+    for (key, entry) in data {
+        characters.push(decode_character(key, entry)?);
+    }
+    Ok(characters)
+}
+
+fn decode_character(key: &str, value: &Value) -> Result<Character, AppError> {
+    validate_decimal_id(key)?;
+    let object = value.as_object().ok_or_else(provider_validation)?;
+
+    let character_id = object
+        .get("characterId")
+        .ok_or_else(provider_validation)
+        .and_then(decode_decimal_id_value)?;
+    if character_id != key {
+        return Err(provider_validation());
+    }
+
+    Ok(Character {
+        id: CharacterId::new(key),
+        // The provider payload is not a trustworthy source of display names.
+        name: None,
+        class: Some(decode_enum_name(
+            object.get("classType"),
+            CLASS_NAMES.as_slice(),
+        )?),
+        race: Some(decode_enum_name(
+            object.get("raceType"),
+            RACE_NAMES.as_slice(),
+        )?),
+        gender: Some(decode_enum_name(
+            object.get("genderType"),
+            GENDER_NAMES.as_slice(),
+        )?),
+        light: decode_optional_u16(object.get("light"))?,
+    })
+}
+
+/// Canonical Destiny class codes. Any other valid `u32` code is preserved as
+/// `Unknown(<code>)` rather than guessed.
+const CLASS_NAMES: [(u32, &str); 3] = [(0, "Titan"), (1, "Hunter"), (2, "Warlock")];
+
+/// Canonical Destiny race codes. Any other valid `u32` code is preserved as
+/// `Unknown(<code>)` rather than guessed.
+const RACE_NAMES: [(u32, &str); 3] = [(0, "Human"), (1, "Awoken"), (2, "Exo")];
+
+/// Canonical Destiny gender codes. Any other valid `u32` code is preserved as
+/// `Unknown(<code>)` rather than guessed.
+const GENDER_NAMES: [(u32, &str); 2] = [(0, "Male"), (1, "Female")];
+
+/// Decodes one required, non-null character enum code.
+///
+/// A missing or `null` value, a non-numeric value, or a code outside the `u32`
+/// range is rejected. A known code maps to its canonical name and every other
+/// valid `u32` code is preserved as `Unknown(<code>)`.
+fn decode_enum_name(
+    value: Option<&Value>,
+    names: &'static [(u32, &'static str)],
+) -> Result<String, AppError> {
+    let code = decode_required_u32(value)?;
+    Ok(names
+        .iter()
+        .find(|(candidate, _)| *candidate == code)
+        .map(|(_, name)| (*name).to_owned())
+        .unwrap_or_else(|| format!("Unknown({code})")))
+}
+
+fn decode_profile_items(value: &Value) -> Result<Vec<RawItem>, AppError> {
+    let data = component_data(value)?;
+    let items = data
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(provider_validation)?;
+
+    let mut decoded = Vec::with_capacity(items.len());
+    for item in items {
+        if let Some(raw) = decode_item(item, ItemOrigin::Profile)? {
+            decoded.push(raw);
+        }
+    }
+    Ok(decoded)
+}
+
+fn decode_character_items(
+    value: &Value,
+    character_ids: &BTreeSet<String>,
+    equipped: bool,
+) -> Result<Vec<RawItem>, AppError> {
+    let data = component_data(value)?;
+    let mut present = HashSet::with_capacity(data.len());
+    let mut decoded = Vec::new();
+
+    for (character_id, group) in data {
+        if !character_ids.contains(character_id) {
+            return Err(provider_validation());
+        }
+        present.insert(character_id.as_str());
+
+        let group = group.as_object().ok_or_else(provider_validation)?;
+        let items = group
+            .get("items")
+            .and_then(Value::as_array)
+            .ok_or_else(provider_validation)?;
+        for item in items {
+            let origin = ItemOrigin::Character {
+                id: character_id,
+                equipped,
+            };
+            if let Some(raw) = decode_item(item, origin)? {
+                decoded.push(raw);
+            }
+        }
+    }
+
+    if character_ids
+        .iter()
+        .any(|character_id| !present.contains(character_id.as_str()))
+    {
+        return Err(provider_validation());
+    }
+
+    Ok(decoded)
+}
+
+fn decode_item(value: &Value, origin: ItemOrigin<'_>) -> Result<Option<RawItem>, AppError> {
+    let object = value.as_object().ok_or_else(provider_validation)?;
+
+    let instance_id = match object.get("itemInstanceId") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(value) => decode_decimal_id_value(value)?,
+    };
+
+    let item_hash = decode_item_hash(object.get("itemHash"))?;
+    let quantity = decode_quantity(object.get("quantity"))?;
+    let state = decode_state(object.get("state"))?;
+    let locked = state & 1 != 0;
+
+    let (location, equipped) = match origin {
+        ItemOrigin::Profile => {
+            let location = decode_required_u32(object.get("location"))?;
+            if location == LOCATION_POSTMASTER {
+                return Ok(None);
+            }
+            let location = if location == LOCATION_VAULT {
+                ItemLocation::Vault
+            } else {
+                ItemLocation::other(format!("bungie-profile-location:{location}"))
+            };
+            (location, false)
+        }
+        ItemOrigin::Character { id, equipped } => {
+            (ItemLocation::Character(CharacterId::new(id)), equipped)
+        }
+    };
+
+    Ok(Some(RawItem {
+        instance_id,
+        item_hash,
+        quantity,
+        locked,
+        location,
+        equipped,
+    }))
+}
+
+fn decode_item_hash(value: Option<&Value>) -> Result<ItemHash, AppError> {
+    // Bungie item hashes are unsigned 32-bit values.
+    let hash = decode_required_u32(value)?;
+    Ok(ItemHash::new(i64::from(hash)))
+}
+
+fn decode_quantity(value: Option<&Value>) -> Result<u32, AppError> {
+    let raw = value
+        .and_then(Value::as_u64)
+        .ok_or_else(provider_validation)?;
+    u32::try_from(raw).map_err(|_| provider_validation())
+}
+
+fn decode_state(value: Option<&Value>) -> Result<u64, AppError> {
+    let raw = value
+        .and_then(Value::as_u64)
+        .ok_or_else(provider_validation)?;
+    if raw > u64::from(u32::MAX) {
+        return Err(provider_validation());
+    }
+    Ok(raw)
+}
+
+/// Decodes one required, non-null, unsigned 32-bit provider value.
+fn decode_required_u32(value: Option<&Value>) -> Result<u32, AppError> {
+    let raw = value
+        .and_then(Value::as_u64)
+        .ok_or_else(provider_validation)?;
+    u32::try_from(raw).map_err(|_| provider_validation())
+}
+
+/// Decodes an optional unsigned `u16`, rejecting wrong types and out-of-range values.
+fn decode_optional_u16(value: Option<&Value>) -> Result<Option<u16>, AppError> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => {
+            let raw = number.as_u64().ok_or_else(provider_validation)?;
+            let value = u16::try_from(raw).map_err(|_| provider_validation())?;
+            Ok(Some(value))
+        }
+        Some(_) => Err(provider_validation()),
+    }
+}
+
+fn decode_power(instance: &Map<String, Value>) -> Result<Option<u16>, AppError> {
+    match instance.get("primaryStat") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Object(stat)) => decode_optional_u16(stat.get("value")),
+        Some(_) => Err(provider_validation()),
+    }
+}
+
+fn decode_perks(
+    perks: &Map<String, Value>,
+    instance_id: &str,
+) -> Result<Vec<PerkSummary>, AppError> {
+    let Some(entry) = perks.get(instance_id) else {
+        return Ok(Vec::new());
+    };
+    let entry = entry.as_object().ok_or_else(provider_validation)?;
+    let summaries = entry
+        .get("perks")
+        .and_then(Value::as_array)
+        .ok_or_else(provider_validation)?;
+
+    let mut decoded = Vec::with_capacity(summaries.len());
+    for summary in summaries {
+        decoded.push(decode_perk(summary)?);
+    }
+    Ok(decoded)
+}
+
+fn decode_perk(value: &Value) -> Result<PerkSummary, AppError> {
+    let object = value.as_object().ok_or_else(provider_validation)?;
+
+    let perk_hash = object
+        .get("perkHash")
+        .and_then(Value::as_u64)
+        .ok_or_else(provider_validation)?;
+    let perk_hash = u32::try_from(perk_hash).map_err(|_| provider_validation())?;
+
+    let active = object
+        .get("isActive")
+        .and_then(Value::as_bool)
+        .ok_or_else(provider_validation)?;
+
+    let visible = object
+        .get("visible")
+        .and_then(Value::as_bool)
+        .ok_or_else(provider_validation)?;
+
+    Ok(PerkSummary {
+        perk_hash: PerkHash::new(perk_hash),
+        active,
+        visible,
+    })
+}
+
+/// Requires a non-empty, canonical, unsigned decimal identifier of at most 128
+/// digits.
+///
+/// The bound matches the durable profile projection, so an identifier accepted
+/// here can always be persisted. Only ASCII digits are accepted; signs,
+/// whitespace, separators, and any non-ASCII digit are rejected. Leading zeros
+/// are rejected as non-canonical, so `"0"` is the only accepted identifier
+/// with a leading zero. Canonical decimal form is required because characters
+/// and items are ordered by length first and then lexicographically, which is
+/// numeric order only for canonical decimal strings.
+fn validate_decimal_id(value: &str) -> Result<(), AppError> {
+    if value.is_empty()
+        || value.len() > MAX_IDENTIFIER_DIGITS
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+        || (value.len() > 1 && value.starts_with('0'))
+    {
+        return Err(provider_validation());
+    }
+    Ok(())
+}
+
+/// Decodes a decimal identifier that the provider may serialize as either a
+/// decimal string or an exact nonnegative JSON integer.
+///
+/// Real Bungie payloads serialize identifiers such as `characterId` as decimal
+/// strings, so string support is mandatory. The generated schema may instead
+/// emit an unsigned integer, so an exact nonnegative `u64` is accepted and
+/// canonicalized to its decimal representation before use. Floating-point and
+/// negative numbers are never accepted, because `Value::as_u64` returns `None`
+/// for them; no `f64` or `i64` conversion is performed anywhere in this path.
+fn decode_decimal_id_value(value: &Value) -> Result<String, AppError> {
+    match value {
+        Value::String(text) => {
+            validate_decimal_id(text)?;
+            Ok(text.clone())
+        }
+        Value::Number(number) => {
+            let raw = number.as_u64().ok_or_else(provider_validation)?;
+            Ok(raw.to_string())
+        }
+        _ => Err(provider_validation()),
+    }
+}
+
+/// Ascending numeric order for canonical decimal identifiers without parsing
+/// them, so identifiers wider than any integer type still compare correctly.
+fn decimal_id_order(left: &str, right: &str) -> Ordering {
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_profile;
+    use destiny_core::{
+        AppError, Character, CharacterId, DefinitionVersion, DestinyMembership, ErrorCategory,
+        InventorySnapshotInput, ItemHash, ItemInstance, ItemInstanceId, ItemLocation, MembershipId,
+        MembershipType, PerkHash, PerkSummary, SourceMarker, Timestamp,
+    };
+    use serde_json::{Value, json};
+
+    const FIXTURE: &[u8] = include_bytes!("../tests/fixtures/profile-complete.json");
+    const MEMBERSHIP_TYPE: u32 = 3;
+    const MEMBERSHIP_ID: &str = "4611686018484639825";
+    const DEFINITION_VERSION: &str = "manifest-fixture-v1";
+    const CHECKED_AT: u64 = 1_724_000_000;
+
+    fn membership() -> DestinyMembership {
+        DestinyMembership::new(
+            MembershipType::new(MEMBERSHIP_TYPE),
+            MembershipId::new(MEMBERSHIP_ID),
+        )
+        .expect("fixture membership")
+    }
+
+    fn decode(bytes: &[u8]) -> Result<InventorySnapshotInput, AppError> {
+        decode_profile(
+            bytes,
+            &membership(),
+            DefinitionVersion::new(DEFINITION_VERSION),
+            Timestamp::new(CHECKED_AT),
+        )
+    }
+
+    fn fixture_value() -> Value {
+        serde_json::from_slice(FIXTURE).expect("fixture is JSON")
+    }
+
+    fn decode_mutated(mutate: impl FnOnce(&mut Value)) -> Result<InventorySnapshotInput, AppError> {
+        let mut value = fixture_value();
+        mutate(&mut value);
+        let bytes = serde_json::to_vec(&value).expect("mutated fixture serializes");
+        decode(&bytes)
+    }
+
+    fn assert_validation(result: Result<InventorySnapshotInput, AppError>) {
+        let error = result.expect_err("expected a provider-validation failure");
+        assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+    }
+
+    fn character_id(value: &str) -> CharacterId {
+        CharacterId::new(value)
+    }
+
+    fn instance_id(value: &str) -> ItemInstanceId {
+        ItemInstanceId::new(value)
+    }
+
+    #[test]
+    fn complete_fixture_normalizes_the_full_snapshot() {
+        let snapshot = decode(FIXTURE).expect("complete fixture");
+
+        let expected = InventorySnapshotInput {
+            membership_id: MembershipId::new(MEMBERSHIP_ID),
+            membership_type: MembershipType::new(MEMBERSHIP_TYPE),
+            definition_version: DefinitionVersion::new(DEFINITION_VERSION),
+            checked_at: Timestamp::new(CHECKED_AT),
+            source: SourceMarker::Profile,
+            characters: vec![
+                Character {
+                    id: character_id("900000000000000001"),
+                    name: None,
+                    class: Some("Warlock".to_owned()),
+                    race: Some("Awoken".to_owned()),
+                    gender: Some("Male".to_owned()),
+                    light: Some(1810),
+                },
+                Character {
+                    id: character_id("900000000000000002"),
+                    name: None,
+                    class: Some("Hunter".to_owned()),
+                    race: Some("Human".to_owned()),
+                    gender: Some("Female".to_owned()),
+                    light: Some(1795),
+                },
+            ],
+            items: vec![
+                ItemInstance {
+                    instance_id: instance_id("700000000000000001"),
+                    item_hash: ItemHash::new(1001),
+                    location: ItemLocation::Vault,
+                    quantity: 1,
+                    equipped: false,
+                    locked: true,
+                    power: Some(1800),
+                    perks: Vec::new(),
+                },
+                ItemInstance {
+                    instance_id: instance_id("700000000000000003"),
+                    item_hash: ItemHash::new(1003),
+                    location: ItemLocation::other("bungie-profile-location:3"),
+                    quantity: 5,
+                    equipped: false,
+                    locked: false,
+                    power: None,
+                    perks: Vec::new(),
+                },
+                ItemInstance {
+                    instance_id: instance_id("700000000000000004"),
+                    item_hash: ItemHash::new(2001),
+                    location: ItemLocation::Character(character_id("900000000000000001")),
+                    quantity: 1,
+                    equipped: false,
+                    locked: false,
+                    power: None,
+                    perks: Vec::new(),
+                },
+                ItemInstance {
+                    instance_id: instance_id("700000000000000005"),
+                    item_hash: ItemHash::new(2003),
+                    location: ItemLocation::Character(character_id("900000000000000002")),
+                    quantity: 3,
+                    equipped: false,
+                    locked: false,
+                    power: None,
+                    perks: Vec::new(),
+                },
+                ItemInstance {
+                    instance_id: instance_id("700000000000000006"),
+                    item_hash: ItemHash::new(3001),
+                    location: ItemLocation::Character(character_id("900000000000000001")),
+                    quantity: 1,
+                    equipped: true,
+                    locked: true,
+                    power: Some(1810),
+                    perks: vec![
+                        PerkSummary {
+                            perk_hash: PerkHash::new(5001),
+                            active: true,
+                            visible: true,
+                        },
+                        PerkSummary {
+                            perk_hash: PerkHash::new(5002),
+                            active: false,
+                            visible: false,
+                        },
+                        PerkSummary {
+                            perk_hash: PerkHash::new(5001),
+                            active: false,
+                            visible: true,
+                        },
+                    ],
+                },
+                ItemInstance {
+                    instance_id: instance_id("700000000000000007"),
+                    item_hash: ItemHash::new(3002),
+                    location: ItemLocation::Character(character_id("900000000000000002")),
+                    quantity: 1,
+                    equipped: true,
+                    locked: false,
+                    power: None,
+                    perks: Vec::new(),
+                },
+            ],
+        };
+
+        assert_eq!(snapshot, expected);
+        assert!(snapshot.is_structurally_valid());
+
+        // The fixture intentionally contains instance-less and Postmaster items
+        // that must not appear in the projection.
+        let retained: Vec<&str> = snapshot
+            .items
+            .iter()
+            .map(|item| item.instance_id.as_str())
+            .collect();
+        assert_eq!(
+            retained,
+            vec![
+                "700000000000000001",
+                "700000000000000003",
+                "700000000000000004",
+                "700000000000000005",
+                "700000000000000006",
+                "700000000000000007",
+            ]
+        );
+    }
+
+    #[test]
+    fn error_code_and_envelope_failures_are_provider_validation() {
+        assert_validation(decode("{not json".as_bytes()));
+        assert_validation(decode("[]".as_bytes()));
+        assert_validation(decode("{}".as_bytes()));
+        assert_validation(decode_mutated(|value| {
+            value["ErrorCode"] = json!(0);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"] = Value::Null;
+        }));
+    }
+
+    #[test]
+    fn missing_or_private_components_are_rejected() {
+        assert_validation(decode_mutated(|value| {
+            value["Response"]
+                .as_object_mut()
+                .expect("response")
+                .remove("profileInventory");
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characters"]["privacy"] = json!(2);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characterEquipment"]["privacy"] = json!(3);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["perks"]["privacy"] = json!(2);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characters"]["disabled"] = json!(true);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characters"]["disabled"] = json!(1);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["instances"]["data"] = json!(null);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]
+                .as_object_mut()
+                .expect("item components")
+                .remove("perks");
+        }));
+    }
+
+    #[test]
+    fn absent_privacy_and_public_privacy_are_accepted() {
+        decode_mutated(|value| {
+            value["Response"]["characters"]
+                .as_object_mut()
+                .expect("characters")
+                .remove("privacy");
+        })
+        .expect("absent privacy is accepted");
+
+        decode_mutated(|value| {
+            value["Response"]["characters"]["privacy"] = json!(0);
+        })
+        .expect("privacy 0 is accepted");
+
+        decode_mutated(|value| {
+            value["Response"]["characters"]["privacy"] = json!(1);
+        })
+        .expect("privacy 1 is accepted");
+    }
+
+    #[test]
+    fn character_identifier_and_component_consistency_is_enforced() {
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characters"]["data"]["900000000000000001"]["characterId"] =
+                json!("900000000000000099");
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characters"]["data"]["900000000000000001"]["characterId"] = json!(5);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characterInventories"]["data"]
+                .as_object_mut()
+                .expect("inventory")
+                .remove("900000000000000002");
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characterEquipment"]["data"]
+                .as_object_mut()
+                .expect("equipment")
+                .remove("900000000000000002");
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characterInventories"]["data"]["900000000000000099"] =
+                json!({ "items": [] });
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characters"]["data"]["900000000000000001"]["classType"] =
+                json!("Warlock");
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characters"]["data"]["900000000000000001"]["light"] = json!(70000);
+        }));
+    }
+
+    #[test]
+    fn item_identity_and_equipment_conflicts_are_rejected() {
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characterEquipment"]["data"]["900000000000000001"]["items"][0]["itemInstanceId"] =
+                json!("700000000000000001");
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["instances"]["data"]["700000000000000006"]["isEquipped"] =
+                json!(false);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["instances"]["data"]["700000000000000004"]["isEquipped"] =
+                json!(true);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["instances"]["data"]
+                .as_object_mut()
+                .expect("instances")
+                .remove("700000000000000001");
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"]["isEquipped"] =
+                json!("false");
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characterInventories"]["data"]["900000000000000001"]["items"][0]["itemInstanceId"] =
+                json!("not-a-decimal-id");
+        }));
+    }
+
+    #[test]
+    fn missing_required_item_fields_are_rejected() {
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["profileInventory"]["data"]["items"][0]["itemHash"] = Value::Null;
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["profileInventory"]["data"]["items"][0]["quantity"] = json!("1");
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["profileInventory"]["data"]["items"][0]["state"] =
+                json!(4294967296u64);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["profileInventory"]["data"]["items"][0]["location"] = json!("2");
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["profileInventory"]["data"]["items"] = json!(null);
+        }));
+    }
+
+    #[test]
+    fn malformed_power_and_perks_are_rejected() {
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"]["primaryStat"]
+                ["value"] = json!(70000);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"]["primaryStat"]
+                ["value"] = json!("1800");
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"]["primaryStat"] =
+                json!(1800);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["perks"]["data"]["700000000000000006"]["perks"]
+                [0]["perkHash"] = json!(4294967296u64);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["perks"]["data"]["700000000000000006"]["perks"]
+                [0]["isActive"] = json!(1);
+        }));
+        // Official `visible` is a boolean; numeric, string, and null forms fail.
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["perks"]["data"]["700000000000000006"]["perks"]
+                [0]["visible"] = json!(0);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["perks"]["data"]["700000000000000006"]["perks"]
+                [0]["visible"] = json!(1);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["perks"]["data"]["700000000000000006"]["perks"]
+                [0]["visible"] = json!("true");
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["perks"]["data"]["700000000000000006"]["perks"]
+                [0]["visible"] = Value::Null;
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["perks"]["data"]["700000000000000006"]["perks"] =
+                json!({});
+        }));
+    }
+
+    #[test]
+    fn failures_never_leak_input_sentinels() {
+        let sentinel = "sentinel-provider-secret";
+        let error = decode_mutated(|value| {
+            value["Response"]["characters"]["data"]["900000000000000001"]["classType"] =
+                json!(sentinel);
+        })
+        .expect_err("malformed class");
+        assert_eq!(error, AppError::new(ErrorCategory::ProviderValidation));
+        assert!(!error.to_string().contains(sentinel));
+        assert!(!format!("{error:?}").contains(sentinel));
+    }
+
+    fn set_character_field(field: &str, to: Value) -> impl FnOnce(&mut Value) {
+        let field = field.to_owned();
+        move |value: &mut Value| {
+            value
+                .pointer_mut("/Response/characters/data/900000000000000001")
+                .expect("character")
+                .as_object_mut()
+                .expect("character object")
+                .insert(field.clone(), to.clone());
+        }
+    }
+
+    fn remove_character_field(field: &str) -> impl FnOnce(&mut Value) {
+        let field = field.to_owned();
+        move |value: &mut Value| {
+            value
+                .pointer_mut("/Response/characters/data/900000000000000001")
+                .expect("character")
+                .as_object_mut()
+                .expect("character object")
+                .remove(field.as_str());
+        }
+    }
+
+    fn set_profile_item_field(index: usize, field: &str, to: Value) -> impl FnOnce(&mut Value) {
+        let field = field.to_owned();
+        move |value: &mut Value| {
+            value
+                .pointer_mut("/Response/profileInventory/data/items")
+                .expect("profile items")
+                .as_array_mut()
+                .expect("profile item array")[index]
+                .as_object_mut()
+                .expect("profile item")
+                .insert(field.clone(), to.clone());
+        }
+    }
+
+    fn item<'a>(snapshot: &'a InventorySnapshotInput, id: &str) -> &'a ItemInstance {
+        snapshot
+            .items
+            .iter()
+            .find(|item| item.instance_id.as_str() == id)
+            .expect("retained item")
+    }
+
+    #[test]
+    fn known_and_unknown_character_enum_codes_map_deterministically() {
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["characters"]["data"]["900000000000000001"]["classType"] = json!(9);
+        })
+        .expect("unknown class");
+        assert_eq!(snapshot.characters[0].class.as_deref(), Some("Unknown(9)"));
+
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["characters"]["data"]["900000000000000001"]["raceType"] = json!(3);
+        })
+        .expect("unknown race");
+        assert_eq!(snapshot.characters[0].race.as_deref(), Some("Unknown(3)"));
+
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["characters"]["data"]["900000000000000001"]["genderType"] = json!(2);
+        })
+        .expect("unknown gender");
+        assert_eq!(snapshot.characters[0].gender.as_deref(), Some("Unknown(2)"));
+
+        // The largest valid u32 code is preserved rather than rejected.
+        let snapshot = decode_mutated(set_character_field("classType", json!(4294967295u64)))
+            .expect("boundary enum code");
+        assert_eq!(
+            snapshot.characters[0].class.as_deref(),
+            Some("Unknown(4294967295)")
+        );
+    }
+
+    #[test]
+    fn character_enums_are_required_non_null_u32() {
+        for field in ["classType", "raceType", "genderType"] {
+            assert_validation(decode_mutated(remove_character_field(field)));
+            assert_validation(decode_mutated(set_character_field(field, Value::Null)));
+            assert_validation(decode_mutated(set_character_field(field, json!(1.5))));
+            assert_validation(decode_mutated(set_character_field(
+                field,
+                json!(4294967296u64),
+            )));
+            assert_validation(decode_mutated(set_character_field(field, json!(i64::MIN))));
+            assert_validation(decode_mutated(set_character_field(field, json!("2"))));
+        }
+    }
+
+    #[test]
+    fn profile_locations_preserve_unknown_values_and_omit_postmaster() {
+        // The fixture carries Vendor (3), which is a preserved unknown location,
+        // and Postmaster (4), which is intentionally omitted.
+        let snapshot = decode(FIXTURE).expect("fixture");
+        assert_eq!(
+            item(&snapshot, "700000000000000003").location,
+            ItemLocation::other("bungie-profile-location:3")
+        );
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .all(|item| item.instance_id.as_str() != "700000000000000002")
+        );
+
+        // Unknown (0) and Inventory (1) profile locations are preserved as Other.
+        for location in [0u64, 1] {
+            let snapshot = decode_mutated(set_profile_item_field(0, "location", json!(location)))
+                .expect("preserved location");
+            assert_eq!(
+                item(&snapshot, "700000000000000001").location,
+                ItemLocation::other(format!("bungie-profile-location:{location}"))
+            );
+        }
+
+        // Postmaster (4) is dropped from the projection.
+        let snapshot = decode_mutated(set_profile_item_field(0, "location", json!(4)))
+            .expect("postmaster omitted");
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .all(|item| item.instance_id.as_str() != "700000000000000001")
+        );
+    }
+
+    #[test]
+    fn decimal_identifiers_accept_string_and_exact_u64_forms() {
+        // A u64 item instance id canonicalizes and resolves its instance record.
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["profileInventory"]["data"]["items"][0]["itemInstanceId"] =
+                json!(700000000000000001u64);
+        })
+        .expect("u64 instance id");
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .any(|item| { item.instance_id.as_str() == "700000000000000001" })
+        );
+
+        // A u64 character id canonicalizes and matches the map key.
+        let snapshot = decode_mutated(set_character_field(
+            "characterId",
+            json!(900000000000000001u64),
+        ))
+        .expect("u64 character id");
+        assert_eq!(snapshot.characters[0].id.as_str(), "900000000000000001");
+
+        // A mismatched u64 character id is still rejected.
+        assert_validation(decode_mutated(set_character_field(
+            "characterId",
+            json!(900000000000000099u64),
+        )));
+
+        // Floats, negatives, booleans, and containers are never accepted.
+        for id in [
+            json!(900000000000000001.0f64),
+            json!(i64::MIN),
+            json!(true),
+            json!([1]),
+            json!(null),
+        ] {
+            assert_validation(decode_mutated(set_character_field("characterId", id)));
+        }
+    }
+
+    #[test]
+    fn decimal_identifiers_are_bounded_to_128_digits() {
+        let at_limit = "9".repeat(128);
+        let item_id = at_limit.clone();
+        let instance_key = at_limit.clone();
+        let snapshot = decode_mutated(move |value| {
+            value["Response"]["profileInventory"]["data"]["items"][0]["itemInstanceId"] =
+                json!(item_id);
+            value["Response"]["itemComponents"]["instances"]["data"][instance_key.as_str()] =
+                json!({ "isEquipped": false });
+        })
+        .expect("128-digit identifier is accepted");
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .any(|item| item.instance_id.as_str() == at_limit)
+        );
+
+        for oversize in ["9".repeat(129), String::new(), "12x".to_owned()] {
+            let item_id = oversize.clone();
+            let instance_key = oversize.clone();
+            assert_validation(decode_mutated(move |value| {
+                value["Response"]["profileInventory"]["data"]["items"][0]["itemInstanceId"] =
+                    json!(item_id);
+                value["Response"]["itemComponents"]["instances"]["data"][instance_key.as_str()] =
+                    json!({ "isEquipped": false });
+            }));
+        }
+    }
+
+    #[test]
+    fn item_hash_and_profile_location_enforce_u32_bounds() {
+        let snapshot = decode_mutated(set_profile_item_field(0, "itemHash", json!(4294967295u64)))
+            .expect("max u32 item hash");
+        assert_eq!(
+            item(&snapshot, "700000000000000001").item_hash.value(),
+            i64::from(u32::MAX)
+        );
+        assert_validation(decode_mutated(set_profile_item_field(
+            0,
+            "itemHash",
+            json!(4294967296u64),
+        )));
+        assert_validation(decode_mutated(set_profile_item_field(
+            0,
+            "itemHash",
+            json!(i64::MIN),
+        )));
+        assert_validation(decode_mutated(set_profile_item_field(
+            0,
+            "itemHash",
+            json!(1.5),
+        )));
+
+        let snapshot = decode_mutated(set_profile_item_field(0, "location", json!(4294967295u64)))
+            .expect("max u32 location");
+        assert_eq!(
+            item(&snapshot, "700000000000000001").location,
+            ItemLocation::other("bungie-profile-location:4294967295")
+        );
+        assert_validation(decode_mutated(set_profile_item_field(
+            0,
+            "location",
+            json!(4294967296u64),
+        )));
+        assert_validation(decode_mutated(set_profile_item_field(
+            0,
+            "location",
+            json!(i64::MIN),
+        )));
+    }
+
+    #[test]
+    fn decimal_identifiers_must_be_canonical() {
+        // The validator accepts the literal zero and canonical non-zero values.
+        assert!(super::validate_decimal_id("0").is_ok());
+        assert!(super::validate_decimal_id("10").is_ok());
+        let at_limit = "9".repeat(128);
+        assert!(super::validate_decimal_id(at_limit.as_str()).is_ok());
+
+        for invalid in [
+            "",
+            "00",
+            "01",
+            "007",
+            "0x1",
+            "1a",
+            "-1",
+            " 1",
+            "\u{661}\u{662}\u{663}",
+        ] {
+            assert_eq!(
+                super::validate_decimal_id(invalid),
+                Err(AppError::new(ErrorCategory::ProviderValidation)),
+                "identifier {invalid:?} must be rejected"
+            );
+        }
+        let over_limit = "9".repeat(129);
+        assert_eq!(
+            super::validate_decimal_id(over_limit.as_str()),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+
+        // End to end: a literal zero instance id is accepted when its instance
+        // record exists, while a leading-zero instance id is rejected.
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["profileInventory"]["data"]["items"][0]["itemInstanceId"] =
+                json!("0");
+            value["Response"]["itemComponents"]["instances"]["data"]["0"] =
+                json!({ "isEquipped": false });
+        })
+        .expect("literal zero id");
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .any(|item| item.instance_id.as_str() == "0")
+        );
+
+        for leading_zero in ["00", "01", "007"] {
+            let id = leading_zero.to_owned();
+            let instance_key = leading_zero.to_owned();
+            assert_validation(decode_mutated(move |value| {
+                value["Response"]["profileInventory"]["data"]["items"][0]["itemInstanceId"] =
+                    json!(id);
+                value["Response"]["itemComponents"]["instances"]["data"][instance_key.as_str()] =
+                    json!({ "isEquipped": false });
+            }));
+        }
+    }
+
+    #[test]
+    fn character_and_item_order_is_numeric_decimal_not_lexicographic() {
+        // Character ids "9" and "10" and instance ids "20" and "100" are
+        // canonical but mixed length. Lexicographic or input order would emit
+        // "10" before "9" and "100" before "20"; numeric decimal order must
+        // emit "9", "10" and "20", "100".
+        let payload = json!({
+            "ErrorCode": 1,
+            "Response": {
+                "characters": {
+                    "data": {
+                        "10": { "characterId": "10", "classType": 0, "raceType": 0, "genderType": 0 },
+                        "9": { "characterId": "9", "classType": 0, "raceType": 0, "genderType": 0 }
+                    }
+                },
+                "profileInventory": { "data": { "items": [] } },
+                "characterInventories": {
+                    "data": {
+                        "10": { "items": [ { "itemHash": 2, "itemInstanceId": "100", "quantity": 1, "location": 1, "state": 0 } ] },
+                        "9": { "items": [ { "itemHash": 1, "itemInstanceId": "20", "quantity": 1, "location": 1, "state": 0 } ] }
+                    }
+                },
+                "characterEquipment": {
+                    "data": {
+                        "10": { "items": [] },
+                        "9": { "items": [] }
+                    }
+                },
+                "itemComponents": {
+                    "instances": { "data": { "20": { "isEquipped": false }, "100": { "isEquipped": false } } },
+                    "perks": { "data": {} }
+                }
+            }
+        });
+        let bytes = serde_json::to_vec(&payload).expect("payload serializes");
+        let snapshot = decode(&bytes).expect("valid reordered payload");
+
+        let character_ids: Vec<&str> = snapshot
+            .characters
+            .iter()
+            .map(|character| character.id.as_str())
+            .collect();
+        assert_eq!(character_ids, vec!["9", "10"]);
+
+        let instance_ids: Vec<&str> = snapshot
+            .items
+            .iter()
+            .map(|item| item.instance_id.as_str())
+            .collect();
+        assert_eq!(instance_ids, vec!["20", "100"]);
+        assert_eq!(
+            snapshot.items[0].location,
+            ItemLocation::Character(character_id("9"))
+        );
+        assert_eq!(
+            snapshot.items[1].location,
+            ItemLocation::Character(character_id("10"))
+        );
+    }
+}

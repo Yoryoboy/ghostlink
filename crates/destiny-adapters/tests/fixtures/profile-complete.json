@@ -1,0 +1,160 @@
+{
+  "ErrorCode": 1,
+  "Response": {
+    "characters": {
+      "data": {
+        "900000000000000001": {
+          "characterId": "900000000000000001",
+          "classType": 2,
+          "raceType": 1,
+          "genderType": 0,
+          "light": 1810,
+          "deleted": false
+        },
+        "900000000000000002": {
+          "characterId": "900000000000000002",
+          "classType": 1,
+          "raceType": 0,
+          "genderType": 1,
+          "light": 1795,
+          "deleted": false
+        }
+      },
+      "privacy": 1
+    },
+    "profileInventory": {
+      "data": {
+        "items": [
+          {
+            "itemHash": 1001,
+            "itemInstanceId": "700000000000000001",
+            "quantity": 1,
+            "location": 2,
+            "state": 1
+          },
+          {
+            "itemHash": 1002,
+            "itemInstanceId": "700000000000000002",
+            "quantity": 1,
+            "location": 4,
+            "state": 0
+          },
+          {
+            "itemHash": 1003,
+            "itemInstanceId": "700000000000000003",
+            "quantity": 5,
+            "location": 3,
+            "state": 0
+          },
+          {
+            "itemHash": 1004,
+            "itemInstanceId": null,
+            "quantity": 99,
+            "location": 2,
+            "state": 0
+          },
+          {
+            "itemHash": 1005,
+            "quantity": 50,
+            "location": 2,
+            "state": 0
+          }
+        ]
+      },
+      "privacy": 1
+    },
+    "characterInventories": {
+      "data": {
+        "900000000000000001": {
+          "items": [
+            {
+              "itemHash": 2001,
+              "itemInstanceId": "700000000000000004",
+              "quantity": 1,
+              "location": 1,
+              "state": 0
+            },
+            {
+              "itemHash": 2002,
+              "itemInstanceId": null,
+              "quantity": 50,
+              "location": 1,
+              "state": 0
+            }
+          ]
+        },
+        "900000000000000002": {
+          "items": [
+            {
+              "itemHash": 2003,
+              "itemInstanceId": "700000000000000005",
+              "quantity": 3,
+              "location": 1,
+              "state": 2
+            }
+          ]
+        }
+      },
+      "privacy": 1
+    },
+    "characterEquipment": {
+      "data": {
+        "900000000000000001": {
+          "items": [
+            {
+              "itemHash": 3001,
+              "itemInstanceId": "700000000000000006",
+              "quantity": 1,
+              "location": 1,
+              "state": 1
+            }
+          ]
+        },
+        "900000000000000002": {
+          "items": [
+            {
+              "itemHash": 3002,
+              "itemInstanceId": "700000000000000007",
+              "quantity": 1,
+              "location": 1,
+              "state": 0
+            }
+          ]
+        }
+      },
+      "privacy": 1
+    },
+    "itemComponents": {
+      "instances": {
+        "data": {
+          "700000000000000001": {
+            "isEquipped": false,
+            "primaryStat": { "statHash": 1480404414, "value": 1800 }
+          },
+          "700000000000000002": { "isEquipped": false },
+          "700000000000000003": { "isEquipped": false },
+          "700000000000000004": { "isEquipped": false },
+          "700000000000000005": { "isEquipped": false },
+          "700000000000000006": {
+            "isEquipped": true,
+            "primaryStat": { "statHash": 1480404414, "value": 1810 }
+          },
+          "700000000000000007": { "isEquipped": true }
+        },
+        "privacy": 1
+      },
+      "perks": {
+        "data": {
+          "700000000000000006": {
+            "perks": [
+              { "perkHash": 5001, "isActive": true, "visible": true },
+              { "perkHash": 5002, "isActive": false, "visible": false },
+              { "perkHash": 5001, "isActive": false, "visible": true }
+            ]
+          }
+        },
+        "privacy": 1
+      }
+    }
+  }
+}
