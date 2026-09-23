@@ -79,15 +79,15 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
   - Rollback: remove `sqlite/search.rs` and the `mod.rs` declaration/doc update; schema v2 and existing repositories remain byte-for-byte unaffected.
   - Evidence: commit `00e6bef` (`feat: add durable inventory search`).
 
-- [ ] **DQS-004 — Orchestrate freshness-aware query services** *(in progress)*
-  - Route: delegated multi-file writer; application service plus exports/tests.
-  - Outcome: implement `list_characters`, `search_inventory`, and `inspect_item` over the sync/repository seams; refresh non-fresh projections, preserve typed authorization/provider/storage errors, return bounded ambiguity candidates, and expose sanitized freshness metadata.
-  - Likely surfaces: new `crates/destiny-app/src/queries.rs`, `crates/destiny-app/src/lib.rs`, and focused service tests.
-  - Check: fresh skip and stale/missing refresh; refresh failure preservation; list ordering; missing/unique/ambiguous search; exact inspection; definition/instance separation; app tests/clippy/fmt/diff; independent verification per native risk assessment.
-  - Rollback: remove the query service and exports without changing sync, storage, or query contracts.
-  - Evidence: pending.
+- [x] **DQS-004 — Orchestrate freshness-aware query services**
+  - Route: delegated multi-file writer; native assessment was unassessable because `queries.rs` was intentionally untracked, so an independent high-risk verifier reviewed the complete candidate.
+  - Outcome: added `QueryService<G,R>` composing the existing `ProfileSyncService` over one repository for `list_characters`, `search_inventory`, and exact `inspect_item`. Requests validate before side effects; valid reads perform one ordinary freshness gate; committed post-sync metadata/freshness is reported; search joins exact definitions and instances without guessing; inspect returns missing/unique and fails closed on invalid duplicate/missing definition state; provider/auth/storage errors remain typed and sanitized.
+  - Check: writer and independent verifier observed fmt/diff clean; 23 focused query tests and 113 complete app test-support tests passed; app all-target test-support clippy passed with `-D warnings`; LSP reported no findings. Parent spot check reran the changed-refresh revision test successfully. No blocker/high/medium finding remains.
+  - Review workload: 1,385 additions in one implementation-and-tests module plus two exports. The service is about 296 lines and the exhaustive sync/search/inspect matrix is about 1,087 lines; separating them would violate tests-with-behavior, so this remains one accepted over-budget work unit.
+  - Rollback: remove `queries.rs` and the two `lib.rs` exports without changing sync, storage, or core query contracts.
+  - Evidence: commit `6015749` (`feat: orchestrate inventory queries`).
 
-- [ ] **DQS-005 — Prove the offline SQLite query journey**
+- [ ] **DQS-005 — Prove the offline SQLite query journey** *(in progress)*
   - Route: delegated integration-harness writer plus independent read-only verification.
   - Outcome: compose real `SqliteStore`, real query services, deterministic fixtures, and only the existing injected gateway/clock seams; prove durable list/search/inspect, stale-triggered refresh, ambiguity, reopen, bounded results, and secret absence.
   - Likely surfaces: a new focused integration test under `crates/destiny-adapters/tests/` and only narrowly required sanitized fixture additions.
@@ -126,7 +126,8 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
 - DQS-001 is complete in `e6d78f0` with boundary evidence in `bd90b9c`.
 - DQS-002 contracts and fake parity are complete in `053fe2a`; independent verification passed after bounding caller-controlled hash filters and completing the public exports, with no blocker/high/medium finding remaining.
 - DQS-003 durable SQLite search is complete in `00e6bef`; the corrected source-table design passed independent verification with no blocker/high/medium finding.
+- DQS-004 application query orchestration is complete in `6015749`; independent verification passed with no blocker/high/medium finding.
 
 ## Next step
 
-Delegate DQS-004 freshness-aware application query orchestration over the verified search and sync seams.
+Delegate DQS-005 to prove the complete offline query journey over real SQLite and deterministic provider seams.
