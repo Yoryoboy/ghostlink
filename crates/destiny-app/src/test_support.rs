@@ -11,7 +11,8 @@ use destiny_core::{
     InventorySnapshotInput, ItemDefinition, ItemHash, ItemInstance, ItemInstanceId,
     ManifestAcquisition, ManifestDefinitions, ManifestGateway, PlanId, PlanIdGenerator,
     ProfileGateway, Resolution, SearchRepository, SnapshotMetadata, SourceMarker, SyncMetadata,
-    SyncRevision, Timestamp, definition_matches, instance_matches,
+    SyncRevision, Timestamp, TransferGateway, TransferOutcome, TransferRequest, definition_matches,
+    instance_matches,
 };
 use std::collections::{HashSet, VecDeque};
 
@@ -591,6 +592,56 @@ impl ProfileGateway for QueuedProfileGateway {
         self.inventory_calls += 1;
         self.requested_memberships.push(membership.clone());
         self.snapshots.pop_front().unwrap_or_else(|| {
+            Err(AppError::new(
+                destiny_core::ErrorCategory::ProviderUnavailable,
+            ))
+        })
+    }
+}
+
+/// Deterministically queues sanitized transfer outcomes and records the exact
+/// requests it was asked to issue, in call order.
+///
+/// The queue is consumed front-to-back like [`QueuedProfileGateway`]. An
+/// exhausted queue reports a sanitized provider-unavailable failure rather than
+/// inventing a success, so a test that forgets to script a step fails loudly
+/// instead of silently passing. Each recorded request is a clone of the
+/// sanitized [`TransferRequest`] the executor built, so a test can assert the
+/// exact endpoint order and the fields (including the complete membership and
+/// the definition hash and quantity) the app derived from the projection.
+#[derive(Debug, Default)]
+pub struct QueuedTransferGateway {
+    outcomes: VecDeque<Result<TransferOutcome, AppError>>,
+    requests: Vec<TransferRequest>,
+    calls: usize,
+}
+
+impl QueuedTransferGateway {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Queues one sanitized transfer outcome.
+    pub fn queue(&mut self, outcome: Result<TransferOutcome, AppError>) {
+        self.outcomes.push_back(outcome);
+    }
+
+    /// Counts transfer attempts, including failures and exhausted queues.
+    pub const fn calls(&self) -> usize {
+        self.calls
+    }
+
+    /// The exact transfer requests issued, in call order.
+    pub fn requests(&self) -> &[TransferRequest] {
+        &self.requests
+    }
+}
+
+impl TransferGateway for QueuedTransferGateway {
+    fn transfer(&mut self, request: &TransferRequest) -> Result<TransferOutcome, AppError> {
+        self.calls += 1;
+        self.requests.push(request.clone());
+        self.outcomes.pop_front().unwrap_or_else(|| {
             Err(AppError::new(
                 destiny_core::ErrorCategory::ProviderUnavailable,
             ))

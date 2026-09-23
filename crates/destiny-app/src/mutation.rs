@@ -76,17 +76,44 @@
 //! plans and then preflights, so a presentation adapter cannot obtain a plan
 //! without passing the mandatory gate. The two phases stay independently
 //! callable because they own distinct contracts.
+//!
+//! # Execution (DTE-003)
+//!
+//! [`MutationService::authorize_execution`] is the mandatory fresh preflight
+//! gate for one attempt. It validates intent first, rejects an expired plan or a
+//! wrong-membership request *before* any provider read, and only then forces the
+//! same acquisition and shared policy evaluation the preflight uses. It either
+//! reports a *verified no-op* when the freshly observed concrete item already
+//! sits at the plan's destination, or mints the single-use [`ExecutionTicket`]
+//! that authorizes exactly one ordered attempt sequence.
+//!
+//! [`MutationService::execute_move`] consumes that ticket **by value** and
+//! issues only the plan's ordered steps through the injected [`TransferGateway`],
+//! stopping at the first step that does not complete and recording bounded
+//! [`ExecutionEvidence`]. Success returns that evidence directly; every failure
+//! returns an [`ExecutionFailure`] that still carries the evidence observed so
+//! far, so a later pre-dispatch failure keeps an earlier applied step instead of
+//! discarding it. A first-step failure before dispatch has no attempted step and
+//! so honestly reports that no remote mutation occurred, while a post-dispatch
+//! outcome that cannot be determined is recorded as typed step uncertainty.
+//! [`ExecutionFailure::requires_post_action_refresh`] is the single predicate
+//! DTE-004 uses to find every path that must refresh. This unit never refreshes
+//! after acting and never verifies the final destination; post-action refresh and
+//! destination verification belong to DTE-004, and the HTTP adapter belongs to
+//! DTE-005.
 
 use std::fmt;
 
 use crate::sync::ProfileSyncService;
 use destiny_core::{
-    AppError, DefinitionSearchQuery, DestinationSelector, ErrorCategory, FreshnessPolicy,
-    InstanceSearchQuery, IntentAuthorizationOutcome, InventoryRepository, InventorySnapshot,
-    ItemHashFilter, ItemInstance, ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT,
+    AppError, DefinitionSearchQuery, DestinationSelector, DestinyMembership, ErrorCategory,
+    ExecutionEvidence, ExecutionTicket, FreshnessPolicy, InstanceSearchQuery,
+    IntentAuthorizationOutcome, InventoryRepository, InventorySnapshot, ItemHashFilter,
+    ItemInstance, ItemInstanceId, ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT,
     MovePlan, MovePlanValidation, MoveRequest, MutationPolicyInput, MutationPolicyOutcome,
-    PlanIdGenerator, PlanLifetime, ProfileGateway, ProfileSyncReason, Resolution, SearchRepository,
-    Timestamp, evaluate_mutation, resolve_destination,
+    PlanIdGenerator, PlanLifetime, ProfileGateway, ProfileSyncOutcome, ProfileSyncReason,
+    Resolution, SearchRepository, StepOutcome, SyncRevision, Timestamp, TransferGateway,
+    TransferRequest, evaluate_mutation, resolve_destination,
 };
 
 /// The sanitized, typed failure of semantic move planning or preflight.
@@ -266,6 +293,76 @@ impl fmt::Display for MutationError {
 
 impl std::error::Error for MutationError {}
 
+/// The result of the mandatory fresh execution preflight gate.
+///
+/// The gate cannot itself mutate the provider, and it refuses an expired plan or
+/// a request bound to another membership before it produces either variant, so
+/// there are exactly two terminal shapes: either the freshly refreshed
+/// projection already proved the requested end state, or the gate produced the
+/// single-use ticket that authorizes exactly one ordered attempt sequence.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ExecutionAuthorization {
+    /// The mandatory fresh preflight proved the concrete item already sits at
+    /// the plan's destination, so the requested end state already holds. No
+    /// transfer step is issued and no [`ExecutionTicket`] is spent; the carried
+    /// evidence is the plan's bounded, all-unattempted step skeleton.
+    VerifiedNoOp(ExecutionEvidence),
+    /// The mandatory fresh preflight authorized exactly one ordered attempt.
+    /// The ticket is not `Clone`, so it can be consumed at most once.
+    Authorized(ExecutionTicket),
+}
+
+/// The sanitized failure of one execution attempt together with the bounded step
+/// evidence observed before it stopped.
+///
+/// The record always carries evidence for the attempted sequence, so a caller
+/// can never observe a partial sequence and then lose the account of what already
+/// happened: a second-step pre-dispatch failure still reports the first step's
+/// completion instead of collapsing back to a bare error. The evidence is
+/// bounded by the plan exactly as [`ExecutionEvidence`] is.
+///
+/// [`ExecutionFailure::requires_post_action_refresh`] is the single predicate the
+/// post-action refresh step (DTE-004) needs: it is true exactly when at least one
+/// step reached the provider, so every path that must refresh is observable and a
+/// first-step pre-dispatch failure honestly reports that no remote mutation
+/// occurred.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionFailure {
+    error: MutationError,
+    evidence: Box<ExecutionEvidence>,
+}
+
+impl ExecutionFailure {
+    /// Builds one bounded failure record.
+    pub fn new(error: MutationError, evidence: ExecutionEvidence) -> Self {
+        Self {
+            error,
+            evidence: Box::new(evidence),
+        }
+    }
+
+    /// The sanitized typed error that stopped the attempt.
+    pub fn error(&self) -> MutationError {
+        self.error
+    }
+
+    /// The bounded evidence observed before the attempt stopped.
+    pub fn evidence(&self) -> &ExecutionEvidence {
+        &self.evidence
+    }
+
+    /// True when at least one step reached the provider, so a post-action
+    /// refresh is mandatory before any further decision.
+    ///
+    /// A first-step failure before dispatch has no attempted step, so this is
+    /// false and no remote mutation occurred; a failure after an earlier step
+    /// applied has a nonzero attempted count, so the refreshed state must be
+    /// read before anything else.
+    pub fn requires_post_action_refresh(&self) -> bool {
+        self.evidence.attempted_count() > 0
+    }
+}
+
 /// Plans and preflights one semantic `move_item` request.
 ///
 /// The service owns the sync orchestration and the plan identifier seam by
@@ -370,48 +467,17 @@ where
         now: Timestamp,
     ) -> Result<(), MutationError> {
         authorize(request)?;
-        let outcome = self
-            .sync
-            .sync(ProfileSyncReason::Preflight, policy, now)
-            .map_err(MutationError::from)?;
-        let snapshot = self.committed_snapshot()?;
-        let (resolved_item, current_source) = self.reresolve_item(plan)?;
-        let resolved_destination = match &plan.destination {
-            ItemLocation::Vault => Resolution::Unique(ItemLocation::Vault),
-            ItemLocation::Character(id) => resolve_destination(
-                &DestinationSelector::Character(id.clone()),
-                &snapshot.characters,
-            ),
-            // An unsupported planned destination is rejected by the shared core
-            // policy before the re-resolved destination is consulted.
-            ItemLocation::Other(_) => Resolution::Missing,
-        };
-        let input = MutationPolicyInput {
-            now,
-            membership: request.membership.clone(),
-            current_revision: outcome.revision(),
-            current_source,
+        let (outcome, snapshot, resolved_item, current_source) =
+            self.fresh_preflight(plan, policy, now)?;
+        self.evaluate_preflight(
+            request,
+            plan,
+            &snapshot,
+            outcome.revision(),
             resolved_item,
-            resolved_destination,
-        };
-        match evaluate_mutation(plan, &input) {
-            MutationPolicyOutcome::Valid => {}
-            outcome => return Err(MutationError::from_policy_outcome(outcome)),
-        }
-        // The plan-anchored evaluation above proves the plan is still internally
-        // consistent; this request-anchored resolution proves the caller's intent
-        // refers to that same plan. Both selectors are resolved against the same
-        // refreshed projection and must match the plan uniquely, so a request for
-        // one item can never preflight a plan for another.
-        let requested_item = self.resolve_item(request)?;
-        if requested_item.instance_id != plan.item {
-            return Err(MutationError::WrongItem);
-        }
-        let requested_destination = self.resolve_plan_destination(request, &snapshot.characters)?;
-        if requested_destination != plan.destination {
-            return Err(MutationError::WrongDestination);
-        }
-        Ok(())
+            current_source,
+            now,
+        )
     }
 
     /// The single shared adapter entry: plan, then pass the mandatory preflight.
@@ -430,6 +496,272 @@ where
         let plan = self.plan_move(request, lifetime, policy, now)?;
         self.preflight_move(request, &plan, policy, now)?;
         Ok(plan)
+    }
+
+    /// DTE-003: the mandatory fresh preflight gate for one execution attempt.
+    ///
+    /// Intent is validated first, before any side effect. Expiry and membership
+    /// are known from the plan and the request alone, so both are rejected
+    /// *before* the forced refresh: an expired or wrong-membership plan must not
+    /// reach the provider at all. Only a plan that is still executable and bound
+    /// to the requesting membership forces the same
+    /// [`ProfileSyncReason::Preflight`] acquisition and shared policy evaluation
+    /// [`MutationService::preflight_move`] uses, so execution cannot reach a
+    /// changed plan and this gate does not duplicate that policy. The core
+    /// ticket checks re-verify expiry, revision, and membership from the
+    /// refreshed observation after the refresh.
+    ///
+    /// The refreshed projection is inspected before the binding policy, because
+    /// an already-satisfied destination is the one outcome the strict policy
+    /// would otherwise misreport as a stale or changed plan. When the stable
+    /// plan item re-resolves uniquely *and* its freshly observed location is
+    /// already the plan's destination, the requested end state holds: the gate
+    /// returns [`ExecutionAuthorization::VerifiedNoOp`] with zero transfer calls
+    /// and no ticket, because no provider mutation may be issued. The request's
+    /// own item/destination selectors are still enforced on that path.
+    ///
+    /// Otherwise the plan must survive the full preflight policy, and the gate
+    /// mints the single-use [`ExecutionTicket`] from that same refreshed,
+    /// revision-bound observation.
+    pub fn authorize_execution(
+        &mut self,
+        request: &MoveRequest,
+        plan: &MovePlan,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<ExecutionAuthorization, MutationError> {
+        authorize(request)?;
+        // Expiry and membership need no provider read, so they are rejected
+        // here, before the forced refresh, and a caller cannot spend a provider
+        // call on a plan that could never execute.
+        if plan.is_expired(now) {
+            return Err(MutationError::Expired);
+        }
+        if request.membership != plan.membership {
+            return Err(MutationError::WrongMembership);
+        }
+        let (outcome, snapshot, resolved_item, current_source) =
+            self.fresh_preflight(plan, policy, now)?;
+
+        if matches!(&resolved_item, Resolution::Unique(_))
+            && plan.already_satisfied(&current_source)
+        {
+            // The concrete plan item re-resolved uniquely and already sits at
+            // the plan's destination. The request must still refer to that same
+            // plan, so a request for another item or destination is rejected
+            // instead of silently reporting someone else's already-satisfied
+            // state as a no-op.
+            let requested_item = self.resolve_item(request)?;
+            if requested_item.instance_id != plan.item {
+                return Err(MutationError::WrongItem);
+            }
+            let requested_destination =
+                self.resolve_plan_destination(request, &snapshot.characters)?;
+            if requested_destination != plan.destination {
+                return Err(MutationError::WrongDestination);
+            }
+            return Ok(ExecutionAuthorization::VerifiedNoOp(
+                ExecutionEvidence::for_plan(plan),
+            ));
+        }
+
+        self.evaluate_preflight(
+            request,
+            plan,
+            &snapshot,
+            outcome.revision(),
+            resolved_item,
+            current_source,
+            now,
+        )?;
+        let ticket = ExecutionTicket::after_fresh_preflight(plan, &outcome, now)
+            .map_err(MutationError::from)?;
+        Ok(ExecutionAuthorization::Authorized(ticket))
+    }
+
+    /// DTE-003: the narrow executor entry point that consumes one ticket.
+    ///
+    /// The [`ExecutionTicket`] is taken **by value** and consumed for the whole
+    /// sequence, so a caller cannot borrow, copy, or replay the one fresh
+    /// preflight that authorized this attempt. Only the plan's ordered steps are
+    /// issued, through the supplied [`TransferGateway`] one step at a time, and
+    /// the loop stops at the first step that does not complete: a later step's
+    /// precondition is the previous step's effect, so continuing would act on an
+    /// unproven state.
+    ///
+    /// The returned [`ExecutionEvidence`] is bounded by the plan and sanitized.
+    /// Success returns the evidence directly, and any failure returns an
+    /// [`ExecutionFailure`] that still carries the evidence observed so far, so a
+    /// later pre-dispatch failure reports the earlier steps that already applied
+    /// instead of dropping them. That failure shape distinguishes a first-step
+    /// pre-dispatch failure, whose evidence has no attempted step and therefore
+    /// represents no remote mutation, from a failure after a provider effect,
+    /// which DTE-004 must refresh before deciding anything. A post-dispatch
+    /// outcome whose effect cannot be determined is recorded as
+    /// [`StepOutcome::Uncertain`], never collapsed into a success or a clean
+    /// failure. This method never refreshes or verifies the final destination;
+    /// that is DTE-004.
+    pub fn execute_move<T: TransferGateway>(
+        &mut self,
+        transfer: &mut T,
+        plan: &MovePlan,
+        ticket: ExecutionTicket,
+    ) -> Result<ExecutionEvidence, ExecutionFailure> {
+        // The bounded skeleton is built first and mutated in place, so any
+        // failure below can report exactly how much of the plan was attempted
+        // without losing the record of an earlier applied step.
+        let mut evidence = ExecutionEvidence::for_plan(plan);
+        match self.run_steps(transfer, plan, &ticket, &mut evidence) {
+            Ok(()) => Ok(evidence),
+            Err(error) => Err(ExecutionFailure::new(error, evidence)),
+        }
+    }
+
+    /// Runs the ticket's ordered steps in place, stopping at the first that does
+    /// not apply.
+    ///
+    /// `evidence` is mutated before any failure can return, so the caller wraps
+    /// the error with exactly the steps observed so far. The complete membership
+    /// identity, the definition hash, and the accepted quantity are read from the
+    /// committed projection rather than caller input, so an adapter cannot be
+    /// handed an invented request shape.
+    fn run_steps<T: TransferGateway>(
+        &mut self,
+        transfer: &mut T,
+        plan: &MovePlan,
+        ticket: &ExecutionTicket,
+        evidence: &mut ExecutionEvidence,
+    ) -> Result<(), MutationError> {
+        // The ticket is the authorization and the plan supplies the bounded
+        // evidence skeleton, so the two must describe the same authorized move.
+        // A mismatch can only come from a contract violation, and it fails closed
+        // before any provider call.
+        if ticket.plan_id() != &plan.plan_id
+            || ticket.item() != &plan.item
+            || ticket.steps() != plan.steps()
+        {
+            return Err(MutationError::InvalidPlan);
+        }
+        let snapshot = self.committed_snapshot()?;
+        let membership = DestinyMembership::new(
+            snapshot.metadata.membership_type,
+            snapshot.metadata.membership_id.clone(),
+        )
+        .map_err(MutationError::from)?;
+        if membership.membership_id() != ticket.membership() {
+            return Err(MutationError::WrongMembership);
+        }
+        let instance = match self
+            .repository()
+            .lookup_instance(ticket.item())
+            .map_err(MutationError::from)?
+        {
+            Resolution::Unique(instance) => instance,
+            Resolution::Missing => return Err(MutationError::MissingResolution),
+            Resolution::Ambiguous(_) => return Err(MutationError::AmbiguousResolution),
+        };
+        for step in ticket.steps() {
+            let request = TransferRequest::new(
+                membership.clone(),
+                ticket.item().clone(),
+                instance.item_hash,
+                instance.quantity,
+                step.from.clone(),
+                step.to.clone(),
+            )
+            .map_err(MutationError::from)?;
+            let outcome = transfer.transfer(&request).map_err(MutationError::from)?;
+            evidence
+                .record(step.ordinal, StepOutcome::from_transfer(outcome))
+                .map_err(MutationError::from)?;
+            if !outcome.applied() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Acquires the mandatory fresh preflight observation exactly once.
+    ///
+    /// [`ProfileSyncReason::Preflight`] forces one synchronized projection
+    /// regardless of freshness, then the plan's stable item identity and its
+    /// current location are re-resolved against that same projection. Both the
+    /// preflight policy and the execution gate consume this one acquisition, so
+    /// neither can drift into a second, differently-sourced read.
+    fn fresh_preflight(
+        &mut self,
+        plan: &MovePlan,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<
+        (
+            ProfileSyncOutcome,
+            InventorySnapshot,
+            Resolution<ItemInstanceId>,
+            ItemLocation,
+        ),
+        MutationError,
+    > {
+        let outcome = self
+            .sync
+            .sync(ProfileSyncReason::Preflight, policy, now)
+            .map_err(MutationError::from)?;
+        let snapshot = self.committed_snapshot()?;
+        let (resolved_item, current_source) = self.reresolve_item(plan)?;
+        Ok((outcome, snapshot, resolved_item, current_source))
+    }
+
+    /// Evaluates the shared core policy and then the request-selector re-check.
+    ///
+    /// The plan-anchored evaluation proves the plan is still internally
+    /// consistent; the request-anchored resolution proves the caller's intent
+    /// refers to that same plan. Both selectors are resolved against the same
+    /// refreshed projection and must match the plan uniquely, so a request for
+    /// one item can never carry a plan for another. This is the exact policy
+    /// [`MutationService::preflight_move`] applies, shared rather than
+    /// duplicated.
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_preflight(
+        &self,
+        request: &MoveRequest,
+        plan: &MovePlan,
+        snapshot: &InventorySnapshot,
+        current_revision: SyncRevision,
+        resolved_item: Resolution<ItemInstanceId>,
+        current_source: ItemLocation,
+        now: Timestamp,
+    ) -> Result<(), MutationError> {
+        let resolved_destination = match &plan.destination {
+            ItemLocation::Vault => Resolution::Unique(ItemLocation::Vault),
+            ItemLocation::Character(id) => resolve_destination(
+                &DestinationSelector::Character(id.clone()),
+                &snapshot.characters,
+            ),
+            // An unsupported planned destination is rejected by the shared core
+            // policy before the re-resolved destination is consulted.
+            ItemLocation::Other(_) => Resolution::Missing,
+        };
+        let input = MutationPolicyInput {
+            now,
+            membership: request.membership.clone(),
+            current_revision,
+            current_source,
+            resolved_item,
+            resolved_destination,
+        };
+        match evaluate_mutation(plan, &input) {
+            MutationPolicyOutcome::Valid => {}
+            outcome => return Err(MutationError::from_policy_outcome(outcome)),
+        }
+        let requested_item = self.resolve_item(request)?;
+        if requested_item.instance_id != plan.item {
+            return Err(MutationError::WrongItem);
+        }
+        let requested_destination = self.resolve_plan_destination(request, &snapshot.characters)?;
+        if requested_destination != plan.destination {
+            return Err(MutationError::WrongDestination);
+        }
+        Ok(())
     }
 
     /// Returns the committed projection, or reports that none is visible.
@@ -585,20 +917,20 @@ fn authorize(request: &MoveRequest) -> Result<(), MutationError> {
 
 #[cfg(all(test, feature = "test-support"))]
 mod tests {
-    use super::{MutationError, MutationService};
+    use super::{ExecutionAuthorization, ExecutionFailure, MutationError, MutationService};
     use crate::sync::ProfileSyncService;
     use crate::test_support::{
         DeterministicPlanIds, InMemoryInventoryRepository, InMemorySearchRepository,
-        QueuedProfileGateway,
+        QueuedProfileGateway, QueuedTransferGateway,
     };
     use destiny_core::{
         AppError, Character, CharacterId, DefinitionSearchQuery, DefinitionVersion,
-        DestinationSelector, ErrorCategory, FreshnessPolicy, InstanceSearchQuery,
-        InventoryRepository, InventorySnapshot, InventorySnapshotInput, ItemDefinition, ItemHash,
-        ItemInstance, ItemInstanceId, ItemLocation, ItemSelector, MAX_HASH_FILTERS,
-        MoveIntentAuthorization, MoveRequest, MutationPolicyOutcome, PlanId, PlanIdGenerator,
-        PlanLifetime, ProfileGateway, Resolution, SearchRepository, SourceMarker, SyncRevision,
-        Timestamp,
+        DestinationSelector, ErrorCategory, ExecutionEvidence, ExecutionTicket, FreshnessPolicy,
+        InstanceSearchQuery, InventoryRepository, InventorySnapshot, InventorySnapshotInput,
+        ItemDefinition, ItemHash, ItemInstance, ItemInstanceId, ItemLocation, ItemSelector,
+        MAX_HASH_FILTERS, MoveIntentAuthorization, MovePlan, MoveRequest, MutationPolicyOutcome,
+        PlanId, PlanIdGenerator, PlanLifetime, ProfileGateway, Resolution, SearchRepository,
+        SourceMarker, StepOutcome, SyncRevision, Timestamp, TransferOutcome, TransferRejection,
     };
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2231,5 +2563,550 @@ mod tests {
             intent.authorize(),
             destiny_core::IntentAuthorizationOutcome::Authorized
         );
+    }
+
+    // --- DTE-003: mandatory fresh preflight and ordered execution ---
+
+    /// Plans one direct Vault -> Warlock move against a committed projection.
+    fn direct_plan(service: &mut Service) -> (MoveRequest, MovePlan) {
+        let move_request = request(exact("item-1"), exact_character("warlock"));
+        let plan = service
+            .plan_move(&move_request, LIFETIME, TTL, NOW)
+            .expect("plan");
+        (move_request, plan)
+    }
+
+    /// Authorizes exactly one execution attempt, expecting a ticket.
+    fn authorized_ticket(
+        service: &mut Service,
+        move_request: &MoveRequest,
+        plan: &MovePlan,
+    ) -> ExecutionTicket {
+        authorized(
+            service
+                .authorize_execution(move_request, plan, TTL, NOW)
+                .expect("authorization"),
+        )
+        .expect("expected an authorized ticket")
+    }
+
+    /// Project the gate result onto the optional ticket without a diverging arm.
+    fn authorized(authorization: ExecutionAuthorization) -> Option<ExecutionTicket> {
+        match authorization {
+            ExecutionAuthorization::Authorized(ticket) => Some(ticket),
+            ExecutionAuthorization::VerifiedNoOp(_) => None,
+        }
+    }
+
+    /// Commits a plan whose item moves from the Vault to a character and returns
+    /// the service and its request/plan pair.
+    fn direct_service_with_plan() -> (
+        Rc<RefCell<QueuedProfileGateway>>,
+        Service,
+        MoveRequest,
+        MovePlan,
+    ) {
+        let shared = gateway();
+        let mut repository =
+            CompositeRepository::with_definitions(vec![definition(1, "Gjallarhorn")]);
+        repository.commit(fresh_vault_projection());
+        let mut service = service(&shared, repository);
+        let (move_request, plan) = direct_plan(&mut service);
+        (shared, service, move_request, plan)
+    }
+
+    /// Commits a plan whose item moves from one character to another through the
+    /// Vault and returns the service and its request/plan pair.
+    fn vault_mediated_service_with_plan() -> (
+        Rc<RefCell<QueuedProfileGateway>>,
+        Service,
+        MoveRequest,
+        MovePlan,
+    ) {
+        let shared = gateway();
+        let mut repository =
+            CompositeRepository::with_definitions(vec![definition(1, "Gjallarhorn")]);
+        let projection = projection(
+            fresh_checked_at(),
+            vec![
+                warlock_character(),
+                character("hunter", Some("Hunter"), None),
+            ],
+            vec![instance("item-1", 1, warlock())],
+        );
+        repository.commit(projection.clone());
+        let mut service = service(&shared, repository);
+        let move_request = request(exact("item-1"), exact_character("hunter"));
+        let plan = service
+            .plan_move(&move_request, LIFETIME, TTL, NOW)
+            .expect("plan");
+        queue_refresh(&shared, projection);
+        (shared, service, move_request, plan)
+    }
+
+    #[test]
+    fn authorize_execution_reuses_the_mandatory_fresh_preflight_and_mints_one_ticket() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        // The planning gate found the projection fresh and skipped acquisition;
+        // only the mandatory preflight forces one synchronized projection.
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+        queue_refresh(&shared, fresh_vault_projection());
+
+        let ticket = authorized_ticket(&mut service, &move_request, &plan);
+
+        assert_eq!(ticket.plan_id(), &PlanId::new("plan-1"));
+        assert_eq!(ticket.item(), &item_id("item-1"));
+        assert_eq!(ticket.source(), &ItemLocation::Vault);
+        assert_eq!(ticket.destination(), &warlock());
+        assert_eq!(ticket.revision(), SyncRevision::new(1));
+        assert_eq!(ticket.step_count(), 1);
+        assert_eq!(ticket.steps(), plan.steps());
+        // Even a fresh projection was refreshed, because an attempt may only
+        // start from a state that was actually re-read.
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+    }
+
+    #[test]
+    fn authorize_execution_reports_a_verified_no_op_when_the_item_is_already_there() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        // The fresh preflight proves the concrete item already sits at the
+        // plan's destination, so the requested end state already holds.
+        queue_refresh(
+            &shared,
+            projection(
+                NOW,
+                vec![warlock_character()],
+                vec![instance("item-1", 1, warlock())],
+            ),
+        );
+
+        let authorization = service
+            .authorize_execution(&move_request, &plan, TTL, NOW)
+            .expect("authorization");
+
+        match authorization {
+            ExecutionAuthorization::VerifiedNoOp(evidence) => {
+                assert_eq!(evidence.plan_id(), &PlanId::new("plan-1"));
+                assert_eq!(evidence.attempted_count(), 0);
+                assert_eq!(evidence.unattempted_count(), 1);
+                assert_eq!(evidence.completed_count(), 0);
+                assert!(
+                    evidence
+                        .steps()
+                        .iter()
+                        .all(|record| record.outcome == StepOutcome::Unattempted)
+                );
+            }
+            other @ ExecutionAuthorization::Authorized(_) => {
+                panic!("expected a verified no-op, got {other:?}")
+            }
+        }
+        // No ticket exists on this path, so the executor has no authorization
+        // and cannot issue any transfer step: zero provider mutation calls.
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+    }
+
+    #[test]
+    fn authorize_execution_rejects_an_expired_plan_without_forcing_a_preflight() {
+        let shared = gateway();
+        let mut repository =
+            CompositeRepository::with_definitions(vec![definition(1, "Gjallarhorn")]);
+        repository.commit(fresh_vault_projection());
+        let mut service = service(&shared, repository);
+        let move_request = request(exact("item-1"), exact_character("warlock"));
+        let lifetime = PlanLifetime::new(30).expect("valid lifetime");
+        let plan = service
+            .plan_move(&move_request, lifetime, TTL, NOW)
+            .expect("plan");
+        let later = Timestamp::new(NOW.seconds() + 30);
+
+        let error = service
+            .authorize_execution(&move_request, &plan, TTL, later)
+            .expect_err("expired plan");
+
+        assert_eq!(error, MutationError::Expired);
+        assert_eq!(error.category(), ErrorCategory::StaleState);
+        // Expiry needs no provider read, so the gate rejects it before the
+        // forced refresh: not one membership or inventory call is spent.
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+    }
+
+    #[test]
+    fn authorize_execution_rejects_a_plan_whose_projection_changed_away() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        queue_refresh(
+            &shared,
+            projection(
+                NOW,
+                vec![
+                    warlock_character(),
+                    character("hunter", Some("Hunter"), None),
+                ],
+                vec![instance("item-1", 1, hunter())],
+            ),
+        );
+
+        let error = service
+            .authorize_execution(&move_request, &plan, TTL, NOW)
+            .expect_err("changed projection");
+
+        assert_eq!(error, MutationError::StaleRevision);
+        assert_eq!(error.category(), ErrorCategory::StaleState);
+    }
+
+    #[test]
+    fn authorize_execution_rejects_a_request_for_another_membership_without_a_preflight() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        let mut other = move_request.clone();
+        other.membership = destiny_core::MembershipId::new("99999999999999999");
+
+        let error = service
+            .authorize_execution(&other, &plan, TTL, NOW)
+            .expect_err("wrong membership");
+
+        assert_eq!(error, MutationError::WrongMembership);
+        assert_eq!(error.category(), ErrorCategory::StaleState);
+        // The plan already binds a different membership, so the gate rejects the
+        // request before the forced refresh touches the provider.
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+    }
+
+    #[test]
+    fn authorize_execution_rejects_a_request_for_a_different_item() {
+        let shared = gateway();
+        let mut repository =
+            CompositeRepository::with_definitions(vec![definition(1, "Gjallarhorn")]);
+        let committed = projection(
+            fresh_checked_at(),
+            vec![warlock_character()],
+            vec![
+                instance("item-1", 1, ItemLocation::Vault),
+                instance("item-2", 2, ItemLocation::Vault),
+            ],
+        );
+        repository.commit(committed.clone());
+        let mut service = service(&shared, repository);
+        let plan = service
+            .plan_move(
+                &request(exact("item-1"), exact_character("warlock")),
+                LIFETIME,
+                TTL,
+                NOW,
+            )
+            .expect("plan");
+        queue_refresh(&shared, committed);
+
+        let error = service
+            .authorize_execution(
+                &request(exact("item-2"), exact_character("warlock")),
+                &plan,
+                TTL,
+                NOW,
+            )
+            .expect_err("wrong item");
+
+        assert_eq!(error, MutationError::WrongItem);
+        assert_eq!(error.category(), ErrorCategory::StaleState);
+    }
+
+    #[test]
+    fn authorize_execution_rejects_absent_intent_before_any_side_effect() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        let mut unauthorized = move_request.clone();
+        unauthorized.intent = MoveIntentAuthorization::Absent;
+
+        let error = service
+            .authorize_execution(&unauthorized, &plan, TTL, NOW)
+            .expect_err("absent intent");
+
+        assert_eq!(error, MutationError::MissingIntent);
+        assert_eq!(error.category(), ErrorCategory::AuthorizationRequired);
+        // Intent is validated before the forced refresh: no provider call, no
+        // projection read, and no attempt.
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+    }
+
+    #[test]
+    fn authorize_execution_reports_a_vanished_plan_item() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        let mut mutated = plan.clone();
+        mutated.item = item_id("vanished");
+        queue_refresh(&shared, fresh_vault_projection());
+
+        let error = service
+            .authorize_execution(&move_request, &mutated, TTL, NOW)
+            .expect_err("vanished item");
+
+        assert_eq!(error, MutationError::MissingResolution);
+    }
+
+    #[test]
+    fn execute_move_issues_a_direct_step_in_order_and_records_completion() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        queue_refresh(&shared, fresh_vault_projection());
+        let ticket = authorized_ticket(&mut service, &move_request, &plan);
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Transferred));
+
+        let evidence = service
+            .execute_move(&mut transfer, &plan, ticket)
+            .expect("execution");
+
+        assert!(evidence.is_complete());
+        assert!(!evidence.is_partial());
+        assert_eq!(evidence.attempted_count(), 1);
+        assert_eq!(evidence.completed_count(), 1);
+        assert_eq!(evidence.unattempted_count(), 0);
+        assert_eq!(evidence.stop_outcome(), None);
+        assert_eq!(evidence.next_ordinal(), None);
+        assert_eq!(transfer.calls(), 1);
+
+        let issued = transfer.requests().first().expect("one request");
+        assert_eq!(issued.membership().membership_id(), &membership_id());
+        assert_eq!(
+            issued.membership().membership_type(),
+            destiny_core::MembershipType::new(3)
+        );
+        assert_eq!(issued.item(), &item_id("item-1"));
+        assert_eq!(issued.item_hash(), ItemHash::new(1));
+        assert_eq!(issued.quantity(), 1);
+        assert_eq!(issued.from(), &ItemLocation::Vault);
+        assert_eq!(issued.to(), &warlock());
+        assert!(!issued.to_vault());
+    }
+
+    #[test]
+    fn execute_move_routes_a_character_to_character_move_through_the_vault_in_order() {
+        let (_shared, mut service, move_request, plan) = vault_mediated_service_with_plan();
+        let ticket = authorized_ticket(&mut service, &move_request, &plan);
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Transferred));
+        transfer.queue(Ok(TransferOutcome::Transferred));
+
+        let evidence = service
+            .execute_move(&mut transfer, &plan, ticket)
+            .expect("execution");
+
+        assert!(evidence.is_complete());
+        assert_eq!(evidence.attempted_count(), 2);
+        assert_eq!(evidence.completed_count(), 2);
+        assert_eq!(transfer.calls(), 2);
+        assert_eq!(plan.step_count(), 2);
+        let first = transfer.requests().first().expect("first request");
+        let second = transfer.requests().get(1).expect("second request");
+        // Exactly the plan's ordered steps: character -> Vault -> character.
+        assert_eq!(first.from(), &warlock());
+        assert_eq!(first.to(), &ItemLocation::Vault);
+        assert_eq!(second.from(), &ItemLocation::Vault);
+        assert_eq!(second.to(), &hunter());
+    }
+
+    #[test]
+    fn execute_move_stops_after_a_first_step_refusal_without_issuing_the_next_step() {
+        let (_shared, mut service, move_request, plan) = vault_mediated_service_with_plan();
+        let ticket = authorized_ticket(&mut service, &move_request, &plan);
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Rejected(
+            TransferRejection::NotTransferable,
+        )));
+        // A second outcome is queued to prove the executor never reaches it.
+        transfer.queue(Ok(TransferOutcome::Transferred));
+
+        let evidence = service
+            .execute_move(&mut transfer, &plan, ticket)
+            .expect("execution");
+
+        assert_eq!(transfer.calls(), 1);
+        assert_eq!(evidence.attempted_count(), 1);
+        assert_eq!(evidence.completed_count(), 0);
+        assert_eq!(evidence.unattempted_count(), 1);
+        assert!(!evidence.is_partial());
+        assert_eq!(
+            evidence.stop_outcome(),
+            Some(StepOutcome::Rejected(TransferRejection::NotTransferable))
+        );
+        assert_eq!(evidence.next_ordinal(), Some(2));
+    }
+
+    #[test]
+    fn execute_move_reports_partial_completion_when_a_later_step_fails() {
+        let (_shared, mut service, move_request, plan) = vault_mediated_service_with_plan();
+        let ticket = authorized_ticket(&mut service, &move_request, &plan);
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Transferred));
+        transfer.queue(Ok(TransferOutcome::Rejected(
+            TransferRejection::DestinationFull,
+        )));
+
+        let evidence = service
+            .execute_move(&mut transfer, &plan, ticket)
+            .expect("execution");
+
+        assert!(evidence.is_partial());
+        assert!(!evidence.is_complete());
+        assert_eq!(evidence.attempted_count(), 2);
+        assert_eq!(evidence.completed_count(), 1);
+        assert_eq!(evidence.unattempted_count(), 0);
+        assert_eq!(
+            evidence.stop_outcome(),
+            Some(StepOutcome::Rejected(TransferRejection::DestinationFull))
+        );
+        assert_eq!(transfer.calls(), 2);
+    }
+
+    #[test]
+    fn execute_move_records_post_dispatch_uncertainty_as_typed_evidence() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        queue_refresh(&shared, fresh_vault_projection());
+        let ticket = authorized_ticket(&mut service, &move_request, &plan);
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Uncertain));
+
+        let evidence = service
+            .execute_move(&mut transfer, &plan, ticket)
+            .expect("execution");
+
+        assert_eq!(transfer.calls(), 1);
+        assert_eq!(evidence.attempted_count(), 1);
+        assert_eq!(evidence.completed_count(), 0);
+        assert!(!evidence.is_partial());
+        assert_eq!(evidence.stop_outcome(), Some(StepOutcome::Uncertain));
+        assert!(evidence.stop_outcome().expect("stop").is_uncertain());
+    }
+
+    #[test]
+    fn execute_move_records_a_transient_step_outcome() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        queue_refresh(&shared, fresh_vault_projection());
+        let ticket = authorized_ticket(&mut service, &move_request, &plan);
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Transient));
+
+        let evidence = service
+            .execute_move(&mut transfer, &plan, ticket)
+            .expect("execution");
+
+        assert_eq!(evidence.stop_outcome(), Some(StepOutcome::Transient));
+        assert!(!evidence.stop_outcome().expect("stop").is_uncertain());
+        assert_eq!(transfer.calls(), 1);
+    }
+
+    #[test]
+    fn execute_move_preserves_a_pre_dispatch_provider_error() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        queue_refresh(&shared, fresh_vault_projection());
+        let ticket = authorized_ticket(&mut service, &move_request, &plan);
+        let mut transfer = QueuedTransferGateway::new();
+        // An error means no provider mutation could have occurred, so it is
+        // preserved rather than recorded as a step outcome.
+        transfer.queue(Err(AppError::new(ErrorCategory::ProviderUnavailable)));
+
+        let failure = service
+            .execute_move(&mut transfer, &plan, ticket)
+            .expect_err("pre-dispatch provider error");
+
+        assert_eq!(
+            failure.error(),
+            MutationError::Application(ErrorCategory::ProviderUnavailable)
+        );
+        assert_eq!(
+            failure.error().category(),
+            ErrorCategory::ProviderUnavailable
+        );
+        // The first step failed before reaching the provider, so the evidence
+        // honestly reports no remote mutation and no post-action refresh.
+        assert_eq!(failure.evidence().attempted_count(), 0);
+        assert_eq!(failure.evidence().completed_count(), 0);
+        assert!(!failure.requires_post_action_refresh());
+        assert_eq!(transfer.calls(), 1);
+        let rendered = format!("{} {:?}", failure.error(), failure.error());
+        for secret in ["item-1", MEMBERSHIP_IDENTIFIER, "warlock"] {
+            assert!(!rendered.contains(secret), "diagnostic leaked {secret}");
+        }
+    }
+
+    #[test]
+    fn execute_move_preserves_first_step_evidence_when_a_later_step_fails_before_dispatch() {
+        let (_shared, mut service, move_request, plan) = vault_mediated_service_with_plan();
+        let ticket = authorized_ticket(&mut service, &move_request, &plan);
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Transferred));
+        // The second step fails before dispatch, so the first step's applied
+        // effect must not be dropped from the failure record.
+        transfer.queue(Err(AppError::new(ErrorCategory::ProviderUnavailable)));
+
+        let failure: ExecutionFailure = service
+            .execute_move(&mut transfer, &plan, ticket)
+            .expect_err("second-step pre-dispatch failure");
+
+        assert_eq!(
+            failure.error(),
+            MutationError::Application(ErrorCategory::ProviderUnavailable)
+        );
+        assert_eq!(transfer.calls(), 2);
+        assert_eq!(failure.evidence().attempted_count(), 1);
+        assert_eq!(failure.evidence().completed_count(), 1);
+        assert_eq!(failure.evidence().unattempted_count(), 1);
+        assert!(failure.evidence().is_partial());
+        assert_eq!(failure.evidence().plan_id(), &PlanId::new("plan-1"));
+        // The first step reached the provider, so DTE-004 must refresh before
+        // deciding anything about the item's location.
+        assert!(failure.requires_post_action_refresh());
+    }
+
+    #[test]
+    fn execute_move_fails_closed_when_the_ticket_does_not_match_the_plan() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        queue_refresh(&shared, fresh_vault_projection());
+        let ticket = authorized_ticket(&mut service, &move_request, &plan);
+        let mut mutated = plan.clone();
+        mutated.plan_id = PlanId::new("other-plan");
+        let mut transfer = QueuedTransferGateway::new();
+
+        let failure = service
+            .execute_move(&mut transfer, &mutated, ticket)
+            .expect_err("mismatched ticket");
+
+        assert_eq!(failure.error(), MutationError::InvalidPlan);
+        assert_eq!(failure.evidence().attempted_count(), 0);
+        assert!(!failure.requires_post_action_refresh());
+        assert_eq!(transfer.calls(), 0);
+    }
+
+    #[test]
+    fn execute_move_reports_a_missing_item_resolution_without_a_provider_call() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        queue_refresh(&shared, fresh_vault_projection());
+        let ticket = authorized_ticket(&mut service, &move_request, &plan);
+        // The item vanishes from the search projection after the ticket was
+        // minted, so the executor cannot build a request for it.
+        service.repository_mut().seed_instances(Vec::new());
+        let mut transfer = QueuedTransferGateway::new();
+
+        let failure = service
+            .execute_move(&mut transfer, &plan, ticket)
+            .expect_err("missing item");
+
+        assert_eq!(failure.error(), MutationError::MissingResolution);
+        assert_eq!(failure.evidence().attempted_count(), 0);
+        assert_eq!(transfer.calls(), 0);
+    }
+
+    #[test]
+    fn execute_move_takes_the_ticket_by_value() {
+        // The entry point signature takes `ExecutionTicket` by value, not by
+        // reference. This function item pins the exact shape at compile time, so
+        // a future borrowing or replayable signature fails to compile here. The
+        // ticket type is not `Clone`, which is what makes a second attempt from
+        // the same authorization impossible rather than merely discouraged.
+        type EntryPoint = fn(
+            &mut Service,
+            &mut QueuedTransferGateway,
+            &MovePlan,
+            ExecutionTicket,
+        ) -> Result<ExecutionEvidence, ExecutionFailure>;
+        let _: EntryPoint = Service::execute_move::<QueuedTransferGateway>;
     }
 }
