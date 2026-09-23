@@ -60,16 +60,16 @@ WU-009 and WU-010 provide the safe shared mutation contracts and execution behav
   - Commit evidence: `0dff3c8` (`chore: integrate Destiny mutation foundation`).
   - Review evidence: independent verification found no blocker/high/medium findings; both workspace test matrices passed (578 default, 579 all-features), checks/clippy/fmt/diff clean.
 
-- [ ] **DMM-002 — Add bounded MCP mutation contracts and service seam** *(in progress)*
+- [x] **DMM-002 — Add bounded MCP mutation contracts and service seam**
   - Add semantic move arguments for an instance ID or search text plus a Vault/exact-character/character-label destination.
   - Add bounded sanitized output views for effects, step evidence, final locations, and typed failures.
   - Compose planner/executor behavior behind an adapter-free MCP service seam and derive membership internally.
   - Acceptance: one invocation performs plan → fresh preflight → ordered execution → refresh → verification; missing/ambiguous/stale state fails closed; partial/uncertain outcomes remain honest; no secrets or raw provider payloads cross MCP.
   - Checks: focused MCP unit/contract tests, manifest dependency-boundary test, formatting, clippy, `git diff --check`.
-  - Commit evidence: pending.
-  - Review evidence: pending.
+  - Commit evidence: `8410cb1` (`feat: add MCP mutation service contract`).
+  - Review evidence: independent verification found no blocker/high/medium findings; MCP default/all-feature tests passed (54/55), app tests 31 passed, fmt/check/clippy/diff clean. One accepted low note: the current zero-attempt `ExecutionFailure` invariant is enforced app-side rather than pinned at the MCP mapping boundary.
 
-- [ ] **DMM-003 — Expose `move_item` through RMCP stdio**
+- [ ] **DMM-003 — Expose `move_item` through RMCP stdio** *(in progress)*
   - Register `move_item` when the mutation seam is configured while retaining the three existing read tools.
   - Dispatch one `tools/call` directly through the mutation seam under existing serialization and bounded protocol errors.
   - Acceptance: discovery exposes four tools in product composition; read-only construction remains compatible; one call completes the semantic move without an approval artifact or second tool call.
@@ -116,8 +116,11 @@ WU-009 and WU-010 provide the safe shared mutation contracts and execution behav
 - DMM-001 completed in merge commit `0dff3c8`; WU-010 `a167540` is integrated onto WU-011 `8fe817b` with complete-credential semantics preserved.
 - DMM-001 independent verification: no blocker/high/medium findings; 578 default and 579 all-feature workspace tests passed; fmt/check/clippy/diff clean.
 - One harmless orchestration incident occurred: an initial `git add` ran in the parent worktree and failed before mutation because the path was absent; diagnosis confirmed WU-012 merge/index state remained intact. Subsequent commands used `git -C /home/yoryo/apps/ghostlink-wu-012`.
-- DMM-002 is in progress.
+- DMM-002 completed in commit `8410cb1` with bounded closed input schemas, sanitized typed output views, internal membership derivation, and the adapter-free composed planner/executor seam.
+- DMM-002 independent verification: no blocker/high/medium findings; 54 default and 55 all-feature MCP tests plus 31 app tests passed; fmt/check/clippy/diff clean.
+- Accepted low verification note: MCP currently maps the app's guaranteed zero-attempt `Err(ExecutionFailure)` without carrying evidence; app-side contracts prove that path has no attempted-step evidence today. Re-audit at DMM-005 if the shared contract changes.
+- DMM-003 is in progress.
 
 ## Next step
 
-Implement bounded MCP mutation contracts and the adapter-free application service seam for DMM-002.
+Register and dispatch `move_item` through the RMCP stdio server while preserving read-only construction.
