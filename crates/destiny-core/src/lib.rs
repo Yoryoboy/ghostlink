@@ -23,8 +23,11 @@ pub use ids::{
     MembershipType, PerkHash, PlanId, SyncRevision,
 };
 pub use mutation::{
-    MoveIntent, MovePlan, MovePlanValidation, MutationPolicyInput, MutationPolicyOutcome,
-    evaluate_mutation,
+    DestinationSelector, IntentAuthorizationOutcome, ItemSelector, MAX_MOVE_STEPS,
+    MAX_PLAN_LIFETIME_SECONDS, MoveEffects, MoveIntent, MoveIntentAuthorization, MovePlan,
+    MovePlanValidation, MoveRequest, MoveStep, MutationPolicyInput, MutationPolicyOutcome,
+    PlanBinding, PlanLifetime, PlanLifetimeValidation, character_destination, destination_matches,
+    evaluate_mutation, plan_steps, resolve_destination,
 };
 pub use ports::{
     AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,

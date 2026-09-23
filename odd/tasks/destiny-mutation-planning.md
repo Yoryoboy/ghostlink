@@ -61,10 +61,12 @@ WU-009 is the safety boundary between semantic user intent and WU-010 remote exe
   - Rollback: remove only this tracker and its Engram mirror before source implementation.
   - Evidence: commit `4d3fbac` (`chore: start Destiny mutation planning`).
 
-- [ ] **DMP-002 — Complete provider-neutral move contracts and pure policy**
-  - Outcome: validated selectors, intent authorization, step/effect records, bounded lifetime policy, complete plan binding, and exhaustive pure tests.
-  - Check: focused `destiny-core` mutation tests, fmt, clippy, and diff check.
+- [x] **DMP-002 — Complete provider-neutral move contracts and pure policy**
+  - Outcome: added validated exact/semantic item selectors, Vault/exact/semantic destination selectors, explicit/absent/ambiguous intent authorization, deterministic direct or two-step Vault-mediated effects, a caller-selected lifetime bounded to 300 seconds, overflow-safe expiry, and complete plan binding with distinct missing/ambiguous destination outcomes.
+  - Check: focused mutation tests 16 passed; complete core tests 47 passed; focused and workspace all-feature clippy passed with `-D warnings`; workspace all-target/all-feature check, fmt, and diff check passed. Independent high-risk verification found no blocker/high/medium issue; one low documentation overstatement was corrected. LSP retained stale boolean/type findings contradicted by rustc tests and clippy.
+  - Review workload: 893 additions and 97 deletions across the cohesive contracts, pure policy, and 16 tests; splitting tests from behavior would violate the work-unit rule.
   - Rollback: revert only mutation contract/policy changes and core exports.
+  - Evidence: pending work-unit commit.
 
 - [ ] **DMP-003 — Implement semantic planning service**
   - Outcome: ordinary freshness preparation, exact or semantic item resolution, destination resolution, deterministic direct/Vault-mediated plans, and no remote mutation side effect.
