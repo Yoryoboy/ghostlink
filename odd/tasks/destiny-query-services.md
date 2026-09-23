@@ -87,15 +87,15 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
   - Rollback: remove `queries.rs` and the two `lib.rs` exports without changing sync, storage, or core query contracts.
   - Evidence: commit `6015749` (`feat: orchestrate inventory queries`).
 
-- [ ] **DQS-005 — Prove the offline SQLite query journey** *(in progress)*
-  - Route: delegated integration-harness writer plus independent read-only verification.
-  - Outcome: compose real `SqliteStore`, real query services, deterministic fixtures, and only the existing injected gateway/clock seams; prove durable list/search/inspect, stale-triggered refresh, ambiguity, reopen, bounded results, and secret absence.
-  - Likely surfaces: a new focused integration test under `crates/destiny-adapters/tests/` and only narrowly required sanitized fixture additions.
-  - Check: focused integration tests plus the complete effective check set.
-  - Rollback: remove only the query journey test/fixture additions; production behavior remains intact.
-  - Evidence: pending.
+- [x] **DQS-005 — Prove the offline SQLite query journey**
+  - Route: delegated one-file integration-harness writer plus independent high-risk verifier because native assessment was unassessable for the intentional untracked test target. One low fixture-ordering note was corrected by selecting the changed item through its stable instance ID.
+  - Outcome: added nine offline integration tests composing the real `QueryService`, real `ProfileSyncService`, real `BungieProfileGateway`, and real file-backed `SqliteStore`; only the existing scripted transport and injected clock seams are fake. The journey proves list/search/inspect, name/type/tag/perk/character/hash filtering, bounded candidates, identity distinction, fresh skip, stale refresh, revision retention/advance, reopen durability, failure preservation, schema refusal of mis-sourced durable rows, and DB/sidecar secrecy with a positive control.
+  - Check: focused journey 9 passed; workspace default and all-feature tests each reported 363 passed across 10 suites; workspace all-target/all-feature check; default/all-feature all-target clippy with `-D warnings`; fmt; CLI/MCP help; and diff check all passed. Independent verification reconciled fixture counts and every assertion against production decoder/sync/query/storage behavior with no blocker/high/medium finding. Parent spot check reran the changed-refresh scenario successfully. LSP emitted stale serde-json index/slice-coercion diagnostics contradicted by rustc and clippy.
+  - Review workload: 1,120 additions in one cohesive integration target with a shared harness and nine non-duplicated scenarios; splitting would duplicate the harness or separate tests from the behavior they prove.
+  - Rollback: remove `crates/destiny-adapters/tests/query_journey.rs`; no production or schema behavior changes.
+  - Evidence: commit `b002325` (`test: prove offline inventory query journey`).
 
-- [ ] **DQS-006 — Verify and close WU-007**
+- [ ] **DQS-006 — Verify and close WU-007** *(in progress)*
   - Route: delegated independent full-range verification; parent reconciles tracker, mirror, and closure.
   - Outcome: verify the entire WU-007 range, record every check and manual limitation, close the feature, and identify WU-008/WU-011 as the next adapter work.
   - Check: complete effective set; committed-range inspection; clean status; no direct provider or secret-bearing boundary in query outputs.
@@ -127,7 +127,8 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
 - DQS-002 contracts and fake parity are complete in `053fe2a`; independent verification passed after bounding caller-controlled hash filters and completing the public exports, with no blocker/high/medium finding remaining.
 - DQS-003 durable SQLite search is complete in `00e6bef`; the corrected source-table design passed independent verification with no blocker/high/medium finding.
 - DQS-004 application query orchestration is complete in `6015749`; independent verification passed with no blocker/high/medium finding.
+- DQS-005 offline SQLite query journey is complete in `b002325`; all effective checks passed and independent verification found no blocker/high/medium issue.
 
 ## Next step
 
-Delegate DQS-005 to prove the complete offline query journey over real SQLite and deterministic provider seams.
+Run DQS-006 independent full-range verification from `8a2250e`, reconcile closure evidence, and close WU-007.
