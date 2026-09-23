@@ -381,6 +381,7 @@ dependencies = [
  "apple-native-keyring-store",
  "dbus-secret-service-keyring-store",
  "destiny-app",
+ "destiny-cli",
  "destiny-core",
  "keyring-core",
  "reqwest",

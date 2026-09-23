@@ -44,7 +44,12 @@
 //!    and inspect results with no gateway call;
 //! 8. a provider failure that preserves the prior projection and leaks no
 //!    credential, raw-payload, or membership sentinel into errors or disk; and
-//! 9. the durable schema's refusal to mis-source a profile projection.
+//! 9. the durable schema's refusal to mis-source a profile projection;
+//! 10. the real CLI runner rendering list/search/inspect in both human and
+//!     JSON modes, including fresh reuse, a stale refresh, explicit multiple
+//!     candidates, a typed `item_not_found`, and secret-free streams; and
+//! 11. a decoded provider failure reaching the process boundary as a sanitized
+//!     typed outcome on stderr only.
 //!
 //! [`BungieProfileGateway`]: destiny_adapters::profile_gateway::BungieProfileGateway
 //! [`SqliteStore`]: destiny_adapters::sqlite::SqliteStore
@@ -61,6 +66,7 @@ use destiny_adapters::profile_gateway::{
 };
 use destiny_adapters::sqlite::SqliteStore;
 use destiny_app::{ProfileSyncService, QueryService, SearchInventoryRequest};
+use destiny_cli::{ProcessOutput, ReadFreshness};
 use destiny_core::{
     AccessCredential, AccessCredentialMetadata, AppError, CharacterId, Clock, CredentialMaterial,
     Dataset, DefinitionReplacementInput, DefinitionRepository, DefinitionSearchQuery,
@@ -538,6 +544,40 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
         && haystack
             .windows(needle.len())
             .any(|window| window == needle)
+}
+
+/// The freshness inputs the CLI forwards verbatim to the shared service.
+fn cli_freshness(now: Timestamp) -> ReadFreshness {
+    ReadFreshness { policy: TTL, now }
+}
+
+/// Builds one process argument vector with the binary name first.
+fn cli_argv(arguments: &[&str]) -> Vec<String> {
+    let mut argv = vec!["destiny-cli".to_string()];
+    argv.extend(arguments.iter().map(|argument| (*argument).to_string()));
+    argv
+}
+
+/// Drives the real CLI runner over the composed service, exactly as the binary
+/// process boundary does, and returns the fully rendered process result.
+fn cli(service: &mut Service, arguments: &[&str], now: Timestamp) -> ProcessOutput {
+    destiny_cli::run(service, cli_argv(arguments), cli_freshness(now))
+}
+
+/// Asserts that no credential, raw payload marker, or membership identifier
+/// reached a rendered stream.
+fn assert_no_secrets(rendered: &str) {
+    for sentinel in [
+        API_KEY_SENTINEL,
+        BEARER_SENTINEL,
+        PAYLOAD_SENTINEL,
+        MEMBERSHIP_ID,
+    ] {
+        assert!(
+            !rendered.contains(sentinel),
+            "rendered output leaked {sentinel}"
+        );
+    }
 }
 
 /// Scenario 1: an empty store plus one ordinary `list_characters` query
@@ -1117,4 +1157,243 @@ fn the_durable_schema_refuses_a_mis_sourced_profile_projection() {
     assert_eq!(result.metadata.sync.revision, SyncRevision::new(1));
     assert_eq!(result.metadata.freshness, FreshnessStatus::Fresh);
     assert_eq!(journey.request_count(), requests_before);
+}
+
+/// CLI journey: the real CLI runner renders the committed character projection
+/// in both human and JSON modes, reuses the fresh projection without a gateway
+/// call, and leaks no credential, payload, or membership sentinel.
+#[test]
+fn cli_list_characters_renders_human_and_json_and_reuses_the_fresh_projection() {
+    let journey = Journey::new();
+    journey.at(NOW);
+    let mut service = journey.service();
+    seed(&journey, &mut service);
+    let requests_before = journey.request_count();
+
+    let human = cli(&mut service, &["list-characters"], NOW);
+    assert_eq!(human.exit_code, 0);
+    assert!(human.stderr.is_empty(), "success must not write to stderr");
+    assert!(human.stdout.starts_with("characters: 2\n"));
+    assert!(human.stdout.contains("id: 900000000000000001"));
+    assert!(human.stdout.contains("class: Warlock"));
+    assert!(human.stdout.contains("id: 900000000000000002"));
+    assert!(human.stdout.ends_with(&format!(
+        "revision: 1\nchecked_at: {}\nfreshness: fresh\n",
+        NOW.seconds()
+    )));
+    assert!(
+        human
+            .stdout
+            .chars()
+            .all(|character| character == '\n' || !character.is_control()),
+        "human output must not carry raw control characters"
+    );
+    assert_no_secrets(&human.stdout);
+
+    let json = cli(&mut service, &["--json", "list-characters"], NOW);
+    assert_eq!(json.exit_code, 0);
+    assert!(json.stderr.is_empty());
+    let value: Value = serde_json::from_str(json.stdout.trim()).expect("one JSON object");
+    assert_eq!(value["kind"].as_str(), Some("character_list"));
+    assert_eq!(value["metadata"]["revision"].as_i64(), Some(1));
+    assert_eq!(value["metadata"]["source"].as_str(), Some("profile"));
+    assert_eq!(value["metadata"]["freshness"].as_str(), Some("fresh"));
+    assert_eq!(value["characters"].as_array().expect("characters").len(), 2);
+    assert_no_secrets(&json.stdout);
+
+    // Both reads reused the fresh projection: the gateway never ran again.
+    assert_eq!(journey.request_count(), requests_before);
+}
+
+/// CLI journey: the real CLI search reports bounded, deterministic definition
+/// candidates and pairs instance hits with their exact definition, never
+/// collapsing multiple candidates into one guessed match.
+#[test]
+fn cli_search_inventory_reports_bounded_candidates_and_paired_hits() {
+    let journey = Journey::new();
+    journey.at(NOW);
+    let mut service = journey.service();
+    seed(&journey, &mut service);
+
+    let human = cli(
+        &mut service,
+        &["search-inventory", "--text", "gjallar"],
+        NOW,
+    );
+    assert_eq!(human.exit_code, 0);
+    assert!(human.stderr.is_empty());
+    assert!(human.stdout.starts_with("candidates: 2\n"));
+    assert!(human.stdout.contains("hash: 1001; name: Gjallarhorn"));
+    assert!(human.stdout.contains("hash: 1003; name: Gjallarswift"));
+    assert!(human.stdout.contains("hits: 0\n"));
+    assert_no_secrets(&human.stdout);
+
+    // Two "sword" definitions stay explicit candidates with no instance hit.
+    let ambiguous = cli(
+        &mut service,
+        &["--json", "search-inventory", "--text", "sword"],
+        NOW,
+    );
+    assert_eq!(ambiguous.exit_code, 0);
+    let value: Value = serde_json::from_str(ambiguous.stdout.trim()).expect("one JSON object");
+    assert_eq!(value["kind"].as_str(), Some("inventory_search"));
+    let hashes: Vec<i64> = value["candidates"]
+        .as_array()
+        .expect("candidates")
+        .iter()
+        .map(|candidate| candidate["hash"].as_i64().expect("hash"))
+        .collect();
+    assert_eq!(hashes, [2001, 2003]);
+    assert!(value["hits"].as_array().expect("hits").is_empty());
+
+    // The validated shared limit bounds the candidate list.
+    let bounded = cli(
+        &mut service,
+        &["search-inventory", "--text", "sword", "--limit", "1"],
+        NOW,
+    );
+    assert!(bounded.stdout.starts_with("candidates: 1\n"));
+    assert!(bounded.stdout.contains("hash: 2001; name: Sword of Crota"));
+    assert!(!bounded.stdout.contains("hash: 2003"));
+
+    // An instance filter pairs the concrete instance with its exact definition.
+    let paired = cli(
+        &mut service,
+        &[
+            "--json",
+            "search-inventory",
+            "--text",
+            "gjallar",
+            "--item-hash",
+            "1001",
+        ],
+        NOW,
+    );
+    assert_eq!(paired.exit_code, 0);
+    let value: Value = serde_json::from_str(paired.stdout.trim()).expect("one JSON object");
+    let hits = value["hits"].as_array().expect("hits");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(
+        hits[0]["instance"]["instance_id"].as_str(),
+        Some(INSTANCE_VAULT)
+    );
+    assert_eq!(hits[0]["instance"]["item_hash"].as_i64(), Some(1001));
+    assert_eq!(hits[0]["definition"]["hash"].as_i64(), Some(1001));
+    assert_no_secrets(&paired.stdout);
+}
+
+/// CLI journey: the real CLI inspection keeps definition and instance identity
+/// distinct, renders both modes, and reports a missing instance as the typed
+/// `item_not_found`/32 outcome with an empty stdout.
+#[test]
+fn cli_inspect_item_renders_exact_identity_and_a_typed_missing_item() {
+    let journey = Journey::new();
+    journey.at(NOW);
+    let mut service = journey.service();
+    seed(&journey, &mut service);
+
+    let json = cli(
+        &mut service,
+        &["--json", "inspect-item", INSTANCE_VAULT],
+        NOW,
+    );
+    assert_eq!(json.exit_code, 0);
+    assert!(json.stderr.is_empty());
+    let value: Value = serde_json::from_str(json.stdout.trim()).expect("one JSON object");
+    assert_eq!(value["kind"].as_str(), Some("item_inspection"));
+    assert_eq!(value["definition"]["hash"].as_i64(), Some(1001));
+    assert_eq!(
+        value["instance"]["instance_id"].as_str(),
+        Some(INSTANCE_VAULT)
+    );
+    assert_eq!(value["instance"]["item_hash"].as_i64(), Some(1001));
+    assert_eq!(value["metadata"]["freshness"].as_str(), Some("fresh"));
+    assert_no_secrets(&json.stdout);
+
+    let human = cli(&mut service, &["inspect-item", INSTANCE_VAULT], NOW);
+    assert_eq!(human.exit_code, 0);
+    assert!(human.stderr.is_empty());
+    assert!(
+        human
+            .stdout
+            .starts_with(&format!("instance: {INSTANCE_VAULT}\n"))
+    );
+    assert!(human.stdout.contains("  item_hash: 1001\n"));
+    assert!(human.stdout.contains("  location: vault\n"));
+
+    let missing = cli(&mut service, &["inspect-item", "700000000000000099"], NOW);
+    assert_eq!(missing.exit_code, 32);
+    assert!(
+        missing.stdout.is_empty(),
+        "a failure must not write to stdout"
+    );
+    assert_eq!(
+        missing.stderr,
+        "error: the requested item instance was not found\n"
+    );
+}
+
+/// CLI journey: a stale read refreshes the projection exactly once through the
+/// shared freshness policy and reports the advanced committed metadata.
+#[test]
+fn cli_stale_read_refreshes_once_and_reports_the_advanced_metadata() {
+    let journey = Journey::new();
+    journey.at(NOW);
+    let mut service = journey.service();
+    seed(&journey, &mut service);
+    let after_seed = journey.request_count();
+
+    let stale_now = Timestamp::new(NOW.seconds() + TTL.ttl_seconds + 1);
+    journey.at(stale_now);
+    journey.queue_membership();
+    journey.queue_profile(FIXTURE);
+
+    let output = cli(&mut service, &["list-characters"], stale_now);
+    assert_eq!(output.exit_code, 0);
+    assert!(output.stderr.is_empty());
+    assert_eq!(journey.request_count(), after_seed + 2);
+    assert!(output.stdout.ends_with(&format!(
+        "revision: 1\nchecked_at: {}\nfreshness: fresh\n",
+        stale_now.seconds()
+    )));
+}
+
+/// CLI journey: a decoded provider failure reaches the process boundary as a
+/// sanitized typed outcome on stderr only, with no raw payload, credential, or
+/// membership sentinel on either stream.
+#[test]
+fn cli_provider_failure_is_typed_and_sanitized_on_stderr_only() {
+    let journey = Journey::new();
+    journey.at(NOW);
+    let mut service = journey.service();
+    seed(&journey, &mut service);
+
+    let failure_now = Timestamp::new(NOW.seconds() + TTL.ttl_seconds + 1);
+    journey.at(failure_now);
+    journey.queue_membership();
+    journey.queue_profile(&sentinel_profile());
+
+    let json = cli(
+        &mut service,
+        &["--json", "search-inventory", "--text", "gjallar"],
+        failure_now,
+    );
+    assert_eq!(json.exit_code, 2);
+    assert!(json.stdout.is_empty(), "a failure must not write to stdout");
+    let value: Value = serde_json::from_str(json.stderr.trim()).expect("one JSON error object");
+    assert_eq!(value["error"]["code"].as_str(), Some("invalid_request"));
+    assert_no_secrets(&json.stderr);
+
+    // The same decoded failure renders as one sanitized human line.
+    journey.queue_membership();
+    journey.queue_profile(&sentinel_profile());
+    let human = cli(
+        &mut service,
+        &["search-inventory", "--text", "gjallar"],
+        failure_now,
+    );
+    assert_eq!(human.exit_code, 2);
+    assert!(human.stdout.is_empty());
+    assert!(human.stderr.starts_with("error: "));
+    assert_no_secrets(&human.stderr);
 }

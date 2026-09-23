@@ -219,6 +219,7 @@ fn binary_outcome(mode: OutputMode, startup: Result<(), destiny_app::AppError>) 
 fn json_mode(args: &[OsString]) -> OutputMode {
     if args
         .iter()
+        .take_while(|argument| argument.to_str() != Some("--"))
         .any(|argument| argument.to_str() == Some("--json"))
     {
         OutputMode::Json
@@ -439,6 +440,24 @@ mod tests {
             "{\"error\":{\"code\":\"invalid_request\",\"message\":\"the request arguments are invalid\"}}\n"
         );
         assert!(!output.stderr.contains(sentinel));
+        assert!(service.recorded().is_empty());
+    }
+
+    #[test]
+    fn json_after_the_option_terminator_does_not_select_json_error_mode() {
+        // `--json` after `--` is a positional value, not the global flag, so a
+        // rejected command line must still render the human error line. Detecting
+        // the flag past the terminator would silently switch the failure mode.
+        let mut service = RecordingService::new();
+        let output = run(
+            &mut service,
+            argv(&["list-characters", "--", "--json"]),
+            freshness(),
+        );
+
+        assert_eq!(output.exit_code, 2);
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
         assert!(service.recorded().is_empty());
     }
 

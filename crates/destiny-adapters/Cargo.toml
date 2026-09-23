@@ -14,6 +14,7 @@ url.workspace = true
 
 [dev-dependencies]
 destiny-app = { path = "../destiny-app", features = ["test-support"] }
+destiny-cli = { path = "../destiny-cli" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { workspace = true, features = ["keychain", "protected"] }

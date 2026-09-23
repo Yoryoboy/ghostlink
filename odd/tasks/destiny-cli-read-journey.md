@@ -64,7 +64,8 @@ The matrix is exhaustive over the current `ErrorCategory`; tests must fail when 
 - `crates/destiny-cli/Cargo.toml` — JSON/runtime test dependencies as required.
 - `crates/destiny-cli/src/lib.rs` plus focused modules under `src/` — parser, shared-service dispatch, rendering, and typed exits.
 - `crates/destiny-cli/src/main.rs` — minimal process boundary only.
-- `crates/destiny-cli/tests/` — offline fixture/read-journey integration and snapshots/assertions.
+- `crates/destiny-cli/tests/` — focused CLI-only integration when a standalone harness is sufficient.
+- `crates/destiny-adapters/Cargo.toml` and `crates/destiny-adapters/tests/query_journey.rs` — extend the existing real SQLite/gateway/query fixture harness through the CLI runner without duplicating its provider fixtures.
 - `README.md` — command/output examples and offline/manual boundary.
 
 No other crate or path is in scope unless a discovered compile-time requirement is recorded here before editing it.
@@ -92,16 +93,18 @@ No other crate or path is in scope unless a discovered compile-time requirement 
   - Runtime harness: a deterministic recording fake implements `QueryOperations`, records the exact request plus the freshness policy/time in call order, and returns canned shared records. Tests prove invalid clap input and invalid request bounds make zero service calls, valid list/search/inspect dispatch exactly once with the caller's policy/time, results retain shared metadata, and a missing inspection is the typed `item_not_found`/32 outcome.
   - Composition limitation: a production `QueryService` cannot yet be composed from public `destiny-app` foundations (`load_config` is crate-visible and no public function builds a service over the production adapters, which are not in `destiny-cli`'s dependency surface). No adapter or business logic was invented. `main.rs` is minimal: it calls the sanitized process boundary (`run_binary`), which keeps the sanitized startup diagnostic and reports the stable `unsupported_operation`/40 outcome for a read it cannot serve. `runner::tests::binary_boundary_documents_the_composition_limitation` records this boundary; DCR-004 wires the journey end-to-end with fixture services.
   - Rollback: remove the `runner` module and its tests, revert the `QueryOperations` trait and its re-export, and restore the minimal `main.rs`, while retaining the parser and render contracts.
-  - Evidence: pending DCR-003 commit (worktree uncommitted).
+  - Evidence: commit `28b09f2` (`feat: dispatch Destiny CLI reads`).
 
-- [ ] **DCR-004 — Prove the offline human and JSON journey**
-  - Outcome: integration-test list/search/inspect, fresh reuse, stale refresh, ambiguity, missing item, typed failures, stdout/stderr separation, bounds, and secret absence using deterministic fixtures; document user commands and manual browser/reauthorization boundary.
-  - Checks: focused integration suite and full workspace baseline.
-  - Runtime harness: execute the CLI application boundary end-to-end with fixture services in both human and JSON modes; no live Bungie account.
-  - Rollback: remove the integration target and README additions without affecting CLI contracts.
-  - Commit: Conventional Commit with tests/docs.
+- [x] **DCR-004 — Prove the offline human and JSON journey**
+  - Outcome: extended the existing real query journey in `crates/destiny-adapters/tests/query_journey.rs` with `destiny-cli` as a dev dependency and five focused tests that drive `destiny_cli::run` over the same real `QueryService`/`ProfileSyncService`/`BungieProfileGateway`/`SqliteStore` harness (scripted transport and clock, no duplicated provider fixtures). The journey covers human and JSON list/search/inspect, fresh reuse with no gateway call, a stale refresh exactly once with advanced metadata, explicit multiple candidates with no guessed instance, `--limit` bounding, a typed `item_not_found`/32 missing instance, paired definition/instance identity, stdout/stderr separation, a decoded provider failure rendered as the sanitized `invalid_request`/2 outcome, and credential/payload/membership sentinel absence on every stream. Added a `runner` unit test proving `--json` after `--` does not select JSON error mode. Documented the CLI syntax, output contract, and composition status in `README.md`.
+  - Checks: `cargo fmt --all -- --check` passed; `cargo check -p destiny-cli -p destiny-adapters --all-targets --all-features` finished clean; `cargo test -p destiny-adapters --test query_journey` 14 passed; `cargo test -p destiny-cli` 40 passed (39 pre-existing + the new `--`-terminator test); `cargo clippy -p destiny-cli -p destiny-adapters --all-targets --all-features -- -D warnings` finished with exit 0; `git diff --check` passed.
+  - Runtime harness: the real CLI runner executes over the composed real services with a scripted transport/clock; no live Bungie account or credential. The active lint pass reported `query_journey.rs`/`runner.rs` type diagnostics that rustc test compiles contradict (stale false positives on standard `&[&str; N]` unsizing, `serde_json::Value` indexing, and trait-object coercion); no code was rewritten to satisfy them.
+  - Composition limitation: normal production composition remains blocked/pending the authorized foundational composition root; the offline harness proves behavior and is not a live-success claim.
+  - Rollback: remove the five integration tests, the `destiny-cli` dev-dependency and its lockfile entry, the `runner` `--`-terminator test, and the README additions without affecting CLI contracts.
+  - Commit: pending (worktree uncommitted).
 
 - [ ] **DCR-005 — Verify and close WU-008**
+  - Status: open/blocked pending the DCR-004 commit and independent verification of the committed range.
   - Outcome: independently verify the committed feature range, record exact checks, workload, limitations, rollback boundary, and commit identities.
   - Checks: fmt; workspace check/clippy/tests default and all features; CLI/MCP help; focused CLI journey; `git diff --check`; clean status.
   - Runtime harness: documented deterministic read journey plus manual limitation for system-browser authorization.
