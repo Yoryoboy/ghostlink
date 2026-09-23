@@ -470,10 +470,17 @@ impl fmt::Debug for CredentialMaterial {
     }
 }
 
-/// Stores one opaque credential value without prescribing persistence or serialization.
+/// Stores one complete opaque access credential without prescribing persistence
+/// or serialization.
+///
+/// The port carries the whole [`AccessCredential`] — the opaque material *and*
+/// its expiry metadata — so a store can never silently discard the freshness
+/// information an adapter needs to revalidate the credential later. A store
+/// that cannot represent the expiry must fail closed instead of persisting the
+/// bare material; there is no material-only overload.
 pub trait CredentialStore {
-    fn save(&mut self, material: CredentialMaterial) -> Result<(), AppError>;
-    fn load(&self) -> Result<Option<CredentialMaterial>, AppError>;
+    fn save(&mut self, credential: AccessCredential) -> Result<(), AppError>;
+    fn load(&self) -> Result<Option<AccessCredential>, AppError>;
     fn delete(&mut self) -> Result<(), AppError>;
 }
 

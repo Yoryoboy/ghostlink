@@ -11,6 +11,7 @@ pub mod sync;
 pub mod test_support;
 
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
+pub use config::{MAX_READ_FRESHNESS_TTL_SECONDS, ReadApiKey, ReadRuntimeConfig};
 pub use manifest::{ManifestService, normalize_manifest};
 
 /// Presentation-safe shared contracts.
@@ -20,13 +21,15 @@ pub use manifest::{ManifestService, normalize_manifest};
 /// `destiny-core` directly and without re-deriving identity, freshness, or
 /// metadata concepts of its own.
 pub use destiny_core::{
-    AppError, BucketHash, Character, CharacterId, CharacterListResult, Dataset,
-    DefinitionSearchQuery, DefinitionVersion, ErrorCategory, FreshnessPolicy, FreshnessStatus,
-    InspectItemRequest, InstanceSearchQuery, InventorySearchHit, InventorySearchResult,
-    ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstance, ItemInstanceId,
-    ItemLocation, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS,
-    PerkHash, PerkSummary, QueryMetadata, Resolution, SearchTerm, SourceMarker, SyncMetadata,
-    SyncRevision, Timestamp,
+    AppError, BucketHash, Character, CharacterId, CharacterListResult, Clock, Dataset,
+    DefinitionReplacementInput, DefinitionRepository, DefinitionSearchQuery, DefinitionVersion,
+    DestinyMembership, ErrorCategory, FreshnessPolicy, FreshnessStatus, InspectItemRequest,
+    InstanceSearchQuery, InventoryRepository, InventorySearchHit, InventorySearchResult,
+    InventorySnapshot, InventorySnapshotInput, ItemDefinition, ItemHash, ItemHashFilter,
+    ItemInspection, ItemInstance, ItemInstanceId, ItemLocation, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT,
+    MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS, MembershipId, MembershipType, PerkHash, PerkSummary,
+    ProfileGateway, QueryMetadata, Resolution, SearchRepository, SearchTerm, SourceMarker,
+    SyncMetadata, SyncRevision, Timestamp,
 };
 pub use queries::{QueryOperations, QueryService, SearchInventoryRequest};
 pub use sync::ProfileSyncService;
