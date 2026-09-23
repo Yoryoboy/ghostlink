@@ -3,14 +3,49 @@ name = "destiny-mcp"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+autobins = false
+default-run = "destiny-mcp"
+
+[features]
+default = []
+# Non-default feature for the clearly test-only offline fixture binary and the
+# child-process stdio integration test. It only enables the application test
+# support fakes; it never changes the product `destiny-mcp` binary.
+offline-fixtures = ["destiny-app/test-support"]
 
 [dependencies]
 clap.workspace = true
+destiny-adapters.workspace = true
 destiny-app.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio = { workspace = true, features = [
+    "io-std",
+    "io-util",
+    "macros",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
 
 [dev-dependencies]
 destiny-app = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = [
+    "io-util",
+    "macros",
+    "process",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+
+[[bin]]
+name = "destiny-mcp"
+path = "src/main.rs"
+
+[[bin]]
+name = "offline-fixture"
+path = "src/bin/offline_fixture.rs"
+required-features = ["offline-fixtures"]
