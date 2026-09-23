@@ -1,8 +1,8 @@
 //! The `destiny-cli` process boundary.
 //!
-//! All argument parsing, sanitized startup validation, and output choice live
-//! in the library. The binary only forwards the process arguments and emits the
-//! fully rendered result.
+//! All argument parsing, request validation, runtime composition, and output
+//! choice live in the library. The binary only forwards the process arguments
+//! and emits the fully rendered result.
 
 use std::process::ExitCode;
 

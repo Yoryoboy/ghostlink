@@ -23,6 +23,7 @@ use crate::command::{Cli, CliError, ReadRequest, SUCCESS_EXIT_CODE, inspection_o
 use crate::output::{
     OutputMode, render_characters, render_error, render_inspection, render_search,
 };
+use crate::runtime::RuntimeFactory;
 
 /// The caller-supplied freshness inputs for one read.
 ///
@@ -170,16 +171,32 @@ where
 
 /// The production process boundary of the binary.
 ///
-/// A `QueryService` cannot yet be composed from the public `destiny-app`
-/// foundations: `load_config` is crate-visible and no public function builds a
-/// service over the production adapters, which are not part of this crate's
-/// dependency surface either. Rather than invent an adapter or business logic
-/// here, the binary validates the process arguments, retains the sanitized
-/// startup diagnostic, and reports the stable `unsupported_operation` outcome
-/// for a read it cannot serve. The `tests::binary_boundary_documents_the_composition_limitation`
-/// test records this boundary.
+/// It builds the production runtime factory, which performs no acquisition on
+/// construction, and delegates to [`run_binary_with`]. The request is parsed and
+/// semantically validated before the factory is asked to build anything, so an
+/// invalid request never reads configuration, a credential store, the database,
+/// a clock, or a transport. A valid request is dispatched through the existing
+/// runner path over the composed [`destiny_app::QueryService`].
 pub fn run_binary<I, T>(args: I) -> ProcessOutput
 where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
+    let mut factory = crate::runtime::production_runtime_factory();
+    run_binary_with(&mut factory, args)
+}
+
+/// Runs one command line against an injectable runtime factory.
+///
+/// The order is fixed: parse, then semantically validate the read request, and
+/// only then ask the factory for the runtime. A parse or validation failure is
+/// reported before the factory is called at all, so an invalid request can
+/// never trigger a configuration read, a credential lookup, a keyring access, a
+/// database open, a clock read, or a network call. A runtime failure is mapped
+/// through the same stable, sanitized outcome matrix as any other failure.
+pub fn run_binary_with<F, I, T>(factory: &mut F, args: I) -> ProcessOutput
+where
+    F: RuntimeFactory,
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
@@ -188,27 +205,16 @@ where
         Err(output) => return output,
     };
     let mode = cli.output_mode();
-    // Validate the read before the startup check so an invalid request keeps the
-    // same `invalid_request`/2 contract the tested runner produces, whether or
-    // not the runtime could serve it.
-    if let Err(error) = cli.into_read_request() {
-        return ProcessOutput::failure(mode, error);
-    }
-    binary_outcome(mode, destiny_app::startup())
-}
-
-/// Maps a startup result into the stable process outcome.
-///
-/// On success the read runtime cannot be composed, so the outcome is the
-/// sanitized `unsupported_operation`; on failure the sanitized configuration
-/// diagnostic from [`destiny_app::startup`] is preserved unchanged.
-fn binary_outcome(mode: OutputMode, startup: Result<(), destiny_app::AppError>) -> ProcessOutput {
-    match startup {
-        Ok(()) => ProcessOutput::failure(
-            mode,
-            CliError::from_category(destiny_app::ErrorCategory::UnsupportedOperation),
-        ),
-        Err(error) => ProcessOutput::failure(mode, CliError::from_app(error)),
+    let request = match cli.into_read_request() {
+        Ok(request) => request,
+        Err(error) => return ProcessOutput::failure(mode, error),
+    };
+    match factory.build() {
+        Ok(mut runtime) => {
+            let freshness = runtime.freshness();
+            dispatch(runtime.service_mut(), request, mode, freshness)
+        }
+        Err(error) => ProcessOutput::failure(mode, error),
     }
 }
 
@@ -244,9 +250,12 @@ fn parse_failure(mode: OutputMode, error: &clap::Error) -> ProcessOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProcessOutput, ReadFreshness, dispatch, parse_process, run, run_binary};
+    use super::{
+        ProcessOutput, ReadFreshness, dispatch, parse_process, run, run_binary, run_binary_with,
+    };
     use crate::command::{Cli, CliError, ReadRequest};
     use crate::output::OutputMode;
+    use crate::runtime::{ReadRuntime, RuntimeFactory};
     use destiny_app::{
         AppError, Character, CharacterId, CharacterListResult, Dataset, DefinitionVersion,
         ErrorCategory, FreshnessPolicy, FreshnessStatus, InspectItemRequest, InventorySearchHit,
@@ -254,6 +263,8 @@ mod tests {
         ItemInstanceId, ItemLocation, QueryMetadata, QueryOperations, Resolution,
         SearchInventoryRequest, SourceMarker, SyncMetadata, SyncRevision, Timestamp,
     };
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
 
     const NOW: Timestamp = Timestamp::new(10_000);
     const TTL: FreshnessPolicy = FreshnessPolicy { ttl_seconds: 300 };
@@ -266,10 +277,17 @@ mod tests {
         Inspect(InspectItemRequest),
     }
 
+    /// The call log of a recording service.
+    ///
+    /// It is shared through an `Rc<RefCell<_>>` so a runtime factory can hand
+    /// out a clone of the service and the test can still observe every call the
+    /// dispatched clone made.
+    type RecordedCalls = Rc<RefCell<Vec<(Recorded, FreshnessPolicy, Timestamp)>>>;
+
     /// A recording fake that returns canned shared results and never touches I/O.
     #[derive(Clone, Debug)]
     struct RecordingService {
-        calls: Vec<(Recorded, FreshnessPolicy, Timestamp)>,
+        calls: RecordedCalls,
         list: Result<CharacterListResult, AppError>,
         search: Result<InventorySearchResult, AppError>,
         inspect: Result<Resolution<ItemInspection>, AppError>,
@@ -278,15 +296,19 @@ mod tests {
     impl RecordingService {
         fn new() -> Self {
             Self {
-                calls: Vec::new(),
+                calls: Rc::new(RefCell::new(Vec::new())),
                 list: Ok(character_list()),
                 search: Ok(search_result()),
                 inspect: Ok(Resolution::Unique(inspection())),
             }
         }
 
-        fn recorded(&self) -> &[(Recorded, FreshnessPolicy, Timestamp)] {
-            &self.calls
+        fn recorded(&self) -> Vec<(Recorded, FreshnessPolicy, Timestamp)> {
+            self.calls.borrow().clone()
+        }
+
+        fn record(&self, read: Recorded, policy: FreshnessPolicy, now: Timestamp) {
+            self.calls.borrow_mut().push((read, policy, now));
         }
     }
 
@@ -296,7 +318,7 @@ mod tests {
             policy: FreshnessPolicy,
             now: Timestamp,
         ) -> Result<CharacterListResult, AppError> {
-            self.calls.push((Recorded::List, policy, now));
+            self.record(Recorded::List, policy, now);
             self.list.clone()
         }
 
@@ -306,8 +328,7 @@ mod tests {
             policy: FreshnessPolicy,
             now: Timestamp,
         ) -> Result<InventorySearchResult, AppError> {
-            self.calls
-                .push((Recorded::Search(request.clone()), policy, now));
+            self.record(Recorded::Search(request.clone()), policy, now);
             self.search.clone()
         }
 
@@ -317,8 +338,7 @@ mod tests {
             policy: FreshnessPolicy,
             now: Timestamp,
         ) -> Result<Resolution<ItemInspection>, AppError> {
-            self.calls
-                .push((Recorded::Inspect(request.clone()), policy, now));
+            self.record(Recorded::Inspect(request.clone()), policy, now);
             self.inspect.clone()
         }
     }
@@ -327,6 +347,42 @@ mod tests {
         ReadFreshness {
             policy: TTL,
             now: NOW,
+        }
+    }
+
+    /// A runtime factory that records its build count and injects a service.
+    #[derive(Clone)]
+    struct FakeFactory {
+        builds: Rc<Cell<usize>>,
+        service: RecordingService,
+        freshness: ReadFreshness,
+        failure: Option<CliError>,
+    }
+
+    impl FakeFactory {
+        fn new(service: RecordingService) -> Self {
+            Self {
+                builds: Rc::new(Cell::new(0)),
+                service,
+                freshness: freshness(),
+                failure: None,
+            }
+        }
+
+        fn build_count(&self) -> usize {
+            self.builds.get()
+        }
+    }
+
+    impl RuntimeFactory for FakeFactory {
+        type Service = RecordingService;
+
+        fn build(&mut self) -> Result<ReadRuntime<Self::Service>, CliError> {
+            self.builds.set(self.builds.get() + 1);
+            match self.failure {
+                Some(error) => Err(error),
+                None => Ok(ReadRuntime::new(self.service.clone(), self.freshness)),
+            }
         }
     }
 
@@ -635,25 +691,81 @@ mod tests {
     }
 
     #[test]
-    fn binary_boundary_documents_the_composition_limitation() {
-        // A successful startup still cannot compose a read service from public
-        // foundations, so the boundary reports the sanitized unsupported
-        // outcome instead of inventing an adapter or business logic.
-        let output = super::binary_outcome(OutputMode::Human, Ok(()));
-        assert_eq!(output.exit_code, 40);
-        assert!(output.stdout.is_empty());
-        assert_eq!(output.stderr, "error: the operation is unsupported\n");
+    fn invalid_arguments_never_build_the_runtime() {
+        let service = RecordingService::new();
+        let mut factory = FakeFactory::new(service.clone());
 
-        // A startup failure keeps the sanitized configuration diagnostic.
-        let output = super::binary_outcome(
-            OutputMode::Human,
-            Err(AppError::new(ErrorCategory::ConfigurationError)),
-        );
+        // A clap syntax failure.
+        let output = run_binary_with(&mut factory, argv(&["inspect-item", "--unknown"]));
+        assert_eq!(output.exit_code, 2);
+        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
+
+        // A parsed but semantically invalid request.
+        let output = run_binary_with(&mut factory, argv(&["search-inventory", "--limit", "0"]));
+        assert_eq!(output.exit_code, 2);
+        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
+
+        // A missing required argument is rejected before any runtime work too.
+        let output = run_binary_with(&mut factory, argv(&["inspect-item"]));
+        assert_eq!(output.exit_code, 2);
+
+        assert_eq!(factory.build_count(), 0);
+        assert!(service.recorded().is_empty());
+    }
+
+    #[test]
+    fn a_valid_request_dispatches_through_the_built_runtime_with_its_policy_and_time() {
+        let policy = FreshnessPolicy { ttl_seconds: 60 };
+        let now = Timestamp::new(123_456);
+        let service = RecordingService::new();
+        let mut factory = FakeFactory::new(service.clone());
+        factory.freshness = ReadFreshness { policy, now };
+
+        let output = run_binary_with(&mut factory, argv(&["list-characters"]));
+
+        assert_eq!(output.exit_code, 0);
+        assert!(output.stderr.is_empty());
+        assert_eq!(factory.build_count(), 1);
+        assert_eq!(service.recorded(), [(Recorded::List, policy, now)]);
+    }
+
+    #[test]
+    fn a_runtime_failure_is_sanitized_in_both_output_modes() {
+        // A runtime that cannot be built dispatches nothing and reports the
+        // stable typed outcome on the selected stream only.
+        let service = RecordingService::new();
+        let mut factory = FakeFactory::new(service.clone());
+        factory.failure = Some(CliError::from_category(
+            ErrorCategory::CredentialStoreUnavailable,
+        ));
+
+        let output = run_binary_with(&mut factory, argv(&["list-characters"]));
+        assert_eq!(output.exit_code, 50);
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, "error: credential storage is unavailable\n");
+        assert_eq!(factory.build_count(), 1);
+        assert!(service.recorded().is_empty());
+
+        let mut factory = FakeFactory::new(service.clone());
+        factory.failure = Some(CliError::from_category(ErrorCategory::ConfigurationError));
+        let output = run_binary_with(&mut factory, argv(&["--json", "list-characters"]));
         assert_eq!(output.exit_code, 52);
+        assert!(output.stdout.is_empty());
         assert_eq!(
             output.stderr,
-            "error: required runtime configuration is missing or invalid\n"
+            "{\"error\":{\"code\":\"configuration_error\",\"message\":\"required runtime configuration is missing or invalid\"}}\n"
         );
+        assert!(service.recorded().is_empty());
+    }
+
+    #[test]
+    fn the_production_boundary_rejects_invalid_arguments_without_reading_the_environment() {
+        // `run_binary` builds only the infallible production factory. Because a
+        // rejected request never reaches the factory, this touches no
+        // environment variable, keyring, database, clock, or transport.
+        let output: ProcessOutput = run_binary(argv(&["inspect-item", "--unknown"]));
+        assert_eq!(output.exit_code, 2);
+        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
     }
 
     #[test]
@@ -663,19 +775,5 @@ mod tests {
 
         let invalid = parse_process(argv(&["list-characters", "--unknown"])).unwrap_err();
         assert_eq!(invalid.exit_code, CliError::invalid_request().exit_code());
-    }
-
-    #[test]
-    fn run_binary_rejects_invalid_arguments_before_startup() {
-        let output: ProcessOutput = run_binary(argv(&["inspect-item"]));
-        assert_eq!(output.exit_code, 2);
-        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
-
-        // A parsed but invalid request is rejected before the startup check, so
-        // it keeps the same contract without depending on the environment.
-        let output: ProcessOutput =
-            run_binary(vec!["destiny-cli", "search-inventory", "--limit", "0"]);
-        assert_eq!(output.exit_code, 2);
-        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
     }
 }

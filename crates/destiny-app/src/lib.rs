@@ -20,8 +20,13 @@ pub use manifest::{ManifestService, normalize_manifest};
 /// presentation surface can render the shared records without depending on
 /// `destiny-core` directly and without re-deriving identity, freshness, or
 /// metadata concepts of its own.
+///
+/// The credential-store contracts are re-exported for the same reason: a
+/// composition root loads the stored access credential through the shared port
+/// without reaching around this crate into `destiny-core`.
 pub use destiny_core::{
-    AppError, BucketHash, Character, CharacterId, CharacterListResult, Clock, Dataset,
+    AccessCredential, AccessCredentialMetadata, AppError, BucketHash, Character, CharacterId,
+    CharacterListResult, Clock, CredentialMaterial, CredentialStore, Dataset,
     DefinitionReplacementInput, DefinitionRepository, DefinitionSearchQuery, DefinitionVersion,
     DestinyMembership, ErrorCategory, FreshnessPolicy, FreshnessStatus, InspectItemRequest,
     InstanceSearchQuery, InventoryRepository, InventorySearchHit, InventorySearchResult,

@@ -62,7 +62,7 @@ The matrix is exhaustive over the current `ErrorCategory`; tests must fail when 
 - `odd/tasks/destiny-cli-read-journey.md` — durable tracker and evidence.
 - `crates/destiny-app/src/lib.rs` and `crates/destiny-app/src/queries.rs` — presentation-safe re-exports and a narrow shared query-operations trait implemented by `QueryService`; no CLI behavior.
 - `crates/destiny-cli/Cargo.toml` — JSON/runtime test dependencies as required.
-- `crates/destiny-cli/src/lib.rs` plus focused modules under `src/` — parser, shared-service dispatch, rendering, and typed exits.
+- `crates/destiny-cli/src/lib.rs` plus focused modules under `src/` — parser, shared-service dispatch, production runtime composition, rendering, and typed exits.
 - `crates/destiny-cli/src/main.rs` — minimal process boundary only.
 - `crates/destiny-cli/tests/` — focused CLI-only integration when a standalone harness is sufficient.
 - `crates/destiny-adapters/Cargo.toml` and `crates/destiny-adapters/tests/query_journey.rs` — extend the existing real SQLite/gateway/query fixture harness through the CLI runner without duplicating its provider fixtures.
@@ -101,10 +101,18 @@ No other crate or path is in scope unless a discovered compile-time requirement 
   - Runtime harness: the real CLI runner executes over the composed real services with a scripted transport/clock; no live Bungie account or credential. The active lint pass reported `query_journey.rs`/`runner.rs` type diagnostics that rustc test compiles contradict (stale false positives on standard `&[&str; N]` unsizing, `serde_json::Value` indexing, and trait-object coercion); no code was rewritten to satisfy them.
   - Composition limitation: normal production composition remains blocked/pending the authorized foundational composition root; the offline harness proves behavior and is not a live-success claim.
   - Rollback: remove the five integration tests, the `destiny-cli` dev-dependency and its lockfile entry, the `runner` `--`-terminator test, and the README additions without affecting CLI contracts.
-  - Commit: pending (worktree uncommitted).
+  - Commit: `05b258f` (`test: prove Destiny CLI read journey`).
+
+- [x] **DCR-006 — Compose the production read runtime**
+  - Outcome: added `destiny-adapters` to `destiny-cli` and a narrow `runtime` module composing the production read runtime behind an injectable `RuntimeFactory` seam. The process boundary parses and semantically validates the request first, then asks a factory for the runtime, which composes in the exact fail-fast order: `ReadRuntimeConfig::from_env`; `NativeCredentialStore::new`/`load` of the complete `AccessCredential` (missing => `AuthorizationRequired`); `SystemClock` with exactly one `now` reading; `HttpProfileTransport`; `ProfileApiKey` from the validated `ReadApiKey`; `BungieProfileGateway` with the configured definition version; `SqliteStore`; `ProfileSyncService`; `QueryService`. The single clock reading and the configured `FreshnessPolicy` form the `ReadFreshness` forwarded to the shared services. A valid command dispatches through the existing runner `dispatch` path, so the previous `unsupported_operation` fallback and its `binary_outcome` helper are gone; `main.rs` stays a two-line boundary. `destiny-app` now re-exports the credential-store contracts (`AccessCredential`, `AccessCredentialMetadata`, `CredentialMaterial`, `CredentialStore`) so the composition root needs no direct `destiny-core` dependency.
+  - Checks: `cargo fmt --all -- --check` passed; `cargo test -p destiny-cli` 54 passed across 3 suites; `cargo test -p destiny-app --features test-support` 123 passed across 2 suites; `cargo test -p destiny-adapters` 234 passed across 4 suites; `cargo clippy -p destiny-cli --all-targets --all-features -- -D warnings` passed; `git diff --check` passed; the built binary returns `configuration_error`/52 for a valid command with no read environment and `--help` exits 0.
+  - Runtime harness: scripted `ReadFoundations` prove the exact acquisition order and the sanitized mapping of configuration/credential/clock/transport/storage failures; a scripted `RuntimeFactory` proves a rejected parse or request performs zero runtime builds while a valid request dispatches once with the supplied service, policy, and time; a composed in-memory runtime dispatches through the shared runner and reports the provider's sanitized category. No live account, credential, keyring, or network is used.
+  - Composition limitation: the production path still needs a real environment, an OS keyring entry, and a reachable provider, so its live success remains unproven and is not claimed; only the deterministic seams are proven.
+  - Rollback: remove the `runtime` module and its tests, revert the `runner` boundary and its tests, the `lib.rs`/`main.rs` doc updates, the `destiny-app` credential re-exports, the `destiny-cli` manifest dependency, and the README runtime section.
+  - Evidence: commit pending (worktree uncommitted); the parent owns the commit.
 
 - [ ] **DCR-005 — Verify and close WU-008**
-  - Status: open/blocked pending the DCR-004 commit and independent verification of the committed range.
+  - Status: ready for verification (not done); independent verification of the committed range that now includes DCR-006 is pending.
   - Outcome: independently verify the committed feature range, record exact checks, workload, limitations, rollback boundary, and commit identities.
   - Checks: fmt; workspace check/clippy/tests default and all features; CLI/MCP help; focused CLI journey; `git diff --check`; clean status.
   - Runtime harness: documented deterministic read journey plus manual limitation for system-browser authorization.

@@ -13,8 +13,6 @@ The five crates are intentionally minimal. Runtime configuration is a Bungie
 public-client API key, public OAuth client ID, HTTP loopback callback URI, and
 a separately configured registered callback URI. The two callback values must
 match exactly, including case. There is no client-secret configuration.
-OAuth, HTTP calls, SQLite, MCP transport, and credential persistence are
-planned for later work units.
 
 Copy `config.example.env` and replace its obvious placeholders locally; do not
 commit credentials. Startup diagnostics are typed and sanitized.
@@ -54,18 +52,40 @@ cargo run -p destiny-cli -- --json search-inventory --text gjallar --item-hash 1
   provider or repository request. Exit codes follow the stable matrix in
   `odd/tasks/destiny-cli-read-journey.md`.
 
-### Composition status
+### Runtime configuration and authorization
 
-Normal production composition remains **blocked / pending** the authorized
-foundational composition root: `destiny-app` does not yet expose a public
-constructor that builds a `QueryService` from the production configuration and
-adapters, so the shipped binary validates its arguments and, once startup
-configuration is valid, reports the sanitized `unsupported_operation`/40
-outcome for a read rather than fabricating an adapter or a production mode. The
-offline journey in `crates/destiny-adapters/tests/query_journey.rs` drives the
-real CLI runner over the real `QueryService` / `ProfileSyncService` /
-`BungieProfileGateway` / `SqliteStore` with a scripted transport and clock; it
-proves behavior without a live account and is **not** a live-success claim.
+A read composes the production runtime in one fail-fast order: the command line
+is parsed and validated first, and only then does `destiny-cli` read the shared
+runtime configuration, load the stored access credential, build the system
+clock and the hardened HTTPS transport, open the durable SQLite store, and
+dispatch the read through the shared `QueryService`. An invalid argument
+therefore never reads configuration, a credential, a database, a clock, or the
+network.
+
+The read runtime requires exactly these variables (see `config.example.env`):
+
+| Variable | Meaning |
+| --- | --- |
+| `BUNGIE_API_KEY` | Bungie public-client API key |
+| `DESTINY_DATABASE_PATH` | Path to the durable SQLite projection |
+| `DESTINY_DEFINITION_VERSION` | Manifest definition version the projection was built from |
+| `DESTINY_FRESHNESS_TTL_SECONDS` | Positive freshness TTL in seconds (maximum `2592000`) |
+
+A read also requires an already-authorized account. `destiny-cli` loads a
+complete access credential from the operating system's native credential store
+(service `dev.ghostlink.destiny`, account `destiny-access-credential`) and never
+degrades to a plaintext or filesystem fallback. When no credential is stored,
+the read exits with the typed `authorization_required` outcome (exit 10); a
+missing or invalid read configuration exits with `configuration_error` (exit
+52). The interactive browser authorization flow that writes that credential
+remains an application/adapter concern outside this read-only unit.
+
+Automated checks are offline: no live Bungie account or credential is used, and
+no live read is claimed. The journey in
+`crates/destiny-adapters/tests/query_journey.rs` drives the real CLI runner over
+the real `QueryService` / `ProfileSyncService` / `BungieProfileGateway` /
+`SqliteStore` with a scripted transport and clock; it proves behavior without a
+live account and is not a live-success claim.
 
 ## Baseline checks
 
