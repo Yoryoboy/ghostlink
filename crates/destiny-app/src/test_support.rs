@@ -127,11 +127,17 @@ impl Clock for FakeClock {
 #[derive(Clone, Debug)]
 pub struct DeterministicPlanIds {
     next: u64,
+    calls: u64,
 }
 
 impl DeterministicPlanIds {
     pub const fn starting_at(next: u64) -> Self {
-        Self { next }
+        Self { next, calls: 0 }
+    }
+
+    /// Counts identifiers issued, so a test can prove how many were spent.
+    pub const fn calls(&self) -> u64 {
+        self.calls
     }
 }
 
@@ -143,6 +149,7 @@ impl PlanIdGenerator for DeterministicPlanIds {
             .ok_or_else(|| AppError::new(destiny_core::ErrorCategory::PlanIdExhausted))?;
         let id = PlanId::new(format!("plan-{}", self.next));
         self.next = next;
+        self.calls += 1;
         Ok(id)
     }
 }

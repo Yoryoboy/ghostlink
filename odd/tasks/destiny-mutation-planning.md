@@ -66,17 +66,20 @@ WU-009 is the safety boundary between semantic user intent and WU-010 remote exe
   - Check: focused mutation tests 16 passed; complete core tests 47 passed; focused and workspace all-feature clippy passed with `-D warnings`; workspace all-target/all-feature check, fmt, and diff check passed. Independent high-risk verification found no blocker/high/medium issue; one low documentation overstatement was corrected. LSP retained stale boolean/type findings contradicted by rustc tests and clippy.
   - Review workload: 893 additions and 97 deletions across the cohesive contracts, pure policy, and 16 tests; splitting tests from behavior would violate the work-unit rule.
   - Rollback: revert only mutation contract/policy changes and core exports.
-  - Evidence: pending work-unit commit.
+  - Evidence: commit `a2566d3` (`feat: complete mutation planning contracts`).
 
-- [ ] **DMP-003 — Implement semantic planning service**
-  - Outcome: ordinary freshness preparation, exact or semantic item resolution, destination resolution, deterministic direct/Vault-mediated plans, and no remote mutation side effect.
-  - Check: focused application planner tests plus core/app clippy and LSP.
+- [x] **DMP-003 — Implement semantic planning service**
+  - Outcome: added a shared `MutationService` that authorizes before side effects, runs ordinary freshness preparation, resolves exact or bounded semantic item selectors through one coherent definition-to-instance candidate set, resolves Vault/exact/semantic character destinations without guessing, spends an injected plan ID only after validation, and creates deterministic direct/Vault-mediated plans. The service owns no remote mutation port.
+  - Check: covered with the combined DMP-003/004 focused suite and verification below.
   - Rollback: remove the application mutation planner and its exports/tests while preserving core contracts.
+  - Evidence: pending combined planning/preflight work-unit commit.
 
-- [ ] **DMP-004 — Enforce shared explicit intent and mandatory preflight**
-  - Outcome: one shared service accepts explicit intent, forces `Preflight` synchronization, re-resolves current stable state, and maps binding failures to typed sanitized errors without preview or approval artifacts.
-  - Check: focused policy/preflight tests covering expiry, changed revision/source/item/destination, missing/ambiguous intent/selection, and exact sync reason/order.
-  - Rollback: revert the preflight/authorization orchestration without changing the pure planner.
+- [x] **DMP-004 — Enforce shared explicit intent and mandatory preflight**
+  - Outcome: `prepare_move` composes planning with a forced `ProfileSyncReason::Preflight`; preflight re-resolves the plan's stable item/source/membership/revision and independently binds the refreshed request item/destination selectors to that plan, preventing intent for one target from authorizing another. Every policy outcome maps to a sanitized typed error and no approval artifact exists.
+  - Check: 47 focused mutation tests and 157 complete app test-support tests passed; app clippy passed with `-D warnings`; fmt and diff check passed. Independent high-risk verification found no blocker/high/medium issue; its low request/plan mismatch observation was promoted and corrected with six additional tests. LSP reported only stale pre-existing diagnostics contradicted by rustc/clippy.
+  - Review workload: the new application module is approximately 2,000 lines including 47 exhaustive tests; DMP-003 and DMP-004 share one service and test harness, so the honest review slice remains one cohesive combined work-unit commit rather than separating tests or duplicating orchestration.
+  - Rollback: revert the preflight/authorization orchestration together with the shared planner module, leaving core contracts unchanged.
+  - Evidence: pending combined planning/preflight work-unit commit.
 
 - [ ] **DMP-005 — Prove the offline mutation-planning journey**
   - Outcome: deterministic fixture journey proves “The Last Word to Warlock,” direct and Vault-mediated effects, planning non-mutation, explicit one-call intent, and preflight invalidation against production services/fakes.
