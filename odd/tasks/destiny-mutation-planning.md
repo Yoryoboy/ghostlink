@@ -72,19 +72,20 @@ WU-009 is the safety boundary between semantic user intent and WU-010 remote exe
   - Outcome: added a shared `MutationService` that authorizes before side effects, runs ordinary freshness preparation, resolves exact or bounded semantic item selectors through one coherent definition-to-instance candidate set, resolves Vault/exact/semantic character destinations without guessing, spends an injected plan ID only after validation, and creates deterministic direct/Vault-mediated plans. The service owns no remote mutation port.
   - Check: covered with the combined DMP-003/004 focused suite and verification below.
   - Rollback: remove the application mutation planner and its exports/tests while preserving core contracts.
-  - Evidence: pending combined planning/preflight work-unit commit.
+  - Evidence: commit `f1119be` (`feat: add semantic mutation planning service`).
 
 - [x] **DMP-004 — Enforce shared explicit intent and mandatory preflight**
   - Outcome: `prepare_move` composes planning with a forced `ProfileSyncReason::Preflight`; preflight re-resolves the plan's stable item/source/membership/revision and independently binds the refreshed request item/destination selectors to that plan, preventing intent for one target from authorizing another. Every policy outcome maps to a sanitized typed error and no approval artifact exists.
   - Check: 47 focused mutation tests and 157 complete app test-support tests passed; app clippy passed with `-D warnings`; fmt and diff check passed. Independent high-risk verification found no blocker/high/medium issue; its low request/plan mismatch observation was promoted and corrected with six additional tests. LSP reported only stale pre-existing diagnostics contradicted by rustc/clippy.
   - Review workload: the new application module is approximately 2,000 lines including 47 exhaustive tests; DMP-003 and DMP-004 share one service and test harness, so the honest review slice remains one cohesive combined work-unit commit rather than separating tests or duplicating orchestration.
   - Rollback: revert the preflight/authorization orchestration together with the shared planner module, leaving core contracts unchanged.
-  - Evidence: pending combined planning/preflight work-unit commit.
+  - Evidence: commit `f1119be` (`feat: add semantic mutation planning service`).
 
-- [ ] **DMP-005 — Prove the offline mutation-planning journey**
-  - Outcome: deterministic fixture journey proves “The Last Word to Warlock,” direct and Vault-mediated effects, planning non-mutation, explicit one-call intent, and preflight invalidation against production services/fakes.
-  - Check: focused integration test plus workspace baseline commands and LSP diagnostics on changed paths.
-  - Rollback: remove only the integration target and fixture additions.
+- [x] **DMP-005 — Prove the offline mutation-planning journey**
+  - Outcome: added seven offline scenarios over the production `MutationService`/`ProfileSyncService`, real file-backed `SqliteStore`, real `BungieProfileGateway`, scripted deterministic profile transport, and injected IDs. They prove “The Last Word to Warlock,” direct and character-to-character Vault-mediated effects, one-call explicit intent, forced preflight, revision invalidation, fail-closed intent, read-only provider calls, and credential absence. The invalidated preflight returns before any effect can execute; structurally, no transfer seam exists in the composed service.
+  - Check: focused journey 7 passed; workspace all-target/all-feature check and clippy passed with `-D warnings`; fmt and diff check passed. Independent verification confirmed the production stack, read-only endpoint allowlist, and no blocker/high/medium issue.
+  - Rollback: remove only `crates/destiny-adapters/tests/mutation_planning_journey.rs`.
+  - Evidence: pending journey work-unit commit.
 
 - [ ] **DMP-006 — Verify and close WU-009**
   - Outcome: full-range verification, final tracker evidence, exact authored-line count, remaining implementation-time provider questions, and clean committed branch.
