@@ -102,7 +102,7 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
   - Manual limitations: no live credentials/network are required for WU-007; the documented definition N+1 scan was not benchmarked and remains an accepted MVP performance seam.
   - Review workload: the verified range contains 4,826 insertions and 11 deletions including the tracker, approximately 4,692 authored production/test lines. The four implementation units remain cohesive, tested, and independently revertible in reverse order; the feature rollback boundary is exact.
   - Rollback: reset this feature branch to `8a2250e371f6c8b90ea97f9649951c6d59bd06ea` to remove only WU-007.
-  - Evidence: closure commit pending.
+  - Evidence: commit `5f13d6b` (`docs: close Destiny query services`).
 
 ## Acceptance criteria
 
@@ -134,7 +134,7 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
 ## Closure
 
 - WU-007 is complete: shared bounded query contracts, deterministic fake parity, durable SQLite search, freshness-aware application orchestration, and the real offline SQLite query journey are implemented and verified.
-- The working tree was clean at verified HEAD `5d91d0d`; the final closure commit contains only this tracker update.
+- The working tree was clean at verified implementation HEAD `5d91d0d`; closure commit `5f13d6b` contains only this tracker update.
 - Delivery remains a separate user decision: the feature branch is committed locally and no push or pull request is implied by closure.
 
 ## Next step
