@@ -1,11 +1,11 @@
 //! Bounded MCP schemas, sanitized error shape, and tool descriptors.
 //!
 //! This module owns every wire-shaped type the MCP client sees. Inputs are
-//! bounded before the read service runs, and outputs are finite projections of
-//! the shared sanitized application results. The official SDK types (`rmcp`) stay
-//! here and in the sibling [`crate::service`] module; no SDK type reaches the
-//! application or core contracts, and no application or core type leaks into an
-//! MCP error.
+//! bounded before the read or mutation service runs, and outputs are finite
+//! projections of the shared sanitized application results. The official SDK
+//! types (`rmcp`) stay here and in the sibling [`crate::service`] module; no SDK
+//! type reaches the application or core contracts, and no application or core
+//! type leaks into an MCP error.
 //!
 //! # Bounds
 //!
@@ -19,8 +19,9 @@
 //! # Sanitization
 //!
 //! A tool value carries only normalized domain reads plus their provenance and
-//! freshness metadata. It never carries a credential, a membership identifier,
-//! a raw provider payload, or an opaque provider location value: an
+//! freshness metadata, or the sanitized effects, step evidence, final location,
+//! and typed failure of one move. It never carries a credential, a membership
+//! identifier, a raw provider payload, or an opaque provider location value: an
 //! `ItemLocation::Other` instance is rendered as the opaque
 //! [`LocationView::Other`] shape without its provider text.
 
@@ -41,12 +42,17 @@ pub const SEARCH_INVENTORY_TOOL: &str = "search_inventory";
 /// Stable tool name for the exact instance inspection read.
 pub const INSPECT_ITEM_TOOL: &str = "inspect_item";
 
+/// Stable tool name for the single semantic mutation.
+pub const MOVE_ITEM_TOOL: &str = "move_item";
+
 const LIST_CHARACTERS_DESCRIPTION: &str = "List the signed-in account's characters with the freshness metadata of the committed profile projection.";
 
 const SEARCH_INVENTORY_DESCRIPTION: &str = "Search item definitions and, when requested, concrete inventory instances with bounded filters.";
 
 const INSPECT_ITEM_DESCRIPTION: &str =
     "Inspect exactly one concrete inventory instance by its instance identifier.";
+
+const MOVE_ITEM_DESCRIPTION: &str = "Move one concrete inventory instance to the Vault or to a character. One call plans the move, forces a fresh preflight, issues only the ordered steps, refreshes the projection after the action, and verifies the destination.";
 
 /// Maximum accepted MCP identifier length, in characters.
 ///
@@ -89,6 +95,19 @@ pub fn tool_specs() -> Vec<Tool> {
         .with_input_schema::<InspectItemArgs>()
         .with_output_schema::<InspectItemOutput>(),
     ]
+}
+
+/// The `move_item` descriptor, with its bounded input and structured output.
+///
+/// The descriptor is declared beside the read tools so the mutation contract is
+/// reviewed with them, but it is deliberately not part of [`tool_specs`]: the
+/// runtime advertises `move_item` only when a mutation seam is composed, and that
+/// composition decision belongs to the binary root. Registering it changes no
+/// input or output bound declared here.
+pub fn move_item_tool() -> Tool {
+    Tool::new(MOVE_ITEM_TOOL, MOVE_ITEM_DESCRIPTION, JsonObject::new())
+        .with_input_schema::<MoveItemArgs>()
+        .with_output_schema::<MoveItemOutput>()
 }
 
 /// `list_characters` accepts no arguments.
@@ -168,6 +187,42 @@ pub struct InspectItemArgs {
 
 fn default_search_limit() -> usize {
     MAX_SEARCH_LIMIT
+}
+
+/// Bounded `move_item` arguments.
+///
+/// A caller names exactly one item and exactly one destination, and nothing
+/// else. Membership, credentials, revisions, and plans are not accepted at all:
+/// unknown arguments are rejected, so a caller cannot smuggle a provider
+/// identity into the call. The adapter bounds are enforced before any service
+/// call, and the shared selector constructors validate the constructed values
+/// again.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveItemArgs {
+    /// Exact instance identifier; exactly one of `instance_id` or `item_text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub instance_id: Option<String>,
+
+    /// Semantic definition term; exactly one of `instance_id` or `item_text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub item_text: Option<String>,
+
+    /// Explicit Vault destination; exclusive with any character destination.
+    #[serde(default)]
+    pub to_vault: bool,
+
+    /// Exact character identifier destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub character_id: Option<String>,
+
+    /// Character class or name label destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub character_label: Option<String>,
 }
 
 /// The current state of one character in the committed projection.
@@ -281,12 +336,125 @@ pub enum InspectItemOutput {
     Missing,
 }
 
+/// The sanitized expected postcondition of one move.
+///
+/// It records only what a successful execution must make observable: the
+/// concrete item leaves `source` and arrives at `destination`, using the Vault
+/// exactly once when `via_vault` is true. It carries no credential, raw provider
+/// payload, membership identifier, revision, or plan identifier.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MoveEffectsView {
+    pub item_id: String,
+    pub via_vault: bool,
+    pub source: LocationView,
+    pub destination: LocationView,
+}
+
+/// One planned step with the bounded outcome observed for it.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct StepEvidenceView {
+    pub ordinal: u8,
+    pub from: LocationView,
+    pub to: LocationView,
+    pub outcome: StepOutcomeView,
+}
+
+/// The sanitized outcome observed for one planned step.
+///
+/// `Rejected`, `Transient`, and `Uncertain` stay distinct so a caller never has
+/// to collapse an unknown step effect into a success or a failure.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum StepOutcomeView {
+    Unattempted,
+    Completed,
+    Rejected { reason: TransferRejectionView },
+    Transient,
+    Uncertain,
+}
+
+/// The sanitized reason a provider deterministically refused one step.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransferRejectionView {
+    NotTransferable,
+    Equipped,
+    DestinationFull,
+    InvalidRequest,
+}
+
+/// A completed attempt whose destination the refreshed projection proves.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct MoveSuccessView {
+    pub effects: MoveEffectsView,
+    pub observed: LocationView,
+    pub steps: Vec<StepEvidenceView>,
+}
+
+/// An honest incomplete execution: a dispatched sequence stopped short.
+///
+/// `partial` distinguishes an attempt that left at least one applied step behind
+/// from one that applied nothing; both are incomplete rather than successful, and
+/// neither claims a rollback. `failure` carries the sanitized pre-dispatch error
+/// only when the sequence stopped on an error rather than on a classified step.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct IncompleteMoveView {
+    pub effects: MoveEffectsView,
+    pub observed: LocationView,
+    pub partial: bool,
+    pub steps: Vec<StepEvidenceView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<McpError>,
+}
+
+/// Why the destination could not be verified after a dispatched sequence.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VerificationFailureReasonView {
+    RefreshFailed,
+    Unresolved,
+    Elsewhere,
+}
+
+/// A dispatched sequence whose destination could not be verified.
+///
+/// The bounded evidence survives, `observed` is the concrete location the
+/// refreshed projection reported when there was one, and `failure` carries the
+/// sanitized refresh or pre-dispatch error when one applies.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct VerificationFailureView {
+    pub effects: MoveEffectsView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed: Option<LocationView>,
+    pub reason: VerificationFailureReasonView,
+    pub steps: Vec<StepEvidenceView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<McpError>,
+}
+
+/// Structured result of `move_item`.
+///
+/// `VerifiedSuccess` and `VerifiedNoOp` are proven end states; `Incomplete` and
+/// `VerificationFailed` are honest non-success outcomes that keep their evidence
+/// instead of collapsing into a bare error.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum MoveItemOutput {
+    VerifiedSuccess(MoveSuccessView),
+    VerifiedNoOp(MoveSuccessView),
+    Incomplete(IncompleteMoveView),
+    VerificationFailed(VerificationFailureView),
+}
+
 /// A sanitized, stable MCP tool failure.
 ///
 /// `code` is a stable machine token derived from the shared
 /// [`ErrorCategory`], and `message` is the shared sanitized category message.
-/// The type carries no provider payload, credential, or configuration value.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// The type carries no provider payload, credential, or configuration value. The
+/// same shape is reused inside a non-success `move_item` output, so one
+/// sanitized failure contract covers both a tool-level error and an honest
+/// partial result.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct McpError {
     code: String,
     message: String,
@@ -367,6 +535,13 @@ impl InspectItemOutput {
     }
 }
 
+impl MoveItemOutput {
+    /// Renders this output as a structured tool result.
+    pub fn into_call_tool_result(self) -> CallToolResult {
+        structured_result(self)
+    }
+}
+
 /// The stable code for one shared error category.
 fn error_code(category: ErrorCategory) -> &'static str {
     match category {
@@ -399,7 +574,8 @@ mod tests {
     use super::{
         INSPECT_ITEM_TOOL, InspectItemArgs, LIST_CHARACTERS_TOOL, ListCharactersArgs,
         MAX_HASH_FILTERS, MAX_IDENTIFIER_LENGTH, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH,
-        MAX_TAG_FILTERS, McpError, SEARCH_INVENTORY_TOOL, SearchInventoryArgs, tool_specs,
+        MAX_TAG_FILTERS, MOVE_ITEM_TOOL, McpError, MoveItemArgs, SEARCH_INVENTORY_TOOL,
+        SearchInventoryArgs, move_item_tool, tool_specs,
     };
     use destiny_app::{AppError, ErrorCategory};
     use serde_json::{Value, json};
@@ -410,6 +586,10 @@ mod tests {
             .find(|tool| tool.name == tool_name)
             .expect("tool is exposed")
             .schema_as_json_value()
+    }
+
+    fn move_item_schema() -> Value {
+        move_item_tool().schema_as_json_value()
     }
 
     #[test]
@@ -515,6 +695,138 @@ mod tests {
             serde_json::from_value::<InspectItemArgs>(json!({"instance_id": "inst", "unknown": 1}))
                 .is_err()
         );
+        assert!(serde_json::from_value::<MoveItemArgs>(json!({"unknown": 1})).is_err());
+    }
+
+    #[test]
+    fn move_item_descriptor_is_declared_bounded_and_not_registered_by_tool_specs() {
+        let tool = move_item_tool();
+        assert_eq!(tool.name, MOVE_ITEM_TOOL);
+        assert_eq!(tool.name, "move_item");
+        assert!(
+            tool.description
+                .as_deref()
+                .is_some_and(|value| !value.is_empty()),
+            "move_item needs a stable description"
+        );
+        assert!(
+            tool.output_schema.is_some(),
+            "move_item needs a structured output schema"
+        );
+
+        // The mutation tool is declared here but only advertised once a
+        // mutation seam is composed, so the read descriptor set is unchanged.
+        let declared = tool_specs();
+        let registered: Vec<&str> = declared.iter().map(|tool| tool.name.as_ref()).collect();
+        assert!(!registered.contains(&MOVE_ITEM_TOOL));
+
+        let rendered = serde_json::to_string(&move_item_schema()).expect("schema serializes");
+        assert_eq!(
+            move_item_schema().get("additionalProperties"),
+            Some(&Value::Bool(false)),
+            "unknown arguments must stay rejected"
+        );
+        assert!(
+            rendered.contains(&format!("\"maxLength\":{MAX_IDENTIFIER_LENGTH}")),
+            "identifiers must be bounded: {rendered}"
+        );
+        assert!(
+            rendered.contains(&format!("\"maxLength\":{MAX_SEARCH_TEXT_LENGTH}")),
+            "semantic text must be bounded: {rendered}"
+        );
+        assert!(
+            rendered.contains("\"minLength\":1"),
+            "empty selectors must be rejected: {rendered}"
+        );
+    }
+
+    #[test]
+    fn move_item_arguments_accept_no_provider_identity_or_plan() {
+        // The declared input is a closed object with exactly the five bounded
+        // semantic fields a caller may name.
+        let input = move_item_schema();
+        let mut declared: Vec<&str> = input
+            .get("properties")
+            .and_then(Value::as_object)
+            .expect("the input schema declares properties")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        declared.sort_unstable();
+        assert_eq!(
+            declared,
+            [
+                "character_id",
+                "character_label",
+                "instance_id",
+                "item_text",
+                "to_vault"
+            ]
+        );
+
+        // No declared object property anywhere in the input or the output
+        // schema is a provider identity, a credential, or a plan field.
+        let output_schema = move_item_tool()
+            .output_schema
+            .expect("structured output schema");
+        let output = serde_json::to_value(&*output_schema).expect("output schema serializes");
+        for schema in [&input, &output] {
+            for name in declared_property_names(schema) {
+                for forbidden in [
+                    "membership",
+                    "membership_id",
+                    "credential",
+                    "revision",
+                    "plan",
+                    "plan_id",
+                    "access_token",
+                ] {
+                    assert_ne!(
+                        name, forbidden,
+                        "move_item must not declare a caller-supplied {forbidden} field"
+                    );
+                }
+            }
+        }
+
+        // A caller that tries to supply one is rejected by the closed object.
+        for smuggled in [
+            json!({"instance_id": "inst", "to_vault": true, "membership_id": "4611686018484639825"}),
+            json!({"instance_id": "inst", "to_vault": true, "credential": "secret"}),
+            json!({"instance_id": "inst", "to_vault": true, "revision": 7}),
+            json!({"instance_id": "inst", "to_vault": true, "plan_id": "plan-1"}),
+        ] {
+            assert!(
+                serde_json::from_value::<MoveItemArgs>(smuggled.clone()).is_err(),
+                "smuggled provider identity must be rejected: {smuggled}"
+            );
+        }
+    }
+
+    /// Every object property name declared anywhere in one JSON schema.
+    fn declared_property_names(schema: &Value) -> Vec<String> {
+        let mut names = Vec::new();
+        collect_property_names(&mut names, schema);
+        names
+    }
+
+    fn collect_property_names(names: &mut Vec<String>, value: &Value) {
+        match value {
+            Value::Object(object) => {
+                if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+                    names.extend(properties.keys().cloned());
+                }
+                for nested in object.values() {
+                    collect_property_names(names, nested);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    collect_property_names(names, item);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        }
     }
 
     #[test]

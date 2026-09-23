@@ -1,29 +1,34 @@
-//! MCP-facing contracts and stdio server for the Destiny semantic read tools.
+//! MCP-facing contracts and stdio server for the Destiny semantic tools.
 //!
 //! This crate owns the Model Context Protocol presentation for
-//! `list_characters`, `search_inventory`, and `inspect_item`. It translates MCP
-//! inputs and outputs against the shared application read services and keeps
-//! every official SDK type (`rmcp`) inside this crate, so the application and
-//! core contracts stay provider- and transport-neutral.
+//! `list_characters`, `search_inventory`, `inspect_item`, and the single
+//! intent-authorized `move_item` mutation. It translates MCP inputs and outputs
+//! against the shared application read and mutation services and keeps every
+//! official SDK type (`rmcp`) inside this crate, so the application and core
+//! contracts stay provider- and transport-neutral.
 //!
 //! [`server::ReadToolServer`] adapts the injectable read seam to
 //! [`rmcp::ServerHandler`], and [`runtime::serve_stdio`] serves it over the
-//! standard input/output transport. The production composition that names
-//! concrete provider and platform adapters stays in the binary root; this
-//! library names no adapter.
+//! standard input/output transport. [`service::ComposedMutationService`] is the
+//! adapter-free mutation seam: it composes the shared planner/executor and
+//! derives the provider membership from the committed projection, so a caller
+//! never supplies a membership, a credential, or a plan. The production
+//! composition that names concrete provider and platform adapters stays in the
+//! binary root; this library names no adapter.
 //!
 //! # Boundaries
 //!
-//! - Every read delegates to the shared application query service; this crate
-//!   invents no freshness, search, storage, provider, or authorization policy.
-//! - MCP arguments are bounded before the service runs, and results are bounded,
+//! - Every read and mutation delegates to a shared application service; this
+//!   crate invents no freshness, search, storage, provider, planning, execution,
+//!   verification, or authorization policy.
+//! - MCP arguments are bounded before a service runs, and results are bounded,
 //!   deterministic projections of the shared sanitized results.
 //! - Failures expose stable sanitized categories and messages only. Raw provider
-//!   payloads, credentials, and unbounded upstream records never cross this
-//!   boundary.
+//!   payloads, credentials, membership identifiers, and unbounded upstream
+//!   records never cross this boundary.
 //! - No concrete adapter type appears in this library: the server, schemas, and
-//!   service seam depend only on the application read service. The binary root
-//!   is the single composition point that names adapters.
+//!   service seams depend only on the application services. The binary root is
+//!   the single composition point that names adapters.
 
 pub mod runtime;
 pub mod schema;
@@ -31,14 +36,18 @@ pub mod server;
 pub mod service;
 
 pub use schema::{
-    FoundInspection, InspectItemArgs, InspectItemOutput, InstanceQueryArgs, ListCharactersArgs,
-    ListCharactersOutput, MAX_IDENTIFIER_LENGTH, McpError, SearchInventoryArgs,
-    SearchInventoryOutput, structured_result, tool_specs,
+    FoundInspection, IncompleteMoveView, InspectItemArgs, InspectItemOutput, InstanceQueryArgs,
+    ListCharactersArgs, ListCharactersOutput, MAX_IDENTIFIER_LENGTH, MOVE_ITEM_TOOL, McpError,
+    MoveEffectsView, MoveItemArgs, MoveItemOutput, MoveSuccessView, SearchInventoryArgs,
+    SearchInventoryOutput, StepEvidenceView, StepOutcomeView, TransferRejectionView,
+    VerificationFailureReasonView, VerificationFailureView, move_item_tool, structured_result,
+    tool_specs,
 };
 pub use server::ReadToolServer;
 pub use service::{
-    InventoryReadService, ListCharactersRequest, QueryReadService, inspect_item_output,
-    list_characters_output, search_inventory_output,
+    ComposedMutationService, InventoryReadService, ListCharactersRequest, MoveItemRequest,
+    MutationToolService, QueryReadService, inspect_item_output, list_characters_output,
+    move_item_output, search_inventory_output,
 };
 
 #[cfg(test)]
@@ -102,5 +111,24 @@ mod tests {
                 "the product binary references the offline fixture via {forbidden}"
             );
         }
+    }
+
+    /// The presentation library must not depend on the core contract directly.
+    ///
+    /// `destiny-mcp` translates MCP values against the shared application
+    /// services only, so a core type can reach it only through the additive
+    /// `destiny-app` re-exports. A direct `destiny-core` manifest dependency
+    /// would let the presentation layer bound itself to core types that the
+    /// application boundary never sanctioned.
+    #[test]
+    fn the_mcp_manifest_has_no_direct_core_dependency() {
+        let path = format!("{}/Cargo.toml", env!("CARGO_MANIFEST_DIR"));
+        let manifest = std::fs::read_to_string(&path).expect("crate manifest is readable");
+        assert!(
+            !manifest
+                .lines()
+                .any(|line| line.trim_start().starts_with("destiny-core")),
+            "destiny-mcp must not depend directly on destiny-core"
+        );
     }
 }

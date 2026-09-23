@@ -1,12 +1,21 @@
-//! Injectable read-service seam and translation onto the shared query service.
+//! Injectable read and mutation service seams and their translation.
 //!
-//! [`InventoryReadService`] is the narrow, object-safe seam the future stdio
+//! [`InventoryReadService`] is the narrow, object-safe read seam the stdio
 //! runtime calls: one method per semantic read, each taking an already-validated
 //! request and returning a bounded MCP output or a sanitized [`McpError`].
-//! [`QueryReadService`] is the production implementation. It composes the shared
-//! application [`QueryService`] with an injected clock and freshness policy, so
-//! the MCP layer adds no freshness, search, storage, or provider policy of its
-//! own.
+//! [`QueryReadService`] is the production read implementation. It composes the
+//! shared application [`QueryService`] with an injected clock and freshness
+//! policy, so the MCP layer adds no freshness, search, storage, or provider
+//! policy of its own.
+//!
+//! [`MutationToolService`] is the matching object-safe mutation seam, and
+//! [`ComposedMutationService`] is its production implementation. One
+//! [`MutationToolService::move_item`] call derives the provider membership
+//! internally, plans against the shared planner, forces the fresh preflight,
+//! issues only the ordered steps, refreshes the projection after the action, and
+//! verifies the destination, so the MCP layer adds no planning, execution, or
+//! verification policy of its own and no caller supplies a membership or a
+//! credential.
 //!
 //! # Argument bounds
 //!
@@ -27,18 +36,24 @@
 
 use destiny_app::{
     Character, CharacterId, CharacterListResult, Clock, Dataset, DefinitionRepository,
-    DefinitionSearchQuery, ErrorCategory, FreshnessPolicy, FreshnessStatus, InspectItemRequest,
-    InstanceSearchQuery, InventoryRepository, InventorySearchResult, ItemDefinition, ItemHash,
-    ItemHashFilter, ItemInspection, ItemInstance, ItemInstanceId, ItemLocation, MAX_HASH_FILTERS,
-    MAX_SEARCH_LIMIT, MAX_TAG_FILTERS, PerkHash, ProfileGateway, QueryMetadata, QueryService,
-    Resolution, SearchInventoryRequest, SearchRepository, SearchTerm, SourceMarker,
+    DefinitionSearchQuery, DestinationSelector, ErrorCategory, ExecutionEvidence, FreshnessPolicy,
+    FreshnessStatus, InspectItemRequest, InstanceSearchQuery, InventoryRepository,
+    InventorySearchResult, ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstance,
+    ItemInstanceId, ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT,
+    MAX_TAG_FILTERS, MembershipId, MoveEffects, MoveExecutionOutcome, MoveIntentAuthorization,
+    MovePlan, MoveRequest, MutationError, MutationService, PerkHash, PlanIdGenerator, PlanLifetime,
+    ProfileGateway, ProfileSyncReason, QueryMetadata, QueryService, Resolution,
+    SearchInventoryRequest, SearchRepository, SearchTerm, SourceMarker, StepOutcome, Timestamp,
+    TransferGateway, TransferRejection, VerificationFailureReason,
 };
 
 use crate::schema::{
-    CharacterView, DefinitionView, FoundInspection, InspectItemArgs, InspectItemOutput,
-    InstanceQueryArgs, InstanceView, InventorySearchHitView, ListCharactersArgs,
-    ListCharactersOutput, LocationView, MAX_IDENTIFIER_LENGTH, McpError, PerkView,
-    QueryMetadataView, SearchInventoryArgs, SearchInventoryOutput,
+    CharacterView, DefinitionView, FoundInspection, IncompleteMoveView, InspectItemArgs,
+    InspectItemOutput, InstanceQueryArgs, InstanceView, InventorySearchHitView, ListCharactersArgs,
+    ListCharactersOutput, LocationView, MAX_IDENTIFIER_LENGTH, McpError, MoveEffectsView,
+    MoveItemArgs, MoveItemOutput, MoveSuccessView, PerkView, QueryMetadataView,
+    SearchInventoryArgs, SearchInventoryOutput, StepEvidenceView, StepOutcomeView,
+    TransferRejectionView, VerificationFailureReasonView, VerificationFailureView,
 };
 
 /// A validated `list_characters` request. The tool takes no arguments.
@@ -151,6 +166,167 @@ impl ListCharactersArgs {
     }
 }
 
+/// A validated, bounded semantic move request carrying no provider identity.
+///
+/// The request is the whole contribution of the MCP boundary: one validated item
+/// selector and one validated destination selector. It carries no membership,
+/// credential, revision, or plan, because one explicit, validated call is itself
+/// the intent fact and the shared application service derives every
+/// provider-bound value from the committed projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MoveItemRequest {
+    pub item: ItemSelector,
+    pub destination: DestinationSelector,
+}
+
+/// The narrow mutation seam the MCP runtime calls.
+///
+/// The trait is deliberately object-safe and free of SDK types, so a server can
+/// hold `Box<dyn MutationToolService>` and tests can inject any implementation
+/// without touching `rmcp`. One call performs the entire one-call contract:
+/// derive the provider membership internally, plan with the shared planner,
+/// force the fresh preflight, issue only the ordered steps, refresh the
+/// projection after the action, and verify the destination. Outputs are the
+/// bounded MCP projections defined in [`crate::schema`]; a failure is a stable
+/// sanitized [`McpError`].
+pub trait MutationToolService {
+    /// Plans, executes, refreshes, and verifies exactly one semantic move.
+    fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError>;
+}
+
+/// Composes the shared mutation service and transfer port into one MCP call.
+///
+/// The service owns the composed planner/executor, the transfer port, the
+/// injected clock, the freshness policy, and the plan lifetime, so the MCP layer
+/// adds no freshness, planning, execution, or verification policy of its own and
+/// reads no ambient clock.
+///
+/// [`MutationToolService::move_item`] derives the provider membership from the
+/// committed projection through the application/profile boundary. A caller can
+/// therefore never supply a membership or a credential, and the same derived
+/// identity is what the shared planner and the executor's ticket checks compare
+/// against.
+pub struct ComposedMutationService<G, R, P, C, T> {
+    mutations: MutationService<G, R, P>,
+    transfer: T,
+    clock: C,
+    policy: FreshnessPolicy,
+    lifetime: PlanLifetime,
+}
+
+impl<G, R, P, C, T> ComposedMutationService<G, R, P, C, T> {
+    /// Wraps one composed mutation service with its ports and injected policy.
+    pub fn new(
+        mutations: MutationService<G, R, P>,
+        transfer: T,
+        clock: C,
+        policy: FreshnessPolicy,
+        lifetime: PlanLifetime,
+    ) -> Self {
+        Self {
+            mutations,
+            transfer,
+            clock,
+            policy,
+            lifetime,
+        }
+    }
+
+    /// Borrows the composed mutation service.
+    pub fn mutations(&self) -> &MutationService<G, R, P> {
+        &self.mutations
+    }
+
+    /// Mutably borrows the composed mutation service for test or composition setup.
+    pub fn mutations_mut(&mut self) -> &mut MutationService<G, R, P> {
+        &mut self.mutations
+    }
+}
+
+impl<G, R, P, C, T> ComposedMutationService<G, R, P, C, T>
+where
+    G: ProfileGateway,
+    R: InventoryRepository + SearchRepository,
+    P: PlanIdGenerator,
+    C: Clock,
+{
+    /// Resolves the effective provider membership from the committed projection.
+    ///
+    /// One ordinary synchronization establishes or reuses the projection through
+    /// the application/profile boundary, and the effective membership comes from
+    /// that projection's own metadata. The value never comes from caller input,
+    /// and a caller-supplied membership is rejected by the closed argument
+    /// schema before this runs.
+    ///
+    /// `Ok(None)` cannot follow a successful synchronization: a skipped-fresh or
+    /// refreshed outcome always leaves a committed projection behind. The
+    /// sanitized local-storage error covers only that unreachable invariant
+    /// violation rather than guessing a membership.
+    fn committed_membership(&mut self, now: Timestamp) -> Result<MembershipId, McpError> {
+        self.mutations
+            .sync_mut()
+            .sync(ProfileSyncReason::Ordinary, self.policy, now)
+            .map_err(McpError::from)?;
+        let snapshot = self
+            .mutations
+            .repository()
+            .load_current()
+            .map_err(McpError::from)?
+            .ok_or_else(|| McpError::new(ErrorCategory::LocalStorage))?;
+        Ok(snapshot.metadata.membership_id.clone())
+    }
+}
+
+impl<G, R, P, C, T> MutationToolService for ComposedMutationService<G, R, P, C, T>
+where
+    G: ProfileGateway,
+    R: InventoryRepository + SearchRepository,
+    P: PlanIdGenerator,
+    C: Clock,
+    T: TransferGateway,
+{
+    fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+        let preflight_now = self.clock.now().map_err(McpError::from)?;
+        let membership = self.committed_membership(preflight_now)?;
+        let move_request = MoveRequest {
+            membership,
+            item: request.item.clone(),
+            destination: request.destination.clone(),
+            // The single validated call is the explicit intent fact; the shared
+            // planner rejects any other intent state before a side effect.
+            intent: MoveIntentAuthorization::Explicit,
+        };
+
+        let plan = self
+            .mutations
+            .plan_move(&move_request, self.lifetime, self.policy, preflight_now)
+            .map_err(mutation_failure)?;
+
+        // The post-action observation is read after the plan, so a real clock
+        // stamps it later than the preflight it observes. `plan_move` already
+        // ran the ordinary freshness gate, and the executor forces the fresh
+        // preflight, the ordered dispatch, the post-action refresh, and the
+        // destination verification itself.
+        let post_action_now = self.clock.now().map_err(McpError::from)?;
+        let outcome = self
+            .mutations
+            .execute_move_verified(
+                &mut self.transfer,
+                &move_request,
+                &plan,
+                self.policy,
+                preflight_now,
+                post_action_now,
+            )
+            // A first-step pre-dispatch failure carries zero attempted steps, so
+            // no remote mutation occurred and there is nothing to verify; the
+            // sanitized category is the whole honest answer.
+            .map_err(|failure| mutation_failure(failure.error()))?;
+
+        Ok(move_item_output(&plan, &outcome))
+    }
+}
+
 impl SearchInventoryArgs {
     /// Validates and converts raw arguments into a shared search request.
     ///
@@ -236,6 +412,49 @@ impl InspectItemArgs {
     }
 }
 
+impl MoveItemArgs {
+    /// Validates and converts raw arguments into one semantic move request.
+    ///
+    /// Exactly one item selector (an exact instance identifier or a semantic
+    /// term) and exactly one destination (the Vault, an exact character
+    /// identifier, or a character label) are required, and every bound is
+    /// enforced here before any service call. The shared selector constructors
+    /// validate the constructed values again, so the two layers cannot disagree
+    /// on what is acceptable. A caller cannot supply a membership, credential,
+    /// revision, or plan: those arguments do not exist, and the closed schema
+    /// rejects them.
+    pub fn into_request(self) -> Result<MoveItemRequest, McpError> {
+        let item = match (self.instance_id, self.item_text) {
+            (Some(instance_id), None) => {
+                validate_identifier(&instance_id)?;
+                ItemSelector::instance(ItemInstanceId::new(instance_id))
+            }
+            (None, Some(item_text)) => {
+                ItemSelector::semantic(&item_text).map_err(McpError::from)?
+            }
+            // Neither selector, or both, is an ambiguous or absent target: no
+            // destination is guessed and nothing reaches the service.
+            (Some(_), Some(_)) | (None, None) => return Err(invalid_arguments()),
+        };
+
+        let destination = match (self.to_vault, self.character_id, self.character_label) {
+            // The Vault is explicit, never a magic character name, and it is
+            // exclusive with any character target.
+            (true, None, None) => DestinationSelector::vault(),
+            (false, Some(character_id), None) => {
+                validate_identifier(&character_id)?;
+                DestinationSelector::character(CharacterId::new(character_id))
+            }
+            (false, None, Some(character_label)) => {
+                DestinationSelector::character_label(&character_label).map_err(McpError::from)?
+            }
+            _ => return Err(invalid_arguments()),
+        };
+
+        Ok(MoveItemRequest { item, destination })
+    }
+}
+
 /// Projects a shared character listing into its bounded MCP output.
 pub fn list_characters_output(result: &CharacterListResult) -> ListCharactersOutput {
     ListCharactersOutput {
@@ -277,6 +496,115 @@ pub fn inspect_item_output(
             metadata: metadata_view(&inspection.metadata),
         }))),
         Resolution::Ambiguous(_) => Err(McpError::new(ErrorCategory::LocalStorage)),
+    }
+}
+
+/// Projects one planned and executed move into its bounded MCP output.
+///
+/// Every variant carries the sanitized planned effects, the refreshed final
+/// location, and the bounded step evidence, so a client always sees what was
+/// expected, what happened, and where the item actually is. A typed failure is
+/// the stable sanitized [`McpError`] shape: no provider payload, credential,
+/// membership identifier, revision, or plan identifier crosses this boundary.
+///
+/// The planned effects come from the plan the shared service built, and the
+/// observed location comes from the outcome the shared service verified, so this
+/// projection invents no target and no end state of its own.
+pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> MoveItemOutput {
+    let effects = plan.effects();
+    match outcome {
+        // The refreshed projection proves the item at the requested
+        // destination, so the observed location is that proven destination.
+        MoveExecutionOutcome::VerifiedSuccess(evidence) => {
+            MoveItemOutput::VerifiedSuccess(MoveSuccessView {
+                effects: effects_view(effects),
+                observed: location_view(&effects.destination),
+                steps: step_views(evidence),
+            })
+        }
+        // The mandatory fresh preflight observed the item already at the
+        // destination and dispatched nothing.
+        MoveExecutionOutcome::VerifiedNoOp(evidence) => {
+            MoveItemOutput::VerifiedNoOp(MoveSuccessView {
+                effects: effects_view(effects),
+                observed: location_view(&effects.destination),
+                steps: step_views(evidence),
+            })
+        }
+        MoveExecutionOutcome::IncompleteExecution(incomplete) => {
+            MoveItemOutput::Incomplete(IncompleteMoveView {
+                effects: effects_view(effects),
+                observed: location_view(incomplete.observed()),
+                partial: incomplete.is_partial(),
+                steps: step_views(incomplete.evidence()),
+                failure: incomplete.error().map(mutation_failure),
+            })
+        }
+        MoveExecutionOutcome::VerificationFailed(failure) => {
+            MoveItemOutput::VerificationFailed(VerificationFailureView {
+                effects: effects_view(effects),
+                observed: failure.observed().map(location_view),
+                reason: verification_reason_view(failure.reason()),
+                steps: step_views(failure.evidence()),
+                failure: failure.error().map(mutation_failure),
+            })
+        }
+    }
+}
+
+/// Maps one shared sanitized mutation failure onto its stable MCP category code.
+fn mutation_failure(error: MutationError) -> McpError {
+    McpError::new(error.category())
+}
+
+fn effects_view(effects: &MoveEffects) -> MoveEffectsView {
+    MoveEffectsView {
+        item_id: effects.item.as_str().to_owned(),
+        via_vault: effects.via_vault,
+        source: location_view(&effects.source),
+        destination: location_view(&effects.destination),
+    }
+}
+
+fn step_views(evidence: &ExecutionEvidence) -> Vec<StepEvidenceView> {
+    evidence
+        .steps()
+        .iter()
+        .map(|record| StepEvidenceView {
+            ordinal: record.step.ordinal,
+            from: location_view(&record.step.from),
+            to: location_view(&record.step.to),
+            outcome: step_outcome_view(record.outcome),
+        })
+        .collect()
+}
+
+fn step_outcome_view(outcome: StepOutcome) -> StepOutcomeView {
+    match outcome {
+        StepOutcome::Unattempted => StepOutcomeView::Unattempted,
+        StepOutcome::Completed => StepOutcomeView::Completed,
+        StepOutcome::Rejected(rejection) => StepOutcomeView::Rejected {
+            reason: rejection_view(rejection),
+        },
+        StepOutcome::Transient => StepOutcomeView::Transient,
+        StepOutcome::Uncertain => StepOutcomeView::Uncertain,
+    }
+}
+
+fn rejection_view(rejection: TransferRejection) -> TransferRejectionView {
+    match rejection {
+        TransferRejection::NotTransferable => TransferRejectionView::NotTransferable,
+        TransferRejection::Equipped => TransferRejectionView::Equipped,
+        TransferRejection::DestinationFull => TransferRejectionView::DestinationFull,
+        TransferRejection::InvalidRequest => TransferRejectionView::InvalidRequest,
+    }
+}
+
+fn verification_reason_view(reason: VerificationFailureReason) -> VerificationFailureReasonView {
+    match reason {
+        VerificationFailureReason::RefreshFailed => VerificationFailureReasonView::RefreshFailed,
+        VerificationFailureReason::Unresolved => VerificationFailureReasonView::Unresolved,
+        VerificationFailureReason::Elsewhere => VerificationFailureReasonView::Elsewhere,
     }
 }
 
@@ -399,16 +727,18 @@ fn freshness_code(freshness: FreshnessStatus) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        InventoryReadService, ListCharactersRequest, QueryReadService, inspect_item_output,
-        list_characters_output, search_inventory_output,
+        ComposedMutationService, InventoryReadService, ListCharactersRequest, MoveItemRequest,
+        MutationToolService, QueryReadService, inspect_item_output, list_characters_output,
+        search_inventory_output,
     };
     use crate::schema::{
         InspectItemArgs, InspectItemOutput, InstanceQueryArgs, LocationView, MAX_IDENTIFIER_LENGTH,
-        SearchInventoryArgs,
+        MoveEffectsView, MoveItemArgs, MoveItemOutput, SearchInventoryArgs, StepOutcomeView,
+        TransferRejectionView, VerificationFailureReasonView,
     };
     use destiny_app::test_support::{
-        FakeClock, InMemoryDefinitionRepository, InMemoryInventoryRepository,
-        InMemorySearchRepository, QueuedProfileGateway,
+        DeterministicPlanIds, FakeClock, InMemoryDefinitionRepository, InMemoryInventoryRepository,
+        InMemorySearchRepository, QueuedProfileGateway, QueuedTransferGateway,
     };
     use destiny_app::{
         AppError, Character, CharacterId, DefinitionReplacementInput, DefinitionRepository,
@@ -416,8 +746,10 @@ mod tests {
         FreshnessPolicy, InstanceSearchQuery, InventoryRepository, InventorySnapshot,
         InventorySnapshotInput, ItemDefinition, ItemHash, ItemInstance, ItemInstanceId,
         ItemLocation, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS,
-        MembershipId, MembershipType, PerkHash, PerkSummary, ProfileGateway, ProfileSyncService,
-        QueryService, Resolution, SearchRepository, SourceMarker, SyncMetadata, Timestamp,
+        MembershipId, MembershipType, MutationService, PerkHash, PerkSummary, PlanLifetime,
+        ProfileGateway, ProfileSyncService, QueryService, Resolution, SearchRepository,
+        SourceMarker, SyncMetadata, Timestamp, TransferGateway, TransferOutcome, TransferRejection,
+        TransferRequest,
     };
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1096,5 +1428,760 @@ mod tests {
 
         assert_eq!(output.characters.len(), 1);
         assert_eq!(output.characters[0].id, "warlock");
+    }
+
+    // ---- one-call intent-authorized mutation (DMM-002) ------------------
+
+    /// A spy over the fake transfer port the composed service owns by value.
+    struct SharedTransfer(Rc<RefCell<QueuedTransferGateway>>);
+
+    impl TransferGateway for SharedTransfer {
+        fn transfer(&mut self, request: &TransferRequest) -> Result<TransferOutcome, AppError> {
+            self.0.borrow_mut().transfer(request)
+        }
+    }
+
+    type MutationServiceUnderTest =
+        MutationService<SharedGateway, CompositeRepository, DeterministicPlanIds>;
+    type ComposedService = ComposedMutationService<
+        SharedGateway,
+        CompositeRepository,
+        DeterministicPlanIds,
+        FakeClock,
+        SharedTransfer,
+    >;
+
+    fn transfer_port() -> Rc<RefCell<QueuedTransferGateway>> {
+        Rc::new(RefCell::new(QueuedTransferGateway::new()))
+    }
+
+    fn composed_service(
+        shared: &Rc<RefCell<QueuedProfileGateway>>,
+        transfer: &Rc<RefCell<QueuedTransferGateway>>,
+        repository: CompositeRepository,
+    ) -> ComposedService {
+        let mutations: MutationServiceUnderTest = MutationService::new(
+            ProfileSyncService::new(SharedGateway(Rc::clone(shared)), repository),
+            DeterministicPlanIds::starting_at(1),
+        );
+        ComposedMutationService::new(
+            mutations,
+            SharedTransfer(Rc::clone(transfer)),
+            FakeClock::fixed(NOW),
+            TTL,
+            PlanLifetime::MAX,
+        )
+    }
+
+    fn warlock() -> Character {
+        Character {
+            id: CharacterId::new("warlock"),
+            name: Some("Warlock".to_owned()),
+            class: None,
+            race: None,
+            gender: None,
+            light: None,
+        }
+    }
+
+    fn hunter() -> Character {
+        Character {
+            id: CharacterId::new("hunter"),
+            name: Some("Hunter".to_owned()),
+            class: None,
+            race: None,
+            gender: None,
+            light: None,
+        }
+    }
+
+    fn at_warlock() -> ItemLocation {
+        ItemLocation::Character(CharacterId::new("warlock"))
+    }
+
+    fn at_hunter() -> ItemLocation {
+        ItemLocation::Character(CharacterId::new("hunter"))
+    }
+
+    /// Queues one membership resolution and one inventory acquisition.
+    fn queue_projection(
+        shared: &Rc<RefCell<QueuedProfileGateway>>,
+        checked_at: Timestamp,
+        characters: Vec<Character>,
+        items: Vec<ItemInstance>,
+    ) {
+        shared.borrow_mut().queue_membership(Ok(membership()));
+        shared
+            .borrow_mut()
+            .queue_inventory(Ok(snapshot_input(checked_at, characters, items)));
+    }
+
+    fn exact_move(instance_id: &str, character_id: &str) -> MoveItemRequest {
+        MoveItemArgs {
+            instance_id: Some(instance_id.to_owned()),
+            item_text: None,
+            to_vault: false,
+            character_id: Some(character_id.to_owned()),
+            character_label: None,
+        }
+        .into_request()
+        .expect("valid exact arguments")
+    }
+
+    fn vault_item(instance_id: &str, item_hash: i64) -> ItemInstance {
+        instance(instance_id, item_hash, ItemLocation::Vault, Vec::new())
+    }
+
+    #[test]
+    fn move_item_performs_the_whole_one_call_contract_from_one_derived_membership() {
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        ));
+        // The mandatory fresh preflight, then the mandatory post-action
+        // refresh. The plan itself needs no acquisition because the seeded
+        // projection is already fresh.
+        queue_projection(
+            &shared,
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        );
+        queue_projection(
+            &shared,
+            NOW,
+            vec![warlock()],
+            vec![instance("inst-a", 1, at_warlock(), Vec::new())],
+        );
+        transfer
+            .borrow_mut()
+            .queue(Ok(TransferOutcome::Transferred));
+
+        let mut service = composed_service(&shared, &transfer, repository);
+        let output = service
+            .move_item(&exact_move("inst-a", "warlock"))
+            .expect("the one call completes the move");
+
+        let destination = LocationView::Character {
+            character_id: "warlock".to_owned(),
+        };
+        match &output {
+            MoveItemOutput::VerifiedSuccess(success) => {
+                assert_eq!(
+                    success.effects,
+                    MoveEffectsView {
+                        item_id: "inst-a".to_owned(),
+                        via_vault: false,
+                        source: LocationView::Vault,
+                        destination: destination.clone(),
+                    }
+                );
+                assert_eq!(success.observed, destination);
+                assert_eq!(success.steps.len(), 1);
+                assert_eq!(success.steps[0].ordinal, 1);
+                assert_eq!(success.steps[0].from, LocationView::Vault);
+                assert_eq!(success.steps[0].to, destination);
+                assert_eq!(success.steps[0].outcome, StepOutcomeView::Completed);
+            }
+            other => panic!("expected a verified success, got {other:?}"),
+        }
+
+        // Exactly one fresh preflight, one ordered transfer, and one post-action
+        // refresh, all inside the single MCP call.
+        assert_eq!(shared.borrow().membership_calls(), 2);
+        assert_eq!(shared.borrow().inventory_calls(), 2);
+        assert_eq!(service.mutations().plan_ids().calls(), 1);
+
+        let queue = transfer.borrow();
+        assert_eq!(queue.calls(), 1);
+        let issued = &queue.requests()[0];
+        assert_eq!(issued.item().as_str(), "inst-a");
+        assert_eq!(issued.item_hash().value(), 1);
+        assert_eq!(issued.quantity(), 1);
+        assert_eq!(issued.from(), &ItemLocation::Vault);
+        assert_eq!(issued.to(), &at_warlock());
+        // The provider identity the transfer carried was derived internally.
+        assert_eq!(
+            issued.membership().membership_id().as_str(),
+            MEMBERSHIP_IDENTIFIER
+        );
+        drop(queue);
+
+        // No membership identifier, credential, or provider text crosses MCP.
+        let rendered = serde_json::to_string(&output).expect("output serializes");
+        assert!(rendered.contains("verified_success"));
+        assert!(!rendered.contains(MEMBERSHIP_IDENTIFIER), "{rendered}");
+    }
+
+    #[test]
+    fn move_item_reports_a_verified_no_op_without_dispatching() {
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        ));
+        // The fresh preflight is the one acquisition, and it already observes
+        // the requested end state.
+        queue_projection(
+            &shared,
+            NOW,
+            vec![warlock()],
+            vec![instance("inst-a", 1, at_warlock(), Vec::new())],
+        );
+
+        let mut service = composed_service(&shared, &transfer, repository);
+        let output = service
+            .move_item(&exact_move("inst-a", "warlock"))
+            .expect("an already-satisfied move is not an error");
+
+        match &output {
+            MoveItemOutput::VerifiedNoOp(no_op) => {
+                assert_eq!(
+                    no_op.observed,
+                    LocationView::Character {
+                        character_id: "warlock".to_owned(),
+                    }
+                );
+                assert_eq!(no_op.steps.len(), 1);
+                assert_eq!(no_op.steps[0].outcome, StepOutcomeView::Unattempted);
+            }
+            other => panic!("expected a verified no-op, got {other:?}"),
+        }
+
+        // Zero transfer calls and zero post-action refreshes were spent.
+        assert_eq!(transfer.borrow().calls(), 0);
+        assert_eq!(shared.borrow().membership_calls(), 1);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+    }
+
+    #[test]
+    fn move_item_reports_an_honest_incomplete_execution_with_typed_evidence() {
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        ));
+        queue_projection(
+            &shared,
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        );
+        // The provider refused the step, so the refreshed projection still
+        // places the item at the plan source, consistent with zero applied steps.
+        queue_projection(&shared, NOW, vec![warlock()], vec![vault_item("inst-a", 1)]);
+        transfer.borrow_mut().queue(Ok(TransferOutcome::Rejected(
+            TransferRejection::DestinationFull,
+        )));
+
+        let mut service = composed_service(&shared, &transfer, repository);
+        let output = service
+            .move_item(&exact_move("inst-a", "warlock"))
+            .expect("a refusal is an outcome, not a tool error");
+
+        match &output {
+            MoveItemOutput::Incomplete(incomplete) => {
+                assert_eq!(incomplete.observed, LocationView::Vault);
+                assert!(!incomplete.partial);
+                assert!(incomplete.failure.is_none());
+                assert_eq!(incomplete.steps.len(), 1);
+                assert_eq!(
+                    incomplete.steps[0].outcome,
+                    StepOutcomeView::Rejected {
+                        reason: TransferRejectionView::DestinationFull,
+                    }
+                );
+            }
+            other => panic!("expected an incomplete execution, got {other:?}"),
+        }
+
+        assert_eq!(transfer.borrow().calls(), 1);
+        assert_eq!(shared.borrow().inventory_calls(), 2);
+    }
+
+    #[test]
+    fn move_item_reports_a_partial_via_vault_execution_honestly() {
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock(), hunter()],
+            vec![instance("inst-a", 1, at_warlock(), Vec::new())],
+        ));
+        queue_projection(
+            &shared,
+            FRESH_CHECKED_AT,
+            vec![warlock(), hunter()],
+            vec![instance("inst-a", 1, at_warlock(), Vec::new())],
+        );
+        // Step one applied, step two failed transiently, so the item is stranded
+        // in the Vault, which is exactly what the refreshed projection reports.
+        queue_projection(
+            &shared,
+            NOW,
+            vec![warlock(), hunter()],
+            vec![vault_item("inst-a", 1)],
+        );
+        transfer
+            .borrow_mut()
+            .queue(Ok(TransferOutcome::Transferred));
+        transfer.borrow_mut().queue(Ok(TransferOutcome::Transient));
+
+        let mut service = composed_service(&shared, &transfer, repository);
+        let output = service
+            .move_item(&exact_move("inst-a", "hunter"))
+            .expect("a partial execution is an outcome");
+
+        match &output {
+            MoveItemOutput::Incomplete(incomplete) => {
+                assert_eq!(incomplete.observed, LocationView::Vault);
+                assert!(incomplete.partial, "one applied step is a partial write");
+                assert!(incomplete.effects.via_vault);
+                assert_eq!(incomplete.steps.len(), 2);
+                assert_eq!(incomplete.steps[0].outcome, StepOutcomeView::Completed);
+                assert_eq!(incomplete.steps[1].outcome, StepOutcomeView::Transient);
+            }
+            other => panic!("expected a partial incomplete execution, got {other:?}"),
+        }
+
+        let queue = transfer.borrow();
+        assert_eq!(queue.calls(), 2);
+        assert_eq!(queue.requests()[0].to(), &ItemLocation::Vault);
+        assert_eq!(queue.requests()[1].from(), &ItemLocation::Vault);
+        assert_eq!(queue.requests()[1].to(), &at_hunter());
+    }
+
+    #[test]
+    fn move_item_reports_an_uncertain_step_as_uncertain_rather_than_a_success() {
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        ));
+        queue_projection(
+            &shared,
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        );
+        // The step effect could not be determined, and the refreshed projection
+        // still shows the item at its source, so the honest shape is incomplete.
+        queue_projection(&shared, NOW, vec![warlock()], vec![vault_item("inst-a", 1)]);
+        transfer.borrow_mut().queue(Ok(TransferOutcome::Uncertain));
+
+        let mut service = composed_service(&shared, &transfer, repository);
+        let output = service
+            .move_item(&exact_move("inst-a", "warlock"))
+            .expect("an uncertain effect is an outcome, not a tool error");
+
+        match &output {
+            MoveItemOutput::Incomplete(incomplete) => {
+                assert_eq!(incomplete.observed, LocationView::Vault);
+                assert!(!incomplete.partial);
+                assert_eq!(incomplete.steps[0].outcome, StepOutcomeView::Uncertain);
+            }
+            other => panic!("an uncertain step must never be reported as success: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn move_item_reports_a_changed_preflight_projection_as_a_typed_stale_failure() {
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock(), hunter()],
+            vec![vault_item("inst-a", 1)],
+        ));
+        // The mandatory fresh preflight observes a changed projection: the same
+        // item now sits on another character, so the plan no longer binds.
+        queue_projection(
+            &shared,
+            NOW,
+            vec![warlock(), hunter()],
+            vec![instance("inst-a", 1, at_hunter(), Vec::new())],
+        );
+
+        let mut service = composed_service(&shared, &transfer, repository);
+        let error = service
+            .move_item(&exact_move("inst-a", "warlock"))
+            .expect_err("a changed projection must fail closed before dispatch");
+
+        assert_eq!(error.code(), "stale_state");
+        // Nothing reached the provider and no post-action refresh was spent.
+        assert_eq!(transfer.borrow().calls(), 0);
+        assert_eq!(shared.borrow().membership_calls(), 1);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+    }
+
+    #[test]
+    fn move_item_reports_a_contradicted_projection_as_a_typed_verification_failure() {
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock(), hunter()],
+            vec![instance("inst-a", 1, at_warlock(), Vec::new())],
+        ));
+        queue_projection(
+            &shared,
+            FRESH_CHECKED_AT,
+            vec![warlock(), hunter()],
+            vec![instance("inst-a", 1, at_warlock(), Vec::new())],
+        );
+        // Both steps reported success, yet the refreshed projection reports the
+        // item back at its source: a contradiction, never a success.
+        queue_projection(
+            &shared,
+            NOW,
+            vec![warlock(), hunter()],
+            vec![instance("inst-a", 1, at_warlock(), Vec::new())],
+        );
+        transfer
+            .borrow_mut()
+            .queue(Ok(TransferOutcome::Transferred));
+        transfer
+            .borrow_mut()
+            .queue(Ok(TransferOutcome::Transferred));
+
+        let mut service = composed_service(&shared, &transfer, repository);
+        let output = service
+            .move_item(&exact_move("inst-a", "hunter"))
+            .expect("a contradiction is an outcome, not a tool error");
+
+        match &output {
+            MoveItemOutput::VerificationFailed(failure) => {
+                assert!(matches!(
+                    failure.reason,
+                    VerificationFailureReasonView::Elsewhere
+                ));
+                assert_eq!(
+                    failure.observed,
+                    Some(LocationView::Character {
+                        character_id: "warlock".to_owned(),
+                    })
+                );
+                assert!(failure.failure.is_none());
+                assert_eq!(failure.steps.len(), 2);
+            }
+            other => panic!("expected a verification failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn move_item_reports_a_refresh_failure_as_a_typed_sanitized_failure() {
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        ));
+        queue_projection(
+            &shared,
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        );
+        // The mandatory post-action refresh fails, so no observation is possible.
+        shared.borrow_mut().queue_membership(Ok(membership()));
+        shared
+            .borrow_mut()
+            .queue_inventory(Err(AppError::new(ErrorCategory::ProviderUnavailable)));
+        transfer
+            .borrow_mut()
+            .queue(Ok(TransferOutcome::Transferred));
+
+        let mut service = composed_service(&shared, &transfer, repository);
+        let output = service
+            .move_item(&exact_move("inst-a", "warlock"))
+            .expect("a refresh failure keeps its bounded evidence");
+
+        match &output {
+            MoveItemOutput::VerificationFailed(failure) => {
+                assert!(matches!(
+                    failure.reason,
+                    VerificationFailureReasonView::RefreshFailed
+                ));
+                assert!(failure.observed.is_none());
+                let typed = failure.failure.as_ref().expect("a typed refresh failure");
+                assert_eq!(typed.code(), "provider_unavailable");
+                assert_eq!(failure.steps.len(), 1);
+                assert_eq!(failure.steps[0].outcome, StepOutcomeView::Completed);
+            }
+            other => panic!("expected a verification failure, got {other:?}"),
+        }
+
+        let rendered = serde_json::to_string(&output).expect("output serializes");
+        assert!(!rendered.contains(MEMBERSHIP_IDENTIFIER), "{rendered}");
+    }
+
+    #[test]
+    fn move_item_keeps_missing_ambiguous_and_unsupported_failures_typed_and_remote_free() {
+        // A missing target and an unsupported source/destination pair both fail
+        // closed before any provider mutation.
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        ));
+        let calls = Rc::clone(&repository.calls);
+        let mut service = composed_service(&shared, &transfer, repository);
+
+        let missing = service
+            .move_item(&exact_move("absent", "warlock"))
+            .expect_err("a missing instance must fail closed");
+        assert_eq!(missing.code(), "stale_state");
+
+        let unsupported = service
+            .move_item(
+                &MoveItemArgs {
+                    instance_id: Some("inst-a".to_owned()),
+                    item_text: None,
+                    to_vault: true,
+                    character_id: None,
+                    character_label: None,
+                }
+                .into_request()
+                .expect("valid arguments"),
+            )
+            .expect_err("a vault-to-vault move must fail closed");
+        assert_eq!(unsupported.code(), "unsupported_operation");
+
+        // An ambiguous exact lookup is only reachable through a
+        // contract-violating projection, and it fails closed instead of guessing.
+        let duplicate = vault_item("dup", 1);
+        service
+            .mutations_mut()
+            .repository_mut()
+            .search
+            .set_instances(vec![duplicate.clone(), duplicate]);
+        let ambiguous = service
+            .move_item(&exact_move("dup", "warlock"))
+            .expect_err("an ambiguous instance must fail closed");
+        assert_eq!(ambiguous.code(), "ambiguous_match");
+
+        // The initial fresh projection means no acquisition was needed, and no
+        // failure above reached the provider.
+        assert_eq!(transfer.borrow().calls(), 0);
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+        assert!(
+            calls.borrow().iter().all(|call| *call != "replace_current"),
+            "no failed request may publish a projection: {:?}",
+            calls.borrow()
+        );
+    }
+
+    #[test]
+    fn move_item_resolves_semantic_and_label_selectors_without_guessing() {
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        ));
+        queue_projection(
+            &shared,
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        );
+        queue_projection(
+            &shared,
+            NOW,
+            vec![warlock()],
+            vec![instance("inst-a", 1, at_warlock(), Vec::new())],
+        );
+        transfer
+            .borrow_mut()
+            .queue(Ok(TransferOutcome::Transferred));
+
+        let mut service = composed_service(&shared, &transfer, repository);
+        let request = MoveItemArgs {
+            instance_id: None,
+            item_text: Some("gjallar".to_owned()),
+            to_vault: false,
+            character_id: None,
+            character_label: Some("Warlock".to_owned()),
+        }
+        .into_request()
+        .expect("valid semantic arguments");
+
+        let output = service
+            .move_item(&request)
+            .expect("the semantic term and label resolve uniquely");
+
+        match &output {
+            MoveItemOutput::VerifiedSuccess(success) => {
+                assert_eq!(success.effects.item_id, "inst-a");
+            }
+            other => panic!("expected a verified success, got {other:?}"),
+        }
+        assert_eq!(transfer.borrow().requests()[0].to(), &at_warlock());
+    }
+
+    #[test]
+    fn move_item_rejects_absent_ambiguous_or_unbounded_selectors_before_any_call() {
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            Vec::new(),
+        ));
+        let calls = Rc::clone(&repository.calls);
+        let mut service = composed_service(&shared, &transfer, repository);
+
+        let overlong = "i".repeat(MAX_IDENTIFIER_LENGTH + 1);
+        let cases = vec![
+            // Neither item selector, and both item selectors.
+            MoveItemArgs {
+                instance_id: None,
+                item_text: None,
+                to_vault: true,
+                character_id: None,
+                character_label: None,
+            },
+            MoveItemArgs {
+                instance_id: Some("inst-a".to_owned()),
+                item_text: Some("gjallar".to_owned()),
+                to_vault: true,
+                character_id: None,
+                character_label: None,
+            },
+            // No destination, two destinations, and the Vault plus a character.
+            MoveItemArgs {
+                instance_id: Some("inst-a".to_owned()),
+                item_text: None,
+                to_vault: false,
+                character_id: None,
+                character_label: None,
+            },
+            MoveItemArgs {
+                instance_id: Some("inst-a".to_owned()),
+                item_text: None,
+                to_vault: false,
+                character_id: Some("warlock".to_owned()),
+                character_label: Some("Warlock".to_owned()),
+            },
+            MoveItemArgs {
+                instance_id: Some("inst-a".to_owned()),
+                item_text: None,
+                to_vault: true,
+                character_id: Some("warlock".to_owned()),
+                character_label: None,
+            },
+            // Empty, over-long, and control-bearing semantic values.
+            MoveItemArgs {
+                instance_id: None,
+                item_text: Some(String::new()),
+                to_vault: true,
+                character_id: None,
+                character_label: None,
+            },
+            MoveItemArgs {
+                instance_id: Some(overlong.clone()),
+                item_text: None,
+                to_vault: true,
+                character_id: None,
+                character_label: None,
+            },
+            MoveItemArgs {
+                instance_id: Some("inst-a".to_owned()),
+                item_text: None,
+                to_vault: false,
+                character_id: None,
+                character_label: Some("Warlock\u{7}".to_owned()),
+            },
+        ];
+
+        for case in cases {
+            let error = case
+                .into_request()
+                .expect_err("an absent or ambiguous selector must be rejected");
+            assert_eq!(error.code(), "provider_validation");
+            assert!(!error.message().contains(&overlong));
+        }
+
+        // A rejected argument never reached the composed service.
+        assert!(calls.borrow().is_empty());
+        assert_eq!(transfer.borrow().calls(), 0);
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+
+        // The same wired service does reach the shared seams for a valid
+        // request, so the empty record above is a real argument rejection and
+        // not a dead harness. A missing item still fails closed with its typed
+        // category and spends no provider call.
+        let missing = service
+            .move_item(&exact_move("absent", "warlock"))
+            .expect_err("a missing instance must fail closed");
+        assert_eq!(missing.code(), "stale_state");
+        assert!(
+            calls.borrow().contains(&"lookup_instance"),
+            "the service must reach the shared repository: {:?}",
+            calls.borrow()
+        );
+        assert_eq!(transfer.borrow().calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+    }
+
+    #[test]
+    fn the_mutation_seam_is_object_safe_and_injectable() {
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        ));
+        queue_projection(
+            &shared,
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        );
+        queue_projection(
+            &shared,
+            NOW,
+            vec![warlock()],
+            vec![instance("inst-a", 1, at_warlock(), Vec::new())],
+        );
+        transfer
+            .borrow_mut()
+            .queue(Ok(TransferOutcome::Transferred));
+
+        let mut service: Box<dyn MutationToolService> =
+            Box::new(composed_service(&shared, &transfer, repository));
+        let output = service
+            .move_item(&exact_move("inst-a", "warlock"))
+            .expect("injected mutation succeeds");
+
+        assert!(matches!(output, MoveItemOutput::VerifiedSuccess(_)));
     }
 }

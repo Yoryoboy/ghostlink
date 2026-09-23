@@ -18,23 +18,26 @@ pub use destiny_core::{AppError, ErrorCategory};
 // Additive provider-neutral re-exports for presentation crates.
 //
 // `destiny-mcp` must translate MCP inputs and outputs against the shared read
-// contract and compose its read service without naming `destiny-core` in its
-// manifest. The public types that already appear in `QueryService` requests,
-// results, error categories, bounds, injected policy, and credential port
-// therefore have to be reachable through this crate. This block is the smallest
-// additive surface that lets the presentation layer implement that translation
-// and lets its binary composition root load a credential; it adds no behavior
-// and no new abstraction.
+// and mutation contracts and compose its read and mutation services without
+// naming `destiny-core` in its manifest. The public types that already appear in
+// `QueryService` and `MutationService` requests, results, error categories,
+// bounds, injected policy, and provider ports therefore have to be reachable
+// through this crate. This block is the smallest additive surface that lets the
+// presentation layer implement that translation and lets its binary composition
+// root load a credential; it adds no behavior and no new abstraction.
 pub use destiny_core::{
     AccessCredential, AccessCredentialMetadata, Character, CharacterId, CharacterListResult, Clock,
     CredentialMaterial, CredentialStore, Dataset, DefinitionReplacementInput, DefinitionRepository,
-    DefinitionSearchQuery, DefinitionVersion, DestinyMembership, FreshnessPolicy, FreshnessStatus,
-    InspectItemRequest, InstanceSearchQuery, InventoryRepository, InventorySearchResult,
-    InventorySnapshot, InventorySnapshotInput, ItemDefinition, ItemHash, ItemHashFilter,
-    ItemInspection, ItemInstance, ItemInstanceId, ItemLocation, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT,
-    MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS, MembershipId, MembershipType, PerkHash, PerkSummary,
-    ProfileGateway, QueryMetadata, Resolution, SearchRepository, SearchTerm, SourceMarker,
-    SyncMetadata, Timestamp,
+    DefinitionSearchQuery, DefinitionVersion, DestinationSelector, DestinyMembership,
+    ExecutionEvidence, FreshnessPolicy, FreshnessStatus, InspectItemRequest, InstanceSearchQuery,
+    InventoryRepository, InventorySearchResult, InventorySnapshot, InventorySnapshotInput,
+    ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstance, ItemInstanceId,
+    ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH,
+    MAX_TAG_FILTERS, MembershipId, MembershipType, MoveEffects, MoveIntentAuthorization, MovePlan,
+    MoveRequest, PerkHash, PerkSummary, PlanIdGenerator, PlanLifetime, ProfileGateway,
+    ProfileSyncOutcome, ProfileSyncReason, QueryMetadata, Resolution, SearchRepository, SearchTerm,
+    SourceMarker, StepOutcome, SyncMetadata, Timestamp, TransferGateway, TransferOutcome,
+    TransferRejection, TransferRequest,
 };
 pub use manifest::{ManifestService, normalize_manifest};
 pub use mutation::{
