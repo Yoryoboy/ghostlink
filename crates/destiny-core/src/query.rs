@@ -1,0 +1,680 @@
+//! Provider-neutral query contracts for character listing, inventory search,
+//! and exact item inspection.
+//!
+//! # Scope
+//!
+//! This module owns the request and result *shapes* shared by the future
+//! `list_characters`, `search_inventory`, and `inspect_item` application
+//! services, together with the deterministic normalization and matching rules
+//! those services must reproduce in every adapter. It performs no I/O, holds no
+//! provider payload, and never returns a credential or an unbounded upstream
+//! record.
+//!
+//! # Definition versus instance identity
+//!
+//! [`ItemHash`] identifies a Manifest *definition* and [`ItemInstanceId`]
+//! identifies one concrete runtime *instance*. The two are structurally
+//! distinct and never interchangeable: a definition-level filter uses
+//! [`ItemHash`], while an exact inspection requires an [`ItemInstanceId`].
+//! [`ItemInspection`] reports the matched definition and the concrete instance
+//! in separate fields so a caller can never mistake one for the other.
+//!
+//! # Matching rules
+//!
+//! Searches are case-insensitive. Every searchable value is normalized with
+//! [`normalize_search_text`]: surrounding whitespace is dropped, interior
+//! whitespace runs collapse to a single space, and the result is lowercased.
+//! A durable search projection must therefore store or compare values under the
+//! same normalization, and no adapter may invent a different case rule.
+//!
+//! A definition matches:
+//!
+//! - its text filter when the normalized `name` *contains* the normalized term;
+//! - its type filter on exact normalized equality against `item_type`, and an
+//!   absent `item_type` never matches a present type filter;
+//! - its tag filters only when every listed tag is present on the definition as
+//!   an exact normalized value.
+//!
+//! An instance matches a [`PerkHash`] filter only when it carries a
+//! [`PerkSummary`] with that exact hash. No textual perk-name search exists,
+//! because the Manifest projection stores no perk definition catalog; perk
+//! matching is always the exact-hash form.
+//!
+//! [`PerkSummary`]: crate::domain::PerkSummary
+//!
+//! # Bounds and determinism
+//!
+//! Every search input is validated before use. A search limit must be between
+//! one and [`MAX_SEARCH_LIMIT`] inclusive, a term must be non-empty and at most
+//! [`MAX_SEARCH_TEXT_LENGTH`] characters, and a definition search may carry at
+//! most [`MAX_TAG_FILTERS`] tags. Rejected input produces the sanitized
+//! [`AppError`] category [`ErrorCategory::ProviderValidation`] and never echoes
+//! the offending value.
+//!
+//! Definition matches are ordered by [`ItemHash`] ascending and instance
+//! matches by [`ItemInstanceId`] ascending; the limit truncates the ordered
+//! list. A valid projection carries unique definition hashes and unique
+//! instance identifiers, so both orders are total, and an invalid projection
+//! with duplicate keys is outside this contract.
+
+use crate::domain::{Character, ItemDefinition, ItemInstance, ItemLocation, SyncMetadata};
+use crate::error::{AppError, ErrorCategory};
+use crate::ids::{CharacterId, ItemHash, ItemInstanceId, PerkHash};
+use crate::state::FreshnessStatus;
+
+/// Maximum accepted length of a single normalized search term, in characters.
+pub const MAX_SEARCH_TEXT_LENGTH: usize = 256;
+
+/// Maximum number of matches any single search may return.
+pub const MAX_SEARCH_LIMIT: usize = 100;
+
+/// Maximum number of tag filters one definition search may carry.
+pub const MAX_TAG_FILTERS: usize = 16;
+
+/// Maximum number of definition hashes one instance search may constrain to.
+///
+/// The bound keeps a caller-supplied candidate set finite before it reaches a
+/// durable query, so no adapter has to materialize an unbounded `IN (...)` set.
+/// It does not apply to [`ItemHashFilter::Any`], which carries no hashes at all.
+pub const MAX_HASH_FILTERS: usize = 64;
+
+fn invalid_query() -> AppError {
+    AppError::new(ErrorCategory::ProviderValidation)
+}
+
+/// Rejects prohibited control characters and raw input longer than the bound.
+fn reject_prohibited_text(value: &str, max_length: usize) -> Result<(), AppError> {
+    let has_prohibited_control = value
+        .chars()
+        .any(|character| character.is_control() && !character.is_whitespace());
+    if has_prohibited_control || value.chars().count() > max_length {
+        return Err(invalid_query());
+    }
+    Ok(())
+}
+
+/// Normalizes one searchable value for deterministic, case-insensitive matching.
+///
+/// The transformation is total and provider-neutral: it trims surrounding
+/// whitespace, collapses interior whitespace runs to one space, and lowercases
+/// the result with Rust's Unicode-aware `str::to_lowercase`, not an ASCII-only
+/// fold. Every search implementation, whether an in-memory fake or a durable
+/// SQLite search projection, must apply this same rule to both the stored values
+/// and the query term so the two can never disagree on case or spacing.
+///
+/// The Unicode case folding is part of the contract, not an incident of the
+/// current implementation: a durable projection that relied on SQLite's default
+/// byte-wise `lower()` would diverge from this function for non-ASCII names and
+/// types. The safest way to reproduce it is to normalize values when they are
+/// written (for example into precomputed normalized columns) with this same
+/// function rather than re-deriving case in SQL.
+pub fn normalize_search_text(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    for word in value.split_whitespace() {
+        if !normalized.is_empty() {
+            normalized.push(' ');
+        }
+        normalized.push_str(word);
+    }
+    normalized.to_lowercase()
+}
+
+/// A validated, normalized, case-insensitive search term.
+///
+/// Construction rejects empty input, prohibited control characters, and input
+/// longer than [`MAX_SEARCH_TEXT_LENGTH`]; the stored value is already
+/// normalized, so matching never repeats the transformation on the query side.
+/// The term is not secret and may appear in diagnostics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchTerm(String);
+
+impl SearchTerm {
+    /// Validates and normalizes one search term.
+    ///
+    /// An empty, oversized, or control-bearing value is rejected with the
+    /// sanitized [`ErrorCategory::ProviderValidation`] category; the rejected
+    /// value never appears in the error.
+    pub fn new(value: &str) -> Result<Self, AppError> {
+        reject_prohibited_text(value, MAX_SEARCH_TEXT_LENGTH)?;
+        let normalized = normalize_search_text(value);
+        if normalized.is_empty() || normalized.chars().count() > MAX_SEARCH_TEXT_LENGTH {
+            return Err(invalid_query());
+        }
+        Ok(Self(normalized))
+    }
+
+    /// The normalized term used for matching.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn validate_search_limit(limit: usize) -> Result<(), AppError> {
+    if limit == 0 || limit > MAX_SEARCH_LIMIT {
+        return Err(invalid_query());
+    }
+    Ok(())
+}
+
+/// A validated definition-level inventory search.
+///
+/// Every filter is optional and independent; `None` (or an empty `tags` list)
+/// imposes no restriction, so an unfiltered query matches every definition up to
+/// `limit`. The text term matches on normalized `name` substring, `item_type`
+/// matches on exact normalized equality, and each entry of `tags` must be
+/// present. At most [`MAX_TAG_FILTERS`] tags are accepted, and `limit` must be
+/// within `1..=MAX_SEARCH_LIMIT`.
+///
+/// A constructed value is validated by construction, but the fields are public
+/// so a caller can build one directly; [`Self::validate`] is the single check
+/// every search implementation runs before reading the projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DefinitionSearchQuery {
+    pub text: Option<SearchTerm>,
+    pub item_type: Option<SearchTerm>,
+    pub tags: Vec<SearchTerm>,
+    pub limit: usize,
+}
+
+impl DefinitionSearchQuery {
+    /// Rejects an out-of-range limit or too many tag filters.
+    pub fn validate(&self) -> Result<(), AppError> {
+        validate_search_limit(self.limit)?;
+        if self.tags.len() > MAX_TAG_FILTERS {
+            return Err(invalid_query());
+        }
+        Ok(())
+    }
+}
+
+/// The definition-hash constraint carried by an instance search.
+///
+/// The distinction between "no constraint" and "an empty candidate set" is
+/// explicit: [`ItemHashFilter::Any`] matches every instance, while
+/// [`ItemHashFilter::AnyOf`] with an empty list matches nothing. An instance
+/// search that follows a definition search passes the matched hashes; a
+/// perk-only search passes [`ItemHashFilter::Any`]. Duplicate hashes inside
+/// `AnyOf` are allowed and equivalent to a deduplicated list.
+///
+/// `AnyOf` is bounded: it may carry at most [`MAX_HASH_FILTERS`] hashes, and
+/// [`InstanceSearchQuery::validate`] rejects a larger list with the sanitized
+/// [`ErrorCategory::ProviderValidation`] category. An empty `AnyOf` remains
+/// valid and still matches nothing; only an over-large list is rejected.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ItemHashFilter {
+    /// No definition constraint.
+    Any,
+    /// Only these definition hashes, and nothing when the list is empty.
+    AnyOf(Vec<ItemHash>),
+}
+
+/// A validated instance-level inventory search.
+///
+/// A concrete instance matches when it satisfies the [`ItemHashFilter`], carries
+/// the exact [`PerkHash`] when one is present, and is located on the named
+/// character when a [`CharacterId`] filter is present. Vault and unknown
+/// locations never satisfy a character filter. `limit` must be within
+/// `1..=MAX_SEARCH_LIMIT`, an [`ItemHashFilter::AnyOf`] list may carry at most
+/// [`MAX_HASH_FILTERS`] hashes, and [`Self::validate`] is the single check every
+/// implementation runs before reading the projection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstanceSearchQuery {
+    pub item_hashes: ItemHashFilter,
+    pub perk_hash: Option<PerkHash>,
+    pub character_id: Option<CharacterId>,
+    pub limit: usize,
+}
+
+impl InstanceSearchQuery {
+    /// Rejects an out-of-range limit or an over-large definition-hash list.
+    pub fn validate(&self) -> Result<(), AppError> {
+        validate_search_limit(self.limit)?;
+        if let ItemHashFilter::AnyOf(hashes) = &self.item_hashes
+            && hashes.len() > MAX_HASH_FILTERS
+        {
+            return Err(invalid_query());
+        }
+        Ok(())
+    }
+}
+
+/// True when one normalized definition satisfies every filter of `query`.
+///
+/// This is the normative matching rule for definition search. It reads only the
+/// definition record, performs no I/O, and is deterministic, so a durable
+/// implementation can be checked against it and the in-memory fake can never
+/// drift from the documented behavior.
+pub fn definition_matches(query: &DefinitionSearchQuery, definition: &ItemDefinition) -> bool {
+    if let Some(term) = &query.text
+        && !normalize_search_text(&definition.name).contains(term.as_str())
+    {
+        return false;
+    }
+
+    if let Some(item_type) = &query.item_type {
+        match definition.item_type.as_deref() {
+            Some(candidate) if normalize_search_text(candidate) == item_type.as_str() => {}
+            _ => return false,
+        }
+    }
+
+    if !query.tags.is_empty() {
+        let stored: Vec<String> = definition
+            .tags
+            .iter()
+            .map(|tag| normalize_search_text(tag))
+            .collect();
+        if !query
+            .tags
+            .iter()
+            .all(|tag| stored.iter().any(|value| value == tag.as_str()))
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// True when one normalized instance satisfies every filter of `query`.
+///
+/// This is the normative matching rule for instance search. Perk matching is an
+/// exact [`PerkHash`] membership test on the instance's summarized perks and is
+/// independent of the `active` and `visible` flags: a visible or inactive perk
+/// still satisfies the filter, and a duplicated perk hash is harmless.
+pub fn instance_matches(query: &InstanceSearchQuery, instance: &ItemInstance) -> bool {
+    if let ItemHashFilter::AnyOf(hashes) = &query.item_hashes
+        && !hashes.contains(&instance.item_hash)
+    {
+        return false;
+    }
+
+    if let Some(perk_hash) = query.perk_hash
+        && !instance
+            .perks
+            .iter()
+            .any(|perk| perk.perk_hash == perk_hash)
+    {
+        return false;
+    }
+
+    if let Some(character_id) = &query.character_id {
+        let located_on_character = matches!(
+            &instance.location,
+            ItemLocation::Character(location_id) if location_id == character_id
+        );
+        if !located_on_character {
+            return false;
+        }
+    }
+
+    true
+}
+
+/// The projection metadata and freshness that accompany one query answer.
+///
+/// It reuses the repository-owned [`SyncMetadata`] and the shared
+/// [`FreshnessStatus`], so no query result invents a parallel revision,
+/// provenance, or freshness concept. `sync` describes the projection the answer
+/// was read from: the profile inventory projection for character, inventory, and
+/// inspection queries, and the Manifest definition projection for a
+/// definition-only read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryMetadata {
+    pub sync: SyncMetadata,
+    pub freshness: FreshnessStatus,
+}
+
+/// A bounded, sanitized listing of the characters in one profile projection.
+///
+/// The result reuses the normalized [`Character`] record and carries no raw
+/// provider payload. The vector is bounded by the profile projection itself and
+/// its order is the repository-owned canonical character order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CharacterListResult {
+    pub characters: Vec<Character>,
+    pub metadata: QueryMetadata,
+}
+
+/// One concrete instance paired with the definition it references.
+///
+/// The pairing is explicit and sanitized: `definition` is the normalized
+/// Manifest record for `instance.item_hash`, and `instance` is the current
+/// runtime state. Both sides are bounded domain records with no provider payload.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventorySearchHit {
+    pub definition: ItemDefinition,
+    pub instance: ItemInstance,
+}
+
+/// A bounded inventory search answer.
+///
+/// `candidates` are the definition-level matches in [`ItemHash`] order, and
+/// `hits` are the concrete instance matches in [`ItemInstanceId`] order. Both
+/// lists are independently truncated to the requested limit, so a caller always
+/// sees a bounded, deterministic answer. An empty list is the explicit
+/// "no match" outcome: a search never silently selects a single concrete
+/// instance, and it never reports a definition as an instance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventorySearchResult {
+    pub candidates: Vec<ItemDefinition>,
+    pub hits: Vec<InventorySearchHit>,
+    pub metadata: QueryMetadata,
+}
+
+/// The exact inspection of one concrete instance.
+///
+/// The Manifest `definition` and the current `instance` state are separate
+/// fields, so a caller reports them distinctly and never confuses a definition
+/// hash with an instance identifier. Inspection requires a concrete
+/// [`ItemInstanceId`]; a display-name query resolves through
+/// [`InventorySearchResult`] instead and never reaches this type directly.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ItemInspection {
+    pub definition: ItemDefinition,
+    pub instance: ItemInstance,
+    pub metadata: QueryMetadata,
+}
+
+/// A request to inspect exactly one concrete instance.
+///
+/// The request is keyed by a concrete [`ItemInstanceId`]. There is deliberately
+/// no display-name field: a name query resolves through search candidates and
+/// never reaches inspection directly, so a caller can never accidentally select
+/// a concrete instance by display name alone.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InspectItemRequest {
+    pub instance_id: ItemInstanceId,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DefinitionSearchQuery, InstanceSearchQuery, ItemHashFilter, MAX_HASH_FILTERS,
+        MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS, SearchTerm, definition_matches,
+        instance_matches, normalize_search_text,
+    };
+    use crate::domain::{ItemDefinition, ItemInstance, ItemLocation, PerkSummary};
+    use crate::error::{AppError, ErrorCategory};
+    use crate::ids::{CharacterId, DefinitionVersion, ItemHash, PerkHash};
+
+    fn term(value: &str) -> SearchTerm {
+        SearchTerm::new(value).expect("valid term")
+    }
+
+    fn definition(hash: i64, name: &str) -> ItemDefinition {
+        ItemDefinition {
+            hash: ItemHash::new(hash),
+            bucket_hash: None,
+            name: name.into(),
+            item_type: None,
+            tier: None,
+            element: None,
+            tags: Vec::new(),
+            version: DefinitionVersion::new("manifest-v1"),
+        }
+    }
+
+    fn instance(instance_id: &str, item_hash: i64) -> ItemInstance {
+        ItemInstance {
+            instance_id: instance_id.into(),
+            item_hash: ItemHash::new(item_hash),
+            location: ItemLocation::Vault,
+            quantity: 1,
+            equipped: false,
+            locked: false,
+            power: None,
+            perks: Vec::new(),
+        }
+    }
+
+    fn query(
+        text: Option<&str>,
+        item_type: Option<&str>,
+        tags: Vec<&str>,
+    ) -> DefinitionSearchQuery {
+        DefinitionSearchQuery {
+            text: text.map(term),
+            item_type: item_type.map(term),
+            tags: tags.into_iter().map(term).collect(),
+            limit: MAX_SEARCH_LIMIT,
+        }
+    }
+
+    fn instance_query(
+        item_hashes: ItemHashFilter,
+        perk_hash: Option<PerkHash>,
+    ) -> InstanceSearchQuery {
+        InstanceSearchQuery {
+            item_hashes,
+            perk_hash,
+            character_id: None,
+            limit: MAX_SEARCH_LIMIT,
+        }
+    }
+
+    #[test]
+    fn normalization_trims_collapses_and_lowercases() {
+        assert_eq!(normalize_search_text("  Gjallar   Horn \t"), "gjallar horn");
+        assert_eq!(normalize_search_text("ALREADY"), "already");
+        assert_eq!(normalize_search_text("   "), "");
+    }
+
+    #[test]
+    fn search_terms_are_validated_and_normalized() {
+        assert_eq!(term("  Ghost   Shell ").as_str(), "ghost shell");
+
+        for invalid in ["", "   ", "bad\u{7}control"] {
+            assert_eq!(
+                SearchTerm::new(invalid),
+                Err(AppError::new(ErrorCategory::ProviderValidation)),
+                "term {invalid:?} must be rejected"
+            );
+        }
+
+        let boundary = "a".repeat(MAX_SEARCH_TEXT_LENGTH);
+        assert_eq!(SearchTerm::new(&boundary).unwrap().as_str(), boundary);
+        let oversized = "a".repeat(MAX_SEARCH_TEXT_LENGTH + 1);
+        assert_eq!(
+            SearchTerm::new(&oversized),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+    }
+
+    #[test]
+    fn invalid_limits_and_tag_counts_are_rejected() {
+        let mut definition_query = query(Some("ghost"), None, Vec::new());
+        definition_query.limit = 0;
+        assert_eq!(
+            definition_query.validate(),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+        definition_query.limit = MAX_SEARCH_LIMIT + 1;
+        assert_eq!(
+            definition_query.validate(),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+        definition_query.limit = MAX_SEARCH_LIMIT;
+        definition_query.tags = (0..=MAX_TAG_FILTERS)
+            .map(|i| term(&format!("tag-{i}")))
+            .collect();
+        assert_eq!(
+            definition_query.validate(),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+
+        let mut instance_query = instance_query(ItemHashFilter::Any, None);
+        instance_query.limit = 0;
+        assert_eq!(
+            instance_query.validate(),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+    }
+
+    #[test]
+    fn instance_hash_filter_cardinality_is_bounded() {
+        // The boundary and the empty list are both valid; only an over-large
+        // list is rejected. `AnyOf(empty)` keeps its fail-closed meaning.
+        let boundary: Vec<ItemHash> = (0..MAX_HASH_FILTERS as i64).map(ItemHash::new).collect();
+        let at_boundary = instance_query(ItemHashFilter::AnyOf(boundary), None);
+        assert_eq!(at_boundary.validate(), Ok(()));
+
+        let over: Vec<ItemHash> = (0..=MAX_HASH_FILTERS as i64).map(ItemHash::new).collect();
+        let over_bound = instance_query(ItemHashFilter::AnyOf(over), None);
+        assert_eq!(
+            over_bound.validate(),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+
+        // The empty list stays valid and remains distinct from `Any`.
+        assert_eq!(
+            instance_query(ItemHashFilter::AnyOf(Vec::new()), None).validate(),
+            Ok(())
+        );
+        assert_eq!(instance_query(ItemHashFilter::Any, None).validate(), Ok(()));
+    }
+
+    #[test]
+    fn definition_text_matches_normalized_name_substring() {
+        let gjallarhorn = definition(1, "Gjallarhorn");
+        assert!(definition_matches(
+            &query(Some("gjallar"), None, Vec::new()),
+            &gjallarhorn
+        ));
+        assert!(definition_matches(
+            &query(Some("  HORN "), None, Vec::new()),
+            &gjallarhorn
+        ));
+        assert!(!definition_matches(
+            &query(Some("hornet"), None, Vec::new()),
+            &gjallarhorn
+        ));
+    }
+
+    #[test]
+    fn definition_type_matches_exactly_and_absent_type_never_matches() {
+        let mut weapon = definition(1, "Gjallarhorn");
+        weapon.item_type = Some("Rocket Launcher".into());
+        assert!(definition_matches(
+            &query(None, Some("rocket launcher"), Vec::new()),
+            &weapon
+        ));
+        assert!(!definition_matches(
+            &query(None, Some("rocket"), Vec::new()),
+            &weapon
+        ));
+        assert!(!definition_matches(
+            &query(None, Some("Rocket Launcher"), Vec::new()),
+            &definition(2, "Ghost")
+        ));
+    }
+
+    #[test]
+    fn definition_tags_require_every_listed_tag() {
+        let mut item = definition(1, "Gjallarhorn");
+        item.tags = vec!["exotic".into(), "solar".into()];
+        assert!(definition_matches(
+            &query(None, None, vec!["exotic"]),
+            &item
+        ));
+        assert!(definition_matches(
+            &query(None, None, vec!["EXOTIC", " solar "]),
+            &item
+        ));
+        assert!(!definition_matches(&query(None, None, vec!["void"]), &item));
+    }
+
+    #[test]
+    fn unfiltered_definition_query_matches_everything() {
+        assert!(definition_matches(
+            &query(None, None, Vec::new()),
+            &definition(1, "Anything")
+        ));
+    }
+
+    #[test]
+    fn instance_hash_filter_distinguishes_any_from_empty() {
+        let item = instance("instance-1", 7);
+
+        assert!(instance_matches(
+            &instance_query(ItemHashFilter::Any, None),
+            &item
+        ));
+        assert!(instance_matches(
+            &instance_query(ItemHashFilter::AnyOf(vec![ItemHash::new(7)]), None),
+            &item
+        ));
+        assert!(!instance_matches(
+            &instance_query(ItemHashFilter::AnyOf(vec![ItemHash::new(8)]), None),
+            &item
+        ));
+        assert!(!instance_matches(
+            &instance_query(ItemHashFilter::AnyOf(Vec::new()), None),
+            &item
+        ));
+    }
+
+    #[test]
+    fn instance_perk_filter_is_exact_and_independent_of_flags() {
+        let mut item = instance("instance-1", 7);
+        item.perks = vec![
+            PerkSummary {
+                perk_hash: PerkHash::new(10),
+                active: false,
+                visible: false,
+            },
+            PerkSummary {
+                perk_hash: PerkHash::new(20),
+                active: true,
+                visible: true,
+            },
+        ];
+
+        assert!(instance_matches(
+            &instance_query(ItemHashFilter::Any, Some(PerkHash::new(10))),
+            &item
+        ));
+        assert!(instance_matches(
+            &instance_query(ItemHashFilter::Any, Some(PerkHash::new(20))),
+            &item
+        ));
+        assert!(!instance_matches(
+            &instance_query(ItemHashFilter::Any, Some(PerkHash::new(30))),
+            &item
+        ));
+    }
+
+    #[test]
+    fn instance_character_filter_excludes_vault_and_other_locations() {
+        let mut on_character = instance("instance-1", 7);
+        on_character.location = ItemLocation::Character(CharacterId::new("warlock"));
+
+        let mut query = instance_query(ItemHashFilter::Any, None);
+        query.character_id = Some(CharacterId::new("warlock"));
+        assert!(instance_matches(&query, &on_character));
+
+        query.character_id = Some(CharacterId::new("hunter"));
+        assert!(!instance_matches(&query, &on_character));
+        assert!(!instance_matches(&query, &instance("instance-2", 7)));
+    }
+
+    #[test]
+    fn contract_results_reuse_shared_metadata_and_status_types() {
+        use crate::ids::{DefinitionVersion, SyncRevision};
+        use crate::state::{Dataset, FreshnessStatus, SourceMarker, Timestamp};
+
+        let metadata = super::QueryMetadata {
+            sync: crate::domain::SyncMetadata {
+                dataset: Dataset::ProfileInventory,
+                checked_at: Timestamp::new(100),
+                source: SourceMarker::Profile,
+                revision: SyncRevision::new(2),
+                definition_version: DefinitionVersion::new("manifest-v1"),
+            },
+            freshness: FreshnessStatus::Fresh,
+        };
+        assert_eq!(metadata.freshness, FreshnessStatus::Fresh);
+        assert_eq!(metadata.sync.source, SourceMarker::Profile);
+        assert_eq!(metadata.sync.revision, SyncRevision::new(2));
+    }
+}

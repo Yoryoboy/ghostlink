@@ -5,7 +5,10 @@ use crate::domain::{
     Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, SyncMetadata,
 };
 use crate::error::{AppError, ErrorCategory};
-use crate::ids::{BucketHash, DefinitionVersion, ItemHash, MembershipId, MembershipType, PlanId};
+use crate::ids::{
+    BucketHash, DefinitionVersion, ItemHash, ItemInstanceId, MembershipId, MembershipType, PlanId,
+};
+use crate::query::{DefinitionSearchQuery, InstanceSearchQuery};
 use crate::state::{Resolution, SourceMarker, Timestamp};
 use std::collections::HashSet;
 use std::fmt;
@@ -196,6 +199,67 @@ pub trait InventoryRepository {
         &mut self,
         snapshot: InventorySnapshotInput,
     ) -> Result<InventorySnapshot, AppError>;
+}
+
+/// Resolves bounded semantic queries against the durable search projection.
+///
+/// This is the provider-neutral read seam shared by `search_inventory` and
+/// `inspect_item`. Every method is a pure read of the caller's committed
+/// projection: it performs no synchronization, no provider call, and no
+/// mutation, so the application layer alone decides when a projection must be
+/// refreshed before a query is answered.
+///
+/// The contract is deliberately implementable with identical behavior by an
+/// in-memory fake and by the durable SQLite adapter, and it assumes no full-text
+/// search capability:
+///
+/// - [`Self::search_definitions`] validates the query, returns every matching
+///   [`ItemDefinition`] whose normalized name, type, and tags satisfy it,
+///   orders the matches by [`ItemHash`] ascending, and then truncates the
+///   ordered list to the query limit. An invalid query fails with the sanitized
+///   [`ErrorCategory::ProviderValidation`] category.
+/// - [`Self::search_instances`] validates the query, returns every matching
+///   [`ItemInstance`] that satisfies the definition-hash, exact [`PerkHash`],
+///   and character filters, orders the matches by [`ItemInstanceId`] ascending,
+///   and then truncates the ordered list to the query limit.
+/// - [`Self::lookup_instance`] resolves one concrete instance by its exact
+///   identifier and reports [`Resolution::Missing`], [`Resolution::Unique`], or
+///   [`Resolution::Ambiguous`] without ever selecting by a display name. A valid
+///   projection carries unique instance identifiers, so `Ambiguous` is
+///   unreachable for a well-formed repository: duplicate instance keys are
+///   rejected by the profile projection's structural validation and by the
+///   durable primary key. The variant is inherited unchanged from the shared
+///   [`Resolution`] type used by [`DefinitionRepository::lookup_definition`],
+///   so its unbounded vector is not a product-facing candidate list and needs no
+///   separate bound here; only the caller-controlled search inputs are bounded.
+///
+/// Matching never returns a raw provider payload, a credential, or an unbounded
+/// record, and no method returns a definition where an instance identity is
+/// required or the reverse.
+///
+/// [`PerkHash`]: crate::ids::PerkHash
+/// [`ItemInstanceId`]: crate::ids::ItemInstanceId
+pub trait SearchRepository {
+    /// Bounded, deterministic definition matches for one validated search.
+    fn search_definitions(
+        &self,
+        query: &DefinitionSearchQuery,
+    ) -> Result<Vec<ItemDefinition>, AppError>;
+
+    /// Bounded, deterministic concrete-instance matches for one validated search.
+    fn search_instances(&self, query: &InstanceSearchQuery) -> Result<Vec<ItemInstance>, AppError>;
+
+    /// Resolves one concrete instance by exact identifier.
+    ///
+    /// The lookup is exact and never name-based. A `Resolution::Ambiguous`
+    /// result is only reachable from a structurally invalid or test-seeded
+    /// projection, because a valid projection carries unique instance
+    /// identifiers; the unbounded ambiguity vector is inherited from the shared
+    /// [`Resolution`] type rather than a bounded product result.
+    fn lookup_instance(
+        &self,
+        instance_id: &ItemInstanceId,
+    ) -> Result<Resolution<ItemInstance>, AppError>;
 }
 
 /// A validated, provider-neutral Destiny membership identity.

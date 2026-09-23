@@ -6,6 +6,7 @@ pub mod error;
 pub mod ids;
 pub mod mutation;
 pub mod ports;
+pub mod query;
 pub mod state;
 
 pub use auth::{
@@ -30,7 +31,13 @@ pub use ports::{
     CredentialStore, DefinitionReplacementInput, DefinitionRepository, DestinyMembership,
     InventoryRepository, InventorySnapshotInput, ManifestAcquisition, ManifestDefinitionCandidate,
     ManifestDefinitions, ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange,
-    SecureRandom,
+    SearchRepository, SecureRandom,
+};
+pub use query::{
+    CharacterListResult, DefinitionSearchQuery, InspectItemRequest, InstanceSearchQuery,
+    InventorySearchHit, InventorySearchResult, ItemHashFilter, ItemInspection, MAX_HASH_FILTERS,
+    MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS, QueryMetadata, SearchTerm,
+    definition_matches, instance_matches, normalize_search_text,
 };
 pub use state::{
     Dataset, FreshnessInput, FreshnessPolicy, FreshnessStatus, ProfileSyncOutcome,

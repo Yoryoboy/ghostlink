@@ -6,11 +6,12 @@
 use destiny_core::{
     AccessCredential, AppError, AuthorizationCallback, AuthorizationState, BrowserAuthorization,
     CallbackReceiver, Clock, CredentialMaterial, CredentialStore, Dataset,
-    DefinitionReplacementInput, DefinitionRepository, DefinitionVersion, DestinyMembership,
-    ErrorCategory, InventoryRepository, InventorySnapshot, InventorySnapshotInput, ItemDefinition,
-    ItemHash, ManifestAcquisition, ManifestDefinitions, ManifestGateway, PlanId, PlanIdGenerator,
-    ProfileGateway, Resolution, SnapshotMetadata, SourceMarker, SyncMetadata, SyncRevision,
-    Timestamp,
+    DefinitionReplacementInput, DefinitionRepository, DefinitionSearchQuery, DefinitionVersion,
+    DestinyMembership, ErrorCategory, InstanceSearchQuery, InventoryRepository, InventorySnapshot,
+    InventorySnapshotInput, ItemDefinition, ItemHash, ItemInstance, ItemInstanceId,
+    ManifestAcquisition, ManifestDefinitions, ManifestGateway, PlanId, PlanIdGenerator,
+    ProfileGateway, Resolution, SearchRepository, SnapshotMetadata, SourceMarker, SyncMetadata,
+    SyncRevision, Timestamp, definition_matches, instance_matches,
 };
 use std::collections::{HashSet, VecDeque};
 
@@ -404,6 +405,121 @@ impl InventoryRepository for InMemoryInventoryRepository {
     }
 }
 
+/// A deterministic, in-memory [`SearchRepository`] over committed projection data.
+///
+/// The fake mirrors the durable search contract exactly: it validates the same
+/// queries, applies the same [`definition_matches`]/[`instance_matches`]
+/// normalization and matching rules, and returns the same
+/// [`ItemHash`]/[`ItemInstanceId`] ascending order truncated to the same limit.
+/// It holds only the *current* projection, so replacing the seeded definitions
+/// or instances immediately changes what a later search observes and nothing
+/// from the previous revision stays visible.
+///
+/// It performs no I/O and no serialization, which lets later `QueryService`
+/// tests exercise definition-versus-instance behavior without a database.
+#[derive(Clone, Debug, Default)]
+pub struct InMemorySearchRepository {
+    definitions: Vec<ItemDefinition>,
+    instances: Vec<ItemInstance>,
+}
+
+impl InMemorySearchRepository {
+    /// Builds an empty projection.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Builds a projection from one complete definition set and no instances.
+    pub fn with_definitions(definitions: Vec<ItemDefinition>) -> Self {
+        Self {
+            definitions,
+            instances: Vec::new(),
+        }
+    }
+
+    /// Builds a projection from one definition set and one committed snapshot.
+    pub fn with_projection(definitions: Vec<ItemDefinition>, snapshot: &InventorySnapshot) -> Self {
+        Self {
+            definitions,
+            instances: snapshot.items.clone(),
+        }
+    }
+
+    /// Replaces every visible definition, as a completed Manifest publication would.
+    pub fn set_definitions(&mut self, definitions: Vec<ItemDefinition>) {
+        self.definitions = definitions;
+    }
+
+    /// Replaces every visible instance, as a completed profile refresh would.
+    pub fn set_instances(&mut self, instances: Vec<ItemInstance>) {
+        self.instances = instances;
+    }
+
+    /// Number of definitions currently visible to search.
+    pub fn definition_count(&self) -> usize {
+        self.definitions.len()
+    }
+
+    /// Number of instances currently visible to search.
+    pub fn instance_count(&self) -> usize {
+        self.instances.len()
+    }
+}
+
+impl SearchRepository for InMemorySearchRepository {
+    fn search_definitions(
+        &self,
+        query: &DefinitionSearchQuery,
+    ) -> Result<Vec<ItemDefinition>, AppError> {
+        query.validate()?;
+        let mut matches: Vec<ItemDefinition> = self
+            .definitions
+            .iter()
+            .filter(|definition| definition_matches(query, definition))
+            .cloned()
+            .collect();
+        matches.sort_by_key(|definition| definition.hash);
+        matches.truncate(query.limit);
+        Ok(matches)
+    }
+
+    fn search_instances(&self, query: &InstanceSearchQuery) -> Result<Vec<ItemInstance>, AppError> {
+        query.validate()?;
+        let mut matches: Vec<ItemInstance> = self
+            .instances
+            .iter()
+            .filter(|instance| instance_matches(query, instance))
+            .cloned()
+            .collect();
+        matches.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+        matches.truncate(query.limit);
+        Ok(matches)
+    }
+
+    fn lookup_instance(
+        &self,
+        instance_id: &ItemInstanceId,
+    ) -> Result<Resolution<ItemInstance>, AppError> {
+        // A structurally valid projection carries unique instance identifiers,
+        // so `Ambiguous` is only reachable from an invalid or expressly
+        // test-seeded projection. The unbounded ambiguity vector is inherited
+        // from the shared `Resolution` type used by definition lookup and is
+        // not a bounded product-facing candidate list; only the caller-supplied
+        // search inputs are bounded by the query validation above.
+        let matches: Vec<ItemInstance> = self
+            .instances
+            .iter()
+            .filter(|instance| &instance.instance_id == instance_id)
+            .cloned()
+            .collect();
+        Ok(match matches.as_slice() {
+            [] => Resolution::Missing,
+            [instance] => Resolution::Unique(instance.clone()),
+            _ => Resolution::Ambiguous(matches),
+        })
+    }
+}
+
 /// Deterministically queues membership resolution and inventory acquisition
 /// outcomes and records how each port method was called.
 ///
@@ -555,8 +671,9 @@ impl CredentialStore for FailingCredentialStore {
 mod tests {
     use super::*;
     use destiny_core::{
-        Character, ErrorCategory, ItemInstance, ItemLocation, MembershipId, MembershipType,
-        PerkHash, PerkSummary,
+        Character, CharacterId, ErrorCategory, InstanceSearchQuery, ItemHashFilter, ItemInstance,
+        ItemLocation, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MembershipId, MembershipType, PerkHash,
+        PerkSummary, SearchTerm,
     };
 
     type RevisionMutation = (&'static str, fn(&mut InventorySnapshotInput));
@@ -665,6 +782,88 @@ mod tests {
             tags: Vec::new(),
             version: DefinitionVersion::new(version),
         }
+    }
+
+    fn typed_definition(
+        hash: i64,
+        name: &str,
+        item_type: Option<&str>,
+        tags: Vec<&str>,
+    ) -> ItemDefinition {
+        let mut definition = item_definition(hash, name, "manifest-v1");
+        definition.item_type = item_type.map(str::to_owned);
+        definition.tags = tags.into_iter().map(str::to_owned).collect();
+        definition
+    }
+
+    fn search_instance(
+        instance_id: &str,
+        item_hash: i64,
+        location: ItemLocation,
+        perk_hashes: Vec<u32>,
+    ) -> ItemInstance {
+        ItemInstance {
+            instance_id: instance_id.into(),
+            item_hash: ItemHash::new(item_hash),
+            location,
+            quantity: 1,
+            equipped: false,
+            locked: false,
+            power: None,
+            perks: perk_hashes
+                .into_iter()
+                .map(|hash| PerkSummary {
+                    perk_hash: PerkHash::new(hash),
+                    active: true,
+                    visible: true,
+                })
+                .collect(),
+        }
+    }
+
+    fn definition_query(
+        text: Option<&str>,
+        item_type: Option<&str>,
+        tags: Vec<&str>,
+        limit: usize,
+    ) -> DefinitionSearchQuery {
+        DefinitionSearchQuery {
+            text: text.map(|value| SearchTerm::new(value).unwrap()),
+            item_type: item_type.map(|value| SearchTerm::new(value).unwrap()),
+            tags: tags
+                .into_iter()
+                .map(|tag| SearchTerm::new(tag).unwrap())
+                .collect(),
+            limit,
+        }
+    }
+
+    fn instance_query(
+        item_hashes: ItemHashFilter,
+        perk_hash: Option<u32>,
+        character: Option<&str>,
+        limit: usize,
+    ) -> InstanceSearchQuery {
+        InstanceSearchQuery {
+            item_hashes,
+            perk_hash: perk_hash.map(PerkHash::new),
+            character_id: character.map(CharacterId::new),
+            limit,
+        }
+    }
+
+    fn definition_hashes(definitions: &[ItemDefinition]) -> Vec<i64> {
+        definitions
+            .iter()
+            .map(|definition| definition.hash.value())
+            .collect()
+    }
+
+    fn instance_names(instances: &[ItemInstance]) -> Vec<&str> {
+        instances
+            .iter()
+            .map(|instance| instance.instance_id.as_str())
+            .collect()
     }
 
     fn definition_set(version: &str, definitions: Vec<ItemDefinition>) -> ManifestDefinitions {
@@ -1567,5 +1766,385 @@ mod tests {
         assert_eq!(store.load().unwrap().unwrap().expose_secret(), b"secret");
         store.delete().unwrap();
         assert!(!store.contains_material());
+    }
+
+    #[test]
+    fn search_repository_matches_normalized_name_type_and_tags() {
+        let repository = InMemorySearchRepository::with_definitions(vec![
+            typed_definition(
+                5,
+                "Gjallarhorn",
+                Some("Rocket Launcher"),
+                vec!["exotic", "solar"],
+            ),
+            typed_definition(
+                2,
+                "Gjallarswift",
+                Some("Rocket Launcher"),
+                vec!["legendary"],
+            ),
+            typed_definition(9, "Ghost Shell", Some("Ghost Shell"), vec!["exotic"]),
+        ]);
+
+        // Name matching is a case-insensitive normalized substring.
+        let by_name = repository
+            .search_definitions(&definition_query(Some("  GJALLAR "), None, Vec::new(), 10))
+            .unwrap();
+        assert_eq!(definition_hashes(&by_name), [2, 5]);
+
+        // Type matching is exact normalized equality, not a substring.
+        let by_type = repository
+            .search_definitions(&definition_query(
+                None,
+                Some("rocket launcher"),
+                Vec::new(),
+                10,
+            ))
+            .unwrap();
+        assert_eq!(definition_hashes(&by_type), [2, 5]);
+
+        // Tag matching requires every listed tag after normalization.
+        let by_tags = repository
+            .search_definitions(&definition_query(None, None, vec!["EXOTIC", " solar "], 10))
+            .unwrap();
+        assert_eq!(definition_hashes(&by_tags), [5]);
+
+        // An unfiltered query matches every definition, bounded by the limit.
+        let unfiltered = repository
+            .search_definitions(&definition_query(None, None, Vec::new(), 10))
+            .unwrap();
+        assert_eq!(definition_hashes(&unfiltered), [2, 5, 9]);
+    }
+
+    #[test]
+    fn definition_search_orders_by_hash_then_truncates_to_the_limit() {
+        let repository = InMemorySearchRepository::with_definitions(vec![
+            typed_definition(30, "Alpha", None, Vec::new()),
+            typed_definition(10, "Beta", None, Vec::new()),
+            typed_definition(20, "Gamma", None, Vec::new()),
+        ]);
+
+        let limited = repository
+            .search_definitions(&definition_query(None, None, Vec::new(), 2))
+            .unwrap();
+        assert_eq!(definition_hashes(&limited), [10, 20]);
+
+        let full = repository
+            .search_definitions(&definition_query(None, None, Vec::new(), 3))
+            .unwrap();
+        assert_eq!(definition_hashes(&full), [10, 20, 30]);
+
+        // Repeated reads are byte-for-byte deterministic.
+        for _ in 0..3 {
+            assert_eq!(
+                definition_hashes(
+                    &repository
+                        .search_definitions(&definition_query(None, None, Vec::new(), 3))
+                        .unwrap()
+                ),
+                [10, 20, 30]
+            );
+        }
+    }
+
+    #[test]
+    fn empty_definition_search_is_an_explicit_no_match() {
+        let repository = InMemorySearchRepository::with_definitions(vec![typed_definition(
+            1,
+            "Gjallarhorn",
+            Some("Rocket Launcher"),
+            vec!["exotic"],
+        )]);
+        let empty = repository
+            .search_definitions(&definition_query(
+                Some("vex mythoclast"),
+                None,
+                Vec::new(),
+                10,
+            ))
+            .unwrap();
+        assert!(empty.is_empty());
+
+        let empty_projection = InMemorySearchRepository::new();
+        assert!(
+            empty_projection
+                .search_definitions(&definition_query(None, None, Vec::new(), 10))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            empty_projection
+                .search_instances(&instance_query(ItemHashFilter::Any, None, None, 10))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn instance_search_filters_by_hash_perk_and_character() {
+        let mut repository = InMemorySearchRepository::new();
+        repository.set_instances(vec![
+            search_instance(
+                "instance-1",
+                7,
+                ItemLocation::Character(CharacterId::new("warlock")),
+                vec![10, 20],
+            ),
+            search_instance("instance-2", 7, ItemLocation::Vault, vec![30]),
+            search_instance("instance-3", 8, ItemLocation::Vault, vec![10]),
+        ]);
+
+        let by_hash = repository
+            .search_instances(&instance_query(
+                ItemHashFilter::AnyOf(vec![ItemHash::new(7)]),
+                None,
+                None,
+                10,
+            ))
+            .unwrap();
+        assert_eq!(instance_names(&by_hash), ["instance-1", "instance-2"]);
+
+        // A perk filter is exact and combines with the definition constraint.
+        let by_perk = repository
+            .search_instances(&instance_query(
+                ItemHashFilter::AnyOf(vec![ItemHash::new(7)]),
+                Some(10),
+                None,
+                10,
+            ))
+            .unwrap();
+        assert_eq!(instance_names(&by_perk), ["instance-1"]);
+
+        // A perk-only search uses the explicit `Any` constraint.
+        let perk_only = repository
+            .search_instances(&instance_query(ItemHashFilter::Any, Some(10), None, 10))
+            .unwrap();
+        assert_eq!(instance_names(&perk_only), ["instance-1", "instance-3"]);
+
+        // A character filter excludes the Vault and unknown locations.
+        let by_character = repository
+            .search_instances(&instance_query(
+                ItemHashFilter::Any,
+                None,
+                Some("warlock"),
+                10,
+            ))
+            .unwrap();
+        assert_eq!(instance_names(&by_character), ["instance-1"]);
+
+        // An empty hash list is a fail-closed no-match, not an unfiltered search.
+        assert!(
+            repository
+                .search_instances(&instance_query(
+                    ItemHashFilter::AnyOf(Vec::new()),
+                    None,
+                    None,
+                    10
+                ))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn instance_search_orders_by_identifier_then_truncates() {
+        let mut repository = InMemorySearchRepository::new();
+        repository.set_instances(vec![
+            search_instance("instance-c", 7, ItemLocation::Vault, Vec::new()),
+            search_instance("instance-a", 7, ItemLocation::Vault, Vec::new()),
+            search_instance("instance-b", 7, ItemLocation::Vault, Vec::new()),
+        ]);
+
+        let ordered = repository
+            .search_instances(&instance_query(ItemHashFilter::Any, None, None, 10))
+            .unwrap();
+        assert_eq!(
+            instance_names(&ordered),
+            ["instance-a", "instance-b", "instance-c"]
+        );
+
+        let limited = repository
+            .search_instances(&instance_query(ItemHashFilter::Any, None, None, 2))
+            .unwrap();
+        assert_eq!(instance_names(&limited), ["instance-a", "instance-b"]);
+    }
+
+    #[test]
+    fn lookup_instance_reports_missing_unique_and_ambiguous() {
+        // Duplicate instance identifiers cannot occur in a structurally valid
+        // projection, so this seeds an expressly invalid state to prove the
+        // inherited `Resolution::Ambiguous` outcome is still reported rather
+        // than silently collapsed.
+        let duplicate_first = search_instance("instance-1", 7, ItemLocation::Vault, Vec::new());
+        let duplicate_second = search_instance(
+            "instance-1",
+            8,
+            ItemLocation::Other("postmaster".into()),
+            Vec::new(),
+        );
+
+        let mut repository = InMemorySearchRepository::new();
+        repository.set_instances(vec![duplicate_first.clone(), duplicate_second.clone()]);
+        assert_eq!(
+            repository
+                .lookup_instance(&ItemInstanceId::new("instance-1"))
+                .unwrap(),
+            Resolution::Ambiguous(vec![duplicate_first.clone(), duplicate_second])
+        );
+        assert_eq!(
+            repository
+                .lookup_instance(&ItemInstanceId::new("missing"))
+                .unwrap(),
+            Resolution::Missing
+        );
+
+        repository.set_instances(vec![duplicate_first.clone()]);
+        assert_eq!(
+            repository
+                .lookup_instance(&ItemInstanceId::new("instance-1"))
+                .unwrap(),
+            Resolution::Unique(duplicate_first)
+        );
+    }
+
+    #[test]
+    fn search_repository_exposes_only_the_current_projection() {
+        let mut repository = InMemorySearchRepository::with_definitions(vec![typed_definition(
+            1,
+            "Old Name",
+            None,
+            vec!["old-tag"],
+        )]);
+        repository.set_instances(vec![search_instance(
+            "instance-1",
+            1,
+            ItemLocation::Vault,
+            Vec::new(),
+        )]);
+
+        repository.set_definitions(vec![typed_definition(2, "New Name", None, vec!["new-tag"])]);
+        repository.set_instances(vec![search_instance(
+            "instance-2",
+            2,
+            ItemLocation::Vault,
+            Vec::new(),
+        )]);
+
+        assert_eq!(repository.definition_count(), 1);
+        assert_eq!(repository.instance_count(), 1);
+        assert!(
+            repository
+                .search_definitions(&definition_query(Some("old name"), None, Vec::new(), 10))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            definition_hashes(
+                &repository
+                    .search_definitions(&definition_query(None, None, Vec::new(), 10))
+                    .unwrap()
+            ),
+            [2]
+        );
+        assert_eq!(
+            repository
+                .lookup_instance(&ItemInstanceId::new("instance-1"))
+                .unwrap(),
+            Resolution::Missing
+        );
+        assert!(matches!(
+            repository
+                .lookup_instance(&ItemInstanceId::new("instance-2"))
+                .unwrap(),
+            Resolution::Unique(_)
+        ));
+    }
+
+    #[test]
+    fn search_repository_rejects_invalid_queries_with_a_sanitized_error() {
+        let repository = InMemorySearchRepository::with_definitions(vec![typed_definition(
+            1,
+            "Gjallarhorn",
+            None,
+            Vec::new(),
+        )]);
+
+        let mut invalid_definitions = definition_query(Some("ghost"), None, Vec::new(), 10);
+        invalid_definitions.limit = 0;
+        assert_eq!(
+            repository.search_definitions(&invalid_definitions),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+
+        let mut invalid_instances = instance_query(ItemHashFilter::Any, None, None, 10);
+        invalid_instances.limit = MAX_SEARCH_LIMIT + 1;
+        assert_eq!(
+            repository.search_instances(&invalid_instances),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+    }
+
+    #[test]
+    fn search_repository_bounds_the_instance_hash_filter_cardinality() {
+        let repository = InMemorySearchRepository::with_definitions(vec![typed_definition(
+            1,
+            "Gjallarhorn",
+            None,
+            Vec::new(),
+        )]);
+
+        // The boundary is accepted and the over-bound list is rejected with a
+        // sanitized error before any projection read.
+        let boundary: Vec<ItemHash> = (0..MAX_HASH_FILTERS as i64).map(ItemHash::new).collect();
+        let at_boundary = instance_query(ItemHashFilter::AnyOf(boundary), None, None, 10);
+        assert_eq!(repository.search_instances(&at_boundary), Ok(Vec::new()));
+
+        let over: Vec<ItemHash> = (0..=MAX_HASH_FILTERS as i64).map(ItemHash::new).collect();
+        let over_bound = instance_query(ItemHashFilter::AnyOf(over), None, None, 10);
+        assert_eq!(
+            repository.search_instances(&over_bound),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+
+        // An empty `AnyOf` stays valid and still matches nothing, so the
+        // `Any` versus `AnyOf(empty)` distinction survives the bound.
+        let empty_filter = instance_query(ItemHashFilter::AnyOf(Vec::new()), None, None, 10);
+        assert_eq!(repository.search_instances(&empty_filter), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn search_repository_seeds_from_a_committed_snapshot() {
+        let snapshot = InventorySnapshot {
+            metadata: SnapshotMetadata {
+                membership_id: MembershipId::new("membership"),
+                membership_type: MembershipType::new(1),
+                revision: SyncRevision::new(1),
+                definition_version: DefinitionVersion::new("manifest-v1"),
+                checked_at: Timestamp::new(100),
+                source: SourceMarker::Profile,
+            },
+            characters: Vec::new(),
+            items: vec![search_instance(
+                "instance-1",
+                7,
+                ItemLocation::Vault,
+                vec![10],
+            )],
+        };
+        let repository = InMemorySearchRepository::with_projection(
+            vec![typed_definition(7, "Gjallarhorn", None, Vec::new())],
+            &snapshot,
+        );
+
+        assert_eq!(repository.definition_count(), 1);
+        assert_eq!(repository.instance_count(), 1);
+        assert_eq!(
+            instance_names(
+                &repository
+                    .search_instances(&instance_query(ItemHashFilter::Any, Some(10), None, 10))
+                    .unwrap()
+            ),
+            ["instance-1"]
+        );
     }
 }
