@@ -7,6 +7,7 @@ pub mod profile;
 pub mod profile_gateway;
 pub mod sqlite;
 pub mod token;
+pub mod transfer;
 
 pub use credential_store::{CREDENTIAL_SERVICE, CREDENTIAL_USER, NativeCredentialStore};
 pub use oauth::{
@@ -24,4 +25,9 @@ pub use profile_gateway::{
 pub use token::{
     BungieTokenExchange, HttpTokenTransport, TOKEN_ENDPOINT, TokenHttpResponse, TokenRequest,
     TokenTransport, TokenTransportError,
+};
+pub use transfer::{
+    BungieTransferGateway, HttpTransferTransport, TRANSFER_ENDPOINT, TRANSFER_RESPONSE_LIMIT,
+    TransferApiKey, TransferBearerToken, TransferHttpRequest, TransferHttpResponse,
+    TransferTransport, TransferTransportError, is_allowed_transfer_url,
 };
