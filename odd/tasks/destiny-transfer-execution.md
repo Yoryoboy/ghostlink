@@ -58,7 +58,7 @@ Implementation must contract-test exact URL, trailing slash, JSON field names/ty
 - Review slices: (A) execution contracts, preflight, and provider-call sequencing; (B) partial-failure records, post-action refresh, verification, adapter, and offline journey.
 - Strategy: `ask-on-risk`; the user selected `stacked-to-main` before the first work-unit commit.
 - Slice A contains DTE-001 through DTE-003 at commits `268a7cc`, `5919cd6`, and `b07a044`, closed by evidence commit `74c28ce`.
-- Slice B branch `feature/destiny-transfer-verification` starts at `74c28ce` and contains DTE-004 `26ad3af`, DTE-005 `8fcee88`, and DTE-006 `e4f947e`; closure commit pending below.
+- Slice B branch `feature/destiny-transfer-verification` starts at `74c28ce` and contains DTE-004 `26ad3af`, DTE-005 `8fcee88`, DTE-006 `e4f947e`, and closure `a78f8e9`.
 - No push, pull request, merge, or release is authorized.
 
 ## Tasks
@@ -116,7 +116,7 @@ Implementation must contract-test exact URL, trailing slash, JSON field names/ty
   - Checks: tracker/Engram/todo reconciliation and clean worktree.
   - Route: inline documentation plus delegated final whole-range verification.
   - Evidence: final independent verification read every changed production/test file in `dbf71b0..e4f947e`, audited all ten acceptance criteria, and reported no blocker, critical, major, minor, unmet criterion, regression, or scope creep. Observed final checks: `cargo fmt --all -- --check` clean; `cargo test --workspace` 516 passed; `cargo test --workspace --all-features` 516 passed; `cargo check --workspace --all-targets --all-features` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `git diff --check` clean. Whole range before closure: 10 files, 6,185 insertions, 50 deletions. Slice A boundary: `74c28ce`; Slice B behavior/test commits: `26ad3af`, `8fcee88`, `e4f947e`.
-  - Commit: pending closure commit.
+  - Commit: `a78f8e9` (`docs: close Destiny transfer execution`).
 
 ## Acceptance criteria
 
@@ -154,4 +154,4 @@ Implementation must contract-test exact URL, trailing slash, JSON field names/ty
 
 ## Next step
 
-Commit this closure evidence, update Engram/todo with the closure identity, and confirm the worktree is clean. WU-012 may then consume WU-009/WU-010/WU-011.
+WU-010 is complete. WU-012 may consume WU-009/WU-010/WU-011 after the final closure-identity evidence commit.
