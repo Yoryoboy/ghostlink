@@ -39,19 +39,31 @@ WU-011 is the independent MCP read vertical. It must translate MCP inputs and ou
 ## Exact edit surfaces
 
 - Workspace dependency/lock surface: `Cargo.toml`, `Cargo.lock`.
-- MCP package: `crates/destiny-mcp/Cargo.toml`, `crates/destiny-mcp/src/main.rs`, and new MCP-local modules under `crates/destiny-mcp/src/` for schemas/mapping, service routing, and composition.
-- MCP tests/fixtures only: in-module tests and/or `crates/destiny-mcp/tests/` plus deterministic sanitized fixtures if needed.
+- Minimal composition-foundation repair: `crates/destiny-core/src/{auth.rs,ports.rs,lib.rs}` for the complete credential contract; `crates/destiny-app/src/{auth.rs,config.rs,lib.rs}` for complete-credential use and an app-owned redacted MCP runtime configuration; `crates/destiny-adapters/src/{credential_store.rs,clock.rs,lib.rs}` for versioned secure persistence and `SystemClock`.
+- MCP package: `crates/destiny-mcp/Cargo.toml`, `crates/destiny-mcp/src/main.rs`, and MCP-local modules under `crates/destiny-mcp/src/` for schemas/mapping, service routing, and the concrete composition root.
+- MCP tests: in-module tests and/or `crates/destiny-mcp/tests/`; deterministic fakes may drive tests but never production behavior.
 - User/run documentation only where behavior becomes runnable: `README.md` and this tracker.
-- No planned edits to `destiny-core`, `destiny-app`, `destiny-adapters`, CLI, migrations, or provider fixtures.
+- No planned edits to SQLite migrations, provider fixtures, query behavior, or CLI.
+
+## Authorized composition repair
+
+The user explicitly authorized the minimum cross-WU repair needed to make the stdio binary real rather than fixture-backed:
+
+- `CredentialStore` persists and loads the complete `AccessCredential` (expiry metadata plus opaque material), never only the bearer bytes.
+- Native keyring encoding is versioned and bounded. A legacy raw-material entry cannot recover expiry, so it is recognized without rendering or guessing, rejected as `ReauthorizationRequired`, and removed or replaced only through the explicit authorization lifecycle. There is no environment-derived expiry and no plaintext fallback.
+- Application-owned MCP runtime configuration exposes only typed values needed by the trusted composition root (API key wrapper input, database path, definition version, freshness TTL); its `Debug`, `Display`, and errors remain value-redacted.
+- A production `SystemClock` implements the shared clock port using Unix seconds with sanitized pre-epoch/overflow failure.
+- Only the `destiny-mcp` binary composition root names concrete adapters. Tool handlers and MCP library contracts continue to depend on the app-neutral `InventoryReadService`; adapter types never enter schemas/results/errors.
+- Tests must prove new/legacy/malformed keyring behavior, exact complete-credential round trips, secret-free `Debug`/errors/log-facing values, redacted configuration, clock behavior, and that no fixture or environment expiry enters the production composition.
 
 ## Delivery
 
 - Strategy: `ask-on-risk`.
-- Forecast: approximately 1,200–2,000 authored changed lines across mapping/contracts, server routing/runtime composition, stdio integration harness, snapshots, and documentation.
+- Forecast: approximately 2,400–4,000 authored changed lines across mapping/contracts, the authorized composition repair, server routing/runtime composition, stdio integration harness, snapshots, and documentation.
 - Chain strategy: `feature-branch-chain`, continuing from WU-007 boundary `2b6c001`.
 - Branch: `feature/destiny-mcp-read-tools`.
 - Engram mirror topic: `odd/destiny-mcp-read-tools/tasks`.
-- Review slices: tracker; bounded mapping/service contract; stdio runtime/integration; final verification/closure.
+- Review slices: tracker; bounded mapping/service contract; composition-foundation repair; stdio runtime/integration; final verification/closure.
 - Every implementation slice includes its own tests/docs and closes with a Conventional Commit. No push or PR is part of this work unit.
 
 ## Effective checks
@@ -63,7 +75,7 @@ WU-011 is the independent MCP read vertical. It must translate MCP inputs and ou
 ## Tasks
 
 - [x] **DMR-001 — Establish WU-011 boundary and pin official RMCP decisions**
-  - Outcome: create this tracker and Engram mirror before source edits; record exact dependencies, edit surfaces, bounds, transport evidence, four implementation/closure tasks, checks, and rollback boundaries.
+  - Outcome: create this tracker and Engram mirror before source edits; record exact dependencies, edit surfaces, bounds, transport evidence, and the initial four implementation/closure tasks, checks, and rollback boundaries. The later authorized composition repair adds DMR-002A explicitly rather than hiding it inside DMR-003.
   - Check: tracker/Engram readback; clean `git diff --check`; commit contains only the tracker.
   - Rollback: remove only this tracker/branch before implementation.
   - Evidence: commit `3433bfa` (`chore: start Destiny MCP read tools`) contains only `odd/tasks/destiny-mcp-read-tools.md` (114 insertions, 0 deletions, confirmed by `git show --stat 3433bfa`); `git diff --check` was clean at that commit and the worktree was clean on `feature/destiny-mcp-read-tools` before DMR-002.
@@ -72,7 +84,13 @@ WU-011 is the independent MCP read vertical. It must translate MCP inputs and ou
   - Outcome: pin RMCP; add MCP-owned inputs/outputs and a narrow application-service seam; map all three reads to shared services with deterministic bounded results and sanitized typed errors; prove mapping parity without transport.
   - Check: focused MCP unit/contract tests; fmt; focused clippy; schema/result snapshots or exact structure assertions; secret sentinel scan.
   - Rollback: remove the MCP dependency and local schema/mapping/service modules/tests while leaving the placeholder binary intact.
-  - Evidence: pinned `rmcp = { version = "=3.4.0", features = ["server", "transport-io"] }` (resolved to rmcp 3.4.0 in `Cargo.lock`) plus `serde`/`schemars` workspace dependencies; added MCP-local `src/lib.rs`, `src/schema.rs`, and `src/service.rs`; added a documented additive `destiny-core` reexport block to `crates/destiny-app/src/lib.rs` so the presentation crate can translate shared read types without a direct `destiny-core` dependency; added one MCP-local identifier transport bound (`MAX_IDENTIFIER_LENGTH = 512`, `character_id`/`instance_id`, empty rejected) enforced in JSON Schema and in runtime conversion before any service call; 20 focused MCP tests cover argument bounds, identifier bounds with zero-call behavior, tool/JSON-schema shape, deterministic mapping, missing/ambiguous/sanitized errors, definition-vs-instance identity, secret-sentinel absence, and parity with the shared application results. DMR-003/004 remain unchecked.
+  - Evidence: commit `16b7809` (`feat: add bounded MCP read contracts`) pinned `rmcp = { version = "=3.4.0", features = ["server", "transport-io"] }` plus `serde`/`schemars`; added MCP-local `src/lib.rs`, `src/schema.rs`, and `src/service.rs`; added documented provider-neutral reexports through `destiny-app`; and applied `MAX_IDENTIFIER_LENGTH = 512` identically in JSON Schema/runtime without changing shared opaque IDs. Twenty focused MCP tests cover argument/identifier bounds, tool schemas, deterministic mapping, missing/ambiguous/sanitized errors, identity separation, secret absence, and shared-result parity. Independent verification closed both medium findings with no blocker/high/medium issue remaining. DMR-002A/003/004 remain unchecked.
+
+- [ ] **DMR-002A — Repair the minimum production composition foundations**
+  - Outcome: persist/load a versioned complete `AccessCredential` through the native secure store; fail closed with explicit reauthorization for legacy entries whose expiry is unknowable; add redacted app-owned MCP runtime config and a production `SystemClock`; keep secrets and adapter types outside MCP/application result contracts.
+  - Check: core/app/adapter focused tests; complete credential round trip; legacy and malformed-entry compatibility; no raw material in keyring diagnostics, `Debug`, errors, or log-facing values; config redaction; deterministic clock edge tests; fmt/clippy/diff checks.
+  - Rollback: revert the complete-credential port/auth changes, remove versioned native-store encoding and `SystemClock`, and remove the MCP runtime-config surface; DMR-002 contracts remain usable with injected services and no stdio composition.
+  - Evidence: authorized by the user after DMR-002 when repository inspection proved the old store discarded `expires_at` and could not construct `BungieProfileGateway` correctly in a new process. No environment expiry or fixture-backed production mode is permitted.
 
 - [ ] **DMR-003 — Run the tools through the stdio MCP transport**
   - Outcome: wire the RMCP tools-only server and binary lifecycle; prove initialize, discovery, and all three calls through a real child-process stdio session using deterministic offline composition; document invocation and protocol-only stdout.
@@ -93,6 +111,7 @@ WU-011 is the independent MCP read vertical. It must translate MCP inputs and ou
 - Contract tests demonstrate parity with CLI-neutral application results, and a real child-process stdio test completes discovery and all three read calls offline.
 - `destiny-mcp` remains independent of WU-008 and has no direct dependency on `destiny-core` or provider adapters.
 - Every completed task records exact checks, rollback boundary, and Conventional Commit identity.
+- Existing raw-material-only native keyring entries produce an explicit reauthorization path; no expiry is guessed and no secret is migrated through plaintext or environment configuration.
 
 ## Transport evidence and open uncertainty
 
