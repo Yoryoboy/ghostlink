@@ -95,12 +95,14 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
   - Rollback: remove `crates/destiny-adapters/tests/query_journey.rs`; no production or schema behavior changes.
   - Evidence: commit `b002325` (`test: prove offline inventory query journey`).
 
-- [ ] **DQS-006 — Verify and close WU-007** *(in progress)*
-  - Route: delegated independent full-range verification; parent reconciles tracker, mirror, and closure.
-  - Outcome: verify the entire WU-007 range, record every check and manual limitation, close the feature, and identify WU-008/WU-011 as the next adapter work.
-  - Check: complete effective set; committed-range inspection; clean status; no direct provider or secret-bearing boundary in query outputs.
-  - Rollback: reset this feature branch to `8a2250e` to remove only WU-007.
-  - Evidence: pending.
+- [x] **DQS-006 — Verify and close WU-007**
+  - Route: delegated independent full-range verification because native committed-range assessment remained schema-incompatible/unassessable under clone-disabled RDD.
+  - Outcome: verified the complete committed `8a2250e..5d91d0d` range against WU-007, the architecture read invariants, every changed production/test file, and the runtime journey. All acceptance criteria passed; no blocker/high/medium finding remains. WU-008 CLI reads and WU-011 MCP reads may now consume the shared query services.
+  - Check: fmt and workspace all-target/all-feature check passed; default and all-feature workspace clippy passed with `-D warnings`; core 35, app test-support 113, adapters all-feature 215, workspace default 363, workspace all-feature 363, and query journey 9 tests passed; CLI/MCP help, range diff check, and clean status passed.
+  - Manual limitations: no live credentials/network are required for WU-007; the documented definition N+1 scan was not benchmarked and remains an accepted MVP performance seam.
+  - Review workload: the verified range contains 4,826 insertions and 11 deletions including the tracker, approximately 4,692 authored production/test lines. The four implementation units remain cohesive, tested, and independently revertible in reverse order; the feature rollback boundary is exact.
+  - Rollback: reset this feature branch to `8a2250e371f6c8b90ea97f9649951c6d59bd06ea` to remove only WU-007.
+  - Evidence: closure commit pending.
 
 ## Acceptance criteria
 
@@ -129,6 +131,12 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
 - DQS-004 application query orchestration is complete in `6015749`; independent verification passed with no blocker/high/medium finding.
 - DQS-005 offline SQLite query journey is complete in `b002325`; all effective checks passed and independent verification found no blocker/high/medium issue.
 
+## Closure
+
+- WU-007 is complete: shared bounded query contracts, deterministic fake parity, durable SQLite search, freshness-aware application orchestration, and the real offline SQLite query journey are implemented and verified.
+- The working tree was clean at verified HEAD `5d91d0d`; the final closure commit contains only this tracker update.
+- Delivery remains a separate user decision: the feature branch is committed locally and no push or pull request is implied by closure.
+
 ## Next step
 
-Run DQS-006 independent full-range verification from `8a2250e`, reconcile closure evidence, and close WU-007.
+Begin WU-008 CLI read journey or WU-011 MCP read tools from this closed WU-007 boundary; those adapter units can proceed independently in isolated branches/worktrees if desired.
