@@ -2,7 +2,7 @@
 
 ## Status
 
-IN PROGRESS on stacked Slice B branch `feature/destiny-transfer-verification`, based on Slice A evidence commit `74c28ce` (WU-009 base `dbf71b0`).
+WU-010 COMPLETE and CLOSED on stacked Slice B branch `feature/destiny-transfer-verification`, based on Slice A evidence commit `74c28ce` (WU-009 base `dbf71b0`). No push or pull request was performed.
 
 ## Objective
 
@@ -58,7 +58,7 @@ Implementation must contract-test exact URL, trailing slash, JSON field names/ty
 - Review slices: (A) execution contracts, preflight, and provider-call sequencing; (B) partial-failure records, post-action refresh, verification, adapter, and offline journey.
 - Strategy: `ask-on-risk`; the user selected `stacked-to-main` before the first work-unit commit.
 - Slice A contains DTE-001 through DTE-003 at commits `268a7cc`, `5919cd6`, and `b07a044`, closed by evidence commit `74c28ce`.
-- Slice B branch `feature/destiny-transfer-verification` starts at `74c28ce` and contains DTE-004 through DTE-006.
+- Slice B branch `feature/destiny-transfer-verification` starts at `74c28ce` and contains DTE-004 `26ad3af`, DTE-005 `8fcee88`, and DTE-006 `e4f947e`; closure commit pending below.
 - No push, pull request, merge, or release is authorized.
 
 ## Tasks
@@ -109,13 +109,14 @@ Implementation must contract-test exact URL, trailing slash, JSON field names/ty
   - Checks: focused journey; workspace default/all-features tests; fmt/check/clippy; `git diff --check`.
   - Route: delegated writer, then independent verifier if native assessment requires it.
   - Evidence: added `crates/destiny-adapters/tests/transfer_execution_journey.rs`, one composed offline journey over the real `BungieProfileGateway`, the real on-disk `SqliteStore`, the real `MutationService`/`ProfileSyncService`, and the real `BungieTransferGateway`. Only the two injected transport seams plus the clock and plan-id generator are scripted: the profile transport generates every membership/profile body from one mutable scripted world (so an identical refresh retains the revision and a moved item advances it honestly), and the transfer transport applies each requested move to that same world from the real adapter's own request body before returning a real provider envelope for the real adapter to classify. Nine scenarios cover: direct Vault-to-character success verified only after the mandatory `PostAction` refresh advances the revision; character-to-character success with exactly two ordered Vault-mediated POSTs asserted field by field; a refused second step that strands the item in the Vault and reports partial `IncompleteExecution` evidence with no rollback claim; a changed fresh preflight that rejects with `MutationError::StaleRevision` and zero transfers; an uncertain (`5xx`) step confirmed by the post-action projection as a verified success; a contradictory post-action projection reported as `VerificationFailed(Elsewhere)`; a failed post-action refresh reported as `VerificationFailed(RefreshFailed)` with preserved evidence; an already-satisfied preflight as a verified no-op with zero transfers and no post-action refresh; and API-key/bearer/raw-payload sentinels absent from the public error, bounded evidence, and on-disk bytes. No production behavior changed and no fixture JSON was needed. `cargo fmt --all -- --check`, `cargo test -p destiny-adapters --test transfer_execution_journey` (9 passed), `cargo test -p destiny-adapters --test mutation_planning_journey` (7 passed), `cargo test --workspace` (516 passed), `cargo test --workspace --all-features` (516 passed), `cargo check --workspace --all-targets --all-features`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and `git diff --check` all clean.
-  - Commit: pending.
+  - Commit: `e4f947e` (`test: prove offline transfer execution`).
 
-- [ ] **DTE-007 — Close WU-010**
+- [x] **DTE-007 — Close WU-010**
   - Reconcile acceptance criteria, exact check evidence, review findings, authored-line count, commit boundaries, and next step for WU-012.
   - Checks: tracker/Engram/todo reconciliation and clean worktree.
-  - Route: inline documentation plus routed verification.
-  - Commit: pending.
+  - Route: inline documentation plus delegated final whole-range verification.
+  - Evidence: final independent verification read every changed production/test file in `dbf71b0..e4f947e`, audited all ten acceptance criteria, and reported no blocker, critical, major, minor, unmet criterion, regression, or scope creep. Observed final checks: `cargo fmt --all -- --check` clean; `cargo test --workspace` 516 passed; `cargo test --workspace --all-features` 516 passed; `cargo check --workspace --all-targets --all-features` clean; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `git diff --check` clean. Whole range before closure: 10 files, 6,185 insertions, 50 deletions. Slice A boundary: `74c28ce`; Slice B behavior/test commits: `26ad3af`, `8fcee88`, `e4f947e`.
+  - Commit: pending closure commit.
 
 ## Acceptance criteria
 
@@ -153,4 +154,4 @@ Implementation must contract-test exact URL, trailing slash, JSON field names/ty
 
 ## Next step
 
-Delegate DTE-007 (WU-010 closure) from the DTE-006 offline journey on stacked Slice B: reconcile acceptance criteria, exact check evidence, review findings, authored-line count, and commit boundaries, and record the work-unit commit identity for DTE-006 once authorized.
+Commit this closure evidence, update Engram/todo with the closure identity, and confirm the worktree is clean. WU-012 may then consume WU-009/WU-010/WU-011.
