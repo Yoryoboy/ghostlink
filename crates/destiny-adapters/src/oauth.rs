@@ -62,6 +62,8 @@ impl CallbackEndpoint {
 pub struct LoopbackCallbackReceiver {
     listeners: Vec<TcpListener>,
     endpoint: CallbackEndpoint,
+    accept_timeout: Duration,
+    read_timeout: Duration,
 }
 
 impl LoopbackCallbackReceiver {
@@ -118,7 +120,16 @@ impl LoopbackCallbackReceiver {
         Ok(Self {
             listeners,
             endpoint,
+            accept_timeout: ACCEPT_TIMEOUT,
+            read_timeout: READ_TIMEOUT,
         })
+    }
+
+    #[cfg(test)]
+    fn with_timeouts(mut self, accept_timeout: Duration, read_timeout: Duration) -> Self {
+        self.accept_timeout = accept_timeout;
+        self.read_timeout = read_timeout;
+        self
     }
 
     pub fn local_port(&self) -> Result<u16, AppError> {
@@ -142,7 +153,7 @@ impl LoopbackCallbackReceiver {
 
 impl CallbackReceiver for LoopbackCallbackReceiver {
     fn receive(&mut self) -> Result<AuthorizationCallback, AppError> {
-        let deadline = Instant::now() + ACCEPT_TIMEOUT;
+        let deadline = Instant::now() + self.accept_timeout;
         let mut stream = 'accept_loop: loop {
             for listener in &self.listeners {
                 match listener.accept() {
@@ -156,7 +167,7 @@ impl CallbackReceiver for LoopbackCallbackReceiver {
             }
             thread::sleep(Duration::from_millis(10));
         };
-        let read_deadline = Instant::now() + READ_TIMEOUT;
+        let read_deadline = Instant::now() + self.read_timeout;
         let mut request = Vec::with_capacity(1024);
         let mut buffer = [0u8; 1024];
         loop {
@@ -469,6 +480,16 @@ impl BrowserAuthorization for HeadlessBrowserAuthorization {
 mod tests {
     use super::*;
     use destiny_core::state::Timestamp;
+    use std::sync::{Mutex, MutexGuard};
+
+    static LOOPBACK_TEST_GUARD: Mutex<()> = Mutex::new(());
+    const LOOPBACK_TEST_TIMEOUT: Duration = Duration::from_millis(250);
+
+    fn lock_loopback_tests() -> MutexGuard<'static, ()> {
+        LOOPBACK_TEST_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn authorize_url_has_only_public_client_parameters() {
@@ -555,6 +576,7 @@ mod tests {
 
     #[test]
     fn callback_receiver_binds_explicit_ipv6_when_available() {
+        let _guard = lock_loopback_tests();
         let listener = match std::net::TcpListener::bind("[::1]:0") {
             Ok(listener) => listener,
             Err(_) => return,
@@ -579,6 +601,7 @@ mod tests {
 
     #[test]
     fn callback_receiver_localhost_uses_available_families() {
+        let _guard = lock_loopback_tests();
         let ipv4 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = ipv4.local_addr().unwrap().port();
         let mut listeners = vec![ipv4];
@@ -596,6 +619,7 @@ mod tests {
 
     #[test]
     fn callback_receiver_serves_a_real_local_socket() {
+        let _guard = lock_loopback_tests();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let endpoint =
@@ -617,24 +641,28 @@ mod tests {
 
     #[test]
     fn callback_receiver_times_out_without_a_connection() {
+        let _guard = lock_loopback_tests();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let endpoint =
             CallbackEndpoint::parse(&format!("http://127.0.0.1:{port}/callback")).unwrap();
-        let mut receiver =
-            LoopbackCallbackReceiver::from_bound_listeners(endpoint, vec![listener]).unwrap();
+        let mut receiver = LoopbackCallbackReceiver::from_bound_listeners(endpoint, vec![listener])
+            .unwrap()
+            .with_timeouts(LOOPBACK_TEST_TIMEOUT, LOOPBACK_TEST_TIMEOUT);
         let result = receiver.receive();
         assert_eq!(result, Err(AppError::new(ErrorCategory::CallbackTimeout)));
     }
 
     #[test]
     fn callback_receiver_times_out_incomplete_reads_with_sanitized_failure() {
+        let _guard = lock_loopback_tests();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let endpoint =
             CallbackEndpoint::parse(&format!("http://127.0.0.1:{port}/callback")).unwrap();
-        let mut receiver =
-            LoopbackCallbackReceiver::from_bound_listeners(endpoint, vec![listener]).unwrap();
+        let mut receiver = LoopbackCallbackReceiver::from_bound_listeners(endpoint, vec![listener])
+            .unwrap()
+            .with_timeouts(LOOPBACK_TEST_TIMEOUT, LOOPBACK_TEST_TIMEOUT);
         let thread = std::thread::spawn(move || receiver.receive());
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream
@@ -650,12 +678,14 @@ mod tests {
 
     #[test]
     fn callback_receiver_enforces_one_deadline_across_slow_drip_reads() {
+        let _guard = lock_loopback_tests();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let endpoint =
             CallbackEndpoint::parse(&format!("http://127.0.0.1:{port}/callback")).unwrap();
-        let mut receiver =
-            LoopbackCallbackReceiver::from_bound_listeners(endpoint, vec![listener]).unwrap();
+        let mut receiver = LoopbackCallbackReceiver::from_bound_listeners(endpoint, vec![listener])
+            .unwrap()
+            .with_timeouts(LOOPBACK_TEST_TIMEOUT, LOOPBACK_TEST_TIMEOUT);
         let thread = std::thread::spawn(move || {
             let started = Instant::now();
             let result = receiver.receive();
@@ -663,19 +693,19 @@ mod tests {
         });
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream
-            .set_read_timeout(Some(READ_TIMEOUT + Duration::from_secs(2)))
+            .set_read_timeout(Some(LOOPBACK_TEST_TIMEOUT + Duration::from_secs(2)))
             .unwrap();
         let drip = b"GET /callback?state=partial HTTP/1.1\r\n";
         for byte in drip {
             if stream.write_all(std::slice::from_ref(byte)).is_err() {
                 break;
             }
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(25));
         }
         let (elapsed, result) = thread.join().unwrap();
         assert_eq!(result, Err(AppError::new(ErrorCategory::CallbackTimeout)));
-        assert!(elapsed >= READ_TIMEOUT);
-        assert!(elapsed < READ_TIMEOUT + Duration::from_secs(2));
+        assert!(elapsed >= LOOPBACK_TEST_TIMEOUT);
+        assert!(elapsed < LOOPBACK_TEST_TIMEOUT + Duration::from_millis(750));
         let mut response = String::new();
         let _ = stream.read_to_string(&mut response);
         assert!(response.starts_with("HTTP/1.1 200 OK"));
@@ -684,6 +714,7 @@ mod tests {
 
     #[test]
     fn callback_receiver_rejects_oversized_requests_with_sanitized_failure() {
+        let _guard = lock_loopback_tests();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let endpoint =
