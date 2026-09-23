@@ -57,7 +57,8 @@ Implementation must contract-test exact URL, trailing slash, JSON field names/ty
 - Forecast: approximately 1,200–1,800 authored diff lines including behavior-first tests; generated files excluded.
 - Review slices: (A) execution contracts, preflight, and provider-call sequencing; (B) partial-failure records, post-action refresh, verification, adapter, and offline journey.
 - Strategy: `ask-on-risk`; the user selected `stacked-to-main` before the first work-unit commit.
-- Planned slices: Slice A will contain DTE-001 through DTE-003; Slice B will branch from Slice A and contain DTE-004 through DTE-006. Exact commit identities will be recorded as each slice closes.
+- Slice A contains DTE-001 through DTE-003 at commits `268a7cc`, `5919cd6`, and `b07a044`; its evidence closure commit is pending.
+- Slice B will branch from the Slice A evidence boundary and contain DTE-004 through DTE-006.
 - No push, pull request, merge, or release is authorized.
 
 ## Tasks
@@ -84,7 +85,7 @@ Implementation must contract-test exact URL, trailing slash, JSON field names/ty
   - Checks: focused app tests for expiry/invalidation/order/failure/retry refusal.
   - Route: delegated writer (multi-file app slice).
   - Evidence: `MutationService::authorize_execution` validates intent first, rejects an expired plan or a wrong-membership request before any provider read, then reuses the WU-009 fresh-preflight acquisition and `evaluate_mutation` policy through extracted `fresh_preflight`/`evaluate_preflight` helpers, rejects a changed plan, returns `ExecutionAuthorization::VerifiedNoOp` with zero transfer calls when the refreshed projection already holds the concrete item at the plan destination, and otherwise mints exactly one `ExecutionTicket`. `MutationService::execute_move` consumes that ticket **by value**, rebuilds each `TransferRequest` from the committed projection (complete membership, definition hash, accepted quantity), issues only the ticket's ordered steps through an injected `TransferGateway`, stops at the first non-applying outcome, records post-dispatch uncertainty as `StepOutcome::Uncertain`, and returns bounded `ExecutionEvidence`. Verifier corrections applied: (Medium) every failure now returns a typed `ExecutionFailure { error, evidence }` carrying the bounded evidence observed so far plus `requires_post_action_refresh`, so a second-step pre-dispatch provider error preserves the first step's completed evidence instead of dropping it while a first-step pre-dispatch failure reports zero attempted steps as no remote mutation; (Low) expiry and membership mismatch are rejected before the forced preflight while intent stays first and the core ticket checks still run after refresh. Added `QueuedTransferGateway` to `test-support`; 19 behavior-first tests cover direct order, Vault-mediated order, the verified no-op, pre-refresh expiry/wrong-membership with zero provider calls, changed state, wrong item, missing resolution, first-step refusal and stop behavior, transient failure, uncertainty, partial completion, first- and second-step pre-dispatch errors, and a compile-time by-value signature pin. `cargo test -p destiny-app --features test-support mutation` (66 passed), `cargo test -p destiny-app --features test-support` (176 passed), `cargo test -p destiny-adapters --test mutation_planning_journey` (7 passed), `cargo fmt --all -- --check`, `cargo clippy -p destiny-app --all-targets --all-features -- -D warnings`, and `git diff --check` all clean. No post-action refresh, destination verification, adapter, fixture, CLI, or MCP work.
-  - Commit: pending parent commit.
+  - Commit: `b07a044` (`feat: execute ordered item transfers`).
 
 - [ ] **DTE-004 — Refresh and verify every attempted sequence**
   - Force `ProfileSyncReason::PostAction` after provider calls, then verify concrete item destination from refreshed state.
@@ -146,4 +147,4 @@ Implementation must contract-test exact URL, trailing slash, JSON field names/ty
 
 ## Next step
 
-Commit the independently verified DTE-003 candidate and close Slice A; then create the stacked Slice B branch from that boundary for DTE-004.
+Commit the Slice A evidence update, then create stacked Slice B from that boundary for DTE-004.
