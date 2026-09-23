@@ -75,14 +75,15 @@ No other crate or path is in scope unless a discovered compile-time requirement 
   - Outcome: mapped WU-007 contracts and created this tracker before any source write, including exact surfaces, output contracts, error matrix, checks, and rollback.
   - Check: tracker and Engram mirror readback; `git diff --check`.
   - Rollback: remove only this tracker and its Engram mirror.
-  - Evidence: pending boundary commit.
+  - Evidence: commit `932ca5d` (`chore: start Destiny CLI read journey`).
 
-- [ ] **DCR-002 — Add CLI command, rendering, and typed-exit contracts**
-  - Outcome: parse all three read commands and JSON selection; validate/convert inputs; render bounded shared results; exhaustively map application errors and missing inspection to stable stderr/exit outcomes.
-  - Checks: focused parser/render/error tests, fmt, clippy, diff check.
-  - Runtime harness: invoke parser/renderer with deterministic shared records; no external runtime boundary exists yet.
-  - Rollback: remove CLI library/modules and presentation-safe app re-exports, preserving the original binary startup behavior.
-  - Commit: Conventional Commit with tests.
+- [x] **DCR-002 — Add CLI command, rendering, and typed-exit contracts**
+  - Outcome: added all three read commands, global JSON selection, validation/conversion into shared WU-007 request types, deterministic human/JSON rendering, explicit missing/ambiguous inspection handling, and an exhaustive typed application-error matrix. Presentation-safe application re-exports preserve the no-direct-core-dependency rule. Perk hashes remain accepted search inputs but are not rendered because domain policy marks them opaque.
+  - Checks: `cargo fmt --all -- --check`; CLI 25 passed across 3 suites; app 23 passed across 2 suites; CLI all-target/all-feature clippy passed with `-D warnings`; `git diff --check` passed. Active LSP reported two stale false positives in `command.rs` contradicted by rustc tests and clippy.
+  - Runtime harness: the CLI tests executed parsers and human/JSON renderers against deterministic shared records; no external runtime boundary exists yet. The production binary remains intentionally unwired until DCR-003.
+  - Review workload: approximately 1,600 implementation-and-test lines across parser/contracts and renderers. The two modules are independently readable but jointly define one public CLI contract; tests remain beside behavior rather than being split by file type.
+  - Rollback: remove CLI library/modules and revert the presentation-safe app re-exports, CLI manifest, and derived lockfile dependency while preserving the original binary startup behavior.
+  - Evidence: pending DCR-002 commit.
 
 - [ ] **DCR-003 — Dispatch reads through the shared freshness-aware service**
   - Outcome: one thin command runner calls only shared application query operations, passing policy/time without reproducing freshness or authorization rules; verify no call occurs after invalid input and all results retain shared metadata.

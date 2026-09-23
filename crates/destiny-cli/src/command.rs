@@ -1,0 +1,835 @@
+//! Command surface, request validation, and stable typed exits for the
+//! read-only Destiny journey.
+//!
+//! Parsing and conversion here are pure: they never touch a provider, a
+//! repository, or a database, and every request shape is decided before a
+//! shared service is called. Rendering lives in [`crate::output`]; dispatch
+//! through the shared application query services is deliberately not part of
+//! this module.
+
+use std::fmt;
+
+use clap::{Args, Parser, Subcommand};
+
+use destiny_app::{
+    AppError, CharacterId, DefinitionSearchQuery, ErrorCategory, InspectItemRequest,
+    InstanceSearchQuery, ItemHash, ItemHashFilter, ItemInspection, ItemInstanceId,
+    MAX_SEARCH_LIMIT, PerkHash, Resolution, SearchInventoryRequest, SearchTerm,
+};
+
+use crate::output::OutputMode;
+
+/// The stable code reported for a successful outcome.
+pub const SUCCESS_CODE: &str = "ok";
+
+/// The process exit status reported for a successful outcome.
+pub const SUCCESS_EXIT_CODE: i32 = 0;
+
+/// The read-only Destiny command surface.
+#[derive(Debug, Parser)]
+#[command(
+    name = "destiny-cli",
+    version,
+    about = "Read-only Destiny profile, inventory, and item inspection"
+)]
+pub struct Cli {
+    /// Emit exactly one bounded JSON object instead of human text.
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    /// The read command to run.
+    #[command(subcommand)]
+    pub command: Command,
+}
+
+impl Cli {
+    /// The output mode selected by the global `--json` flag.
+    pub fn output_mode(&self) -> OutputMode {
+        if self.json {
+            OutputMode::Json
+        } else {
+            OutputMode::Human
+        }
+    }
+
+    /// Converts the parsed arguments into one validated read request.
+    ///
+    /// Every validation failure is reported as [`CliError::invalid_request`], so
+    /// an invalid request can never reach a shared service and can never echo
+    /// the rejected value.
+    pub fn into_read_request(self) -> Result<ReadRequest, CliError> {
+        match self.command {
+            Command::ListCharacters => Ok(ReadRequest::ListCharacters),
+            Command::SearchInventory(arguments) => {
+                arguments.into_request().map(ReadRequest::SearchInventory)
+            }
+            Command::InspectItem(arguments) => {
+                arguments.into_request().map(ReadRequest::InspectItem)
+            }
+        }
+    }
+}
+
+/// The three read commands this journey exposes.
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// List the characters in the current profile projection.
+    #[command(name = "list-characters")]
+    ListCharacters,
+
+    /// Search definitions and, optionally, concrete inventory instances.
+    #[command(name = "search-inventory")]
+    SearchInventory(SearchInventoryArgs),
+
+    /// Inspect exactly one concrete item instance.
+    #[command(name = "inspect-item")]
+    InspectItem(InspectItemArgs),
+}
+
+/// Arguments for `search-inventory`.
+///
+/// Definition filters (`--text`, `--type`, `--tag`) select Manifest
+/// definitions. Instance filters (`--item-hash`, `--perk-hash`, `--character`)
+/// select concrete instances; when none is present no instance search is
+/// issued, so a definition-only search never reports a concrete instance and
+/// never silently chooses one.
+#[derive(Debug, Args)]
+pub struct SearchInventoryArgs {
+    /// Case-insensitive substring of the definition name.
+    #[arg(long, value_name = "TEXT")]
+    pub text: Option<String>,
+
+    /// Exact definition item type, matched case-insensitively.
+    #[arg(long = "type", value_name = "TYPE")]
+    pub item_type: Option<String>,
+
+    /// Definition tag that must be present; repeat for several tags.
+    #[arg(long = "tag", value_name = "TAG")]
+    pub tag: Vec<String>,
+
+    /// Restrict instance matches to one definition hash; repeat for several.
+    #[arg(long = "item-hash", value_name = "HASH")]
+    pub item_hash: Vec<i64>,
+
+    /// Restrict instance matches to one exact perk hash.
+    #[arg(long = "perk-hash", value_name = "HASH")]
+    pub perk_hash: Option<u32>,
+
+    /// Restrict instance matches to the character with this exact identifier.
+    #[arg(long = "character", value_name = "CHARACTER_ID")]
+    pub character: Option<String>,
+
+    /// Maximum number of definition candidates and instance hits.
+    #[arg(long, value_name = "N", default_value_t = MAX_SEARCH_LIMIT)]
+    pub limit: usize,
+}
+
+impl SearchInventoryArgs {
+    /// Builds the two shared query shapes this command maps onto.
+    fn into_request(self) -> Result<SearchInventoryRequest, CliError> {
+        let definitions = DefinitionSearchQuery {
+            text: search_term(self.text.as_deref())?,
+            item_type: search_term(self.item_type.as_deref())?,
+            tags: self
+                .tag
+                .iter()
+                .map(|value| SearchTerm::new(value.as_str()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| CliError::invalid_request())?,
+            limit: self.limit,
+        };
+        definitions
+            .validate()
+            .map_err(|_| CliError::invalid_request())?;
+
+        let instances = self.instance_query()?;
+        Ok(SearchInventoryRequest {
+            definitions,
+            instances,
+        })
+    }
+
+    /// Builds the optional instance query, or `None` when no instance filter
+    /// was supplied.
+    fn instance_query(&self) -> Result<Option<InstanceSearchQuery>, CliError> {
+        let has_instance_filter =
+            !self.item_hash.is_empty() || self.perk_hash.is_some() || self.character.is_some();
+        if !has_instance_filter {
+            return Ok(None);
+        }
+
+        let character_id = match &self.character {
+            Some(value) => {
+                validate_identity(value)?;
+                Some(CharacterId::new(value.as_str()))
+            }
+            None => None,
+        };
+        let item_hashes = if self.item_hash.is_empty() {
+            ItemHashFilter::Any
+        } else {
+            ItemHashFilter::AnyOf(self.item_hash.iter().copied().map(ItemHash::new).collect())
+        };
+        let query = InstanceSearchQuery {
+            item_hashes,
+            perk_hash: self.perk_hash.map(PerkHash::new),
+            character_id,
+            limit: self.limit,
+        };
+        query.validate().map_err(|_| CliError::invalid_request())?;
+        Ok(Some(query))
+    }
+}
+
+/// Arguments for `inspect-item`.
+#[derive(Debug, Args)]
+pub struct InspectItemArgs {
+    /// The concrete item instance identifier to inspect.
+    ///
+    /// A definition hash is never accepted here: a name or hash query resolves
+    /// through `search-inventory` first, and only a concrete instance identifier
+    /// reaches exact inspection.
+    #[arg(value_name = "INSTANCE_ID")]
+    pub instance_id: String,
+}
+
+impl InspectItemArgs {
+    fn into_request(self) -> Result<InspectItemRequest, CliError> {
+        validate_identity(&self.instance_id)?;
+        Ok(InspectItemRequest {
+            instance_id: ItemInstanceId::new(self.instance_id),
+        })
+    }
+}
+
+/// One validated read request derived from the parsed command line.
+///
+/// Each variant carries the exact shared request type, so the CLI adds no query
+/// concept of its own and a malformed value can never reach a service.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReadRequest {
+    ListCharacters,
+    SearchInventory(SearchInventoryRequest),
+    InspectItem(InspectItemRequest),
+}
+
+/// A stable machine code and process exit status for one failure outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ErrorOutcome {
+    /// The stable machine-readable code.
+    pub code: &'static str,
+    /// The process exit status.
+    pub exit_code: i32,
+}
+
+/// Maps one application error category to its stable CLI outcome.
+///
+/// The match is exhaustive over [`ErrorCategory`] by construction: adding a new
+/// category without extending this table is a compile error, so no category can
+/// silently fall through to a generic or successful outcome.
+pub fn category_outcome(category: ErrorCategory) -> ErrorOutcome {
+    let (code, exit_code) = match category {
+        ErrorCategory::AuthorizationRequired => ("authorization_required", 10),
+        ErrorCategory::AuthorizationDenied => ("authorization_denied", 10),
+        ErrorCategory::AlreadyAuthorizing => ("authorization_state", 10),
+        ErrorCategory::AlreadyAuthorized => ("authorization_state", 10),
+        ErrorCategory::CsrfStateMismatch => ("authorization_state", 10),
+        ErrorCategory::ReauthorizationRequired => ("reauthorization_required", 11),
+        ErrorCategory::ProviderAuthentication => ("reauthorization_required", 11),
+        ErrorCategory::ProviderRateLimit => ("provider_rate_limit", 20),
+        ErrorCategory::ProviderUnavailable => ("provider_unavailable", 21),
+        ErrorCategory::CallbackTimeout => ("provider_unavailable", 21),
+        ErrorCategory::ProviderValidation => ("invalid_request", 2),
+        ErrorCategory::StaleState => ("stale_state", 30),
+        ErrorCategory::AmbiguousMatch => ("ambiguous_match", 31),
+        ErrorCategory::UnsupportedOperation => ("unsupported_operation", 40),
+        ErrorCategory::PartialFailure => ("partial_failure", 41),
+        ErrorCategory::VerificationFailed => ("verification_failed", 42),
+        ErrorCategory::CredentialStoreUnavailable => ("credential_store_unavailable", 50),
+        ErrorCategory::LocalStorage => ("local_storage", 51),
+        ErrorCategory::ConfigurationError => ("configuration_error", 52),
+        ErrorCategory::ClockOverflow => ("internal_error", 70),
+        ErrorCategory::PlanIdExhausted => ("internal_error", 70),
+    };
+    ErrorOutcome { code, exit_code }
+}
+
+/// A stable, sanitized CLI failure.
+///
+/// [`CliError::code`] and [`CliError::exit_code`] are the machine contract, and
+/// the [`fmt::Display`] message is the single sanitized line written for a
+/// human. Neither ever echoes a rejected value, a provider payload, a
+/// credential, or a header.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CliError {
+    kind: FailureKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FailureKind {
+    /// CLI or shared request validation rejected the arguments.
+    InvalidRequest,
+    /// An exact inspection found no instance.
+    ItemNotFound,
+    /// A shared application service reported a typed error.
+    Application(AppError),
+}
+
+impl CliError {
+    /// The CLI/shared request validation failure.
+    pub const fn invalid_request() -> Self {
+        Self {
+            kind: FailureKind::InvalidRequest,
+        }
+    }
+
+    /// The explicit not-found outcome of an exact inspection.
+    pub const fn item_not_found() -> Self {
+        Self {
+            kind: FailureKind::ItemNotFound,
+        }
+    }
+
+    /// Wraps one shared application error.
+    pub const fn from_app(error: AppError) -> Self {
+        Self {
+            kind: FailureKind::Application(error),
+        }
+    }
+
+    /// Wraps one application error category as a fresh, value-free error.
+    pub const fn from_category(category: ErrorCategory) -> Self {
+        Self::from_app(AppError::new(category))
+    }
+
+    /// The stable machine-readable code.
+    pub fn code(&self) -> &'static str {
+        match self.kind {
+            FailureKind::InvalidRequest => "invalid_request",
+            FailureKind::ItemNotFound => "item_not_found",
+            FailureKind::Application(error) => category_outcome(error.category()).code,
+        }
+    }
+
+    /// The stable process exit status.
+    pub fn exit_code(&self) -> i32 {
+        match self.kind {
+            FailureKind::InvalidRequest => 2,
+            FailureKind::ItemNotFound => 32,
+            FailureKind::Application(error) => category_outcome(error.category()).exit_code,
+        }
+    }
+}
+
+impl fmt::Display for CliError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            FailureKind::InvalidRequest => formatter.write_str("the request arguments are invalid"),
+            FailureKind::ItemNotFound => {
+                formatter.write_str("the requested item instance was not found")
+            }
+            FailureKind::Application(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for CliError {}
+
+impl From<AppError> for CliError {
+    fn from(error: AppError) -> Self {
+        Self::from_app(error)
+    }
+}
+
+/// Classifies one exact inspection resolution into a renderable inspection or a
+/// stable typed failure.
+///
+/// A missing instance is the explicit `item_not_found` outcome rather than an
+/// empty success. The shared service fails closed on an ambiguous instance
+/// identifier, but the CLI still refuses to guess if one ever reaches here.
+pub fn inspection_outcome(
+    resolution: Resolution<ItemInspection>,
+) -> Result<ItemInspection, CliError> {
+    match resolution {
+        Resolution::Unique(inspection) => Ok(inspection),
+        Resolution::Missing => Err(CliError::item_not_found()),
+        Resolution::Ambiguous(_) => Err(CliError::from_category(ErrorCategory::AmbiguousMatch)),
+    }
+}
+
+/// Validates and normalizes one optional free-text search term.
+fn search_term(value: Option<&str>) -> Result<Option<SearchTerm>, CliError> {
+    value
+        .map(SearchTerm::new)
+        .transpose()
+        .map_err(|_| CliError::invalid_request())
+}
+
+/// Rejects an empty, whitespace-only, or control-bearing identifier value.
+///
+/// Identity values are opaque and are used verbatim, so this check never trims
+/// or rewrites one. It only refuses a value that could not name anything and a
+/// value that could break the line-oriented human output.
+fn validate_identity(value: &str) -> Result<(), CliError> {
+    if value.trim().is_empty() || value.chars().any(char::is_control) {
+        return Err(CliError::invalid_request());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Cli, CliError, Command, ErrorOutcome, ReadRequest, SUCCESS_CODE, SUCCESS_EXIT_CODE,
+        category_outcome, inspection_outcome,
+    };
+    use crate::output::OutputMode;
+    use clap::Parser;
+    use destiny_app::{
+        ErrorCategory, ItemHashFilter, ItemInspection, ItemInstanceId, ItemLocation,
+        MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS, Resolution,
+        SearchInventoryRequest, SyncMetadata, Timestamp,
+    };
+
+    const ALL_CATEGORIES: [ErrorCategory; 21] = [
+        ErrorCategory::AuthorizationRequired,
+        ErrorCategory::ReauthorizationRequired,
+        ErrorCategory::AlreadyAuthorizing,
+        ErrorCategory::AlreadyAuthorized,
+        ErrorCategory::AuthorizationDenied,
+        ErrorCategory::CsrfStateMismatch,
+        ErrorCategory::CredentialStoreUnavailable,
+        ErrorCategory::ProviderAuthentication,
+        ErrorCategory::ProviderRateLimit,
+        ErrorCategory::ProviderUnavailable,
+        ErrorCategory::ProviderValidation,
+        ErrorCategory::StaleState,
+        ErrorCategory::AmbiguousMatch,
+        ErrorCategory::UnsupportedOperation,
+        ErrorCategory::PartialFailure,
+        ErrorCategory::VerificationFailed,
+        ErrorCategory::LocalStorage,
+        ErrorCategory::ConfigurationError,
+        ErrorCategory::CallbackTimeout,
+        ErrorCategory::ClockOverflow,
+        ErrorCategory::PlanIdExhausted,
+    ];
+
+    fn expectation(category: ErrorCategory) -> ErrorOutcome {
+        match category {
+            ErrorCategory::AuthorizationRequired => ErrorOutcome {
+                code: "authorization_required",
+                exit_code: 10,
+            },
+            ErrorCategory::AuthorizationDenied => ErrorOutcome {
+                code: "authorization_denied",
+                exit_code: 10,
+            },
+            ErrorCategory::AlreadyAuthorizing | ErrorCategory::AlreadyAuthorized => ErrorOutcome {
+                code: "authorization_state",
+                exit_code: 10,
+            },
+            ErrorCategory::CsrfStateMismatch => ErrorOutcome {
+                code: "authorization_state",
+                exit_code: 10,
+            },
+            ErrorCategory::ReauthorizationRequired | ErrorCategory::ProviderAuthentication => {
+                ErrorOutcome {
+                    code: "reauthorization_required",
+                    exit_code: 11,
+                }
+            }
+            ErrorCategory::ProviderRateLimit => ErrorOutcome {
+                code: "provider_rate_limit",
+                exit_code: 20,
+            },
+            ErrorCategory::ProviderUnavailable | ErrorCategory::CallbackTimeout => ErrorOutcome {
+                code: "provider_unavailable",
+                exit_code: 21,
+            },
+            ErrorCategory::ProviderValidation => ErrorOutcome {
+                code: "invalid_request",
+                exit_code: 2,
+            },
+            ErrorCategory::StaleState => ErrorOutcome {
+                code: "stale_state",
+                exit_code: 30,
+            },
+            ErrorCategory::AmbiguousMatch => ErrorOutcome {
+                code: "ambiguous_match",
+                exit_code: 31,
+            },
+            ErrorCategory::UnsupportedOperation => ErrorOutcome {
+                code: "unsupported_operation",
+                exit_code: 40,
+            },
+            ErrorCategory::PartialFailure => ErrorOutcome {
+                code: "partial_failure",
+                exit_code: 41,
+            },
+            ErrorCategory::VerificationFailed => ErrorOutcome {
+                code: "verification_failed",
+                exit_code: 42,
+            },
+            ErrorCategory::CredentialStoreUnavailable => ErrorOutcome {
+                code: "credential_store_unavailable",
+                exit_code: 50,
+            },
+            ErrorCategory::LocalStorage => ErrorOutcome {
+                code: "local_storage",
+                exit_code: 51,
+            },
+            ErrorCategory::ConfigurationError => ErrorOutcome {
+                code: "configuration_error",
+                exit_code: 52,
+            },
+            ErrorCategory::ClockOverflow | ErrorCategory::PlanIdExhausted => ErrorOutcome {
+                code: "internal_error",
+                exit_code: 70,
+            },
+        }
+    }
+
+    fn parse<I>(arguments: I) -> Cli
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let mut argv = vec!["destiny-cli".to_string()];
+        argv.extend(
+            arguments
+                .into_iter()
+                .map(|argument| argument.as_ref().to_string()),
+        );
+        Cli::try_parse_from(argv).expect("arguments should parse")
+    }
+
+    fn rejected<I>(arguments: I) -> CliError
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        parse(arguments)
+            .into_read_request()
+            .expect_err("arguments should be rejected")
+    }
+
+    fn search_request(request: ReadRequest) -> SearchInventoryRequest {
+        match request {
+            ReadRequest::SearchInventory(request) => request,
+            other => panic!("expected a search request, found {other:?}"),
+        }
+    }
+
+    #[test]
+    fn subcommands_parse_into_their_arguments() {
+        assert!(matches!(
+            parse(["list-characters"]).command,
+            Command::ListCharacters
+        ));
+
+        let search = parse(["search-inventory", "--text", "gjallarhorn", "--limit", "5"]);
+        match search.command {
+            Command::SearchInventory(arguments) => {
+                assert_eq!(arguments.text.as_deref(), Some("gjallarhorn"));
+                assert_eq!(arguments.limit, 5);
+                assert!(arguments.tag.is_empty());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let inspect = parse(["inspect-item", "inst-1"]);
+        match inspect.command {
+            Command::InspectItem(arguments) => assert_eq!(arguments.instance_id, "inst-1"),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn json_selection_is_global_and_defaults_to_human() {
+        assert_eq!(parse(["list-characters"]).output_mode(), OutputMode::Human);
+        assert_eq!(
+            parse(["--json", "list-characters"]).output_mode(),
+            OutputMode::Json
+        );
+        assert_eq!(
+            parse(["search-inventory", "--json"]).output_mode(),
+            OutputMode::Json
+        );
+    }
+
+    #[test]
+    fn search_defaults_to_the_shared_query_bound() {
+        let request = search_request(
+            parse(["search-inventory"])
+                .into_read_request()
+                .expect("an unfiltered search is valid"),
+        );
+        assert_eq!(request.definitions.limit, MAX_SEARCH_LIMIT);
+        assert_eq!(request.instances, None);
+    }
+
+    #[test]
+    fn definition_filters_are_normalized_into_the_shared_queries() {
+        let request = search_request(
+            parse([
+                "search-inventory",
+                "--text",
+                "  Gjallar   Horn ",
+                "--type",
+                "Rocket Launcher",
+                "--tag",
+                "Exotic",
+                "--tag",
+                "  Solar ",
+            ])
+            .into_read_request()
+            .expect("valid definition filters"),
+        );
+
+        assert_eq!(
+            request.definitions.text.as_ref().map(|term| term.as_str()),
+            Some("gjallar horn")
+        );
+        assert_eq!(
+            request
+                .definitions
+                .item_type
+                .as_ref()
+                .map(|term| term.as_str()),
+            Some("rocket launcher")
+        );
+        assert_eq!(
+            request
+                .definitions
+                .tags
+                .iter()
+                .map(|term| term.as_str())
+                .collect::<Vec<_>>(),
+            ["exotic", "solar"]
+        );
+        assert_eq!(request.instances, None);
+    }
+
+    #[test]
+    fn instance_filters_build_one_exact_instance_query() {
+        let request = search_request(
+            parse([
+                "search-inventory",
+                "--item-hash",
+                "1",
+                "--item-hash",
+                "2",
+                "--perk-hash",
+                "5001",
+                "--character",
+                "warlock",
+                "--limit",
+                "7",
+            ])
+            .into_read_request()
+            .expect("valid instance filters"),
+        );
+
+        let instances = request.instances.expect("instance filters were supplied");
+        assert_eq!(instances.limit, 7);
+        assert_eq!(instances.perk_hash.map(|hash| hash.value()), Some(5001));
+        assert_eq!(
+            instances
+                .character_id
+                .as_ref()
+                .map(|character| character.as_str()),
+            Some("warlock")
+        );
+        match instances.item_hashes {
+            ItemHashFilter::AnyOf(hashes) => {
+                assert_eq!(
+                    hashes.iter().map(|hash| hash.value()).collect::<Vec<_>>(),
+                    [1, 2]
+                );
+            }
+            ItemHashFilter::Any => panic!("an explicit hash filter was supplied"),
+        }
+    }
+
+    #[test]
+    fn perk_only_search_matches_every_definition_hash() {
+        let request = search_request(
+            parse(["search-inventory", "--perk-hash", "42"])
+                .into_read_request()
+                .expect("valid perk filter"),
+        );
+
+        let instances = request
+            .instances
+            .expect("a perk filter is an instance filter");
+        assert_eq!(instances.item_hashes, ItemHashFilter::Any);
+    }
+
+    #[test]
+    fn invalid_arguments_are_rejected_as_invalid_requests() {
+        let oversized_text = "a".repeat(MAX_SEARCH_TEXT_LENGTH + 1);
+        let mut too_many_tags: Vec<String> = vec!["search-inventory".to_string()];
+        let mut too_many_hashes: Vec<String> = vec!["search-inventory".to_string()];
+        for _ in 0..=MAX_TAG_FILTERS {
+            too_many_tags.push("--tag".to_string());
+            too_many_tags.push("exotic".to_string());
+        }
+        for _ in 0..=MAX_HASH_FILTERS {
+            too_many_hashes.push("--item-hash".to_string());
+            too_many_hashes.push("1".to_string());
+        }
+
+        let mut cases: Vec<Vec<&str>> = vec![
+            vec!["search-inventory", "--limit", "0"],
+            vec!["search-inventory", "--limit", "101"],
+            vec!["search-inventory", "--text", "   "],
+            vec!["search-inventory", "--type", ""],
+            vec!["search-inventory", "--tag", "  "],
+            vec!["search-inventory", "--character", ""],
+            vec!["search-inventory", "--character", "war\nlock"],
+            vec!["inspect-item", ""],
+            vec!["inspect-item", "  "],
+            vec!["inspect-item", "inst\n1"],
+        ];
+        cases.push({
+            let mut case = vec!["search-inventory", "--text"];
+            case.push(oversized_text.as_str());
+            case
+        });
+        cases.push(too_many_tags.iter().map(String::as_str).collect());
+        cases.push(too_many_hashes.iter().map(String::as_str).collect());
+
+        for case in cases {
+            let error = rejected(case.iter().copied());
+            assert_eq!(error.code(), "invalid_request", "case: {case:?}");
+            assert_eq!(error.exit_code(), 2, "case: {case:?}");
+            assert_eq!(
+                error.to_string(),
+                "the request arguments are invalid",
+                "case: {case:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inputs_at_the_shared_bounds_are_accepted() {
+        let mut at_limit: Vec<String> = vec![
+            "search-inventory".to_string(),
+            "--limit".to_string(),
+            MAX_SEARCH_LIMIT.to_string(),
+        ];
+        for _ in 0..MAX_TAG_FILTERS {
+            at_limit.push("--tag".to_string());
+            at_limit.push("exotic".to_string());
+        }
+        for _ in 0..MAX_HASH_FILTERS {
+            at_limit.push("--item-hash".to_string());
+            at_limit.push("1".to_string());
+        }
+        let at_limit: Vec<&str> = at_limit.iter().map(String::as_str).collect();
+
+        let request = search_request(
+            parse(at_limit)
+                .into_read_request()
+                .expect("the shared bounds themselves are accepted"),
+        );
+        assert_eq!(request.definitions.limit, MAX_SEARCH_LIMIT);
+        assert_eq!(request.definitions.tags.len(), MAX_TAG_FILTERS);
+        let instances = request
+            .instances
+            .expect("hash filters are instance filters");
+        match instances.item_hashes {
+            ItemHashFilter::AnyOf(hashes) => assert_eq!(hashes.len(), MAX_HASH_FILTERS),
+            ItemHashFilter::Any => panic!("hash filters were supplied"),
+        }
+    }
+
+    #[test]
+    fn rejected_values_never_appear_in_the_failure_message() {
+        let error = rejected(["search-inventory", "--text", "secret-sentinel-\u{7}-value"]);
+        let diagnostic = error.to_string();
+        assert!(!diagnostic.contains("secret-sentinel"));
+        assert_eq!(error.code(), "invalid_request");
+    }
+
+    #[test]
+    fn the_error_matrix_is_stable_over_every_current_category() {
+        assert_eq!(
+            ALL_CATEGORIES.len(),
+            21,
+            "a new ErrorCategory needs a matrix entry and a test expectation"
+        );
+        for category in ALL_CATEGORIES {
+            let outcome = category_outcome(category);
+            let expected = expectation(category);
+            assert_eq!(outcome, expected, "category: {category:?}");
+        }
+
+        let mapped = rejected(["inspect-item", ""]);
+        assert_eq!(mapped.code(), "invalid_request");
+        assert_eq!(
+            CliError::from_category(ErrorCategory::ProviderValidation).code(),
+            "invalid_request"
+        );
+        assert_eq!(SUCCESS_CODE, "ok");
+        assert_eq!(SUCCESS_EXIT_CODE, 0);
+    }
+
+    #[test]
+    fn missing_inspection_is_a_typed_not_found_outcome() {
+        let missing = inspection_outcome(Resolution::<ItemInspection>::Missing)
+            .expect_err("a missing instance is not a success");
+        assert_eq!(missing.code(), "item_not_found");
+        assert_eq!(missing.exit_code(), 32);
+        assert_eq!(
+            missing.to_string(),
+            "the requested item instance was not found"
+        );
+
+        let ambiguous = inspection_outcome(Resolution::Ambiguous(Vec::new()))
+            .expect_err("an ambiguous instance is not a success");
+        assert_eq!(ambiguous.code(), "ambiguous_match");
+        assert_eq!(ambiguous.exit_code(), 31);
+    }
+
+    #[test]
+    fn unique_inspection_is_returned_unchanged() {
+        let inspection = ItemInspection {
+            definition: destiny_app::ItemDefinition {
+                hash: destiny_app::ItemHash::new(1),
+                bucket_hash: None,
+                name: "Gjallarhorn".to_string(),
+                item_type: None,
+                tier: None,
+                element: None,
+                tags: Vec::new(),
+                version: destiny_app::DefinitionVersion::new("manifest-v1"),
+            },
+            instance: destiny_app::ItemInstance {
+                instance_id: ItemInstanceId::new("inst-1"),
+                item_hash: destiny_app::ItemHash::new(1),
+                location: ItemLocation::Vault,
+                quantity: 1,
+                equipped: false,
+                locked: false,
+                power: None,
+                perks: Vec::new(),
+            },
+            metadata: destiny_app::QueryMetadata {
+                sync: SyncMetadata {
+                    dataset: destiny_app::Dataset::ProfileInventory,
+                    checked_at: Timestamp::new(100),
+                    source: destiny_app::SourceMarker::Profile,
+                    revision: destiny_app::SyncRevision::new(1),
+                    definition_version: destiny_app::DefinitionVersion::new("manifest-v1"),
+                },
+                freshness: destiny_app::FreshnessStatus::Fresh,
+            },
+        };
+
+        let returned = inspection_outcome(Resolution::Unique(inspection.clone()))
+            .expect("a unique instance is a success");
+        assert_eq!(returned, inspection);
+    }
+}

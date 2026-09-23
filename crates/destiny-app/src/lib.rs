@@ -11,8 +11,23 @@ pub mod sync;
 pub mod test_support;
 
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
-pub use destiny_core::{AppError, ErrorCategory};
 pub use manifest::{ManifestService, normalize_manifest};
+
+/// Presentation-safe shared contracts.
+///
+/// These are re-exports of existing `destiny-core` contracts only: a
+/// presentation surface can render the shared records without depending on
+/// `destiny-core` directly and without re-deriving identity, freshness, or
+/// metadata concepts of its own.
+pub use destiny_core::{
+    AppError, BucketHash, Character, CharacterId, CharacterListResult, Dataset,
+    DefinitionSearchQuery, DefinitionVersion, ErrorCategory, FreshnessPolicy, FreshnessStatus,
+    InspectItemRequest, InstanceSearchQuery, InventorySearchHit, InventorySearchResult,
+    ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstance, ItemInstanceId,
+    ItemLocation, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS,
+    PerkHash, PerkSummary, QueryMetadata, Resolution, SearchTerm, SourceMarker, SyncMetadata,
+    SyncRevision, Timestamp,
+};
 pub use queries::{QueryService, SearchInventoryRequest};
 pub use sync::ProfileSyncService;
 
