@@ -51,16 +51,16 @@ WU-009 and WU-010 provide the safe shared mutation contracts and execution behav
 
 ## Tasks
 
-- [ ] **DMM-001 — Establish the integration boundary** *(in progress)*
+- [x] **DMM-001 — Establish the integration boundary**
   - Merge WU-010 `a167540` into the WU-011-based feature branch.
   - Preserve WU-010 mutation/transfer contracts and WU-011 complete `AccessCredential` persistence, `SystemClock`, `ReadRuntimeConfig`, and MCP read server.
   - Resolve additive exports/test-support conflicts and regenerate `Cargo.lock` only as required.
   - Acceptance: both dependency trees compile together; no material-only `CredentialStore` contract remains; existing workspace behavior remains green.
   - Checks: formatting, workspace check/tests default and all-features, clippy default and all-features, `git diff --check`.
-  - Commit evidence: pending.
-  - Review evidence: pending.
+  - Commit evidence: `0dff3c8` (`chore: integrate Destiny mutation foundation`).
+  - Review evidence: independent verification found no blocker/high/medium findings; both workspace test matrices passed (578 default, 579 all-features), checks/clippy/fmt/diff clean.
 
-- [ ] **DMM-002 — Add bounded MCP mutation contracts and service seam**
+- [ ] **DMM-002 — Add bounded MCP mutation contracts and service seam** *(in progress)*
   - Add semantic move arguments for an instance ID or search text plus a Vault/exact-character/character-label destination.
   - Add bounded sanitized output views for effects, step evidence, final locations, and typed failures.
   - Compose planner/executor behavior behind an adapter-free MCP service seam and derive membership internally.
@@ -113,8 +113,11 @@ WU-009 and WU-010 provide the safe shared mutation contracts and execution behav
 - User selected `stacked-to-main` delivery strategy.
 - Created worktree `/home/yoryo/apps/ghostlink-wu-012` and branch `feature/destiny-mcp-mutation-tool` from WU-011 `8fe817b`.
 - Engram mirror initialized as observation `5987` under `odd/destiny-mcp-mutation-tool/tasks`.
-- DMM-001 is in progress.
+- DMM-001 completed in merge commit `0dff3c8`; WU-010 `a167540` is integrated onto WU-011 `8fe817b` with complete-credential semantics preserved.
+- DMM-001 independent verification: no blocker/high/medium findings; 578 default and 579 all-feature workspace tests passed; fmt/check/clippy/diff clean.
+- One harmless orchestration incident occurred: an initial `git add` ran in the parent worktree and failed before mutation because the path was absent; diagnosis confirmed WU-012 merge/index state remained intact. Subsequent commands used `git -C /home/yoryo/apps/ghostlink-wu-012`.
+- DMM-002 is in progress.
 
 ## Next step
 
-Integrate WU-010 `a167540` through a bounded delegated writer, then record exact checks and commit identity.
+Implement bounded MCP mutation contracts and the adapter-free application service seam for DMM-002.
