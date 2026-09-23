@@ -85,12 +85,15 @@ WU-009 is the safety boundary between semantic user intent and WU-010 remote exe
   - Outcome: added seven offline scenarios over the production `MutationService`/`ProfileSyncService`, real file-backed `SqliteStore`, real `BungieProfileGateway`, scripted deterministic profile transport, and injected IDs. They prove “The Last Word to Warlock,” direct and character-to-character Vault-mediated effects, one-call explicit intent, forced preflight, revision invalidation, fail-closed intent, read-only provider calls, and credential absence. The invalidated preflight returns before any effect can execute; structurally, no transfer seam exists in the composed service.
   - Check: focused journey 7 passed; workspace all-target/all-feature check and clippy passed with `-D warnings`; fmt and diff check passed. Independent verification confirmed the production stack, read-only endpoint allowlist, and no blocker/high/medium issue.
   - Rollback: remove only `crates/destiny-adapters/tests/mutation_planning_journey.rs`.
-  - Evidence: pending journey work-unit commit.
+  - Evidence: commit `97358a6` (`test: prove offline mutation planning journey`).
 
-- [ ] **DMP-006 — Verify and close WU-009**
-  - Outcome: full-range verification, final tracker evidence, exact authored-line count, remaining implementation-time provider questions, and clean committed branch.
-  - Check: all effective commands and runtime harness pass; no blocker/high/medium finding remains.
+- [x] **DMP-006 — Verify and close WU-009**
+  - Outcome: independently verified the complete committed `2b6c001..97358a6` range against WU-009, architecture invariants, source, tests, and the offline runtime journey. Semantic resolution, complete plan binding, direct/Vault routing, explicit intent, mandatory request-bound preflight, and the absence of any transfer seam all passed. WU-010 may now consume the internal plan and preflight contract.
+  - Check: fmt and range diff check passed; workspace all-target/all-feature check; default and all-feature clippy with `-D warnings`; default and all-feature workspace tests each 426 passed; focused mutation journey 7 passed; CLI/MCP help passed. Independent final verification found no blocker/high/medium issue.
+  - Review workload: the five pre-closure commits contain 3,978 additions and 98 deletions across seven files. The core contracts, combined application planner/preflight, and offline journey remain independently revertible review slices; exhaustive tests account for most of the forecast overage and were not separated from behavior.
+  - Limitations: verification is offline; no live Bungie account or transfer endpoint exists in WU-009. Provider lock, availability, endpoint, and transfer sequencing remain explicit WU-010 revalidation work.
   - Rollback: reset the branch to exact base `2b6c00159ebc574d1e97d9ffc490244d04f1ca70` to remove only WU-009.
+  - Evidence: final verification at implementation HEAD `97358a6`; closure commit follows.
 
 ## Acceptance criteria
 
