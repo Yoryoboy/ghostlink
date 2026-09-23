@@ -60,7 +60,7 @@ The matrix is exhaustive over the current `ErrorCategory`; tests must fail when 
 ## Exact edit surfaces
 
 - `odd/tasks/destiny-cli-read-journey.md` — durable tracker and evidence.
-- `crates/destiny-app/src/lib.rs` — presentation-safe re-exports only; no new CLI behavior.
+- `crates/destiny-app/src/lib.rs` and `crates/destiny-app/src/queries.rs` — presentation-safe re-exports and a narrow shared query-operations trait implemented by `QueryService`; no CLI behavior.
 - `crates/destiny-cli/Cargo.toml` — JSON/runtime test dependencies as required.
 - `crates/destiny-cli/src/lib.rs` plus focused modules under `src/` — parser, shared-service dispatch, rendering, and typed exits.
 - `crates/destiny-cli/src/main.rs` — minimal process boundary only.
@@ -83,14 +83,16 @@ No other crate or path is in scope unless a discovered compile-time requirement 
   - Runtime harness: the CLI tests executed parsers and human/JSON renderers against deterministic shared records; no external runtime boundary exists yet. The production binary remains intentionally unwired until DCR-003.
   - Review workload: approximately 1,600 implementation-and-test lines across parser/contracts and renderers. The two modules are independently readable but jointly define one public CLI contract; tests remain beside behavior rather than being split by file type.
   - Rollback: remove CLI library/modules and revert the presentation-safe app re-exports, CLI manifest, and derived lockfile dependency while preserving the original binary startup behavior.
-  - Evidence: pending DCR-002 commit.
+  - Independent verification: all focused checks passed; no blocker/high finding. One medium DCR-003 requirement was recorded above: normalize clap parse errors into the stable typed output contract.
+  - Evidence: commit `e3aa9c9` (`feat: define Destiny CLI read contracts`).
 
-- [ ] **DCR-003 — Dispatch reads through the shared freshness-aware service**
-  - Outcome: one thin command runner calls only shared application query operations, passing policy/time without reproducing freshness or authorization rules; verify no call occurs after invalid input and all results retain shared metadata.
-  - Checks: focused runner tests plus CLI crate tests/clippy.
-  - Runtime harness: deterministic fake service records list/search/inspect requests and returns fresh/stale-refreshed outcomes.
-  - Rollback: remove runner boundary and tests while retaining parser/render contracts.
-  - Commit: Conventional Commit with tests/docs.
+- [x] **DCR-003 — Dispatch reads through the shared freshness-aware service**
+  - Outcome: added the object-safe `QueryOperations` trait in `destiny-app`, implemented by `QueryService` and re-exported for presentation crates; it exposes only `list_characters`/`search_inventory`/`inspect_item` and retains the caller-supplied `FreshnessPolicy`/`Timestamp`. Added `destiny-cli`'s `runner` module: it validates the parsed command line before any service call, dispatches exactly once through the shared trait, renders the shared result (including metadata) in the selected mode, maps a missing inspection through the existing typed `item_not_found` outcome, and forwards caller-supplied freshness policy/time without duplicating any sync decision. The process boundary captures clap syntax/type failures and emits the sanitized `invalid_request`/2 contract in human or JSON mode, detecting global `--json` from raw tokens without echoing argv; clap's default error prose never reaches the process, while `--help`/`--version` pass through on stdout with a success status.
+  - Checks: `cargo fmt --all -- --check` passed; `cargo test -p destiny-cli` 39 passed across 3 suites; `cargo test -p destiny-app --features test-support` 114 passed across 2 suites; `cargo clippy -p destiny-cli -p destiny-app --all-targets --all-features -- -D warnings` passed; `git diff --check` passed.
+  - Runtime harness: a deterministic recording fake implements `QueryOperations`, records the exact request plus the freshness policy/time in call order, and returns canned shared records. Tests prove invalid clap input and invalid request bounds make zero service calls, valid list/search/inspect dispatch exactly once with the caller's policy/time, results retain shared metadata, and a missing inspection is the typed `item_not_found`/32 outcome.
+  - Composition limitation: a production `QueryService` cannot yet be composed from public `destiny-app` foundations (`load_config` is crate-visible and no public function builds a service over the production adapters, which are not in `destiny-cli`'s dependency surface). No adapter or business logic was invented. `main.rs` is minimal: it calls the sanitized process boundary (`run_binary`), which keeps the sanitized startup diagnostic and reports the stable `unsupported_operation`/40 outcome for a read it cannot serve. `runner::tests::binary_boundary_documents_the_composition_limitation` records this boundary; DCR-004 wires the journey end-to-end with fixture services.
+  - Rollback: remove the `runner` module and its tests, revert the `QueryOperations` trait and its re-export, and restore the minimal `main.rs`, while retaining the parser and render contracts.
+  - Evidence: pending DCR-003 commit (worktree uncommitted).
 
 - [ ] **DCR-004 — Prove the offline human and JSON journey**
   - Outcome: integration-test list/search/inspect, fresh reuse, stale refresh, ambiguity, missing item, typed failures, stdout/stderr separation, bounds, and secret absence using deterministic fixtures; document user commands and manual browser/reauthorization boundary.

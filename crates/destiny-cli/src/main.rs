@@ -1,17 +1,11 @@
-use clap::Parser;
+//! The `destiny-cli` process boundary.
+//!
+//! All argument parsing, sanitized startup validation, and output choice live
+//! in the library. The binary only forwards the process arguments and emits the
+//! fully rendered result.
 
-#[derive(Debug, Parser)]
-#[command(
-    name = "destiny-cli",
-    version,
-    about = "Destiny inventory command line interface"
-)]
-struct Cli;
+use std::process::ExitCode;
 
-fn main() {
-    let _ = Cli::parse();
-    if let Err(error) = destiny_app::startup() {
-        eprintln!("{}", error);
-        std::process::exit(1);
-    }
+fn main() -> ExitCode {
+    destiny_cli::run_binary(std::env::args_os()).emit()
 }

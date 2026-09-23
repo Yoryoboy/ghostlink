@@ -28,7 +28,7 @@ pub use destiny_core::{
     PerkHash, PerkSummary, QueryMetadata, Resolution, SearchTerm, SourceMarker, SyncMetadata,
     SyncRevision, Timestamp,
 };
-pub use queries::{QueryService, SearchInventoryRequest};
+pub use queries::{QueryOperations, QueryService, SearchInventoryRequest};
 pub use sync::ProfileSyncService;
 
 /// Reports that the application foundation is available.

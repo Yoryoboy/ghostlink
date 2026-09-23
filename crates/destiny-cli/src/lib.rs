@@ -5,15 +5,18 @@
 //! the deterministic human and JSON renderers, and the stable typed exits. The
 //! binary is a thin process boundary over this surface.
 //!
-//! Nothing here dispatches a read: command parsing, request validation, and
-//! rendering are pure, and the shared freshness-aware services are invoked by
-//! the runner boundary in later work.
+//! Nothing here dispatches a read directly: command parsing, request
+//! validation, and rendering are pure, and the shared freshness-aware services
+//! are invoked only through the [`runner`] boundary. The binary is a thin
+//! process boundary over this surface.
 
 pub mod command;
 pub mod output;
+pub mod runner;
 
 pub use command::{
     Cli, CliError, Command, ErrorOutcome, InspectItemArgs, ReadRequest, SUCCESS_CODE,
     SUCCESS_EXIT_CODE, SearchInventoryArgs, category_outcome, inspection_outcome,
 };
 pub use output::{OutputMode, render_characters, render_error, render_inspection, render_search};
+pub use runner::{ProcessOutput, ReadFreshness, dispatch, parse_process, run, run_binary, run_cli};
