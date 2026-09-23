@@ -1,17 +1,22 @@
-//! RMCP tools-only server for the Destiny semantic reads.
+//! RMCP tools-only server for the Destiny semantic tools.
 //!
 //! [`ReadToolServer`] adapts the provider-neutral [`InventoryReadService`] seam
-//! to an [`rmcp::ServerHandler`]. It exposes exactly the three bounded read
-//! tools, dispatches each `tools/call` through the shared argument conversion
-//! and service, and returns the structured result or a sanitized tool error.
+//! to an [`rmcp::ServerHandler`]. On its own it exposes exactly the three
+//! bounded read tools, dispatches each `tools/call` through the shared argument
+//! conversion and service, and returns the structured result or a sanitized tool
+//! error. When constructed with the optional adapter-free [`MutationToolService`]
+//! seam it additionally advertises and dispatches the single intent-authorized
+//! `move_item` tool, so a read-only server keeps precisely the read-only
+//! discovery and dispatch it had before.
 //!
 //! # Boundaries
 //!
-//! - The handler holds a `Box<dyn InventoryReadService + Send>` behind a
-//!   `std::sync::Mutex`, so the synchronous read service can be shared by the
-//!   [`rmcp::ServerHandler`] without introducing a second service contract. The
-//!   lock is only ever held for one synchronous dispatch, never across an
-//!   `.await`.
+//! - The handler holds a `Box<dyn InventoryReadService + Send>` and an optional
+//!   `Box<dyn MutationToolService + Send>` behind `std::sync::Mutex`, so both
+//!   synchronous services can be shared by the [`rmcp::ServerHandler`] without
+//!   introducing a second service contract. A lock is only ever held for one
+//!   synchronous dispatch, never across an `.await`. The two seams serialize
+//!   independently, so a mutation never blocks a concurrent read.
 //! - Dispatch is offloaded with [`tokio::task::spawn_blocking`]: the read
 //!   service performs blocking provider and storage work, and the RMCP server
 //!   loop is async. Keeping the blocking work off the async worker is what makes
@@ -33,46 +38,122 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::schema::{
-    INSPECT_ITEM_TOOL, InspectItemArgs, LIST_CHARACTERS_TOOL, ListCharactersArgs, McpError,
-    SEARCH_INVENTORY_TOOL, SearchInventoryArgs,
+    INSPECT_ITEM_TOOL, InspectItemArgs, LIST_CHARACTERS_TOOL, ListCharactersArgs, MOVE_ITEM_TOOL,
+    McpError, MoveItemArgs, SEARCH_INVENTORY_TOOL, SearchInventoryArgs, move_item_tool,
 };
-use crate::service::InventoryReadService;
+use crate::service::{InventoryReadService, MutationToolService};
 
 type SharedReadService = Arc<Mutex<Box<dyn InventoryReadService + Send>>>;
+type SharedMutationService = Arc<Mutex<Box<dyn MutationToolService + Send>>>;
 
-/// The tools-only RMCP server over one shared read service.
+/// The instructions a read-only server advertises.
 ///
-/// The service is shared behind a mutex so the same `Send` read service can
-/// answer concurrent `tools/call` requests one at a time. The server is
-/// `Send + Sync + 'static`, as [`rmcp::ServerHandler`] requires.
+/// This is the exact text the read-only construction has always advertised; it
+/// is kept verbatim so an unconfigured server reports the same capability it
+/// always did.
+const READ_ONLY_INSTRUCTIONS: &str =
+    "Read-only, bounded access to the signed-in Destiny inventory and Manifest definitions.";
+
+/// The instructions a server with a composed mutation seam advertises.
+///
+/// The text must not claim the server is read-only: composing the seam adds the
+/// single intent-authorized `move_item` mutation, so the advertised capability
+/// has to match the discovery set.
+const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item` mutation.";
+
+/// The tools-only RMCP server over one shared read service and an optional
+/// mutation seam.
+///
+/// Each service is shared behind its own mutex so the same `Send` service can
+/// answer concurrent `tools/call` requests one at a time, independent of the
+/// other seam. The server is `Send + Sync + 'static`, as
+/// [`rmcp::ServerHandler`] requires.
 pub struct ReadToolServer {
     service: SharedReadService,
+    mutation: Option<SharedMutationService>,
 }
 
 impl ReadToolServer {
-    /// Wraps one read service for the stdio server.
+    /// Wraps one read service for the stdio server, exposing only the reads.
+    ///
+    /// This is the read-only construction: the server discovers exactly the
+    /// three read tools and rejects `move_item` as an unknown tool, so an
+    /// unconfigured mutation seam cannot be told apart from one that was never
+    /// built.
     pub fn new(service: Box<dyn InventoryReadService + Send>) -> Self {
         Self {
             service: Arc::new(Mutex::new(service)),
+            mutation: None,
+        }
+    }
+
+    /// Wraps one read service and one mutation seam for the stdio server.
+    ///
+    /// The mutation seam is adapter-free: it is only a
+    /// [`MutationToolService`], so this crate still names no concrete adapter.
+    /// Configuring it advertises the single `move_item` tool and routes its
+    /// call through the seam; every read keeps its unchanged behavior.
+    pub fn with_mutation(
+        service: Box<dyn InventoryReadService + Send>,
+        mutation: Box<dyn MutationToolService + Send>,
+    ) -> Self {
+        Self {
+            service: Arc::new(Mutex::new(service)),
+            mutation: Some(Arc::new(Mutex::new(mutation))),
         }
     }
 
     /// The exact tool descriptors this server advertises, in stable order.
+    ///
+    /// The three reads are always present and deterministic. `move_item` is
+    /// appended only when a mutation seam was composed, so the discovery set is
+    /// a function of the construction and never of the request.
     pub fn discover_tools(&self) -> ListToolsResult {
+        let mut tools = crate::schema::tool_specs();
+        if self.mutation.is_some() {
+            tools.push(move_item_tool());
+        }
         ListToolsResult {
-            tools: crate::schema::tool_specs(),
+            tools,
             ..Default::default()
         }
     }
 
-    /// Synchronously dispatches one tool call through the shared service.
+    /// Synchronously dispatches one tool call through the selected seam.
     ///
     /// This is the single dispatch path the async handler and the focused unit
     /// tests share. An unknown tool name and arguments that do not fit the
     /// bounded schema are fixed protocol errors; a rejected bound or a service
-    /// failure is a sanitized structured tool error.
+    /// failure is a sanitized structured tool error. `move_item` routes through
+    /// the mutation seam only when one was composed; otherwise it stays an
+    /// unknown tool.
     pub fn dispatch(&self, name: &str, arguments: JsonObject) -> Result<CallToolResult, ErrorData> {
-        dispatch_locked(&self.service, name, arguments)
+        match self.mutation_for(name) {
+            Some(mutation) => dispatch_mutation_locked(mutation, arguments),
+            None => dispatch_locked(&self.service, name, arguments),
+        }
+    }
+
+    /// The mutation seam to use for one tool name, if it is composed.
+    fn mutation_for(&self, name: &str) -> Option<&SharedMutationService> {
+        if name == MOVE_ITEM_TOOL {
+            self.mutation.as_ref()
+        } else {
+            None
+        }
+    }
+
+    /// The instructions this server advertises for its own capabilities.
+    ///
+    /// A read-only server reports exactly [`READ_ONLY_INSTRUCTIONS`]; a server
+    /// with a composed mutation seam reports [`MUTATION_INSTRUCTIONS`] instead,
+    /// so the advertised capability never contradicts the discovered tools.
+    fn instructions(&self) -> &'static str {
+        if self.mutation.is_some() {
+            MUTATION_INSTRUCTIONS
+        } else {
+            READ_ONLY_INSTRUCTIONS
+        }
     }
 }
 
@@ -85,14 +166,16 @@ impl fmt::Debug for ReadToolServer {
 impl ServerHandler for ReadToolServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("destiny-mcp", env!("CARGO_PKG_VERSION")))
-            .with_instructions(
-                "Read-only, bounded access to the signed-in Destiny inventory and Manifest definitions.",
-            )
+            .with_server_info(Implementation::new(
+                "destiny-mcp",
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_instructions(self.instructions())
     }
 
     fn get_tool(&self, name: &str) -> Option<Tool> {
-        crate::schema::tool_specs()
+        self.discover_tools()
+            .tools
             .into_iter()
             .find(|tool| tool.name == name)
     }
@@ -110,15 +193,25 @@ impl ServerHandler for ReadToolServer {
         request: CallToolRequestParams,
         _context: RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        // Clone the shared handle so the blocking dispatch owns everything it
-        // needs; the synchronous service runs off the async worker thread.
-        let service = Arc::clone(&self.service);
         let name = request.name.to_string();
         let arguments = request.arguments.unwrap_or_default();
-        let result =
-            tokio::task::spawn_blocking(move || dispatch_locked(&service, &name, arguments))
-                .await
-                .map_err(|_| internal_error())?;
+        // Clone the selected shared handle so the blocking dispatch owns
+        // everything it needs; the synchronous service runs off the async
+        // worker thread. A read-only server keeps the mutation name unknown.
+        let result = match self.mutation_for(&name) {
+            Some(mutation) => {
+                let mutation = Arc::clone(mutation);
+                tokio::task::spawn_blocking(move || dispatch_mutation_locked(&mutation, arguments))
+                    .await
+                    .map_err(|_| internal_error())?
+            }
+            None => {
+                let service = Arc::clone(&self.service);
+                tokio::task::spawn_blocking(move || dispatch_locked(&service, &name, arguments))
+                    .await
+                    .map_err(|_| internal_error())?
+            }
+        };
         result.map(CallToolResponse::from)
     }
 }
@@ -177,6 +270,27 @@ fn dispatch_inspect_item(
         .map_or_else(tool_error, |output| output.into_call_tool_result()))
 }
 
+/// Dispatches one `move_item` call while holding the shared mutation lock.
+///
+/// Arguments are bounded and converted before the service runs, so an absent or
+/// ambiguous selector is a sanitized tool error and never reaches the seam. A
+/// rejected bound or a service failure is likewise a sanitized structured tool
+/// error; the lock is held only for this one synchronous call.
+fn dispatch_mutation_locked(
+    mutation: &Mutex<Box<dyn MutationToolService + Send>>,
+    arguments: JsonObject,
+) -> Result<CallToolResult, ErrorData> {
+    let arguments: MoveItemArgs = deserialize(arguments)?;
+    let request = match arguments.into_request() {
+        Ok(request) => request,
+        Err(error) => return Ok(error.into_call_tool_result()),
+    };
+    let mut guard = mutation.lock().map_err(|_| internal_error())?;
+    Ok(guard
+        .move_item(&request)
+        .map_or_else(tool_error, |output| output.into_call_tool_result()))
+}
+
 /// Deserializes bounded tool arguments without echoing the raw input.
 fn deserialize<T: DeserializeOwned>(arguments: JsonObject) -> Result<T, ErrorData> {
     serde_json::from_value(Value::Object(arguments)).map_err(|_| invalid_arguments())
@@ -209,10 +323,13 @@ fn internal_error() -> ErrorData {
 mod tests {
     use super::ReadToolServer;
     use crate::schema::{
-        InspectItemOutput, LIST_CHARACTERS_TOOL, ListCharactersOutput, McpError, QueryMetadataView,
-        SEARCH_INVENTORY_TOOL, SearchInventoryOutput,
+        InspectItemOutput, LIST_CHARACTERS_TOOL, ListCharactersOutput, LocationView,
+        MOVE_ITEM_TOOL, McpError, MoveEffectsView, MoveItemArgs, MoveItemOutput, MoveSuccessView,
+        QueryMetadataView, SEARCH_INVENTORY_TOOL, SearchInventoryOutput,
     };
-    use crate::service::{InventoryReadService, ListCharactersRequest};
+    use crate::service::{
+        InventoryReadService, ListCharactersRequest, MoveItemRequest, MutationToolService,
+    };
     use destiny_app::{
         ErrorCategory, InspectItemRequest, MAX_SEARCH_LIMIT, SearchInventoryRequest,
     };
@@ -344,6 +461,105 @@ mod tests {
         (ReadToolServer::new(Box::new(service)), handle)
     }
 
+    /// A deterministic recording mutation seam with observable concurrency.
+    #[derive(Clone, Debug)]
+    struct RecordingMutationService {
+        requests: Arc<std::sync::Mutex<Vec<MoveItemRequest>>>,
+        inflight: Arc<AtomicUsize>,
+        max_inflight: Arc<AtomicUsize>,
+        delay: Duration,
+        failure: Option<ErrorCategory>,
+    }
+
+    impl RecordingMutationService {
+        fn new() -> Self {
+            Self {
+                requests: Arc::new(std::sync::Mutex::new(Vec::new())),
+                inflight: Arc::new(AtomicUsize::new(0)),
+                max_inflight: Arc::new(AtomicUsize::new(0)),
+                delay: Duration::ZERO,
+                failure: None,
+            }
+        }
+
+        fn with_delay(delay: Duration) -> Self {
+            Self {
+                delay,
+                ..Self::new()
+            }
+        }
+
+        fn with_failure(category: ErrorCategory) -> Self {
+            Self {
+                failure: Some(category),
+                ..Self::new()
+            }
+        }
+
+        fn recorded(&self) -> Vec<MoveItemRequest> {
+            self.requests.lock().expect("request log lock").clone()
+        }
+
+        fn max_concurrency(&self) -> usize {
+            self.max_inflight.load(Ordering::SeqCst)
+        }
+    }
+
+    impl MutationToolService for RecordingMutationService {
+        fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+            self.requests
+                .lock()
+                .expect("request log lock")
+                .push(request.clone());
+            let current = self.inflight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_inflight.fetch_max(current, Ordering::SeqCst);
+            if !self.delay.is_zero() {
+                std::thread::sleep(self.delay);
+            }
+            let result = match self.failure {
+                Some(category) => Err(McpError::new(category)),
+                None => Ok(move_success_output()),
+            };
+            self.inflight.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+    }
+
+    /// One bounded successful move output for the recording seam.
+    fn move_success_output() -> MoveItemOutput {
+        MoveItemOutput::VerifiedSuccess(MoveSuccessView {
+            effects: MoveEffectsView {
+                item_id: "inst-a".into(),
+                via_vault: false,
+                source: LocationView::Vault,
+                destination: LocationView::Character {
+                    character_id: "warlock".into(),
+                },
+            },
+            observed: LocationView::Character {
+                character_id: "warlock".into(),
+            },
+            steps: Vec::new(),
+        })
+    }
+
+    fn mutation_server(
+        service: RecordingService,
+    ) -> (ReadToolServer, RecordingService, RecordingMutationService) {
+        let read_handle = service.clone();
+        let mutation = RecordingMutationService::new();
+        let mutation_handle = mutation.clone();
+        (
+            ReadToolServer::with_mutation(Box::new(service), Box::new(mutation)),
+            read_handle,
+            mutation_handle,
+        )
+    }
+
+    fn exact_move_arguments() -> Value {
+        json!({"instance_id": "inst-a", "to_vault": true})
+    }
+
     fn args(value: Value) -> JsonObject {
         value
             .as_object()
@@ -378,6 +594,43 @@ mod tests {
         let info = ServerHandler::get_info(&server);
         assert!(info.capabilities.tools.is_some());
         assert_eq!(info.server_info.name, "destiny-mcp");
+    }
+
+    #[test]
+    fn read_only_construction_advertises_the_exact_read_only_instructions() {
+        let (server, _handle) = server(RecordingService::new());
+        let info = ServerHandler::get_info(&server);
+        assert_eq!(
+            info.instructions.as_deref(),
+            Some(
+                "Read-only, bounded access to the signed-in Destiny inventory and Manifest definitions."
+            )
+        );
+    }
+
+    #[test]
+    fn configured_mutation_advertises_mutation_aware_instructions() {
+        let (server, _read, _mutation) = mutation_server(RecordingService::new());
+        let info = ServerHandler::get_info(&server);
+        let instructions = info
+            .instructions
+            .as_deref()
+            .expect("a composed server advertises instructions");
+
+        // A mutation-configured server must not describe itself as read-only.
+        assert!(
+            !instructions.contains("Read-only"),
+            "a mutable server must not claim to be read-only: {instructions}"
+        );
+        // The advertised capability matches the discovered mutable tool set.
+        assert!(
+            instructions.contains(MOVE_ITEM_TOOL),
+            "a mutable server must name the mutation it exposes: {instructions}"
+        );
+        assert_ne!(
+            instructions,
+            "Read-only, bounded access to the signed-in Destiny inventory and Manifest definitions."
+        );
     }
 
     #[test]
@@ -534,5 +787,181 @@ mod tests {
             .dispatch("inspect_item", args(json!({"instance_id": "inst-a"})))
             .expect("second dispatch");
         assert_eq!(structured(&first), structured(&second));
+    }
+
+    #[test]
+    fn read_only_construction_exposes_exactly_the_three_reads() {
+        let (server, _handle) = server(RecordingService::new());
+        let tools = server.discover_tools().tools;
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
+        assert_eq!(
+            names,
+            [LIST_CHARACTERS_TOOL, SEARCH_INVENTORY_TOOL, "inspect_item"]
+        );
+        assert!(
+            server.get_tool(MOVE_ITEM_TOOL).is_none(),
+            "a read-only server must not advertise move_item"
+        );
+    }
+
+    #[test]
+    fn read_only_construction_keeps_move_item_unknown() {
+        let (server, read) = server(RecordingService::new());
+        let error = server
+            .dispatch(MOVE_ITEM_TOOL, args(exact_move_arguments()))
+            .expect_err("move_item is unknown without a mutation seam");
+        assert_eq!(error.code.0, -32601);
+        assert_eq!(error.message, "unknown tool");
+        assert!(read.recorded().is_empty());
+    }
+
+    #[test]
+    fn configured_mutation_exposes_the_three_reads_plus_move_item() {
+        let (server, _read, _mutation) = mutation_server(RecordingService::new());
+        let tools = server.discover_tools().tools;
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
+        assert_eq!(
+            names,
+            [
+                LIST_CHARACTERS_TOOL,
+                SEARCH_INVENTORY_TOOL,
+                "inspect_item",
+                MOVE_ITEM_TOOL
+            ]
+        );
+        let tool = server
+            .get_tool(MOVE_ITEM_TOOL)
+            .expect("move_item is advertised once composed");
+        assert_eq!(tool.name, MOVE_ITEM_TOOL);
+        assert!(tool.output_schema.is_some());
+    }
+
+    #[test]
+    fn reads_still_dispatch_unchanged_when_a_mutation_seam_is_configured() {
+        let (server, read, mutation) = mutation_server(RecordingService::new());
+        let list = server
+            .dispatch(LIST_CHARACTERS_TOOL, JsonObject::new())
+            .expect("list dispatch succeeds");
+        assert_eq!(list.is_error, Some(false));
+        let inspect = server
+            .dispatch("inspect_item", args(json!({"instance_id": "inst-a"})))
+            .expect("inspect dispatch succeeds");
+        assert_eq!(structured(&inspect), json!({"status": "missing"}));
+        assert_eq!(read.recorded(), ["list_characters", "inspect_item"]);
+        assert!(mutation.recorded().is_empty());
+    }
+
+    #[test]
+    fn move_item_dispatches_through_the_mutation_seam() {
+        let (server, read, mutation) = mutation_server(RecordingService::new());
+        let result = server
+            .dispatch(MOVE_ITEM_TOOL, args(exact_move_arguments()))
+            .expect("move_item dispatch succeeds");
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(structured(&result)["status"], "verified_success");
+        assert_eq!(structured(&result)["effects"]["item_id"], "inst-a");
+
+        let recorded = mutation.recorded();
+        assert_eq!(recorded.len(), 1);
+        let expected = MoveItemArgs {
+            instance_id: Some("inst-a".into()),
+            item_text: None,
+            to_vault: true,
+            character_id: None,
+            character_label: None,
+        }
+        .into_request()
+        .expect("valid exact arguments");
+        assert_eq!(recorded[0], expected);
+        assert!(
+            read.recorded().is_empty(),
+            "a mutation must never reach the read seam"
+        );
+    }
+
+    #[test]
+    fn malformed_move_item_arguments_are_a_fixed_protocol_error() {
+        let (server, _read, mutation) = mutation_server(RecordingService::new());
+        for invalid in [
+            json!({"unknown": true}),
+            json!({"instance_id": 1, "to_vault": true}),
+            json!({"to_vault": "yes"}),
+        ] {
+            let error = server
+                .dispatch(MOVE_ITEM_TOOL, args(invalid.clone()))
+                .expect_err("malformed arguments are a protocol error");
+            assert_eq!(error.code.0, -32602, "must reject: {invalid}");
+            assert_eq!(error.message, "invalid tool arguments");
+        }
+        assert!(mutation.recorded().is_empty());
+    }
+
+    #[test]
+    fn ambiguous_move_item_selectors_return_a_sanitized_tool_error() {
+        let (server, _read, mutation) = mutation_server(RecordingService::new());
+        for rejected in [
+            json!({"instance_id": "inst-a"}),
+            json!({"to_vault": true}),
+            json!({"instance_id": "inst-a", "item_text": "gjallar", "to_vault": true}),
+            json!({"instance_id": "inst-a", "to_vault": true, "character_id": "warlock"}),
+            json!({"instance_id": "", "to_vault": true}),
+        ] {
+            let result = server
+                .dispatch(MOVE_ITEM_TOOL, args(rejected.clone()))
+                .expect("a rejected selector is a tool-level error");
+            assert_eq!(result.is_error, Some(true), "must reject: {rejected}");
+            assert_eq!(structured(&result)["code"], "provider_validation");
+        }
+        assert!(
+            mutation.recorded().is_empty(),
+            "a rejected selector must never reach the mutation seam"
+        );
+    }
+
+    #[test]
+    fn mutation_service_failures_return_a_sanitized_tool_error() {
+        let read = RecordingService::new();
+        let mutation = RecordingMutationService::with_failure(ErrorCategory::StaleState);
+        let server = ReadToolServer::with_mutation(Box::new(read), Box::new(mutation));
+        let result = server
+            .dispatch(MOVE_ITEM_TOOL, args(exact_move_arguments()))
+            .expect("a mutation failure is a tool-level error");
+        assert_eq!(result.is_error, Some(true));
+        let rendered = serde_json::to_string(&structured(&result)).expect("serializes");
+        assert!(rendered.contains("stale_state"));
+        assert!(!rendered.contains("raw"));
+    }
+
+    #[test]
+    fn concurrent_mutation_dispatch_is_serialized_by_the_shared_seam() {
+        let delay = Duration::from_millis(5);
+        let read = RecordingService::new();
+        let mutation = RecordingMutationService::with_delay(delay);
+        let mutation_handle = mutation.clone();
+        let server = Arc::new(ReadToolServer::with_mutation(
+            Box::new(read),
+            Box::new(mutation),
+        ));
+
+        let mut threads = Vec::new();
+        for _ in 0..8 {
+            let server = Arc::clone(&server);
+            threads.push(std::thread::spawn(move || {
+                server
+                    .dispatch(MOVE_ITEM_TOOL, args(exact_move_arguments()))
+                    .expect("concurrent mutation dispatch succeeds")
+            }));
+        }
+        for thread in threads {
+            let result = thread.join().expect("thread completes");
+            assert_eq!(result.is_error, Some(false));
+        }
+
+        assert_eq!(mutation_handle.recorded().len(), 8);
+        assert_eq!(
+            mutation_handle.max_concurrency(),
+            1,
+            "the mutation mutex must serialize seam access"
+        );
     }
 }
