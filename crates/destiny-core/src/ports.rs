@@ -448,6 +448,226 @@ pub trait ManifestGateway {
     fn load_definitions(&mut self) -> Result<ManifestAcquisition, AppError>;
 }
 
+/// One provider-neutral request to move one concrete item between two locations.
+///
+/// This is the whole input of the transfer seam: the effective
+/// [`DestinyMembership`], the concrete [`ItemInstanceId`] and its definition
+/// [`ItemHash`], the stack quantity, and the two typed endpoints. It deliberately
+/// carries no credential, no provider field name, no provider payload, and no
+/// pre-encoded destination flag, so a transfer adapter maps [`Self::to_vault`] and
+/// the endpoints onto its own request shape and the core never learns a provider
+/// parameter name.
+///
+/// The membership is the complete resolved [`DestinyMembership`], which already
+/// pairs the provider membership type with the opaque identifier, so an adapter
+/// can issue the request with no out-of-band account input.
+///
+/// Every field is private and reachable only through its accessor, so a request
+/// exists only as the product of [`TransferRequest::new`] and its endpoint policy
+/// cannot be bypassed by a struct literal. `quantity` is passed through
+/// unchanged, because the application already accepted the provider-reported
+/// quantity and this contract must not silently rewrite it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferRequest {
+    membership: DestinyMembership,
+    item: ItemInstanceId,
+    item_hash: ItemHash,
+    quantity: u32,
+    from: ItemLocation,
+    to: ItemLocation,
+}
+
+impl TransferRequest {
+    /// Builds one request for two distinct Vault/character endpoints.
+    ///
+    /// An endpoint outside [`ItemLocation::Vault`] and
+    /// [`ItemLocation::Character`] is rejected with the sanitized
+    /// [`ErrorCategory::UnsupportedOperation`] category, and identical endpoints
+    /// are rejected with [`ErrorCategory::ProviderValidation`], because a
+    /// transfer to where the item already is has no provider meaning. Neither
+    /// rejected value appears in the error.
+    ///
+    /// [`ErrorCategory::UnsupportedOperation`]: crate::error::ErrorCategory::UnsupportedOperation
+    /// [`ErrorCategory::ProviderValidation`]: crate::error::ErrorCategory::ProviderValidation
+    pub fn new(
+        membership: DestinyMembership,
+        item: ItemInstanceId,
+        item_hash: ItemHash,
+        quantity: u32,
+        from: ItemLocation,
+        to: ItemLocation,
+    ) -> Result<Self, AppError> {
+        validate_endpoints(&from, &to)?;
+        Ok(Self {
+            membership,
+            item,
+            item_hash,
+            quantity,
+            from,
+            to,
+        })
+    }
+
+    /// The complete effective membership this request is issued for.
+    pub const fn membership(&self) -> &DestinyMembership {
+        &self.membership
+    }
+
+    /// The concrete item instance to move.
+    pub const fn item(&self) -> &ItemInstanceId {
+        &self.item
+    }
+
+    /// The definition hash of the item to move.
+    pub const fn item_hash(&self) -> ItemHash {
+        self.item_hash
+    }
+
+    /// The stack quantity to move, unchanged from the accepted projection.
+    pub const fn quantity(&self) -> u32 {
+        self.quantity
+    }
+
+    /// The location the item must leave.
+    pub const fn from(&self) -> &ItemLocation {
+        &self.from
+    }
+
+    /// The location the item must reach.
+    pub const fn to(&self) -> &ItemLocation {
+        &self.to
+    }
+
+    /// True when this request moves the item into the Vault.
+    pub const fn to_vault(&self) -> bool {
+        match self.to {
+            ItemLocation::Vault => true,
+            ItemLocation::Character(_) | ItemLocation::Other(_) => false,
+        }
+    }
+}
+
+/// Validates the two endpoints of one transfer request.
+///
+/// Endpoint policy lives here so an adapter never has to decide whether a request
+/// is meaningful. Every combination is matched explicitly with no wildcard arm, so
+/// adding a location to the domain cannot silently become an accepted transfer
+/// endpoint.
+fn validate_endpoints(from: &ItemLocation, to: &ItemLocation) -> Result<(), AppError> {
+    match (from, to) {
+        (
+            ItemLocation::Vault | ItemLocation::Character(_),
+            ItemLocation::Vault | ItemLocation::Character(_),
+        ) => {
+            if from == to {
+                Err(AppError::new(ErrorCategory::ProviderValidation))
+            } else {
+                Ok(())
+            }
+        }
+        (ItemLocation::Other(_), _) | (_, ItemLocation::Other(_)) => {
+            Err(AppError::new(ErrorCategory::UnsupportedOperation))
+        }
+    }
+}
+
+/// Why the provider deterministically refused one transfer step.
+///
+/// Every variant is a bounded, sanitized classification of a provider refusal.
+/// A provider status string, message, or payload never crosses this seam, so a
+/// caller branches on the meaning instead of parsing provider text, and no
+/// refusal can smuggle provider copy into a product surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransferRejection {
+    /// The provider reports the item can never be transferred.
+    NotTransferable,
+    /// The provider reports the item is equipped and must be unequipped first.
+    Equipped,
+    /// The provider reports the destination has no room for the item.
+    DestinationFull,
+    /// The provider rejected the request itself as malformed or unsupported.
+    InvalidRequest,
+}
+
+impl TransferRejection {
+    /// The shared sanitized category for this refusal.
+    ///
+    /// The two item-specific refusals are unsupported operations for that item.
+    /// A full destination and a rejected request are both provider refusals of
+    /// the submitted request, so they keep the provider-validation category.
+    pub const fn category(self) -> ErrorCategory {
+        match self {
+            Self::NotTransferable | Self::Equipped => ErrorCategory::UnsupportedOperation,
+            Self::DestinationFull | Self::InvalidRequest => ErrorCategory::ProviderValidation,
+        }
+    }
+}
+
+/// The sanitized provider result of one transfer step.
+///
+/// The four variants are the only terminal shapes a transfer adapter may report
+/// for one request: the step applied, the provider deterministically refused it,
+/// the provider failed transiently, or the effect of an already-issued request
+/// could not be determined. The last shape is what makes an honest partial
+/// result possible; it is never a success and never a clean failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransferOutcome {
+    /// The provider reported this step applied.
+    Transferred,
+    /// The provider deterministically refused this step; it changed nothing.
+    Rejected(TransferRejection),
+    /// The provider failed transiently for this step; nothing was applied.
+    Transient,
+    /// Whether an already-issued step applied could not be determined.
+    Uncertain,
+}
+
+impl TransferOutcome {
+    /// True only when the provider reported the step applied.
+    pub const fn applied(self) -> bool {
+        match self {
+            Self::Transferred => true,
+            Self::Rejected(_) | Self::Transient | Self::Uncertain => false,
+        }
+    }
+
+    /// The bounded refusal, when the provider deterministically refused the step.
+    pub const fn rejection(self) -> Option<TransferRejection> {
+        match self {
+            Self::Rejected(rejection) => Some(rejection),
+            Self::Transferred | Self::Transient | Self::Uncertain => None,
+        }
+    }
+}
+
+/// Performs exactly one provider-side item transfer step.
+///
+/// One call is one step of one already-planned move. The gateway performs no
+/// batching, no ordering, no post-condition check, and above all no retry: it
+/// issues the single request it is given and reports the sanitized result, so
+/// every sequencing, refresh, and retry decision stays in the application
+/// executor, which can only attempt a step under a fresh preflight.
+///
+/// The result contract keeps uncertainty honest:
+///
+/// - `Ok(TransferOutcome)` classifies a provider response that was observed.
+/// - `Err(AppError)` is reserved for a failure in which no provider mutation can
+///   have occurred, such as missing or rejected credentials, missing runtime
+///   configuration, or a rate-limit or availability failure that happened before
+///   the request was dispatched.
+/// - A failure after dispatch whose effect cannot be established, including a
+///   lost response or an unclassifiable envelope, must be reported as
+///   [`TransferOutcome::Uncertain`] instead of an error, because an error would
+///   claim the item did not move when that is exactly what is unknown.
+///
+/// The trait takes the request by reference and returns no raw payload, so an
+/// adapter can never hand a credential, a provider body, or a provider message
+/// back to the core.
+pub trait TransferGateway {
+    /// Issues one transfer step and reports its sanitized provider result.
+    fn transfer(&mut self, request: &TransferRequest) -> Result<TransferOutcome, AppError>;
+}
+
 /// Opaque credential material. Bytes are available only through the explicit
 /// trusted-adapter exposure boundary and are never available to formatting APIs.
 #[derive(Clone, Eq, PartialEq)]
@@ -486,9 +706,12 @@ pub trait CredentialStore {
 
 #[cfg(test)]
 mod tests {
-    use super::DestinyMembership;
+    use super::{
+        DestinyMembership, TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
+    };
+    use crate::domain::ItemLocation;
     use crate::error::{AppError, ErrorCategory};
-    use crate::ids::{MembershipId, MembershipType};
+    use crate::ids::{CharacterId, ItemHash, ItemInstanceId, MembershipId, MembershipType};
 
     const NUMERIC_ID: &str = "4611686018484639825";
 
@@ -545,5 +768,163 @@ mod tests {
         assert_eq!(base, same);
         assert_ne!(base, other_type);
         assert_ne!(base, other_id);
+    }
+
+    /// One transfer request from the Vault to one exact character.
+    fn membership() -> DestinyMembership {
+        DestinyMembership::new(MembershipType::new(3), MembershipId::new(NUMERIC_ID))
+            .expect("valid membership")
+    }
+
+    fn request(from: ItemLocation, to: ItemLocation) -> Result<TransferRequest, AppError> {
+        TransferRequest::new(
+            membership(),
+            ItemInstanceId::new("instance-1"),
+            ItemHash::new(1234),
+            1,
+            from,
+            to,
+        )
+    }
+
+    #[test]
+    fn transfer_requests_accept_only_distinct_vault_or_character_endpoints() {
+        let warlock = ItemLocation::Character(CharacterId::new("warlock"));
+
+        let direct = request(ItemLocation::Vault, warlock.clone()).expect("valid request");
+        assert!(!direct.to_vault());
+        // The complete resolved membership travels with the request, so an
+        // adapter needs no out-of-band account input.
+        assert_eq!(direct.membership(), &membership());
+        assert_eq!(
+            direct.membership().membership_type(),
+            MembershipType::new(3)
+        );
+        assert_eq!(direct.membership().membership_id().as_str(), NUMERIC_ID);
+        assert_eq!(direct.item(), &ItemInstanceId::new("instance-1"));
+        assert_eq!(direct.item_hash(), ItemHash::new(1234));
+        assert_eq!(direct.quantity(), 1);
+        assert_eq!(direct.from(), &ItemLocation::Vault);
+        assert_eq!(direct.to(), &warlock);
+
+        let into_vault = TransferRequest::new(
+            membership(),
+            ItemInstanceId::new("instance-1"),
+            ItemHash::new(1234),
+            7,
+            ItemLocation::Character(CharacterId::new("warlock")),
+            ItemLocation::Vault,
+        )
+        .expect("valid request");
+        assert!(into_vault.to_vault());
+        assert_eq!(into_vault.quantity(), 7);
+        assert_eq!(into_vault.to(), &ItemLocation::Vault);
+
+        // Only the Vault and one exact character are transfer endpoints.
+        for (from, to) in [
+            (ItemLocation::other("future-location"), ItemLocation::Vault),
+            (ItemLocation::Vault, ItemLocation::other("future-location")),
+        ] {
+            assert_eq!(
+                request(from.clone(), to.clone()),
+                Err(AppError::new(ErrorCategory::UnsupportedOperation)),
+                "{from:?} -> {to:?} must be rejected"
+            );
+        }
+
+        // A transfer to where the item already is has no provider meaning.
+        let character = ItemLocation::Character(CharacterId::new("warlock"));
+        assert_eq!(
+            request(ItemLocation::Vault, ItemLocation::Vault),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+        assert_eq!(
+            request(character.clone(), character),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+    }
+
+    #[test]
+    fn transfer_request_debug_redacts_every_identifier_value() {
+        let rendered = format!(
+            "{:?}",
+            request(
+                ItemLocation::Vault,
+                ItemLocation::Character(CharacterId::new("warlock"))
+            )
+            .expect("valid request")
+        );
+        assert!(rendered.contains("TransferRequest"));
+        // Identifiers redact their values in debug output: the opaque ids print
+        // only their type name, and the resolved membership keeps its non-secret
+        // provider type while redacting the account identifier.
+        assert!(rendered.contains("ItemInstanceId"));
+        assert!(rendered.contains("MembershipType"));
+        for secret in ["instance-1", NUMERIC_ID, "warlock"] {
+            assert!(
+                !rendered.contains(secret),
+                "transfer request debug leaked {secret}"
+            );
+        }
+    }
+
+    #[test]
+    fn transfer_outcomes_classify_applied_refused_transient_and_uncertain() {
+        assert!(TransferOutcome::Transferred.applied());
+        assert_eq!(TransferOutcome::Transferred.rejection(), None);
+        assert!(!TransferOutcome::Transient.applied());
+        assert_eq!(TransferOutcome::Transient.rejection(), None);
+        assert!(!TransferOutcome::Uncertain.applied());
+        assert_eq!(TransferOutcome::Uncertain.rejection(), None);
+
+        for (rejection, category) in [
+            (
+                TransferRejection::NotTransferable,
+                ErrorCategory::UnsupportedOperation,
+            ),
+            (
+                TransferRejection::Equipped,
+                ErrorCategory::UnsupportedOperation,
+            ),
+            (
+                TransferRejection::DestinationFull,
+                ErrorCategory::ProviderValidation,
+            ),
+            (
+                TransferRejection::InvalidRequest,
+                ErrorCategory::ProviderValidation,
+            ),
+        ] {
+            let outcome = TransferOutcome::Rejected(rejection);
+            assert!(!outcome.applied());
+            assert_eq!(outcome.rejection(), Some(rejection));
+            assert_eq!(rejection.category(), category);
+        }
+    }
+
+    #[test]
+    fn a_transfer_gateway_issues_one_request_per_step_without_retrying() {
+        #[derive(Default)]
+        struct Recording {
+            items: Vec<String>,
+        }
+
+        impl TransferGateway for Recording {
+            fn transfer(&mut self, request: &TransferRequest) -> Result<TransferOutcome, AppError> {
+                self.items.push(request.item().as_str().to_owned());
+                Ok(TransferOutcome::Transient)
+            }
+        }
+
+        let mut gateway = Recording::default();
+        let transfer = request(
+            ItemLocation::Vault,
+            ItemLocation::Character(CharacterId::new("warlock")),
+        )
+        .expect("valid request");
+
+        assert_eq!(gateway.transfer(&transfer), Ok(TransferOutcome::Transient));
+        // One call is one step: the gateway never retries on its own.
+        assert_eq!(gateway.items, ["instance-1"]);
     }
 }
