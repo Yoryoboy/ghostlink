@@ -7,3 +7,10 @@ license.workspace = true
 [dependencies]
 clap.workspace = true
 destiny-app.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+destiny-app = { workspace = true, features = ["test-support"] }

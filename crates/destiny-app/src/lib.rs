@@ -12,6 +12,25 @@ pub mod test_support;
 
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
 pub use destiny_core::{AppError, ErrorCategory};
+
+// Additive provider-neutral re-exports for presentation crates.
+//
+// `destiny-mcp` must translate MCP inputs and outputs against the shared read
+// contract without naming `destiny-core` in its manifest. The public types that
+// already appear in `QueryService` requests, results, error categories, bounds,
+// and injected policy therefore have to be reachable through this crate. This
+// block is the smallest additive surface that lets the presentation layer
+// implement that translation; it adds no behavior and no new abstraction.
+pub use destiny_core::{
+    Character, CharacterId, CharacterListResult, Clock, Dataset, DefinitionReplacementInput,
+    DefinitionRepository, DefinitionSearchQuery, DefinitionVersion, DestinyMembership,
+    FreshnessPolicy, FreshnessStatus, InspectItemRequest, InstanceSearchQuery, InventoryRepository,
+    InventorySearchResult, InventorySnapshot, InventorySnapshotInput, ItemDefinition, ItemHash,
+    ItemHashFilter, ItemInspection, ItemInstance, ItemInstanceId, ItemLocation, MAX_HASH_FILTERS,
+    MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS, MembershipId, MembershipType,
+    PerkHash, PerkSummary, ProfileGateway, QueryMetadata, Resolution, SearchRepository, SearchTerm,
+    SourceMarker, SyncMetadata, Timestamp,
+};
 pub use manifest::{ManifestService, normalize_manifest};
 pub use queries::{QueryService, SearchInventoryRequest};
 pub use sync::ProfileSyncService;

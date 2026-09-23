@@ -62,15 +62,17 @@ WU-011 is the independent MCP read vertical. It must translate MCP inputs and ou
 
 ## Tasks
 
-- [ ] **DMR-001 — Establish WU-011 boundary and pin official RMCP decisions**
+- [x] **DMR-001 — Establish WU-011 boundary and pin official RMCP decisions**
   - Outcome: create this tracker and Engram mirror before source edits; record exact dependencies, edit surfaces, bounds, transport evidence, four implementation/closure tasks, checks, and rollback boundaries.
   - Check: tracker/Engram readback; clean `git diff --check`; commit contains only the tracker.
   - Rollback: remove only this tracker/branch before implementation.
+  - Evidence: commit `3433bfa` (`chore: start Destiny MCP read tools`) contains only `odd/tasks/destiny-mcp-read-tools.md` (114 insertions, 0 deletions, confirmed by `git show --stat 3433bfa`); `git diff --check` was clean at that commit and the worktree was clean on `feature/destiny-mcp-read-tools` before DMR-002.
 
-- [ ] **DMR-002 — Add bounded MCP schema, translation, and service contract**
+- [x] **DMR-002 — Add bounded MCP schema, translation, and service contract**
   - Outcome: pin RMCP; add MCP-owned inputs/outputs and a narrow application-service seam; map all three reads to shared services with deterministic bounded results and sanitized typed errors; prove mapping parity without transport.
   - Check: focused MCP unit/contract tests; fmt; focused clippy; schema/result snapshots or exact structure assertions; secret sentinel scan.
   - Rollback: remove the MCP dependency and local schema/mapping/service modules/tests while leaving the placeholder binary intact.
+  - Evidence: pinned `rmcp = { version = "=3.4.0", features = ["server", "transport-io"] }` (resolved to rmcp 3.4.0 in `Cargo.lock`) plus `serde`/`schemars` workspace dependencies; added MCP-local `src/lib.rs`, `src/schema.rs`, and `src/service.rs`; added a documented additive `destiny-core` reexport block to `crates/destiny-app/src/lib.rs` so the presentation crate can translate shared read types without a direct `destiny-core` dependency; added one MCP-local identifier transport bound (`MAX_IDENTIFIER_LENGTH = 512`, `character_id`/`instance_id`, empty rejected) enforced in JSON Schema and in runtime conversion before any service call; 20 focused MCP tests cover argument bounds, identifier bounds with zero-call behavior, tool/JSON-schema shape, deterministic mapping, missing/ambiguous/sanitized errors, definition-vs-instance identity, secret-sentinel absence, and parity with the shared application results. DMR-003/004 remain unchecked.
 
 - [ ] **DMR-003 — Run the tools through the stdio MCP transport**
   - Outcome: wire the RMCP tools-only server and binary lifecycle; prove initialize, discovery, and all three calls through a real child-process stdio session using deterministic offline composition; document invocation and protocol-only stdout.
@@ -103,11 +105,43 @@ WU-011 is the independent MCP read vertical. It must translate MCP inputs and ou
 
 - WU-007 is closed at base `2b6c001`; the worktree began clean on `feature/destiny-mcp-read-tools`.
 - Repository mapping confirms `QueryService` already owns list/search/inspect freshness behavior and bounded provider-neutral results.
-- `destiny-mcp` currently contains only a Clap placeholder calling `destiny_app::startup()`; it has no RMCP dependency, tool schema, service router, shared-service composition, or transport tests.
+- DMR-001 is complete at commit `3433bfa`. DMR-002 is complete as a contract-only slice: pinned RMCP, bounded MCP schemas, injectable read-service seam, and translation parity tests. `destiny-mcp` still contains only the Clap placeholder binary; the stdio server and production composition remain DMR-003.
 
 ## Verification evidence
 
-- Pending DMR-001 tracker and Engram mirror readback.
+### DMR-001
+
+- `git show --stat 3433bfa` / `git show --name-only 3433bfa`: sole path `odd/tasks/destiny-mcp-read-tools.md`, 114 insertions, 0 deletions.
+- `git diff --check` at the DMR-002 start: clean; `git status --porcelain`: clean on `feature/destiny-mcp-read-tools`.
+
+### DMR-002 (contract-only; no stdio runtime and no production composition)
+
+- Dependency pin: `cargo tree -p destiny-mcp` resolves `rmcp v3.4.0`; `Cargo.lock` gained 354 additive lines with no removals, including `rmcp 3.4.0`, `schemars`, and the `tokio`/`futures`/`uuid` transport graph.
+- Changed surfaces: `Cargo.toml`, `crates/destiny-mcp/Cargo.toml`, new `crates/destiny-mcp/src/lib.rs`, new `crates/destiny-mcp/src/schema.rs`, new `crates/destiny-mcp/src/service.rs`, additive reexports in `crates/destiny-app/src/lib.rs`, and new `Cargo.lock` entries. `crates/destiny-mcp/src/main.rs` stays the untouched Clap placeholder.
+- Rollback boundary: base `3433bfa`. Removing the `rmcp`/`serde`/`schemars` manifest entries (and refreshing `Cargo.lock`), deleting the three new MCP library modules, and reverting the additive `destiny-app` reexport block returns the tree to DMR-001 without touching the placeholder binary or any completed WU-007 behavior.
+
+| Command | Observed result |
+| --- | --- |
+| `cargo fmt --all -- --check` | Clean (`FMT_OK`) |
+| `cargo test -p destiny-mcp` | 20 passed, 0 failed (3 suites) |
+| `cargo test -p destiny-app --all-features` | 113 passed, 0 failed (2 suites); includes the presentation-crate no-`destiny-core` manifest check |
+| `cargo clippy -p destiny-mcp -p destiny-app --all-targets --all-features -- -D warnings` | No issues found |
+| `cargo check --workspace --all-targets --all-features` | Passed |
+| `cargo test --workspace --all-features` | 383 passed, 0 failed (12 suites) |
+| `git diff --check` | Clean |
+
+Focused MCP tests: `schema::tests::{tool_specs_expose_only_the_three_semantic_reads_in_stable_order, search_inventory_schema_declares_the_shared_bounds, identifier_schemas_declare_the_mcp_transport_bound, list_and_inspect_schemas_are_closed_objects, unknown_arguments_are_rejected_by_every_input_type, omitted_limits_default_to_the_shared_maximum, error_codes_are_stable_and_messages_are_sanitized}` and `service::tests::{definition_bounds_are_rejected_before_any_service_call, instance_candidate_bounds_are_rejected_before_any_service_call, invalid_identifiers_are_rejected_before_any_service_call, identifier_boundary_is_inclusive, list_characters_parity_with_the_shared_application_result, search_inventory_parity_with_the_shared_application_result, inspect_item_parity_keeps_definition_and_instance_distinct, inspect_item_reports_missing_as_an_explicit_successful_outcome, ambiguous_instance_fails_closed_with_a_sanitized_error, provider_failures_surface_only_sanitized_categories, mcp_values_never_carry_raw_provider_material, translation_is_deterministic_across_repeated_reads, the_read_service_seam_is_object_safe_and_injectable}`.
+
+DMR-002 decisions:
+
+- `search_inventory` mirrors the shared request shape: the definition query always runs and an optional nested `instances` object carries the concrete-instance query; `item_hashes: null` means no constraint while `[]` stays fail-closed.
+- `inspect_item` maps the shared `Resolution::Missing` to an explicit successful `Missing` outcome; ambiguity and invalid projection state stay sanitized `local_storage` errors, matching the shared fail-closed behavior.
+- An opaque `ItemLocation::Other` value is rendered as `LocationView::Other` without its provider text.
+- Identifier bounding is MCP-local transport policy, not a core rule: `MAX_IDENTIFIER_LENGTH = 512` characters bounds `character_id` and `instance_id`, and empty identifiers are rejected, because the shared opaque `CharacterId`/`ItemInstanceId` types accept any string. The bound is declared in the JSON Schema (`minLength: 1`, `maxLength: 512`) and enforced in runtime conversion before any service call; no core identifier type changed.
+- All `rmcp` types (`Tool`, `CallToolResult`) stay in `crates/destiny-mcp/src/schema.rs`; the `InventoryReadService` seam and translation hold no SDK type and are object-safe.
+- The additive `destiny-app` reexports are the documented transitive-public-type gap: the presentation crate needs the shared query/result/bounds/identity types without a direct `destiny-core` manifest dependency.
+
+DMR-002 known limitations carried to DMR-003: stdio wiring, child-process shutdown, the macro-generated router (the default `macros` feature is already enabled), production service composition, and protocol-only stdout discipline are not implemented or proven here.
 
 ## Closure
 
