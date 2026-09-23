@@ -69,15 +69,15 @@ WU-009 and WU-010 provide the safe shared mutation contracts and execution behav
   - Commit evidence: `8410cb1` (`feat: add MCP mutation service contract`).
   - Review evidence: independent verification found no blocker/high/medium findings; MCP default/all-feature tests passed (54/55), app tests 31 passed, fmt/check/clippy/diff clean. One accepted low note: the current zero-attempt `ExecutionFailure` invariant is enforced app-side rather than pinned at the MCP mapping boundary.
 
-- [ ] **DMM-003 — Expose `move_item` through RMCP stdio** *(in progress)*
+- [x] **DMM-003 — Expose `move_item` through RMCP stdio**
   - Register `move_item` when the mutation seam is configured while retaining the three existing read tools.
   - Dispatch one `tools/call` directly through the mutation seam under existing serialization and bounded protocol errors.
   - Acceptance: discovery exposes four tools in product composition; read-only construction remains compatible; one call completes the semantic move without an approval artifact or second tool call.
   - Checks: focused server dispatch/discovery/serialization/error tests, formatting, clippy, `git diff --check`.
-  - Commit evidence: pending.
-  - Review evidence: pending.
+  - Commit evidence: `0773400` (`feat: expose move item through MCP`).
+  - Review evidence: independent verification and bounded correction re-verification found no remaining findings; MCP default/all-feature tests passed (65/66), fmt/check/clippy/diff clean.
 
-- [ ] **DMM-004 — Compose production mutation and prove the stdio journey**
+- [ ] **DMM-004 — Compose production mutation and prove the stdio journey** *(in progress)*
   - Construct the shared mutation service, production plan ID generation, and Bungie transfer gateway in the product binary.
   - Extend the offline fixture and child-process stdio tests with successful, repeated/already-satisfied, preflight-change, partial/incomplete, sanitized-failure, and sentinel-exclusion behavior as appropriate.
   - Document default-enabled host behavior only where existing project docs require it.
@@ -119,8 +119,10 @@ WU-009 and WU-010 provide the safe shared mutation contracts and execution behav
 - DMM-002 completed in commit `8410cb1` with bounded closed input schemas, sanitized typed output views, internal membership derivation, and the adapter-free composed planner/executor seam.
 - DMM-002 independent verification: no blocker/high/medium findings; 54 default and 55 all-feature MCP tests plus 31 app tests passed; fmt/check/clippy/diff clean.
 - Accepted low verification note: MCP currently maps the app's guaranteed zero-attempt `Err(ExecutionFailure)` without carrying evidence; app-side contracts prove that path has no attempted-step evidence today. Re-audit at DMM-005 if the shared contract changes.
-- DMM-003 is in progress.
+- DMM-003 completed in commit `0773400`: read-only construction retains three tools and exact legacy capability text; mutation composition advertises four tools, capability-aware server information, and serialized one-call dispatch.
+- DMM-003 independent verification found one low stale-description issue, corrected it, and re-verified with no remaining findings; 65 default and 66 all-feature MCP tests passed, fmt/check/clippy/diff clean.
+- DMM-004 is in progress.
 
 ## Next step
 
-Register and dispatch `move_item` through the RMCP stdio server while preserving read-only construction.
+Compose the production mutation runtime and prove the complete one-call offline stdio journey.
