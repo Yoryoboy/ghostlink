@@ -59,7 +59,7 @@ WU-009 is the safety boundary between semantic user intent and WU-010 remote exe
   - Outcome: created this tracker after reading the MVP plan, architecture, existing mutation/query/sync contracts, ports, fakes, and prior ODD conventions; fixed semantic selectors, direct/Vault step rules, explicit-intent semantics, preflight composition, delivery slices, checks, and rollback boundaries before source edits.
   - Check: tracker readback and `git diff --check`.
   - Rollback: remove only this tracker and its Engram mirror before source implementation.
-  - Evidence: pending boundary commit.
+  - Evidence: commit `4d3fbac` (`chore: start Destiny mutation planning`).
 
 - [ ] **DMP-002 — Complete provider-neutral move contracts and pure policy**
   - Outcome: validated selectors, intent authorization, step/effect records, bounded lifetime policy, complete plan binding, and exhaustive pure tests.
