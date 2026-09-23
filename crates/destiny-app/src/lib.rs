@@ -11,6 +11,7 @@ pub mod sync;
 pub mod test_support;
 
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
+pub use config::{MAX_READ_FRESHNESS_TTL_SECONDS, ReadApiKey, ReadRuntimeConfig};
 pub use destiny_core::{AppError, ErrorCategory};
 
 // Additive provider-neutral re-exports for presentation crates.

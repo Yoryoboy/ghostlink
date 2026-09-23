@@ -5,9 +5,9 @@
 
 use destiny_core::{
     AccessCredential, AppError, AuthorizationCallback, AuthorizationState, BrowserAuthorization,
-    CallbackReceiver, Clock, CredentialMaterial, CredentialStore, Dataset,
-    DefinitionReplacementInput, DefinitionRepository, DefinitionSearchQuery, DefinitionVersion,
-    DestinyMembership, ErrorCategory, InstanceSearchQuery, InventoryRepository, InventorySnapshot,
+    CallbackReceiver, Clock, CredentialStore, Dataset, DefinitionReplacementInput,
+    DefinitionRepository, DefinitionSearchQuery, DefinitionVersion, DestinyMembership,
+    ErrorCategory, InstanceSearchQuery, InventoryRepository, InventorySnapshot,
     InventorySnapshotInput, ItemDefinition, ItemHash, ItemInstance, ItemInstanceId,
     ManifestAcquisition, ManifestDefinitions, ManifestGateway, PlanId, PlanIdGenerator,
     ProfileGateway, Resolution, SearchRepository, SnapshotMetadata, SourceMarker, SyncMetadata,
@@ -625,25 +625,25 @@ impl ManifestGateway for QueuedManifestGateway {
 
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryCredentialStore {
-    material: Option<CredentialMaterial>,
+    credential: Option<AccessCredential>,
 }
 
 impl InMemoryCredentialStore {
-    pub fn contains_material(&self) -> bool {
-        self.material.is_some()
+    pub fn contains_credential(&self) -> bool {
+        self.credential.is_some()
     }
 }
 
 impl CredentialStore for InMemoryCredentialStore {
-    fn save(&mut self, material: CredentialMaterial) -> Result<(), AppError> {
-        self.material = Some(material);
+    fn save(&mut self, credential: AccessCredential) -> Result<(), AppError> {
+        self.credential = Some(credential);
         Ok(())
     }
-    fn load(&self) -> Result<Option<CredentialMaterial>, AppError> {
-        Ok(self.material.clone())
+    fn load(&self) -> Result<Option<AccessCredential>, AppError> {
+        Ok(self.credential.clone())
     }
     fn delete(&mut self) -> Result<(), AppError> {
-        self.material = None;
+        self.credential = None;
         Ok(())
     }
 }
@@ -654,11 +654,11 @@ pub struct FailingCredentialStore {
 }
 
 impl CredentialStore for FailingCredentialStore {
-    fn save(&mut self, _material: CredentialMaterial) -> Result<(), AppError> {
+    fn save(&mut self, _credential: AccessCredential) -> Result<(), AppError> {
         Err(self.error)
     }
 
-    fn load(&self) -> Result<Option<CredentialMaterial>, AppError> {
+    fn load(&self) -> Result<Option<AccessCredential>, AppError> {
         Err(self.error)
     }
 
@@ -671,9 +671,9 @@ impl CredentialStore for FailingCredentialStore {
 mod tests {
     use super::*;
     use destiny_core::{
-        Character, CharacterId, ErrorCategory, InstanceSearchQuery, ItemHashFilter, ItemInstance,
-        ItemLocation, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MembershipId, MembershipType, PerkHash,
-        PerkSummary, SearchTerm,
+        AccessCredentialMetadata, Character, CharacterId, CredentialMaterial, ErrorCategory,
+        InstanceSearchQuery, ItemHashFilter, ItemInstance, ItemLocation, MAX_HASH_FILTERS,
+        MAX_SEARCH_LIMIT, MembershipId, MembershipType, PerkHash, PerkSummary, SearchTerm,
     };
 
     type RevisionMutation = (&'static str, fn(&mut InventorySnapshotInput));
@@ -1757,15 +1757,24 @@ mod tests {
     }
 
     #[test]
-    fn credential_material_is_redacted_and_never_displayable() {
+    fn in_memory_credential_store_round_trips_complete_credentials_and_redacts_material() {
         let material = CredentialMaterial::from_bytes(b"secret");
         assert_eq!(format!("{material:?}"), "CredentialMaterial");
+        let credential = AccessCredential {
+            metadata: AccessCredentialMetadata {
+                expires_at: Timestamp::new(42),
+            },
+            material,
+        };
         let mut store = InMemoryCredentialStore::default();
-        store.save(material).unwrap();
-        assert!(store.contains_material());
-        assert_eq!(store.load().unwrap().unwrap().expose_secret(), b"secret");
+        store.save(credential.clone()).unwrap();
+        assert!(store.contains_credential());
+        let loaded = store.load().unwrap().expect("stored credential");
+        assert_eq!(loaded, credential);
+        assert_eq!(loaded.metadata.expires_at, Timestamp::new(42));
+        assert_eq!(loaded.material.expose_secret(), b"secret");
         store.delete().unwrap();
-        assert!(!store.contains_material());
+        assert!(!store.contains_credential());
     }
 
     #[test]

@@ -160,7 +160,7 @@ where
             }
         };
         let metadata = credential.metadata;
-        if self.store.save(credential.material).is_err() {
+        if self.store.save(credential).is_err() {
             self.state = AuthState::ReauthorizationRequired;
             return Err(AppError::new(ErrorCategory::CredentialStoreUnavailable));
         }
@@ -224,21 +224,21 @@ mod tests {
 
         #[derive(Clone, Default)]
         struct SharedCredentialStore {
-            material: Arc<Mutex<Option<CredentialMaterial>>>,
+            credential: Arc<Mutex<Option<AccessCredential>>>,
         }
 
         impl CredentialStore for SharedCredentialStore {
-            fn save(&mut self, material: CredentialMaterial) -> Result<(), AppError> {
-                *self.material.lock().expect("shared store lock") = Some(material);
+            fn save(&mut self, credential: AccessCredential) -> Result<(), AppError> {
+                *self.credential.lock().expect("shared store lock") = Some(credential);
                 Ok(())
             }
 
-            fn load(&self) -> Result<Option<CredentialMaterial>, AppError> {
-                Ok(self.material.lock().expect("shared store lock").clone())
+            fn load(&self) -> Result<Option<AccessCredential>, AppError> {
+                Ok(self.credential.lock().expect("shared store lock").clone())
             }
 
             fn delete(&mut self) -> Result<(), AppError> {
-                *self.material.lock().expect("shared store lock") = None;
+                *self.credential.lock().expect("shared store lock") = None;
                 Ok(())
             }
         }
@@ -613,10 +613,57 @@ mod tests {
                     CallbackResult::Code(AuthorizationCode::from_bytes(b"code")),
                 ))
                 .unwrap();
-            assert!(handle.material.lock().expect("shared store lock").is_some());
+            assert!(
+                handle
+                    .credential
+                    .lock()
+                    .expect("shared store lock")
+                    .is_some()
+            );
             assert_eq!(service.logout(), Ok(AuthorizationOutcome::LoggedOut));
-            assert!(handle.material.lock().expect("shared store lock").is_none());
+            assert!(
+                handle
+                    .credential
+                    .lock()
+                    .expect("shared store lock")
+                    .is_none()
+            );
             assert_eq!(service.state(), &AuthState::SignedOut);
+        }
+
+        #[test]
+        fn authorization_persists_the_complete_credential_metadata_and_material() {
+            let store = SharedCredentialStore::default();
+            let handle = store.clone();
+            let mut service = started_service(store);
+            let state = match service.state() {
+                AuthState::Authorizing { state, .. } => state.clone(),
+                _ => unreachable!(),
+            };
+            service
+                .handle_callback(callback(
+                    &state,
+                    CallbackResult::Code(AuthorizationCode::from_bytes(b"code")),
+                ))
+                .unwrap();
+
+            // The port stores the whole credential: the expiry the exchange
+            // returned is not dropped when only the material is persisted.
+            let stored = handle
+                .credential
+                .lock()
+                .expect("shared store lock")
+                .clone()
+                .expect("a credential was persisted");
+            assert_eq!(stored.metadata.expires_at, Timestamp::new(100));
+            assert_eq!(stored.material.expose_secret(), b"credential-sentinel");
+            assert_eq!(stored, credential(100));
+            assert_eq!(
+                service.access_status(),
+                Ok(AuthorizationOutcome::Authorized(AccessCredentialMetadata {
+                    expires_at: Timestamp::new(100)
+                }))
+            );
         }
 
         #[test]

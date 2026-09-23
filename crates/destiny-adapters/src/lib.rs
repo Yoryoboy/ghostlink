@@ -1,5 +1,6 @@
 //! Provider integrations and local OAuth adapters.
 
+pub mod clock;
 pub mod credential_store;
 pub mod manifest;
 pub mod oauth;
@@ -8,6 +9,7 @@ pub mod profile_gateway;
 pub mod sqlite;
 pub mod token;
 
+pub use clock::SystemClock;
 pub use credential_store::{CREDENTIAL_SERVICE, CREDENTIAL_USER, NativeCredentialStore};
 pub use oauth::{
     CommandLauncher, DesktopBrowserAuthorization, HeadlessAuthorizationInstruction,

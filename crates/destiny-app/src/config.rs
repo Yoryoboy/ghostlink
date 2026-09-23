@@ -1,14 +1,29 @@
 //! Public-client runtime configuration and callback validation.
 
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::fmt;
+use std::path::{Path, PathBuf};
 
-use destiny_core::AppError;
+use destiny_core::{AppError, DefinitionVersion, FreshnessPolicy};
 use url::Url;
 
 const API_KEY: &str = "BUNGIE_API_KEY";
 const CLIENT_ID: &str = "BUNGIE_PUBLIC_CLIENT_ID";
 const CALLBACK_URI: &str = "BUNGIE_CALLBACK_URI";
 const REGISTERED_CALLBACK_URI: &str = "BUNGIE_REGISTERED_CALLBACK_URI";
+const READ_DATABASE_PATH: &str = "DESTINY_DATABASE_PATH";
+const READ_DEFINITION_VERSION: &str = "DESTINY_DEFINITION_VERSION";
+const READ_FRESHNESS_TTL_SECONDS: &str = "DESTINY_FRESHNESS_TTL_SECONDS";
+
+/// The longest Manifest definition version the durable projection accepts.
+const MAX_DEFINITION_VERSION_LENGTH: usize = 128;
+
+/// The largest freshness TTL the shared read runtime configuration accepts (30 days).
+///
+/// Freshness remains caller policy; this is only a defensive ceiling against a
+/// nonsensical configured value, not a product TTL.
+pub const MAX_READ_FRESHNESS_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 /// A validated HTTP loopback callback URI.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,7 +115,8 @@ pub(crate) struct Config {
 #[allow(dead_code)]
 impl Config {
     pub fn from_env() -> Result<Self, AppError> {
-        let values = std::env::vars().collect();
+        let values =
+            exact_env_values(&[API_KEY, CLIENT_ID, CALLBACK_URI, REGISTERED_CALLBACK_URI])?;
         Self::from_values(&values)
     }
 
@@ -138,10 +154,218 @@ fn required(values: &HashMap<String, String>, name: &str) -> Result<String, AppE
     }
 }
 
+/// Reads exactly the named environment variables, and nothing else.
+///
+/// Unlike a bulk `std::env::vars()` snapshot this never reads, retains, or
+/// even inspects unrelated process variables, and it does not panic on a
+/// variable whose value is not valid Unicode: an unreadable required value
+/// becomes the sanitized configuration failure instead.
+fn exact_env_values(names: &[&str]) -> Result<HashMap<String, String>, AppError> {
+    exact_key_values(names, |name| std::env::var_os(name))
+}
+
+/// The testable core of [`exact_env_values`] over an injected key lookup.
+///
+/// Absent keys are omitted so [`required`] reports them; a present key with
+/// invalid Unicode fails closed with the sanitized configuration category and
+/// is never rendered.
+fn exact_key_values<F>(names: &[&str], mut lookup: F) -> Result<HashMap<String, String>, AppError>
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
+    let mut values = HashMap::with_capacity(names.len());
+    for name in names {
+        if let Some(value) = lookup(name) {
+            let value = value.into_string().map_err(|_| AppError::configuration())?;
+            values.insert((*name).to_owned(), value);
+        }
+    }
+    Ok(values)
+}
+
+/// A validated, value-redacted Bungie API key for the shared CLI/MCP read
+/// composition roots.
+///
+/// The value is accepted only when it is non-empty visible ASCII, mirroring the
+/// adapter-level key contract without importing it. Bytes are reachable only
+/// through [`Self::expose_secret`] and are never rendered by [`fmt::Debug`].
+#[derive(Clone, Eq, PartialEq)]
+pub struct ReadApiKey(String);
+
+impl ReadApiKey {
+    /// Validates a candidate API key.
+    ///
+    /// Empty, whitespace-bearing, control-bearing, or non-ASCII values are
+    /// rejected as sanitized configuration failures; the rejected value never
+    /// appears in the error.
+    pub fn new(value: impl Into<String>) -> Result<Self, AppError> {
+        let value = value.into();
+        if !value.is_empty() && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+            return Ok(Self(value));
+        }
+        Err(AppError::configuration())
+    }
+
+    /// The trusted accessor for the composition root. The value is never
+    /// rendered by any diagnostic surface.
+    pub fn expose_secret(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ReadApiKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReadApiKey")
+    }
+}
+
+/// Application-owned runtime configuration for the shared CLI/MCP read
+/// composition roots.
+///
+/// It carries exactly the typed values those roots need to build the read
+/// services — a validated API key, the SQLite database path, the Manifest
+/// definition version, and a positive, bounded freshness TTL — and nothing
+/// else. Every field is private and reachable only through a trusted accessor.
+/// [`fmt::Debug`] and [`fmt::Display`] render no value, and every parse failure
+/// is a sanitized [`AppError`] that never echoes the supplied configuration.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ReadRuntimeConfig {
+    api_key: ReadApiKey,
+    database_path: PathBuf,
+    definition_version: DefinitionVersion,
+    freshness_ttl_seconds: u64,
+}
+
+impl ReadRuntimeConfig {
+    /// Loads the shared read runtime configuration from the process environment.
+    ///
+    /// Only the exact required keys are read; unrelated process variables are
+    /// never inspected or retained, and a required value that is not valid
+    /// Unicode fails closed with the sanitized configuration category instead
+    /// of panicking.
+    pub fn from_env() -> Result<Self, AppError> {
+        let values = exact_env_values(&[
+            API_KEY,
+            READ_DATABASE_PATH,
+            READ_DEFINITION_VERSION,
+            READ_FRESHNESS_TTL_SECONDS,
+        ])?;
+        Self::from_values(&values)
+    }
+
+    /// Validates the shared read runtime configuration from an explicit value map.
+    pub fn from_values(values: &HashMap<String, String>) -> Result<Self, AppError> {
+        let api_key = ReadApiKey::new(required(values, API_KEY)?)?;
+        let database_path = read_database_path(&required(values, READ_DATABASE_PATH)?)?;
+        let definition_version =
+            read_definition_version(&required(values, READ_DEFINITION_VERSION)?)?;
+        let freshness_ttl_seconds =
+            read_freshness_ttl(&required(values, READ_FRESHNESS_TTL_SECONDS)?)?;
+        Ok(Self {
+            api_key,
+            database_path,
+            definition_version,
+            freshness_ttl_seconds,
+        })
+    }
+
+    /// The trusted API-key accessor; the value is never rendered.
+    pub fn api_key(&self) -> &ReadApiKey {
+        &self.api_key
+    }
+
+    /// The trusted database-path accessor.
+    pub fn database_path(&self) -> &Path {
+        &self.database_path
+    }
+
+    /// The trusted Manifest definition-version accessor.
+    pub fn definition_version(&self) -> &DefinitionVersion {
+        &self.definition_version
+    }
+
+    /// The validated positive, bounded freshness TTL in seconds.
+    pub const fn freshness_ttl_seconds(&self) -> u64 {
+        self.freshness_ttl_seconds
+    }
+
+    /// The validated TTL as the shared freshness policy the read services take.
+    pub fn freshness_policy(&self) -> FreshnessPolicy {
+        FreshnessPolicy {
+            ttl_seconds: self.freshness_ttl_seconds,
+        }
+    }
+}
+
+impl fmt::Debug for ReadRuntimeConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReadRuntimeConfig")
+            .field("api_key", &"<redacted>")
+            .field("database_path", &"<redacted>")
+            .field("definition_version", &"<redacted>")
+            .field("freshness_ttl_seconds", &"<redacted>")
+            .finish()
+    }
+}
+
+impl fmt::Display for ReadRuntimeConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReadRuntimeConfig(<redacted>)")
+    }
+}
+
+/// Requires a non-empty path with no interior NUL byte and no surrounding
+/// whitespace.
+fn read_database_path(value: &str) -> Result<PathBuf, AppError> {
+    if value.is_empty() || value.trim() != value || value.as_bytes().contains(&0) {
+        return Err(AppError::configuration());
+    }
+    Ok(PathBuf::from(value))
+}
+
+/// Requires a non-empty definition version within the durable storage bound.
+///
+/// The value must be provider-safe: no leading or trailing whitespace, no
+/// interior whitespace of any kind, and no control characters. The length bound
+/// is the durable projection's own 128-character limit, so a value accepted
+/// here can always be persisted and compared exactly instead of being trimmed
+/// or normalized later.
+fn read_definition_version(value: &str) -> Result<DefinitionVersion, AppError> {
+    if value.is_empty()
+        || value.chars().count() > MAX_DEFINITION_VERSION_LENGTH
+        || value.trim() != value
+        || value.chars().any(char::is_whitespace)
+        || value.chars().any(char::is_control)
+    {
+        return Err(AppError::configuration());
+    }
+    Ok(DefinitionVersion::new(value))
+}
+
+/// Requires a strictly positive decimal TTL within the accepted ceiling.
+fn read_freshness_ttl(value: &str) -> Result<u64, AppError> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(AppError::configuration());
+    }
+    let ttl = value
+        .parse::<u64>()
+        .map_err(|_| AppError::configuration())?;
+    if ttl == 0 || ttl > MAX_READ_FRESHNESS_TTL_SECONDS {
+        return Err(AppError::configuration());
+    }
+    Ok(ttl)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CallbackUri, Config};
+    use super::{
+        CallbackUri, Config, MAX_READ_FRESHNESS_TTL_SECONDS, ReadApiKey, ReadRuntimeConfig,
+        exact_key_values,
+    };
+    use destiny_core::ErrorCategory;
     use std::collections::HashMap;
+    use std::ffi::OsString;
 
     fn values() -> HashMap<String, String> {
         HashMap::from([
@@ -232,5 +456,250 @@ mod tests {
         assert!(!message.contains("super-secret-api-key"));
         assert!(!message.contains("secret"));
         assert!(!message.contains("example.test"));
+    }
+
+    fn read_runtime_values() -> HashMap<String, String> {
+        HashMap::from([
+            ("BUNGIE_API_KEY".into(), "api-key-placeholder".into()),
+            ("DESTINY_DATABASE_PATH".into(), "/tmp/destiny.db".into()),
+            ("DESTINY_DEFINITION_VERSION".into(), "manifest-v1".into()),
+            ("DESTINY_FRESHNESS_TTL_SECONDS".into(), "900".into()),
+        ])
+    }
+
+    #[test]
+    fn read_runtime_config_parses_every_typed_field() {
+        let config = ReadRuntimeConfig::from_values(&read_runtime_values()).unwrap();
+        assert_eq!(config.api_key().expose_secret(), "api-key-placeholder");
+        assert_eq!(config.database_path().to_string_lossy(), "/tmp/destiny.db");
+        assert_eq!(config.definition_version().as_str(), "manifest-v1");
+        assert_eq!(config.freshness_ttl_seconds(), 900);
+        assert_eq!(config.freshness_policy().ttl_seconds, 900);
+    }
+
+    #[test]
+    fn read_runtime_config_requires_every_value() {
+        for key in [
+            "BUNGIE_API_KEY",
+            "DESTINY_DATABASE_PATH",
+            "DESTINY_DEFINITION_VERSION",
+            "DESTINY_FRESHNESS_TTL_SECONDS",
+        ] {
+            let mut missing = read_runtime_values();
+            missing.remove(key);
+            assert!(
+                ReadRuntimeConfig::from_values(&missing).is_err(),
+                "{key} should be required"
+            );
+            let mut empty = read_runtime_values();
+            empty.insert(key.into(), String::new());
+            assert!(
+                ReadRuntimeConfig::from_values(&empty).is_err(),
+                "{key} should reject an empty value"
+            );
+        }
+    }
+
+    #[test]
+    fn read_runtime_config_rejects_invalid_values() {
+        let cases: [(&str, Vec<String>); 4] = [
+            (
+                "BUNGIE_API_KEY",
+                vec!["with space".into(), "with\ttab".into(), "caf\u{e9}".into()],
+            ),
+            (
+                "DESTINY_DATABASE_PATH",
+                vec!["/tmp/with\0nul".into(), " \t ".into()],
+            ),
+            ("DESTINY_DEFINITION_VERSION", vec!["v".repeat(129)]),
+            (
+                "DESTINY_FRESHNESS_TTL_SECONDS",
+                vec![
+                    "0".into(),
+                    "-1".into(),
+                    "1.5".into(),
+                    "nope".into(),
+                    "+5".into(),
+                    "18446744073709551616".into(),
+                ],
+            ),
+        ];
+        for (key, bad_values) in cases {
+            for bad in bad_values {
+                let mut invalid = read_runtime_values();
+                invalid.insert(key.into(), bad.clone());
+                assert!(
+                    ReadRuntimeConfig::from_values(&invalid).is_err(),
+                    "{key} should reject {bad:?}"
+                );
+            }
+        }
+
+        // The TTL ceiling is inclusive.
+        let mut boundary = read_runtime_values();
+        boundary.insert(
+            "DESTINY_FRESHNESS_TTL_SECONDS".into(),
+            MAX_READ_FRESHNESS_TTL_SECONDS.to_string(),
+        );
+        assert_eq!(
+            ReadRuntimeConfig::from_values(&boundary)
+                .unwrap()
+                .freshness_ttl_seconds(),
+            MAX_READ_FRESHNESS_TTL_SECONDS
+        );
+
+        // The version bound is inclusive.
+        let mut boundary = read_runtime_values();
+        boundary.insert("DESTINY_DEFINITION_VERSION".into(), "v".repeat(128));
+        assert!(ReadRuntimeConfig::from_values(&boundary).is_ok());
+    }
+
+    #[test]
+    fn read_runtime_config_debug_and_display_are_value_redacted() {
+        let mut secret = read_runtime_values();
+        secret.insert("BUNGIE_API_KEY".into(), "api-key-sentinel".into());
+        secret.insert(
+            "DESTINY_DATABASE_PATH".into(),
+            "/home/sentinel/destiny.db".into(),
+        );
+        secret.insert(
+            "DESTINY_DEFINITION_VERSION".into(),
+            "version-sentinel".into(),
+        );
+        secret.insert("DESTINY_FRESHNESS_TTL_SECONDS".into(), "1234".into());
+        let config = ReadRuntimeConfig::from_values(&secret).unwrap();
+
+        let rendered = format!("{config} {config:?} {:?}", config.api_key());
+        for leaked in [
+            "api-key-sentinel",
+            "/home/sentinel/destiny.db",
+            "version-sentinel",
+            "1234",
+        ] {
+            assert!(
+                !rendered.contains(leaked),
+                "a formatted config leaked {leaked}: {rendered}"
+            );
+        }
+        assert_eq!(format!("{}", config), "ReadRuntimeConfig(<redacted>)");
+        assert_eq!(format!("{:?}", config.api_key()), "ReadApiKey");
+    }
+
+    #[test]
+    fn read_runtime_config_errors_do_not_echo_supplied_values() {
+        let mut invalid = read_runtime_values();
+        invalid.insert(
+            "DESTINY_DATABASE_PATH".into(),
+            "/home/sentinel/destiny.db".into(),
+        );
+        invalid.insert(
+            "DESTINY_FRESHNESS_TTL_SECONDS".into(),
+            "not-a-number".into(),
+        );
+        let error = ReadRuntimeConfig::from_values(&invalid).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "required runtime configuration is missing or invalid"
+        );
+        assert!(!error.to_string().contains("sentinel"));
+        assert!(!format!("{error:?}").contains("sentinel"));
+
+        // The API-key wrapper itself is redacted on its own.
+        assert_eq!(
+            format!("{:?}", ReadApiKey::new("key-sentinel").unwrap()),
+            "ReadApiKey"
+        );
+        assert!(ReadApiKey::new("").is_err());
+        assert!(ReadApiKey::new("with space").is_err());
+    }
+
+    #[test]
+    fn exact_key_values_reads_only_requested_keys_and_omits_absent_ones() {
+        let names: &[&str] = &["FIRST_KEY", "SECOND_KEY", "ABSENT_KEY"];
+        let values = exact_key_values(names, |name| {
+            match name {
+                "FIRST_KEY" => Some(OsString::from("first")),
+                "SECOND_KEY" => Some(OsString::from("second")),
+                "ABSENT_KEY" => None,
+                // Any other name, including an unrelated process variable, is a
+                // contract violation: the loader must never read it.
+                other => panic!("unexpected key read: {other}"),
+            }
+        })
+        .unwrap();
+        assert_eq!(values.len(), 2);
+        assert_eq!(values.get("FIRST_KEY").map(String::as_str), Some("first"));
+        assert_eq!(values.get("SECOND_KEY").map(String::as_str), Some("second"));
+        assert!(!values.contains_key("ABSENT_KEY"));
+    }
+
+    #[test]
+    fn exact_key_values_rejects_invalid_unicode_sanitized() {
+        for invalid in invalid_unicode_os_strings() {
+            let error = exact_key_values(&["BROKEN_KEY"], |_| Some(invalid.clone()))
+                .expect_err("invalid Unicode fails closed");
+            assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+            assert_eq!(
+                error.to_string(),
+                "required runtime configuration is missing or invalid"
+            );
+        }
+    }
+
+    /// Builds environment values that are not valid Unicode on the host platform.
+    #[cfg(unix)]
+    fn invalid_unicode_os_strings() -> Vec<OsString> {
+        use std::os::unix::ffi::OsStringExt;
+        vec![OsString::from_vec(vec![0xff, 0xfe])]
+    }
+
+    /// Windows `OsString` is always valid Unicode, so there is nothing to build.
+    #[cfg(not(unix))]
+    fn invalid_unicode_os_strings() -> Vec<OsString> {
+        Vec::new()
+    }
+
+    #[test]
+    fn read_definition_version_rejects_whitespace_and_control_characters() {
+        for bad in [
+            " manifest-v1",
+            "manifest-v1 ",
+            "manifest v1",
+            "manifest\tv1",
+            "manifest\nv1",
+            "manifest\rv1",
+            "manifest\u{0}v1",
+            "manifest\u{7f}v1",
+            "manifest\u{a0}v1",
+        ] {
+            let mut invalid = read_runtime_values();
+            invalid.insert("DESTINY_DEFINITION_VERSION".into(), bad.into());
+            let error = ReadRuntimeConfig::from_values(&invalid).expect_err("rejected");
+            assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+            // The rejected value never appears in a diagnostic.
+            assert_eq!(
+                error.to_string(),
+                "required runtime configuration is missing or invalid"
+            );
+            let rendered = format!("{error} {error:?}");
+            assert!(
+                !rendered.contains("manifest") && !rendered.contains(bad),
+                "a diagnostic leaked the definition version {bad:?}: {rendered}"
+            );
+        }
+
+        // Clean versions, including a version that is exactly the length bound,
+        // remain accepted.
+        for good in ["manifest-v1", "2026-09-21", &"v".repeat(128)] {
+            let mut valid = read_runtime_values();
+            valid.insert("DESTINY_DEFINITION_VERSION".into(), good.into());
+            assert_eq!(
+                ReadRuntimeConfig::from_values(&valid)
+                    .unwrap()
+                    .definition_version()
+                    .as_str(),
+                good
+            );
+        }
     }
 }
