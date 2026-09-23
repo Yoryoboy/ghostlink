@@ -109,15 +109,17 @@ No other crate or path is in scope unless a discovered compile-time requirement 
   - Runtime harness: scripted `ReadFoundations` prove the exact acquisition order and the sanitized mapping of configuration/credential/clock/transport/storage failures; a scripted `RuntimeFactory` proves a rejected parse or request performs zero runtime builds while a valid request dispatches once with the supplied service, policy, and time; a composed in-memory runtime dispatches through the shared runner and reports the provider's sanitized category. No live account, credential, keyring, or network is used.
   - Composition limitation: the production path still needs a real environment, an OS keyring entry, and a reachable provider, so its live success remains unproven and is not claimed; only the deterministic seams are proven.
   - Rollback: remove the `runtime` module and its tests, revert the `runner` boundary and its tests, the `lib.rs`/`main.rs` doc updates, the `destiny-app` credential re-exports, the `destiny-cli` manifest dependency, and the README runtime section.
-  - Evidence: commit pending (worktree uncommitted); the parent owns the commit.
+  - Independent verification: focused composition verification passed with no blocker/high finding; its only medium was the stale evidence line corrected here.
+  - Evidence: commit `318c3db` (`feat: compose production CLI reads`). Shared runtime foundations were selectively cherry-picked as `0208774` from upstream `7dc4984`; the sole `destiny-app/src/lib.rs` conflict was resolved additively without losing `QueryOperations` or presentation-safe exports.
 
-- [ ] **DCR-005 — Verify and close WU-008**
-  - Status: ready for verification (not done); independent verification of the committed range that now includes DCR-006 is pending.
-  - Outcome: independently verify the committed feature range, record exact checks, workload, limitations, rollback boundary, and commit identities.
-  - Checks: fmt; workspace check/clippy/tests default and all features; CLI/MCP help; focused CLI journey; `git diff --check`; clean status.
-  - Runtime harness: documented deterministic read journey plus manual limitation for system-browser authorization.
-  - Rollback: reset this feature branch to `2b6c00159ebc574d1e97d9ffc490244d04f1ca70`.
-  - Commit: Conventional Commit containing tracker closure only.
+- [x] **DCR-005 — Verify and close WU-008**
+  - Status: complete.
+  - Outcome: independently verified the complete committed `2b6c001..318c3db` range against WU-008 and every tracker acceptance criterion. The production binary now composes the shared read runtime and dispatches valid requests instead of returning the former unsupported fallback. No blocker/high/medium finding remains.
+  - Checks: `cargo fmt --all -- --check`; workspace all-target/all-feature check; workspace default and all-feature all-target clippy with `-D warnings`; workspace locked tests default and all features; focused query journey 14 passed; CLI 54 passed; CLI/MCP help; `git diff --check`; clean status. Final independent verification repeated CLI 54, query journey 14, help, clean status/diff, and sanitized human/JSON configuration-error runtime exercises.
+  - Runtime harness: the deterministic real SQLite/gateway/query CLI journey proves list/search/inspect, fresh reuse, stale refresh, ambiguity, missing, typed failures, bounds, and secret absence. Scripted production foundations prove acquisition ordering and error mapping. Live provider, OS-keyring round trip, and system-browser/reauthorization UX remain explicit manual limitations and are not claimed.
+  - Review workload: six implementation/evidence commits plus this closure commit, including the selectively integrated shared runtime-foundation commit. Large parser/render/test slices retain behavior and tests together and remain independently revertible in reverse order.
+  - Rollback: reset this feature branch to `2b6c00159ebc574d1e97d9ffc490244d04f1ca70` to remove only WU-008 plus its selectively integrated runtime foundation.
+  - Evidence: pending closure commit.
 
 ## Acceptance criteria
 

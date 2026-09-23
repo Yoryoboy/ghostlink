@@ -5,7 +5,7 @@ Dependency direction points inward:
 
 ```text
 destiny-core <- destiny-app <- destiny-cli
-destiny-core <- destiny-adapters
+destiny-core <- destiny-adapters <- destiny-cli (composition root only)
 destiny-app <- destiny-mcp
 ```
 
