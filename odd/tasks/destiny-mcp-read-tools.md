@@ -96,12 +96,15 @@ The user explicitly authorized the minimum cross-WU repair needed to make the st
   - Outcome: wire the RMCP tools-only server and binary lifecycle; prove initialize, discovery, and all three calls through a real child-process stdio session using deterministic offline composition; document invocation and protocol-only stdout.
   - Check: focused stdio integration suite, MCP help, offline runtime scenario, fmt/clippy/diff checks.
   - Rollback: remove stdio composition/integration harness and restore the contract-only MCP library from DMR-002.
-  - Evidence: implemented on the committed DMR-002A foundation `7dc4984` plus the current uncommitted tracker evidence (parent-owned commit identity pending). Added `crates/destiny-mcp/src/server.rs` (`ReadToolServer` holds `Box<dyn InventoryReadService + Send>` behind a `std::sync::Mutex`, exposes exactly `tool_specs()`, dispatches each bounded `tools/call` through the existing `into_request()` conversions, offloads the synchronous read to `tokio::task::spawn_blocking`, and returns structured results or sanitized tool errors; unknown tool and malformed arguments are fixed protocol errors), `crates/destiny-mcp/src/runtime.rs` (`serve_stdio` over `rmcp::transport::stdio()` with a clean `waiting()` shutdown), the `destiny-mcp` binary composition root in `crates/destiny-mcp/src/main.rs` (`ReadRuntimeConfig`; `NativeCredentialStore` load with missing → `AuthorizationRequired` and legacy → propagated `ReauthorizationRequired`; `ProfileApiKey`; `HttpProfileTransport`; `SystemClock`; `BungieProfileGateway`; `SqliteStore`; `ProfileSyncService`/`QueryService`/`QueryReadService`), the test-only `offline-fixtures`-gated `crates/destiny-mcp/src/bin/offline_fixture.rs`, and `crates/destiny-mcp/tests/stdio.rs`. `crates/destiny-app/src/lib.rs` gained additive `AccessCredential`/`AccessCredentialMetadata`/`CredentialMaterial`/`CredentialStore` reexports so the root avoids a direct `destiny-core` dependency. `destiny-adapters` is a dependency of the binary crate only and is enforced by a library boundary test; the product binary has no fixture path or flag. README run/config docs updated. Exact commands and counts are in the DMR-003 verification table below.
+  - Evidence: commit `f443cf9` (`feat: serve Destiny reads over MCP stdio`) builds on foundation `7dc4984`. It adds `ReadToolServer`, bounded dispatch and sanitized protocol/tool errors; `rmcp::transport::stdio` lifecycle; and the product composition root (`ReadRuntimeConfig` → complete native credential → HTTP/SystemClock/Bungie gateway + SQLite → shared sync/query/read services). Concrete adapters appear only in binary source and are prohibited from library modules by a source-boundary test. A non-default `offline-fixtures` feature gates a separate fixture binary and real child-process test; the product binary has no fixture path. The test completes initialize, exact discovery, all three calls, unknown-tool and bounded-error behavior, cancellation/EOF shutdown, timeouts, and stream leak scans. Independent verification reproduced every check and found no blocker/high/medium issue.
 
-- [ ] **DMR-004 — Verify and close WU-011**
-  - Outcome: run the full effective check set, review every changed file against WU-011 acceptance criteria, record exact commit/check evidence and known manual limitations, then close this tracker.
-  - Check: complete baseline/focused/runtime commands, clean status, authored line count, and no blocker/high/medium finding.
+- [x] **DMR-004 — Verify and close WU-011**
+  - Outcome: independently verified the complete committed `2b6c001..f443cf9` range against WU-011, every acceptance criterion, every changed production/test/doc file, and the real stdio runtime journey. No blocker/high/medium finding remains.
+  - Check: fmt; workspace all-target/all-feature check; workspace clippy with and without all features under `-D warnings`; 425 default and 426 all-feature workspace tests; 39 default MCP tests; the all-feature child-process stdio test; CLI/MCP help; empty-environment product process with zero-byte stdout and sanitized stderr; range diff/status clean.
+  - Review workload: 4,828 insertions and 72 deletions across five commits, including 377 generated lockfile lines; approximately 4,451 authored lines (about 2,767 production/docs and 1,684 tests). The three implementation commits remain cohesive, independently revertible slices; tests were not separated or compressed.
+  - Manual limitations: no real OS keyring, live Bungie credential/network, or third-party MCP host was exercised; native keyring backends remain mock/compile verified and host interoperability remains WU-015.
   - Rollback: reset the feature branch to exact base `2b6c00159ebc574d1e97d9ffc490244d04f1ca70` to remove only WU-011.
+  - Evidence: independent high-risk verifier passed committed range through `f443cf9`; this tracker closure is the final documentation-only commit.
 
 ## Acceptance criteria
 
@@ -110,7 +113,7 @@ The user explicitly authorized the minimum cross-WU repair needed to make the st
 - MCP arguments and outputs are explicitly bounded, deterministic, and preserve definition hash versus concrete instance ID.
 - Missing, ambiguity, freshness, and typed failures translate predictably without leaking secret or raw provider material.
 - Contract tests demonstrate parity with CLI-neutral application results, and a real child-process stdio test completes discovery and all three read calls offline.
-- `destiny-mcp` remains independent of WU-008 and has no direct dependency on `destiny-core` or provider adapters.
+- `destiny-mcp` remains independent of WU-008 and has no direct dependency on `destiny-core`; concrete provider adapters are named only by the product binary composition root, never by MCP schemas, handlers, or library service contracts.
 - Every completed task records exact checks, rollback boundary, and Conventional Commit identity.
 - Existing raw-material-only native keyring entries produce an explicit reauthorization path; no expiry is guessed and no secret is migrated through plaintext or environment configuration.
 
@@ -119,13 +122,13 @@ The user explicitly authorized the minimum cross-WU repair needed to make the st
 - Official source: <https://github.com/modelcontextprotocol/rust-sdk> and <https://docs.rs/rmcp/3.4.0/rmcp/>.
 - Registry evidence on 2026-09-23: `cargo info rmcp --registry crates-io` reports official `rmcp` 3.4.0, Apache-2.0, MSRV 1.88, default `server`/`macros` support, `transport-io` for server stdio, and `transport-child-process` for client subprocess tests.
 - Workspace evidence: Rust 1.98.1 and Cargo 1.98.1 satisfy the SDK MSRV.
-- Remaining implementation uncertainty is mechanical API shape only: exact macro-generated router signatures and graceful child-process shutdown behavior must be proven against the pinned crate by compilation/runtime tests. It does not require a product decision and stays isolated inside `destiny-mcp`.
+- RMCP 3.4.0 handler, stdio, initialization, cancellation, EOF shutdown, and child-process behavior are now proven by compilation and the real offline stdio harness; later SDK changes remain isolated inside `destiny-mcp`.
 
 ## Progress
 
 - WU-007 is closed at base `2b6c001`; the worktree began clean on `feature/destiny-mcp-read-tools`.
 - Repository mapping confirms `QueryService` already owns list/search/inspect freshness behavior and bounded provider-neutral results.
-- DMR-001 is complete at commit `3433bfa`. DMR-002 is complete as a contract-only slice: pinned RMCP, bounded MCP schemas, injectable read-service seam, and translation parity tests. DMR-002A repaired the production composition foundations. DMR-003 is complete: the RMCP tools-only server runs over the stdio transport, the product `destiny-mcp` binary composes the concrete adapters, and a real offline child-process stdio test proves initialize/discovery/all three reads/cancellation/shutdown. DMR-004 (verify and close) remains unchecked.
+- DMR-001 is complete at `3433bfa`, DMR-002 at `16b7809`, DMR-002A at `7dc4984`, and DMR-003 at `f443cf9`. DMR-004 independently verified the complete range and closes WU-011 in this tracker update.
 
 ## Verification evidence
 
@@ -193,7 +196,7 @@ DMR-002A decisions:
 - `ReadRuntimeConfig` is a distinct app-owned surface rather than an extension of the existing `pub(crate)` `Config`: it validates only the four typed values the shared CLI/MCP read composition roots need and keeps them private behind trusted accessors, with `Debug`/`Display` fully value-redacted. The freshness TTL must be a positive decimal at or below 30 days; the definition version is provider-safe and must be non-empty, within the durable 128-character bound, and free of leading/trailing or interior whitespace and of control characters; the database path rejects empty, NUL-bearing, and surrounding-whitespace values; the API key reuses the visible-ASCII adapter rule. Names and internal env-key constants are deliberately not MCP-specific so the foundation stays selectively reusable by both roots; only binary wiring may name MCP.
 - `Config::from_env` and `ReadRuntimeConfig::from_env` load exactly their required keys through a shared `var_os`-based exact-key loader; unrelated process variables are never inspected or retained, and a required value that is not valid Unicode fails closed as sanitized `ConfigurationError` instead of panicking. The loader core is unit-tested with an injected lookup (proving no extra key is queried) and, on Unix, an invalid-Unicode `OsString`.
 
-### DMR-003 (stdio server and production composition; commit identity parent-owned)
+### DMR-003 (stdio server and production composition; committed at `f443cf9`)
 
 Changed surfaces: `Cargo.toml` (added `destiny-adapters` and `tokio` workspace dependencies), `Cargo.lock` (additive), `crates/destiny-mcp/Cargo.toml` (`autobins = false`, `default-run = "destiny-mcp"`, non-default `offline-fixtures` feature, `destiny-adapters`/`tokio` dependencies, and explicit `destiny-mcp` and `offline-fixture` binaries with `required-features`), `crates/destiny-mcp/src/lib.rs`, new `crates/destiny-mcp/src/server.rs`, new `crates/destiny-mcp/src/runtime.rs`, `crates/destiny-mcp/src/main.rs`, new `crates/destiny-mcp/src/bin/offline_fixture.rs`, new `crates/destiny-mcp/tests/stdio.rs`, additive `AccessCredential`/`AccessCredentialMetadata`/`CredentialMaterial`/`CredentialStore` reexports in `crates/destiny-app/src/lib.rs`, and `README.md`. No core, adapter, or application behavior changed beyond the additive app reexports; no HTTP MCP transport, mutation, or WU-008 path was added.
 
@@ -227,4 +230,6 @@ DMR-003 rollback: revert the MCP crate to the DMR-002 contract-only library, rem
 
 ## Closure
 
-- DMR-004 (verify and close WU-011) is pending; DMR-003 is complete with the checks above and no commit has been created (parent-owned commit identity).
+- WU-011 is complete through runtime commit `f443cf9`: bounded MCP contracts, reusable production composition foundations, three stdio read tools, and a real offline child-process journey are implemented and independently verified.
+- The verified implementation worktree was clean at `f443cf9`; this final tracker update records DMR-004 evidence only.
+- Delivery remains a separate user decision: no push or pull request is implied.
