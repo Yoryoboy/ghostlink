@@ -63,15 +63,15 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
   - Rollback: delete only this new branch and tracker before source implementation.
   - Evidence: commit `e6d78f0` (`chore: start Destiny query services`).
 
-- [ ] **DQS-002 — Add provider-neutral query contracts and deterministic fake parity** *(in progress)*
-  - Route: delegated multi-file writer; core/app surfaces and behavioral tests.
-  - Outcome: define bounded query requests/results, explicit definition/instance identities, semantic resolution outcomes, and `SearchRepository`; add a deterministic in-memory implementation with contract tests.
-  - Likely surfaces: `crates/destiny-core/src/query.rs` (new), `crates/destiny-core/src/ports.rs`, `crates/destiny-core/src/lib.rs`, `crates/destiny-app/src/test_support.rs`, and focused tests in those modules.
-  - Check: core and app test-support tests; default/all-feature focused clippy; fmt; diff check; independent verification per native risk assessment.
-  - Rollback: remove the new query module/re-exports/port and fake additions while preserving all WU-006 contracts.
-  - Evidence: pending.
+- [x] **DQS-002 — Add provider-neutral query contracts and deterministic fake parity**
+  - Route: delegated multi-file writer; native assessment was unassessable because the new query module was intentionally untracked, so the required high-risk independent verifier reviewed the complete candidate and one bounded correction round.
+  - Outcome: added validated bounded query contracts, explicit definition/instance identities, shared Unicode-aware normalization/matching rules, exact perk-hash filters, deterministic result metadata/shapes, and a `SearchRepository` port. Added an in-memory fake with whole-projection replacement, stable sort-before-limit semantics, exact lookup resolution, and contract tests. Caller-controlled limits and hash filters are bounded; `Any` remains distinct from fail-closed `AnyOf(empty)`.
+  - Check: writer and independent verifier observed fmt/diff clean; core 35 passed; app test-support 91 passed; core and app focused clippy passed with `-D warnings`. Parent spot check reran the 64/65 hash-filter boundary test successfully. LSP reported three stale/false diagnostics in pre-existing fake code, contradicted by rustc tests and clippy.
+  - Review workload: 1,339 additions and 9 deletions across the indivisible public contracts, shared matching rules, fake implementation, and behavioral tests. An honest contracts/fake split would still produce roughly 690- and 590-line slices, so DQS-002 retains one cohesive accepted over-budget work unit rather than separating tests from behavior.
+  - Rollback: remove `query.rs`, its core exports/port, and the in-memory search fake/tests while preserving all WU-006 contracts.
+  - Evidence: commit `053fe2a` (`feat: add query contracts and search fake`).
 
-- [ ] **DQS-003 — Implement durable SQLite search and contract parity**
+- [ ] **DQS-003 — Implement durable SQLite search and contract parity** *(in progress)*
   - Route: delegated multi-file writer; SQLite schema/search/repository tests.
   - Outcome: implement `SearchRepository` over the durable definition/profile projection with bounded deterministic matching and fake parity; add a reversible migration only if the verified search design needs persisted search structures.
   - Likely surfaces: `crates/destiny-adapters/src/sqlite/mod.rs`, new `crates/destiny-adapters/src/sqlite/search.rs`, and narrowly required migration/test modules.
@@ -123,9 +123,9 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
 ## Verification evidence
 
 - DQS-001 repository mapping covered core domain/state/ports/errors, app sync/test-support, SQLite definitions/inventory/migrations, fixtures, architecture, implementation plan, and prior ODD trackers.
-- DQS-001 is complete in `e6d78f0`; DQS-002 contract/fake implementation is in progress.
-- Source implementation has not started.
+- DQS-001 is complete in `e6d78f0` with boundary evidence in `bd90b9c`.
+- DQS-002 contracts and fake parity are complete in `053fe2a`; independent verification passed after bounding caller-controlled hash filters and completing the public exports, with no blocker/high/medium finding remaining.
 
 ## Next step
 
-Delegate DQS-002 query contracts and deterministic fake parity, verify the bounded candidate, and record its work-unit commit.
+Delegate DQS-003 durable SQLite search and fake contract parity, preserving exact Rust Unicode normalization at write time.
