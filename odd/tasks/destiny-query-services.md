@@ -61,9 +61,9 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
   - Outcome: created the chained feature branch and this durable tracker with the existing/missing seam map, bounded search scope, exact-perk limitation, freshness/ambiguity rules, six task slices, checks, delivery forecast, and rollback boundaries.
   - Check: tracker and Engram mirror readback passed; `git diff --check` passed before the boundary commit.
   - Rollback: delete only this new branch and tracker before source implementation.
-  - Evidence: pending work-unit commit.
+  - Evidence: commit `e6d78f0` (`chore: start Destiny query services`).
 
-- [ ] **DQS-002 — Add provider-neutral query contracts and deterministic fake parity**
+- [ ] **DQS-002 — Add provider-neutral query contracts and deterministic fake parity** *(in progress)*
   - Route: delegated multi-file writer; core/app surfaces and behavioral tests.
   - Outcome: define bounded query requests/results, explicit definition/instance identities, semantic resolution outcomes, and `SearchRepository`; add a deterministic in-memory implementation with contract tests.
   - Likely surfaces: `crates/destiny-core/src/query.rs` (new), `crates/destiny-core/src/ports.rs`, `crates/destiny-core/src/lib.rs`, `crates/destiny-app/src/test_support.rs`, and focused tests in those modules.
@@ -123,8 +123,9 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
 ## Verification evidence
 
 - DQS-001 repository mapping covered core domain/state/ports/errors, app sync/test-support, SQLite definitions/inventory/migrations, fixtures, architecture, implementation plan, and prior ODD trackers.
+- DQS-001 is complete in `e6d78f0`; DQS-002 contract/fake implementation is in progress.
 - Source implementation has not started.
 
 ## Next step
 
-Complete DQS-001 persistence/readback and work-unit commit, then delegate DQS-002 query contracts and fake parity.
+Delegate DQS-002 query contracts and deterministic fake parity, verify the bounded candidate, and record its work-unit commit.
