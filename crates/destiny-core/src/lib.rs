@@ -23,18 +23,20 @@ pub use ids::{
     MembershipType, PerkHash, PlanId, SyncRevision,
 };
 pub use mutation::{
-    DestinationSelector, IntentAuthorizationOutcome, ItemSelector, MAX_MOVE_STEPS,
-    MAX_PLAN_LIFETIME_SECONDS, MoveEffects, MoveIntent, MoveIntentAuthorization, MovePlan,
-    MovePlanValidation, MoveRequest, MoveStep, MutationPolicyInput, MutationPolicyOutcome,
-    PlanBinding, PlanLifetime, PlanLifetimeValidation, character_destination, destination_matches,
-    evaluate_mutation, plan_steps, resolve_destination,
+    DestinationSelector, ExecutionEvidence, ExecutionTicket, IntentAuthorizationOutcome,
+    ItemSelector, MAX_MOVE_STEPS, MAX_PLAN_LIFETIME_SECONDS, MoveEffects, MoveIntent,
+    MoveIntentAuthorization, MovePlan, MovePlanValidation, MoveRequest, MoveStep,
+    MutationPolicyInput, MutationPolicyOutcome, PlanBinding, PlanLifetime, PlanLifetimeValidation,
+    StepOutcome, StepRecord, character_destination, destination_matches, evaluate_mutation,
+    plan_steps, resolve_destination,
 };
 pub use ports::{
     AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,
     CredentialStore, DefinitionReplacementInput, DefinitionRepository, DestinyMembership,
     InventoryRepository, InventorySnapshotInput, ManifestAcquisition, ManifestDefinitionCandidate,
     ManifestDefinitions, ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange,
-    SearchRepository, SecureRandom,
+    SearchRepository, SecureRandom, TransferGateway, TransferOutcome, TransferRejection,
+    TransferRequest,
 };
 pub use query::{
     CharacterListResult, DefinitionSearchQuery, InspectItemRequest, InstanceSearchQuery,

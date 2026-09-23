@@ -67,18 +67,20 @@ Implementation must contract-test exact URL, trailing slash, JSON field names/ty
   - Checks: tracker readback; `git diff --check`.
   - Route: inline (single known documentation file).
   - Evidence: tracker and Engram mirror created; user selected `stacked-to-main`; `git diff --check` passed.
-  - Commit: pending creation.
+  - Commit: `268a7cc` (`chore: start Destiny transfer execution`).
 
-- [ ] **DTE-002 — Define narrow execution contracts**
+- [x] **DTE-002 — Define narrow execution contracts**
   - Add provider-neutral transfer gateway/request/outcome and bounded execution/step evidence contracts.
   - Make retries impossible without refreshed state rather than embedding automatic retries.
   - Checks: focused core unit tests; formatting; clippy for touched crates.
   - Route: delegated writer (multi-file core contract slice).
+  - Evidence: `TransferGateway`, `TransferRequest` (private fields, accessors, complete `DestinyMembership` identity), `TransferOutcome`, and `TransferRejection` added to `ports.rs` with an exhaustive `validate_endpoints` policy; `StepOutcome`, `StepRecord`, `ExecutionEvidence`, `ExecutionTicket`, and `MovePlan::already_satisfied` added to `mutation.rs`. `ExecutionTicket::after_fresh_preflight` takes an explicit `now` and enforces the plan window itself, and a debug test pins that the boundary request leaks no identifier value. `cargo test -p destiny-core mutation` (28 passed), `cargo test -p destiny-core` (63 passed), `cargo fmt --all -- --check`, `cargo clippy -p destiny-core --all-targets -- -D warnings`, and `git diff --check` all clean. No app execution, post-action refresh, adapter, fixture, CLI, or MCP work.
   - Commit: pending.
 
 - [ ] **DTE-003 — Execute preflight-approved ordered steps**
   - Reuse WU-009 mandatory preflight, handle already-satisfied fresh state as verified no-op, issue only ordered plan steps, and stop at first failure.
   - Preserve completed/uncompleted step evidence and distinguish deterministic, transient, uncertain, and partial failure.
+  - Consume the single-use `ExecutionTicket` by value in the executor entry point, so one fresh preflight authorizes exactly one attempt sequence and no borrowing or replay path exists.
   - Checks: focused app tests for expiry/invalidation/order/failure/retry refusal.
   - Route: delegated writer (multi-file app slice).
   - Commit: pending.
@@ -137,7 +139,9 @@ Implementation must contract-test exact URL, trailing slash, JSON field names/ty
 - 2026-09-23: revalidated current official Bungie endpoint, request schema, transfer statuses, scope, throttle note, and Vault-mediated semantics from primary Bungie sources.
 - 2026-09-23: user selected `stacked-to-main`; planned Slice A (DTE-001–003) and Slice B (DTE-004–006).
 - 2026-09-23: DTE-001 tracker readback and `git diff --check` passed.
+- 2026-09-23: DTE-002 execution contracts added: narrow provider-neutral transfer port, bounded sanitized step evidence, and a single-use revision-bound execution ticket that refuses a blind retry. Authored diff is ~999 lines (232 documentation, ~250 implementation, ~450 behavior-first tests), above the advisory ~400 target; correctness and test clarity were kept ahead of line count.
+- 2026-09-23: DTE-002 verifier corrections applied: ticket minting enforces the plan window with an explicit current timestamp; `TransferRequest` carries the complete `DestinyMembership` with private fields and accessors; retry documentation now requires a new forced refresh plus a new plan only once state or binding changed; the DTE-003 by-value ticket consumption requirement is pinned in the contract and tracker; a direct-plan completion test was added.
 
 ## Next step
 
-Commit DTE-001, record its identity, then delegate DTE-002.
+Commit the independently verified DTE-002 candidate, record its identity, then delegate DTE-003.

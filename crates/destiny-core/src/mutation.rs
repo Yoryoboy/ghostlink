@@ -51,13 +51,32 @@
 //! re-checks expiry, membership, revision, current source, resolved item, and
 //! resolved destination against a preflight snapshot and reports a specific
 //! [`PlanBinding`] outcome instead of guessing.
+//!
+//! # Execution contracts
+//!
+//! This module also owns the contracts the application executor and the transfer
+//! adapter share, still without performing any I/O itself. The remote seam is the
+//! provider-neutral [`TransferGateway`] request/outcome pair; the local record is
+//! the bounded, sanitized [`ExecutionEvidence`] the executor fills in one step at
+//! a time; and the single-use [`ExecutionTicket`] is the only authorization to
+//! attempt those steps. A ticket can be minted only from a *refreshed*
+//! [`ProfileSyncOutcome`] whose revision still matches the plan, it is neither
+//! `Clone` nor derivable from an outcome, an error, or evidence, and it therefore
+//! makes a blind retry after an uncertain or partial attempt impossible through
+//! the public API: another attempt needs another forced refresh, and a new plan as
+//! soon as state or binding has changed. No automatic retry, backoff, or recovery
+//! loop exists anywhere in this module.
+//!
+//! [`TransferGateway`]: crate::ports::TransferGateway
+//! [`TransferOutcome`]: crate::ports::TransferOutcome
 
 use crate::{
     domain::{Character, ItemLocation},
     error::{AppError, ErrorCategory},
     ids::{CharacterId, ItemInstanceId, MembershipId, PlanId, SyncRevision},
+    ports::{TransferOutcome, TransferRejection},
     query::{SearchTerm, normalize_search_text},
-    state::{Resolution, Timestamp},
+    state::{ProfileSyncOutcome, Resolution, SourceMarker, Timestamp},
 };
 
 /// Maximum number of ordered steps one move plan may contain.
@@ -456,6 +475,18 @@ impl MovePlan {
         now >= self.expires_at
     }
 
+    /// True when a freshly observed location already satisfies the postcondition.
+    ///
+    /// The destination alone decides this, because a plan never binds a source
+    /// equal to its destination. An already-satisfied plan is a *verified no-op*:
+    /// the caller must have reached this point through the mandatory fresh
+    /// preflight, and because the provider already holds the item, no transfer
+    /// step may be issued and no [`ExecutionTicket`] may be spent. This predicate
+    /// is a pure read, so it can never itself trigger a provider call.
+    pub fn already_satisfied(&self, location: &ItemLocation) -> bool {
+        location == &self.destination
+    }
+
     /// Re-checks every binding assumption against a preflight snapshot.
     ///
     /// Outcomes are reported in a fixed precedence so a caller never has to
@@ -576,6 +607,359 @@ pub fn evaluate_mutation(plan: &MovePlan, input: &MutationPolicyInput) -> Mutati
     }
 }
 
+/// The bounded, sanitized result recorded for one executed plan step.
+///
+/// The record keeps the planned [`MoveStep`] next to the outcome observed for it,
+/// so evidence proves *which* ordered step ran, not only how many. It carries no
+/// credential, provider payload, or provider message.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StepRecord {
+    pub step: MoveStep,
+    pub outcome: StepOutcome,
+}
+
+/// The sanitized outcome of one executed plan step.
+///
+/// [`StepOutcome::Unattempted`] is the initial state of every planned step, and
+/// the other four are the terminal shapes one attempt can produce. The variants
+/// distinguish a step that applied, one the provider deterministically refused,
+/// one that failed without applying, and one whose effect is unknown, so a caller
+/// never has to collapse an uncertain step into a success or a failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StepOutcome {
+    /// The provider reported this step applied.
+    Completed,
+    /// The provider deterministically refused this step; it changed nothing.
+    Rejected(TransferRejection),
+    /// The provider failed transiently for this step; nothing was applied.
+    Transient,
+    /// Whether an already-issued step applied could not be determined.
+    Uncertain,
+    /// This step was never attempted.
+    Unattempted,
+}
+
+impl StepOutcome {
+    /// Maps one sanitized provider result to the step outcome it implies.
+    pub const fn from_transfer(outcome: TransferOutcome) -> Self {
+        match outcome {
+            TransferOutcome::Transferred => Self::Completed,
+            TransferOutcome::Rejected(rejection) => Self::Rejected(rejection),
+            TransferOutcome::Transient => Self::Transient,
+            TransferOutcome::Uncertain => Self::Uncertain,
+        }
+    }
+
+    /// True when this step outcome records an actual attempt.
+    pub const fn is_attempted(self) -> bool {
+        match self {
+            Self::Unattempted => false,
+            Self::Completed | Self::Rejected(_) | Self::Transient | Self::Uncertain => true,
+        }
+    }
+
+    /// True only when this step applied and the sequence may advance.
+    pub const fn continues(self) -> bool {
+        match self {
+            Self::Completed => true,
+            Self::Rejected(_) | Self::Transient | Self::Uncertain | Self::Unattempted => false,
+        }
+    }
+
+    /// True when this step was attempted and the sequence must stop.
+    ///
+    /// A refusal, a transient failure, and an indeterminate effect all stop a
+    /// plan: a later step's precondition is the previous step's effect, so
+    /// continuing after any of them would act on an unproven state.
+    pub const fn stops_sequence(self) -> bool {
+        self.is_attempted() && !self.continues()
+    }
+
+    /// True only when this step's effect could not be determined.
+    pub const fn is_uncertain(self) -> bool {
+        match self {
+            Self::Uncertain => true,
+            Self::Completed | Self::Rejected(_) | Self::Transient | Self::Unattempted => false,
+        }
+    }
+}
+
+/// Bounded, sanitized evidence of one attempted transfer sequence.
+///
+/// Evidence is built from exactly one [`MovePlan`], so its step list is the
+/// plan's ordered steps and nothing else, and it is bounded by
+/// [`MAX_MOVE_STEPS`]. [`ExecutionEvidence::record`] advances the record one step
+/// at a time, in plan order and only while every attempted step so far applied,
+/// which is how "issue only ordered plan steps" and "stop at the first
+/// non-completing step" are enforced by the record itself rather than by hopeful
+/// caller discipline. The record contains typed identities and locations only: a
+/// credential, a raw provider payload, or a provider message has no field here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionEvidence {
+    plan_id: PlanId,
+    item: ItemInstanceId,
+    source: ItemLocation,
+    destination: ItemLocation,
+    steps: Vec<StepRecord>,
+}
+
+impl ExecutionEvidence {
+    /// Builds fully unattempted evidence for exactly one plan's ordered steps.
+    pub fn for_plan(plan: &MovePlan) -> Self {
+        let steps: Vec<StepRecord> = plan
+            .steps()
+            .iter()
+            .cloned()
+            .map(|step| StepRecord {
+                step,
+                outcome: StepOutcome::Unattempted,
+            })
+            .collect();
+        debug_assert!(steps.len() <= MAX_MOVE_STEPS);
+        Self {
+            plan_id: plan.plan_id.clone(),
+            item: plan.item.clone(),
+            source: plan.source.clone(),
+            destination: plan.destination.clone(),
+            steps,
+        }
+    }
+
+    pub fn plan_id(&self) -> &PlanId {
+        &self.plan_id
+    }
+
+    /// The concrete item this evidence is about.
+    pub fn item(&self) -> &ItemInstanceId {
+        &self.item
+    }
+
+    /// The location the plan expected the item to leave.
+    pub fn source(&self) -> &ItemLocation {
+        &self.source
+    }
+
+    /// The location the plan expected the item to reach.
+    pub fn destination(&self) -> &ItemLocation {
+        &self.destination
+    }
+
+    /// Every planned step with its recorded outcome, in plan order.
+    pub fn steps(&self) -> &[StepRecord] {
+        &self.steps
+    }
+
+    /// How many steps recorded an attempt.
+    pub fn attempted_count(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|record| record.outcome.is_attempted())
+            .count()
+    }
+
+    /// How many steps the provider reported applied.
+    pub fn completed_count(&self) -> usize {
+        self.steps
+            .iter()
+            .filter(|record| record.outcome.continues())
+            .count()
+    }
+
+    /// How many steps have no recorded attempt.
+    pub fn unattempted_count(&self) -> usize {
+        self.steps.len() - self.attempted_count()
+    }
+
+    /// The ordinal of the next unattempted step, or `None` when none remains.
+    pub fn next_ordinal(&self) -> Option<u8> {
+        self.steps
+            .iter()
+            .find(|record| !record.outcome.is_attempted())
+            .map(|record| record.step.ordinal)
+    }
+
+    /// True when every planned step reported that it applied.
+    pub fn is_complete(&self) -> bool {
+        self.completed_count() == self.steps.len()
+    }
+
+    /// True when the sequence applied at least one step but not every step.
+    ///
+    /// This is the honest partial-completion shape: some provider effect exists,
+    /// so the move is neither a failure nor a success, and a caller must refresh
+    /// before deciding anything about the item's location.
+    pub fn is_partial(&self) -> bool {
+        self.completed_count() > 0 && !self.is_complete()
+    }
+
+    /// The first attempted step that stopped the sequence, if any.
+    pub fn stop_outcome(&self) -> Option<StepOutcome> {
+        self.steps
+            .iter()
+            .find(|record| record.outcome.stops_sequence())
+            .map(|record| record.outcome)
+    }
+
+    /// Records one outcome for the next unattempted step in plan order.
+    ///
+    /// Exactly one ordinal is acceptable at any point: the first step with no
+    /// recorded attempt. Anything else is rejected with the sanitized
+    /// [`ErrorCategory::StaleState`] category, because an out-of-order, repeated,
+    /// or post-stop recording would describe a sequence that never ran. Recording
+    /// [`StepOutcome::Unattempted`] is rejected with
+    /// [`ErrorCategory::ProviderValidation`], because "no attempt" is the absence
+    /// of a record rather than a result. No rejected call mutates the evidence.
+    ///
+    /// [`ErrorCategory::StaleState`]: crate::error::ErrorCategory::StaleState
+    /// [`ErrorCategory::ProviderValidation`]: crate::error::ErrorCategory::ProviderValidation
+    pub fn record(&mut self, ordinal: u8, outcome: StepOutcome) -> Result<(), AppError> {
+        if !outcome.is_attempted() {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        if self.stop_outcome().is_some() || self.next_ordinal() != Some(ordinal) {
+            return Err(AppError::new(ErrorCategory::StaleState));
+        }
+        for record in &mut self.steps {
+            if record.step.ordinal == ordinal {
+                record.outcome = outcome;
+                return Ok(());
+            }
+        }
+        // `next_ordinal` proved the ordinal belongs to a planned step, so an
+        // unmatched ordinal is unreachable and fails closed rather than silently
+        // dropping the record.
+        Err(AppError::new(ErrorCategory::StaleState))
+    }
+}
+
+/// The single-use authorization to attempt one plan's ordered steps exactly once.
+///
+/// A ticket is minted only by [`ExecutionTicket::after_fresh_preflight`], which
+/// requires an unexpired plan, an explicit current timestamp, and a *refreshed*
+/// committed profile observation whose membership and revision still match the
+/// plan. That single gate is what makes a blind retry impossible rather than
+/// merely discouraged:
+///
+/// - The type is deliberately neither `Clone` nor `Copy`, so a completed attempt
+///   cannot replay its authorization, and no accessor hands out a reusable one.
+/// - No outcome, error, or evidence type produces a ticket, so an uncertain or
+///   partial result has no path back to another provider call.
+/// - The revision binding closes the remaining route: once an applied step has
+///   advanced the committed projection, minting a second ticket for the same plan
+///   against the post-action refresh fails with [`ErrorCategory::StaleState`]. A
+///   further attempt then requires a new forced refresh and a new plan, never a
+///   replay. When a forced refresh instead retains the revision, state and
+///   binding are unchanged, so the same plan may be attempted again only after
+///   that refresh; a ticket is never minted from state that was not re-read.
+/// - The plan window is enforced here, not only in the preflight policy, so a
+///   composition that skipped that policy cannot spend a ticket on expired state.
+///
+/// The ticket owns a copy of the plan's ordered steps so an executor cannot
+/// invent, reorder, or extend them, and it carries no credential and no provider
+/// value.
+///
+/// # Composition requirement (DTE-003)
+///
+/// The executor entry point must take this ticket **by value** and consume it for
+/// the whole sequence, which is where the single-use guarantee is completed: this
+/// contract exposes no borrowing attempt path, no replay, and no
+/// refresh-and-retry helper, so a caller that keeps or copies the authorization
+/// cannot exist. Until that executor consumes it by value, the guarantee is held
+/// only by this type's construction and validation rules.
+///
+/// [`ErrorCategory::StaleState`]: crate::error::ErrorCategory::StaleState
+#[derive(Debug, Eq, PartialEq)]
+pub struct ExecutionTicket {
+    plan_id: PlanId,
+    membership: MembershipId,
+    item: ItemInstanceId,
+    source: ItemLocation,
+    destination: ItemLocation,
+    revision: SyncRevision,
+    steps: Vec<MoveStep>,
+}
+
+impl ExecutionTicket {
+    /// Mints the single-use ticket for one plan from a fresh preflight result.
+    ///
+    /// The plan must still be inside its window at the supplied `now`. The
+    /// observation must be a committed profile projection that was actually
+    /// refreshed, not one that skipped acquisition as already fresh, and it must
+    /// describe the same membership and the same committed revision the plan was
+    /// bound to. Any other input fails closed with the sanitized
+    /// [`ErrorCategory::StaleState`] category, so a plan can never be attempted
+    /// against expired state, state that was not re-read, or state that has
+    /// already moved on.
+    ///
+    /// [`ErrorCategory::StaleState`]: crate::error::ErrorCategory::StaleState
+    pub fn after_fresh_preflight(
+        plan: &MovePlan,
+        refreshed: &ProfileSyncOutcome,
+        now: Timestamp,
+    ) -> Result<Self, AppError> {
+        if plan.is_expired(now) {
+            return Err(AppError::new(ErrorCategory::StaleState));
+        }
+        if !refreshed.refreshed() {
+            return Err(AppError::new(ErrorCategory::StaleState));
+        }
+        let metadata = refreshed.metadata();
+        if metadata.source != SourceMarker::Profile
+            || metadata.membership_id != plan.membership
+            || metadata.revision != plan.revision
+        {
+            return Err(AppError::new(ErrorCategory::StaleState));
+        }
+        Ok(Self {
+            plan_id: plan.plan_id.clone(),
+            membership: plan.membership.clone(),
+            item: plan.item.clone(),
+            source: plan.source.clone(),
+            destination: plan.destination.clone(),
+            revision: plan.revision,
+            steps: plan.steps().to_vec(),
+        })
+    }
+
+    pub fn plan_id(&self) -> &PlanId {
+        &self.plan_id
+    }
+
+    pub fn membership(&self) -> &MembershipId {
+        &self.membership
+    }
+
+    /// The concrete item this ticket authorizes moving.
+    pub fn item(&self) -> &ItemInstanceId {
+        &self.item
+    }
+
+    /// The location the plan expected the item to leave.
+    pub fn source(&self) -> &ItemLocation {
+        &self.source
+    }
+
+    /// The location the plan expected the item to reach.
+    pub fn destination(&self) -> &ItemLocation {
+        &self.destination
+    }
+
+    /// The committed revision the plan and the fresh preflight agreed on.
+    pub fn revision(&self) -> SyncRevision {
+        self.revision
+    }
+
+    /// The ordered steps this ticket authorizes, bounded by [`MAX_MOVE_STEPS`].
+    pub fn steps(&self) -> &[MoveStep] {
+        &self.steps
+    }
+
+    /// The number of authorized steps.
+    pub fn step_count(&self) -> usize {
+        self.steps.len()
+    }
+}
+
 /// A validated, bounded plan lifetime policy.
 ///
 /// The core owns the bound; a caller supplies the concrete duration. A zero or
@@ -639,9 +1023,9 @@ pub fn character_destination(id: CharacterId) -> ItemLocation {
 mod tests {
     use super::*;
     use crate::{
-        domain::ItemLocation,
+        domain::{ItemLocation, SnapshotMetadata},
         error::{AppError, ErrorCategory},
-        ids::{CharacterId, PlanId},
+        ids::{CharacterId, DefinitionVersion, MembershipType, PlanId},
     };
 
     fn character(id: &str, name: Option<&str>, class: Option<&str>) -> Character {
@@ -1187,5 +1571,385 @@ mod tests {
             character_destination(CharacterId::new("warlock")),
             ItemLocation::Character(CharacterId::new("warlock"))
         );
+    }
+
+    /// A committed projection whose revision is the plan's own binding revision.
+    fn metadata(revision: u64) -> SnapshotMetadata {
+        SnapshotMetadata {
+            membership_id: MembershipId::new("membership"),
+            membership_type: MembershipType::new(3),
+            revision: SyncRevision::new(revision),
+            definition_version: DefinitionVersion::new("definitions-v1"),
+            checked_at: Timestamp::new(15),
+            source: SourceMarker::Profile,
+        }
+    }
+
+    /// One committed profile refresh at `revision`.
+    fn refreshed(revision: u64) -> ProfileSyncOutcome {
+        ProfileSyncOutcome::Refreshed {
+            metadata: metadata(revision),
+        }
+    }
+
+    /// One current timestamp strictly inside the `plan()` window (10..20).
+    const NOW: Timestamp = Timestamp::new(15);
+
+    /// One plan that must move through the Vault, with two ordered steps.
+    fn vault_mediated_plan() -> MovePlan {
+        MovePlan::new(
+            PlanId::new("plan"),
+            MembershipId::new("membership"),
+            ItemInstanceId::new("item"),
+            ItemLocation::Character(CharacterId::new("warlock")),
+            ItemLocation::Character(CharacterId::new("hunter")),
+            SyncRevision::new(4),
+            Timestamp::new(10),
+            Timestamp::new(20),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn step_outcomes_mirror_provider_results_and_stop_the_sequence() {
+        assert_eq!(
+            StepOutcome::from_transfer(TransferOutcome::Transferred),
+            StepOutcome::Completed
+        );
+        assert_eq!(
+            StepOutcome::from_transfer(TransferOutcome::Rejected(
+                TransferRejection::DestinationFull
+            )),
+            StepOutcome::Rejected(TransferRejection::DestinationFull)
+        );
+        assert_eq!(
+            StepOutcome::from_transfer(TransferOutcome::Transient),
+            StepOutcome::Transient
+        );
+        assert_eq!(
+            StepOutcome::from_transfer(TransferOutcome::Uncertain),
+            StepOutcome::Uncertain
+        );
+
+        assert!(StepOutcome::Completed.is_attempted());
+        assert!(StepOutcome::Completed.continues());
+        assert!(!StepOutcome::Completed.stops_sequence());
+        assert!(!StepOutcome::Unattempted.is_attempted());
+        assert!(!StepOutcome::Unattempted.continues());
+        assert!(!StepOutcome::Unattempted.stops_sequence());
+
+        for outcome in [
+            StepOutcome::Rejected(TransferRejection::Equipped),
+            StepOutcome::Transient,
+            StepOutcome::Uncertain,
+        ] {
+            assert!(outcome.is_attempted());
+            assert!(!outcome.continues());
+            assert!(
+                outcome.stops_sequence(),
+                "{outcome:?} must stop the sequence"
+            );
+        }
+
+        assert!(StepOutcome::Uncertain.is_uncertain());
+        assert!(!StepOutcome::Transient.is_uncertain());
+    }
+
+    #[test]
+    fn evidence_starts_unattempted_and_bounded_to_the_plan_steps() {
+        let direct = ExecutionEvidence::for_plan(&plan());
+        assert_eq!(direct.plan_id(), &PlanId::new("plan"));
+        assert_eq!(direct.item(), &ItemInstanceId::new("item"));
+        assert_eq!(direct.source(), &ItemLocation::Vault);
+        assert_eq!(
+            direct.destination(),
+            &ItemLocation::Character(CharacterId::new("character"))
+        );
+        assert_eq!(direct.steps().len(), 1);
+        assert!(direct.steps().len() <= MAX_MOVE_STEPS);
+        assert_eq!(direct.steps()[0].step.ordinal, 1);
+        assert_eq!(direct.steps()[0].outcome, StepOutcome::Unattempted);
+        assert_eq!(direct.next_ordinal(), Some(1));
+        assert_eq!(direct.attempted_count(), 0);
+        assert_eq!(direct.completed_count(), 0);
+        assert_eq!(direct.unattempted_count(), 1);
+        assert_eq!(direct.stop_outcome(), None);
+        assert!(!direct.is_complete());
+        assert!(!direct.is_partial());
+
+        let mediated = ExecutionEvidence::for_plan(&vault_mediated_plan());
+        assert_eq!(mediated.steps().len(), MAX_MOVE_STEPS);
+        assert_eq!(
+            mediated.steps()[0].step.from,
+            ItemLocation::Character(CharacterId::new("warlock"))
+        );
+        assert_eq!(mediated.steps()[0].step.to, ItemLocation::Vault);
+        assert_eq!(
+            mediated.steps()[1].step.to,
+            ItemLocation::Character(CharacterId::new("hunter"))
+        );
+        assert_eq!(mediated.next_ordinal(), Some(1));
+        assert_eq!(mediated.unattempted_count(), MAX_MOVE_STEPS);
+    }
+
+    #[test]
+    fn evidence_records_only_the_next_unattempted_step_in_order() {
+        let mut evidence = ExecutionEvidence::for_plan(&vault_mediated_plan());
+
+        // "No attempt" is the absence of a record, never a recorded result.
+        assert_eq!(
+            evidence.record(1, StepOutcome::Unattempted),
+            Err(AppError::new(ErrorCategory::ProviderValidation))
+        );
+        // An unplanned or out-of-order ordinal describes a sequence that never ran.
+        assert_eq!(
+            evidence.record(2, StepOutcome::Completed),
+            Err(AppError::new(ErrorCategory::StaleState))
+        );
+        assert_eq!(
+            evidence.record(3, StepOutcome::Completed),
+            Err(AppError::new(ErrorCategory::StaleState))
+        );
+        // No rejected call changed the evidence.
+        assert_eq!(evidence.attempted_count(), 0);
+        assert_eq!(evidence.next_ordinal(), Some(1));
+
+        evidence
+            .record(1, StepOutcome::Completed)
+            .expect("first step");
+        assert_eq!(evidence.attempted_count(), 1);
+        assert_eq!(evidence.next_ordinal(), Some(2));
+        // One step records one attempt; a replay is refused.
+        assert_eq!(
+            evidence.record(1, StepOutcome::Completed),
+            Err(AppError::new(ErrorCategory::StaleState))
+        );
+    }
+
+    #[test]
+    fn evidence_stops_after_the_first_non_completing_step() {
+        let mut evidence = ExecutionEvidence::for_plan(&vault_mediated_plan());
+        evidence
+            .record(1, StepOutcome::Completed)
+            .expect("first step");
+        evidence
+            .record(2, StepOutcome::from_transfer(TransferOutcome::Uncertain))
+            .expect("second step");
+
+        assert_eq!(evidence.stop_outcome(), Some(StepOutcome::Uncertain));
+        assert_eq!(evidence.attempted_count(), 2);
+        assert_eq!(evidence.completed_count(), 1);
+        assert_eq!(evidence.unattempted_count(), 0);
+        assert_eq!(evidence.next_ordinal(), None);
+        assert!(evidence.is_partial());
+        assert!(!evidence.is_complete());
+        // A stopped sequence accepts no further step, not even a later one.
+        assert_eq!(
+            evidence.record(2, StepOutcome::Completed),
+            Err(AppError::new(ErrorCategory::StaleState))
+        );
+    }
+
+    #[test]
+    fn evidence_separates_a_failed_second_step_from_a_complete_sequence() {
+        let mut partial = ExecutionEvidence::for_plan(&vault_mediated_plan());
+        partial
+            .record(1, StepOutcome::Completed)
+            .expect("first step");
+        partial
+            .record(2, StepOutcome::Rejected(TransferRejection::DestinationFull))
+            .expect("second step");
+        assert!(partial.is_partial());
+        assert!(!partial.is_complete());
+        assert_eq!(
+            partial.stop_outcome(),
+            Some(StepOutcome::Rejected(TransferRejection::DestinationFull))
+        );
+
+        let mut complete = ExecutionEvidence::for_plan(&vault_mediated_plan());
+        complete
+            .record(1, StepOutcome::Completed)
+            .expect("first step");
+        complete
+            .record(2, StepOutcome::Completed)
+            .expect("second step");
+        assert!(complete.is_complete());
+        assert!(!complete.is_partial());
+        assert_eq!(complete.stop_outcome(), None);
+        assert_eq!(complete.next_ordinal(), None);
+    }
+
+    #[test]
+    fn a_first_step_refusal_is_not_partial_completion() {
+        let mut evidence = ExecutionEvidence::for_plan(&plan());
+        evidence
+            .record(1, StepOutcome::Rejected(TransferRejection::NotTransferable))
+            .expect("first step");
+
+        assert!(!evidence.is_partial());
+        assert!(!evidence.is_complete());
+        assert_eq!(evidence.completed_count(), 0);
+        assert_eq!(evidence.unattempted_count(), 0);
+        assert_eq!(
+            evidence.stop_outcome(),
+            Some(StepOutcome::Rejected(TransferRejection::NotTransferable))
+        );
+    }
+
+    #[test]
+    fn a_ticket_requires_a_refreshed_revision_bound_observation() {
+        let plan = plan();
+
+        // A projection that skipped acquisition as already fresh authorizes nothing.
+        assert_eq!(
+            ExecutionTicket::after_fresh_preflight(
+                &plan,
+                &ProfileSyncOutcome::SkippedFresh {
+                    metadata: metadata(4)
+                },
+                NOW
+            ),
+            Err(AppError::new(ErrorCategory::StaleState))
+        );
+        // A non-profile observation cannot describe the committed projection.
+        assert_eq!(
+            ExecutionTicket::after_fresh_preflight(
+                &plan,
+                &ProfileSyncOutcome::Refreshed {
+                    metadata: SnapshotMetadata {
+                        source: SourceMarker::Manifest,
+                        ..metadata(4)
+                    }
+                },
+                NOW
+            ),
+            Err(AppError::new(ErrorCategory::StaleState))
+        );
+        // Another membership never authorizes this plan.
+        assert_eq!(
+            ExecutionTicket::after_fresh_preflight(
+                &plan,
+                &ProfileSyncOutcome::Refreshed {
+                    metadata: SnapshotMetadata {
+                        membership_id: MembershipId::new("other"),
+                        ..metadata(4)
+                    }
+                },
+                NOW
+            ),
+            Err(AppError::new(ErrorCategory::StaleState))
+        );
+        // A revision the plan was not bound to means state already moved on.
+        assert_eq!(
+            ExecutionTicket::after_fresh_preflight(&plan, &refreshed(5), NOW),
+            Err(AppError::new(ErrorCategory::StaleState))
+        );
+
+        let ticket =
+            ExecutionTicket::after_fresh_preflight(&plan, &refreshed(4), NOW).expect("ticket");
+        assert_eq!(ticket.plan_id(), &PlanId::new("plan"));
+        assert_eq!(ticket.membership(), &MembershipId::new("membership"));
+        assert_eq!(ticket.item(), &ItemInstanceId::new("item"));
+        assert_eq!(ticket.source(), &ItemLocation::Vault);
+        assert_eq!(
+            ticket.destination(),
+            &ItemLocation::Character(CharacterId::new("character"))
+        );
+        assert_eq!(ticket.revision(), SyncRevision::new(4));
+        assert_eq!(ticket.step_count(), 1);
+        assert_eq!(ticket.steps(), plan.steps());
+    }
+
+    #[test]
+    fn a_ticket_enforces_the_plan_window_itself() {
+        let plan = plan();
+
+        // A refreshed, revision-bound observation is not enough on its own: the
+        // ticket enforces the plan window here, so a composition that skipped the
+        // mandatory preflight policy cannot spend it on expired state.
+        assert_eq!(
+            ExecutionTicket::after_fresh_preflight(&plan, &refreshed(4), plan.expires_at()),
+            Err(AppError::new(ErrorCategory::StaleState))
+        );
+        assert_eq!(
+            ExecutionTicket::after_fresh_preflight(
+                &plan,
+                &refreshed(4),
+                Timestamp::new(plan.expires_at().seconds() + 1)
+            ),
+            Err(AppError::new(ErrorCategory::StaleState))
+        );
+        // The last second inside the window still mints.
+        assert_eq!(
+            ExecutionTicket::after_fresh_preflight(
+                &plan,
+                &refreshed(4),
+                Timestamp::new(plan.expires_at().seconds() - 1)
+            )
+            .map(|ticket| ticket.step_count()),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn a_ticket_cannot_authorize_a_second_attempt_after_state_advanced() {
+        let plan = vault_mediated_plan();
+        let ticket =
+            ExecutionTicket::after_fresh_preflight(&plan, &refreshed(4), NOW).expect("ticket");
+
+        let mut evidence = ExecutionEvidence::for_plan(&plan);
+        evidence
+            .record(ticket.steps()[0].ordinal, StepOutcome::Completed)
+            .expect("first step");
+        assert_eq!(evidence.stop_outcome(), None);
+
+        // The applied step forces the mandatory post-action refresh, whose
+        // committed projection carries a new revision. Replaying the same plan
+        // against that state is refused, so another attempt requires a new plan.
+        assert_eq!(
+            ExecutionTicket::after_fresh_preflight(
+                &plan,
+                &refreshed(plan.revision.value() + 1),
+                NOW
+            ),
+            Err(AppError::new(ErrorCategory::StaleState))
+        );
+    }
+
+    #[test]
+    fn a_forced_refresh_that_retained_the_revision_is_not_a_blind_retry() {
+        // The guard is a fresh, revision-bound observation, not an attempt
+        // counter: a forced refresh that retained the revision proves the
+        // projection really is unchanged, so re-attempting the same plan after
+        // that refresh is a state-refreshed attempt rather than a blind retry.
+        // A changed state or binding needs a new plan, and that case is covered
+        // by the advanced-revision test above.
+        let plan = plan();
+        assert!(ExecutionTicket::after_fresh_preflight(&plan, &refreshed(4), NOW).is_ok());
+    }
+
+    #[test]
+    fn an_already_satisfied_destination_is_the_only_verified_no_op() {
+        let plan = plan();
+        assert!(plan.already_satisfied(&ItemLocation::Character(CharacterId::new("character"))));
+        assert!(!plan.already_satisfied(&ItemLocation::Vault));
+        assert!(!plan.already_satisfied(&ItemLocation::Character(CharacterId::new("warlock"))));
+        assert!(!plan.already_satisfied(&ItemLocation::other("future-location")));
+    }
+
+    #[test]
+    fn a_direct_plan_completes_after_its_only_step_applies() {
+        let mut evidence = ExecutionEvidence::for_plan(&plan());
+        evidence
+            .record(1, StepOutcome::Completed)
+            .expect("only step");
+
+        assert!(evidence.is_complete());
+        assert!(!evidence.is_partial());
+        assert_eq!(evidence.attempted_count(), 1);
+        assert_eq!(evidence.completed_count(), 1);
+        assert_eq!(evidence.unattempted_count(), 0);
+        assert_eq!(evidence.stop_outcome(), None);
+        assert_eq!(evidence.next_ordinal(), None);
     }
 }
