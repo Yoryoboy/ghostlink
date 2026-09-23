@@ -14,7 +14,10 @@ pub mod test_support;
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
 pub use destiny_core::{AppError, ErrorCategory};
 pub use manifest::{ManifestService, normalize_manifest};
-pub use mutation::{ExecutionAuthorization, ExecutionFailure, MutationError, MutationService};
+pub use mutation::{
+    ExecutionAuthorization, ExecutionFailure, IncompleteExecution, MoveExecutionOutcome,
+    MutationError, MutationService, VerificationFailure, VerificationFailureReason,
+};
 pub use queries::{QueryService, SearchInventoryRequest};
 pub use sync::ProfileSyncService;
 
