@@ -71,15 +71,15 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
   - Rollback: remove `query.rs`, its core exports/port, and the in-memory search fake/tests while preserving all WU-006 contracts.
   - Evidence: commit `053fe2a` (`feat: add query contracts and search fake`).
 
-- [ ] **DQS-003 — Implement durable SQLite search and contract parity** *(in progress)*
-  - Route: delegated multi-file writer; SQLite schema/search/repository tests.
-  - Outcome: implement `SearchRepository` over the durable definition/profile projection with bounded deterministic matching and fake parity; add a reversible migration only if the verified search design needs persisted search structures.
-  - Likely surfaces: `crates/destiny-adapters/src/sqlite/mod.rs`, new `crates/destiny-adapters/src/sqlite/search.rs`, and narrowly required migration/test modules.
-  - Check: migration upgrade/downgrade/reopen when applicable; name/type/tag/perk filters; ordering/limits; corruption/error behavior; fake/SQLite parity; adapter tests/clippy/fmt/diff; independent verification per native risk assessment.
-  - Rollback: remove only the search implementation and its migration/index structures, preserving v1/v2 definitions and profile projection.
-  - Evidence: pending.
+- [x] **DQS-003 — Implement durable SQLite search and contract parity**
+  - Route: delegated multi-file writer; native assessment was unassessable because `search.rs` was intentionally untracked, so an independent high-risk verifier reviewed the complete candidate. The first v3 precomputed-index design had two medium corruption/migration-bound findings; one bounded correction removed the derived schema entirely and the verifier passed the simplified design.
+  - Outcome: implemented `SearchRepository` directly over the existing v2 source-of-truth tables. Definition search streams hashes in deterministic order, reuses the canonical fail-closed definition reader, applies the shared Rust Unicode matcher, and stops at the validated limit. Instance search uses bounded parameterized SQL for exact hash/perk/character filters, deterministic ordering, complete reconstruction, and exact lookup. No schema migration or derived index can drift; the documented MVP N+1 scan is the future index seam.
+  - Check: writer and independent verifier observed fmt/diff clean; 66 focused SQLite tests and 206 complete adapter tests passed; adapter all-target/all-feature clippy passed with `-D warnings`. Parent spot check reran the Unicode/name/type/tag fake-parity test successfully. LSP emitted stale slice-coercion/`None` diagnostics contradicted by rustc and clippy. No blocker/high/medium finding remains.
+  - Review workload: 848 additions and 2 deletions in one implementation-and-tests slice. The 317-line implementation and 527-line tests cannot be separated without violating the tests-with-behavior rule, so this remains one accepted over-budget work unit.
+  - Rollback: remove `sqlite/search.rs` and the `mod.rs` declaration/doc update; schema v2 and existing repositories remain byte-for-byte unaffected.
+  - Evidence: commit `00e6bef` (`feat: add durable inventory search`).
 
-- [ ] **DQS-004 — Orchestrate freshness-aware query services**
+- [ ] **DQS-004 — Orchestrate freshness-aware query services** *(in progress)*
   - Route: delegated multi-file writer; application service plus exports/tests.
   - Outcome: implement `list_characters`, `search_inventory`, and `inspect_item` over the sync/repository seams; refresh non-fresh projections, preserve typed authorization/provider/storage errors, return bounded ambiguity candidates, and expose sanitized freshness metadata.
   - Likely surfaces: new `crates/destiny-app/src/queries.rs`, `crates/destiny-app/src/lib.rs`, and focused service tests.
@@ -125,7 +125,8 @@ WU-007 establishes the shared read contract required by both WU-008 CLI reads an
 - DQS-001 repository mapping covered core domain/state/ports/errors, app sync/test-support, SQLite definitions/inventory/migrations, fixtures, architecture, implementation plan, and prior ODD trackers.
 - DQS-001 is complete in `e6d78f0` with boundary evidence in `bd90b9c`.
 - DQS-002 contracts and fake parity are complete in `053fe2a`; independent verification passed after bounding caller-controlled hash filters and completing the public exports, with no blocker/high/medium finding remaining.
+- DQS-003 durable SQLite search is complete in `00e6bef`; the corrected source-table design passed independent verification with no blocker/high/medium finding.
 
 ## Next step
 
-Delegate DQS-003 durable SQLite search and fake contract parity, preserving exact Rust Unicode normalization at write time.
+Delegate DQS-004 freshness-aware application query orchestration over the verified search and sync seams.
