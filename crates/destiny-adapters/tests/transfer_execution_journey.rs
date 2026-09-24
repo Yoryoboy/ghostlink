@@ -3,11 +3,12 @@
 //! This integration test drives the real composed stack instead of a stand-in
 //! for it: the real [`BungieProfileGateway`] decodes the deterministic provider
 //! payloads, the real [`SqliteStore`] persists the committed projection to an
-//! on-disk SQLite file, the real [`MutationService`] composes the real
-//! [`ProfileSyncService`] freshness gates and the real core mutation/execution
-//! policy, and the real [`BungieTransferGateway`] maps each ordered step onto the
-//! exact documented provider POST and classifies the provider envelope.
-//! Nothing at those layers is faked.
+//! on-disk SQLite file, the real [`QueryService`] answers list/search/inspect
+//! through the real [`ProfileSyncService`] freshness gates, the real
+//! [`MutationService`] composes the same freshness gates with the real core
+//! mutation/execution policy, and the real [`BungieTransferGateway`] maps each
+//! ordered step onto the exact documented provider POST and classifies the
+//! provider envelope. Nothing at those layers is faked.
 //!
 //! The only fakes are the outermost seams the production code already takes by
 //! dependency injection:
@@ -29,9 +30,13 @@
 //!
 //! Scenarios covered:
 //!
-//! 1. a direct Vault-to-character move applies through the real transfer adapter
-//!    and is verified only after the mandatory `PostAction` refresh advances the
-//!    committed revision;
+//! 1. the named "The Last Word to Warlock" move: the real read service lists the
+//!    characters and resolves the concrete Vault instance, the real planner binds
+//!    that revision, the mandatory fresh preflight passes, one direct
+//!    Vault-to-character transfer applies, and the forced `PostAction` refresh
+//!    advances the committed revision so both the executor and an independent
+//!    read-service re-inspection verify the destination, including the stale
+//!    cache refresh that spends exactly one more gateway call;
 //! 2. a character-to-character move posts exactly two ordered Vault-mediated
 //!    transfers and verifies the final destination;
 //! 3. a refused second step strands the item in the Vault and reports honest
@@ -51,6 +56,7 @@
 //! [`BungieProfileGateway`]: destiny_adapters::profile_gateway::BungieProfileGateway
 //! [`BungieTransferGateway`]: destiny_adapters::transfer::BungieTransferGateway
 //! [`SqliteStore`]: destiny_adapters::sqlite::SqliteStore
+//! [`QueryService`]: destiny_app::QueryService
 //! [`MutationService`]: destiny_app::MutationService
 //! [`ProfileSyncService`]: destiny_app::ProfileSyncService
 //! [`ProfileTransport`]: destiny_adapters::profile_gateway::ProfileTransport
@@ -59,7 +65,7 @@
 
 use destiny_adapters::profile_gateway::{
     BungieProfileGateway, MEMBERSHIP_ENDPOINT, ProfileApiKey, ProfileHttpRequest,
-    ProfileHttpResponse, ProfileTransport, ProfileTransportError,
+    ProfileHttpResponse, ProfileTransport, ProfileTransportError, profile_endpoint,
 };
 use destiny_adapters::sqlite::SqliteStore;
 use destiny_adapters::transfer::{
@@ -68,16 +74,18 @@ use destiny_adapters::transfer::{
 };
 use destiny_app::test_support::DeterministicPlanIds;
 use destiny_app::{
-    MoveExecutionOutcome, MutationError, MutationService, ProfileSyncService,
-    VerificationFailureReason,
+    MoveExecutionOutcome, MutationError, MutationService, ProfileSyncService, QueryService,
+    SearchInventoryRequest, VerificationFailureReason,
 };
 use destiny_core::{
     AccessCredential, AccessCredentialMetadata, AppError, CharacterId, Clock, CredentialMaterial,
-    DefinitionReplacementInput, DefinitionRepository, DefinitionVersion, DestinationSelector,
-    ErrorCategory, FreshnessPolicy, InventoryRepository, InventorySnapshot, ItemDefinition,
-    ItemHash, ItemLocation, ItemSelector, ManifestDefinitions, MembershipId,
-    MoveIntentAuthorization, MoveRequest, PlanLifetime, ProfileSyncReason, SourceMarker,
-    StepOutcome, SyncRevision, Timestamp, TransferRejection,
+    Dataset, DefinitionReplacementInput, DefinitionRepository, DefinitionSearchQuery,
+    DefinitionVersion, DestinationSelector, DestinyMembership, ErrorCategory, FreshnessPolicy,
+    FreshnessStatus, InspectItemRequest, InstanceSearchQuery, InventoryRepository,
+    InventorySnapshot, ItemDefinition, ItemHash, ItemHashFilter, ItemInstanceId, ItemLocation,
+    ItemSelector, MAX_SEARCH_LIMIT, ManifestDefinitions, MembershipId, MembershipType,
+    MoveIntentAuthorization, MoveRequest, PlanLifetime, ProfileSyncReason, Resolution, SearchTerm,
+    SourceMarker, StepOutcome, SyncRevision, Timestamp, TransferRejection,
 };
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
@@ -89,6 +97,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The effective Cross Save primary the whole journey resolves to. It matches
 /// the membership the `profile-complete.json` fixture is consistent with.
+const MEMBERSHIP_TYPE: u32 = 3;
 const MEMBERSHIP_ID: &str = "4611686018484639825";
 
 /// The Manifest version shared by the published definitions and the gateway that
@@ -103,6 +112,7 @@ const HUNTER_ID: &str = "900000000000000002";
 /// The Vault-held "The Last Word" instance and the Hunter-held "Crota's Sword"
 /// instance the fixture normalizes to.
 const LAST_WORD_INSTANCE: &str = "700000000000000001";
+const LAST_WORD_HASH: i64 = 1001;
 const CROTA_INSTANCE: &str = "700000000000000005";
 
 /// Deterministic application time. `checked_at` is excluded from revision
@@ -159,6 +169,26 @@ fn warlock_location() -> ItemLocation {
 
 fn hunter_location() -> ItemLocation {
     ItemLocation::Character(CharacterId::new(HUNTER_ID))
+}
+
+fn expected_membership() -> DestinyMembership {
+    DestinyMembership::new(
+        MembershipType::new(MEMBERSHIP_TYPE),
+        MembershipId::new(MEMBERSHIP_ID),
+    )
+    .expect("fixture membership is canonical")
+}
+
+/// Asserts that every recorded profile request is a read-only membership or
+/// profile GET, so the read path never contacted another remote endpoint.
+fn assert_read_only_profile_requests(urls: &[String]) {
+    let profile = profile_endpoint(&expected_membership());
+    for url in urls {
+        assert!(
+            url == MEMBERSHIP_ENDPOINT || url == &profile,
+            "unexpected remote endpoint: {url}"
+        );
+    }
 }
 
 /// One entry of the scripted provider transfer behaviour.
@@ -334,6 +364,7 @@ struct TransferScript {
 struct SharedProfileTransport {
     world: Rc<RefCell<World>>,
     requests: Rc<RefCell<Vec<String>>>,
+    authorized: Rc<RefCell<Vec<bool>>>,
     faults: Rc<RefCell<VecDeque<ProfileFault>>>,
 }
 
@@ -344,6 +375,11 @@ impl ProfileTransport for SharedProfileTransport {
     ) -> Result<ProfileHttpResponse, ProfileTransportError> {
         let url = request.url().to_owned();
         self.requests.borrow_mut().push(url.clone());
+        // Record only whether the injected fixture authorization was attached;
+        // the secret values are never captured or rendered.
+        self.authorized
+            .borrow_mut()
+            .push(request.api_key().is_some() && request.bearer().is_some());
         if url == MEMBERSHIP_ENDPOINT {
             return Ok(profile_json(MEMBERSHIP_BODY.as_bytes().to_vec()));
         }
@@ -414,6 +450,7 @@ impl Clock for TestClock {
 
 type ProfileAdapter = BungieProfileGateway<SharedProfileTransport, TestClock>;
 type TransferAdapter = BungieTransferGateway<SharedTransferTransport, TestClock>;
+type ReadService = QueryService<ProfileAdapter, SqliteStore>;
 type Service = MutationService<ProfileAdapter, SqliteStore, DeterministicPlanIds>;
 
 /// A private temporary database path plus cleanup of its SQLite sidecars.
@@ -457,6 +494,7 @@ struct Journey {
     clock: Rc<Cell<u64>>,
     world: Rc<RefCell<World>>,
     profile_requests: Rc<RefCell<Vec<String>>>,
+    profile_authorized: Rc<RefCell<Vec<bool>>>,
     profile_faults: Rc<RefCell<VecDeque<ProfileFault>>>,
     script: Rc<RefCell<TransferScript>>,
 }
@@ -468,6 +506,7 @@ impl Journey {
             clock: Rc::new(Cell::new(NOW.seconds())),
             world: Rc::new(RefCell::new(World::new())),
             profile_requests: Rc::new(RefCell::new(Vec::new())),
+            profile_authorized: Rc::new(RefCell::new(Vec::new())),
             profile_faults: Rc::new(RefCell::new(VecDeque::new())),
             script: Rc::new(RefCell::new(TransferScript::default())),
         }
@@ -481,10 +520,28 @@ impl Journey {
     /// Composes the real mutation service over a fresh real profile gateway and
     /// a fresh real SQLite store.
     fn service(&self) -> Service {
-        let gateway = BungieProfileGateway::new(
+        let store = SqliteStore::open(self.database.path()).expect("open file store");
+        MutationService::new(
+            ProfileSyncService::new(self.profile_gateway(), store),
+            DeterministicPlanIds::starting_at(1),
+        )
+    }
+
+    /// Composes the real read application service over the same durable SQLite
+    /// path the mutation service uses, so search and inspection observe exactly
+    /// the committed projection a mutation acts on.
+    fn read_service(&self) -> ReadService {
+        let store = SqliteStore::open(self.database.path()).expect("open file store");
+        QueryService::new(ProfileSyncService::new(self.profile_gateway(), store))
+    }
+
+    /// The real profile gateway over the shared world, clock, and fault script.
+    fn profile_gateway(&self) -> ProfileAdapter {
+        BungieProfileGateway::new(
             SharedProfileTransport {
                 world: Rc::clone(&self.world),
                 requests: Rc::clone(&self.profile_requests),
+                authorized: Rc::clone(&self.profile_authorized),
                 faults: Rc::clone(&self.profile_faults),
             },
             TestClock(Rc::clone(&self.clock)),
@@ -492,12 +549,7 @@ impl Journey {
             ProfileApiKey::new(API_KEY_SENTINEL).expect("valid API key"),
             DefinitionVersion::new(DEFINITION_VERSION),
         )
-        .expect("valid profile gateway configuration");
-        let store = SqliteStore::open(self.database.path()).expect("open file store");
-        MutationService::new(
-            ProfileSyncService::new(gateway, store),
-            DeterministicPlanIds::starting_at(1),
-        )
+        .expect("valid profile gateway configuration")
     }
 
     /// Composes the real Bungie transfer adapter over the scripted transport.
@@ -539,6 +591,21 @@ impl Journey {
 
     fn request_count(&self) -> usize {
         self.profile_requests.borrow().len()
+    }
+
+    /// The recorded profile/membership request URLs, in dispatch order.
+    fn profile_urls(&self) -> Vec<String> {
+        self.profile_requests.borrow().clone()
+    }
+
+    /// True when every recorded request carried the injected fixture
+    /// authorization, proving the read path never reached a provider without a
+    /// credential and never needed a live or OS-keyring one.
+    fn all_profile_requests_authorized(&self) -> bool {
+        self.profile_authorized
+            .borrow()
+            .iter()
+            .all(|authorized| *authorized)
     }
 }
 
@@ -651,6 +718,28 @@ fn warlock_label() -> DestinationSelector {
     DestinationSelector::character_label("Warlock").expect("valid destination label")
 }
 
+fn term(value: &str) -> SearchTerm {
+    SearchTerm::new(value).expect("valid search term")
+}
+
+fn definition_query(text: Option<&str>, limit: usize) -> DefinitionSearchQuery {
+    DefinitionSearchQuery {
+        text: text.map(term),
+        item_type: None,
+        tags: Vec::new(),
+        limit,
+    }
+}
+
+fn instance_query(item_hashes: ItemHashFilter, limit: usize) -> InstanceSearchQuery {
+    InstanceSearchQuery {
+        item_hashes,
+        perk_hash: None,
+        character_id: None,
+        limit,
+    }
+}
+
 fn move_request(item: ItemSelector, destination: DestinationSelector) -> MoveRequest {
     MoveRequest {
         membership: MembershipId::new(MEMBERSHIP_ID),
@@ -715,30 +804,128 @@ fn body_json(recorded: &RecordedTransfer) -> Value {
     serde_json::from_str(&recorded.body).expect("transfer body is JSON")
 }
 
-/// Scenario 1: a direct Vault-to-Warlock move applies through the real adapter
-/// and is verified only after the mandatory `PostAction` refresh commits the
-/// moved item at the destination and advances the revision.
+/// Scenario 1: the named "The Last Word to Warlock" move composed end to end.
+///
+/// The real read service resolves the concrete Vault instance by definition name
+/// and by instance identity over the same durable SQLite path the mutation path
+/// uses; the planner binds that exact revision and the named destination; the
+/// mandatory fresh preflight passes; one direct Vault-to-Warlock transfer
+/// applies; the forced `PostAction` refresh commits the destination and advances
+/// the revision; an independent read-service re-inspection verifies the Warlock
+/// placement from the fresh cache without a gateway call; and a stale
+/// re-inspection then spends exactly one ordinary refresh and still observes the
+/// Warlock placement at the retained revision.
 #[test]
 fn direct_move_is_verified_after_a_post_action_refresh() {
     let journey = Journey::new();
     journey.at(NOW);
     let mut service = journey.service();
     seed(&journey, &mut service);
+    let mut read = journey.read_service();
     let mut transfer = journey.transfer_adapter();
 
+    // The read service lists the committed characters with repository-owned
+    // metadata, resolved from the projected Cross Save primary.
+    let characters = read
+        .list_characters(TTL, NOW)
+        .expect("cold query reads the committed projection");
+    let ids: Vec<&str> = characters
+        .characters
+        .iter()
+        .map(|character| character.id.as_str())
+        .collect();
+    assert_eq!(ids, [WARLOCK_ID, HUNTER_ID]);
+    assert_eq!(characters.metadata.sync.dataset, Dataset::ProfileInventory);
+    assert_eq!(characters.metadata.sync.source, SourceMarker::Profile);
+    assert_eq!(characters.metadata.sync.revision, SyncRevision::new(1));
+    assert_eq!(characters.metadata.sync.checked_at, NOW);
+    assert_eq!(characters.metadata.freshness, FreshnessStatus::Fresh);
+
+    // Definition search and concrete instance search pair the named definition
+    // with the one Vault-held instance, and inspection loses neither identity.
+    let search = read
+        .search_inventory(
+            &SearchInventoryRequest {
+                definitions: definition_query(Some("the last word"), MAX_SEARCH_LIMIT),
+                instances: Some(instance_query(
+                    ItemHashFilter::AnyOf(vec![ItemHash::new(LAST_WORD_HASH)]),
+                    MAX_SEARCH_LIMIT,
+                )),
+            },
+            TTL,
+            NOW,
+        )
+        .expect("search resolves the named item");
+    assert_eq!(search.candidates.len(), 1);
+    assert_eq!(search.candidates[0].name, "The Last Word");
+    assert_eq!(search.hits.len(), 1);
+    assert_eq!(
+        search.hits[0].instance.instance_id.as_str(),
+        LAST_WORD_INSTANCE
+    );
+    assert_eq!(search.hits[0].instance.location, ItemLocation::Vault);
+    assert_eq!(
+        search.hits[0].definition.hash,
+        search.hits[0].instance.item_hash
+    );
+
+    let resolution = read
+        .inspect_item(
+            &InspectItemRequest {
+                instance_id: ItemInstanceId::new(LAST_WORD_INSTANCE),
+            },
+            TTL,
+            NOW,
+        )
+        .expect("inspection resolves the instance");
+    let inspection = match resolution {
+        Resolution::Unique(inspection) => inspection,
+        other => panic!("expected one concrete instance, got {other:?}"),
+    };
+    assert_eq!(inspection.definition.hash, ItemHash::new(LAST_WORD_HASH));
+    assert_eq!(inspection.definition.name, "The Last Word");
+    assert_eq!(inspection.instance.location, ItemLocation::Vault);
+    assert_eq!(inspection.metadata.sync.revision, SyncRevision::new(1));
+
+    // Every read stayed on the allowlisted membership/profile GETs, and every
+    // one carried the injected fixture authorization instead of a live one.
+    assert_read_only_profile_requests(&journey.profile_urls());
+    assert!(journey.all_profile_requests_authorized());
+
+    // The planner resolves the named item and the Warlock itself and binds the
+    // committed revision into a single direct step.
     let request = move_request(semantic("The Last Word"), warlock_label());
     let plan = service
         .plan_move(&request, PlanLifetime::MAX, TTL, NOW)
         .expect("direct plan");
+    assert_eq!(plan.plan_id.as_str(), "plan-1");
+    assert_eq!(plan.membership.as_str(), MEMBERSHIP_ID);
+    assert_eq!(plan.item.as_str(), LAST_WORD_INSTANCE);
+    assert_eq!(plan.source, ItemLocation::Vault);
+    assert_eq!(plan.destination, warlock_location());
     assert_eq!(plan.revision, SyncRevision::new(1));
     assert_eq!(plan.step_count(), 1);
+    assert!(!plan.effects().via_vault);
+    assert_eq!(plan.steps()[0].from, ItemLocation::Vault);
+    assert_eq!(plan.steps()[0].to, warlock_location());
+
+    // The mandatory fresh preflight forces one refresh even though the read
+    // projection was fresh, and the unchanged state keeps the bound revision.
+    service
+        .preflight_move(&request, &plan, TTL, NOW)
+        .expect("the plan survives the mandatory fresh preflight");
+    assert_eq!(committed(&service).metadata.revision, SyncRevision::new(1));
     assert_eq!(
-        location_of(&committed(&service), LAST_WORD_INSTANCE),
-        ItemLocation::Vault
+        journey.request_count(),
+        4,
+        "seed plus the explicit fresh preflight"
     );
 
     journey.queue_transfer(TransferAction::Applied);
 
+    // Execution runs its own mandatory fresh preflight, dispatches exactly one
+    // ordered transfer, then forces the post-action refresh.
+    let post_action_now = Timestamp::new(NOW.seconds() + 2);
     let outcome = service
         .execute_move_verified(
             &mut transfer,
@@ -746,7 +933,7 @@ fn direct_move_is_verified_after_a_post_action_refresh() {
             &plan,
             TTL,
             Timestamp::new(NOW.seconds() + 1),
-            Timestamp::new(NOW.seconds() + 2),
+            post_action_now,
         )
         .expect("verified outcome");
     let evidence = match outcome {
@@ -755,7 +942,9 @@ fn direct_move_is_verified_after_a_post_action_refresh() {
     };
     assert_eq!(evidence.completed_count(), 1);
     assert_eq!(evidence.attempted_count(), 1);
+    assert_eq!(evidence.unattempted_count(), 0);
     assert_eq!(evidence.steps()[0].outcome, StepOutcome::Completed);
+    assert_eq!(service.plan_ids().calls(), 1);
 
     // The post-action refresh committed the moved item at the destination, which
     // is what advances the revision from the preflight observation.
@@ -765,6 +954,60 @@ fn direct_move_is_verified_after_a_post_action_refresh() {
         warlock_location()
     );
     assert_eq!(snapshot.metadata.revision, SyncRevision::new(2));
+    let requests_after_execution = journey.request_count();
+    assert_eq!(
+        requests_after_execution, 8,
+        "seed, explicit preflight, execution preflight, post-action"
+    );
+
+    // A fresh re-inspection is served from the committed projection without
+    // spending a gateway call, and still places the item at the Warlock.
+    let re_read = read
+        .inspect_item(
+            &InspectItemRequest {
+                instance_id: ItemInstanceId::new(LAST_WORD_INSTANCE),
+            },
+            TTL,
+            post_action_now,
+        )
+        .expect("fresh re-inspection succeeds");
+    let verified = match re_read {
+        Resolution::Unique(inspection) => inspection,
+        other => panic!("expected one concrete instance, got {other:?}"),
+    };
+    assert_eq!(verified.instance.location, warlock_location());
+    assert_eq!(verified.metadata.sync.revision, SyncRevision::new(2));
+    assert_eq!(verified.metadata.freshness, FreshnessStatus::Fresh);
+    assert_eq!(journey.request_count(), requests_after_execution);
+
+    // Once the cached observation is stale, the read path refreshes exactly once
+    // and still reads the Warlock at the retained revision 2.
+    let stale_now = Timestamp::new(post_action_now.seconds() + TTL.ttl_seconds + 1);
+    journey.at(stale_now);
+    let stale = read
+        .inspect_item(
+            &InspectItemRequest {
+                instance_id: ItemInstanceId::new(LAST_WORD_INSTANCE),
+            },
+            TTL,
+            stale_now,
+        )
+        .expect("stale re-inspection refreshes once");
+    let stale_inspection = match stale {
+        Resolution::Unique(inspection) => inspection,
+        other => panic!("expected one concrete instance, got {other:?}"),
+    };
+    assert_eq!(stale_inspection.instance.location, warlock_location());
+    assert_eq!(
+        stale_inspection.metadata.sync.revision,
+        SyncRevision::new(2)
+    );
+    assert_eq!(stale_inspection.metadata.freshness, FreshnessStatus::Fresh);
+    assert_eq!(
+        journey.request_count(),
+        requests_after_execution + 2,
+        "one stale ordinary refresh"
+    );
 
     // Exactly one ordered POST, with the Vault-to-character direction the
     // executor derived from the projection.
@@ -784,9 +1027,8 @@ fn direct_move_is_verified_after_a_post_action_refresh() {
         body.get("itemId").and_then(Value::as_str),
         Some(LAST_WORD_INSTANCE)
     );
-
-    // Seed plus the forced preflight and the forced post-action refreshes.
-    assert_eq!(journey.request_count(), 2 + 2 + 2);
+    assert_read_only_profile_requests(&journey.profile_urls());
+    assert!(journey.all_profile_requests_authorized());
 }
 
 /// Scenario 2: a character-to-character move posts exactly two ordered
