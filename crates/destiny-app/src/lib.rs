@@ -34,7 +34,7 @@ pub use destiny_core::{
     ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstance, ItemInstanceId,
     ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH,
     MAX_TAG_FILTERS, MembershipId, MembershipType, MoveEffects, MoveIntentAuthorization, MovePlan,
-    MoveRequest, PerkHash, PerkSummary, PlanIdGenerator, PlanLifetime, ProfileGateway,
+    MoveRequest, PerkHash, PerkSummary, PlanId, PlanIdGenerator, PlanLifetime, ProfileGateway,
     ProfileSyncOutcome, ProfileSyncReason, QueryMetadata, Resolution, SearchRepository, SearchTerm,
     SourceMarker, StepOutcome, SyncMetadata, Timestamp, TransferGateway, TransferOutcome,
     TransferRejection, TransferRequest,
