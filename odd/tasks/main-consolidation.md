@@ -15,7 +15,7 @@ IN PROGRESS on `feature/main-consolidation` from clean WU-014 `37786e0`. Establi
 
 ## Tasks
 
-- [ ] **MCI-001 — Persist audit and consolidation tracker.** Route: inline Git state plus delegated read-only topology/assumption checks. Checks: tracker + full Engram mirror readback, branch and remote inventory, clean worktrees. Commit: pending.
+- [x] **MCI-001 — Persist audit and consolidation tracker.** Route: inline Git state plus delegated read-only topology/assumption checks. Checks: tracker + full Engram mirror readback (`6029`), branch and remote inventory, clean worktrees, `git diff --check` exit 0. Commit: `8a90058` (`docs: plan main consolidation`).
 - [ ] **MCI-002 — Preserve WU-008 ancestry without altering product tree.** Route: parent Git integration after independent exact-tree challenge. Make a labelled ancestry-only merge on feature branch, confirm WU-008 is an ancestor and commit tree exactly matches pre-merge tree. Commit: pending.
 - [ ] **MCI-003 — Verify integrated candidate and create local main.** Route: independent `gentle-ai-verify` for full offline commands; parent spot-check and Git status/ancestry. Create `main` at verified candidate tip and switch to it, without rewriting existing history. Commit: integration commit from MCI-002 (no unnecessary source edit).
 - [ ] **MCI-004 — Publish and set GitHub default main.** Route: parent exact remote Git/gh commands. Push `main` normally, verify exact remote SHA, change GitHub default to main, then confirm `gh repo view` and remote HEAD. Record remote outcome. Commit: evidence tracker update if needed.
@@ -29,4 +29,4 @@ IN PROGRESS on `feature/main-consolidation` from clean WU-014 `37786e0`. Establi
 
 ## Next step
 
-Mirror this tracker and commit it, then preserve the equivalent WU-008 history with a tree-identical merge.
+Preserve equivalent WU-008 history via a tree-identical ancestry-only merge, then independently verify before publishing.
