@@ -16,6 +16,31 @@ use destiny_core::{
 };
 use std::collections::{HashSet, VecDeque};
 
+/// One coherent sentinel set shared by every cross-boundary leak harness.
+///
+/// The durable SQLite bytes and sidecars, the CLI runner and its process
+/// streams, the MCP stdio child process, and the serialized error shapes all
+/// draw their canaries from this single definition, so a value proven absent at
+/// one boundary is the exact value probed at the others. Every constant is
+/// inert test data: none is a real credential, identifier, or provider value,
+/// and none requires a network, a keyring, or a live account.
+pub mod leak_sentinels {
+    /// An API key supplied to a provider read gateway.
+    pub const API_KEY: &str = "sentinel-hardening-api-key-2f9c41d7";
+    /// An opaque bearer credential supplied to a provider read gateway.
+    pub const BEARER_TOKEN: &str = "sentinel-hardening-bearer-token-7d41b8e2";
+    /// Raw provider payload text that a failure message might otherwise echo.
+    pub const RAW_PAYLOAD: &str = "sentinel-hardening-raw-payload-b3e5a0c9";
+    /// A non-secret control marker expected to be observable wherever a
+    /// surface is genuinely exercised, proving a clean scan or stream is not an
+    /// empty one.
+    pub const CONTROL: &str = "sentinel-hardening-control-1a6d50f3";
+
+    /// The secret-bearing sentinels that must never reach a durable byte, a
+    /// process stream, or a serialized error shape.
+    pub const SECRETS: [&str; 3] = [API_KEY, BEARER_TOKEN, RAW_PAYLOAD];
+}
+
 #[derive(Debug)]
 pub struct DeterministicRandom {
     states: VecDeque<AuthorizationState>,

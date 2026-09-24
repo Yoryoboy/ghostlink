@@ -32,6 +32,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use destiny_app::test_support::leak_sentinels;
 use destiny_app::test_support::{
     DeterministicPlanIds, FakeClock, InMemoryDefinitionRepository, InMemoryInventoryRepository,
     InMemorySearchRepository,
@@ -47,9 +48,6 @@ use destiny_app::{
 };
 use destiny_mcp::runtime::serve_stdio;
 use destiny_mcp::{ComposedMutationService, QueryReadService, ReadToolServer};
-
-/// The sentinel embedded in opaque provider text; the projection must drop it.
-pub const SENTINEL: &str = "offline-fixture-secret-sentinel";
 
 /// The scenario selector read once at process start.
 const SCENARIO_ENV: &str = "DESTINY_FIXTURE_SCENARIO";
@@ -358,11 +356,29 @@ fn characters() -> Vec<Character> {
 fn base_items() -> Vec<ItemInstance> {
     vec![
         instance("inst-a", 1, ItemLocation::Vault, vec![perk(10)]),
-        instance("inst-b", 2, ItemLocation::other(SENTINEL), Vec::new()),
+        instance(
+            "inst-b",
+            2,
+            ItemLocation::other(opaque_provider_location()),
+            Vec::new(),
+        ),
         instance("inst-c", 3, ItemLocation::Vault, Vec::new()),
         instance("inst-d", 4, ItemLocation::Vault, Vec::new()),
         instance("inst-e", 5, at_character("zavala"), Vec::new()),
     ]
+}
+
+/// One opaque provider location value carrying every shared secret canary.
+///
+/// The projection renders this as [`LocationView::Other`] without its text, so
+/// no byte of it may reach stdout or stderr.
+fn opaque_provider_location() -> String {
+    format!(
+        "{}|{}|{}",
+        leak_sentinels::RAW_PAYLOAD,
+        leak_sentinels::API_KEY,
+        leak_sentinels::BEARER_TOKEN
+    )
 }
 
 fn at_character(id: &str) -> ItemLocation {
@@ -391,7 +407,9 @@ fn fixture_definitions() -> Vec<ItemDefinition> {
 fn character(id: &str) -> Character {
     Character {
         id: CharacterId::new(id),
-        name: Some(format!("name-{id}")),
+        // The shared non-secret control crosses to the client in the readable
+        // name, which proves the MCP stdout stream carries real content.
+        name: Some(format!("name-{id}-{}", leak_sentinels::CONTROL)),
         class: None,
         race: None,
         gender: None,

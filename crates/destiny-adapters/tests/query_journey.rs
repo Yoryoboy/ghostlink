@@ -65,6 +65,7 @@ use destiny_adapters::profile_gateway::{
     ProfileHttpResponse, ProfileTransport, ProfileTransportError, profile_endpoint,
 };
 use destiny_adapters::sqlite::SqliteStore;
+use destiny_app::test_support::leak_sentinels;
 use destiny_app::{ProfileSyncService, QueryService, SearchInventoryRequest};
 use destiny_cli::{ProcessOutput, ReadFreshness};
 use destiny_core::{
@@ -103,9 +104,11 @@ const TTL: FreshnessPolicy = FreshnessPolicy { ttl_seconds: 300 };
 
 /// Distinctive sentinels for the two secrets and one raw-payload marker. None of
 /// them may ever reach an error, the committed projection, or the on-disk bytes.
-const API_KEY_SENTINEL: &str = "sentinel-query-api-key";
-const BEARER_SENTINEL: &str = "sentinel-query-bearer-token";
-const PAYLOAD_SENTINEL: &str = "sentinel-query-raw-payload";
+/// They come from the shared leak set so this journey probes the exact values the
+/// MCP and consolidated hardening harnesses probe.
+const API_KEY_SENTINEL: &str = leak_sentinels::API_KEY;
+const BEARER_SENTINEL: &str = leak_sentinels::BEARER_TOKEN;
+const PAYLOAD_SENTINEL: &str = leak_sentinels::RAW_PAYLOAD;
 
 /// The complete profile fixture decoded by the real adapter.
 const FIXTURE: &[u8] = include_bytes!("fixtures/profile-complete.json");

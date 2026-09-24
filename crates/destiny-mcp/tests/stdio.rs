@@ -20,6 +20,7 @@
 //! either stream.
 #![cfg(feature = "offline-fixtures")]
 
+use destiny_app::test_support::leak_sentinels;
 use serde_json::{Value, json};
 use std::process::Stdio;
 use std::time::Duration;
@@ -29,11 +30,17 @@ use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 /// Bounded wait for every read, write, and process exit.
 const TIMEOUT: Duration = Duration::from_secs(15);
 
-/// Must match the sentinel embedded by `offline_fixture.rs`.
-const SENTINEL: &str = "offline-fixture-secret-sentinel";
-
 /// The membership identifier the fixture resolves; it must never reach a client.
 const MEMBERSHIP_IDENTIFIER: &str = "4611686018484639825";
+
+/// Every canary that must never appear on either process stream or in a
+/// serialized response, drawn from the shared leak set.
+const STREAM_SENTINELS: [&str; 4] = [
+    leak_sentinels::API_KEY,
+    leak_sentinels::BEARER_TOKEN,
+    leak_sentinels::RAW_PAYLOAD,
+    MEMBERSHIP_IDENTIFIER,
+];
 
 /// The scenario selector the fixture reads at process start.
 const SCENARIO_ENV: &str = "DESTINY_FIXTURE_SCENARIO";
@@ -55,14 +62,12 @@ async fn read_frame(reader: &mut BufReader<ChildStdout>) -> Value {
         .expect("a stdout frame arrives within the timeout")
         .expect("stdout is readable");
     assert!(read > 0, "stdout closed before an expected response");
-    assert!(
-        !line.contains(SENTINEL),
-        "a secret sentinel leaked onto stdout: {line}"
-    );
-    assert!(
-        !line.contains(MEMBERSHIP_IDENTIFIER),
-        "a membership identifier leaked onto stdout: {line}"
-    );
+    for sentinel in STREAM_SENTINELS {
+        assert!(
+            !line.contains(sentinel),
+            "a sentinel leaked onto stdout: {line}"
+        );
+    }
     let frame: Value = serde_json::from_str(&line).expect("stdout carries only JSON frames");
     assert_eq!(frame["jsonrpc"], "2.0", "stdout is protocol-only: {line}");
     frame
@@ -217,17 +222,26 @@ impl FixtureSession {
             .await
             .expect("stderr is readable within the bounded timeout")
             .expect("stderr reads to end");
-        assert!(
-            !stderr_text.contains(SENTINEL),
-            "a secret sentinel leaked onto stderr: {stderr_text}"
-        );
-        assert!(
-            !stderr_text.contains(MEMBERSHIP_IDENTIFIER),
-            "a membership identifier leaked onto stderr: {stderr_text}"
-        );
+        for sentinel in STREAM_SENTINELS {
+            assert!(
+                !stderr_text.contains(sentinel),
+                "a sentinel leaked onto stderr: {stderr_text}"
+            );
+        }
         assert!(
             !stderr_text.contains("\"jsonrpc\""),
             "protocol frames must not be written to stderr: {stderr_text}"
+        );
+    }
+}
+
+/// Asserts no shared secret canary appears in a serialized response value.
+fn assert_no_secret_in(value: &Value) {
+    let rendered = serde_json::to_string(value).expect("the response serializes");
+    for sentinel in leak_sentinels::SECRETS {
+        assert!(
+            !rendered.contains(sentinel),
+            "a secret sentinel reached a serialized response: {rendered}"
         );
     }
 }
@@ -261,6 +275,13 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
         .expect("characters array");
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[0]["id"], "warlock");
+    assert!(
+        listed[0]["name"]
+            .as_str()
+            .expect("the readable name crosses to the client")
+            .contains(leak_sentinels::CONTROL),
+        "the non-secret control proves the stdout stream carries real content"
+    );
 
     let search = session
         .call_tool(SEARCH_INVENTORY_TOOL, json!({ "text": "gjallar" }))
@@ -305,12 +326,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
     assert_eq!(steps[0]["from"]["kind"], "vault");
     assert_eq!(steps[0]["to"]["character_id"], "warlock");
     assert_eq!(steps[0]["outcome"]["status"], "completed");
-    assert!(
-        !serde_json::to_string(&moved)
-            .expect("serializes")
-            .contains(SENTINEL),
-        "the success response must not carry the opaque provider text"
-    );
+    assert_no_secret_in(&moved);
 
     // --- a repeated request fails closed without replay --------------------------
     let repeat = session
@@ -325,6 +341,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
         structured(&repeat).get("steps").is_none(),
         "a rejected plan carries no step evidence"
     );
+    assert_no_secret_in(&repeat);
 
     // --- a missing item is a sanitized typed failure -----------------------------
     let missing = session
@@ -335,6 +352,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
         .await;
     assert_eq!(missing["result"]["isError"], true);
     assert_eq!(structured(&missing)["code"], "stale_state");
+    assert_no_secret_in(&missing);
 
     // --- the opaque provider location never crosses the boundary -----------------
     let opaque = session
@@ -345,12 +363,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
         .await;
     assert_eq!(opaque["result"]["isError"], true);
     assert_eq!(structured(&opaque)["code"], "unsupported_operation");
-    assert!(
-        !serde_json::to_string(&opaque)
-            .expect("serializes")
-            .contains(SENTINEL),
-        "an unsupported opaque source must not echo provider text"
-    );
+    assert_no_secret_in(&opaque);
 
     session.shutdown().await;
 }
@@ -394,11 +407,7 @@ async fn move_item_reports_a_changed_preflight_as_a_typed_sanitized_failure() {
         .await;
     assert_eq!(moved["result"]["isError"], true);
     assert_eq!(structured(&moved)["code"], "stale_state");
-    assert!(
-        !serde_json::to_string(&moved)
-            .expect("serializes")
-            .contains(SENTINEL)
-    );
+    assert_no_secret_in(&moved);
 
     session.shutdown().await;
 }
