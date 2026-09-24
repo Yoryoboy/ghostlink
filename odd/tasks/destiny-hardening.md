@@ -58,7 +58,7 @@ Security hardening must be cross-boundary, not local to one adapter. Secrets, au
   - Outcome: created `feature/destiny-hardening`, mapped redaction/logging/retry/fallback/leak-test surfaces, resolved the WU-008 dependency integration choice, and resolved the MVP credential fallback policy as fail-closed only.
   - Check: tracker readback passed; Engram mirror readback passed for observation `5995`; visible TODO projection created.
   - Rollback: delete only `odd/tasks/destiny-hardening.md` and the `feature/destiny-hardening` branch before source implementation.
-  - Evidence: pending commit.
+  - Evidence: commit `d81d44f` (`chore: start Destiny hardening`).
 
 - [ ] **DHS-002 — Integrate the WU-008 CLI read dependency into the WU-013 branch**
   - Route: delegated multi-file writer because integration touches CLI, app/core exports, adapters journey tests, workspace manifests, and docs.
