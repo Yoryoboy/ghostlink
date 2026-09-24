@@ -9,9 +9,10 @@ use crate::ids::{
     BucketHash, DefinitionVersion, ItemHash, ItemInstanceId, MembershipId, MembershipType, PlanId,
 };
 use crate::query::{DefinitionSearchQuery, InstanceSearchQuery};
-use crate::state::{Resolution, SourceMarker, Timestamp};
+use crate::state::{ProfileSyncReason, Resolution, SourceMarker, Timestamp};
 use std::collections::HashSet;
 use std::fmt;
+use std::time::Duration;
 
 /// Supplies application time without coupling the core to a clock runtime.
 pub trait Clock {
@@ -356,6 +357,34 @@ pub trait ProfileGateway {
         &mut self,
         membership: &DestinyMembership,
     ) -> Result<InventorySnapshotInput, AppError>;
+
+    /// Resolves the effective membership with the retry scope of one sync reason.
+    ///
+    /// The default delegates to [`Self::resolve_membership`], whose scope is the
+    /// conservative one that never absorbs a transient provider-unavailable
+    /// response. An adapter that can select a per-call scope overrides this so an
+    /// ordinary read repeats a bounded transient failure while a preflight or
+    /// post-action observation stays one-shot. The reason is supplied per call
+    /// rather than at construction, because one gateway instance is reused across
+    /// ordinary and observation reads.
+    fn resolve_membership_scoped(
+        &mut self,
+        _reason: ProfileSyncReason,
+    ) -> Result<DestinyMembership, AppError> {
+        self.resolve_membership()
+    }
+
+    /// Loads one membership's inventory with the retry scope of one sync reason.
+    ///
+    /// The default delegates to [`Self::load_inventory`] for the same reason as
+    /// [`Self::resolve_membership_scoped`].
+    fn load_inventory_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        _reason: ProfileSyncReason,
+    ) -> Result<InventorySnapshotInput, AppError> {
+        self.load_inventory(membership)
+    }
 }
 
 /// A complete versioned normalized definition set published as one replacement.
@@ -690,6 +719,618 @@ impl fmt::Debug for CredentialMaterial {
     }
 }
 
+/// Injected pacing seam for bounded read retries.
+///
+/// A read gateway never sleeps on its own: between bounded attempts it asks the
+/// injected implementation to wait. Production injects a real blocking sleep;
+/// deterministic tests inject a recording or zero-delay implementation, so no
+/// test ever depends on ambient sleeping and no retry can become a hot loop.
+pub trait RetryDelay {
+    /// Pauses for `delay` before the next bounded attempt.
+    fn wait(&mut self, delay: Duration);
+}
+
+/// The production pacing implementation: one bounded blocking sleep per wait.
+///
+/// A zero delay is a no-op, so a policy that computes no backoff never performs
+/// a pointless sleep call.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ThreadRetryDelay;
+
+impl RetryDelay for ThreadRetryDelay {
+    fn wait(&mut self, delay: Duration) {
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
+    }
+}
+
+/// Which transient read categories a bounded retry may repeat.
+///
+/// The scope is explicit at the call site because the safe set is not the same
+/// for every read: a definition acquisition never feeds an observation result,
+/// while a profile read can be the observation half of a mutation execution and
+/// must not silently absorb an unavailable provider response.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReadRetryScope {
+    /// Repeat only the explicit provider rate-limit refusal.
+    RateLimitOnly,
+    /// Repeat rate-limit and transient provider-unavailable failures.
+    RateLimitAndTransient,
+}
+
+impl ReadRetryScope {
+    /// The retry scope for one profile synchronization reason.
+    ///
+    /// Only a mutation observation ([`ProfileSyncReason::Preflight`] or
+    /// [`ProfileSyncReason::PostAction`]) is restricted to the rate-limit-only
+    /// scope, so a transient provider-unavailable response is reported instead
+    /// of being absorbed by a repeat. Every other reason is a plain read that
+    /// may repeat both the explicit rate limit and a transient unavailable
+    /// failure under the bounded policy.
+    pub const fn for_profile_reason(reason: ProfileSyncReason) -> Self {
+        if reason.observes_mutation() {
+            Self::RateLimitOnly
+        } else {
+            Self::RateLimitAndTransient
+        }
+    }
+}
+
+/// One bounded read-retry policy: a small attempt ceiling and bounded backoff.
+///
+/// `max_attempts` counts total attempts including the first, so
+/// [`ReadRetryPolicy::single_attempt`] never repeats and every constructed value
+/// is clamped to `1..=MAX_ATTEMPTS`. The backoff derives from `base_delay` and is
+/// capped by `max_delay`, so neither the attempt count nor any wait is unbounded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadRetryPolicy {
+    max_attempts: u32,
+    base_delay: Duration,
+    max_delay: Duration,
+}
+
+impl ReadRetryPolicy {
+    /// The hard ceiling on total attempts, independent of caller input.
+    pub const MAX_ATTEMPTS: u32 = 5;
+
+    /// Builds a policy, clamping attempts to `1..=MAX_ATTEMPTS` and ordering the
+    /// backoff bounds so `base_delay <= max_delay`.
+    pub const fn new(max_attempts: u32, base_delay: Duration, max_delay: Duration) -> Self {
+        let max_attempts = if max_attempts < 1 {
+            1
+        } else if max_attempts > Self::MAX_ATTEMPTS {
+            Self::MAX_ATTEMPTS
+        } else {
+            max_attempts
+        };
+        let (base_delay, max_delay) = if base_delay.as_nanos() > max_delay.as_nanos() {
+            (max_delay, base_delay)
+        } else {
+            (base_delay, max_delay)
+        };
+        Self {
+            max_attempts,
+            base_delay,
+            max_delay,
+        }
+    }
+
+    /// A policy that performs exactly one attempt and never repeats.
+    pub const fn single_attempt() -> Self {
+        Self {
+            max_attempts: 1,
+            base_delay: Duration::ZERO,
+            max_delay: Duration::ZERO,
+        }
+    }
+
+    /// The total number of attempts, including the first.
+    pub const fn max_attempts(&self) -> u32 {
+        self.max_attempts
+    }
+
+    /// The first backoff before a repeat.
+    pub const fn base_delay(&self) -> Duration {
+        self.base_delay
+    }
+
+    /// The inclusive ceiling on any single wait.
+    pub const fn max_delay(&self) -> Duration {
+        self.max_delay
+    }
+
+    /// The bounded exponential backoff to wait before `attempt + 1`.
+    pub fn delay_for_attempt(&self, attempt: u32) -> Duration {
+        if self.base_delay.is_zero() {
+            return Duration::ZERO;
+        }
+        let shift = attempt.saturating_sub(1).min(16);
+        let factor = 1u128 << shift;
+        let nanos = self
+            .base_delay
+            .as_nanos()
+            .saturating_mul(factor)
+            .min(self.max_delay.as_nanos());
+        Duration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+    }
+}
+
+impl Default for ReadRetryPolicy {
+    fn default() -> Self {
+        Self::new(3, Duration::from_millis(200), Duration::from_secs(2))
+    }
+}
+
+/// The provider-neutral classification of one HTTP `Retry-After` header.
+///
+/// A transport classifies the raw header value into this bounded shape before
+/// it crosses into the gateway, so the original provider text is never retained
+/// or rendered. The classification is clock-independent: an absolute date is
+/// stored as whole seconds since the Unix epoch and is only resolved into a
+/// concrete wait with an injected clock.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetryAfterHeader {
+    /// No `Retry-After` header was observed; the bounded policy backoff applies.
+    Absent,
+    /// The header carried an integer number of seconds.
+    DeltaSeconds(u64),
+    /// The header carried an absolute HTTP date, as seconds since the Unix epoch.
+    HttpDate(u64),
+    /// The header was present but not a valid delta-seconds value or HTTP date.
+    Invalid,
+}
+
+impl RetryAfterHeader {
+    /// Resolves this header into a bounded pacing decision.
+    ///
+    /// The `now` closure is consulted only for an absolute-date header, and only
+    /// because a date names an instant that must be compared against the
+    /// injected clock. An unavailable clock makes a date header unusable rather
+    /// than guessed; a date already in the past resolves to a zero wait. The
+    /// returned wait is not itself clamped here: the bounded policy owns the
+    /// ceiling and suppresses a repeat whose instruction exceeds it.
+    pub fn resolve(self, now: impl FnOnce() -> Option<Timestamp>) -> RetryAfterHint {
+        match self {
+            Self::Absent => RetryAfterHint::Absent,
+            Self::DeltaSeconds(seconds) => RetryAfterHint::Wait(Duration::from_secs(seconds)),
+            Self::HttpDate(seconds) => match now() {
+                Some(now) => {
+                    let wait = seconds.saturating_sub(now.seconds());
+                    RetryAfterHint::Wait(Duration::from_secs(wait))
+                }
+                None => RetryAfterHint::Unusable,
+            },
+            Self::Invalid => RetryAfterHint::Unusable,
+        }
+    }
+}
+
+/// A provider pacing instruction attached to one read failure.
+///
+/// This is the resolved, bounded decision the retry runtime acts on. `Absent`
+/// leaves pacing entirely to the policy backoff; `Wait` honors the provider's
+/// instruction only while it fits the policy ceiling; `Unusable` means the
+/// instruction could not be honored (a malformed or uninterpretable header, or
+/// an absolute date whose clock was unavailable), so the read must not repeat.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RetryAfterHint {
+    /// No usable provider instruction; the bounded policy backoff applies.
+    Absent,
+    /// The provider instructed a wait of this duration.
+    Wait(Duration),
+    /// The provider instruction cannot be honored; the read must not repeat.
+    Unusable,
+}
+
+/// Parses one raw HTTP `Retry-After` header value into a bounded classification.
+///
+/// A non-empty run of ASCII digits is the integer delta-seconds form. An empty
+/// value, an overflowing delta-seconds value, or any other token that is not a
+/// valid HTTP date is [`RetryAfterHeader::Invalid`], never a guessed wait. Both
+/// the canonical IMF-fixdate and the two obsolete HTTP date forms are accepted;
+/// a two-digit RFC 850 year follows the documented 1970 cut-off convention.
+pub fn parse_retry_after_header(value: &str) -> RetryAfterHeader {
+    let value = value.trim();
+    if value.is_empty() {
+        return RetryAfterHeader::Invalid;
+    }
+    if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return match value.parse::<u64>() {
+            Ok(seconds) => RetryAfterHeader::DeltaSeconds(seconds),
+            Err(_) => RetryAfterHeader::Invalid,
+        };
+    }
+    match parse_http_date(value) {
+        Some(seconds) => RetryAfterHeader::HttpDate(seconds),
+        None => RetryAfterHeader::Invalid,
+    }
+}
+
+/// Parses one raw HTTP `Retry-After` header from its raw bytes.
+///
+/// This is the transport-facing entry point: a header is classified from the
+/// exact bytes the provider sent, so the absent-header decision stays separate
+/// from the present-but-unusable one. A byte sequence that is not valid UTF-8 is
+/// [`RetryAfterHeader::Invalid`] -- a *present* but unusable instruction -- never
+/// the same as an absent header, so a non-textual header suppresses a repeat
+/// instead of silently falling back to the bounded policy backoff. A valid
+/// UTF-8 sequence is classified by [`parse_retry_after_header`].
+pub fn parse_retry_after_header_bytes(value: &[u8]) -> RetryAfterHeader {
+    match std::str::from_utf8(value) {
+        Ok(text) => parse_retry_after_header(text),
+        Err(_) => RetryAfterHeader::Invalid,
+    }
+}
+
+/// Parses one HTTP date, accepting the canonical and both obsolete forms.
+///
+/// Every accepted form names a weekday alongside a calendar date. A weekday that
+/// contradicts the date is rejected: the header is internally inconsistent, so
+/// it is not a usable instruction and must not be resolved into a wait.
+fn parse_http_date(value: &str) -> Option<u64> {
+    parse_imf_fixdate(value)
+        .or_else(|| parse_rfc850(value))
+        .or_else(|| parse_asctime(value))
+}
+
+/// `Sun, 06 Nov 1994 08:49:37 GMT`
+fn parse_imf_fixdate(value: &str) -> Option<u64> {
+    let mut parts = value.split_whitespace();
+    let weekday = parts.next()?;
+    let day = parts.next()?;
+    let month = parts.next()?;
+    let year = parts.next()?;
+    let time = parts.next()?;
+    let zone = parts.next()?;
+    if parts.next().is_some() || zone != "GMT" {
+        return None;
+    }
+    let weekday = weekday_index(weekday.strip_suffix(',')?)?;
+    let (hour, minute, second) = parse_time_of_day(time)?;
+    unix_seconds(
+        parse_year4(year)?,
+        month_number(month)?,
+        parse_day_of_month(day)?,
+        hour,
+        minute,
+        second,
+        weekday,
+    )
+}
+
+/// `Sunday, 06-Nov-94 08:49:37 GMT`
+fn parse_rfc850(value: &str) -> Option<u64> {
+    let mut parts = value.split_whitespace();
+    let weekday = parts.next()?;
+    let date = parts.next()?;
+    let time = parts.next()?;
+    let zone = parts.next()?;
+    if parts.next().is_some() || zone != "GMT" {
+        return None;
+    }
+    let weekday = weekday_index(weekday.strip_suffix(',')?)?;
+    let mut date_parts = date.split('-');
+    let day = date_parts.next()?;
+    let month = date_parts.next()?;
+    let raw_year = date_parts.next()?;
+    if date_parts.next().is_some() {
+        return None;
+    }
+    let year = match raw_year.len() {
+        2 => {
+            let two = parse_two_digits(raw_year)?;
+            // The HTTP convention maps a two-digit year below 70 into the 2000s
+            // and 70..=99 into the 1900s.
+            if two < 70 {
+                2000 + i64::from(two)
+            } else {
+                1900 + i64::from(two)
+            }
+        }
+        4 => parse_year4(raw_year)?,
+        _ => return None,
+    };
+    let (hour, minute, second) = parse_time_of_day(time)?;
+    unix_seconds(
+        year,
+        month_number(month)?,
+        parse_day_of_month(day)?,
+        hour,
+        minute,
+        second,
+        weekday,
+    )
+}
+
+/// `Sun Nov  6 08:49:37 1994`
+fn parse_asctime(value: &str) -> Option<u64> {
+    let mut parts = value.split_whitespace();
+    let weekday = parts.next()?;
+    let month = parts.next()?;
+    let day = parts.next()?;
+    let time = parts.next()?;
+    let year = parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let weekday = weekday_index(weekday)?;
+    let (hour, minute, second) = parse_time_of_day(time)?;
+    unix_seconds(
+        parse_year4(year)?,
+        month_number(month)?,
+        parse_day_of_month(day)?,
+        hour,
+        minute,
+        second,
+        weekday,
+    )
+}
+
+/// Maps one weekday token to its index, `0` = Sunday through `6` = Saturday.
+///
+/// Both the three-letter spelling used by the canonical IMF-fixdate and the
+/// `asctime` form and the full spelling used by RFC 850 are accepted. A trailing
+/// comma is not part of the token and is stripped by the caller before this
+/// lookup.
+fn weekday_index(token: &str) -> Option<u32> {
+    Some(match token {
+        "Sun" | "Sunday" => 0,
+        "Mon" | "Monday" => 1,
+        "Tue" | "Tuesday" => 2,
+        "Wed" | "Wednesday" => 3,
+        "Thu" | "Thursday" => 4,
+        "Fri" | "Friday" => 5,
+        "Sat" | "Saturday" => 6,
+        _ => return None,
+    })
+}
+
+fn month_number(token: &str) -> Option<u32> {
+    Some(match token {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    })
+}
+
+/// One or two ASCII digits naming a calendar day in `1..=31`.
+fn parse_day_of_month(token: &str) -> Option<u32> {
+    if token.is_empty() || token.len() > 2 || !token.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let day: u32 = token.parse().ok()?;
+    (1..=31).contains(&day).then_some(day)
+}
+
+/// Exactly two ASCII digits.
+fn parse_two_digits(token: &str) -> Option<u32> {
+    if token.len() != 2 || !token.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    token.parse().ok()
+}
+
+/// Exactly four ASCII digits, bounded to a representable year at or after 1970.
+fn parse_year4(token: &str) -> Option<i64> {
+    if token.len() != 4 || !token.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let year: i64 = token.parse().ok()?;
+    (1970..=9999).contains(&year).then_some(year)
+}
+
+/// `HH:MM:SS` with two digits per field and an optional leap second.
+fn parse_time_of_day(token: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = token.split(':');
+    let hour = parse_two_digits(parts.next()?)?;
+    let minute = parse_two_digits(parts.next()?)?;
+    let second = parse_two_digits(parts.next()?)?;
+    if parts.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    Some((hour, minute, second))
+}
+
+/// Converts one validated UTC calendar instant into Unix-epoch seconds.
+///
+/// The day is range-checked against the month and the named weekday is checked
+/// against the date before conversion, and a date before the epoch resolves to
+/// zero rather than a negative value, so a stale instruction always yields a
+/// zero wait.
+fn unix_seconds(
+    year: i64,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+    weekday: u32,
+) -> Option<u64> {
+    if day > days_in_month(year, month) || weekday_of(year, month, day) != weekday {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    if days < 0 {
+        return Some(0);
+    }
+    let seconds = days
+        .checked_mul(86_400)?
+        .checked_add(i64::from(hour) * 3_600 + i64::from(minute) * 60 + i64::from(second))?;
+    u64::try_from(seconds).ok()
+}
+
+fn days_in_month(year: i64, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn is_leap_year(year: i64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+/// Computes the weekday of one calendar date, `0` = Sunday through `6` = Saturday.
+///
+/// The Unix epoch, `1970-01-01`, was a Thursday, so the epoch day count is
+/// offset by four. `days_from_civil` is exact for negative (pre-epoch) inputs, so
+/// a stale pre-epoch date is compared correctly before it clamps to a zero wait.
+fn weekday_of(year: i64, month: u32, day: u32) -> u32 {
+    (days_from_civil(year, month, day) + 4).rem_euclid(7) as u32
+}
+
+/// Days between `1970-01-01` and `year-month-day` (Howard Hinnant's algorithm).
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
+    let day_of_era =
+        year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + i64::from(day_of_year);
+    era * 146_097 + day_of_era - 719_468
+}
+
+/// One read attempt's sanitized failure plus an optional provider pacing hint.
+///
+/// The hint is the provider's own `Retry-After` signal when the adapter could
+/// read it. It is non-secret, never rendered, and never escapes: it only shapes
+/// the next bounded wait, always capped by the policy ceiling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadFailure {
+    error: AppError,
+    retry_after: RetryAfterHint,
+}
+
+impl ReadFailure {
+    /// A failure that carries no provider pacing hint.
+    pub const fn terminal(error: AppError) -> Self {
+        Self {
+            error,
+            retry_after: RetryAfterHint::Absent,
+        }
+    }
+
+    /// A classified failure that also carries a resolved provider pacing hint.
+    pub const fn with_retry_after(error: AppError, retry_after: RetryAfterHint) -> Self {
+        Self { error, retry_after }
+    }
+
+    /// The sanitized category-only failure.
+    pub const fn error(self) -> AppError {
+        self.error
+    }
+
+    /// The resolved provider pacing hint, when one was observed.
+    pub const fn retry_after(self) -> RetryAfterHint {
+        self.retry_after
+    }
+}
+
+/// A bounded, paced read-retry runtime: policy plus injected delay.
+///
+/// It exists so a read adapter can repeat one idempotent request without ever
+/// hot-looping, and so the same deterministic decision is testable without a
+/// live clock, transport, or ambient sleep.
+pub struct ReadRetry {
+    policy: ReadRetryPolicy,
+    delay: Box<dyn RetryDelay + Send + Sync>,
+}
+
+impl ReadRetry {
+    /// Pairs one bounded policy with one injected pacing implementation.
+    pub fn new(policy: ReadRetryPolicy, delay: impl RetryDelay + Send + Sync + 'static) -> Self {
+        Self {
+            policy,
+            delay: Box::new(delay),
+        }
+    }
+
+    /// The bounded policy this runtime applies.
+    pub const fn policy(&self) -> ReadRetryPolicy {
+        self.policy
+    }
+
+    /// A single-attempt runtime with no pacing: useful to keep a
+    /// category-mapping test or a deliberately one-shot caller unchanged.
+    pub fn single_attempt() -> Self {
+        Self::new(ReadRetryPolicy::single_attempt(), ThreadRetryDelay)
+    }
+
+    /// Runs one read operation under the bounded policy.
+    ///
+    /// A repeat happens only while the failure category is in `scope` and the
+    /// attempt ceiling has not been reached. Pacing is bounded in every case:
+    /// an absent provider hint uses the policy backoff, a provider wait is
+    /// honored as long as it fits the policy ceiling, and a provider wait that
+    /// exceeds the ceiling, a malformed instruction, or an uninterpretable date
+    /// suppresses the repeat entirely rather than silently waiting less than the
+    /// provider instructed. The final failure is returned unchanged, including
+    /// its category and sanitization.
+    pub fn run<T, F>(&mut self, scope: ReadRetryScope, mut operation: F) -> Result<T, AppError>
+    where
+        F: FnMut() -> Result<T, ReadFailure>,
+    {
+        let mut attempt: u32 = 1;
+        loop {
+            match operation() {
+                Ok(value) => return Ok(value),
+                Err(failure) => {
+                    let category = failure.error().category();
+                    let retryable = match scope {
+                        ReadRetryScope::RateLimitOnly => category.is_rate_limit(),
+                        ReadRetryScope::RateLimitAndTransient => category.is_retryable_read(),
+                    };
+                    if !retryable || attempt >= self.policy.max_attempts() {
+                        return Err(failure.error());
+                    }
+                    let backoff = self.policy.delay_for_attempt(attempt);
+                    let wait = match failure.retry_after() {
+                        RetryAfterHint::Unusable => return Err(failure.error()),
+                        RetryAfterHint::Absent => backoff,
+                        RetryAfterHint::Wait(provider) => {
+                            if provider > self.policy.max_delay() {
+                                return Err(failure.error());
+                            }
+                            provider.max(backoff)
+                        }
+                    };
+                    self.delay.wait(wait);
+                    attempt += 1;
+                }
+            }
+        }
+    }
+}
+
+impl Default for ReadRetry {
+    fn default() -> Self {
+        Self::new(ReadRetryPolicy::default(), ThreadRetryDelay)
+    }
+}
+
+impl fmt::Debug for ReadRetry {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReadRetry")
+            .field("policy", &self.policy)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Stores one complete opaque access credential without prescribing persistence
 /// or serialization.
 ///
@@ -707,11 +1348,17 @@ pub trait CredentialStore {
 #[cfg(test)]
 mod tests {
     use super::{
-        DestinyMembership, TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
+        DestinyMembership, ReadFailure, ReadRetry, ReadRetryPolicy, ReadRetryScope,
+        RetryAfterHeader, RetryAfterHint, RetryDelay, ThreadRetryDelay, TransferGateway,
+        TransferOutcome, TransferRejection, TransferRequest, parse_retry_after_header,
+        parse_retry_after_header_bytes,
     };
     use crate::domain::ItemLocation;
     use crate::error::{AppError, ErrorCategory};
     use crate::ids::{CharacterId, ItemHash, ItemInstanceId, MembershipId, MembershipType};
+    use crate::state::{ProfileSyncReason, Timestamp};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     const NUMERIC_ID: &str = "4611686018484639825";
 
@@ -926,5 +1573,431 @@ mod tests {
         assert_eq!(gateway.transfer(&transfer), Ok(TransferOutcome::Transient));
         // One call is one step: the gateway never retries on its own.
         assert_eq!(gateway.items, ["instance-1"]);
+    }
+
+    /// Records the exact paced waits a bounded retry performed, with no sleep.
+    #[derive(Clone, Default)]
+    struct RecordingDelay {
+        waits: Arc<Mutex<Vec<Duration>>>,
+    }
+
+    impl RecordingDelay {
+        fn waits(&self) -> Vec<Duration> {
+            self.waits.lock().expect("delay log lock").clone()
+        }
+    }
+
+    impl RetryDelay for RecordingDelay {
+        fn wait(&mut self, delay: Duration) {
+            self.waits.lock().expect("delay log lock").push(delay);
+        }
+    }
+
+    fn rate_limit() -> AppError {
+        AppError::new(ErrorCategory::ProviderRateLimit)
+    }
+
+    #[test]
+    fn read_retry_policy_clamps_attempts_and_orders_backoff_bounds() {
+        assert_eq!(ReadRetryPolicy::single_attempt().max_attempts(), 1);
+        assert_eq!(
+            ReadRetryPolicy::new(0, Duration::ZERO, Duration::ZERO).max_attempts(),
+            1
+        );
+        assert_eq!(
+            ReadRetryPolicy::new(99, Duration::ZERO, Duration::ZERO).max_attempts(),
+            ReadRetryPolicy::MAX_ATTEMPTS
+        );
+        // A reversed pair is ordered so the cap is never below the base.
+        let ordered = ReadRetryPolicy::new(2, Duration::from_secs(5), Duration::from_secs(1));
+        assert_eq!(ordered.base_delay(), Duration::from_secs(1));
+        assert_eq!(ordered.max_delay(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn bounded_read_backoff_is_exponential_and_capped() {
+        let policy =
+            ReadRetryPolicy::new(5, Duration::from_millis(100), Duration::from_millis(250));
+        assert_eq!(policy.delay_for_attempt(1), Duration::from_millis(100));
+        assert_eq!(policy.delay_for_attempt(2), Duration::from_millis(200));
+        // The third would be 400 ms but the cap holds it at 250 ms.
+        assert_eq!(policy.delay_for_attempt(3), Duration::from_millis(250));
+        assert_eq!(
+            policy.delay_for_attempt(u32::MAX),
+            Duration::from_millis(250)
+        );
+        assert_eq!(
+            ReadRetryPolicy::single_attempt().delay_for_attempt(1),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn bounded_read_retry_repeats_a_rate_limit_to_success() {
+        let delay = RecordingDelay::default();
+        let waits = delay.clone();
+        let policy = ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_millis(100));
+        let mut retry = ReadRetry::new(policy, delay);
+        let mut attempts = 0;
+
+        let value = retry
+            .run(ReadRetryScope::RateLimitOnly, || {
+                attempts += 1;
+                if attempts < 3 {
+                    Err(ReadFailure::terminal(rate_limit()))
+                } else {
+                    Ok(7)
+                }
+            })
+            .expect("third attempt succeeds");
+
+        assert_eq!(value, 7);
+        assert_eq!(attempts, 3);
+        // Exactly one wait per repeat, paced by the injected delay: no ambient
+        // sleep and no hot loop.
+        assert_eq!(
+            waits.waits(),
+            vec![Duration::from_millis(10), Duration::from_millis(20)]
+        );
+    }
+
+    #[test]
+    fn bounded_read_retry_exhausts_at_the_attempt_ceiling() {
+        let delay = RecordingDelay::default();
+        let waits = delay.clone();
+        let policy = ReadRetryPolicy::new(3, Duration::from_millis(5), Duration::from_millis(20));
+        let mut retry = ReadRetry::new(policy, delay);
+        let mut attempts = 0;
+
+        let error = retry
+            .run::<(), _>(ReadRetryScope::RateLimitOnly, || {
+                attempts += 1;
+                Err(ReadFailure::terminal(rate_limit()))
+            })
+            .expect_err("exhausted retry fails");
+
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(attempts, 3);
+        // Two repeats for three attempts, never a third wait.
+        assert_eq!(waits.waits().len(), 2);
+    }
+
+    #[test]
+    fn bounded_read_retry_never_repeats_a_non_transient_failure() {
+        for category in [
+            ErrorCategory::ProviderValidation,
+            ErrorCategory::ProviderAuthentication,
+            ErrorCategory::VerificationFailed,
+            ErrorCategory::AmbiguousMatch,
+        ] {
+            let delay = RecordingDelay::default();
+            let waits = delay.clone();
+            let mut retry = ReadRetry::new(ReadRetryPolicy::default(), delay);
+            let mut attempts = 0;
+
+            let error = retry
+                .run::<(), _>(ReadRetryScope::RateLimitAndTransient, || {
+                    attempts += 1;
+                    Err(ReadFailure::terminal(AppError::new(category)))
+                })
+                .expect_err("non-transient failure is not retried");
+
+            assert_eq!(error.category(), category);
+            assert_eq!(attempts, 1, "{category:?} must not be repeated");
+            assert!(waits.waits().is_empty());
+        }
+    }
+
+    #[test]
+    fn rate_limit_scope_never_repeats_a_provider_unavailable_failure() {
+        let delay = RecordingDelay::default();
+        let waits = delay.clone();
+        let mut retry = ReadRetry::new(ReadRetryPolicy::default(), delay);
+        let mut attempts = 0;
+
+        let error = retry
+            .run::<(), _>(ReadRetryScope::RateLimitOnly, || {
+                attempts += 1;
+                Err(ReadFailure::terminal(AppError::new(
+                    ErrorCategory::ProviderUnavailable,
+                )))
+            })
+            .expect_err("unavailable is outside the rate-limit scope");
+
+        assert_eq!(error.category(), ErrorCategory::ProviderUnavailable);
+        assert_eq!(attempts, 1);
+        assert!(waits.waits().is_empty());
+    }
+
+    #[test]
+    fn transient_scope_repeats_a_provider_unavailable_failure() {
+        let delay = RecordingDelay::default();
+        let mut retry = ReadRetry::new(
+            ReadRetryPolicy::new(2, Duration::from_millis(1), Duration::from_millis(4)),
+            delay,
+        );
+        let mut attempts = 0;
+
+        let value = retry
+            .run(ReadRetryScope::RateLimitAndTransient, || {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(ReadFailure::terminal(AppError::new(
+                        ErrorCategory::ProviderUnavailable,
+                    )))
+                } else {
+                    Ok(1)
+                }
+            })
+            .expect("second attempt succeeds");
+
+        assert_eq!(value, 1);
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn bounded_read_retry_honors_a_retry_after_within_the_policy_ceiling() {
+        let delay = RecordingDelay::default();
+        let waits = delay.clone();
+        let policy = ReadRetryPolicy::new(2, Duration::from_millis(10), Duration::from_secs(30));
+        let mut retry = ReadRetry::new(policy, delay);
+        let mut attempts = 0;
+
+        retry
+            .run(ReadRetryScope::RateLimitOnly, || {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(ReadFailure::with_retry_after(
+                        rate_limit(),
+                        RetryAfterHint::Wait(Duration::from_secs(5)),
+                    ))
+                } else {
+                    Ok(())
+                }
+            })
+            .expect("hint-paced retry succeeds");
+
+        // The provider hint wins over the smaller 10 ms backoff.
+        assert_eq!(attempts, 2);
+        assert_eq!(waits.waits(), vec![Duration::from_secs(5)]);
+    }
+
+    #[test]
+    fn bounded_read_retry_does_not_shorten_a_retry_after_beyond_the_ceiling() {
+        let delay = RecordingDelay::default();
+        let waits = delay.clone();
+        let policy = ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_secs(30));
+        let mut retry = ReadRetry::new(policy, delay);
+        let mut attempts = 0;
+
+        let error = retry
+            .run::<(), _>(ReadRetryScope::RateLimitOnly, || {
+                attempts += 1;
+                Err(ReadFailure::with_retry_after(
+                    rate_limit(),
+                    RetryAfterHint::Wait(Duration::from_secs(3_600)),
+                ))
+            })
+            .expect_err("a wait beyond the ceiling suppresses the repeat");
+
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(
+            attempts, 1,
+            "the read must not repeat sooner than instructed"
+        );
+        assert!(waits.waits().is_empty());
+    }
+
+    #[test]
+    fn an_unusable_retry_after_hint_suppresses_the_repeat() {
+        let delay = RecordingDelay::default();
+        let waits = delay.clone();
+        let mut retry = ReadRetry::new(ReadRetryPolicy::default(), delay);
+        let mut attempts = 0;
+
+        let error = retry
+            .run::<(), _>(ReadRetryScope::RateLimitOnly, || {
+                attempts += 1;
+                Err(ReadFailure::with_retry_after(
+                    rate_limit(),
+                    RetryAfterHint::Unusable,
+                ))
+            })
+            .expect_err("an unusable instruction is terminal for this attempt");
+
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(attempts, 1);
+        assert!(waits.waits().is_empty());
+    }
+
+    #[test]
+    fn read_failure_terminal_carries_no_pacing_hint() {
+        let failure = ReadFailure::terminal(rate_limit());
+        assert_eq!(failure.error().category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(failure.retry_after(), RetryAfterHint::Absent);
+    }
+
+    #[test]
+    fn profile_sync_reason_selects_the_read_retry_scope() {
+        for reason in [ProfileSyncReason::Ordinary, ProfileSyncReason::Forced] {
+            assert!(!reason.observes_mutation(), "{reason:?} is a plain read");
+            assert_eq!(
+                ReadRetryScope::for_profile_reason(reason),
+                ReadRetryScope::RateLimitAndTransient,
+                "{reason:?} may repeat a transient failure"
+            );
+        }
+        for reason in [ProfileSyncReason::Preflight, ProfileSyncReason::PostAction] {
+            assert!(reason.observes_mutation(), "{reason:?} observes a mutation");
+            assert_eq!(
+                ReadRetryScope::for_profile_reason(reason),
+                ReadRetryScope::RateLimitOnly,
+                "{reason:?} must report an unavailable observation"
+            );
+        }
+    }
+
+    #[test]
+    fn retry_after_header_classifies_delta_seconds_dates_and_invalid_values() {
+        assert_eq!(
+            parse_retry_after_header("0"),
+            RetryAfterHeader::DeltaSeconds(0)
+        );
+        assert_eq!(
+            parse_retry_after_header(" 120 "),
+            RetryAfterHeader::DeltaSeconds(120)
+        );
+        // The canonical IMF-fixdate and both obsolete forms name one instant.
+        let imf = parse_retry_after_header("Sun, 06 Nov 1994 08:49:37 GMT");
+        assert_eq!(imf, RetryAfterHeader::HttpDate(784_111_777));
+        assert_eq!(
+            imf,
+            parse_retry_after_header("Sunday, 06-Nov-94 08:49:37 GMT")
+        );
+        assert_eq!(imf, parse_retry_after_header("Sun Nov  6 08:49:37 1994"));
+        assert_eq!(
+            parse_retry_after_header("Wed, 21 Oct 2015 07:28:00 GMT"),
+            RetryAfterHeader::HttpDate(1_445_412_480)
+        );
+        for invalid in [
+            "",
+            " ",
+            "-1",
+            "1.5",
+            "not-a-date",
+            "Wed, 32 Oct 2015 07:28:00 GMT",
+            "Wed, 21 Xxx 2015 07:28:00 GMT",
+            "Wed, 21 Oct 2015 25:28:00 GMT",
+            "Wed, 21 Oct 2015 07:28:00 UTC",
+            "99999999999999999999999",
+        ] {
+            assert_eq!(
+                parse_retry_after_header(invalid),
+                RetryAfterHeader::Invalid,
+                "{invalid:?} must be invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn retry_after_header_bytes_reject_non_utf8_as_invalid() {
+        // A present header is classified from its raw bytes, so a non-UTF-8
+        // value is Invalid -- never Absent -- and therefore suppresses a retry.
+        assert_eq!(
+            parse_retry_after_header_bytes(b"120"),
+            RetryAfterHeader::DeltaSeconds(120)
+        );
+        assert_eq!(
+            parse_retry_after_header_bytes(b"Sun, 06 Nov 1994 08:49:37 GMT"),
+            RetryAfterHeader::HttpDate(784_111_777)
+        );
+        let invalid = parse_retry_after_header_bytes([0xff, 0xfe].as_slice());
+        assert_eq!(invalid, RetryAfterHeader::Invalid);
+        assert_eq!(
+            invalid.resolve(|| panic!("clock must not be read")),
+            RetryAfterHint::Unusable
+        );
+        // A valid UTF-8 value outside visible ASCII is still unusable rather
+        // than silently absent.
+        assert_eq!(
+            parse_retry_after_header_bytes("é".as_bytes()),
+            RetryAfterHeader::Invalid
+        );
+    }
+
+    #[test]
+    fn retry_after_header_rejects_a_weekday_mismatching_the_date() {
+        // 2015-10-21 was a Wednesday. A header naming a different weekday
+        // contradicts its own date and must not resolve into a wait.
+        for value in [
+            "Mon, 21 Oct 2015 07:28:00 GMT",
+            "Tue, 21 Oct 2015 07:28:00 GMT",
+            "Thursday, 21-Oct-15 07:28:00 GMT",
+            "Fri Oct 21 07:28:00 2015",
+        ] {
+            let header = parse_retry_after_header(value);
+            assert_eq!(
+                header,
+                RetryAfterHeader::Invalid,
+                "{value:?} must be rejected as a mismatched weekday"
+            );
+            assert_eq!(
+                header.resolve(|| panic!("clock must not be read")),
+                RetryAfterHint::Unusable,
+                "{value:?} must suppress a retry"
+            );
+        }
+        // The matching weekday still resolves the identical instant.
+        assert_eq!(
+            parse_retry_after_header("Wed, 21 Oct 2015 07:28:00 GMT"),
+            RetryAfterHeader::HttpDate(1_445_412_480)
+        );
+        assert_eq!(
+            parse_retry_after_header("Wednesday, 21-Oct-15 07:28:00 GMT"),
+            RetryAfterHeader::HttpDate(1_445_412_480)
+        );
+        assert_eq!(
+            parse_retry_after_header("Wed Oct 21 07:28:00 2015"),
+            RetryAfterHeader::HttpDate(1_445_412_480)
+        );
+    }
+
+    #[test]
+    fn retry_after_header_resolves_dates_with_the_injected_clock() {
+        let header = RetryAfterHeader::HttpDate(1_000);
+        // A future date becomes its exact remaining wait.
+        assert_eq!(
+            header.resolve(|| Some(Timestamp::new(940))),
+            RetryAfterHint::Wait(Duration::from_secs(60))
+        );
+        // A past date becomes a zero wait, never a negative one.
+        assert_eq!(
+            header.resolve(|| Some(Timestamp::new(1_500))),
+            RetryAfterHint::Wait(Duration::ZERO)
+        );
+        // An unavailable clock makes an absolute date unusable.
+        assert_eq!(header.resolve(|| None), RetryAfterHint::Unusable);
+
+        // Delta-seconds and invalid values never consult the clock.
+        assert_eq!(
+            RetryAfterHeader::DeltaSeconds(7).resolve(|| panic!("clock must not be read")),
+            RetryAfterHint::Wait(Duration::from_secs(7))
+        );
+        assert_eq!(
+            RetryAfterHeader::Invalid.resolve(|| panic!("clock must not be read")),
+            RetryAfterHint::Unusable
+        );
+        assert_eq!(
+            RetryAfterHeader::Absent.resolve(|| panic!("clock must not be read")),
+            RetryAfterHint::Absent
+        );
+    }
+
+    #[test]
+    fn thread_retry_delay_is_a_noop_for_a_zero_delay() {
+        // The production implementation must not sleep for a zero wait; this
+        // call would hang the suite if it did a fixed sleep instead.
+        let mut delay = ThreadRetryDelay;
+        delay.wait(Duration::ZERO);
     }
 }

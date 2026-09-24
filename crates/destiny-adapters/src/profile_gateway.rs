@@ -18,10 +18,12 @@
 //!   [`HttpProfileTransport`];
 //! - an exact URL allowlist that admits only the current-memberships endpoint
 //!   and one profile endpoint shape, evaluated before any secret is attached;
-//! - a reusable [`fetch_bounded`] helper with caller-supplied size caps;
+//! - a reusable [`fetch_bounded`] helper with caller-supplied size caps, plus a
+//!   retry-ready single-attempt core;
 //! - [`BungieProfileGateway`], the [`ProfileGateway`] implementation that
-//!   checks the injected clock against the credential expiry before every call,
-//!   performs exactly one bounded request, and delegates decoding to the pure
+//!   re-validates the injected clock against the credential expiry immediately
+//!   before every attempted HTTP call, performs one bounded read whose retry
+//!   scope follows the per-call sync reason, and delegates decoding to the pure
 //!   [`decode_effective_membership`] and [`decode_profile`] functions.
 //!
 //! The gateway holds only redacted secrets and never renders a credential,
@@ -52,9 +54,13 @@
 //!   names no override and applies only to its own type. Zero or several
 //!   memberships are an MVP ambiguity and fail closed.
 
+use destiny_core::ports::{
+    ReadFailure, ReadRetry, ReadRetryScope, RetryAfterHeader, parse_retry_after_header_bytes,
+};
 use destiny_core::{
     AccessCredential, AppError, Clock, DefinitionVersion, DestinyMembership, ErrorCategory,
-    InventorySnapshotInput, MembershipId, MembershipType, ProfileGateway, Timestamp,
+    InventorySnapshotInput, MembershipId, MembershipType, ProfileGateway, ProfileSyncReason,
+    Timestamp,
 };
 use serde_json::Value;
 use std::collections::HashSet;
@@ -588,6 +594,7 @@ pub struct ProfileHttpResponse {
     status: u16,
     content_length: Option<u64>,
     content_type: Option<String>,
+    retry_after: RetryAfterHeader,
     body: Box<dyn Read>,
 }
 
@@ -596,7 +603,9 @@ impl ProfileHttpResponse {
     ///
     /// `content_type` is the raw upstream `Content-Type` header value. It is
     /// only inspected to accept or reject the response; it is never rendered by
-    /// [`fmt::Debug`] and never reaches an error or diagnostic.
+    /// [`fmt::Debug`] and never reaches an error or diagnostic. The response
+    /// starts with no provider pacing hint; a transport that observed a
+    /// `Retry-After` header attaches one with [`Self::with_retry_after`].
     pub fn new(
         status: u16,
         content_length: Option<u64>,
@@ -607,8 +616,15 @@ impl ProfileHttpResponse {
             status,
             content_length,
             content_type,
+            retry_after: RetryAfterHeader::Absent,
             body,
         }
+    }
+
+    /// Attaches the classified provider pacing hint, when one was observed.
+    pub fn with_retry_after(mut self, retry_after: RetryAfterHeader) -> Self {
+        self.retry_after = retry_after;
+        self
     }
 
     pub fn status(&self) -> u16 {
@@ -622,6 +638,13 @@ impl ProfileHttpResponse {
     pub fn content_type(&self) -> Option<&str> {
         self.content_type.as_deref()
     }
+
+    /// The classified provider pacing hint the transport observed.
+    ///
+    /// The value only shapes a bounded retry decision and is never surfaced.
+    pub const fn retry_after(&self) -> RetryAfterHeader {
+        self.retry_after
+    }
 }
 
 impl fmt::Debug for ProfileHttpResponse {
@@ -634,6 +657,7 @@ impl fmt::Debug for ProfileHttpResponse {
                 "content_type",
                 &destiny_core::redact::redact_optional(self.content_type.as_ref()),
             )
+            .field("retry_after", &self.retry_after)
             .field("body", &destiny_core::redact::REDACTED)
             .finish()
     }
@@ -750,10 +774,12 @@ impl ProfileTransport for HttpProfileTransport {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
+        let retry_after = classify_retry_after(response.headers());
         Ok(ProfileHttpResponse {
             status,
             content_length,
             content_type,
+            retry_after,
             body: Box::new(response),
         })
     }
@@ -769,8 +795,27 @@ fn classify_transport_error(error: reqwest::Error) -> ProfileTransportError {
     }
 }
 
+/// Classifies the `Retry-After` header of one response from its raw bytes.
+///
+/// A missing header is [`RetryAfterHeader::Absent`], so the bounded policy
+/// backoff applies. A present header is classified byte-for-byte, so a value
+/// that is not valid UTF-8 is [`RetryAfterHeader::Invalid`] -- present but
+/// unusable -- rather than silently treated as absent. The raw value is never
+/// rendered.
+fn classify_retry_after(headers: &reqwest::header::HeaderMap) -> RetryAfterHeader {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .map_or(RetryAfterHeader::Absent, |value| {
+            parse_retry_after_header_bytes(value.as_bytes())
+        })
+}
+
 /// Performs one allowlisted GET and returns its bounded, media-type-checked JSON
 /// body.
+///
+/// This is the single-attempt primitive: it never repeats. A read gateway wraps
+/// it in a bounded [`ReadRetry`] run, and the public helper stays available for
+/// callers and tests that want exactly one attempt.
 ///
 /// `limit` is the caller-supplied response cap. The declared `Content-Length` is
 /// checked before any byte is read, and the actual body is read under a
@@ -785,14 +830,44 @@ pub fn fetch_bounded<T>(
 where
     T: ProfileTransport,
 {
-    let mut response = transport.get(request).map_err(map_transport_error)?;
+    // A single attempt has no retry decision to make, so no clock is needed to
+    // resolve an absolute-date hint.
+    fetch_once(transport, request, limit, || None).map_err(ReadFailure::error)
+}
+
+/// Performs one allowlisted GET and reports a retry-ready failure.
+///
+/// The failure keeps the sanitized [`AppError`] plus the resolved pacing hint,
+/// so the bounded retry loop can pace or suppress a repeat without ever
+/// re-reading a response body or surfacing provider text. `retry_after_now` is
+/// consulted only for an absolute-date hint, and a clock that is unavailable at
+/// that moment makes the hint unusable rather than guessed.
+fn fetch_once<T, F>(
+    transport: &mut T,
+    request: &ProfileHttpRequest<'_>,
+    limit: usize,
+    retry_after_now: F,
+) -> Result<Vec<u8>, ReadFailure>
+where
+    T: ProfileTransport,
+    F: FnOnce() -> Option<Timestamp>,
+{
+    let mut response = transport
+        .get(request)
+        .map_err(map_transport_error)
+        .map_err(ReadFailure::terminal)?;
     if response.status != 200 {
-        return Err(classify_status(response.status));
+        let hint = response.retry_after().resolve(retry_after_now);
+        return Err(ReadFailure::with_retry_after(
+            classify_status(response.status),
+            hint,
+        ));
     }
     if !response.content_type().is_some_and(is_json_content_type) {
-        return Err(provider_validation());
+        return Err(ReadFailure::terminal(provider_validation()));
     }
     read_bounded_body(&mut response.body, response.content_length, limit)
+        .map_err(ReadFailure::terminal)
 }
 
 fn map_transport_error(error: ProfileTransportError) -> AppError {
@@ -917,13 +992,22 @@ fn read_bounded_body(
 /// The production authenticated Bungie profile gateway.
 ///
 /// It owns the transport, the injected application clock, the access credential,
-/// the API key, and the fixed Manifest definition version. Construction converts
-/// the credential material into a validated [`ProfileBearerToken`]; a
-/// non-UTF-8 or otherwise invalid secret is a sanitized configuration failure.
+/// the API key, the fixed Manifest definition version, and a bounded read-retry
+/// runtime. Construction converts the credential material into a validated
+/// [`ProfileBearerToken`]; a non-UTF-8 or otherwise invalid secret is a
+/// sanitized configuration failure.
 ///
 /// Both operations are read-only and bounded: they refuse to act once the
-/// credential is at or past its expiry, then perform exactly one request, and
-/// never surface a credential, token, API key, or raw provider payload.
+/// credential is at or past its expiry, then perform one bounded, paced read
+/// whose retry scope follows the per-call sync reason, re-validating the expiry
+/// immediately before every attempted HTTP call so a paced repeat can never
+/// attach a bearer that expired while it waited. An ordinary or forced read may
+/// repeat both the explicit provider rate limit and a transient
+/// provider-unavailable failure; a preflight or post-action mutation observation
+/// repeats only the rate limit, because a provider-unavailable response is an
+/// unavailable observation, not a completed one, and must be reported rather
+/// than silently absorbed. Neither operation surfaces a credential, token, API
+/// key, or raw provider payload.
 pub struct BungieProfileGateway<T, C> {
     transport: T,
     clock: C,
@@ -931,6 +1015,7 @@ pub struct BungieProfileGateway<T, C> {
     bearer: ProfileBearerToken,
     api_key: ProfileApiKey,
     definition_version: DefinitionVersion,
+    read_retry: ReadRetry,
 }
 
 impl<T, C> BungieProfileGateway<T, C> {
@@ -938,7 +1023,8 @@ impl<T, C> BungieProfileGateway<T, C> {
     ///
     /// Empty, non-UTF-8, whitespace-bearing, control-bearing, or non-ASCII
     /// credential material is a sanitized `ConfigurationError`; no secret value
-    /// is included in the failure.
+    /// is included in the failure. The default read-retry runtime is
+    /// [`ReadRetry::default`] with a real bounded pacing implementation.
     pub fn new(
         transport: T,
         clock: C,
@@ -956,7 +1042,15 @@ impl<T, C> BungieProfileGateway<T, C> {
             bearer,
             api_key,
             definition_version,
+            read_retry: ReadRetry::default(),
         })
+    }
+
+    /// Replaces the bounded read-retry runtime, for composition or a
+    /// deterministic test policy.
+    pub fn with_read_retry(mut self, read_retry: ReadRetry) -> Self {
+        self.read_retry = read_retry;
+        self
     }
 
     pub fn transport(&self) -> &T {
@@ -979,12 +1073,94 @@ impl<T, C> fmt::Debug for BungieProfileGateway<T, C> {
 /// Refuses to proceed when the credential is already at or past its expiry.
 ///
 /// The comparison is inclusive so a credential that expires exactly now is
-/// treated as expired, and it runs before any request is constructed.
+/// treated as expired, and it runs immediately before every attempted request is
+/// constructed, including every paced repeat.
 fn ensure_unexpired(now: Timestamp, expires_at: Timestamp) -> Result<(), AppError> {
     if now >= expires_at {
         return Err(AppError::new(ErrorCategory::ProviderAuthentication));
     }
     Ok(())
+}
+
+impl<T, C> BungieProfileGateway<T, C>
+where
+    T: ProfileTransport,
+    C: Clock,
+{
+    /// Runs one bounded, paced read, re-validating the credential expiry
+    /// immediately before every attempted HTTP call.
+    ///
+    /// A single pre-loop check is not enough: a paced repeat can outlive the
+    /// credential, so each attempt re-reads the injected clock and refuses to
+    /// construct the request once the credential is at or past its expiry. An
+    /// expiry observed on a repeat is terminal and is never itself repeated. The
+    /// successful body is returned together with the instant the successful
+    /// attempt observed, so the caller stamps the same reading it validated.
+    /// Runs one bounded, paced read under the caller-supplied retry `scope`,
+    /// re-validating the credential expiry immediately before every attempted
+    /// HTTP call.
+    ///
+    /// A single pre-loop check is not enough: a paced repeat can outlive the
+    /// credential, so each attempt re-reads the injected clock and refuses to
+    /// construct the request once the credential is at or past its expiry. An
+    /// expiry observed on a repeat is terminal and is never itself repeated. The
+    /// successful body is returned together with the instant the successful
+    /// attempt observed, so the caller stamps the same reading it validated.
+    ///
+    /// The `scope` is chosen per call from the sync reason, because one gateway
+    /// instance serves both ordinary reads (which may repeat a transient
+    /// provider-unavailable failure) and mutation observations (which must
+    /// report it after one attempt). An absolute-date `Retry-After` hint is
+    /// resolved with a fresh injected-clock reading; a clock that is unavailable
+    /// at that moment marks the hint unusable, so the rate-limit response is
+    /// surfaced rather than repeated against an unknown instant.
+    fn read_with_live_credential(
+        &mut self,
+        endpoint: &str,
+        limit: usize,
+        scope: ReadRetryScope,
+    ) -> Result<(Vec<u8>, Timestamp), AppError> {
+        let request = ProfileHttpRequest::new(endpoint, Some(&self.api_key), Some(&self.bearer));
+        let expires_at = self.credential.metadata.expires_at;
+        let clock = &self.clock;
+        let read_retry = &mut self.read_retry;
+        let transport = &mut self.transport;
+        let mut observed_at = None;
+        let bytes = read_retry.run(scope, || {
+            let now = clock.now().map_err(ReadFailure::terminal)?;
+            ensure_unexpired(now, expires_at).map_err(ReadFailure::terminal)?;
+            let bytes = fetch_once(transport, &request, limit, || clock.now().ok())?;
+            observed_at = Some(now);
+            Ok(bytes)
+        })?;
+        let observed_at = observed_at.ok_or_else(provider_unavailable)?;
+        Ok((bytes, observed_at))
+    }
+
+    fn resolve_membership_with_scope(
+        &mut self,
+        scope: ReadRetryScope,
+    ) -> Result<DestinyMembership, AppError> {
+        let (bytes, _) =
+            self.read_with_live_credential(MEMBERSHIP_ENDPOINT, MEMBERSHIP_RESPONSE_LIMIT, scope)?;
+        decode_effective_membership(&bytes)
+    }
+
+    fn load_inventory_with_scope(
+        &mut self,
+        membership: &DestinyMembership,
+        scope: ReadRetryScope,
+    ) -> Result<InventorySnapshotInput, AppError> {
+        let url = profile_endpoint(membership);
+        let (bytes, observed_at) =
+            self.read_with_live_credential(&url, PROFILE_RESPONSE_LIMIT, scope)?;
+        decode_profile(
+            &bytes,
+            membership,
+            self.definition_version.clone(),
+            observed_at,
+        )
+    }
 }
 
 impl<T, C> ProfileGateway for BungieProfileGateway<T, C>
@@ -993,26 +1169,31 @@ where
     C: Clock,
 {
     fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
-        let now = self.clock.now()?;
-        ensure_unexpired(now, self.credential.metadata.expires_at)?;
-
-        let request =
-            ProfileHttpRequest::new(MEMBERSHIP_ENDPOINT, Some(&self.api_key), Some(&self.bearer));
-        let bytes = fetch_bounded(&mut self.transport, &request, MEMBERSHIP_RESPONSE_LIMIT)?;
-        decode_effective_membership(&bytes)
+        // The unscoped method keeps the conservative observation scope: a
+        // provider-unavailable response is reported rather than absorbed.
+        self.resolve_membership_with_scope(ReadRetryScope::RateLimitOnly)
     }
 
     fn load_inventory(
         &mut self,
         membership: &DestinyMembership,
     ) -> Result<InventorySnapshotInput, AppError> {
-        let now = self.clock.now()?;
-        ensure_unexpired(now, self.credential.metadata.expires_at)?;
+        self.load_inventory_with_scope(membership, ReadRetryScope::RateLimitOnly)
+    }
 
-        let url = profile_endpoint(membership);
-        let request = ProfileHttpRequest::new(&url, Some(&self.api_key), Some(&self.bearer));
-        let bytes = fetch_bounded(&mut self.transport, &request, PROFILE_RESPONSE_LIMIT)?;
-        decode_profile(&bytes, membership, self.definition_version.clone(), now)
+    fn resolve_membership_scoped(
+        &mut self,
+        reason: ProfileSyncReason,
+    ) -> Result<DestinyMembership, AppError> {
+        self.resolve_membership_with_scope(ReadRetryScope::for_profile_reason(reason))
+    }
+
+    fn load_inventory_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<InventorySnapshotInput, AppError> {
+        self.load_inventory_with_scope(membership, ReadRetryScope::for_profile_reason(reason))
     }
 }
 
@@ -1022,16 +1203,21 @@ mod tests {
         BungieProfileGateway, CONTENT_TYPE_JSON, MEMBERSHIP_ENDPOINT, MEMBERSHIP_RESPONSE_LIMIT,
         PROFILE_ORIGIN, PROFILE_RESPONSE_LIMIT, ProfileApiKey, ProfileBearerToken,
         ProfileHttpRequest, ProfileHttpResponse, ProfileTransport, ProfileTransportError,
-        decode_effective_membership, fetch_bounded, is_allowed_profile_url, profile_endpoint,
+        classify_retry_after, decode_effective_membership, fetch_bounded, is_allowed_profile_url,
+        profile_endpoint,
     };
+    use destiny_core::ports::{ReadRetry, ReadRetryPolicy, RetryAfterHeader, RetryDelay};
     use destiny_core::{
         AccessCredential, AccessCredentialMetadata, AppError, Clock, CredentialMaterial,
         DefinitionVersion, DestinyMembership, ErrorCategory, MembershipId, MembershipType,
-        ProfileGateway, Timestamp,
+        ProfileGateway, ProfileSyncReason, Timestamp,
     };
     use serde_json::{Value, json};
+    use std::cell::Cell;
     use std::collections::VecDeque;
     use std::io::{self, Cursor, Read};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     const MEMBERSHIP_TYPE: u64 = 3;
     const MEMBERSHIP_ID: &str = "4611686018484639825";
@@ -1804,6 +1990,34 @@ mod tests {
         }
     }
 
+    /// A clock that answers once and then fails, so a hint resolution that needs
+    /// a separate reading observes an unavailable clock.
+    struct OnceThenFailClock {
+        now: Timestamp,
+        reads: Cell<u32>,
+    }
+
+    impl OnceThenFailClock {
+        fn new(now: Timestamp) -> Self {
+            Self {
+                now,
+                reads: Cell::new(0),
+            }
+        }
+    }
+
+    impl Clock for OnceThenFailClock {
+        fn now(&self) -> Result<Timestamp, AppError> {
+            let reads = self.reads.get();
+            self.reads.set(reads + 1);
+            if reads == 0 {
+                Ok(self.now)
+            } else {
+                Err(AppError::new(ErrorCategory::ClockOverflow))
+            }
+        }
+    }
+
     fn credential(expires_at: u64) -> AccessCredential {
         AccessCredential {
             metadata: AccessCredentialMetadata {
@@ -1814,6 +2028,94 @@ mod tests {
     }
 
     type TestGateway = BungieProfileGateway<FakeProfileTransport, FakeClock>;
+
+    type StepGateway = BungieProfileGateway<FakeProfileTransport, StepClock>;
+
+    /// A clock that reports a scripted reading per call and then repeats the last
+    /// one, so a paced repeat deterministically observes a later instant without
+    /// depending on exactly how often an attempt consults the clock.
+    struct StepClock {
+        readings: Mutex<StepClockState>,
+    }
+
+    struct StepClockState {
+        pending: VecDeque<Timestamp>,
+        last: Timestamp,
+    }
+
+    impl StepClock {
+        fn new(readings: impl IntoIterator<Item = Timestamp>) -> Self {
+            let pending: VecDeque<Timestamp> = readings.into_iter().collect();
+            let last = pending.back().copied().unwrap_or(Timestamp::new(0));
+            Self {
+                readings: Mutex::new(StepClockState { pending, last }),
+            }
+        }
+    }
+
+    impl Clock for StepClock {
+        fn now(&self) -> Result<Timestamp, AppError> {
+            let mut state = self.readings.lock().expect("clock lock");
+            if let Some(next) = state.pending.pop_front() {
+                state.last = next;
+            }
+            Ok(state.last)
+        }
+    }
+
+    /// Records the exact paced waits a bounded retry performed, with no sleep.
+    #[derive(Clone, Default)]
+    struct RecordingDelay {
+        waits: Arc<Mutex<Vec<Duration>>>,
+    }
+
+    impl RecordingDelay {
+        fn waits(&self) -> Vec<Duration> {
+            self.waits.lock().expect("delay log lock").clone()
+        }
+    }
+
+    impl RetryDelay for RecordingDelay {
+        fn wait(&mut self, delay: Duration) {
+            self.waits.lock().expect("delay log lock").push(delay);
+        }
+    }
+
+    /// A bounded policy with no real sleep, injected through the gateway.
+    fn retrying_gateway(
+        responses: Vec<Result<ProfileHttpResponse, ProfileTransportError>>,
+    ) -> (TestGateway, RecordingDelay) {
+        let delay = RecordingDelay::default();
+        let gateway =
+            gateway(responses, GATEWAY_NOW, GATEWAY_EXPIRES_AT).with_read_retry(ReadRetry::new(
+                ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_millis(100)),
+                delay.clone(),
+            ));
+        (gateway, delay)
+    }
+
+    /// A retrying gateway whose clock reports scripted readings, so a paced repeat
+    /// can deterministically cross the credential expiry.
+    fn step_gateway(
+        responses: Vec<Result<ProfileHttpResponse, ProfileTransportError>>,
+        readings: impl IntoIterator<Item = Timestamp>,
+        expires_at: u64,
+    ) -> (StepGateway, RecordingDelay) {
+        let delay = RecordingDelay::default();
+        let gateway = BungieProfileGateway::new(
+            FakeProfileTransport::queue(responses),
+            StepClock::new(readings),
+            credential(expires_at),
+            api_key(),
+            DefinitionVersion::new(DEFINITION_VERSION),
+        )
+        .expect("valid gateway configuration")
+        .with_read_retry(ReadRetry::new(
+            ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_millis(100)),
+            delay.clone(),
+        ));
+        (gateway, delay)
+    }
 
     fn gateway(
         responses: Vec<Result<ProfileHttpResponse, ProfileTransportError>>,
@@ -2490,7 +2792,10 @@ mod tests {
         ];
 
         for (response, expected) in cases {
-            let mut gateway = gateway(vec![Ok(response)], GATEWAY_NOW, GATEWAY_EXPIRES_AT);
+            // A single attempt keeps this a category-mapping test rather than a
+            // retry test; the bounded retry behavior has dedicated coverage.
+            let mut gateway = gateway(vec![Ok(response)], GATEWAY_NOW, GATEWAY_EXPIRES_AT)
+                .with_read_retry(ReadRetry::single_attempt());
             assert_eq!(
                 gateway
                     .resolve_membership()
@@ -2549,6 +2854,333 @@ mod tests {
             ErrorCategory::ProviderValidation
         );
         assert_eq!(gateway.transport().last_request().url, profile_url);
+    }
+
+    #[test]
+    fn gateway_retries_a_rate_limit_then_succeeds_with_bounded_pacing() {
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(json_response(429, "slow")),
+            Ok(json_response_bytes(200, &membership_body())),
+        ]);
+
+        let membership = gateway
+            .resolve_membership()
+            .expect("the second attempt decodes the membership");
+        assert!(!membership.membership_id().as_str().is_empty());
+        assert_eq!(gateway.transport().recorded().len(), 2);
+        let waits = delay.waits();
+        assert_eq!(waits.len(), 1, "exactly one paced repeat");
+        assert_eq!(waits[0], Duration::from_millis(10));
+    }
+
+    #[test]
+    fn gateway_retries_a_rate_limit_on_the_inventory_read() {
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(json_response(429, "slow")),
+            Ok(json_response_bytes(200, FIXTURE)),
+        ]);
+
+        let snapshot = gateway
+            .load_inventory(&selected())
+            .expect("second attempt decodes the profile");
+        assert_eq!(snapshot.membership_id, *selected().membership_id());
+        assert_eq!(gateway.transport().recorded().len(), 2);
+        assert_eq!(delay.waits(), vec![Duration::from_millis(10)]);
+    }
+
+    #[test]
+    fn gateway_revalidates_expiry_before_a_paced_resolve_retry() {
+        // The first attempt observes a live credential and receives a paced 429.
+        // The injected clock then crosses expiry, so the repeat must refuse to
+        // construct the request instead of attaching an expired bearer.
+        let (mut gateway, delay) = step_gateway(
+            vec![Ok(json_response(429, "slow"))],
+            [
+                Timestamp::new(GATEWAY_NOW),
+                Timestamp::new(GATEWAY_EXPIRES_AT),
+            ],
+            GATEWAY_EXPIRES_AT,
+        );
+
+        let error = gateway
+            .resolve_membership()
+            .expect_err("expiry crossed during the paced repeat");
+        assert_eq!(error.category(), ErrorCategory::ProviderAuthentication);
+        assert_eq!(
+            gateway.transport().recorded().len(),
+            1,
+            "an expired bearer is never sent on a retry"
+        );
+        assert_eq!(delay.waits(), vec![Duration::from_millis(10)]);
+    }
+
+    #[test]
+    fn gateway_revalidates_expiry_before_a_paced_inventory_retry() {
+        let (mut gateway, delay) = step_gateway(
+            vec![Ok(json_response(429, "slow"))],
+            [
+                Timestamp::new(GATEWAY_NOW),
+                Timestamp::new(GATEWAY_EXPIRES_AT),
+            ],
+            GATEWAY_EXPIRES_AT,
+        );
+
+        let error = gateway
+            .load_inventory(&selected())
+            .expect_err("expiry crossed during the paced repeat");
+        assert_eq!(error.category(), ErrorCategory::ProviderAuthentication);
+        assert_eq!(gateway.transport().recorded().len(), 1);
+        assert_eq!(delay.waits(), vec![Duration::from_millis(10)]);
+    }
+
+    #[test]
+    fn gateway_exhausts_a_persistent_rate_limit_at_the_attempt_ceiling() {
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(json_response(429, "slow")),
+            Ok(json_response(429, "slow")),
+            Ok(json_response(429, "slow")),
+        ]);
+
+        let error = gateway
+            .resolve_membership()
+            .expect_err("a persistent rate limit is terminal after the ceiling");
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(gateway.transport().recorded().len(), 3);
+        // Two repeats for three attempts, paced at 10 ms then 20 ms.
+        assert_eq!(
+            delay.waits(),
+            vec![Duration::from_millis(10), Duration::from_millis(20)]
+        );
+    }
+
+    #[test]
+    fn gateway_never_retries_transport_unavailability() {
+        // A profile read can be the observation half of a mutation execution, so
+        // a provider-unavailable failure is reported on the first attempt rather
+        // than silently absorbed and mistaken for a completed observation.
+        let (mut gateway, delay) = retrying_gateway(vec![Err(ProfileTransportError::Unavailable)]);
+
+        let error = gateway
+            .resolve_membership()
+            .expect_err("unavailability is reported, not retried");
+        assert_eq!(error.category(), ErrorCategory::ProviderUnavailable);
+        assert_eq!(gateway.transport().recorded().len(), 1);
+        assert!(delay.waits().is_empty());
+    }
+
+    #[test]
+    fn gateway_never_retries_a_non_rate_limit_status() {
+        let (mut gateway, delay) = retrying_gateway(vec![Ok(json_response(404, "missing"))]);
+
+        let error = gateway.resolve_membership().expect_err("404 is terminal");
+        assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+        assert_eq!(gateway.transport().recorded().len(), 1);
+        assert!(delay.waits().is_empty());
+    }
+
+    #[test]
+    fn gateway_suppresses_a_retry_after_beyond_the_policy_ceiling() {
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(json_response(429, "slow").with_retry_after(RetryAfterHeader::DeltaSeconds(5))),
+            Ok(json_response_bytes(200, &membership_body())),
+        ]);
+
+        let error = gateway
+            .resolve_membership()
+            .expect_err("a wait beyond the ceiling must not be shortened");
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(gateway.transport().recorded().len(), 1);
+        assert!(delay.waits().is_empty());
+    }
+
+    #[test]
+    fn gateway_honors_a_retry_after_within_the_policy_ceiling() {
+        let delay = RecordingDelay::default();
+        let mut gateway = gateway(
+            vec![
+                Ok(json_response(429, "slow").with_retry_after(RetryAfterHeader::DeltaSeconds(2))),
+                Ok(json_response_bytes(200, &membership_body())),
+            ],
+            GATEWAY_NOW,
+            GATEWAY_EXPIRES_AT,
+        )
+        .with_read_retry(ReadRetry::new(
+            ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_secs(5)),
+            delay.clone(),
+        ));
+
+        gateway
+            .resolve_membership()
+            .expect("the hinted repeat decodes the membership");
+        assert_eq!(gateway.transport().recorded().len(), 2);
+        // The provider hint wins over the smaller policy backoff.
+        assert_eq!(delay.waits(), vec![Duration::from_secs(2)]);
+    }
+
+    #[test]
+    fn gateway_honors_an_http_date_retry_after_with_the_injected_clock() {
+        let delay = RecordingDelay::default();
+        let mut gateway = gateway(
+            vec![
+                Ok(json_response(429, "slow")
+                    .with_retry_after(RetryAfterHeader::HttpDate(GATEWAY_NOW + 2))),
+                Ok(json_response_bytes(200, &membership_body())),
+            ],
+            GATEWAY_NOW,
+            GATEWAY_EXPIRES_AT,
+        )
+        .with_read_retry(ReadRetry::new(
+            ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_secs(5)),
+            delay.clone(),
+        ));
+
+        gateway
+            .resolve_membership()
+            .expect("the date-hinted repeat decodes the membership");
+        assert_eq!(gateway.transport().recorded().len(), 2);
+        assert_eq!(delay.waits(), vec![Duration::from_secs(2)]);
+    }
+
+    #[test]
+    fn gateway_suppresses_an_http_date_retry_after_beyond_the_policy_ceiling() {
+        let delay = RecordingDelay::default();
+        let mut gateway = gateway(
+            vec![
+                Ok(json_response(429, "slow")
+                    .with_retry_after(RetryAfterHeader::HttpDate(GATEWAY_NOW + 600))),
+                Ok(json_response_bytes(200, &membership_body())),
+            ],
+            GATEWAY_NOW,
+            GATEWAY_EXPIRES_AT,
+        )
+        .with_read_retry(ReadRetry::new(
+            ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_secs(5)),
+            delay.clone(),
+        ));
+
+        let error = gateway
+            .resolve_membership()
+            .expect_err("a date beyond the ceiling must not be shortened");
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(gateway.transport().recorded().len(), 1);
+        assert!(delay.waits().is_empty());
+    }
+
+    #[test]
+    fn gateway_suppresses_an_invalid_retry_after() {
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(json_response(429, "slow").with_retry_after(RetryAfterHeader::Invalid)),
+            Ok(json_response_bytes(200, &membership_body())),
+        ]);
+
+        let error = gateway
+            .resolve_membership()
+            .expect_err("a malformed instruction must not be repeated");
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(gateway.transport().recorded().len(), 1);
+        assert!(delay.waits().is_empty());
+    }
+
+    #[test]
+    fn present_non_utf8_retry_after_is_invalid_not_absent() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        assert_eq!(classify_retry_after(&headers), RetryAfterHeader::Absent);
+
+        // Obs-text bytes are a syntactically valid header value but are not
+        // valid UTF-8, so the header is present yet unusable -- never absent.
+        let non_utf8 = [0xffu8, 0xfe];
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_bytes(non_utf8.as_slice())
+                .expect("obs-text header bytes are a valid header value"),
+        );
+        assert_eq!(classify_retry_after(&headers), RetryAfterHeader::Invalid);
+
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("120"),
+        );
+        assert_eq!(
+            classify_retry_after(&headers),
+            RetryAfterHeader::DeltaSeconds(120)
+        );
+    }
+
+    #[test]
+    fn gateway_suppresses_an_http_date_when_the_clock_is_unavailable() {
+        let delay = RecordingDelay::default();
+        let mut gateway = BungieProfileGateway::new(
+            FakeProfileTransport::queue(vec![
+                Ok(json_response(429, "slow")
+                    .with_retry_after(RetryAfterHeader::HttpDate(GATEWAY_NOW + 2))),
+                Ok(json_response_bytes(200, &membership_body())),
+            ]),
+            OnceThenFailClock::new(Timestamp::new(GATEWAY_NOW)),
+            credential(GATEWAY_EXPIRES_AT),
+            api_key(),
+            DefinitionVersion::new(DEFINITION_VERSION),
+        )
+        .expect("valid gateway configuration")
+        .with_read_retry(ReadRetry::new(
+            ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_secs(5)),
+            delay.clone(),
+        ));
+
+        let error = gateway
+            .resolve_membership()
+            .expect_err("an uninterpretable date is not repeated");
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(gateway.transport().recorded().len(), 1);
+        assert!(delay.waits().is_empty());
+    }
+
+    #[test]
+    fn ordinary_scope_retries_a_transient_provider_unavailability() {
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(json_response(503, "boom")),
+            Ok(json_response_bytes(200, &membership_body())),
+        ]);
+
+        gateway
+            .resolve_membership_scoped(ProfileSyncReason::Ordinary)
+            .expect("an ordinary read repeats a transient failure");
+        assert_eq!(gateway.transport().recorded().len(), 2);
+        assert_eq!(delay.waits(), vec![Duration::from_millis(10)]);
+    }
+
+    #[test]
+    fn mutation_observation_scopes_report_provider_unavailability() {
+        for reason in [ProfileSyncReason::Preflight, ProfileSyncReason::PostAction] {
+            let (mut gateway, delay) = retrying_gateway(vec![
+                Ok(json_response(503, "boom")),
+                Ok(json_response_bytes(200, &membership_body())),
+            ]);
+
+            let error = gateway
+                .resolve_membership_scoped(reason)
+                .expect_err("a mutation observation is one-shot for unavailability");
+            assert_eq!(
+                error.category(),
+                ErrorCategory::ProviderUnavailable,
+                "{reason:?}"
+            );
+            assert_eq!(gateway.transport().recorded().len(), 1, "{reason:?}");
+            assert!(delay.waits().is_empty(), "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn mutation_observation_scopes_still_retry_a_rate_limit() {
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(json_response(429, "slow")),
+            Ok(json_response_bytes(200, &membership_body())),
+        ]);
+
+        gateway
+            .resolve_membership_scoped(ProfileSyncReason::PostAction)
+            .expect("a rate limit is still retried for an observation");
+        assert_eq!(gateway.transport().recorded().len(), 2);
+        assert_eq!(delay.waits(), vec![Duration::from_millis(10)]);
     }
 
     #[test]

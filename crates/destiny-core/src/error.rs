@@ -28,6 +28,29 @@ pub enum ErrorCategory {
     PlanIdExhausted,
 }
 
+impl ErrorCategory {
+    /// True only for the explicit provider rate-limit refusal.
+    ///
+    /// A rate limit is a transient throttle: the provider accepted the request
+    /// shape and only asks the caller to slow down, so an idempotent read may be
+    /// repeated under a bounded pacing policy. It is never a reason to repeat a
+    /// mutation step, which stays one-shot and intent-bound.
+    pub const fn is_rate_limit(self) -> bool {
+        matches!(self, Self::ProviderRateLimit)
+    }
+
+    /// True for a transient provider condition that is safe to repeat for a
+    /// read: the explicit rate-limit refusal and a provider-unavailable failure.
+    ///
+    /// This is the broadest classification a bounded read-retry policy may use.
+    /// Authorization, validation, ambiguity, and verification categories are
+    /// deliberately excluded, so a retry can never mask an outcome that needs a
+    /// human decision.
+    pub const fn is_retryable_read(self) -> bool {
+        matches!(self, Self::ProviderRateLimit | Self::ProviderUnavailable)
+    }
+}
+
 /// An application failure whose presentation is intentionally sanitized.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AppError {

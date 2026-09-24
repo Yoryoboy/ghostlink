@@ -21,9 +21,12 @@
 //! cannot revive encoded traversal or separators, and decimal hash keys must be
 //! canonical so leading-zero aliases cannot yield duplicate semantic hashes.
 
+use destiny_core::ports::{
+    ReadFailure, ReadRetry, ReadRetryScope, RetryAfterHeader, parse_retry_after_header_bytes,
+};
 use destiny_core::{
-    AppError, BucketHash, DefinitionVersion, ErrorCategory, ItemHash, ManifestAcquisition,
-    ManifestDefinitionCandidate, ManifestGateway,
+    AppError, BucketHash, Clock, DefinitionVersion, ErrorCategory, ItemHash, ManifestAcquisition,
+    ManifestDefinitionCandidate, ManifestGateway, Timestamp,
 };
 use serde_json::{Map, Value};
 use std::{fmt, io::Read, time::Duration};
@@ -345,6 +348,7 @@ pub struct ManifestHttpResponse {
     status: u16,
     content_length: Option<u64>,
     content_type: Option<String>,
+    retry_after: RetryAfterHeader,
     body: Box<dyn Read>,
 }
 
@@ -353,7 +357,9 @@ impl ManifestHttpResponse {
     ///
     /// `content_type` is the raw upstream `Content-Type` header value. It is
     /// only inspected to accept or reject the response; it is never rendered by
-    /// [`fmt::Debug`] and never reaches an error or diagnostic.
+    /// [`fmt::Debug`] and never reaches an error or diagnostic. The response
+    /// starts with no provider pacing hint; a transport that observed a
+    /// `Retry-After` header attaches one with [`Self::with_retry_after`].
     pub fn new(
         status: u16,
         content_length: Option<u64>,
@@ -364,8 +370,15 @@ impl ManifestHttpResponse {
             status,
             content_length,
             content_type,
+            retry_after: RetryAfterHeader::Absent,
             body,
         }
+    }
+
+    /// Attaches the classified provider pacing hint, when one was observed.
+    pub fn with_retry_after(mut self, retry_after: RetryAfterHeader) -> Self {
+        self.retry_after = retry_after;
+        self
     }
 
     pub fn status(&self) -> u16 {
@@ -379,6 +392,13 @@ impl ManifestHttpResponse {
     pub fn content_type(&self) -> Option<&str> {
         self.content_type.as_deref()
     }
+
+    /// The classified provider pacing hint the transport observed.
+    ///
+    /// The value only shapes a bounded retry decision and is never surfaced.
+    pub const fn retry_after(&self) -> RetryAfterHeader {
+        self.retry_after
+    }
 }
 
 impl fmt::Debug for ManifestHttpResponse {
@@ -391,6 +411,7 @@ impl fmt::Debug for ManifestHttpResponse {
                 "content_type",
                 &self.content_type.as_ref().map(|_| "<redacted>"),
             )
+            .field("retry_after", &self.retry_after)
             .field("body", &"<redacted>")
             .finish()
     }
@@ -462,10 +483,12 @@ impl ManifestTransport for HttpManifestTransport {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
+        let retry_after = classify_retry_after(response.headers());
         Ok(ManifestHttpResponse {
             status,
             content_length,
             content_type,
+            retry_after,
             body: Box::new(response),
         })
     }
@@ -490,18 +513,52 @@ fn classify_transport_error(error: reqwest::Error) -> ManifestTransportError {
     }
 }
 
-/// The production Manifest gateway.
+/// Classifies the `Retry-After` header of one response from its raw bytes.
 ///
-/// It holds a validated API key and a transport. The index request carries the
-/// key; the component request never does.
-pub struct BungieManifestGateway<T> {
-    api_key: ManifestApiKey,
-    transport: T,
+/// A missing header is [`RetryAfterHeader::Absent`], so the bounded policy
+/// backoff applies. A present header is classified byte-for-byte, so a value
+/// that is not valid UTF-8 is [`RetryAfterHeader::Invalid`] -- present but
+/// unusable -- rather than silently treated as absent. The raw value is never
+/// rendered.
+fn classify_retry_after(headers: &reqwest::header::HeaderMap) -> RetryAfterHeader {
+    headers
+        .get(reqwest::header::RETRY_AFTER)
+        .map_or(RetryAfterHeader::Absent, |value| {
+            parse_retry_after_header_bytes(value.as_bytes())
+        })
 }
 
-impl<T> BungieManifestGateway<T> {
-    pub fn new(api_key: ManifestApiKey, transport: T) -> Self {
-        Self { api_key, transport }
+/// The production Manifest gateway.
+///
+/// It holds a validated API key, a transport, an injected clock, and a bounded
+/// read-retry runtime. The index request carries the key; the component request
+/// never does. A definition acquisition retries both the explicit rate limit and
+/// a transient provider-unavailable failure under the shared bounded policy. The
+/// injected clock is consulted only to interpret an absolute-date `Retry-After`
+/// hint; an unavailable clock makes that hint unusable, so the rate-limit
+/// response is surfaced rather than repeated against an unknown instant.
+pub struct BungieManifestGateway<T, C> {
+    api_key: ManifestApiKey,
+    transport: T,
+    clock: C,
+    read_retry: ReadRetry,
+}
+
+impl<T, C> BungieManifestGateway<T, C> {
+    pub fn new(api_key: ManifestApiKey, transport: T, clock: C) -> Self {
+        Self {
+            api_key,
+            transport,
+            clock,
+            read_retry: ReadRetry::default(),
+        }
+    }
+
+    /// Replaces the bounded read-retry runtime, for composition or a
+    /// deterministic test policy.
+    pub fn with_read_retry(mut self, read_retry: ReadRetry) -> Self {
+        self.read_retry = read_retry;
+        self
     }
 
     pub fn transport(&self) -> &T {
@@ -513,7 +570,7 @@ impl<T> BungieManifestGateway<T> {
     }
 }
 
-impl<T> fmt::Debug for BungieManifestGateway<T> {
+impl<T, C> fmt::Debug for BungieManifestGateway<T, C> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("BungieManifestGateway")
@@ -521,40 +578,90 @@ impl<T> fmt::Debug for BungieManifestGateway<T> {
     }
 }
 
-impl<T> ManifestGateway for BungieManifestGateway<T>
+impl<T, C> ManifestGateway for BungieManifestGateway<T, C>
 where
     T: ManifestTransport,
+    C: Clock,
 {
     fn load_definitions(&mut self) -> Result<ManifestAcquisition, AppError> {
         let index_request = ManifestHttpRequest::new(MANIFEST_ENDPOINT, Some(&self.api_key));
-        let index_bytes = fetch_bounded(&mut self.transport, &index_request, MAX_INDEX_BYTES)?;
+        let index_bytes = fetch_with_retry(
+            &mut self.transport,
+            &mut self.read_retry,
+            &self.clock,
+            &index_request,
+            MAX_INDEX_BYTES,
+        )?;
         let plan = decode_manifest_index(&index_bytes)?;
 
         let component_url = format!("{MANIFEST_ORIGIN}{}", plan.component_path);
         let component_request = ManifestHttpRequest::new(&component_url, None);
-        let component_bytes =
-            fetch_bounded(&mut self.transport, &component_request, MAX_COMPONENT_BYTES)?;
+        let component_bytes = fetch_with_retry(
+            &mut self.transport,
+            &mut self.read_retry,
+            &self.clock,
+            &component_request,
+            MAX_COMPONENT_BYTES,
+        )?;
         decode_inventory_items(plan.version, &component_bytes)
     }
 }
 
-/// Performs one fixed GET and returns its bounded, media-type-checked JSON body.
-fn fetch_bounded<T>(
+/// Performs one bounded, paced Manifest read.
+///
+/// A definition acquisition is a pure cache fill that never feeds a mutation
+/// observation, so it may repeat both the explicit rate limit and a transient
+/// provider-unavailable failure under the shared bounded policy.
+fn fetch_with_retry<T, C>(
     transport: &mut T,
+    read_retry: &mut ReadRetry,
+    clock: &C,
     request: &ManifestHttpRequest<'_>,
     limit: usize,
 ) -> Result<Vec<u8>, AppError>
 where
     T: ManifestTransport,
+    C: Clock,
 {
-    let mut response = transport.get(request).map_err(map_transport_error)?;
+    read_retry.run(ReadRetryScope::RateLimitAndTransient, || {
+        fetch_once(transport, request, limit, || clock.now().ok())
+    })
+}
+
+/// Performs one fixed GET and reports a retry-ready failure.
+///
+/// This is the single-attempt primitive: it never repeats. The gateway wraps it
+/// in a bounded [`ReadRetry`] run, and the failure keeps the sanitized
+/// [`AppError`] plus the resolved pacing hint, so the bounded retry loop can pace
+/// or suppress a repeat without ever re-reading a response body or surfacing
+/// provider text. `retry_after_now` is consulted only for an absolute-date hint,
+/// and an unavailable clock makes that hint unusable rather than guessed.
+fn fetch_once<T, F>(
+    transport: &mut T,
+    request: &ManifestHttpRequest<'_>,
+    limit: usize,
+    retry_after_now: F,
+) -> Result<Vec<u8>, ReadFailure>
+where
+    T: ManifestTransport,
+    F: FnOnce() -> Option<Timestamp>,
+{
+    let mut response = transport
+        .get(request)
+        .map_err(map_transport_error)
+        .map_err(ReadFailure::terminal)?;
     if response.status != 200 {
-        return Err(classify_status(response.status));
+        let hint = response.retry_after().resolve(retry_after_now);
+        return Err(ReadFailure::with_retry_after(
+            classify_status(response.status),
+            hint,
+        ));
     }
     if !response.content_type().is_some_and(is_json_content_type) {
-        return Err(provider_validation());
+        return Err(ReadFailure::terminal(provider_validation()));
     }
     read_bounded_body(&mut response.body, response.content_length, limit)
+        .map_err(ReadFailure::terminal)
 }
 
 fn map_transport_error(error: ManifestTransportError) -> AppError {
@@ -1021,15 +1128,22 @@ mod transport_tests {
     use super::{
         BungieManifestGateway, MANIFEST_ENDPOINT, MANIFEST_ORIGIN, ManifestApiKey,
         ManifestHttpRequest, ManifestHttpResponse, ManifestTransport, ManifestTransportError,
-        is_allowed_manifest_url, read_bounded_body,
+        classify_retry_after, is_allowed_manifest_url, read_bounded_body,
     };
-    use destiny_core::{AppError, ErrorCategory, ManifestAcquisition, ManifestGateway};
+    use destiny_core::ports::{ReadRetry, ReadRetryPolicy, RetryAfterHeader, RetryDelay};
+    use destiny_core::{
+        AppError, Clock, ErrorCategory, ManifestAcquisition, ManifestGateway, Timestamp,
+    };
     use serde_json::json;
     use std::collections::VecDeque;
     use std::io::{self, Cursor, Read};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     const COMPONENT_PATH: &str =
         "/common/destiny2_content/json/en/DestinyInventoryItemDefinition-abc.json";
+
+    const GATEWAY_NOW: u64 = 1_724_000_000;
 
     type QueuedResponse = Result<ManifestHttpResponse, ManifestTransportError>;
 
@@ -1069,6 +1183,63 @@ mod transport_tests {
 
     fn key() -> ManifestApiKey {
         ManifestApiKey::new("test-api-key").expect("valid key")
+    }
+
+    /// A fixed clock; a definition read never consults it unless a `Retry-After`
+    /// hint is an absolute date.
+    struct FixedClock(Timestamp);
+
+    impl Clock for FixedClock {
+        fn now(&self) -> Result<Timestamp, AppError> {
+            Ok(self.0)
+        }
+    }
+
+    fn clock() -> FixedClock {
+        FixedClock(Timestamp::new(GATEWAY_NOW))
+    }
+
+    /// A clock whose every reading fails, so an absolute-date hint is unusable.
+    struct FailClock;
+
+    impl Clock for FailClock {
+        fn now(&self) -> Result<Timestamp, AppError> {
+            Err(AppError::new(ErrorCategory::ClockOverflow))
+        }
+    }
+
+    /// Records the exact paced waits a bounded retry performed, with no sleep.
+    #[derive(Clone, Default)]
+    struct RecordingDelay {
+        waits: Arc<Mutex<Vec<Duration>>>,
+    }
+
+    impl RecordingDelay {
+        fn waits(&self) -> Vec<Duration> {
+            self.waits.lock().expect("delay log lock").clone()
+        }
+    }
+
+    impl RetryDelay for RecordingDelay {
+        fn wait(&mut self, delay: Duration) {
+            self.waits.lock().expect("delay log lock").push(delay);
+        }
+    }
+
+    /// A bounded policy with no real sleep, injected through the gateway.
+    fn retrying_gateway(
+        responses: Vec<QueuedResponse>,
+    ) -> (
+        BungieManifestGateway<FakeTransport, FixedClock>,
+        RecordingDelay,
+    ) {
+        let delay = RecordingDelay::default();
+        let gateway = BungieManifestGateway::new(key(), FakeTransport::with(responses), clock())
+            .with_read_retry(ReadRetry::new(
+                ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_millis(100)),
+                delay.clone(),
+            ));
+        (gateway, delay)
     }
 
     fn index_body(path: &str) -> String {
@@ -1123,7 +1294,7 @@ mod transport_tests {
             Ok(json_response(index_body(COMPONENT_PATH))),
             Ok(component),
         ]);
-        let mut gateway = BungieManifestGateway::new(key(), transport);
+        let mut gateway = BungieManifestGateway::new(key(), transport, clock());
         gateway.load_definitions()
     }
 
@@ -1138,7 +1309,7 @@ mod transport_tests {
                 return Ok(0);
             }
             let count = buffer.len().min(self.remaining);
-            buffer[..count].fill(b'x');
+            buffer.iter_mut().take(count).for_each(|byte| *byte = b'x');
             self.remaining -= count;
             self.read += count;
             Ok(count)
@@ -1159,7 +1330,7 @@ mod transport_tests {
             Ok(json_response(index_body(COMPONENT_PATH))),
             Ok(json_response(component_body())),
         ]);
-        let mut gateway = BungieManifestGateway::new(key(), transport);
+        let mut gateway = BungieManifestGateway::new(key(), transport, clock());
 
         let acquisition = gateway.load_definitions().expect("acquisition");
         assert_eq!(acquisition.version.as_str(), "manifest-v1");
@@ -1176,6 +1347,227 @@ mod transport_tests {
             format!("{MANIFEST_ORIGIN}{COMPONENT_PATH}")
         );
         assert!(!requests[1].has_api_key);
+    }
+
+    #[test]
+    fn gateway_retries_a_rate_limited_index_with_bounded_pacing() {
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(status_response(429)),
+            Ok(json_response(index_body(COMPONENT_PATH))),
+            Ok(json_response(component_body())),
+        ]);
+
+        let acquisition = gateway
+            .load_definitions()
+            .expect("the second index attempt succeeds");
+        assert_eq!(acquisition.definitions.len(), 1);
+        assert_eq!(gateway.transport().requests.len(), 3);
+        assert_eq!(delay.waits(), vec![Duration::from_millis(10)]);
+    }
+
+    #[test]
+    fn gateway_retries_a_transient_status_on_a_definition_read() {
+        // A definition acquisition never feeds a mutation observation, so a
+        // transient provider-unavailable failure is retried too.
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(status_response(503)),
+            Ok(json_response(index_body(COMPONENT_PATH))),
+            Ok(json_response(component_body())),
+        ]);
+
+        gateway
+            .load_definitions()
+            .expect("the second index attempt succeeds");
+        assert_eq!(gateway.transport().requests.len(), 3);
+        assert_eq!(delay.waits(), vec![Duration::from_millis(10)]);
+    }
+
+    #[test]
+    fn gateway_exhausts_a_persistent_rate_limit_at_the_attempt_ceiling() {
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(status_response(429)),
+            Ok(status_response(429)),
+            Ok(status_response(429)),
+        ]);
+
+        let error = gateway
+            .load_definitions()
+            .expect_err("a persistent rate limit is terminal after the ceiling");
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(gateway.transport().requests.len(), 3);
+        // Two repeats for three attempts, paced at 10 ms then 20 ms.
+        assert_eq!(
+            delay.waits(),
+            vec![Duration::from_millis(10), Duration::from_millis(20)]
+        );
+    }
+
+    #[test]
+    fn gateway_never_retries_a_validation_status() {
+        let (mut gateway, delay) = retrying_gateway(vec![Ok(status_response(400))]);
+
+        let error = gateway.load_definitions().expect_err("400 is terminal");
+        assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+        assert_eq!(gateway.transport().requests.len(), 1);
+        assert!(delay.waits().is_empty());
+    }
+
+    #[test]
+    fn gateway_suppresses_a_retry_after_beyond_the_policy_ceiling() {
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(status_response(429).with_retry_after(RetryAfterHeader::DeltaSeconds(5))),
+            Ok(json_response(index_body(COMPONENT_PATH))),
+            Ok(json_response(component_body())),
+        ]);
+
+        let error = gateway
+            .load_definitions()
+            .expect_err("a wait beyond the ceiling must not be shortened");
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(gateway.transport().requests.len(), 1);
+        assert!(delay.waits().is_empty());
+    }
+
+    #[test]
+    fn gateway_honors_a_retry_after_within_the_policy_ceiling() {
+        let delay = RecordingDelay::default();
+        let mut gateway = BungieManifestGateway::new(
+            key(),
+            FakeTransport::with(vec![
+                Ok(status_response(429).with_retry_after(RetryAfterHeader::DeltaSeconds(2))),
+                Ok(json_response(index_body(COMPONENT_PATH))),
+                Ok(json_response(component_body())),
+            ]),
+            clock(),
+        )
+        .with_read_retry(ReadRetry::new(
+            ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_secs(5)),
+            delay.clone(),
+        ));
+
+        gateway
+            .load_definitions()
+            .expect("the hinted repeat succeeds");
+        assert_eq!(gateway.transport().requests.len(), 3);
+        assert_eq!(delay.waits(), vec![Duration::from_secs(2)]);
+    }
+
+    #[test]
+    fn gateway_honors_an_http_date_retry_after_with_the_injected_clock() {
+        let delay = RecordingDelay::default();
+        let mut gateway = BungieManifestGateway::new(
+            key(),
+            FakeTransport::with(vec![
+                Ok(status_response(429)
+                    .with_retry_after(RetryAfterHeader::HttpDate(GATEWAY_NOW + 2))),
+                Ok(json_response(index_body(COMPONENT_PATH))),
+                Ok(json_response(component_body())),
+            ]),
+            clock(),
+        )
+        .with_read_retry(ReadRetry::new(
+            ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_secs(5)),
+            delay.clone(),
+        ));
+
+        gateway
+            .load_definitions()
+            .expect("the date-hinted repeat succeeds");
+        assert_eq!(gateway.transport().requests.len(), 3);
+        assert_eq!(delay.waits(), vec![Duration::from_secs(2)]);
+    }
+
+    #[test]
+    fn gateway_suppresses_an_http_date_retry_after_beyond_the_policy_ceiling() {
+        let delay = RecordingDelay::default();
+        let mut gateway = BungieManifestGateway::new(
+            key(),
+            FakeTransport::with(vec![
+                Ok(status_response(429)
+                    .with_retry_after(RetryAfterHeader::HttpDate(GATEWAY_NOW + 600))),
+                Ok(json_response(index_body(COMPONENT_PATH))),
+                Ok(json_response(component_body())),
+            ]),
+            clock(),
+        )
+        .with_read_retry(ReadRetry::new(
+            ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_secs(5)),
+            delay.clone(),
+        ));
+
+        let error = gateway
+            .load_definitions()
+            .expect_err("a date beyond the ceiling must not be shortened");
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(gateway.transport().requests.len(), 1);
+        assert!(delay.waits().is_empty());
+    }
+
+    #[test]
+    fn gateway_suppresses_an_http_date_when_the_clock_is_unavailable() {
+        let delay = RecordingDelay::default();
+        let mut gateway = BungieManifestGateway::new(
+            key(),
+            FakeTransport::with(vec![
+                Ok(status_response(429)
+                    .with_retry_after(RetryAfterHeader::HttpDate(GATEWAY_NOW + 2))),
+                Ok(json_response(index_body(COMPONENT_PATH))),
+                Ok(json_response(component_body())),
+            ]),
+            FailClock,
+        )
+        .with_read_retry(ReadRetry::new(
+            ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_secs(5)),
+            delay.clone(),
+        ));
+
+        let error = gateway
+            .load_definitions()
+            .expect_err("an uninterpretable date is not repeated");
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(gateway.transport().requests.len(), 1);
+        assert!(delay.waits().is_empty());
+    }
+
+    #[test]
+    fn gateway_suppresses_an_invalid_retry_after() {
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(status_response(429).with_retry_after(RetryAfterHeader::Invalid)),
+            Ok(json_response(index_body(COMPONENT_PATH))),
+            Ok(json_response(component_body())),
+        ]);
+
+        let error = gateway
+            .load_definitions()
+            .expect_err("a malformed instruction must not be repeated");
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(gateway.transport().requests.len(), 1);
+        assert!(delay.waits().is_empty());
+    }
+
+    #[test]
+    fn present_non_utf8_retry_after_is_invalid_not_absent() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        assert_eq!(classify_retry_after(&headers), RetryAfterHeader::Absent);
+
+        // Obs-text bytes are a syntactically valid header value but are not
+        // valid UTF-8, so the header is present yet unusable -- never absent.
+        let non_utf8 = [0xffu8, 0xfe];
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_bytes(non_utf8.as_slice())
+                .expect("obs-text header bytes are a valid header value"),
+        );
+        assert_eq!(classify_retry_after(&headers), RetryAfterHeader::Invalid);
+
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            reqwest::header::HeaderValue::from_static("120"),
+        );
+        assert_eq!(
+            classify_retry_after(&headers),
+            RetryAfterHeader::DeltaSeconds(120)
+        );
     }
 
     #[test]
@@ -1222,7 +1614,10 @@ mod transport_tests {
         ];
         for (status, expected) in cases {
             let transport = FakeTransport::with(vec![Ok(status_response(status))]);
-            let mut gateway = BungieManifestGateway::new(key(), transport);
+            // A single attempt keeps this a category-mapping test rather than a
+            // retry test; the bounded retry behavior has dedicated coverage.
+            let mut gateway = BungieManifestGateway::new(key(), transport, clock())
+                .with_read_retry(ReadRetry::single_attempt());
             let error = gateway.load_definitions().expect_err("status rejection");
             assert_eq!(error.category(), expected, "status {status}");
         }
@@ -1246,7 +1641,10 @@ mod transport_tests {
         ];
         for (transport_error, expected) in cases {
             let transport = FakeTransport::with(vec![Err(transport_error)]);
-            let mut gateway = BungieManifestGateway::new(key(), transport);
+            // A single attempt keeps this a category-mapping test; a manifest
+            // read retries a transient transport failure with dedicated coverage.
+            let mut gateway = BungieManifestGateway::new(key(), transport, clock())
+                .with_read_retry(ReadRetry::single_attempt());
             let error = gateway.load_definitions().expect_err("transport rejection");
             assert_eq!(error.category(), expected, "{transport_error:?}");
         }
@@ -1410,7 +1808,7 @@ mod transport_tests {
                 Ok(fixture_response(component_fixture)),
             ]),
         };
-        let gateway = BungieManifestGateway::new(key(), transport);
+        let gateway = BungieManifestGateway::new(key(), transport, clock());
 
         let prior_version = DefinitionVersion::new("prior-fake-v1");
         let repository = InMemoryDefinitionRepository::new(

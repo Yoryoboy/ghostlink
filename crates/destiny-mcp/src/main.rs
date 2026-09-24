@@ -45,8 +45,9 @@ use destiny_app::{
     DefinitionRepository, DefinitionSearchQuery, DefinitionVersion, DestinyMembership,
     ErrorCategory, FreshnessPolicy, InstanceSearchQuery, InventoryRepository, InventorySnapshot,
     InventorySnapshotInput, ItemDefinition, ItemHash, ItemInstance, ItemInstanceId,
-    MutationService, PlanId, PlanIdGenerator, PlanLifetime, ProfileGateway, ProfileSyncService,
-    QueryService, ReadRuntimeConfig, Resolution, SearchRepository, SyncMetadata,
+    MutationService, PlanId, PlanIdGenerator, PlanLifetime, ProfileGateway, ProfileSyncReason,
+    ProfileSyncService, QueryService, ReadRuntimeConfig, Resolution, SearchRepository,
+    SyncMetadata,
 };
 use destiny_mcp::runtime::serve_stdio;
 use destiny_mcp::{ComposedMutationService, QueryReadService, ReadToolServer};
@@ -214,14 +215,31 @@ impl<C: Clock> PlanIdGenerator for SystemPlanIds<C> {
 /// Both application services own their synchronization service by value, so the
 /// composition root reuses the one provider transport through a mutex. The lock
 /// is only ever held for one synchronous provider call, and no path nests it
-/// with the repository lock.
-#[derive(Clone)]
-struct SharedGateway {
-    inner: Arc<Mutex<BungieProfileGateway<HttpProfileTransport, SystemClock>>>,
+/// with the repository lock. The wrapper is generic over the gateway so the
+/// production composition still shares the one concrete adapter while a test
+/// can inject a recording gateway.
+///
+/// The scoped read methods forward the exact [`ProfileSyncReason`] to the locked
+/// inner adapter. Relying on the [`ProfileGateway`] defaults here would discard
+/// the reason and pin every MCP read to the conservative one-shot scope, so the
+/// reason-scoped retry policy could never reach an ordinary MCP read. Forwards
+/// are deliberate for both scoped methods, mirroring the adapter's own
+/// override, so a mutation observation stays one-shot while an ordinary read
+/// repeats a bounded transient failure.
+struct SharedGateway<G> {
+    inner: Arc<Mutex<G>>,
 }
 
-impl SharedGateway {
-    fn new(gateway: BungieProfileGateway<HttpProfileTransport, SystemClock>) -> Self {
+impl<G> Clone for SharedGateway<G> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<G> SharedGateway<G> {
+    fn new(gateway: G) -> Self {
         Self {
             inner: Arc::new(Mutex::new(gateway)),
         }
@@ -232,17 +250,14 @@ impl SharedGateway {
     /// A poisoned lock can only follow a panic in an unrelated thread that was
     /// holding the gateway; it is reported as a sanitized local-storage failure
     /// rather than propagating a panic payload.
-    fn lock(
-        &self,
-    ) -> Result<MutexGuard<'_, BungieProfileGateway<HttpProfileTransport, SystemClock>>, AppError>
-    {
+    fn lock(&self) -> Result<MutexGuard<'_, G>, AppError> {
         self.inner
             .lock()
             .map_err(|_| AppError::new(ErrorCategory::LocalStorage))
     }
 }
 
-impl ProfileGateway for SharedGateway {
+impl<G: ProfileGateway> ProfileGateway for SharedGateway<G> {
     fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
         self.lock()?.resolve_membership()
     }
@@ -252,6 +267,21 @@ impl ProfileGateway for SharedGateway {
         membership: &DestinyMembership,
     ) -> Result<InventorySnapshotInput, AppError> {
         self.lock()?.load_inventory(membership)
+    }
+
+    fn resolve_membership_scoped(
+        &mut self,
+        reason: ProfileSyncReason,
+    ) -> Result<DestinyMembership, AppError> {
+        self.lock()?.resolve_membership_scoped(reason)
+    }
+
+    fn load_inventory_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<InventorySnapshotInput, AppError> {
+        self.lock()?.load_inventory_scoped(membership, reason)
     }
 }
 
@@ -370,6 +400,90 @@ mod tests {
             },
             material: CredentialMaterial::from_bytes(CREDENTIAL_SENTINEL.as_bytes().to_vec()),
         }
+    }
+
+    #[test]
+    fn shared_gateway_forwards_the_exact_sync_reason_to_the_inner_scoped_reads() {
+        use super::SharedGateway;
+        use destiny_app::{
+            DefinitionVersion, DestinyMembership, InventorySnapshotInput, MembershipId,
+            MembershipType, ProfileGateway, ProfileSyncReason, SourceMarker,
+        };
+        use std::sync::{Arc, Mutex};
+
+        /// Records the reason of every scoped read. The unscoped methods are
+        /// unreachable on purpose: if the wrapper fell back to the trait
+        /// default, it would call them and the reason would be silently lost.
+        struct RecordingGateway {
+            reasons: Arc<Mutex<Vec<ProfileSyncReason>>>,
+        }
+
+        fn membership() -> DestinyMembership {
+            DestinyMembership::new(
+                MembershipType::new(3),
+                MembershipId::new("4611686018484639825"),
+            )
+            .expect("valid membership")
+        }
+
+        fn inventory_input(membership: &DestinyMembership) -> InventorySnapshotInput {
+            InventorySnapshotInput {
+                membership_id: membership.membership_id().clone(),
+                membership_type: membership.membership_type(),
+                definition_version: DefinitionVersion::new("manifest-v1"),
+                checked_at: Timestamp::new(1_724_000_000),
+                source: SourceMarker::Profile,
+                characters: Vec::new(),
+                items: Vec::new(),
+            }
+        }
+
+        impl ProfileGateway for RecordingGateway {
+            fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
+                unreachable!("the scoped read must not fall back to the unscoped default")
+            }
+
+            fn load_inventory(
+                &mut self,
+                _membership: &DestinyMembership,
+            ) -> Result<InventorySnapshotInput, AppError> {
+                unreachable!("the scoped read must not fall back to the unscoped default")
+            }
+
+            fn resolve_membership_scoped(
+                &mut self,
+                reason: ProfileSyncReason,
+            ) -> Result<DestinyMembership, AppError> {
+                self.reasons.lock().expect("reason log").push(reason);
+                Ok(membership())
+            }
+
+            fn load_inventory_scoped(
+                &mut self,
+                membership: &DestinyMembership,
+                reason: ProfileSyncReason,
+            ) -> Result<InventorySnapshotInput, AppError> {
+                self.reasons.lock().expect("reason log").push(reason);
+                Ok(inventory_input(membership))
+            }
+        }
+
+        let reasons = Arc::new(Mutex::new(Vec::new()));
+        let mut gateway = SharedGateway::new(RecordingGateway {
+            reasons: Arc::clone(&reasons),
+        });
+        let membership = gateway
+            .resolve_membership_scoped(ProfileSyncReason::Preflight)
+            .expect("scoped resolve forwards to the inner adapter");
+        gateway
+            .load_inventory_scoped(&membership, ProfileSyncReason::Ordinary)
+            .expect("scoped load forwards to the inner adapter");
+
+        assert_eq!(
+            *reasons.lock().expect("reason log"),
+            [ProfileSyncReason::Preflight, ProfileSyncReason::Ordinary],
+            "the wrapper must forward the exact reason to the locked inner adapter"
+        );
     }
 
     #[test]

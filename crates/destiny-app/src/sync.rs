@@ -84,6 +84,12 @@ where
     /// `definition_version`, and never computes a revision. It returns the
     /// [`ProfileSyncOutcome`] the repository reports, and clones no projection
     /// on the success path.
+    ///
+    /// The sync `reason` is forwarded to the gateway's reason-scoped read
+    /// methods, so a gateway may bound retries differently for an ordinary read
+    /// than for a preflight or post-action mutation observation. A gateway that
+    /// does not override the scoped methods keeps the conservative one-shot
+    /// behavior through the trait defaults.
     pub fn sync(
         &mut self,
         reason: ProfileSyncReason,
@@ -113,8 +119,8 @@ where
             }
         }
 
-        let membership = self.gateway.resolve_membership()?;
-        let candidate = self.gateway.load_inventory(&membership)?;
+        let membership = self.gateway.resolve_membership_scoped(reason)?;
+        let candidate = self.gateway.load_inventory_scoped(&membership, reason)?;
         // The candidate must belong to the membership it was resolved for, so a
         // mismatched or partial provider response can never be published.
         if candidate.membership_id != *membership.membership_id()

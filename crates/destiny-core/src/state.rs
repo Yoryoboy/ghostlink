@@ -163,6 +163,21 @@ impl ProfileSyncReason {
     pub const fn forces_refresh(self) -> bool {
         !matches!(self, Self::Ordinary)
     }
+
+    /// True when this read is the observation half of a mutation execution.
+    ///
+    /// A preflight or post-action read must report a provider-unavailable
+    /// response rather than silently absorb it: an unavailable observation must
+    /// never be mistaken for a completed one, so these reasons are the only ones
+    /// that require the conservative one-shot read scope. Every other reason
+    /// (an ordinary or forced refresh) is a plain read that may repeat a
+    /// transient failure under the bounded policy.
+    pub const fn observes_mutation(self) -> bool {
+        match self {
+            Self::Preflight | Self::PostAction => true,
+            Self::Ordinary | Self::Forced => false,
+        }
+    }
 }
 
 /// The result of one profile synchronization decision.

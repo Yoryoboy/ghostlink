@@ -44,6 +44,7 @@ use destiny_adapters::profile_gateway::{
 };
 use destiny_adapters::sqlite::SqliteStore;
 use destiny_app::ProfileSyncService;
+use destiny_core::ports::{ReadRetry, ReadRetryPolicy, RetryAfterHeader, RetryDelay};
 use destiny_core::{
     AccessCredential, AccessCredentialMetadata, AppError, Clock, CredentialMaterial,
     DefinitionVersion, DestinyMembership, ErrorCategory, FreshnessPolicy, InventoryRepository,
@@ -56,6 +57,8 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// The effective Cross Save primary the whole journey resolves to. It matches
 /// the membership the `profile-complete.json` fixture is consistent with.
@@ -155,6 +158,16 @@ struct ScriptedTransport {
     recorded_urls: Vec<String>,
 }
 
+/// The retry pacing seam: it records the exact bounded waits without sleeping,
+/// so a retry scenario is deterministic and never depends on ambient time.
+struct NoDelay(Arc<Mutex<Vec<Duration>>>);
+
+impl RetryDelay for NoDelay {
+    fn wait(&mut self, delay: Duration) {
+        self.0.lock().expect("delay log lock").push(delay);
+    }
+}
+
 /// The owning-side view of the scripted transport. The gateway takes ownership
 /// of this handle by value; the harness keeps its own `Rc` so it can inspect the
 /// recorded requests and queue further responses after construction.
@@ -195,6 +208,7 @@ struct Journey {
     database: TempDatabase,
     transport: Rc<RefCell<ScriptedTransport>>,
     clock: Rc<Cell<u64>>,
+    delays: Arc<Mutex<Vec<Duration>>>,
 }
 
 impl Journey {
@@ -206,6 +220,7 @@ impl Journey {
                 recorded_urls: Vec::new(),
             })),
             clock: Rc::new(Cell::new(NOW.seconds())),
+            delays: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -215,7 +230,8 @@ impl Journey {
     }
 
     /// Composes the real gateway and the real SQLite store over the shared
-    /// transport and clock.
+    /// transport and clock, with an injected bounded retry policy whose pacing
+    /// is recorded rather than slept.
     fn service(&self) -> Service {
         let gateway = BungieProfileGateway::new(
             SharedTransport(Rc::clone(&self.transport)),
@@ -224,9 +240,34 @@ impl Journey {
             api_key(),
             DefinitionVersion::new(DEFINITION_VERSION),
         )
-        .expect("valid gateway configuration");
+        .expect("valid gateway configuration")
+        .with_read_retry(ReadRetry::new(
+            ReadRetryPolicy::new(3, Duration::from_millis(10), Duration::from_secs(5)),
+            NoDelay(Arc::clone(&self.delays)),
+        ));
         let store = SqliteStore::open(self.database.path()).expect("open file store");
         ProfileSyncService::new(gateway, store)
+    }
+
+    /// Queues one bare status response, used to script a transient failure.
+    fn queue_status(&self, status: u16) {
+        self.transport
+            .borrow_mut()
+            .responses
+            .push_back(Ok(status_response(status)));
+    }
+
+    /// Queues one `429` carrying the given classified `Retry-After` hint.
+    fn queue_rate_limit(&self, retry_after: RetryAfterHeader) {
+        self.transport
+            .borrow_mut()
+            .responses
+            .push_back(Ok(status_response(429).with_retry_after(retry_after)));
+    }
+
+    /// The exact bounded waits the gateway performed, in order.
+    fn waits(&self) -> Vec<Duration> {
+        self.delays.lock().expect("delay log lock").clone()
     }
 
     /// Queues the Cross Save membership discovery body.
@@ -276,6 +317,17 @@ fn credential() -> AccessCredential {
 
 fn membership_body() -> Vec<u8> {
     MEMBERSHIP_BODY.as_bytes().to_vec()
+}
+
+/// A bare status response with an empty body, used to script a transient
+/// provider failure without a decoded payload.
+fn status_response(status: u16) -> ProfileHttpResponse {
+    ProfileHttpResponse::new(
+        status,
+        Some(0),
+        Some("application/json".to_owned()),
+        Box::new(Cursor::new(Vec::new())),
+    )
 }
 
 fn expected_membership() -> DestinyMembership {
@@ -693,4 +745,154 @@ fn secrets_and_payload_markers_never_reach_errors_or_disk() {
             "on-disk database leaked {sentinel}"
         );
     }
+}
+
+/// Scenario 8: an ordinary sync repeats a transient provider-unavailable
+/// membership read under the bounded policy, then publishes through SQLite. The
+/// real gateway and the real sync service make this decision; only the retry
+/// pacing is injected so the test never sleeps.
+#[test]
+fn ordinary_sync_retries_a_transient_membership_failure() {
+    let journey = Journey::new();
+    journey.at(NOW);
+    let mut service = journey.service();
+
+    journey.queue_status(503);
+    journey.queue_membership();
+    journey.queue_profile(FIXTURE);
+
+    let outcome = service
+        .sync(ProfileSyncReason::Ordinary, TTL, NOW)
+        .expect("the retried membership read succeeds");
+    assert!(outcome.refreshed());
+    assert_eq!(outcome.revision().value(), 1);
+
+    let urls = journey.recorded_urls();
+    assert_eq!(urls.len(), 3, "one transient repeat then both reads");
+    assert_eq!(urls[0], MEMBERSHIP_ENDPOINT);
+    assert_eq!(urls[1], MEMBERSHIP_ENDPOINT);
+    assert_eq!(urls[2], profile_endpoint(&expected_membership()));
+    assert_eq!(journey.waits(), vec![Duration::from_millis(10)]);
+}
+
+/// Scenario 9: a preflight or post-action mutation observation reports a
+/// provider-unavailable membership read after exactly one attempt and never
+/// mutates the repository. This is the explicit counterpart to scenario 8.
+#[test]
+fn mutation_observation_does_not_retry_a_transient_membership_failure() {
+    for reason in [ProfileSyncReason::Preflight, ProfileSyncReason::PostAction] {
+        let journey = Journey::new();
+        journey.at(NOW);
+        let mut service = journey.service();
+
+        journey.queue_status(503);
+
+        let error = service
+            .sync(reason, TTL, NOW)
+            .expect_err("a mutation observation is one-shot for unavailability");
+        assert_eq!(
+            error.category(),
+            ErrorCategory::ProviderUnavailable,
+            "{reason:?}"
+        );
+        assert_eq!(journey.request_count(), 1, "{reason:?}");
+        assert!(journey.waits().is_empty(), "{reason:?}");
+        assert!(
+            service
+                .repository()
+                .load_current()
+                .expect("repository read")
+                .is_none(),
+            "{reason:?} must not publish a projection"
+        );
+    }
+}
+
+/// Scenario 10: a preflight or post-action mutation observation still repeats
+/// the explicit provider rate-limit refusal, so a throttled observation is not
+/// treated as an unavailable one.
+#[test]
+fn mutation_observation_still_retries_a_rate_limit() {
+    for reason in [ProfileSyncReason::Preflight, ProfileSyncReason::PostAction] {
+        let journey = Journey::new();
+        journey.at(NOW);
+        let mut service = journey.service();
+
+        journey.queue_rate_limit(RetryAfterHeader::Absent);
+        journey.queue_membership();
+        journey.queue_profile(FIXTURE);
+
+        let outcome = service
+            .sync(reason, TTL, NOW)
+            .expect("a rate-limited observation succeeds after one repeat");
+        assert!(outcome.refreshed(), "{reason:?}");
+        assert_eq!(journey.request_count(), 3, "{reason:?}");
+        assert_eq!(
+            journey.waits(),
+            vec![Duration::from_millis(10)],
+            "{reason:?}"
+        );
+    }
+}
+
+/// Scenario 11: an ordinary sync interprets a provider `Retry-After` against the
+/// injected clock and the bounded policy. A date within the ceiling is honored
+/// exactly; a date beyond it, a malformed instruction, and a delta beyond the
+/// ceiling are surfaced as the sanitized rate limit without any repeat.
+#[test]
+fn ordinary_sync_bounds_retry_after_instructions() {
+    // A date two seconds ahead is within the five-second policy ceiling.
+    let journey = Journey::new();
+    journey.at(NOW);
+    let mut service = journey.service();
+    journey.queue_rate_limit(RetryAfterHeader::HttpDate(NOW.seconds() + 2));
+    journey.queue_membership();
+    journey.queue_profile(FIXTURE);
+    service
+        .sync(ProfileSyncReason::Ordinary, TTL, NOW)
+        .expect("a bounded date hint is honored");
+    assert_eq!(journey.waits(), vec![Duration::from_secs(2)]);
+
+    // A date beyond the ceiling must not be silently shortened, so the rate
+    // limit is surfaced after one attempt.
+    let journey = Journey::new();
+    journey.at(NOW);
+    let mut service = journey.service();
+    journey.queue_rate_limit(RetryAfterHeader::HttpDate(NOW.seconds() + 600));
+    journey.queue_membership();
+    journey.queue_profile(FIXTURE);
+    let error = service
+        .sync(ProfileSyncReason::Ordinary, TTL, NOW)
+        .expect_err("a date beyond the ceiling is not retried");
+    assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+    assert_eq!(journey.request_count(), 1);
+    assert!(journey.waits().is_empty());
+
+    // A delta in seconds beyond the ceiling behaves the same way.
+    let journey = Journey::new();
+    journey.at(NOW);
+    let mut service = journey.service();
+    journey.queue_rate_limit(RetryAfterHeader::DeltaSeconds(600));
+    journey.queue_membership();
+    journey.queue_profile(FIXTURE);
+    let error = service
+        .sync(ProfileSyncReason::Ordinary, TTL, NOW)
+        .expect_err("a delta beyond the ceiling is not retried");
+    assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+    assert_eq!(journey.request_count(), 1);
+    assert!(journey.waits().is_empty());
+
+    // A malformed instruction is not guessed into a wait.
+    let journey = Journey::new();
+    journey.at(NOW);
+    let mut service = journey.service();
+    journey.queue_rate_limit(RetryAfterHeader::Invalid);
+    journey.queue_membership();
+    journey.queue_profile(FIXTURE);
+    let error = service
+        .sync(ProfileSyncReason::Ordinary, TTL, NOW)
+        .expect_err("a malformed instruction is not retried");
+    assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+    assert_eq!(journey.request_count(), 1);
+    assert!(journey.waits().is_empty());
 }
