@@ -438,6 +438,7 @@ dependencies = [
  "destiny-app",
  "destiny-cli",
  "destiny-core",
+ "destiny-mcp",
  "keyring-core",
  "reqwest",
  "rusqlite",

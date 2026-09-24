@@ -49,7 +49,11 @@
 //!     JSON modes, including fresh reuse, a stale refresh, explicit multiple
 //!     candidates, a typed `item_not_found`, and secret-free streams; and
 //! 11. a decoded provider failure reaching the process boundary as a sanitized
-//!     typed outcome on stderr only.
+//!     typed outcome on stderr only; and
+//! 12. the real CLI JSON reads and the real MCP read projections, driven over
+//!     the same composed service and committed SQLite state, agreeing on every
+//!     shared semantic field while pinning the documented MCP-only additions and
+//!     the dropped `Other` location text.
 //!
 //! [`BungieProfileGateway`]: destiny_adapters::profile_gateway::BungieProfileGateway
 //! [`SqliteStore`]: destiny_adapters::sqlite::SqliteStore
@@ -76,6 +80,10 @@ use destiny_core::{
     InventorySnapshot, ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstanceId,
     MAX_SEARCH_LIMIT, ManifestDefinitions, MembershipId, MembershipType, PerkHash, Resolution,
     SearchTerm, SourceMarker, SyncRevision, Timestamp,
+};
+use destiny_mcp::{
+    InspectItemArgs, InventoryReadService, ListCharactersArgs, QueryReadService,
+    SearchInventoryArgs,
 };
 use rusqlite::Connection;
 use serde_json::{Value, json};
@@ -125,6 +133,10 @@ const INSTANCE_CHAR_ONE: &str = "700000000000000004";
 const INSTANCE_CHAR_TWO: &str = "700000000000000005";
 const INSTANCE_CHAR_ONE_EQUIPPED: &str = "700000000000000006";
 const INSTANCE_CHAR_TWO_EQUIPPED: &str = "700000000000000007";
+
+/// An instance identifier the fixture never carries, used by the typed
+/// missing-inspection boundary comparison.
+const INSTANCE_MISSING: &str = "700000000000000099";
 
 /// The exact perk hashes the fixture associates with the equipped item.
 const PERK_ACTIVE: u32 = 5001;
@@ -580,6 +592,144 @@ fn assert_no_secrets(rendered: &str) {
             !rendered.contains(sentinel),
             "rendered output leaked {sentinel}"
         );
+    }
+}
+
+/// Drives the real CLI runner in JSON mode and returns its single parsed object.
+///
+/// A successful read writes exactly one JSON object to stdout and nothing to
+/// stderr, and no rendered byte may carry a credential, raw provider payload, or
+/// membership identifier.
+fn cli_json(service: &mut Service, arguments: &[&str]) -> Value {
+    let output = cli(service, arguments, NOW);
+    assert_eq!(output.exit_code, 0, "CLI read must succeed");
+    assert!(
+        output.stderr.is_empty(),
+        "a successful CLI read writes no stderr"
+    );
+    let value: Value = serde_json::from_str(output.stdout.trim()).expect("one JSON object");
+    assert_no_secrets(&value.to_string());
+    value
+}
+
+/// The real MCP read seam: the [`InventoryReadService`] implementation the stdio
+/// server calls, composed over the same shared query service instance, clock,
+/// and freshness policy the CLI runner reads through.
+type McpReads = QueryReadService<Gateway, SqliteStore, TestClock>;
+
+/// Runs one `list_characters` read through the real MCP read seam.
+fn mcp_read_list(reads: &mut McpReads) -> Value {
+    let request = ListCharactersArgs {}.into_request();
+    let value = serde_json::to_value(
+        reads
+            .list_characters(&request)
+            .expect("MCP character list succeeds"),
+    )
+    .expect("MCP character list serializes to JSON");
+    assert_no_secrets(&value.to_string());
+    value
+}
+
+/// Runs one `search_inventory` read through the real MCP read seam, converting
+/// the MCP argument schema exactly as the tool boundary does.
+fn mcp_read_search(reads: &mut McpReads, arguments: Value) -> Value {
+    let args: SearchInventoryArgs =
+        serde_json::from_value(arguments).expect("MCP search arguments deserialize");
+    let request = args
+        .into_request()
+        .expect("MCP search arguments are valid and bounded");
+    let value = serde_json::to_value(
+        reads
+            .search_inventory(&request)
+            .expect("MCP search succeeds"),
+    )
+    .expect("MCP search serializes to JSON");
+    assert_no_secrets(&value.to_string());
+    value
+}
+
+/// Runs one `inspect_item` read through the real MCP read seam, converting the
+/// MCP argument schema exactly as the tool boundary does.
+fn mcp_read_inspect(reads: &mut McpReads, instance_id: &str) -> Value {
+    let args: InspectItemArgs = serde_json::from_value(json!({ "instance_id": instance_id }))
+        .expect("MCP inspect arguments deserialize");
+    let request = args
+        .into_request()
+        .expect("MCP inspect arguments are valid");
+    let value = serde_json::to_value(
+        reads
+            .inspect_item(&request)
+            .expect("MCP inspection succeeds"),
+    )
+    .expect("MCP inspection serializes to JSON");
+    assert_no_secrets(&value.to_string());
+    value
+}
+
+/// Reduces one CLI or MCP JSON payload to the fields both boundaries share.
+///
+/// The only removals are the documented boundary differences, each bound to its
+/// exact view by shape: a definition's `definition_version`, metadata's `dataset`
+/// and `definition_version`, a perk's `perk_hash`, and the `Other` location's
+/// provider `value`. Every other key, at every level, survives, so an unexpected
+/// addition, drop, or rename on either side makes the comparison fail.
+fn shared(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => Value::Object(
+            object
+                .iter()
+                .filter(|(key, _)| !is_documented_difference(object, key))
+                .map(|(key, nested)| (key.clone(), shared(nested)))
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(shared).collect()),
+        scalar => scalar.clone(),
+    }
+}
+
+/// Whether `key` is one of the documented differences for this object's exact
+/// view. The view is identified by its shape, never by an arbitrary key name, so
+/// only the intended field at the intended view is ever removed.
+fn is_documented_difference(object: &serde_json::Map<String, Value>, key: &str) -> bool {
+    let definition = ["hash", "name", "tags"]
+        .iter()
+        .all(|field| object.contains_key(*field));
+    let metadata = object.contains_key("checked_at") && object.contains_key("source");
+    let perk = object.contains_key("active") && object.contains_key("visible");
+    let other = object.get("kind").and_then(Value::as_str) == Some("other") && object.len() == 2;
+    (key == "definition_version" && (definition || metadata))
+        || (key == "dataset" && metadata)
+        || (key == "perk_hash" && perk)
+        || (key == "value" && other)
+}
+
+/// Finds one instance hit by its exact identifier in a search payload.
+fn hit_of<'a>(hits: &'a Value, instance_id: &str) -> &'a Value {
+    hits.as_array()
+        .expect("hits is an array")
+        .iter()
+        .find(|hit| hit["instance"]["instance_id"].as_str() == Some(instance_id))
+        .unwrap_or_else(|| panic!("the search payload carries a hit for {instance_id}"))
+}
+
+/// Asserts the real CLI and MCP answers agree on every shared section they both
+/// carry, after the bounded documented-difference reduction above.
+fn assert_shared(cli: &Value, mcp: &Value, label: &str) {
+    for section in [
+        "characters",
+        "candidates",
+        "hits",
+        "definition",
+        "instance",
+        "metadata",
+    ] {
+        if cli.get(section).is_some() {
+            assert_eq!(
+                shared(&mcp[section]),
+                shared(&cli[section]),
+                "{label}: {section}"
+            );
+        }
     }
 }
 
@@ -1399,4 +1549,187 @@ fn cli_provider_failure_is_typed_and_sanitized_on_stderr_only() {
     assert!(human.stdout.is_empty());
     assert!(human.stderr.starts_with("error: "));
     assert_no_secrets(&human.stderr);
+}
+
+/// CLI/MCP read parity: the real CLI JSON reads and the real MCP read
+/// projections are driven over the *same* composed service, clock, and committed
+/// SQLite fixture state, then compared on their shared semantic fields.
+///
+/// Parity is never asserted as whole-payload JSON identity: the MCP projection
+/// deliberately adds sanitized metadata (`dataset`, `definition_version`) and the
+/// exact perk hash, and it deliberately drops the provider-derived text behind
+/// `LocationView::Other`. `assert_shared` excludes exactly those fields at exactly
+/// those views, and each removed field is pinned separately below.
+///
+/// The CLI read is read-only; the MCP mutation surface stays the separate
+/// one-call authorization journey proven elsewhere. Nothing here touches the
+/// network, a live account, the OS keyring, or a persisted secret.
+#[test]
+fn cli_and_mcp_reads_share_semantics_with_pinned_key_output() {
+    let journey = Journey::new();
+    journey.at(NOW);
+    let mut service = journey.service();
+    seed(&journey, &mut service);
+    let after_seed = journey.request_count();
+    // The real MCP read seam the stdio server calls, wrapped around the same
+    // composed service, clock, and policy the CLI reads through.
+    let mut mcp = McpReads::new(service, TestClock(Rc::clone(&journey.clock)), TTL);
+
+    // Every read is fresh on the one committed revision, so both boundaries share
+    // this metadata; the MCP side adds exactly the dataset code and Manifest
+    // version that the CLI never renders.
+    let metadata = json!({
+        "checked_at": NOW.seconds(),
+        "freshness": "fresh",
+        "revision": 1,
+        "source": "profile",
+    });
+    let mut mcp_metadata = metadata.clone();
+    mcp_metadata["dataset"] = json!("profile_inventory");
+    mcp_metadata["definition_version"] = json!(DEFINITION_VERSION);
+
+    // ---- list_characters: the exact two-character view, identical on both
+    // boundaries because a character carries no MCP-only field. ----
+    let cli_list = cli_json(mcp.queries_mut(), &["--json", "list-characters"]);
+    let mcp_list = mcp_read_list(&mut mcp);
+    assert_shared(&cli_list, &mcp_list, "list");
+    assert_eq!(cli_list["metadata"], metadata);
+    assert_eq!(mcp_list["metadata"], mcp_metadata);
+    let characters = json!([
+        {"class": "Warlock", "gender": "Male", "id": CHARACTER_ONE, "light": 1810, "name": null, "race": "Awoken"},
+        {"class": "Hunter", "gender": "Female", "id": CHARACTER_TWO, "light": 1795, "name": null, "race": "Human"},
+    ]);
+    assert_eq!(cli_list["characters"], characters);
+    assert_eq!(mcp_list["characters"], characters);
+
+    // ---- search_inventory: one bounded read covers the vaulted item, the
+    // `Other`-located item, and the equipped item carrying perks and power. ----
+    let cli_search = cli_json(
+        mcp.queries_mut(),
+        &[
+            "--json",
+            "search-inventory",
+            "--item-hash",
+            "1001",
+            "--item-hash",
+            "1003",
+            "--item-hash",
+            "3001",
+        ],
+    );
+    let mcp_search = mcp_read_search(
+        &mut mcp,
+        json!({"instances": {"item_hashes": [1001, 1003, 3001]}}),
+    );
+    assert_shared(&cli_search, &mcp_search, "search");
+    assert_eq!(cli_search["metadata"], metadata);
+    assert_eq!(mcp_search["metadata"], mcp_metadata);
+    // The MCP definition view carries the Manifest version the CLI never renders.
+    assert_eq!(
+        mcp_search["candidates"][0]["definition_version"],
+        DEFINITION_VERSION
+    );
+
+    // The vaulted hit is pinned exactly. Its instance carries no MCP-only field,
+    // so both boundaries agree byte for byte on it, which proves the MCP instance
+    // adds nothing outside the documented differences.
+    let cli_vault = hit_of(&cli_search["hits"], INSTANCE_VAULT);
+    let vault_instance = json!({
+        "equipped": false, "instance_id": INSTANCE_VAULT, "item_hash": 1001,
+        "location": {"kind": "vault"}, "locked": true, "perks": [], "power": 1800, "quantity": 1,
+    });
+    assert_eq!(cli_vault["instance"], vault_instance);
+    assert_eq!(
+        hit_of(&mcp_search["hits"], INSTANCE_VAULT)["instance"],
+        vault_instance
+    );
+    assert_eq!(
+        cli_vault["definition"],
+        json!({
+            "bucket_hash": null, "element": null, "hash": 1001, "item_type": "Rocket Launcher",
+            "name": "Gjallarhorn", "tags": ["exotic", "solar"], "tier": null,
+        })
+    );
+
+    // The `Other`-located hit carries the one CLI-only field: the provider
+    // location text. The MCP `Other` view keeps the kind and drops the text, so
+    // no provider string crosses the MCP boundary.
+    assert_eq!(
+        hit_of(&cli_search["hits"], INSTANCE_OTHER)["instance"]["location"],
+        json!({"kind": "other", "value": "bungie-profile-location:3"})
+    );
+    assert_eq!(
+        hit_of(&mcp_search["hits"], INSTANCE_OTHER)["instance"]["location"],
+        json!({"kind": "other"})
+    );
+    assert!(
+        !mcp_search.to_string().contains("bungie-profile-location"),
+        "the MCP projection must not carry provider Other location text"
+    );
+
+    // The equipped hit pins the perk views: the CLI keeps the sanitized
+    // active/visible pair, the MCP view keeps the exact perk hash beside it.
+    assert_eq!(
+        hit_of(&cli_search["hits"], INSTANCE_CHAR_ONE_EQUIPPED)["instance"]["perks"],
+        json!([
+            {"active": true, "visible": true},
+            {"active": false, "visible": false},
+            {"active": false, "visible": true},
+        ])
+    );
+    assert_eq!(
+        hit_of(&mcp_search["hits"], INSTANCE_CHAR_ONE_EQUIPPED)["instance"]["perks"],
+        json!([
+            {"active": true, "perk_hash": 5001, "visible": true},
+            {"active": false, "perk_hash": 5002, "visible": false},
+            {"active": false, "perk_hash": 5001, "visible": true},
+        ])
+    );
+
+    // ---- inspect_item: exact identity on both boundaries ----
+    let cli_inspect = cli_json(
+        mcp.queries_mut(),
+        &["--json", "inspect-item", INSTANCE_CHAR_ONE_EQUIPPED],
+    );
+    let mcp_inspect = mcp_read_inspect(&mut mcp, INSTANCE_CHAR_ONE_EQUIPPED);
+    assert_shared(&cli_inspect, &mcp_inspect, "inspect");
+    assert_eq!(cli_inspect["metadata"], metadata);
+    assert_eq!(mcp_inspect["metadata"], mcp_metadata);
+    assert_eq!(mcp_inspect["status"], "found");
+    // Definition identity and instance identity stay distinct on both sides, and
+    // the MCP definition carries the pinned Manifest version.
+    assert_eq!(cli_inspect["definition"]["hash"], 3001);
+    assert_eq!(cli_inspect["instance"]["item_hash"], 3001);
+    assert_eq!(
+        mcp_inspect["definition"]["definition_version"],
+        DEFINITION_VERSION
+    );
+
+    // ---- inspect_item missing: the one intentional representation difference.
+    // The CLI returns a typed `item_not_found` process outcome on stderr with no
+    // success object; the MCP read returns the explicit `{"status":"missing"}`
+    // variant of the same shared `Resolution::Missing`. ----
+    let mcp_missing = mcp_read_inspect(&mut mcp, INSTANCE_MISSING);
+    assert_eq!(mcp_missing, json!({"status": "missing"}));
+    let cli_missing = cli(
+        mcp.queries_mut(),
+        &["--json", "inspect-item", INSTANCE_MISSING],
+        NOW,
+    );
+    assert_eq!(cli_missing.exit_code, 32);
+    assert!(
+        cli_missing.stdout.is_empty(),
+        "a missing instance renders no CLI success object"
+    );
+    let cli_missing_error: Value =
+        serde_json::from_str(cli_missing.stderr.trim()).expect("one JSON error object");
+    assert_eq!(cli_missing_error["error"]["code"], "item_not_found");
+    assert_eq!(
+        cli_missing_error["error"]["message"],
+        "the requested item instance was not found"
+    );
+    assert_no_secrets(&cli_missing.stderr);
+
+    // Neither boundary refreshed the projection or touched the scripted gateway.
+    assert_eq!(journey.request_count(), after_seed);
 }

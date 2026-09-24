@@ -15,6 +15,10 @@ url.workspace = true
 [dev-dependencies]
 destiny-app = { path = "../destiny-app", features = ["test-support"] }
 destiny-cli = { path = "../destiny-cli" }
+# Dev-only edge used by the CLI/MCP read-parity journey to serialize the real
+# MCP read projections. Production edges stay `destiny-mcp -> destiny-adapters`;
+# this dev-dependency edge introduces no production dependency inversion.
+destiny-mcp = { path = "../destiny-mcp" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { workspace = true, features = ["keychain", "protected"] }
