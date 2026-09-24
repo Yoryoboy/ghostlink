@@ -16,7 +16,7 @@ IN PROGRESS on `feature/main-consolidation` from clean WU-014 `37786e0`. Establi
 ## Tasks
 
 - [x] **MCI-001 — Persist audit and consolidation tracker.** Route: inline Git state plus delegated read-only topology/assumption checks. Checks: tracker + full Engram mirror readback (`6029`), branch and remote inventory, clean worktrees, `git diff --check` exit 0. Commit: `8a90058` (`docs: plan main consolidation`).
-- [ ] **MCI-002 — Preserve WU-008 ancestry without altering product tree.** Route: parent Git integration after independent exact-tree challenge. Make a labelled ancestry-only merge on feature branch, confirm WU-008 is an ancestor and commit tree exactly matches pre-merge tree. Commit: pending.
+- [x] **MCI-002 — Preserve WU-008 ancestry without altering product tree.** Route: parent Git integration after independent exact-tree challenge. Merge `742c70e` (`chore: preserve already integrated WU-008 history`) has parents `558ddfb` and `ae09804`; its Git tree before/after is exactly `8024ad0dbcca1ed228d493bb852dd7dd5d52538c`. WU-008 is now an ancestor; no source diff was applied. Rollback boundary: this ancestry-only merge (no product behavior to revert). Commit: `742c70e`.
 - [ ] **MCI-003 — Verify integrated candidate and create local main.** Route: independent `gentle-ai-verify` for full offline commands; parent spot-check and Git status/ancestry. Create `main` at verified candidate tip and switch to it, without rewriting existing history. Commit: integration commit from MCI-002 (no unnecessary source edit).
 - [ ] **MCI-004 — Publish and set GitHub default main.** Route: parent exact remote Git/gh commands. Push `main` normally, verify exact remote SHA, change GitHub default to main, then confirm `gh repo view` and remote HEAD. Record remote outcome. Commit: evidence tracker update if needed.
 - [ ] **MCI-005 — Remove superseded refs and generated worktrees/caches.** Route: parent exact audited cleanup. Only after main is published/default and all local branch tips are ancestors: remove the five clean auxiliary worktrees with user-approved ignored build caches, delete old local feature branches with `-d`, delete only the seven enumerated remote feature branches, then clean main's generated `target/`. Preserve non-generated surprises and stop instead of forcing uncertain state. Commit: evidence tracker update if needed.
@@ -24,9 +24,9 @@ IN PROGRESS on `feature/main-consolidation` from clean WU-014 `37786e0`. Establi
 
 ## Progress
 
-- Audit completed without mutation; no `main` exists yet. Current source baseline is clean WU-014 `37786e0`; `feature/main-consolidation` was created from it.
+- Audit established WU-014 source baseline `37786e0`; tracker commits `8a90058` and `558ddfb`; tree-identical WU-008 ancestry merge `742c70e`. No `main` exists yet and the integration branch is clean.
 - Worktree/cache deletion explicitly authorized by user after measuring ~30 GB; nothing deleted yet.
 
 ## Next step
 
-Preserve equivalent WU-008 history via a tree-identical ancestry-only merge, then independently verify before publishing.
+Independently run offline suite and Git ancestry checks, then create local `main` at the verified tip.
