@@ -17,16 +17,16 @@ IN PROGRESS on `feature/main-consolidation` from clean WU-014 `37786e0`. Establi
 
 - [x] **MCI-001 — Persist audit and consolidation tracker.** Route: inline Git state plus delegated read-only topology/assumption checks. Checks: tracker + full Engram mirror readback (`6029`), branch and remote inventory, clean worktrees, `git diff --check` exit 0. Commit: `8a90058` (`docs: plan main consolidation`).
 - [x] **MCI-002 — Preserve WU-008 ancestry without altering product tree.** Route: parent Git integration after independent exact-tree challenge. Merge `742c70e` (`chore: preserve already integrated WU-008 history`) has parents `558ddfb` and `ae09804`; its Git tree before/after is exactly `8024ad0dbcca1ed228d493bb852dd7dd5d52538c`. WU-008 is now an ancestor; no source diff was applied. Rollback boundary: this ancestry-only merge (no product behavior to revert). Commit: `742c70e`.
-- [ ] **MCI-003 — Verify integrated candidate and create local main.** Route: independent `gentle-ai-verify` plus parent Git checks. Candidate `23afe45` is clean; all 18 original local feature tips and seven remote feature tips are ancestors; since WU-014 the only file delta is this tracker. Checks: fmt/check/clippy passed; `cargo test --workspace --all-features` 737 passed (19 suites); `git diff --check` exit 0. Create `main` at the final evidence tip and switch without rewriting history. Commit: pending evidence commit.
+- [x] **MCI-003 — Verify integrated candidate and create local main.** Route: independent `gentle-ai-verify` plus parent Git checks. Candidate `23afe45` was clean; all 18 original local feature tips and seven remote feature tips were ancestors; since WU-014 the only file delta was this tracker. Checks: fmt/check/clippy passed; `cargo test --workspace --all-features` 737 passed (19 suites); `git diff --check` exit 0. Verification evidence commit `956b34a` (`docs: record main candidate verification`); local `main` created at that exact commit and checked out without rewriting history.
 - [ ] **MCI-004 — Publish and set GitHub default main.** Route: parent exact remote Git/gh commands. Push `main` normally, verify exact remote SHA, change GitHub default to main, then confirm `gh repo view` and remote HEAD. Record remote outcome. Commit: evidence tracker update if needed.
 - [ ] **MCI-005 — Remove superseded refs and generated worktrees/caches.** Route: parent exact audited cleanup. Only after main is published/default and all local branch tips are ancestors: remove the five clean auxiliary worktrees with user-approved ignored build caches, delete old local feature branches with `-d`, delete only the seven enumerated remote feature branches, then clean main's generated `target/`. Preserve non-generated surprises and stop instead of forcing uncertain state. Commit: evidence tracker update if needed.
 - [ ] **MCI-006 — Confirm main-only state and WU-015 handoff.** Route: read-only local and remote inventories, Git tree/HEAD/status and disk usage. Record failed/skipped/pending checks and final SHA, leave current branch `main` clean; no WU-015 branch until the next session. Commit: final tracker evidence commit on main if required.
 
 ## Progress
 
-- Audit established WU-014 source baseline `37786e0`; tracker commits `8a90058` and `558ddfb`; tree-identical WU-008 ancestry merge `742c70e`. No `main` exists yet and the integration branch is clean.
+- Audit established WU-014 source baseline `37786e0`; tracker commits `8a90058`, `558ddfb`, `23afe45`, `956b34a`; tree-identical WU-008 ancestry merge `742c70e`. Local `main` now exists and is checked out clean.
 - Worktree/cache deletion explicitly authorized by user after measuring ~30 GB; nothing deleted yet.
 
 ## Next step
 
-Commit verification evidence, create and switch to local `main`, then verify its exact SHA before publication.
+Commit this local-main evidence, publish `main`, verify the remote SHA, and change GitHub's default branch before any deletion.
