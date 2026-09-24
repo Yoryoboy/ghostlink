@@ -134,4 +134,4 @@ Open.
 
 ## Next step
 
-Run DHS-002 as a delegated multi-file integration of WU-008 into `feature/destiny-hardening`, then verify the merged CLI/query baseline before starting hardening behavior.
+Run DHS-003 as a delegated multi-file hardening task for shared redaction and request correlation contracts.
