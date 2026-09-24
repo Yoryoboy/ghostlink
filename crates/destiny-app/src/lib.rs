@@ -13,38 +13,38 @@ pub mod test_support;
 
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
 pub use config::{MAX_READ_FRESHNESS_TTL_SECONDS, ReadApiKey, ReadRuntimeConfig};
-pub use destiny_core::{AppError, ErrorCategory};
-
 // Additive provider-neutral re-exports for presentation crates.
 //
 // `destiny-mcp` must translate MCP inputs and outputs against the shared read
 // and mutation contracts and compose its read and mutation services without
-// naming `destiny-core` in its manifest. The public types that already appear in
+// naming `destiny-core` in its manifest, and `destiny-cli` must dispatch reads
+// against the same shared contracts. The public types that already appear in
 // `QueryService` and `MutationService` requests, results, error categories,
 // bounds, injected policy, and provider ports therefore have to be reachable
 // through this crate. This block is the smallest additive surface that lets the
 // presentation layer implement that translation and lets its binary composition
 // root load a credential; it adds no behavior and no new abstraction.
 pub use destiny_core::{
-    AccessCredential, AccessCredentialMetadata, Character, CharacterId, CharacterListResult, Clock,
-    CredentialMaterial, CredentialStore, Dataset, DefinitionReplacementInput, DefinitionRepository,
-    DefinitionSearchQuery, DefinitionVersion, DestinationSelector, DestinyMembership,
-    ExecutionEvidence, FreshnessPolicy, FreshnessStatus, InspectItemRequest, InstanceSearchQuery,
-    InventoryRepository, InventorySearchResult, InventorySnapshot, InventorySnapshotInput,
+    AccessCredential, AccessCredentialMetadata, AppError, BucketHash, Character, CharacterId,
+    CharacterListResult, Clock, CredentialMaterial, CredentialStore, Dataset,
+    DefinitionReplacementInput, DefinitionRepository, DefinitionSearchQuery, DefinitionVersion,
+    DestinationSelector, DestinyMembership, ErrorCategory, ExecutionEvidence, FreshnessPolicy,
+    FreshnessStatus, InspectItemRequest, InstanceSearchQuery, InventoryRepository,
+    InventorySearchHit, InventorySearchResult, InventorySnapshot, InventorySnapshotInput,
     ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstance, ItemInstanceId,
     ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH,
     MAX_TAG_FILTERS, MembershipId, MembershipType, MoveEffects, MoveIntentAuthorization, MovePlan,
     MoveRequest, PerkHash, PerkSummary, PlanId, PlanIdGenerator, PlanLifetime, ProfileGateway,
     ProfileSyncOutcome, ProfileSyncReason, QueryMetadata, Resolution, SearchRepository, SearchTerm,
-    SourceMarker, StepOutcome, SyncMetadata, Timestamp, TransferGateway, TransferOutcome,
-    TransferRejection, TransferRequest,
+    SourceMarker, StepOutcome, SyncMetadata, SyncRevision, Timestamp, TransferGateway,
+    TransferOutcome, TransferRejection, TransferRequest,
 };
 pub use manifest::{ManifestService, normalize_manifest};
 pub use mutation::{
     ExecutionAuthorization, ExecutionFailure, IncompleteExecution, MoveExecutionOutcome,
     MutationError, MutationService, VerificationFailure, VerificationFailureReason,
 };
-pub use queries::{QueryService, SearchInventoryRequest};
+pub use queries::{QueryOperations, QueryService, SearchInventoryRequest};
 pub use sync::ProfileSyncService;
 
 /// Reports that the application foundation is available.

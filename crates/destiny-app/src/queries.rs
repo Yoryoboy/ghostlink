@@ -257,6 +257,73 @@ where
     }
 }
 
+/// The narrow, object-safe read surface a presentation boundary dispatches to.
+///
+/// It exposes only the three committed reads and keeps the caller-supplied
+/// [`FreshnessPolicy`] and explicit [`Timestamp`] in every signature. A caller
+/// therefore forwards its own policy and time and never reproduces the
+/// freshness, authorization, or synchronization decision owned by the shared
+/// service: an implementation of this trait delegates to [`QueryService`] and
+/// decides nothing beyond that delegation. The trait has no generic methods,
+/// associated types, or `Self`-typed returns, so `&mut dyn QueryOperations` is
+/// a valid dispatch target.
+pub trait QueryOperations {
+    /// Lists the committed characters after synchronizing the projection.
+    fn list_characters(
+        &mut self,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<CharacterListResult, AppError>;
+
+    /// Searches definitions and, optionally, concrete instances.
+    fn search_inventory(
+        &mut self,
+        request: &SearchInventoryRequest,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<InventorySearchResult, AppError>;
+
+    /// Inspects exactly one concrete instance.
+    fn inspect_item(
+        &mut self,
+        request: &InspectItemRequest,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<Resolution<ItemInspection>, AppError>;
+}
+
+impl<G, R> QueryOperations for QueryService<G, R>
+where
+    G: ProfileGateway,
+    R: InventoryRepository + SearchRepository + DefinitionRepository,
+{
+    fn list_characters(
+        &mut self,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<CharacterListResult, AppError> {
+        QueryService::list_characters(self, policy, now)
+    }
+
+    fn search_inventory(
+        &mut self,
+        request: &SearchInventoryRequest,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<InventorySearchResult, AppError> {
+        QueryService::search_inventory(self, request, policy, now)
+    }
+
+    fn inspect_item(
+        &mut self,
+        request: &InspectItemRequest,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<Resolution<ItemInspection>, AppError> {
+        QueryService::inspect_item(self, request, policy, now)
+    }
+}
+
 /// The sanitized error for a projection that cannot answer consistently.
 fn invalid_repository_state() -> AppError {
     AppError::new(ErrorCategory::LocalStorage)
@@ -296,14 +363,14 @@ fn query_metadata(
 
 #[cfg(all(test, feature = "test-support"))]
 mod tests {
-    use super::{QueryService, SearchInventoryRequest};
+    use super::{QueryOperations, QueryService, SearchInventoryRequest};
     use crate::sync::ProfileSyncService;
     use crate::test_support::{
         InMemoryDefinitionRepository, InMemoryInventoryRepository, InMemorySearchRepository,
         QueuedProfileGateway,
     };
     use destiny_core::{
-        AppError, Character, CharacterId, Dataset, DefinitionReplacementInput,
+        AppError, Character, CharacterId, CharacterListResult, Dataset, DefinitionReplacementInput,
         DefinitionRepository, DefinitionSearchQuery, DefinitionVersion, DestinyMembership,
         ErrorCategory, FreshnessPolicy, FreshnessStatus, InspectItemRequest, InstanceSearchQuery,
         InventoryRepository, InventorySnapshot, InventorySnapshotInput, ItemDefinition, ItemHash,
@@ -637,6 +704,33 @@ mod tests {
         let mut repository = CompositeRepository::with_definitions(standard_definitions());
         repository.commit(snapshot_input(fresh_checked_at(), characters, items));
         service(shared, repository)
+    }
+
+    #[test]
+    fn query_operations_trait_dispatches_to_the_shared_service() {
+        let shared = gateway();
+        let mut service = fresh_service(&shared, vec![character("warlock")], Vec::new());
+
+        // Naming the trait object type is a type-level proof that the surface
+        // is object-safe. The generic helper then proves it delegates to the
+        // shared implementation, preserving committed metadata and the skip.
+        let _object_safe: Option<&mut dyn QueryOperations> = None;
+        fn list_characters<S: QueryOperations + ?Sized>(
+            service: &mut S,
+        ) -> Result<CharacterListResult, AppError> {
+            service.list_characters(TTL, NOW)
+        }
+
+        let listed = list_characters(&mut service).expect("trait list succeeds");
+
+        assert_eq!(listed.characters.len(), 1);
+        assert_eq!(listed.characters[0].id.as_str(), "warlock");
+        assert_eq!(listed.metadata.sync.dataset, Dataset::ProfileInventory);
+        assert_eq!(listed.metadata.sync.source, SourceMarker::Profile);
+        assert_eq!(listed.metadata.sync.revision, SyncRevision::new(1));
+        assert_eq!(listed.metadata.freshness, FreshnessStatus::Fresh);
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
     }
 
     #[test]
