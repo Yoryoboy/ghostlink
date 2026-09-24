@@ -418,7 +418,7 @@ impl ProfileApiKey {
 
 impl fmt::Debug for ProfileApiKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("ProfileApiKey")
+        destiny_core::redact::opaque(formatter, "ProfileApiKey")
     }
 }
 
@@ -450,7 +450,7 @@ impl ProfileBearerToken {
 
 impl fmt::Debug for ProfileBearerToken {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("ProfileBearerToken")
+        destiny_core::redact::opaque(formatter, "ProfileBearerToken")
     }
 }
 
@@ -568,8 +568,14 @@ impl fmt::Debug for ProfileHttpRequest<'_> {
             .debug_struct("ProfileHttpRequest")
             .field("method", &"GET")
             .field("url", &self.url)
-            .field("api_key", &self.api_key.map(|_| "<redacted>"))
-            .field("bearer", &self.bearer.map(|_| "<redacted>"))
+            .field(
+                "api_key",
+                &destiny_core::redact::redact_optional(self.api_key),
+            )
+            .field(
+                "bearer",
+                &destiny_core::redact::redact_optional(self.bearer),
+            )
             .finish()
     }
 }
@@ -626,9 +632,9 @@ impl fmt::Debug for ProfileHttpResponse {
             .field("content_length", &self.content_length)
             .field(
                 "content_type",
-                &self.content_type.as_ref().map(|_| "<redacted>"),
+                &destiny_core::redact::redact_optional(self.content_type.as_ref()),
             )
-            .field("body", &"<redacted>")
+            .field("body", &destiny_core::redact::REDACTED)
             .finish()
     }
 }

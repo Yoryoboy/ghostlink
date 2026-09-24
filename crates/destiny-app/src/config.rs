@@ -190,7 +190,7 @@ where
 /// adapter-level key contract without importing it. Bytes are reachable only
 /// through [`Self::expose_secret`] and are never rendered by [`fmt::Debug`].
 #[derive(Clone, Eq, PartialEq)]
-pub struct ReadApiKey(String);
+pub struct ReadApiKey(destiny_core::redact::Redacted<String>);
 
 impl ReadApiKey {
     /// Validates a candidate API key.
@@ -201,7 +201,7 @@ impl ReadApiKey {
     pub fn new(value: impl Into<String>) -> Result<Self, AppError> {
         let value = value.into();
         if !value.is_empty() && value.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
-            return Ok(Self(value));
+            return Ok(Self(destiny_core::redact::Redacted::new(value)));
         }
         Err(AppError::configuration())
     }
@@ -209,13 +209,13 @@ impl ReadApiKey {
     /// The trusted accessor for the composition root. The value is never
     /// rendered by any diagnostic surface.
     pub fn expose_secret(&self) -> &str {
-        &self.0
+        self.0.expose_secret()
     }
 }
 
 impl fmt::Debug for ReadApiKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("ReadApiKey")
+        destiny_core::redact::opaque(formatter, "ReadApiKey")
     }
 }
 
@@ -301,17 +301,21 @@ impl fmt::Debug for ReadRuntimeConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ReadRuntimeConfig")
-            .field("api_key", &"<redacted>")
-            .field("database_path", &"<redacted>")
-            .field("definition_version", &"<redacted>")
-            .field("freshness_ttl_seconds", &"<redacted>")
+            .field("api_key", &destiny_core::redact::REDACTED)
+            .field("database_path", &destiny_core::redact::REDACTED)
+            .field("definition_version", &destiny_core::redact::REDACTED)
+            .field("freshness_ttl_seconds", &destiny_core::redact::REDACTED)
             .finish()
     }
 }
 
 impl fmt::Display for ReadRuntimeConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("ReadRuntimeConfig(<redacted>)")
+        write!(
+            formatter,
+            "ReadRuntimeConfig({})",
+            destiny_core::redact::REDACTED
+        )
     }
 }
 

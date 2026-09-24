@@ -7,6 +7,7 @@ pub mod ids;
 pub mod mutation;
 pub mod ports;
 pub mod query;
+pub mod redact;
 pub mod state;
 
 pub use auth::{
@@ -19,8 +20,8 @@ pub use domain::{
 };
 pub use error::{AppError, ErrorCategory};
 pub use ids::{
-    BucketHash, CharacterId, DefinitionVersion, ItemHash, ItemInstanceId, MembershipId,
-    MembershipType, PerkHash, PlanId, SyncRevision,
+    BucketHash, CharacterId, CorrelationId, DefinitionVersion, ItemHash, ItemInstanceId,
+    MembershipId, MembershipType, PerkHash, PlanId, SyncRevision,
 };
 pub use mutation::{
     DestinationSelector, ExecutionEvidence, ExecutionTicket, IntentAuthorizationOutcome,
@@ -44,6 +45,7 @@ pub use query::{
     MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS, QueryMetadata, SearchTerm,
     definition_matches, instance_matches, normalize_search_text,
 };
+pub use redact::{REDACTED, Redacted, opaque, redact_optional};
 pub use state::{
     Dataset, FreshnessInput, FreshnessPolicy, FreshnessStatus, ProfileSyncOutcome,
     ProfileSyncReason, Resolution, RevisionAllocation, RevisionOverflow, RevisionState,

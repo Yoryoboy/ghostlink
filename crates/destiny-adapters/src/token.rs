@@ -193,9 +193,9 @@ impl fmt::Debug for TokenHttpResponse {
             .field("content_length", &self.content_length)
             .field(
                 "content_type",
-                &self.content_type.as_ref().map(|_| "<redacted>"),
+                &destiny_core::redact::redact_optional(self.content_type.as_ref()),
             )
-            .field("body", &"<redacted>")
+            .field("body", &destiny_core::redact::REDACTED)
             .finish()
     }
 }
@@ -1046,6 +1046,22 @@ mod tests {
         assert_no_secrets(&format!("{error}"), secrets);
         assert_no_secrets(&format!("{error:?}"), secrets);
         assert_no_secrets(&format!("{exchange:?}"), secrets);
+    }
+
+    #[test]
+    fn response_diagnostics_use_the_shared_redaction_marker() {
+        // The shared core marker is the one value-hiding placeholder; the
+        // response media type and streaming body must both collapse to it, and
+        // a payload-ish sentinel in either must never reach the diagnostic.
+        let response = response_with_content_type(
+            200,
+            Some("application/json; boundary=content-type-sentinel"),
+            "body-sentinel",
+        );
+        let rendered = format!("{response:?}");
+        assert!(rendered.contains(destiny_core::redact::REDACTED));
+        assert!(!rendered.contains("content-type-sentinel"));
+        assert!(!rendered.contains("body-sentinel"));
     }
 
     fn assert_no_secrets(rendered: &str, secrets: &[&str]) {

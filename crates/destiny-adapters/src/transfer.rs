@@ -154,7 +154,7 @@ impl TransferApiKey {
 
 impl fmt::Debug for TransferApiKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("TransferApiKey")
+        destiny_core::redact::opaque(formatter, "TransferApiKey")
     }
 }
 
@@ -186,7 +186,7 @@ impl TransferBearerToken {
 
 impl fmt::Debug for TransferBearerToken {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("TransferBearerToken")
+        destiny_core::redact::opaque(formatter, "TransferBearerToken")
     }
 }
 
@@ -281,8 +281,14 @@ impl fmt::Debug for TransferHttpRequest<'_> {
             .field("method", &"POST")
             .field("url", &self.url)
             .field("field_names", &field_names)
-            .field("api_key", &self.api_key.map(|_| "<redacted>"))
-            .field("bearer", &self.bearer.map(|_| "<redacted>"))
+            .field(
+                "api_key",
+                &destiny_core::redact::redact_optional(self.api_key),
+            )
+            .field(
+                "bearer",
+                &destiny_core::redact::redact_optional(self.bearer),
+            )
             .finish()
     }
 }
@@ -339,9 +345,9 @@ impl fmt::Debug for TransferHttpResponse {
             .field("content_length", &self.content_length)
             .field(
                 "content_type",
-                &self.content_type.as_ref().map(|_| "<redacted>"),
+                &destiny_core::redact::redact_optional(self.content_type.as_ref()),
             )
-            .field("body", &"<redacted>")
+            .field("body", &destiny_core::redact::REDACTED)
             .finish()
     }
 }

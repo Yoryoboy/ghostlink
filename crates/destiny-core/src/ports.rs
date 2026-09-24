@@ -330,7 +330,7 @@ impl fmt::Debug for DestinyMembership {
         formatter
             .debug_struct("DestinyMembership")
             .field("membership_type", &self.membership_type)
-            .field("membership_id", &"<redacted>")
+            .field("membership_id", &crate::redact::REDACTED)
             .finish()
     }
 }
@@ -671,22 +671,22 @@ pub trait TransferGateway {
 /// Opaque credential material. Bytes are available only through the explicit
 /// trusted-adapter exposure boundary and are never available to formatting APIs.
 #[derive(Clone, Eq, PartialEq)]
-pub struct CredentialMaterial(Vec<u8>);
+pub struct CredentialMaterial(crate::redact::Redacted<Vec<u8>>);
 
 impl CredentialMaterial {
     pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Self {
-        Self(bytes.into())
+        Self(crate::redact::Redacted::new(bytes.into()))
     }
 
     /// Exposes secret bytes to a trusted credential-store/provider adapter.
     pub fn expose_secret(&self) -> &[u8] {
-        &self.0
+        self.0.expose_secret().as_slice()
     }
 }
 
 impl fmt::Debug for CredentialMaterial {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("CredentialMaterial")
+        crate::redact::opaque(formatter, "CredentialMaterial")
     }
 }
 

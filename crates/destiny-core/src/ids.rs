@@ -1,29 +1,30 @@
 //! Opaque identifiers shared by the provider-neutral domain.
 
+use crate::error::{AppError, ErrorCategory};
 use std::fmt;
 
 macro_rules! string_id {
     ($name:ident) => {
         #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
-        pub struct $name(String);
+        pub struct $name(crate::redact::Redacted<String>);
 
         impl $name {
             pub fn new(value: impl Into<String>) -> Self {
-                Self(value.into())
+                Self(crate::redact::Redacted::new(value.into()))
             }
 
             pub fn as_str(&self) -> &str {
-                &self.0
+                self.0.expose_secret()
             }
 
             pub fn into_inner(self) -> String {
-                self.0
+                self.0.into_inner()
             }
         }
 
         impl fmt::Debug for $name {
             fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str(stringify!($name))
+                crate::redact::opaque(formatter, stringify!($name))
             }
         }
 
@@ -46,6 +47,58 @@ string_id!(CharacterId);
 string_id!(ItemInstanceId);
 string_id!(DefinitionVersion);
 string_id!(PlanId);
+
+/// A non-secret request-correlation identifier.
+///
+/// Unlike the opaque identifiers in this module, a correlation identifier is
+/// deliberately safe to render: it exists to tie a set of diagnostics together,
+/// and hiding it would defeat that purpose. It is still bounded to visible
+/// ASCII so it can never inject a control character, a line break, or a header
+/// separator when it is carried through a diagnostic, and it must never be
+/// derived from a provider payload, credential, or account value.
+///
+/// [`fmt::Display`] renders the bare value and [`fmt::Debug`] renders
+/// `CorrelationId(value)`, both intentionally unredacted.
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CorrelationId(String);
+
+impl CorrelationId {
+    /// The longest correlation identifier a diagnostic may carry.
+    pub const MAX_LEN: usize = 64;
+
+    /// Validates a candidate correlation identifier.
+    ///
+    /// Empty, oversized, whitespace-bearing, control-bearing, or non-ASCII
+    /// values are rejected as a sanitized configuration failure; the rejected
+    /// value never appears in the error.
+    pub fn new(value: impl Into<String>) -> Result<Self, AppError> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > Self::MAX_LEN
+            || !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+        {
+            return Err(AppError::new(ErrorCategory::ConfigurationError));
+        }
+        Ok(Self(value))
+    }
+
+    /// The correlation value as a printable string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for CorrelationId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl fmt::Debug for CorrelationId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "CorrelationId({})", self.0)
+    }
+}
 
 /// A provider membership type kept open because providers may add values.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -155,8 +208,10 @@ impl fmt::Display for SyncRevision {
 #[cfg(test)]
 mod tests {
     use super::{
-        CharacterId, ItemHash, ItemInstanceId, MembershipId, MembershipType, PerkHash, SyncRevision,
+        CharacterId, CorrelationId, ItemHash, ItemInstanceId, MembershipId, MembershipType,
+        PerkHash, SyncRevision,
     };
+    use crate::error::ErrorCategory;
 
     #[test]
     fn identifiers_are_explicitly_constructed_and_read() {
@@ -211,5 +266,48 @@ mod tests {
 
         assert_eq!(character.as_str(), "character-secret-sentinel");
         assert_eq!(item.into_inner(), "item-secret-sentinel");
+    }
+
+    #[test]
+    fn correlation_id_is_printable_and_bounded_to_visible_ascii() {
+        let id = CorrelationId::new("req-2026-09-24-0001").expect("valid correlation id");
+        // A correlation id is intentionally non-secret: both formatting paths
+        // render the value so diagnostics can group by request.
+        assert_eq!(id.as_str(), "req-2026-09-24-0001");
+        assert_eq!(id.to_string(), "req-2026-09-24-0001");
+        assert_eq!(format!("{id:?}"), "CorrelationId(req-2026-09-24-0001)");
+
+        // The exact length bound is inclusive, and every byte is visible ASCII
+        // so a correlation id can never smuggle a control byte or separator.
+        let boundary = CorrelationId::new("a".repeat(CorrelationId::MAX_LEN)).expect("boundary");
+        assert_eq!(boundary.as_str().len(), CorrelationId::MAX_LEN);
+        assert!(
+            boundary
+                .as_str()
+                .bytes()
+                .all(|byte| (0x21..=0x7e).contains(&byte))
+        );
+    }
+
+    #[test]
+    fn correlation_id_rejects_unsafe_values_without_echoing_them() {
+        let oversized = "a".repeat(CorrelationId::MAX_LEN + 1);
+        for invalid in [
+            "",
+            " ",
+            "with space",
+            "line\nbreak",
+            "tab\t",
+            "caf\u{e9}",
+            oversized.as_str(),
+        ] {
+            let error = CorrelationId::new(invalid).expect_err("must reject");
+            assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+        }
+
+        // A distinctive rejected value never reaches the sanitized diagnostic.
+        let sentinel = "correlation-secret-sentinel";
+        let error = CorrelationId::new(sentinel.repeat(4)).expect_err("oversized");
+        assert!(!format!("{error} {error:?}").contains(sentinel));
     }
 }
