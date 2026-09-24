@@ -2,7 +2,7 @@
 
 ## Status
 
-WU-012 ACTIVE on `feature/destiny-mcp-mutation-tool`, based on WU-011 `8fe817b`.
+WU-012 COMPLETE and CLOSED on `feature/destiny-mcp-mutation-tool`; implementation boundary `9c47643`, final closure evidence pending the commit below.
 
 ## Objective
 
@@ -86,13 +86,13 @@ WU-009 and WU-010 provide the safe shared mutation contracts and execution behav
   - Commit evidence: `9b0ed11` (`feat: compose MCP item mutation`).
   - Review evidence: native assessment high due to the process boundary; independent verification found two low PlanId documentation/test gaps, both corrected and re-verified with no remaining findings. Final observed checks: 69 MCP default tests, 73 all-feature tests including four child-process stdio journeys, workspace check/clippy/fmt/diff clean, help clean, and empty-environment startup failed closed with zero stdout.
 
-- [ ] **DMM-005 — Independently verify and close WU-012** *(in progress)*
+- [x] **DMM-005 — Independently verify and close WU-012**
   - Verify the complete committed range against WU-012, AC-4/6/7/8/9, all exclusions, secret boundaries, and rollback boundary.
   - Reconcile every finding before closure and record exact observed evidence.
   - Acceptance: no blocker/high/medium finding remains; every acceptance criterion has direct evidence; worktree is clean after closure evidence is committed.
   - Checks: full workspace matrix, MCP focused matrix, binary smoke checks, `git diff --check`, committed-range/status inspection.
-  - Commit evidence: pending.
-  - Review evidence: pending.
+  - Commit evidence: this closure document commit.
+  - Review evidence: final independent whole-range verification over `8fe817b..9c47643` found no blocker/high/medium findings, no unmet acceptance criterion, and no scope creep. Observed 608 default and 612 all-feature workspace tests, all checks/clippy/fmt/diff clean, four child-process stdio journeys, clean help, clean worktree, and fail-closed empty-environment startup with zero stdout.
 
 ## Acceptance criteria
 
@@ -124,8 +124,12 @@ WU-009 and WU-010 provide the safe shared mutation contracts and execution behav
 - DMM-004 completed in commit `9b0ed11`: production mutation is default-enabled; the product binary composes shared read/mutation services, a process-local production plan-ID generator, Bungie transfer gateway, and one shared SQLite/profile boundary.
 - DMM-004 offline stdio proof covers verified success, repeated request, already-satisfied no-op, changed preflight, partial execution, sanitized missing-item failure, and secret-sentinel exclusion without a second call.
 - Independent verification corrected two low PlanId documentation/test gaps and then found no remaining findings. Final checks: MCP 69/73 tests, workspace check/clippy/fmt/diff clean, help clean, empty environment exit 1 with zero stdout and sanitized stderr.
-- DMM-005 is in progress.
+- DMM-005 final independent verification over `8fe817b..9c47643` found no blocker/high/medium findings, no unmet criterion, and no scope creep.
+- Final observed evidence: 608 default workspace tests; 612 all-feature tests including four child-process stdio journeys; workspace check/clippy in both matrices, fmt, diff, and help clean; empty-environment startup exited 1 with zero stdout and sanitized stderr.
+- The accepted DMM-002 zero-attempt evidence-mapping note was re-audited against the unchanged app contract and remains honest.
+- Authored WU-012 range after integration: 10 files, 2,993 additions / 399 deletions (net 2,594), within the net forecast and handled as stacked review slices.
+- No push, pull request, default-branch merge, or release was performed.
 
 ## Next step
 
-Run independent whole-range verification over the committed WU-012 range, reconcile evidence, and close the work unit.
+User decision: keep local, push the feature branch, or prepare the stacked pull-request chain.
