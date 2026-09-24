@@ -368,6 +368,123 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
     session.shutdown().await;
 }
 
+/// The named semantic journey: one `item_text` request, not an exact instance.
+///
+/// This is the in-memory MCP fixture, not the real-adapter journey composed in
+/// `destiny-adapters` (DFJ-002): the fixture composes the read and mutation seams
+/// with deterministic application test doubles, so it proves the MCP semantic
+/// boundary, the ordered Vault-mediated plan, and the sanitized process result,
+/// but it makes no Bungie or durable-storage claim. The named definition
+/// `The Last Word` (hash 5) resolves to the single concrete instance `inst-e`,
+/// which the fixture seeds on `zavala`, so the destination `warlock` forces the
+/// two ordered Vault steps a character-to-character move requires.
+#[tokio::test]
+async fn move_item_semantic_text_resolves_the_named_instance_through_the_vault() {
+    let mut session = FixtureSession::spawn(None).await;
+
+    // --- the read projection resolves the same semantic term ---------------------
+    // The search and inspection run on the fixture's read projection, which is
+    // seeded from the same initial world, so the client can observe the named
+    // definition and concrete instance before the single mutation call.
+    // The concrete-hit list is requested explicitly, constrained to the single
+    // definition hash the term resolved to (hash 5), which is the same bounded
+    // definition-then-instance resolution the semantic move performs.
+    let search = session
+        .call_tool(
+            SEARCH_INVENTORY_TOOL,
+            json!({ "text": "The Last Word", "instances": { "item_hashes": [5] } }),
+        )
+        .await;
+    assert_eq!(search["result"]["isError"], false);
+    let searched = structured(&search);
+    assert_eq!(
+        searched["candidates"].as_array().expect("candidates").len(),
+        1,
+        "the normalized term matches exactly one definition"
+    );
+    assert_eq!(searched["candidates"][0]["hash"], 5);
+    assert_eq!(searched["candidates"][0]["name"], "The Last Word");
+    assert_eq!(
+        searched["hits"].as_array().expect("hits").len(),
+        1,
+        "the named definition has exactly one concrete instance"
+    );
+    assert_eq!(searched["hits"][0]["instance"]["instance_id"], "inst-e");
+    assert_eq!(
+        searched["hits"][0]["instance"]["location"]["kind"],
+        "character"
+    );
+    assert_eq!(
+        searched["hits"][0]["instance"]["location"]["character_id"],
+        "zavala"
+    );
+    assert_no_secret_in(&search);
+
+    let inspect = session
+        .call_tool(INSPECT_ITEM_TOOL, json!({ "instance_id": "inst-e" }))
+        .await;
+    assert_eq!(inspect["result"]["isError"], false);
+    assert_eq!(structured(&inspect)["status"], "found");
+    assert_eq!(structured(&inspect)["definition"]["hash"], 5);
+    assert_eq!(structured(&inspect)["instance"]["instance_id"], "inst-e");
+    assert_eq!(
+        structured(&inspect)["instance"]["location"]["character_id"],
+        "zavala"
+    );
+    assert_no_secret_in(&inspect);
+
+    // --- exactly one semantic mutation call --------------------------------------
+    // The named item and the exact destination are the only caller inputs; the
+    // server resolves `item_text` to `inst-e` itself, so no instance identifier
+    // crosses the boundary for the mutation.
+    let moved = session
+        .call_tool(
+            MOVE_ITEM_TOOL,
+            json!({ "item_text": "The Last Word", "character_id": "warlock" }),
+        )
+        .await;
+    assert_eq!(moved["result"]["isError"], false);
+    let success = structured(&moved);
+    assert_eq!(success["status"], "verified_success");
+
+    // The resolved concrete instance, not the text, is what was moved, and the
+    // route is character -> Vault -> character, so the Vault is used exactly once.
+    assert_eq!(success["effects"]["item_id"], "inst-e");
+    assert_eq!(success["effects"]["via_vault"], true);
+    assert_eq!(success["effects"]["source"]["kind"], "character");
+    assert_eq!(success["effects"]["source"]["character_id"], "zavala");
+    assert_eq!(success["effects"]["destination"]["kind"], "character");
+    assert_eq!(success["effects"]["destination"]["character_id"], "warlock");
+
+    // Post-refresh verification: only the forced refresh after the transfer can
+    // make the destination observable from the shared world.
+    assert_eq!(success["observed"]["kind"], "character");
+    assert_eq!(success["observed"]["character_id"], "warlock");
+
+    // Bounded evidence: the two ordered mediated steps, both completed.
+    let steps = success["steps"].as_array().expect("step evidence");
+    assert_eq!(
+        steps.len(),
+        2,
+        "a character move is two Vault-mediated steps"
+    );
+    assert_eq!(steps[0]["ordinal"], 1);
+    assert_eq!(steps[0]["from"]["kind"], "character");
+    assert_eq!(steps[0]["from"]["character_id"], "zavala");
+    assert_eq!(steps[0]["to"]["kind"], "vault");
+    assert_eq!(steps[0]["outcome"]["status"], "completed");
+    assert_eq!(steps[1]["ordinal"], 2);
+    assert_eq!(steps[1]["from"]["kind"], "vault");
+    assert_eq!(steps[1]["to"]["kind"], "character");
+    assert_eq!(steps[1]["to"]["character_id"], "warlock");
+    assert_eq!(steps[1]["outcome"]["status"], "completed");
+    assert_no_secret_in(&moved);
+
+    // Sanitized process result: a clean exit and no sentinel or protocol frame
+    // on stderr.
+    session.shutdown().await;
+}
+
 #[tokio::test]
 async fn move_item_reports_a_verified_no_op_for_an_already_satisfied_destination() {
     let mut session = FixtureSession::spawn(Some("already-satisfied")).await;
