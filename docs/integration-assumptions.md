@@ -166,6 +166,47 @@ revalidation confirms:
 This note adds no claim beyond the official page. The explicit gaps and unresolved
 questions recorded below are unchanged.
 
+## Credential storage decision (WU-013 / DHS-006, 2026-09-24)
+
+This section resolves unresolved gap 7 above and records the MVP credential policy
+decided on 2026-09-24. It adds no claim about Bungie or the MCP SDK.
+
+- **Fail closed only, with no fallback.** The access credential is held in the
+  operating system's native secure store through the `keyring-core` client layer.
+  The MVP offers no plaintext, filesystem, or environment-variable fallback, and no
+  opt-in gate selects one. A missing entry is a typed `AuthorizationRequired`
+  failure, a legacy raw-material entry is `ReauthorizationRequired`, and an
+  unusable or unsupported store is `CredentialStoreUnavailable`; none of these paths
+  degrades to a weaker store.
+- **The native-store record is versioned, not independently encrypted.**
+  `NativeCredentialStore` persists a bounded, self-describing record (a leading
+  marker plus expiry metadata) around the credential material in the OS secure
+  store. The record includes the material verbatim; its confidentiality depends
+  on the native store, not on this envelope. The record is not a filesystem or
+  environment fallback. A raw-material-only entry written by an older build is
+  detected and rejected rather than silently reinterpreted with a guessed expiry.
+- **No diagnostics sink exists.** The MVP introduces no logging framework in WU-013.
+  Process diagnostics are limited to sanitized `AppError` values on stderr, and
+  stdout carries MCP protocol frames only. WU-013 records and tests that
+  no-log/no-leak process-stream contract instead of inventing a runtime logger; any
+  future diagnostics sink must preserve it.
+- **Correlation identity is a contract, not yet propagation.** `CorrelationId` is a
+  bounded, non-secret, visible-ASCII request identifier whose `Display`/`Debug`
+  intentionally render the non-secret value. Carrying it through `TransferRequest`,
+  the read/mutation services, and a future diagnostic sink is deliberately deferred:
+  it would cross surfaces and many callers that WU-013 does not own, and there is no
+  sink to receive it yet. Plan/step identifiers already remain visible for mutation
+  execution without it.
+- **Leak-harness limitation (reported, non-blocking).** The cross-boundary leak
+  harness drives a real `destiny-cli` child process only through the sanitized
+  failure and rejected-request paths. It cannot drive the CLI to the SQLite success
+  path offline because the production composition loads the OS-keyring credential
+  before it opens the store, so a live credential plus network would be required.
+  The success-path process streams are instead proven through `destiny_cli::run`,
+  which emits the exact bytes the process writes. See WU-013 in
+  `docs/mvp-implementation-plan.md` and `odd/tasks/destiny-hardening.md` for the
+  full harness record.
+
 ## Source register
 
 | Source | Publisher | Retrieved | Confidence / freshness note |

@@ -213,17 +213,17 @@ The scaffold must also document the supported feature/configuration matrix and h
 
 ### WU-013 — Security, logging, and secret-leak checks
 
-**Purpose/outcome:** Harden all paths with redaction, bounded retries, correlation/plan/step IDs, restricted credential fallback gates, and automated leak checks across logs, SQLite, CLI, and MCP.
+**Purpose/outcome:** Harden all paths with redaction, bounded retries, a non-secret correlation identity (a core `CorrelationId` contract only; carrying it through requests, services, and typed diagnostics is deferred), visible plan/step identifiers, a fail-closed credential policy with no fallback, and automated leak checks across the SQLite stores and the CLI and MCP process streams.
 
 **Dependencies:** WU-003, WU-005, WU-008, WU-010–012.
 
-**Likely ownership/edit surfaces:** shared diagnostics/redaction modules; credential and adapter logging; security test fixtures; configuration docs.
+**Likely ownership/edit surfaces:** shared redaction and correlation contracts; credential-store policy tests; adapter read-retry paths; security test fixtures; configuration docs. No logging or diagnostics sink is introduced in this unit.
 
-**Behavior and checks:** Unit-test redaction of tokens, codes, API keys, headers, URLs, payloads, and user-identifying values. Integration-test logs/database/output/MCP serialization with secret sentinels. Contract-test retry policy (only bounded transient/rate-limit cases). Snapshot-test safe error shapes. Manual security review and optional local secret scanner; report exact tool/command only once established by the scaffold.
+**Behavior and checks:** Unit-test redaction of tokens, codes, API keys, headers, URLs, payloads, and user-identifying values. Integration-test SQLite bytes/sidecars, CLI output, and MCP serialization/process streams with secret sentinels plus non-secret positive controls. Contract-test the bounded retry policy (only transient/rate-limit cases) and the fail-closed credential policy (missing, legacy, unavailable, and unsupported store outcomes, with no plaintext, filesystem, or environment fallback). Snapshot-test safe error shapes. Because the MVP has no logging framework, the pipeline tests the no-log/no-leak process-stream contract rather than an introduced logger. Manual security review and optional local secret scanner; report the exact tool/command only once established by the scaffold.
 
-**Exclusions:** No hosted backend, threat-model expansion into unrelated platform security, or plaintext credential exception.
+**Exclusions:** No hosted backend, threat-model expansion into unrelated platform security, no introduced logging or diagnostics sink, and no plaintext, filesystem, or environment credential fallback (the MVP has no fallback gate to opt into).
 
-**Review notes:** Treat any leak as a release blocker; avoid logging “temporarily” for live debugging. Internal review slices: (a) redaction/retry behavior, then (b) cross-boundary leak tests and fallback gates. Revert each slice independently with its diagnostics/tests.
+**Review notes:** Treat any leak as a release blocker; avoid logging “temporarily” for live debugging. Internal review slices: (a) redaction/retry behavior, then (b) cross-boundary leak tests and the fail-closed credential policy. Revert each slice independently with its diagnostics/tests. `CorrelationId` lands as a non-secret core contract only; carrying it through requests, services, and a future diagnostic sink is deferred, and plan/step identifiers already remain visible for mutation execution without it. The leak harness drives a real `destiny-cli` child only through the sanitized failure and rejected-request paths: the offline success path is unreachable because the production composition loads the OS-keyring credential before it opens the store, so success-path streams are proven through the CLI runner that emits the exact process bytes.
 
 ### WU-014 — End-to-end fixture journey
 
@@ -255,7 +255,7 @@ The scaffold must also document the supported feature/configuration matrix and h
 
 ## Feature flags and configuration gates
 
-Keep gates narrow and safety-driven: `offline_fixtures`/test-only services, explicit `live_integration` configuration, credential-store fallback opt-in, and provider/API compatibility diagnostics. `cargo test --workspace --all-features` remains credential-free/offline; live tests are ignored or excluded from it and run only through the explicit opt-in command/configuration defined when implemented. Do not gate MCP mutation out of the default MVP; its single-call intent-authorized contract is the feature. Do not add speculative feature flags for deferred World State, builds, or advanced actions.
+Keep gates narrow and safety-driven: `offline_fixtures`/test-only services, explicit `live_integration` configuration, and provider/API compatibility diagnostics. The credential store is fail-closed with no fallback gate: the MVP defines no plaintext, filesystem, or environment opt-in, so there is no credential-store fallback flag to add. `cargo test --workspace --all-features` remains credential-free/offline; live tests are ignored or excluded from it and run only through the explicit opt-in command/configuration defined when implemented. Do not gate MCP mutation out of the default MVP; its single-call intent-authorized contract is the feature. Do not add speculative feature flags for deferred World State, builds, or advanced actions.
 
 ## Review workload and slice forecast
 

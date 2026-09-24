@@ -545,6 +545,21 @@ mod tests {
     }
 
     #[test]
+    fn composition_fails_before_any_adapter_work_for_an_unavailable_or_unsupported_store() {
+        // An unusable (`CredentialStoreUnavailable`) or operation-unsupported
+        // backend collapses to the same sanitized category at the composition
+        // root, so composition stops before any transport, database, or network
+        // work and never selects a weaker store.
+        let store = FailingCredentialStore {
+            error: destiny_app::AppError::new(ErrorCategory::CredentialStoreUnavailable),
+        };
+        let error =
+            compose_server(&config(), &store).expect_err("an unavailable store stops composition");
+        assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
+        assert!(!error.to_string().contains(API_KEY_SENTINEL));
+    }
+
+    #[test]
     fn assembly_advertises_the_reads_and_the_default_enabled_mutation() {
         // The assembly seam builds the shared adapters offline (an in-memory
         // store and the HTTP clients without a connection) and the product

@@ -161,7 +161,9 @@ fn decode_credential(record: &[u8]) -> Result<AccessCredential, AppError> {
     if record.len() > MAX_RECORD_LENGTH {
         return Err(credential_store_unavailable());
     }
-    if record.len() < RECORD_HEADER_LENGTH || record[RECORD_MAGIC.len()] != RECORD_VERSION {
+    if record.len() < RECORD_HEADER_LENGTH
+        || record.get(RECORD_MAGIC.len()) != Some(&RECORD_VERSION)
+    {
         return Err(credential_store_unavailable());
     }
     let expires_at = u64::from_be_bytes(
@@ -177,7 +179,9 @@ fn decode_credential(record: &[u8]) -> Result<AccessCredential, AppError> {
     if declared_material_length > MAX_MATERIAL_LENGTH {
         return Err(credential_store_unavailable());
     }
-    let material = &record[RECORD_HEADER_LENGTH..];
+    let material = record
+        .get(RECORD_HEADER_LENGTH..)
+        .ok_or_else(credential_store_unavailable)?;
     if material.len() != declared_material_length {
         return Err(credential_store_unavailable());
     }
@@ -457,6 +461,40 @@ mod tests {
         force_next_error(&store, failure());
         let error = adapter.delete().expect_err("delete fails");
         assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
+    }
+
+    #[test]
+    fn unsupported_backend_operations_fail_closed() {
+        // `NotSupportedByStore` (the backend cannot perform the operation) and
+        // `NoDefaultStore` (no backend is configured) are the two "unsupported"
+        // outcomes of the `keyring-core` client layer. Neither may degrade to an
+        // in-memory, filesystem, or environment value: both map to
+        // `CredentialStoreUnavailable`, and a failed save leaves no entry behind.
+        let unsupported = || KeyringError::NotSupportedByStore("no usable backend".to_string());
+        let no_default_store = || KeyringError::NoDefaultStore;
+
+        for failure in [unsupported, no_default_store] {
+            let store = mock_store();
+            let mut adapter = NativeCredentialStore::with_store(Arc::clone(&store));
+
+            force_next_error(&store, failure());
+            let error = adapter
+                .save(canary_credential())
+                .expect_err("save fails closed");
+            assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
+            assert!(
+                try_raw_stored_record(&store).is_none(),
+                "no weaker store may be written when the backend is unsupported"
+            );
+
+            force_next_error(&store, failure());
+            let error = adapter.load().expect_err("load fails closed");
+            assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
+
+            force_next_error(&store, failure());
+            let error = adapter.delete().expect_err("delete fails closed");
+            assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
+        }
     }
 
     #[test]
