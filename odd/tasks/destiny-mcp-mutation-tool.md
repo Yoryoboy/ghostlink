@@ -77,16 +77,16 @@ WU-009 and WU-010 provide the safe shared mutation contracts and execution behav
   - Commit evidence: `0773400` (`feat: expose move item through MCP`).
   - Review evidence: independent verification and bounded correction re-verification found no remaining findings; MCP default/all-feature tests passed (65/66), fmt/check/clippy/diff clean.
 
-- [ ] **DMM-004 — Compose production mutation and prove the stdio journey** *(in progress)*
+- [x] **DMM-004 — Compose production mutation and prove the stdio journey**
   - Construct the shared mutation service, production plan ID generation, and Bungie transfer gateway in the product binary.
   - Extend the offline fixture and child-process stdio tests with successful, repeated/already-satisfied, preflight-change, partial/incomplete, sanitized-failure, and sentinel-exclusion behavior as appropriate.
   - Document default-enabled host behavior only where existing project docs require it.
   - Acceptance: the normal product binary advertises mutation by default; missing credentials fail closed; one offline stdio `move_item` request proves planning, preflight, minimum calls, refresh, and destination verification without a second tool call.
   - Checks: `destiny-mcp` default/all-feature tests, child-process stdio journey, binary help/startup fail-closed checks, applicable workspace matrix, formatting, clippy, `git diff --check`.
-  - Commit evidence: pending.
-  - Review evidence: pending.
+  - Commit evidence: `9b0ed11` (`feat: compose MCP item mutation`).
+  - Review evidence: native assessment high due to the process boundary; independent verification found two low PlanId documentation/test gaps, both corrected and re-verified with no remaining findings. Final observed checks: 69 MCP default tests, 73 all-feature tests including four child-process stdio journeys, workspace check/clippy/fmt/diff clean, help clean, and empty-environment startup failed closed with zero stdout.
 
-- [ ] **DMM-005 — Independently verify and close WU-012**
+- [ ] **DMM-005 — Independently verify and close WU-012** *(in progress)*
   - Verify the complete committed range against WU-012, AC-4/6/7/8/9, all exclusions, secret boundaries, and rollback boundary.
   - Reconcile every finding before closure and record exact observed evidence.
   - Acceptance: no blocker/high/medium finding remains; every acceptance criterion has direct evidence; worktree is clean after closure evidence is committed.
@@ -121,8 +121,11 @@ WU-009 and WU-010 provide the safe shared mutation contracts and execution behav
 - Accepted low verification note: MCP currently maps the app's guaranteed zero-attempt `Err(ExecutionFailure)` without carrying evidence; app-side contracts prove that path has no attempted-step evidence today. Re-audit at DMM-005 if the shared contract changes.
 - DMM-003 completed in commit `0773400`: read-only construction retains three tools and exact legacy capability text; mutation composition advertises four tools, capability-aware server information, and serialized one-call dispatch.
 - DMM-003 independent verification found one low stale-description issue, corrected it, and re-verified with no remaining findings; 65 default and 66 all-feature MCP tests passed, fmt/check/clippy/diff clean.
-- DMM-004 is in progress.
+- DMM-004 completed in commit `9b0ed11`: production mutation is default-enabled; the product binary composes shared read/mutation services, a process-local production plan-ID generator, Bungie transfer gateway, and one shared SQLite/profile boundary.
+- DMM-004 offline stdio proof covers verified success, repeated request, already-satisfied no-op, changed preflight, partial execution, sanitized missing-item failure, and secret-sentinel exclusion without a second call.
+- Independent verification corrected two low PlanId documentation/test gaps and then found no remaining findings. Final checks: MCP 69/73 tests, workspace check/clippy/fmt/diff clean, help clean, empty environment exit 1 with zero stdout and sanitized stderr.
+- DMM-005 is in progress.
 
 ## Next step
 
-Compose the production mutation runtime and prove the complete one-call offline stdio journey.
+Run independent whole-range verification over the committed WU-012 range, reconcile evidence, and close the work unit.
