@@ -24,7 +24,7 @@ The five crates are intentionally minimal.
 Configuration is a Bungie public-client API key, public OAuth client ID,
 custom-scheme callback URI (`ghostlink://oauth/callback`), and a separately
 configured registered callback URI. The two callback values must match exactly,
-including case. There is no client-secret configuration.
+including case. An optional `BUNGIE_CLIENT_SECRET` selects confidential mode.
 
 The shared read composition roots (the CLI and the MCP server) additionally read
 the database path, Manifest definition version, and a positive freshness TTL:
@@ -40,7 +40,7 @@ DESTINY_FRESHNESS_TTL_SECONDS Positive freshness TTL in seconds (max 2592000)
 
 Every binary reads its configuration itself, so secrets never need to be
 exported in the shell that launches it (or in an agent session that runs it).
-For each required key, a value present in the process environment wins;
+For each requested key, a value present in the process environment wins;
 otherwise the value comes from the per-user configuration file, resolved in
 this order:
 
@@ -65,6 +65,22 @@ $EDITOR ~/.config/ghostlink/config.env
 ```
 
 Do not commit credentials. Startup diagnostics are typed and sanitized.
+
+### Confidential and public mode
+
+Without `BUNGIE_CLIENT_SECRET`, Ghostlink uses public mode and requires browser
+reauthorization when the access token expires. For persistent sessions, edit
+your app in the Bungie Developer Portal, change its OAuth client type to
+Confidential, and save the change. Put the issued `BUNGIE_CLIENT_SECRET` only in
+the `0600` per-user configuration file above, never in shell exports or agent
+sessions. Keep `BUNGIE_PUBLIC_CLIENT_ID` unchanged: when a secret is configured,
+that client ID is required for reads as well as login. A present but empty or
+invalid secret fails configuration validation; remove the key to use public mode.
+
+Confidential mode enables refresh tokens lasting approximately 90 days, stored
+alongside the access credential in the OS keyring rather than in the config
+file. Login and automatic-refresh wiring follow in the persistent-session
+implementation; configuring the secret alone does not yet enable refresh.
 
 ## Destiny CLI (read-only)
 
@@ -111,7 +127,8 @@ dispatch the read through the shared `QueryService`. An invalid argument
 therefore never reads configuration, a credential, a database, a clock, or the
 network.
 
-The read runtime requires exactly these variables (see `config.example.env`):
+The read runtime always requires these variables (see `config.example.env`);
+confidential mode additionally requires the client ID paired with the secret:
 
 | Variable | Meaning |
 | --- | --- |

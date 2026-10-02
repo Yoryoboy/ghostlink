@@ -1,17 +1,18 @@
-//! Public-client runtime configuration and callback validation.
+//! Public and confidential runtime configuration and callback validation.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use destiny_core::{AppError, DefinitionVersion, FreshnessPolicy};
+use destiny_core::{AppError, ClientSecret, DefinitionVersion, FreshnessPolicy};
 use url::Url;
 
 mod file;
 
 const API_KEY: &str = "BUNGIE_API_KEY";
 const CLIENT_ID: &str = "BUNGIE_PUBLIC_CLIENT_ID";
+const CLIENT_SECRET: &str = "BUNGIE_CLIENT_SECRET";
 const CALLBACK_URI: &str = "BUNGIE_CALLBACK_URI";
 const REGISTERED_CALLBACK_URI: &str = "BUNGIE_REGISTERED_CALLBACK_URI";
 
@@ -204,14 +205,11 @@ impl LoginCallbackUri {
     }
 }
 
-/// Validated public-client configuration for the interactive login composition.
+/// Validated configuration for the interactive login composition.
 ///
-/// It carries exactly the two values one login attempt needs — the public client
-/// identifier and the exact custom-scheme callback URI the provider has
-/// registered — and nothing else. The API key the read runtime requires is
-/// deliberately absent: starting an OAuth authorization and exchanging the
-/// returned code is a public-client callback flow that needs no API key, so
-/// login never loads one.
+/// It carries the client identifier, registered custom-scheme callback URI,
+/// and optional confidential-client secret. Without a secret, login remains a
+/// public-client flow. Login never loads the API key needed by the read runtime.
 ///
 /// Every field is private and reachable only through a trusted accessor.
 /// [`fmt::Debug`] renders no value, and every parse failure is a sanitized
@@ -220,6 +218,7 @@ impl LoginCallbackUri {
 pub struct LoginRuntimeConfig {
     public_client_id: String,
     callback_uri: LoginCallbackUri,
+    client_secret: Option<ClientSecret>,
 }
 
 impl LoginRuntimeConfig {
@@ -230,7 +229,12 @@ impl LoginRuntimeConfig {
     /// variables used to resolve the file path. Invalid Unicode and malformed
     /// or insecure files fail closed with a sanitized configuration error.
     pub fn from_env() -> Result<Self, AppError> {
-        let values = exact_env_values(&[CLIENT_ID, CALLBACK_URI, REGISTERED_CALLBACK_URI])?;
+        let values = exact_env_values(&[
+            CLIENT_ID,
+            CALLBACK_URI,
+            REGISTERED_CALLBACK_URI,
+            CLIENT_SECRET,
+        ])?;
         Self::from_values(&values)
     }
 
@@ -249,6 +253,7 @@ impl LoginRuntimeConfig {
         Ok(Self {
             public_client_id,
             callback_uri: callback,
+            client_secret: optional_client_secret(values)?,
         })
     }
 
@@ -259,6 +264,11 @@ impl LoginRuntimeConfig {
     /// and out of every diagnostic surface.
     pub fn public_client_id(&self) -> &str {
         &self.public_client_id
+    }
+
+    /// The confidential-client secret, or `None` for public mode.
+    pub fn client_secret(&self) -> Option<&ClientSecret> {
+        self.client_secret.as_ref()
     }
 
     /// The exact validated custom-scheme callback URI to send to the provider.
@@ -273,8 +283,36 @@ impl fmt::Debug for LoginRuntimeConfig {
             .debug_struct("LoginRuntimeConfig")
             .field("public_client_id", &destiny_core::redact::REDACTED)
             .field("callback_uri", &destiny_core::redact::REDACTED)
+            .field("client_secret", &destiny_core::redact::REDACTED)
             .finish()
     }
+}
+
+fn optional_client_secret(
+    values: &HashMap<String, String>,
+) -> Result<Option<ClientSecret>, AppError> {
+    values
+        .get(CLIENT_SECRET)
+        .map(|value| ClientSecret::from_bytes(value.as_bytes().to_vec()))
+        .transpose()
+}
+
+/// Loads only the additional client identifier needed by confidential reads.
+fn read_env_values<F>(mut load: F) -> Result<HashMap<String, String>, AppError>
+where
+    F: FnMut(&[&str]) -> Result<HashMap<String, String>, AppError>,
+{
+    let mut values = load(&[
+        API_KEY,
+        READ_DATABASE_PATH,
+        READ_DEFINITION_VERSION,
+        READ_FRESHNESS_TTL_SECONDS,
+        CLIENT_SECRET,
+    ])?;
+    if values.contains_key(CLIENT_SECRET) {
+        values.extend(load(&[CLIENT_ID])?);
+    }
+    Ok(values)
 }
 
 fn required(values: &HashMap<String, String>, name: &str) -> Result<String, AppError> {
@@ -362,13 +400,38 @@ impl fmt::Debug for ReadApiKey {
     }
 }
 
+/// Validated confidential refresh client; never renders its values.
+#[derive(Clone, Eq, PartialEq)]
+pub struct RefreshClientConfig {
+    client_id: String,
+    client_secret: ClientSecret,
+}
+
+impl RefreshClientConfig {
+    /// The trusted client identifier accessor.
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    /// The trusted confidential-client secret accessor.
+    pub fn client_secret(&self) -> &ClientSecret {
+        &self.client_secret
+    }
+}
+
+impl fmt::Debug for RefreshClientConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        destiny_core::redact::opaque(formatter, "RefreshClientConfig")
+    }
+}
+
 /// Application-owned runtime configuration for the shared CLI/MCP read
 /// composition roots.
 ///
 /// It carries exactly the typed values those roots need to build the read
 /// services — a validated API key, the SQLite database path, the Manifest
-/// definition version, and a positive, bounded freshness TTL — and nothing
-/// else. Every field is private and reachable only through a trusted accessor.
+/// definition version, a positive, bounded freshness TTL, and an optional
+/// confidential refresh client. Every field is private and reachable only through a trusted accessor.
 /// [`fmt::Debug`] and [`fmt::Display`] render no value, and every parse failure
 /// is a sanitized [`AppError`] that never echoes the supplied configuration.
 #[derive(Clone, Eq, PartialEq)]
@@ -377,6 +440,7 @@ pub struct ReadRuntimeConfig {
     database_path: PathBuf,
     definition_version: DefinitionVersion,
     freshness_ttl_seconds: u64,
+    refresh_client: Option<RefreshClientConfig>,
 }
 
 impl ReadRuntimeConfig {
@@ -387,12 +451,7 @@ impl ReadRuntimeConfig {
     /// variables used to resolve the file path. Invalid Unicode and malformed
     /// or insecure files fail closed with a sanitized configuration error.
     pub fn from_env() -> Result<Self, AppError> {
-        let values = exact_env_values(&[
-            API_KEY,
-            READ_DATABASE_PATH,
-            READ_DEFINITION_VERSION,
-            READ_FRESHNESS_TTL_SECONDS,
-        ])?;
+        let values = read_env_values(exact_env_values)?;
         Self::from_values(&values)
     }
 
@@ -409,7 +468,21 @@ impl ReadRuntimeConfig {
             database_path,
             definition_version,
             freshness_ttl_seconds,
+            refresh_client: optional_client_secret(values)?
+                .map(|client_secret| -> Result<_, AppError> {
+                    Ok(RefreshClientConfig {
+                        client_id: required(values, CLIENT_ID)?,
+                        client_secret,
+                    })
+                })
+                .transpose()?,
         })
+    }
+
+    /// The confidential refresh client, or `None` for public reads.
+    /// A client identifier is required only when a secret is configured.
+    pub fn refresh_client(&self) -> Option<&RefreshClientConfig> {
+        self.refresh_client.as_ref()
     }
 
     /// The trusted API-key accessor; the value is never rendered.
@@ -448,6 +521,7 @@ impl fmt::Debug for ReadRuntimeConfig {
             .field("database_path", &destiny_core::redact::REDACTED)
             .field("definition_version", &destiny_core::redact::REDACTED)
             .field("freshness_ttl_seconds", &destiny_core::redact::REDACTED)
+            .field("refresh_client", &destiny_core::redact::REDACTED)
             .finish()
     }
 }
@@ -717,6 +791,128 @@ mod tests {
             ("DESTINY_DEFINITION_VERSION".into(), "manifest-v1".into()),
             ("DESTINY_FRESHNESS_TTL_SECONDS".into(), "900".into()),
         ])
+    }
+
+    #[test]
+    fn optional_secret_preserves_public_login_and_reads() {
+        assert!(
+            LoginRuntimeConfig::from_values(&login_values())
+                .unwrap()
+                .client_secret()
+                .is_none()
+        );
+        assert!(
+            ReadRuntimeConfig::from_values(&read_runtime_values())
+                .unwrap()
+                .refresh_client()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn confidential_configs_expose_secret_but_never_render_it() {
+        let sentinel = "confidential-secret-sentinel";
+        let mut login = login_values();
+        login.insert("BUNGIE_CLIENT_SECRET".into(), sentinel.into());
+        let login = LoginRuntimeConfig::from_values(&login).unwrap();
+        assert_eq!(
+            login.client_secret().unwrap().as_bytes(),
+            sentinel.as_bytes()
+        );
+        let mut read = read_runtime_values();
+        read.insert("BUNGIE_CLIENT_SECRET".into(), sentinel.into());
+        read.insert(
+            "BUNGIE_PUBLIC_CLIENT_ID".into(),
+            "client-id-placeholder".into(),
+        );
+        let read = ReadRuntimeConfig::from_values(&read).unwrap();
+        let client = read.refresh_client().unwrap();
+        assert_eq!(client.client_id(), "client-id-placeholder");
+        assert_eq!(client.client_secret().as_bytes(), sentinel.as_bytes());
+        let rendered = format!(
+            "{login:?} {read:?} {read} {client:?} {:?}",
+            login.client_secret()
+        );
+        assert!(!rendered.contains(sentinel));
+        assert!(!rendered.contains("client-id-placeholder"));
+    }
+
+    #[test]
+    fn confidential_reads_require_a_nonempty_client_id() {
+        for id in [None, Some("")] {
+            let mut read = read_runtime_values();
+            read.insert("BUNGIE_CLIENT_SECRET".into(), "secret-sentinel".into());
+            if let Some(id) = id {
+                read.insert("BUNGIE_PUBLIC_CLIENT_ID".into(), id.into());
+            }
+            let error = ReadRuntimeConfig::from_values(&read).unwrap_err();
+            assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+            assert!(!format!("{error} {error:?}").contains("secret-sentinel"));
+        }
+    }
+
+    #[test]
+    fn invalid_optional_secrets_fail_sanitized_for_both_runtimes() {
+        for secret in [
+            String::new(),
+            "invalid secret-sentinel".into(),
+            "secret-sentinel\n".into(),
+            "secret-sentinelé".into(),
+            "x".repeat(4097),
+        ] {
+            let mut login = login_values();
+            login.insert("BUNGIE_CLIENT_SECRET".into(), secret.clone());
+            let mut read = read_runtime_values();
+            read.insert(
+                "BUNGIE_PUBLIC_CLIENT_ID".into(),
+                "client-id-placeholder".into(),
+            );
+            read.insert("BUNGIE_CLIENT_SECRET".into(), secret);
+            for error in [
+                LoginRuntimeConfig::from_values(&login).unwrap_err(),
+                ReadRuntimeConfig::from_values(&read).unwrap_err(),
+            ] {
+                assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+                assert!(!format!("{error} {error:?}").contains("secret-sentinel"));
+            }
+        }
+    }
+
+    #[test]
+    fn read_lookup_requests_client_id_only_when_secret_is_present() {
+        for confidential in [false, true] {
+            let mut source = read_runtime_values();
+            if confidential {
+                source.insert("BUNGIE_CLIENT_SECRET".into(), "secret-sentinel".into());
+                source.insert(
+                    "BUNGIE_PUBLIC_CLIENT_ID".into(),
+                    "client-id-placeholder".into(),
+                );
+            }
+            let values = super::read_env_values(|names| {
+                exact_key_values(names, |name| {
+                    assert!(name != "BUNGIE_PUBLIC_CLIENT_ID" || confidential);
+                    assert!(matches!(
+                        name,
+                        "BUNGIE_API_KEY"
+                            | "DESTINY_DATABASE_PATH"
+                            | "DESTINY_DEFINITION_VERSION"
+                            | "DESTINY_FRESHNESS_TTL_SECONDS"
+                            | "BUNGIE_CLIENT_SECRET"
+                            | "BUNGIE_PUBLIC_CLIENT_ID"
+                    ));
+                    source.get(name).map(OsString::from)
+                })
+            })
+            .unwrap();
+            assert_eq!(
+                ReadRuntimeConfig::from_values(&values)
+                    .unwrap()
+                    .refresh_client()
+                    .is_some(),
+                confidential
+            );
+        }
     }
 
     #[test]
