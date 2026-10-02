@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+base64 = "0.22.1"
 destiny-core.workspace = true
 getrandom = "0.4"
 keyring-core.workspace = true

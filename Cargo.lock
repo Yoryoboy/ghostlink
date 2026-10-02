@@ -434,6 +434,7 @@ name = "destiny-adapters"
 version = "0.1.0"
 dependencies = [
  "apple-native-keyring-store",
+ "base64 0.22.1",
  "dbus-secret-service-keyring-store",
  "destiny-app",
  "destiny-cli",

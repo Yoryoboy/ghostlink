@@ -26,6 +26,39 @@ macro_rules! opaque_value {
 opaque_value!(AuthorizationState, "AuthorizationState");
 opaque_value!(AuthorizationCode, "AuthorizationCode");
 
+/// Validated confidential-client secret, exposed only to trusted adapters.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ClientSecret(crate::redact::Redacted<Vec<u8>>);
+
+impl ClientSecret {
+    /// Bounded like other stored OAuth material.
+    pub const MAX_LENGTH: usize = 4 * 1024;
+
+    /// Requires non-empty printable ASCII without whitespace or controls.
+    pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Result<Self, crate::error::AppError> {
+        let bytes = bytes.into();
+        if bytes.is_empty()
+            || bytes.len() > Self::MAX_LENGTH
+            || !bytes.iter().all(u8::is_ascii_graphic)
+        {
+            return Err(crate::error::AppError::new(
+                crate::error::ErrorCategory::ConfigurationError,
+            ));
+        }
+        Ok(Self(crate::redact::Redacted::new(bytes)))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.expose_secret().as_slice()
+    }
+}
+
+impl fmt::Debug for ClientSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        crate::redact::opaque(formatter, "ClientSecret")
+    }
+}
+
 /// Opaque refresh material, exposed only to trusted adapters through bytes.
 #[derive(Clone, Eq, PartialEq)]
 pub struct RefreshToken(crate::redact::Redacted<Vec<u8>>);
@@ -128,6 +161,28 @@ mod tests {
     use crate::state::Timestamp;
 
     #[test]
+    fn client_secret_is_validated_and_opaque() {
+        use crate::{ClientSecret, ErrorCategory};
+        for bytes in [
+            Vec::new(),
+            b"has space".to_vec(),
+            b"tab\t".to_vec(),
+            b"line\n".to_vec(),
+            vec![0x7f],
+            vec![0x80],
+            vec![b'x'; ClientSecret::MAX_LENGTH + 1],
+        ] {
+            let error = ClientSecret::from_bytes(bytes).expect_err("invalid secret");
+            assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+        }
+        for bytes in [b"secret:+/%".to_vec(), vec![b'x'; ClientSecret::MAX_LENGTH]] {
+            let secret = ClientSecret::from_bytes(bytes.clone()).expect("valid secret");
+            assert!(secret.as_bytes() == bytes);
+            assert_eq!(format!("{secret:?}"), "ClientSecret");
+        }
+    }
+
+    #[test]
     fn refresh_token_is_bounded_and_opaque() {
         use crate::{ErrorCategory, RefreshToken};
 
@@ -138,7 +193,7 @@ mod tests {
         }
         for bytes in [vec![b'x'], vec![b'x'; RefreshToken::MAX_LENGTH]] {
             let token = RefreshToken::from_bytes(bytes.clone()).expect("bounded token");
-            assert_eq!(token.as_bytes(), bytes);
+            assert!(token.as_bytes() == bytes);
         }
         let token = RefreshToken::from_bytes(b"refresh-sentinel").expect("token");
         assert_eq!(format!("{token:?}"), "RefreshToken");
@@ -222,12 +277,17 @@ mod tests {
                 "{state:?} {code:?} {credential:?} {:?}",
                 credential.material
             );
-            assert!(!rendered.contains(sentinel), "redaction leaked {sentinel}");
+            assert!(
+                !rendered.contains(sentinel),
+                "redaction leaked protected material"
+            );
         }
 
         // The trusted accessors are the only way back to the bytes.
         assert_eq!(state.as_bytes(), b"state-sentinel");
-        assert_eq!(code.as_bytes(), b"code-sentinel");
-        assert_eq!(credential.material.expose_secret(), b"material-sentinel");
+        let expected_code = b"code-sentinel";
+        let expected_material = b"material-sentinel";
+        assert!(code.as_bytes() == expected_code);
+        assert!(credential.material.expose_secret() == expected_material);
     }
 }
