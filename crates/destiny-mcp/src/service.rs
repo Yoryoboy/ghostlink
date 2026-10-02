@@ -67,6 +67,11 @@ pub struct ListCharactersRequest;
 /// without touching `rmcp`. Requests are already validated and bounded; outputs
 /// are the bounded MCP projections defined in [`crate::schema`].
 pub trait InventoryReadService {
+    /// Reads the current public rotation; no account state is required.
+    fn weekly_reset(&mut self) -> Result<crate::schema::WeeklyResetOutput, McpError> {
+        Err(McpError::new(ErrorCategory::DefinitionsUnavailable))
+    }
+
     /// Lists the committed characters.
     fn list_characters(
         &mut self,
@@ -82,6 +87,135 @@ pub trait InventoryReadService {
     /// Inspects exactly one concrete instance.
     fn inspect_item(&mut self, request: &InspectItemRequest)
     -> Result<InspectItemOutput, McpError>;
+}
+
+/// Adds a credential-free weekly service to an independent account read seam.
+pub struct WeeklyReadService<G, R, I> {
+    weekly: destiny_app::weekly_reset::WeeklyResetService<G, R>,
+    inventory: I,
+    timestamp: fn(Timestamp) -> Option<String>,
+}
+
+impl<G, R, I> WeeklyReadService<G, R, I> {
+    pub fn new(
+        weekly: destiny_app::weekly_reset::WeeklyResetService<G, R>,
+        inventory: I,
+        timestamp: fn(Timestamp) -> Option<String>,
+    ) -> Self {
+        Self {
+            weekly,
+            inventory,
+            timestamp,
+        }
+    }
+}
+
+impl<G, R, I> InventoryReadService for WeeklyReadService<G, R, I>
+where
+    G: destiny_app::PublicMilestonesGateway,
+    R: destiny_app::WorldDefinitionRepository,
+    I: InventoryReadService,
+{
+    fn weekly_reset(&mut self) -> Result<crate::schema::WeeklyResetOutput, McpError> {
+        let reset = self.weekly.weekly_reset().map_err(McpError::from)?;
+        Ok(weekly_reset_output(&reset, self.timestamp))
+    }
+
+    fn list_characters(
+        &mut self,
+        request: &ListCharactersRequest,
+    ) -> Result<ListCharactersOutput, McpError> {
+        self.inventory.list_characters(request)
+    }
+
+    fn search_inventory(
+        &mut self,
+        request: &SearchInventoryRequest,
+    ) -> Result<SearchInventoryOutput, McpError> {
+        self.inventory.search_inventory(request)
+    }
+
+    fn inspect_item(
+        &mut self,
+        request: &InspectItemRequest,
+    ) -> Result<InspectItemOutput, McpError> {
+        self.inventory.inspect_item(request)
+    }
+}
+
+/// Provider text has the shared world-definition bounds; strip non-whitespace
+/// controls defensively before serialization, without expanding templates.
+pub fn weekly_reset_output(
+    reset: &destiny_app::weekly_reset::WeeklyReset,
+    timestamp: fn(Timestamp) -> Option<String>,
+) -> crate::schema::WeeklyResetOutput {
+    use crate::schema::{
+        WeeklyActivityView, WeeklyMilestoneView, WeeklyModifierView, WeeklyResetOutput,
+    };
+    use destiny_app::weekly_reset::DefinitionResolution;
+    fn fields(definition: &DefinitionResolution) -> (Option<String>, Option<String>, bool) {
+        let clean = |text: &str, cap| {
+            text.chars()
+                .filter(|c| !c.is_control() || c.is_whitespace())
+                .take(cap)
+                .collect::<String>()
+        };
+        match definition {
+            DefinitionResolution::Resolved { name, description } => {
+                (Some(clean(name, 256)), Some(clean(description, 2048)), true)
+            }
+            DefinitionResolution::Unresolved => (None, None, false),
+        }
+    }
+    WeeklyResetOutput {
+        definition_version: reset.definition_version.as_str().to_owned(),
+        milestones: reset
+            .milestones
+            .iter()
+            .take(64)
+            .map(|milestone| {
+                let (name, description, resolved) = fields(&milestone.definition);
+                WeeklyMilestoneView {
+                    hash: milestone.hash,
+                    order: milestone.order,
+                    name,
+                    description,
+                    resolved,
+                    start: milestone.start.and_then(timestamp),
+                    end: milestone.end.and_then(timestamp),
+                    activities: milestone
+                        .activities
+                        .iter()
+                        .take(64)
+                        .map(|activity| {
+                            let (name, description, resolved) = fields(&activity.definition);
+                            WeeklyActivityView {
+                                hash: activity.hash,
+                                name,
+                                description,
+                                resolved,
+                                modifiers: activity
+                                    .modifiers
+                                    .iter()
+                                    .take(64)
+                                    .map(|modifier| {
+                                        let (name, description, resolved) =
+                                            fields(&modifier.definition);
+                                        WeeklyModifierView {
+                                            hash: modifier.hash,
+                                            name,
+                                            description,
+                                            resolved,
+                                        }
+                                    })
+                                    .collect(),
+                            }
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
+    }
 }
 
 /// Composes the shared query service with an injected clock and freshness policy.
@@ -1048,6 +1182,62 @@ mod tests {
                 limit: MAX_SEARCH_LIMIT,
             }),
         }
+    }
+
+    #[test]
+    fn weekly_missing_definitions_returns_hint_without_gateway_or_account_reads() {
+        struct Gateway;
+        impl destiny_app::PublicMilestonesGateway for Gateway {
+            fn load_public_milestones(
+                &mut self,
+            ) -> Result<destiny_app::PublicMilestonesSnapshot, AppError> {
+                panic!("definitions gate must prevent milestones request")
+            }
+        }
+        let (shared, queries) = fresh_components(Vec::new(), Vec::new());
+        let calls = Rc::clone(&queries.repository().calls);
+        let mut service = super::WeeklyReadService::new(
+            destiny_app::weekly_reset::WeeklyResetService::new(
+                Gateway,
+                InMemoryDefinitionRepository::default(),
+            ),
+            mcp_service(queries),
+            |_| None,
+        );
+        let error = service.weekly_reset().unwrap_err();
+        assert_eq!(error.code(), "definitions_unavailable");
+        assert_eq!(
+            error.message(),
+            "definitions not loaded; run ghostlink sync-manifest"
+        );
+        assert!(calls.borrow().is_empty());
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+    }
+
+    #[test]
+    fn weekly_output_bounds_and_sanitizes_provider_text() {
+        use destiny_app::weekly_reset::{DefinitionResolution, WeeklyMilestone, WeeklyReset};
+        let reset = WeeklyReset {
+            definition_version: DefinitionVersion::new("v1"),
+            milestones: vec![WeeklyMilestone {
+                hash: 1,
+                order: 0,
+                definition: DefinitionResolution::Resolved {
+                    name: format!("\u{1b}{}", "n".repeat(300)),
+                    description: format!("\u{0}{}", "d".repeat(3000)),
+                },
+                start: None,
+                end: None,
+                activities: vec![],
+            }],
+        };
+        let result = super::weekly_reset_output(&reset, |_| None).into_call_tool_result();
+        let value = result.structured_content.unwrap();
+        assert_eq!(value["kind"], "weekly_reset");
+        assert_eq!(value["milestones"][0]["name"], "n".repeat(256));
+        assert_eq!(value["milestones"][0]["description"], "d".repeat(2048));
+        assert_eq!(value["milestones"][0]["start"], serde_json::Value::Null);
     }
 
     #[test]

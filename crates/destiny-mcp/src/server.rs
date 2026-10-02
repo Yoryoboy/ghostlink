@@ -1,7 +1,7 @@
 //! RMCP tools-only server for the Destiny semantic tools.
 //!
 //! [`ReadToolServer`] adapts the provider-neutral [`InventoryReadService`] seam
-//! to an [`rmcp::ServerHandler`]. On its own it exposes exactly the three
+//! to an [`rmcp::ServerHandler`]. On its own it exposes exactly the four
 //! bounded read tools, dispatches each `tools/call` through the shared argument
 //! conversion and service, and returns the structured result or a sanitized tool
 //! error. When constructed with the optional adapter-free [`MutationToolService`]
@@ -77,7 +77,7 @@ impl ReadToolServer {
     /// Wraps one read service for the stdio server, exposing only the reads.
     ///
     /// This is the read-only construction: the server discovers exactly the
-    /// three read tools and rejects `move_item` as an unknown tool, so an
+    /// four read tools and rejects `move_item` as an unknown tool, so an
     /// unconfigured mutation seam cannot be told apart from one that was never
     /// built.
     pub fn new(service: Box<dyn InventoryReadService + Send>) -> Self {
@@ -105,7 +105,7 @@ impl ReadToolServer {
 
     /// The exact tool descriptors this server advertises, in stable order.
     ///
-    /// The three reads are always present and deterministic. `move_item` is
+    /// The four reads are always present and deterministic. `move_item` is
     /// appended only when a mutation seam was composed, so the discovery set is
     /// a function of the construction and never of the request.
     pub fn discover_tools(&self) -> ListToolsResult {
@@ -227,6 +227,12 @@ fn dispatch_locked(
         LIST_CHARACTERS_TOOL => dispatch_list_characters(guard.as_mut(), arguments),
         SEARCH_INVENTORY_TOOL => dispatch_search_inventory(guard.as_mut(), arguments),
         INSPECT_ITEM_TOOL => dispatch_inspect_item(guard.as_mut(), arguments),
+        crate::schema::WEEKLY_RESET_TOOL => {
+            let _: crate::schema::WeeklyResetArgs = deserialize(arguments)?;
+            Ok(guard
+                .weekly_reset()
+                .map_or_else(tool_error, |output| output.into_call_tool_result()))
+        }
         _ => Err(unknown_tool()),
     }
 }
@@ -575,13 +581,18 @@ mod tests {
     }
 
     #[test]
-    fn discovery_exposes_exactly_the_three_reads_in_stable_order() {
+    fn discovery_exposes_exactly_the_four_reads_in_stable_order() {
         let (server, _handle) = server(RecordingService::new());
         let tools = server.discover_tools().tools;
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
         assert_eq!(
             names,
-            [LIST_CHARACTERS_TOOL, SEARCH_INVENTORY_TOOL, "inspect_item"]
+            [
+                LIST_CHARACTERS_TOOL,
+                SEARCH_INVENTORY_TOOL,
+                "inspect_item",
+                "weekly_reset"
+            ]
         );
         for tool in &tools {
             assert!(tool.output_schema.is_some());
@@ -790,13 +801,18 @@ mod tests {
     }
 
     #[test]
-    fn read_only_construction_exposes_exactly_the_three_reads() {
+    fn read_only_construction_exposes_exactly_the_four_reads() {
         let (server, _handle) = server(RecordingService::new());
         let tools = server.discover_tools().tools;
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
         assert_eq!(
             names,
-            [LIST_CHARACTERS_TOOL, SEARCH_INVENTORY_TOOL, "inspect_item"]
+            [
+                LIST_CHARACTERS_TOOL,
+                SEARCH_INVENTORY_TOOL,
+                "inspect_item",
+                "weekly_reset"
+            ]
         );
         assert!(
             server.get_tool(MOVE_ITEM_TOOL).is_none(),
@@ -816,7 +832,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_mutation_exposes_the_three_reads_plus_move_item() {
+    fn configured_mutation_exposes_the_four_reads_plus_move_item() {
         let (server, _read, _mutation) = mutation_server(RecordingService::new());
         let tools = server.discover_tools().tools;
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
@@ -826,6 +842,7 @@ mod tests {
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",
+                "weekly_reset",
                 MOVE_ITEM_TOOL
             ]
         );

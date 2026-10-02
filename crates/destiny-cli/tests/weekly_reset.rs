@@ -95,6 +95,6 @@ fn weekly_reset_json_shape() {
         serde_json::from_str(&render_weekly_reset(OutputMode::Json, &reset())).unwrap();
     assert_eq!(
         actual,
-        serde_json::json!({"kind":"weekly_reset","definition_version":"v1","milestones":[{"hash":1,"order":2,"name":"Raid\nName","description":"Description","resolved":true,"start":"2026-09-29T17:00:00Z","end":"2026-10-06T17:00:00Z","activities":[{"hash":3,"name":"Activity","resolved":true,"modifiers":[{"hash":4,"name":"A","description":"{var:42}","resolved":true},{"hash":5,"name":null,"description":null,"resolved":false}]},{"hash":6,"name":null,"resolved":false,"modifiers":[]}]},{"hash":7,"order":3,"name":null,"description":null,"resolved":false,"start":null,"end":null,"activities":[]}]})
+        serde_json::json!({"kind":"weekly_reset","definition_version":"v1","milestones":[{"hash":1,"order":2,"name":"Raid\nName","description":"Description","resolved":true,"start":"2026-09-29T17:00:00Z","end":"2026-10-06T17:00:00Z","activities":[{"hash":3,"name":"Activity","description":"Ignored","resolved":true,"modifiers":[{"hash":4,"name":"A","description":"{var:42}","resolved":true},{"hash":5,"name":null,"description":null,"resolved":false}]},{"hash":6,"name":null,"description":null,"resolved":false,"modifiers":[]}]},{"hash":7,"order":3,"name":null,"description":null,"resolved":false,"start":null,"end":null,"activities":[]}]})
     );
 }

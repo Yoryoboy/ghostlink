@@ -147,8 +147,8 @@ pub fn render_weekly_reset(
                     "start": milestone.start.and_then(|t| format_reset_timestamp(t, false)),
                     "end": milestone.end.and_then(|t| format_reset_timestamp(t, false)),
                     "activities": milestone.activities.iter().map(|activity| {
-                        let (name, _, resolved) = fields(&activity.definition);
-                        json!({"hash": activity.hash, "name": name, "resolved": resolved,
+                        let (name, description, resolved) = fields(&activity.definition);
+                        json!({"hash": activity.hash, "name": name, "description": description, "resolved": resolved,
                             "modifiers": activity.modifiers.iter().map(|modifier| {
                                 let (name, description, resolved) = fields(&modifier.definition);
                                 json!({"hash": modifier.hash, "name": name, "description": description, "resolved": resolved})

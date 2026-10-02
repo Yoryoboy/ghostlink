@@ -5,7 +5,7 @@
 //! MCP session over the child's stdin/stdout, and asserts the wire contract
 //! directly.
 //!
-//! A default fixture session proves initialize, discovery of the three reads
+//! A default fixture session proves initialize, discovery of the four reads
 //! plus the default-enabled `move_item`, all three reads, the complete one-call
 //! mutation journey (semantic planning, fresh preflight, exactly one transfer,
 //! post-action refresh, and destination verification), a repeated request that
@@ -49,6 +49,7 @@ const LIST_CHARACTERS_TOOL: &str = "list_characters";
 const SEARCH_INVENTORY_TOOL: &str = "search_inventory";
 const INSPECT_ITEM_TOOL: &str = "inspect_item";
 const MOVE_ITEM_TOOL: &str = "move_item";
+const WEEKLY_RESET_TOOL: &str = "weekly_reset";
 
 /// Reads exactly one newline-delimited JSON-RPC frame from the child's stdout.
 ///
@@ -251,6 +252,59 @@ fn structured(response: &Value) -> &Value {
 }
 
 #[tokio::test]
+async fn weekly_reset_stdio_missing_definitions() {
+    let mut session = FixtureSession::spawn(Some("definitions-unavailable")).await;
+    let response = session.call_tool(WEEKLY_RESET_TOOL, json!({})).await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(structured(&response)["code"], "definitions_unavailable");
+    assert_eq!(
+        structured(&response)["message"],
+        "definitions not loaded; run ghostlink sync-manifest"
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn weekly_reset_stdio_contract() {
+    let mut session = FixtureSession::spawn(None).await;
+    let id = session.next_id();
+    let listed = session.request(id, "tools/list", None).await;
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == WEEKLY_RESET_TOOL)
+        .expect("weekly tool listed");
+    assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+    assert!(tool["outputSchema"].is_object());
+    let response = session.call_tool(WEEKLY_RESET_TOOL, json!({})).await;
+    assert_eq!(response["result"]["isError"], false);
+    let reset = structured(&response);
+    assert_eq!(reset["kind"], "weekly_reset");
+    assert_eq!(reset["definition_version"], "fixture-definitions-v1");
+    assert_eq!(reset["milestones"][0]["name"], "Weekly raid");
+    assert_eq!(reset["milestones"][0]["start"], "1970-01-01T00:00:00Z");
+    assert_eq!(reset["milestones"][0]["end"], Value::Null);
+    assert_eq!(
+        reset["milestones"][0]["activities"][0]["modifiers"][1]["description"],
+        "{var:42}"
+    );
+    assert_eq!(
+        reset["milestones"][0]["activities"][0]["modifiers"][0]["name"],
+        Value::Null
+    );
+    assert_eq!(
+        reset["milestones"][0]["activities"][0]["modifiers"][0]["resolved"],
+        false
+    );
+    let rejected = session
+        .call_tool(WEEKLY_RESET_TOOL, json!({"unknown": "sentinel"}))
+        .await;
+    assert_eq!(rejected["error"]["code"], -32602);
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn child_process_stdio_completes_the_one_call_move_journey() {
     let mut session = FixtureSession::spawn(None).await;
 
@@ -262,9 +316,10 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             LIST_CHARACTERS_TOOL,
             SEARCH_INVENTORY_TOOL,
             INSPECT_ITEM_TOOL,
+            WEEKLY_RESET_TOOL,
             MOVE_ITEM_TOOL
         ],
-        "the product-equivalent server discovers the three reads plus move_item"
+        "the product-equivalent server discovers the four reads plus move_item"
     );
 
     // --- the reads still work ----------------------------------------------------

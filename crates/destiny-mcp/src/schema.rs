@@ -45,6 +45,9 @@ pub const INSPECT_ITEM_TOOL: &str = "inspect_item";
 /// Stable tool name for the single semantic mutation.
 pub const MOVE_ITEM_TOOL: &str = "move_item";
 
+/// Stable tool name for the credential-free public rotation.
+pub const WEEKLY_RESET_TOOL: &str = "weekly_reset";
+
 const LIST_CHARACTERS_DESCRIPTION: &str = "List the signed-in account's characters with the freshness metadata of the committed profile projection.";
 
 const SEARCH_INVENTORY_DESCRIPTION: &str = "Search item definitions and, when requested, concrete inventory instances with bounded filters.";
@@ -94,6 +97,13 @@ pub fn tool_specs() -> Vec<Tool> {
         )
         .with_input_schema::<InspectItemArgs>()
         .with_output_schema::<InspectItemOutput>(),
+        Tool::new(
+            WEEKLY_RESET_TOOL,
+            "Read the current week's public rotation without account credentials. Run `ghostlink sync-manifest` first to load the required definitions.",
+            JsonObject::new(),
+        )
+        .with_input_schema::<WeeklyResetArgs>()
+        .with_output_schema::<WeeklyResetOutput>(),
     ]
 }
 
@@ -114,6 +124,65 @@ pub fn move_item_tool() -> Tool {
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListCharactersArgs {}
+
+/// `weekly_reset` accepts no arguments.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeeklyResetArgs {}
+
+/// Structured public rotation, matching the CLI JSON contract.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename = "weekly_reset")]
+pub struct WeeklyResetOutput {
+    pub definition_version: String,
+    #[schemars(length(max = 64))]
+    pub milestones: Vec<WeeklyMilestoneView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct WeeklyMilestoneView {
+    pub hash: u32,
+    pub order: u32,
+    #[schemars(length(max = 256))]
+    pub name: Option<String>,
+    #[schemars(length(max = 2048))]
+    pub description: Option<String>,
+    pub resolved: bool,
+    /// RFC3339 UTC instant, or null when unavailable.
+    pub start: Option<String>,
+    /// RFC3339 UTC instant, or null when unavailable.
+    pub end: Option<String>,
+    #[schemars(length(max = 64))]
+    pub activities: Vec<WeeklyActivityView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct WeeklyActivityView {
+    pub hash: u32,
+    #[schemars(length(max = 256))]
+    pub name: Option<String>,
+    #[schemars(length(max = 2048))]
+    pub description: Option<String>,
+    pub resolved: bool,
+    #[schemars(length(max = 64))]
+    pub modifiers: Vec<WeeklyModifierView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct WeeklyModifierView {
+    pub hash: u32,
+    #[schemars(length(max = 256))]
+    pub name: Option<String>,
+    #[schemars(length(max = 2048))]
+    pub description: Option<String>,
+    pub resolved: bool,
+}
+
+impl WeeklyResetOutput {
+    pub fn into_call_tool_result(self) -> CallToolResult {
+        structured_result(self)
+    }
+}
 
 /// Bounded `search_inventory` arguments.
 ///
@@ -594,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_specs_expose_only_the_three_semantic_reads_in_stable_order() {
+    fn tool_specs_expose_only_the_four_semantic_reads_in_stable_order() {
         let tools = tool_specs();
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
         assert_eq!(
@@ -602,7 +671,8 @@ mod tests {
             [
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
-                INSPECT_ITEM_TOOL
+                INSPECT_ITEM_TOOL,
+                super::WEEKLY_RESET_TOOL
             ]
         );
         for tool in &tools {
@@ -697,6 +767,11 @@ mod tests {
                 .is_err()
         );
         assert!(serde_json::from_value::<MoveItemArgs>(json!({"unknown": 1})).is_err());
+        assert!(serde_json::from_value::<super::WeeklyResetArgs>(json!({"unknown": 1})).is_err());
+        assert_eq!(
+            schema_json(super::WEEKLY_RESET_TOOL)["additionalProperties"],
+            false
+        );
     }
 
     #[test]

@@ -131,6 +131,29 @@ fn compose_server<S: CredentialStore + Send + 'static>(
         transfer,
         repository,
         policy,
+        weekly_service(config)?,
+    ))
+}
+
+type PublicWeeklyService = destiny_app::weekly_reset::WeeklyResetService<
+    destiny_adapters::manifest::BungieManifestGateway<
+        destiny_adapters::manifest::HttpManifestTransport,
+        SystemClock,
+    >,
+    SqliteStore,
+>;
+
+fn weekly_service(config: &ReadRuntimeConfig) -> Result<PublicWeeklyService, AppError> {
+    use destiny_adapters::manifest::{
+        BungieManifestGateway, HttpManifestTransport, ManifestApiKey,
+    };
+    Ok(destiny_app::weekly_reset::WeeklyResetService::new(
+        BungieManifestGateway::new(
+            ManifestApiKey::new(config.api_key().expose_secret())?,
+            HttpManifestTransport::new()?,
+            SystemClock::new(),
+        ),
+        SqliteStore::open(config.database_path())?,
     ))
 }
 
@@ -167,6 +190,7 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     transfer: BungieTransferGateway<HttpTransferTransport, SystemClock, C>,
     repository: SqliteStore,
     policy: FreshnessPolicy,
+    weekly: PublicWeeklyService,
 ) -> ReadToolServer {
     let gateway = SharedGateway::new(profile_gateway);
     let repository = SharedRepository::new(repository);
@@ -174,6 +198,10 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     let read_sync = ProfileSyncService::new(gateway.clone(), repository.clone());
     let read_service =
         QueryReadService::new(QueryService::new(read_sync), SystemClock::new(), policy);
+
+    let read_service = destiny_mcp::service::WeeklyReadService::new(weekly, read_service, |t| {
+        destiny_adapters::format_reset_timestamp(t, false)
+    });
 
     let mutations = MutationService::new(
         ProfileSyncService::new(gateway, repository),
@@ -735,6 +763,14 @@ mod tests {
             transfer,
             store,
             FreshnessPolicy { ttl_seconds: 900 },
+            destiny_app::weekly_reset::WeeklyResetService::new(
+                destiny_adapters::manifest::BungieManifestGateway::new(
+                    destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL).unwrap(),
+                    destiny_adapters::manifest::HttpManifestTransport::new().unwrap(),
+                    SystemClock::new(),
+                ),
+                SqliteStore::open_in_memory().unwrap(),
+            ),
         );
         let tools = server.discover_tools().tools;
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
@@ -744,6 +780,7 @@ mod tests {
                 "list_characters",
                 "search_inventory",
                 "inspect_item",
+                "weekly_reset",
                 "move_item"
             ],
             "mutation must be default-enabled in the product composition"
