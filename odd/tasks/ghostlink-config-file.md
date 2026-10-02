@@ -15,13 +15,13 @@ Let `ghostlink` (CLI and MCP composition roots) load its configuration from a pe
 - Delivery: work-unit commits on `feature/ghostlink-config-file`; push/PR/merge are user decisions.
 
 ## Tasks
-- [ ] **GCF-001 — Establish tracker and branch.** Branch `feature/ghostlink-config-file` from `main` at `bc6f895`.
-- [ ] **GCF-002 — Load configuration from the per-user file with environment precedence.** Test-first in `destiny-app`; delegated writer.
-- [ ] **GCF-003 — Document the config file and migration.** `config.example.env` and operator docs; human-run migration steps from `.env.fish`.
+- [x] **GCF-001 — Establish tracker and branch.** Branch `feature/ghostlink-config-file` from `main` at `bc6f895`. Commit evidence: `3a2241b`.
+- [x] **GCF-002 — Load configuration from the per-user file with environment precedence.** Delegated writer, test-first: RED was unresolved `load`/`parse`/`resolve_path` and missing `exact_source_values`; GREEN 212 destiny-app tests. New private module `crates/destiny-app/src/config/file.rs`; `exact_env_values` composes env-first per key over the file. Real-binary tests are unaffected (leak journey clears env; MCP fixture reads no config). Workspace verification: fmt, build, 820 passed/19 suites, clippy, diff check. Commit evidence: `36da03c`.
+- [x] **GCF-003 — Document the config file and migration.** README configuration-file section and `config.example.env` template (also corrected stale loopback callback to `ghostlink://oauth/callback`). Commit evidence: `9d36947`.
 - [ ] **GCF-004 — Live read validation.** Human creates the file; agent runs read-only `ghostlink` commands with no secrets in its shell, reporting sanitized outcomes.
 
 ## Progress
 Started from `main` at `bc6f895` after PR #1 merge. Exploration: `ReadRuntimeConfig::from_env`, `LoginRuntimeConfig::from_env`, and `Config::from_env` all funnel through `exact_env_values` -> `exact_key_values(names, lookup)`; consumers are `destiny-cli` (`runtime.rs`, `login.rs`), `destiny-mcp/src/main.rs`, and `destiny-app/src/lib.rs`.
 
 ## Next step
-GCF-002 test-first implementation.
+GCF-004: human creates `~/.config/ghostlink/config.env` (0600) with values from `.env.fish`; agent then runs read-only commands in a shell without secrets.
