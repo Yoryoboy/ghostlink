@@ -7,6 +7,7 @@ use std::collections::HashSet;
 pub struct PublicMilestoneActivity {
     pub activity_hash: u32,
     pub modifier_hashes: Vec<u32>,
+    pub challenge_objective_hashes: Vec<u32>,
 }
 /// One milestone's public reset window and activities, measured in UTC Unix seconds.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,7 +30,7 @@ impl PublicMilestonesSnapshot {
         if self.milestones.len() > 64 || self.milestones.iter().any(|milestone| {
             !seen.insert(milestone.milestone_hash)
                 || milestone.activities.len() > 64
-                || milestone.activities.iter().any(|activity| activity.modifier_hashes.len() > 64)
+                || milestone.activities.iter().any(|activity| activity.modifier_hashes.len() > 64 || activity.challenge_objective_hashes.len() > 64)
                 || matches!((milestone.start, milestone.end), (Some(start), Some(end)) if start > end)
         }) {
             return Err(AppError::new(ErrorCategory::ProviderValidation));
