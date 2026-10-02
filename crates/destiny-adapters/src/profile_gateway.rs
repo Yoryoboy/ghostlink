@@ -474,13 +474,15 @@ pub fn profile_endpoint(membership: &DestinyMembership) -> String {
     )
 }
 
-/// Accepts only the fixed current-memberships endpoint or the one exact profile
-/// endpoint shape, so the production transport can never be pointed elsewhere.
+/// Accepts only current-memberships, the exact inventory profile query, or the
+/// exact character weekly query (202/204). No other endpoint is permitted.
 ///
 /// This predicate is the pre-flight gate: the transport evaluates it before it
 /// reads or attaches any credential, so a rejected URL never receives a secret.
 pub fn is_allowed_profile_url(url: &str) -> bool {
-    url == MEMBERSHIP_ENDPOINT || is_allowed_profile_get(url)
+    url == MEMBERSHIP_ENDPOINT
+        || is_allowed_profile_get(url)
+        || crate::weekly_profile::is_allowed_weekly_url(url)
 }
 
 /// Accepts exactly `{origin}/Platform/Destiny2/{type}/Profile/{id}/?components=…`.
@@ -1160,6 +1162,27 @@ where
             self.definition_version.clone(),
             observed_at,
         )
+    }
+}
+
+impl<T, C, S> destiny_core::WeeklyProfileGateway for BungieProfileGateway<T, C, S>
+where
+    T: ProfileTransport,
+    C: Clock,
+    S: CredentialSource,
+{
+    fn load_character_weekly(
+        &mut self,
+        membership: &DestinyMembership,
+        character: &destiny_core::CharacterId,
+    ) -> Result<destiny_core::CharacterWeeklySnapshot, AppError> {
+        let url = crate::weekly_profile::weekly_profile_endpoint(membership, character)?;
+        let (bytes, _) = self.read_with_live_credential(
+            &url,
+            crate::weekly_profile::WEEKLY_RESPONSE_LIMIT,
+            ReadRetryScope::RateLimitAndTransient,
+        )?;
+        crate::weekly_profile::decode_character_weekly(&bytes, character)
     }
 }
 
@@ -2688,6 +2711,44 @@ mod tests {
         assert_eq!(recorded[0].url, MEMBERSHIP_ENDPOINT);
         assert_eq!(recorded[1].url, profile_endpoint(&selected()));
         assert!(recorded[1].url.ends_with(PROFILE_QUERY));
+    }
+
+    #[test]
+    fn weekly_gateway_reuses_auth_retry_and_exact_character_endpoint() {
+        use destiny_core::{CharacterId, WeeklyProfileGateway};
+        let fixture = include_bytes!("../tests/fixtures/character-weekly.json");
+        let (mut gateway, delay) = step_gateway(
+            vec![
+                Ok(json_response_bytes(503, b"{}")),
+                Ok(json_response_bytes(200, fixture)),
+            ],
+            [Timestamp::new(GATEWAY_NOW), Timestamp::new(GATEWAY_NOW)],
+            GATEWAY_EXPIRES_AT,
+        );
+        let character = CharacterId::new("123456789");
+        let snapshot = gateway
+            .load_character_weekly(&selected(), &character)
+            .expect("weekly snapshot");
+        assert_eq!(snapshot.available_activities.len(), 3);
+        assert_eq!(delay.waits().len(), 1);
+        let expected = crate::weekly_profile::weekly_profile_endpoint(&selected(), &character)
+            .expect("weekly endpoint");
+        for request in gateway.transport().recorded() {
+            assert_eq!(request.url, expected);
+            assert_eq!(request.api_key.as_deref(), Some(API_KEY_SENTINEL));
+            assert_eq!(request.bearer.as_deref(), Some(BEARER_SENTINEL));
+        }
+    }
+
+    #[test]
+    fn weekly_gateway_refuses_expired_credentials_before_transport() {
+        use destiny_core::{CharacterId, WeeklyProfileGateway};
+        let mut gateway = gateway(vec![], GATEWAY_NOW, GATEWAY_NOW);
+        let error = gateway
+            .load_character_weekly(&selected(), &CharacterId::new("123"))
+            .expect_err("expired");
+        assert_eq!(error.category(), ErrorCategory::ProviderAuthentication);
+        assert!(gateway.transport().recorded().is_empty());
     }
 
     #[test]

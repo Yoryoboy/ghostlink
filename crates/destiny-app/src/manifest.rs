@@ -56,15 +56,15 @@ pub enum ManifestSyncReport {
     Unchanged {
         version: DefinitionVersion,
         record_count: usize,
-        /// Milestone, activity, activity-modifier counts, in that order.
-        world_counts: [usize; 3],
+        /// Milestone, activity, modifier, objective, activity-type counts.
+        world_counts: [usize; 5],
     },
     Updated {
         version: DefinitionVersion,
         record_count: usize,
         skipped: usize,
-        world_counts: [usize; 3],
-        world_skipped: [usize; 3],
+        world_counts: [usize; 5],
+        world_skipped: [usize; 5],
     },
 }
 
@@ -152,7 +152,7 @@ where
     R: destiny_core::ports::DefinitionCatalogRepository
         + destiny_core::ports::WorldDefinitionRepository,
 {
-    /// Fetches the small index first. An exact version match with all three
+    /// Fetches the small index first. An exact version match with all five
     /// world catalogs populated is a pure read. Missing world catalogs (including
     /// a migrated item-only store) require a complete atomic publication.
     /// Storage failures propagate rather than implying an empty catalog.
@@ -797,6 +797,8 @@ mod tests {
                 milestone_path: "unused".into(),
                 activity_path: "unused".into(),
                 modifier_path: "unused".into(),
+                objective_path: "unused".into(),
+                activity_type_path: "unused".into(),
             }));
             let mut service = ManifestService::new(gateway, repository);
             assert_eq!(
@@ -804,7 +806,7 @@ mod tests {
                 crate::manifest::ManifestSyncReport::Unchanged {
                     version: DefinitionVersion::new("manifest-prior"),
                     record_count: 1,
-                    world_counts: [1; 3],
+                    world_counts: [1; 5],
                 }
             );
             assert_eq!(service.gateway().world_calls(), 0);
@@ -834,8 +836,8 @@ mod tests {
                         version: DefinitionVersion::new(VERSION),
                         record_count: 1,
                         skipped: 3,
-                        world_counts: [1; 3],
-                        world_skipped: [2, 3, 4],
+                        world_counts: [1; 5],
+                        world_skipped: [2, 3, 4, 5, 6],
                     }
                 );
                 assert!(!format!("{report:?}").contains("item-name-sentinel"));
@@ -879,6 +881,8 @@ mod tests {
                         milestone_path: "unused".into(),
                         activity_path: "unused".into(),
                         modifier_path: "unused".into(),
+                        objective_path: "unused".into(),
+                        activity_type_path: "unused".into(),
                     }));
                     gateway.queue_component(Err(error));
                 } else {
@@ -924,6 +928,8 @@ mod tests {
                     milestone_path: "unused".into(),
                     activity_path: "unused".into(),
                     modifier_path: "unused".into(),
+                    objective_path: "unused".into(),
+                    activity_type_path: "unused".into(),
                 }));
                 gateway.queue_component(Ok(acquisition(VERSION, vec![candidate(42, "next")])));
                 gateway.queue_world(if mismatch {
@@ -946,7 +952,7 @@ mod tests {
                 assert_eq!(service.repository().current_metadata().unwrap(), metadata);
                 assert_eq!(
                     service.repository().world_definition_counts().unwrap(),
-                    [1; 3]
+                    [1; 5]
                 );
                 assert_prior_state(service.repository());
             }
@@ -969,7 +975,7 @@ mod tests {
                 crate::manifest::ManifestSyncReport::Unchanged {
                     version: DefinitionVersion::new(VERSION),
                     record_count: 1,
-                    world_counts: [1; 3],
+                    world_counts: [1; 5],
                 }
             );
             assert_eq!(service.gateway().component_calls(), 1);
@@ -1003,6 +1009,8 @@ mod tests {
                 milestone_path: "unused".into(),
                 activity_path: "unused".into(),
                 modifier_path: "unused".into(),
+                objective_path: "unused".into(),
+                activity_type_path: "unused".into(),
             }));
             gateway.queue_component(Ok(acquisition(VERSION, vec![candidate(42, "Gamma")])));
             let mut service = ManifestService::new(gateway, committed_repository());

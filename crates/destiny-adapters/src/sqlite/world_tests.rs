@@ -6,6 +6,14 @@ use destiny_core::*;
 fn world(version: &str, name: &str) -> WorldDefinitionsAcquisition {
     WorldDefinitionsAcquisition {
         version: DefinitionVersion::new(version),
+        objectives: WorldDefinitionTable {
+            definitions: vec![ObjectiveDefinition::new(5, name.into(), 1).unwrap()],
+            skipped_count: 5,
+        },
+        activity_types: WorldDefinitionTable {
+            definitions: vec![ActivityTypeDefinition::new(4, name.into(), "".into()).unwrap()],
+            skipped_count: 6,
+        },
         milestones: WorldDefinitionTable {
             definitions: vec![
                 MilestoneDefinition::new(1, name.into(), "description".into(), 3).unwrap(),
@@ -71,7 +79,7 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
         assert!(matches!(
             service.sync(Timestamp::new(200)).unwrap(),
             destiny_app::ManifestSyncReport::Updated {
-                world_counts: [1, 1, 1],
+                world_counts: [1, 1, 1, 1, 1],
                 ..
             }
         ));
@@ -98,7 +106,7 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
         assert!(matches!(
             service.sync(Timestamp::new(300)).unwrap(),
             destiny_app::ManifestSyncReport::Unchanged {
-                world_counts: [1, 1, 1],
+                world_counts: [1, 1, 1, 1, 1],
                 ..
             }
         ));
@@ -110,7 +118,7 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
     let mut sqlite = SqliteStore::open_in_memory().unwrap();
     sqlite.migrate_to(2).unwrap();
     sqlite.replace_definitions(items("v1", "prior")).unwrap();
-    sqlite.migrate_to(3).unwrap();
+    sqlite.migrate_to(4).unwrap();
     let mut fake = InMemoryDefinitionRepository::default();
     fake.replace_definitions(items("v1", "prior")).unwrap();
     exercise(sqlite);
@@ -119,6 +127,8 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
         "milestone_definitions",
         "activity_definitions",
         "activity_modifier_definitions",
+        "objective_definitions",
+        "activity_type_definitions",
     ] {
         let mut sqlite = SqliteStore::open_in_memory().unwrap();
         sqlite
@@ -141,6 +151,55 @@ fn schema(store: &SqliteStore) -> Vec<(String, String)> {
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap()
+}
+
+#[test]
+fn populated_v3_round_trip_restores_exact_schema_and_data() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(3).unwrap();
+    store
+        .connection()
+        .execute_batch(
+            "INSERT INTO definitions VALUES (10, NULL, 'item', NULL, NULL, NULL, 'v3');
+        INSERT INTO milestone_definitions VALUES (1, 'milestone', 'description', 3, 'v3');
+        INSERT INTO activity_definitions VALUES (2, 'activity', '', 4, -10, 'v3');
+        INSERT INTO activity_modifier_definitions VALUES (3, 'modifier', '', 'v3');
+        INSERT INTO sync_metadata VALUES ('manifest_definitions', '100', 'manifest', '2', 'v3');",
+        )
+        .unwrap();
+    let before = schema(&store);
+    let metadata = store.current_metadata().unwrap();
+    let milestone = store.lookup_milestone(1).unwrap();
+    let activity = store.lookup_activity(2).unwrap();
+    let modifier = store.lookup_activity_modifier(3).unwrap();
+    let item = store.lookup_definition(ItemHash::new(10)).unwrap();
+    store.migrate_to(4).unwrap();
+    assert_eq!(store.world_definition_counts().unwrap(), [1, 1, 1, 0, 0]);
+    assert_eq!(store.lookup_milestone(1).unwrap(), milestone);
+    assert_eq!(store.lookup_activity(2).unwrap(), activity);
+    assert_eq!(store.lookup_activity_modifier(3).unwrap(), modifier);
+    assert_eq!(store.lookup_definition(ItemHash::new(10)).unwrap(), item);
+    assert_eq!(store.current_metadata().unwrap(), metadata);
+    store
+        .connection()
+        .execute_batch(
+            "INSERT INTO objective_definitions VALUES (5, '', -1, 'v3');
+        INSERT INTO activity_type_definitions VALUES (4, 'type', '', 'v3');",
+        )
+        .unwrap();
+    store.migrate_to(3).unwrap();
+    assert_eq!(schema(&store), before);
+    assert_eq!(store.lookup_milestone(1).unwrap(), milestone);
+    assert_eq!(store.lookup_activity(2).unwrap(), activity);
+    assert_eq!(store.lookup_activity_modifier(3).unwrap(), modifier);
+    assert_eq!(store.lookup_definition(ItemHash::new(10)).unwrap(), item);
+    assert_eq!(store.current_metadata().unwrap(), metadata);
+    store
+        .connection()
+        .pragma_update(None, "user_version", 5)
+        .unwrap();
+    assert!(store.migrate_to(4).is_err());
+    assert_eq!(schema(&store), before);
 }
 
 #[test]
@@ -181,7 +240,7 @@ fn populated_v2_round_trip_restores_exact_schema_and_data() {
     ));
     store
         .connection()
-        .pragma_update(None, "user_version", 4)
+        .pragma_update(None, "user_version", 5)
         .unwrap();
     assert!(migrations::migrate_to(store.connection_mut(), 3).is_err());
 }
@@ -192,7 +251,7 @@ fn combined_publish_rolls_back_every_table_and_metadata_on_mid_publish_failure()
     let prior = store
         .publish_manifest(items("v1", "prior"), world("v1", "prior"))
         .unwrap();
-    store.connection().execute_batch("CREATE TRIGGER fail_world BEFORE INSERT ON activity_modifier_definitions BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+    store.connection().execute_batch("CREATE TRIGGER fail_world BEFORE INSERT ON activity_type_definitions BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
     assert!(
         store
             .publish_manifest(items("v2", "next"), world("v2", "next"))
@@ -203,6 +262,18 @@ fn combined_publish_rolls_back_every_table_and_metadata_on_mid_publish_failure()
     assert_eq!(store.lookup_activity(2).unwrap().unwrap().name(), "prior");
     assert_eq!(
         store.lookup_activity_modifier(3).unwrap().unwrap().name(),
+        "prior"
+    );
+    assert_eq!(
+        store
+            .lookup_objective(5)
+            .unwrap()
+            .unwrap()
+            .progress_description(),
+        "prior"
+    );
+    assert_eq!(
+        store.lookup_activity_type(4).unwrap().unwrap().name(),
         "prior"
     );
     let Resolution::Unique(item) = store.lookup_definition(ItemHash::new(10)).unwrap() else {
@@ -223,7 +294,15 @@ fn fake_and_sqlite_share_world_publication_and_lookup_contract() {
             fake.publish_manifest(items("v1", name), world("v1", name))
                 .unwrap()
         );
-        for hash in [1, 2, 3, u32::MAX] {
+        for hash in [1, 2, 3, 4, 5, u32::MAX] {
+            assert_eq!(
+                store.lookup_objective(hash).unwrap(),
+                fake.lookup_objective(hash).unwrap()
+            );
+            assert_eq!(
+                store.lookup_activity_type(hash).unwrap(),
+                fake.lookup_activity_type(hash).unwrap()
+            );
             assert_eq!(
                 store.lookup_milestone(hash).unwrap(),
                 fake.lookup_milestone(hash).unwrap()
@@ -280,8 +359,8 @@ fn fake_and_sqlite_share_world_publication_and_lookup_contract() {
             .unwrap(),
         fake.replace_definitions(items("v2", "items-only")).unwrap()
     );
-    assert_eq!(store.world_definition_counts().unwrap(), [0; 3]);
-    assert_eq!(fake.world_definition_counts().unwrap(), [0; 3]);
+    assert_eq!(store.world_definition_counts().unwrap(), [0; 5]);
+    assert_eq!(fake.world_definition_counts().unwrap(), [0; 5]);
 }
 
 #[test]
@@ -309,6 +388,17 @@ fn world_publication_round_trips_signed_light_levels() {
 fn world_schema_enforces_bounds_and_strict_integer_domains() {
     let store = SqliteStore::open_in_memory().unwrap();
     for sql in [
+        "INSERT INTO objective_definitions VALUES (-1, '', 1, 'v1')",
+        "INSERT INTO objective_definitions VALUES (4294967296, '', 1, 'v1')",
+        "INSERT INTO objective_definitions VALUES (1, '', -2147483649, 'v1')",
+        "INSERT INTO objective_definitions VALUES (1, '', 2147483648, 'v1')",
+        "INSERT INTO objective_definitions VALUES (1, '', 1.5, 'v1')",
+        "INSERT INTO objective_definitions VALUES (1, '', 1, '')",
+        "INSERT INTO objective_definitions VALUES (1, replace(hex(zeroblob(513)), '00', 'x'), 1, 'v1')",
+        "INSERT INTO activity_type_definitions VALUES (1, '', '', 'v1')",
+        "INSERT INTO activity_type_definitions VALUES (1, 'name', zeroblob(2049), 'v1')",
+        "INSERT INTO activity_type_definitions VALUES (-1, 'name', '', 'v1')",
+        "INSERT INTO activity_type_definitions VALUES (1, replace(hex(zeroblob(257)), '00', 'x'), '', 'v1')",
         "INSERT INTO milestone_definitions VALUES (-1, 'name', '', 3, 'v1')",
         "INSERT INTO milestone_definitions VALUES (4294967296, 'name', '', 3, 'v1')",
         "INSERT INTO milestone_definitions VALUES (1, '', '', 3, 'v1')",
@@ -323,6 +413,16 @@ fn world_schema_enforces_bounds_and_strict_integer_domains() {
         assert!(store.connection().execute(sql, []).is_err());
     }
     store.connection().execute("INSERT INTO activity_definitions VALUES (4294967295, 'name', '', 4294967295, 2147483647, 'v1')", []).unwrap();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO objective_definitions VALUES (4294967295, '', -2147483648, 'v1')",
+            [],
+        )
+        .unwrap();
+    let objective = store.lookup_objective(u32::MAX).unwrap().unwrap();
+    assert_eq!(objective.progress_description(), "");
+    assert_eq!(objective.completion_value(), i32::MIN);
     let activity = store.lookup_activity(u32::MAX).unwrap().unwrap();
     assert_eq!(activity.light_level(), i32::MAX);
 }

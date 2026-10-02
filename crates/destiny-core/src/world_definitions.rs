@@ -48,6 +48,51 @@ macro_rules! definition {
 definition!(MilestoneDefinition, milestone_type: u32);
 definition!(ActivityDefinition, activity_type_hash: u32, light_level: i32);
 definition!(ActivityModifierDefinition);
+definition!(ActivityTypeDefinition);
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct ObjectiveDefinition {
+    hash: u32,
+    progress_description: String,
+    completion_value: i32,
+}
+impl std::fmt::Debug for ObjectiveDefinition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObjectiveDefinition")
+            .field("hash", &self.hash)
+            .field("completion_value", &self.completion_value)
+            .finish_non_exhaustive()
+    }
+}
+impl ObjectiveDefinition {
+    pub fn new(
+        hash: u32,
+        progress_description: String,
+        completion_value: i32,
+    ) -> Result<Self, AppError> {
+        if progress_description.chars().count() > 512
+            || progress_description
+                .chars()
+                .any(|c| c.is_control() && !c.is_whitespace())
+        {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(Self {
+            hash,
+            progress_description,
+            completion_value,
+        })
+    }
+    pub const fn hash(&self) -> u32 {
+        self.hash
+    }
+    pub fn progress_description(&self) -> &str {
+        &self.progress_description
+    }
+    pub const fn completion_value(&self) -> i32 {
+        self.completion_value
+    }
+}
 
 /// One component's accepted definitions and omitted blank/redacted records.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -56,13 +101,15 @@ pub struct WorldDefinitionTable<T> {
     pub skipped_count: usize,
 }
 
-/// The three world components acquired against one exact index version.
+/// The five world components acquired against one exact index version.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorldDefinitionsAcquisition {
     pub version: DefinitionVersion,
     pub milestones: WorldDefinitionTable<MilestoneDefinition>,
     pub activities: WorldDefinitionTable<ActivityDefinition>,
     pub modifiers: WorldDefinitionTable<ActivityModifierDefinition>,
+    pub objectives: WorldDefinitionTable<ObjectiveDefinition>,
+    pub activity_types: WorldDefinitionTable<ActivityTypeDefinition>,
 }
 
 impl WorldDefinitionsAcquisition {
@@ -98,25 +145,45 @@ impl WorldDefinitionsAcquisition {
                 self.modifiers.definitions.len(),
                 10000,
             )
+            || !valid(
+                self.objectives
+                    .definitions
+                    .iter()
+                    .map(ObjectiveDefinition::hash),
+                self.objectives.definitions.len(),
+                100000,
+            )
+            || !valid(
+                self.activity_types
+                    .definitions
+                    .iter()
+                    .map(ActivityTypeDefinition::hash),
+                self.activity_types.definitions.len(),
+                1000,
+            )
         {
             return Err(AppError::new(ErrorCategory::ProviderValidation));
         }
         Ok(())
     }
 
-    pub fn counts(&self) -> [usize; 3] {
+    pub fn counts(&self) -> [usize; 5] {
         [
             self.milestones.definitions.len(),
             self.activities.definitions.len(),
             self.modifiers.definitions.len(),
+            self.objectives.definitions.len(),
+            self.activity_types.definitions.len(),
         ]
     }
 
-    pub fn skipped_counts(&self) -> [usize; 3] {
+    pub fn skipped_counts(&self) -> [usize; 5] {
         [
             self.milestones.skipped_count,
             self.activities.skipped_count,
             self.modifiers.skipped_count,
+            self.objectives.skipped_count,
+            self.activity_types.skipped_count,
         ]
     }
 
@@ -134,6 +201,14 @@ impl WorldDefinitionsAcquisition {
         self.milestones.skipped_count = 0;
         self.activities.skipped_count = 0;
         self.modifiers.skipped_count = 0;
+        self.objectives
+            .definitions
+            .sort_by_key(ObjectiveDefinition::hash);
+        self.activity_types
+            .definitions
+            .sort_by_key(ActivityTypeDefinition::hash);
+        self.objectives.skipped_count = 0;
+        self.activity_types.skipped_count = 0;
     }
 }
 
@@ -160,6 +235,16 @@ mod tests {
         assert!(definitions[1].contains("light_level: 2000"));
         let acquisition = WorldDefinitionsAcquisition {
             version: DefinitionVersion::new("v1"),
+            objectives: WorldDefinitionTable {
+                definitions: vec![ObjectiveDefinition::new(6, description.into(), 1).unwrap()],
+                skipped_count: 0,
+            },
+            activity_types: WorldDefinitionTable {
+                definitions: vec![
+                    ActivityTypeDefinition::new(7, name.into(), description.into()).unwrap(),
+                ],
+                skipped_count: 0,
+            },
             milestones: WorldDefinitionTable {
                 definitions: vec![milestone],
                 skipped_count: 0,

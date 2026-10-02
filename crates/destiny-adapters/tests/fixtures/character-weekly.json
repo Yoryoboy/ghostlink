@@ -1,0 +1,33 @@
+{
+  "ErrorCode": 1,
+  "Response": {
+    "progressions": { "data": { "milestones": {
+      "900": {
+        "milestoneHash": 900,
+        "startDate": "2026-09-29T17:00:00Z",
+        "endDate": "2026-10-06T17:00:00Z",
+        "activities": [{
+          "activityHash": 100,
+          "challenges": [{ "objective": { "objectiveHash": 501, "progress": 0, "completionValue": 1, "complete": false } }],
+          "phases": [{ "phaseHash": 601, "complete": true }, { "phaseHash": 602, "complete": false }]
+        }],
+        "rewards": [{ "rewardCategoryHash": 701, "entries": [{ "rewardEntryHash": 801, "earned": true, "redeemed": false }] }]
+      }
+    } } },
+    "activities": { "data": { "availableActivities": [
+      {
+        "activityHash": 100, "isFocusedActivity": false, "isCompleted": true,
+        "recommendedLight": 2000, "difficultyTier": 2, "modifierHashes": [401],
+        "challenges": [{ "objective": { "objectiveHash": 501, "progress": 0, "completionValue": 1, "complete": false } }]
+      },
+      {
+        "activityHash": 200, "isFocusedActivity": false, "isCompleted": false,
+        "challenges": [{ "objective": { "objectiveHash": 502, "progress": 1, "completionValue": 1, "complete": true } }]
+      },
+      {
+        "activityHash": 300, "isFocusedActivity": true, "isCompleted": false,
+        "visibleRewards": [{ "rewardItems": [{ "itemQuantity": { "itemHash": 301, "quantity": 1 } }, { "itemQuantity": { "itemHash": 302, "quantity": 1 } }] }]
+      }
+    ] } }
+  }
+}

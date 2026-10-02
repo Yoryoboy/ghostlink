@@ -66,9 +66,15 @@ pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncRepor
             if let Some(skipped) = skipped {
                 text.push_str(&format!("\nskipped: {skipped}"));
             }
-            for (index, label) in ["milestones", "activities", "activity_modifiers"]
-                .iter()
-                .enumerate()
+            for (index, label) in [
+                "milestones",
+                "activities",
+                "activity_modifiers",
+                "objectives",
+                "activity_types",
+            ]
+            .iter()
+            .enumerate()
             {
                 text.push_str(&format!("\n{label}: {}", world_counts[index]));
                 if let Some(skipped) = world_skipped {
@@ -82,9 +88,15 @@ pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncRepor
             if let Some(skipped) = skipped {
                 value["skipped"] = json!(skipped);
             }
-            for (index, label) in ["milestones", "activities", "activity_modifiers"]
-                .iter()
-                .enumerate()
+            for (index, label) in [
+                "milestones",
+                "activities",
+                "activity_modifiers",
+                "objectives",
+                "activity_types",
+            ]
+            .iter()
+            .enumerate()
             {
                 value[*label] = json!(world_counts[index]);
                 if let Some(skipped) = world_skipped {

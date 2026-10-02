@@ -11,6 +11,7 @@ pub mod random;
 pub mod sqlite;
 pub mod token;
 pub mod transfer;
+pub mod weekly_profile;
 
 pub use clock::SystemClock;
 pub use credential_store::{CREDENTIAL_SERVICE, CREDENTIAL_USER, NativeCredentialStore};

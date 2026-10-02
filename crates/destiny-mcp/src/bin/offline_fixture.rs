@@ -211,6 +211,19 @@ fn weekly_repository() -> InMemoryDefinitionRepository {
                 source: SourceMarker::Manifest,
             },
             WorldDefinitionsAcquisition {
+                objectives: WorldDefinitionTable {
+                    definitions: vec![
+                        destiny_app::ObjectiveDefinition::new(5, "".into(), 1).unwrap(),
+                    ],
+                    skipped_count: 0,
+                },
+                activity_types: WorldDefinitionTable {
+                    definitions: vec![
+                        destiny_app::ActivityTypeDefinition::new(4, "Raid".into(), "".into())
+                            .unwrap(),
+                    ],
+                    skipped_count: 0,
+                },
                 version,
                 milestones: WorldDefinitionTable {
                     definitions: vec![

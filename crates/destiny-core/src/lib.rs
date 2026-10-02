@@ -12,10 +12,12 @@ pub use ports::PublicMilestonesGateway;
 pub use public_milestones::{PublicMilestone, PublicMilestoneActivity, PublicMilestonesSnapshot};
 pub mod redact;
 pub mod state;
+pub mod weekly_profile;
+pub use weekly_profile::*;
 pub mod world_definitions;
 pub use world_definitions::{
-    ActivityDefinition, ActivityModifierDefinition, MilestoneDefinition, WorldDefinitionTable,
-    WorldDefinitionsAcquisition,
+    ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, MilestoneDefinition,
+    ObjectiveDefinition, WorldDefinitionTable, WorldDefinitionsAcquisition,
 };
 
 pub use auth::{

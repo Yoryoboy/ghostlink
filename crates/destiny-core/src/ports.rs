@@ -255,7 +255,12 @@ pub trait WorldDefinitionRepository: DefinitionRepository {
         &self,
         hash: u32,
     ) -> Result<Option<crate::ActivityModifierDefinition>, AppError>;
-    fn world_definition_counts(&self) -> Result<[usize; 3], AppError>;
+    fn lookup_objective(&self, hash: u32) -> Result<Option<crate::ObjectiveDefinition>, AppError>;
+    fn lookup_activity_type(
+        &self,
+        hash: u32,
+    ) -> Result<Option<crate::ActivityTypeDefinition>, AppError>;
+    fn world_definition_counts(&self) -> Result<[usize; 5], AppError>;
     fn publish_manifest(
         &mut self,
         items: DefinitionReplacementInput,
@@ -564,6 +569,8 @@ pub struct ManifestIndex {
     pub milestone_path: String,
     pub activity_path: String,
     pub modifier_path: String,
+    pub objective_path: String,
+    pub activity_type_path: String,
 }
 
 impl fmt::Debug for ManifestIndex {

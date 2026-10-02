@@ -38,12 +38,24 @@ impl WorldDefinitionRepository for SqliteStore {
         "SELECT name, description FROM activity_modifier_definitions WHERE hash = ?1"
     );
 
-    fn world_definition_counts(&self) -> Result<[usize; 3], AppError> {
-        let mut counts = [0; 3];
+    lookup!(
+        lookup_activity_type,
+        ActivityTypeDefinition,
+        "SELECT name, description FROM activity_type_definitions WHERE hash = ?1"
+    );
+    fn lookup_objective(&self, hash: u32) -> Result<Option<ObjectiveDefinition>, AppError> {
+        self.connection().query_row("SELECT progress_description, completion_value FROM objective_definitions WHERE hash = ?1", [hash], |row| {
+            Ok(ObjectiveDefinition::new(hash, row.get(0)?, row.get(1)?))
+        }).optional().map_err(|_| storage_failure())?.transpose().map_err(|_| storage_failure())
+    }
+    fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
+        let mut counts = [0; 5];
         for (index, sql) in [
             "SELECT COUNT(*) FROM milestone_definitions",
             "SELECT COUNT(*) FROM activity_definitions",
             "SELECT COUNT(*) FROM activity_modifier_definitions",
+            "SELECT COUNT(*) FROM objective_definitions",
+            "SELECT COUNT(*) FROM activity_type_definitions",
         ]
         .iter()
         .enumerate()
@@ -67,7 +79,7 @@ impl WorldDefinitionRepository for SqliteStore {
 }
 
 pub(super) fn clear_catalog(connection: &Connection) -> Result<(), AppError> {
-    connection.execute_batch("DELETE FROM milestone_definitions; DELETE FROM activity_definitions; DELETE FROM activity_modifier_definitions;")
+    connection.execute_batch("DELETE FROM milestone_definitions; DELETE FROM activity_definitions; DELETE FROM activity_modifier_definitions; DELETE FROM objective_definitions; DELETE FROM activity_type_definitions;")
         .map_err(|_| storage_failure())
 }
 
@@ -110,6 +122,32 @@ pub(super) fn replace_catalog(
         connection
             .execute(
                 "INSERT INTO activity_modifier_definitions VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    definition.hash(),
+                    definition.name(),
+                    definition.description(),
+                    version
+                ],
+            )
+            .map_err(|_| storage_failure())?;
+    }
+    for definition in &world.objectives.definitions {
+        connection
+            .execute(
+                "INSERT INTO objective_definitions VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    definition.hash(),
+                    definition.progress_description(),
+                    definition.completion_value(),
+                    version
+                ],
+            )
+            .map_err(|_| storage_failure())?;
+    }
+    for definition in &world.activity_types.definitions {
+        connection
+            .execute(
+                "INSERT INTO activity_type_definitions VALUES (?1, ?2, ?3, ?4)",
                 params![
                     definition.hash(),
                     definition.name(),
@@ -167,5 +205,17 @@ pub(super) fn contents_match(
         modifiers,
         "SELECT hash, name, description, definition_version FROM activity_modifier_definitions ORDER BY hash",
         ActivityModifierDefinition
+    ) && table_matches!(
+        connection,
+        world,
+        activity_types,
+        "SELECT hash, name, description, definition_version FROM activity_type_definitions ORDER BY hash",
+        ActivityTypeDefinition
+    ) && table_matches!(
+        connection,
+        world,
+        objectives,
+        "SELECT hash, progress_description, completion_value, definition_version FROM objective_definitions ORDER BY hash",
+        ObjectiveDefinition
     ))
 }
