@@ -1,0 +1,41 @@
+# Ghostlink Weekly for Humans (WU-021)
+
+## Objective and scope
+Make `ghostlink weekly` read like a player's dashboard instead of a serialization of Bungie's structure, and add `--details` and `--debug` levels. `--json` stays the complete structured contract.
+
+Principle: Ghost Link improves readability but never claims a taxonomy the API does not expose. Layers: Bungie API/Manifest -> raw model -> normalization -> derived presentation hints -> renderer. Derived hints are labeled as derived.
+
+Non-goals: translating objective texts; claiming raid encounter challenges (they arrive mixed into `modifierHashes`); expanding `{var:...}` templates; interpreting reward names (for example "Deepsight Weapon (Chance)"); new weekly categories.
+
+## Output levels
+- default: what is featured this week and what to do. No modifiers, no manifest version, no hashes.
+- `--details`: default plus modifiers grouped by derived category.
+- `--debug`: details plus hashes, `resolved` flags, every raw entry (no name deduplication), manifest version, and unclassified activities.
+- `--json`: unchanged complete contract plus the new structured fields below.
+
+## Rules
+- Header: `Ghost Link — Weekly` then `<Class> · Power <light>`.
+- Sections in order: GRANDMASTER, FEATURED RAIDS, FEATURED DUNGEONS, VANGUARD, CRUCIBLE, SEASONAL. No activity-type suffixes inside sections.
+- One entity per activity root; non-default variants (for example Master) render as sub-blocks only where they differ.
+- Objectives: Bungie `progressDescription` verbatim with `○` (incomplete) or `✓` (complete) and `progress/completion`. No translation.
+- Raid phases render as `Encounters n/m`.
+- No personal objective in the payload (for example Deep Stone Crypt for the Hunter): render nothing for it, never fill in.
+- Rewards and modifiers: deduplicate by exact name in default and `--details`; `--debug` keeps every entry with its hash.
+- Quickplay: one line per distinct reward pool, `○ <objective> → <rewards>`, never merged into one activity.
+- Modifier categories (derived, name-based, English): Surge (name ends with "Surge"), Overcharge (name starts with "Overcharged"), Champions (name contains "Champion"), everything else "Other modifiers". JSON exposes it as a derived `category` field.
+- Unclassified activities: list of `{hash, name|null, reason, source}`; reason `activity_definition_missing` or `activity_type_missing`; source `public_milestones` or `character_activities`. Default and `--details` show one warning line at the end; `--debug` lists them.
+
+## Constraints and acceptance
+- Classification rules from WU-020 are unchanged; this WU changes the model only where listed and the renderer.
+- Rendered outputs pinned by tests for each level; CLI/MCP JSON parity kept.
+- Test-first for behavior tasks. Checks per task: `cargo fmt --all -- --check`, `cargo build -p destiny-cli -p destiny-mcp`, `cargo test --workspace --all-features`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `git diff --check`.
+- Worktree `/home/yoryo/apps/ghostlink-human` with its own `target/`; the user's `~/apps/ghostlink` binary is untouched until merge.
+
+## Tasks
+- [ ] **WHU-001 — Model.** Unclassified list with reason and source; Quickplay reward pools; derived modifier categories; JSON fields and parity.
+- [ ] **WHU-002 — Default renderer.** Dashboard layout and rules above, pinned by tests.
+- [ ] **WHU-003 — `--details` and `--debug`.** Flags, grouped modifiers, diagnostic output, pinned by tests.
+- [ ] **WHU-004 — Live validation, docs, close.** Live run for the Hunter on a database copy; README.
+
+## Next step
+WHU-001.
