@@ -160,6 +160,14 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         PlanLifetime::MAX,
     );
 
+    let read_service = destiny_mcp::service::PersonalWeeklyReadService::new(
+        destiny_app::WeeklyPersonalService::new(
+            PublicGateway,
+            PersonalGateway,
+            weekly_repository(),
+        ),
+        read_service,
+    );
     let read_service = destiny_mcp::service::WeeklyReadService::new(
         destiny_app::weekly_reset::WeeklyResetService::new(PublicGateway, weekly_repository()),
         read_service,
@@ -168,12 +176,32 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
     ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
 }
 
+struct PersonalGateway;
+impl destiny_app::WeeklyProfileGateway for PersonalGateway {
+    fn load_character_weekly(
+        &mut self,
+        _: &DestinyMembership,
+        character: &CharacterId,
+    ) -> Result<destiny_app::CharacterWeeklySnapshot, AppError> {
+        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("definitions-unavailable") {
+            panic!("definitions must gate provider requests");
+        }
+        Ok(destiny_app::CharacterWeeklySnapshot {
+            character_id: character.clone(),
+            milestones: vec![],
+            available_activities: vec![],
+        })
+    }
+}
 struct PublicGateway;
 
 impl destiny_app::PublicMilestonesGateway for PublicGateway {
     fn load_public_milestones(
         &mut self,
     ) -> Result<destiny_app::PublicMilestonesSnapshot, AppError> {
+        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("definitions-unavailable") {
+            panic!("definitions must gate provider requests");
+        }
         Ok(destiny_app::PublicMilestonesSnapshot {
             milestones: vec![destiny_app::PublicMilestone {
                 milestone_hash: 1,
@@ -291,6 +319,11 @@ struct WorldGateway {
 
 impl ProfileGateway for WorldGateway {
     fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
+        assert_ne!(
+            std::env::var(SCENARIO_ENV).ok().as_deref(),
+            Some("definitions-unavailable"),
+            "definitions gate must prevent membership requests"
+        );
         Ok(self.membership.clone())
     }
 
@@ -298,6 +331,11 @@ impl ProfileGateway for WorldGateway {
         &mut self,
         membership: &DestinyMembership,
     ) -> Result<InventorySnapshotInput, AppError> {
+        assert_ne!(
+            std::env::var(SCENARIO_ENV).ok().as_deref(),
+            Some("definitions-unavailable"),
+            "definitions gate must prevent inventory requests"
+        );
         if membership != &self.membership {
             return Err(AppError::new(ErrorCategory::ProviderValidation));
         }
@@ -444,10 +482,20 @@ fn snapshot_input(characters: &[Character], items: &[ItemInstance]) -> Inventory
 }
 
 fn characters() -> Vec<Character> {
-    vec![character("warlock"), character("zavala")]
+    if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("empty-characters") {
+        return vec![];
+    }
+    let mut characters = vec![character("warlock"), character("zavala")];
+    if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("ambiguous-character") {
+        characters[0].class = Some("Titan".into());
+    }
+    characters
 }
 
 fn base_items() -> Vec<ItemInstance> {
+    if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("empty-characters") {
+        return vec![];
+    }
     vec![
         instance("inst-a", 1, ItemLocation::Vault, vec![perk(10)]),
         instance(
@@ -504,10 +552,10 @@ fn character(id: &str) -> Character {
         // The shared non-secret control crosses to the client in the readable
         // name, which proves the MCP stdout stream carries real content.
         name: Some(format!("name-{id}-{}", leak_sentinels::CONTROL)),
-        class: None,
+        class: Some(if id == "warlock" { "Warlock" } else { "Titan" }.into()),
         race: None,
         gender: None,
-        light: None,
+        light: Some(if id == "warlock" { 2000 } else { 1900 }),
     }
 }
 

@@ -252,6 +252,73 @@ fn structured(response: &Value) -> &Value {
 }
 
 #[tokio::test]
+async fn weekly_stdio_contract() {
+    let mut session = FixtureSession::spawn(None).await;
+    let id = session.next_id();
+    let listed = session.request(id, "tools/list", None).await;
+    let tool = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "weekly")
+        .expect("weekly tool listed");
+    assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+    assert!(tool["outputSchema"].is_object());
+    for (args, expected_id) in [
+        (json!({}), "warlock"),
+        (json!({"character": "warlock"}), "warlock"),
+        (json!({"character": "titan"}), "zavala"),
+    ] {
+        let response = session.call_tool("weekly", args).await;
+        assert_eq!(structured(&response)["character"]["id"], expected_id);
+        assert_eq!(response["result"]["isError"], false);
+        assert_eq!(structured(&response)["kind"], "weekly");
+        assert!(structured(&response)["unclassified_unresolved"].is_number());
+    }
+    let rejected = session.call_tool("weekly", json!({"unknown": true})).await;
+    assert_eq!(rejected["error"]["code"], -32602);
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn weekly_stdio_ambiguous_selector() {
+    let mut session = FixtureSession::spawn(Some("ambiguous-character")).await;
+    let response = session
+        .call_tool("weekly", json!({"character": "titan"}))
+        .await;
+    assert_eq!(structured(&response)["code"], "ambiguous_match");
+    assert_eq!(
+        structured(&response)["message"],
+        "the request matched multiple items"
+    );
+    for selector in ["unknown", "", " ", "id\nvalue"] {
+        let response = session
+            .call_tool("weekly", json!({"character": selector}))
+            .await;
+        assert_eq!(response["error"]["code"], -32602);
+        assert_eq!(response["error"]["message"], "invalid tool arguments");
+    }
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn weekly_stdio_empty_characters_are_invalid_arguments() {
+    let mut session = FixtureSession::spawn(Some("empty-characters")).await;
+    let response = session.call_tool("weekly", json!({})).await;
+    assert_eq!(response["error"]["code"], -32602);
+    assert_eq!(response["error"]["message"], "invalid tool arguments");
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn weekly_stdio_missing_definitions() {
+    let mut session = FixtureSession::spawn(Some("definitions-unavailable")).await;
+    let response = session.call_tool("weekly", json!({})).await;
+    assert_eq!(structured(&response)["code"], "definitions_unavailable");
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn weekly_reset_stdio_missing_definitions() {
     let mut session = FixtureSession::spawn(Some("definitions-unavailable")).await;
     let response = session.call_tool(WEEKLY_RESET_TOOL, json!({})).await;
@@ -317,6 +384,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             SEARCH_INVENTORY_TOOL,
             INSPECT_ITEM_TOOL,
             WEEKLY_RESET_TOOL,
+            "weekly",
             MOVE_ITEM_TOOL
         ],
         "the product-equivalent server discovers the four reads plus move_item"

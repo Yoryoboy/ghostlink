@@ -172,102 +172,22 @@ pub fn render_weekly_reset(
 }
 
 /// Renders only classified weekly sections; progress always comes from character data.
+#[path = "weekly_json.rs"]
+mod weekly_json;
+
 pub fn render_weekly(
     mode: OutputMode,
     character: &Character,
     weekly: &destiny_app::weekly_personal::WeeklyPersonal,
 ) -> String {
     use destiny_app::DefinitionResolution;
-    use destiny_app::weekly_personal::{PersonalActivity, PersonalGroup};
+    use destiny_app::weekly_personal::PersonalActivity;
     let label = |hash: u32, definition: &DefinitionResolution| match definition {
         DefinitionResolution::Resolved { name, .. } => sanitize(name),
         DefinitionResolution::Unresolved => format!("unresolved #{hash}"),
     };
-    // Real entities retain their actual hash and resolution, with JSON escaping
-    // rather than the line-oriented text sanitizer.
-    let entity = |hash: u32, definition: &DefinitionResolution| {
-        let name = match definition {
-            DefinitionResolution::Resolved { name, .. } => Some(name.as_str()),
-            DefinitionResolution::Unresolved => None,
-        };
-        json!({"hash": hash, "name": name, "resolved": name.is_some()})
-    };
-    let type_json = |activity: &PersonalActivity| {
-        activity
-            .activity_type_hash
-            .map(|hash| entity(hash, &activity.activity_type))
-    };
-    let activity_json = |activity: &PersonalActivity| {
-        let mut value = entity(activity.hash, &activity.definition);
-        value["activity_type"] = json!(type_json(activity));
-        value["rewards"] = json!(
-            activity
-                .rewards
-                .iter()
-                .map(|r| entity(r.hash, &r.definition))
-                .collect::<Vec<_>>()
-        );
-        value["modifiers"] = json!(
-            activity
-                .modifiers
-                .iter()
-                .map(|m| entity(m.hash, &m.definition))
-                .collect::<Vec<_>>()
-        );
-        value["challenge_objectives"] = json!(
-            activity
-                .challenge_objectives
-                .iter()
-                .map(|o| entity(o.hash, &o.definition))
-                .collect::<Vec<_>>()
-        );
-        value["challenges"] = json!(
-            activity
-                .challenges
-                .iter()
-                .map(|c| {
-                    let mut value = entity(c.objective_hash, &c.definition);
-                    value["progress"] = json!(c.progress);
-                    value["completion_value"] = json!(c.completion_value);
-                    value["complete"] = json!(c.complete);
-                    value
-                })
-                .collect::<Vec<_>>()
-        );
-        value["phases"] = json!(
-            activity
-                .phases
-                .as_ref()
-                .map(|p| json!({"complete": p.complete, "total": p.total}))
-        );
-        value
-    };
-    let group_json = |group: &PersonalGroup| {
-        // root is a derived display label, not a definition entity:
-        // it has no hash/resolved flag and is preserved via JSON escaping.
-        // Render only the app's classified variants, never raw snapshot inputs.
-        json!({
-            "root": group.root_name,
-            "activity_type": group.activities.first().and_then(&type_json),
-            "variants": group.activities.iter().map(&activity_json).collect::<Vec<_>>()
-        })
-    };
-    let groups_json = |groups: &[PersonalGroup]| groups.iter().map(&group_json).collect::<Vec<_>>();
     if mode == OutputMode::Json {
-        return json!({
-            "kind": "weekly", "character": character_json(character),
-            "definition_version": weekly.definition_version.as_str(),
-            "newest": groups_json(&weekly.newest),
-            "featured_raids": groups_json(&weekly.featured_raids),
-            "featured_dungeons": groups_json(&weekly.featured_dungeons),
-            "grandmaster_alert": weekly.grandmaster_alert.as_ref().map(&activity_json),
-            "expedition": weekly.weekly_rotators.expedition.as_ref().map(&group_json),
-            "override": weekly.weekly_rotators.override_activity.as_ref().map(&group_json),
-            "portal_focus": groups_json(&weekly.portal_focus),
-            "milestones": weekly.milestones.iter().map(|m| entity(m.hash, &m.definition)).collect::<Vec<_>>(),
-            "unclassified_unresolved": weekly.unclassified_unresolved
-        })
-        .to_string();
+        return weekly_json::render_weekly_json(character, weekly);
     }
     let progress = |activity: &PersonalActivity| {
         let mut parts = activity

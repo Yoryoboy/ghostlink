@@ -56,6 +56,30 @@ use crate::schema::{
     TransferRejectionView, VerificationFailureReasonView, VerificationFailureView,
 };
 
+/// Weekly caller-selection errors remain distinct from application/tool failures.
+#[derive(Debug)]
+pub enum WeeklyReadError {
+    InvalidArguments,
+    Tool(McpError),
+}
+impl From<McpError> for WeeklyReadError {
+    fn from(error: McpError) -> Self {
+        Self::Tool(error)
+    }
+}
+impl From<destiny_app::weekly_selection::WeeklySelectionError> for WeeklyReadError {
+    fn from(error: destiny_app::weekly_selection::WeeklySelectionError) -> Self {
+        match error {
+            destiny_app::weekly_selection::WeeklySelectionError::InvalidRequest => {
+                Self::InvalidArguments
+            }
+            destiny_app::weekly_selection::WeeklySelectionError::AmbiguousMatch => {
+                Self::Tool(McpError::new(ErrorCategory::AmbiguousMatch))
+            }
+        }
+    }
+}
+
 /// A validated `list_characters` request. The tool takes no arguments.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ListCharactersRequest;
@@ -67,6 +91,12 @@ pub struct ListCharactersRequest;
 /// without touching `rmcp`. Requests are already validated and bounded; outputs
 /// are the bounded MCP projections defined in [`crate::schema`].
 pub trait InventoryReadService {
+    fn weekly(
+        &mut self,
+        _args: &crate::schema::WeeklyArgs,
+    ) -> Result<crate::schema::WeeklyOutput, WeeklyReadError> {
+        Err(McpError::new(ErrorCategory::DefinitionsUnavailable).into())
+    }
     /// Reads the current public rotation; no account state is required.
     fn weekly_reset(&mut self) -> Result<crate::schema::WeeklyResetOutput, McpError> {
         Err(McpError::new(ErrorCategory::DefinitionsUnavailable))
@@ -116,6 +146,13 @@ where
     R: destiny_app::WorldDefinitionRepository,
     I: InventoryReadService,
 {
+    fn weekly(
+        &mut self,
+        args: &crate::schema::WeeklyArgs,
+    ) -> Result<crate::schema::WeeklyOutput, WeeklyReadError> {
+        self.inventory.weekly(args)
+    }
+
     fn weekly_reset(&mut self) -> Result<crate::schema::WeeklyResetOutput, McpError> {
         let reset = self.weekly.weekly_reset().map_err(McpError::from)?;
         Ok(weekly_reset_output(&reset, self.timestamp))
@@ -141,6 +178,125 @@ where
     ) -> Result<InspectItemOutput, McpError> {
         self.inventory.inspect_item(request)
     }
+}
+
+/// Personal weekly reads retain the existing authenticated query/refresh path.
+pub struct PersonalWeeklyReadService<P, G, R, Q, S, C> {
+    weekly: destiny_app::WeeklyPersonalService<P, G, R>,
+    inventory: QueryReadService<Q, S, C>,
+}
+impl<P, G, R, Q, S, C> PersonalWeeklyReadService<P, G, R, Q, S, C> {
+    pub fn new(
+        weekly: destiny_app::WeeklyPersonalService<P, G, R>,
+        inventory: QueryReadService<Q, S, C>,
+    ) -> Self {
+        Self { weekly, inventory }
+    }
+}
+impl<P, G, R, Q, S, C> InventoryReadService for PersonalWeeklyReadService<P, G, R, Q, S, C>
+where
+    P: destiny_app::PublicMilestonesGateway,
+    G: destiny_app::WeeklyProfileGateway,
+    R: destiny_app::WorldDefinitionRepository,
+    Q: ProfileGateway,
+    S: InventoryRepository + DefinitionRepository + SearchRepository,
+    C: Clock,
+{
+    fn weekly(
+        &mut self,
+        args: &crate::schema::WeeklyArgs,
+    ) -> Result<crate::schema::WeeklyOutput, WeeklyReadError> {
+        let repository = self.weekly.repository();
+        if repository
+            .current_metadata()
+            .map_err(McpError::from)?
+            .is_none()
+            || repository
+                .world_definition_counts()
+                .map_err(McpError::from)?
+                .contains(&0)
+        {
+            return Err(McpError::new(ErrorCategory::DefinitionsUnavailable).into());
+        }
+        let now = self.inventory.clock.now().map_err(McpError::from)?;
+        let characters = self
+            .inventory
+            .queries
+            .list_characters(self.inventory.policy, now)
+            .map_err(McpError::from)?;
+        let selector = args.character.as_ref().map(CharacterId::new);
+        let character = destiny_app::weekly_selection::select_weekly_character(
+            &characters.characters,
+            selector.as_ref(),
+        )
+        .map_err(WeeklyReadError::from)?;
+        let snapshot = self
+            .inventory
+            .queries
+            .repository()
+            .load_current()
+            .map_err(McpError::from)?
+            .ok_or_else(|| McpError::new(ErrorCategory::LocalStorage))?;
+        let membership = destiny_app::DestinyMembership::new(
+            snapshot.metadata.membership_type,
+            snapshot.metadata.membership_id,
+        )
+        .map_err(McpError::from)?;
+        let weekly = self
+            .weekly
+            .weekly(&destiny_app::WeeklyCharacter {
+                membership,
+                character_id: character.id.clone(),
+            })
+            .map_err(McpError::from)?;
+        weekly_output(&character, &weekly).map_err(WeeklyReadError::from)
+    }
+    fn list_characters(
+        &mut self,
+        r: &ListCharactersRequest,
+    ) -> Result<ListCharactersOutput, McpError> {
+        self.inventory.list_characters(r)
+    }
+    fn search_inventory(
+        &mut self,
+        r: &SearchInventoryRequest,
+    ) -> Result<SearchInventoryOutput, McpError> {
+        self.inventory.search_inventory(r)
+    }
+    fn inspect_item(&mut self, r: &InspectItemRequest) -> Result<InspectItemOutput, McpError> {
+        self.inventory.inspect_item(r)
+    }
+}
+struct WeeklyJsonAdapter;
+impl destiny_app::weekly_projection::WeeklyJson for WeeklyJsonAdapter {
+    type Value = serde_json::Value;
+    fn object(fields: Vec<(&'static str, Self::Value)>) -> Self::Value {
+        serde_json::Value::Object(fields.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
+    }
+    fn array(values: Vec<Self::Value>) -> Self::Value {
+        serde_json::Value::Array(values)
+    }
+    fn string(value: &str) -> Self::Value {
+        serde_json::json!(value)
+    }
+    fn integer(value: i64) -> Self::Value {
+        serde_json::json!(value)
+    }
+    fn boolean(value: bool) -> Self::Value {
+        serde_json::json!(value)
+    }
+    fn null() -> Self::Value {
+        serde_json::Value::Null
+    }
+}
+pub fn weekly_output(
+    character: &Character,
+    weekly: &destiny_app::WeeklyPersonal,
+) -> Result<crate::schema::WeeklyOutput, McpError> {
+    serde_json::from_value(destiny_app::weekly_projection::weekly_projection::<
+        WeeklyJsonAdapter,
+    >(character, weekly))
+    .map_err(|_| McpError::new(ErrorCategory::ProviderValidation))
 }
 
 /// Provider text has the shared world-definition bounds; strip non-whitespace

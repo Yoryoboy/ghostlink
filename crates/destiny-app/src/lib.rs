@@ -9,6 +9,9 @@ pub mod queries;
 pub mod session;
 pub mod sync;
 pub mod weekly_personal;
+pub mod weekly_projection;
+pub mod weekly_selection;
+pub use destiny_core::{CharacterWeeklySnapshot, WeeklyProfileGateway};
 pub mod weekly_reset;
 
 #[cfg(feature = "test-support")]

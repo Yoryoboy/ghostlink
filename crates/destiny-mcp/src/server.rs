@@ -227,6 +227,19 @@ fn dispatch_locked(
         LIST_CHARACTERS_TOOL => dispatch_list_characters(guard.as_mut(), arguments),
         SEARCH_INVENTORY_TOOL => dispatch_search_inventory(guard.as_mut(), arguments),
         INSPECT_ITEM_TOOL => dispatch_inspect_item(guard.as_mut(), arguments),
+        crate::schema::WEEKLY_TOOL => {
+            let args: crate::schema::WeeklyArgs = deserialize(arguments)?;
+            if args.character.as_ref().is_some_and(|s| {
+                s.is_empty() || s.chars().count() > crate::schema::MAX_IDENTIFIER_LENGTH
+            }) {
+                return Err(invalid_arguments());
+            }
+            match guard.weekly(&args) {
+                Ok(output) => Ok(output.into_call_tool_result()),
+                Err(crate::service::WeeklyReadError::InvalidArguments) => Err(invalid_arguments()),
+                Err(crate::service::WeeklyReadError::Tool(error)) => Ok(tool_error(error)),
+            }
+        }
         crate::schema::WEEKLY_RESET_TOOL => {
             let _: crate::schema::WeeklyResetArgs = deserialize(arguments)?;
             Ok(guard
@@ -591,7 +604,8 @@ mod tests {
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",
-                "weekly_reset"
+                "weekly_reset",
+                "weekly"
             ]
         );
         for tool in &tools {
@@ -811,7 +825,8 @@ mod tests {
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",
-                "weekly_reset"
+                "weekly_reset",
+                "weekly"
             ]
         );
         assert!(
@@ -843,6 +858,7 @@ mod tests {
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",
                 "weekly_reset",
+                "weekly",
                 MOVE_ITEM_TOOL
             ]
         );
