@@ -26,8 +26,8 @@ Non-goals: activity, milestone, modifier, and perk tables (a later weekly-activi
 - Delivery: work-unit commits on `feature/ghostlink-live-manifest`; push/PR/merge are user decisions.
 
 ## Tasks
-- [ ] **LMF-001 — Establish tracker and branch.** Worktree branch `feature/ghostlink-live-manifest` from `main` at `382c4f5`.
-- [ ] **LMF-002 — Live-sized acquisition.** gzip, separate compressed/decompressed caps and a longer component timeout, typed streaming decode of only the used fields, skip and count blank-name records.
+- [x] **LMF-001 — Establish tracker and branch.** Worktree branch `feature/ghostlink-live-manifest` from `main` at `382c4f5`. Commit evidence: `4899705`.
+- [x] **LMF-002 — Live-sized acquisition.** gzip, separate compressed/decompressed caps and a longer component timeout, typed streaming decode of only the used fields, skip and count blank-name records. Delegated writer, test-first (RED: mixed blank/redacted batch failed with ProviderValidation). `reqwest` `gzip` feature (parent ran `cargo fetch`: `async-compression` 0.4.41, `compression-codecs`, `compression-core`); `flate2` dev-only. Component: 512 MiB decompressed cap counted while reading, 180 s timeout; index keeps 1 MiB and the short timeout. Only the decompressed cap is enforced (reqwest decodes transparently); it bounds memory. Typed streaming map visitor, no whole-body `Value`. Blank/redacted records skipped and counted (`skipped` on the acquisition); all-skipped batch is an error; 256-char name limit kept (live max 91). Parent fix (inline): writer had redacted the public URL in `ManifestHttpRequest` Debug, breaking an existing test; restored (only the API key is redacted). Verifier: fmt, 827 passed/19 suites, clippy, diff check. Commit evidence: `8204107`.
 - [ ] **LMF-003 — Version-aware publish.** Skip the component download when the stored definition version equals the live index version; report updated/unchanged, record count, skipped count; keep the atomic replace (batch the inserts if needed).
 - [ ] **LMF-004 — CLI command and empty-definitions outcome.** `ghostlink sync-manifest` (text + `--json`), runtime composition, and a clear sanitized outcome for `search-inventory` in CLI and MCP when definitions are empty.
 - [ ] **LMF-005 — Live validation and docs.** Agent runs `sync-manifest` and `search-inventory` live (sanitized output); README section; close tracker.
@@ -36,4 +36,4 @@ Non-goals: activity, milestone, modifier, and perk tables (a later weekly-activi
 Exploration mapped the existing pipeline and gaps above; live sizes measured with public requests.
 
 ## Next step
-LMF-002.
+LMF-003.
