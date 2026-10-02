@@ -34,7 +34,7 @@ Contradicted (omit): Crucible alert weapon (API The Helmsman, game Randy's Throw
 - Worktree `/home/yoryo/apps/ghostlink-weekly`, branch `feature/ghostlink-weekly-personal`; push/PR/merge are user decisions.
 
 ## Tasks
-- [ ] **WPP-001 — Weekly profile domain and gateway.** Core snapshot types and port; adapter request for components 202/204 for one character with exact allowlist; bounded typed decoder; synthetic sanitized fixture mirroring the live shape.
+- [x] **WPP-001 — Weekly profile domain and gateway.** Delegated writer, test-first (RED: missing weekly module and snapshot type; GREEN). `destiny-core/src/weekly_profile.rs` (bounded `CharacterWeeklySnapshot`, `completed_ever` naming, separate `WeeklyProfileGateway` trait so `ProfileGateway` implementors are untouched); `destiny-adapters/src/weekly_profile.rs` GetCharacter `components=202,204` with an exact allowlist, 4 MiB cap, list caps, typed decoder for `Response.progressions.data.milestones` and `Response.activities.data.availableActivities` (assumed shape, to confirm live in WPP-006); reuses the existing auth, refresh, retry, and sanitized error path; inventory query byte-identical. Synthetic fixture `tests/fixtures/character-weekly.json`. Independent verifier PASSED: 931 tests, fmt, build, clippy, diff check. Commit evidence: see git log for `feat(profile): read one character's weekly components`.
 - [ ] **WPP-002 — Objective and activity-type definitions.** Add `DestinyObjectiveDefinition` (progress description) and `DestinyActivityTypeDefinition` (name) to Manifest acquisition and storage.
 - [ ] **WPP-003 — Weekly classification service.** App service combining the public milestones and the character snapshot into reliable sections (featured raids, featured dungeons, newest content, Grandmaster alert, Expedition/Reclaim/Override, Portal focus, challenges and phases), each rule tested.
 - [ ] **WPP-004 — CLI `weekly`.** Character selection (default: most recently played), text and `--json`.
@@ -42,4 +42,4 @@ Contradicted (omit): Crucible alert weapon (API The Helmsman, game Randy's Throw
 - [ ] **WPP-006 — Live validation, docs, close.** Live run for the Hunter on a database copy; README; re-check rules against the next weekly reset if available.
 
 ## Next step
-WPP-001.
+WPP-002.
