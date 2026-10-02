@@ -8,6 +8,7 @@ pub mod mutation;
 pub mod queries;
 pub mod session;
 pub mod sync;
+pub mod weekly_reset;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;
@@ -48,6 +49,7 @@ pub use destiny_core::{
     TransferRequest,
 };
 pub use destiny_core::{ManifestAcquisition, ManifestDefinitions, ManifestGateway};
+pub use destiny_core::{PublicMilestonesGateway, PublicMilestonesSnapshot};
 pub use manifest::{ManifestService, ManifestSyncReport, normalize_manifest};
 pub use mutation::{
     ExecutionAuthorization, ExecutionFailure, IncompleteExecution, MoveExecutionOutcome,
@@ -56,6 +58,10 @@ pub use mutation::{
 pub use queries::{QueryOperations, QueryService, SearchInventoryRequest};
 pub use session::{ConfiguredCredentialSource, RefreshingCredentialSource};
 pub use sync::ProfileSyncService;
+pub use weekly_reset::{
+    DefinitionResolution, WeeklyActivity, WeeklyMilestone, WeeklyModifier, WeeklyReset,
+    WeeklyResetService,
+};
 
 // Additive provider-neutral re-exports for the interactive login composition.
 //
