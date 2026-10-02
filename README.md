@@ -140,7 +140,36 @@ modifiers. Like `sync-manifest`, it needs only `BUNGIE_API_KEY` and
 stored Manifest; a hash with no stored definition is shown as
 `unresolved #<hash>` (JSON: `"resolved": false`, `"name": null`) and is never
 guessed. Modifier descriptions may contain `{var:<hash>}` placeholders, which
-are shown verbatim. Per-character weekly progress is not covered yet.
+are shown verbatim. Per-character weekly content and progress is covered by
+`weekly` below.
+
+### Weekly content for one character
+
+```sh
+ghostlink weekly                       # character with the highest light
+ghostlink weekly --character hunter    # or titan, warlock, or an exact id
+ghostlink --json weekly
+```
+
+Requires a login (it reads profile components 202 and 204 for one character)
+and a loaded Manifest. It shows only what the API supports reliably, each with
+the character's challenge progress and raid phases:
+
+- **Grandmaster, Crucible and Quickplay alerts**: activities of type Mission
+  (strictly highest light), The Crucible and Vanguard Op that carry a weekly
+  challenge, with every reward the API lists. Quickplay weapons are not
+  assigned to Fireteam or Arena Ops.
+- **Featured raids**: public milestone raids with a weekly challenge, minus
+  content whose reward is the always-on "Weekly Reward".
+- **Featured dungeons**: the character's dungeons with a weekly challenge,
+  under the same exclusion.
+- **Weekly Expedition and Override**: reported only when exactly one variant
+  is offered.
+
+Omitted on purpose because the API is ambiguous or contradicts the game:
+Featured Reprise/Encore (Pantheon), Weekly Reclaim, and lifetime completion
+flags. Activities whose definitions are missing are counted, never guessed
+(`unclassified_unresolved`).
 
 ### Output contract
 
@@ -198,7 +227,7 @@ live account and is not a live-success claim.
 
 ## destiny-mcp
 
-`destiny-mcp` serves four read tools plus one default-enabled semantic
+`destiny-mcp` serves five read tools plus one default-enabled semantic
 mutation over the Model Context Protocol stdio transport:
 
 ```text
@@ -206,6 +235,7 @@ list_characters   list the signed-in account's characters
 search_inventory  search Manifest definitions and concrete instances
 inspect_item      inspect exactly one concrete instance by instance identifier
 weekly_reset      show the current public weekly rotation (same data as the CLI)
+weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
 ```
 

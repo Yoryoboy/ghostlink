@@ -132,6 +132,20 @@ fn compose_server<S: CredentialStore + Send + 'static>(
         repository,
         policy,
         weekly_service(config)?,
+        personal_public(config)?,
+        SqliteStore::open(config.database_path())?,
+    ))
+}
+
+type PersonalPublicGateway = destiny_adapters::manifest::BungieManifestGateway<
+    destiny_adapters::manifest::HttpManifestTransport,
+    SystemClock,
+>;
+fn personal_public(config: &ReadRuntimeConfig) -> Result<PersonalPublicGateway, AppError> {
+    Ok(destiny_adapters::manifest::BungieManifestGateway::new(
+        destiny_adapters::manifest::ManifestApiKey::new(config.api_key().expose_secret())?,
+        destiny_adapters::manifest::HttpManifestTransport::new()?,
+        SystemClock::new(),
     ))
 }
 
@@ -191,6 +205,8 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     repository: SqliteStore,
     policy: FreshnessPolicy,
     weekly: PublicWeeklyService,
+    personal_public: PersonalPublicGateway,
+    personal_repository: SqliteStore,
 ) -> ReadToolServer {
     let gateway = SharedGateway::new(profile_gateway);
     let repository = SharedRepository::new(repository);
@@ -198,6 +214,15 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     let read_sync = ProfileSyncService::new(gateway.clone(), repository.clone());
     let read_service =
         QueryReadService::new(QueryService::new(read_sync), SystemClock::new(), policy);
+
+    let read_service = destiny_mcp::service::PersonalWeeklyReadService::new(
+        destiny_app::WeeklyPersonalService::new(
+            personal_public,
+            gateway.clone(),
+            personal_repository,
+        ),
+        read_service,
+    );
 
     let read_service = destiny_mcp::service::WeeklyReadService::new(weekly, read_service, |t| {
         destiny_adapters::format_reset_timestamp(t, false)
@@ -322,6 +347,16 @@ impl<G> SharedGateway<G> {
     }
 }
 
+impl<G: destiny_app::WeeklyProfileGateway> destiny_app::WeeklyProfileGateway for SharedGateway<G> {
+    fn load_character_weekly(
+        &mut self,
+        membership: &DestinyMembership,
+        character: &destiny_app::CharacterId,
+    ) -> Result<destiny_app::CharacterWeeklySnapshot, AppError> {
+        self.lock()?.load_character_weekly(membership, character)
+    }
+}
+
 impl<G: ProfileGateway> ProfileGateway for SharedGateway<G> {
     fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
         self.lock()?.resolve_membership()
@@ -433,6 +468,7 @@ impl DefinitionRepository for SharedRepository {
 
 #[cfg(test)]
 mod tests {
+    use super::personal_public;
     use super::{SystemPlanIds, compose_server, load_credential};
     use destiny_app::test_support::{FailingCredentialStore, FakeClock, InMemoryCredentialStore};
     use destiny_app::{
@@ -771,6 +807,8 @@ mod tests {
                 ),
                 SqliteStore::open_in_memory().unwrap(),
             ),
+            personal_public(&config()).unwrap(),
+            SqliteStore::open_in_memory().unwrap(),
         );
         let tools = server.discover_tools().tools;
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
@@ -781,6 +819,7 @@ mod tests {
                 "search_inventory",
                 "inspect_item",
                 "weekly_reset",
+                "weekly",
                 "move_item"
             ],
             "mutation must be default-enabled in the product composition"

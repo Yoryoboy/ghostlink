@@ -160,6 +160,14 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         PlanLifetime::MAX,
     );
 
+    let read_service = destiny_mcp::service::PersonalWeeklyReadService::new(
+        destiny_app::WeeklyPersonalService::new(
+            PublicGateway,
+            PersonalGateway,
+            weekly_repository(),
+        ),
+        read_service,
+    );
     let read_service = destiny_mcp::service::WeeklyReadService::new(
         destiny_app::weekly_reset::WeeklyResetService::new(PublicGateway, weekly_repository()),
         read_service,
@@ -168,12 +176,48 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
     ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
 }
 
+struct PersonalGateway;
+impl destiny_app::WeeklyProfileGateway for PersonalGateway {
+    fn load_character_weekly(
+        &mut self,
+        _: &DestinyMembership,
+        character: &CharacterId,
+    ) -> Result<destiny_app::CharacterWeeklySnapshot, AppError> {
+        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("definitions-unavailable") {
+            panic!("definitions must gate provider requests");
+        }
+        Ok(destiny_app::CharacterWeeklySnapshot {
+            character_id: character.clone(),
+            milestones: vec![],
+            available_activities: (10..=16)
+                .map(|hash| destiny_app::AvailableActivity {
+                    activity_hash: hash,
+                    focused: false,
+                    completed_ever: false,
+                    recommended_light: Some(if hash == 10 { 400 } else { 300 }),
+                    difficulty_tier: None,
+                    modifier_hashes: vec![],
+                    challenges: vec![destiny_app::ChallengeProgress {
+                        objective_hash: 5,
+                        progress: 0,
+                        completion_value: 1,
+                        complete: false,
+                    }],
+                    visible_reward_item_hashes: vec![if hash == 13 { 2 } else { 1 }],
+                })
+                .collect(),
+        })
+    }
+}
 struct PublicGateway;
 
 impl destiny_app::PublicMilestonesGateway for PublicGateway {
     fn load_public_milestones(
         &mut self,
     ) -> Result<destiny_app::PublicMilestonesSnapshot, AppError> {
+        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("definitions-unavailable") {
+            panic!("definitions must gate provider requests");
+        }
         Ok(destiny_app::PublicMilestonesSnapshot {
             milestones: vec![destiny_app::PublicMilestone {
                 milestone_hash: 1,
@@ -222,6 +266,20 @@ fn weekly_repository() -> InMemoryDefinitionRepository {
                     definitions: vec![
                         destiny_app::ActivityTypeDefinition::new(4, "Raid".into(), "".into())
                             .unwrap(),
+                        destiny_app::ActivityTypeDefinition::new(6, "Mission".into(), "".into())
+                            .unwrap(),
+                        destiny_app::ActivityTypeDefinition::new(
+                            7,
+                            "The Crucible".into(),
+                            "".into(),
+                        )
+                        .unwrap(),
+                        destiny_app::ActivityTypeDefinition::new(
+                            8,
+                            "Vanguard Op".into(),
+                            "".into(),
+                        )
+                        .unwrap(),
                     ],
                     skipped_count: 0,
                 },
@@ -241,6 +299,38 @@ fn weekly_repository() -> InMemoryDefinitionRepository {
                 activities: WorldDefinitionTable {
                     definitions: vec![
                         ActivityDefinition::new(2, "Raid".into(), "Activity".into(), 0, 0).unwrap(),
+                        ActivityDefinition::new(10, "The Disgraced".into(), "".into(), 6, 0)
+                            .unwrap(),
+                        ActivityDefinition::new(11, "Control: Matchmade".into(), "".into(), 7, 0)
+                            .unwrap(),
+                        ActivityDefinition::new(12, "Quickplay: Matchmade".into(), "".into(), 8, 0)
+                            .unwrap(),
+                        ActivityDefinition::new(13, "Quickplay: Customize".into(), "".into(), 8, 0)
+                            .unwrap(),
+                        ActivityDefinition::new(
+                            14,
+                            "Override: Europa: Matchmade".into(),
+                            "".into(),
+                            6,
+                            0,
+                        )
+                        .unwrap(),
+                        ActivityDefinition::new(
+                            15,
+                            "Override: Europa: Customize".into(),
+                            "".into(),
+                            6,
+                            0,
+                        )
+                        .unwrap(),
+                        ActivityDefinition::new(
+                            16,
+                            "Expedition: Cosmodrome: Private".into(),
+                            "".into(),
+                            6,
+                            0,
+                        )
+                        .unwrap(),
                     ],
                     skipped_count: 0,
                 },
@@ -291,6 +381,11 @@ struct WorldGateway {
 
 impl ProfileGateway for WorldGateway {
     fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
+        assert_ne!(
+            std::env::var(SCENARIO_ENV).ok().as_deref(),
+            Some("definitions-unavailable"),
+            "definitions gate must prevent membership requests"
+        );
         Ok(self.membership.clone())
     }
 
@@ -298,6 +393,11 @@ impl ProfileGateway for WorldGateway {
         &mut self,
         membership: &DestinyMembership,
     ) -> Result<InventorySnapshotInput, AppError> {
+        assert_ne!(
+            std::env::var(SCENARIO_ENV).ok().as_deref(),
+            Some("definitions-unavailable"),
+            "definitions gate must prevent inventory requests"
+        );
         if membership != &self.membership {
             return Err(AppError::new(ErrorCategory::ProviderValidation));
         }
@@ -444,10 +544,20 @@ fn snapshot_input(characters: &[Character], items: &[ItemInstance]) -> Inventory
 }
 
 fn characters() -> Vec<Character> {
-    vec![character("warlock"), character("zavala")]
+    if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("empty-characters") {
+        return vec![];
+    }
+    let mut characters = vec![character("warlock"), character("zavala")];
+    if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("ambiguous-character") {
+        characters[0].class = Some("Titan".into());
+    }
+    characters
 }
 
 fn base_items() -> Vec<ItemInstance> {
+    if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("empty-characters") {
+        return vec![];
+    }
     vec![
         instance("inst-a", 1, ItemLocation::Vault, vec![perk(10)]),
         instance(
@@ -504,10 +614,10 @@ fn character(id: &str) -> Character {
         // The shared non-secret control crosses to the client in the readable
         // name, which proves the MCP stdout stream carries real content.
         name: Some(format!("name-{id}-{}", leak_sentinels::CONTROL)),
-        class: None,
+        class: Some(if id == "warlock" { "Warlock" } else { "Titan" }.into()),
         race: None,
         gender: None,
-        light: None,
+        light: Some(if id == "warlock" { 2000 } else { 1900 }),
     }
 }
 

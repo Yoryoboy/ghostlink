@@ -47,13 +47,16 @@ pub use schema::{
     WEEKLY_RESET_TOOL, WeeklyActivityView, WeeklyMilestoneView, WeeklyModifierView,
     WeeklyResetArgs, WeeklyResetOutput,
 };
+pub use schema::{WEEKLY_TOOL, WeeklyArgs, WeeklyOutput};
 pub use server::ReadToolServer;
 pub use service::{
     ComposedMutationService, InventoryReadService, ListCharactersRequest, MoveItemRequest,
     MutationToolService, QueryReadService, inspect_item_output, list_characters_output,
     move_item_output, search_inventory_output,
 };
-pub use service::{WeeklyReadService, weekly_reset_output};
+pub use service::{
+    PersonalWeeklyReadService, WeeklyReadService, weekly_output, weekly_reset_output,
+};
 
 #[cfg(test)]
 mod tests {

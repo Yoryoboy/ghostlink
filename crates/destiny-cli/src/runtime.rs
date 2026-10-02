@@ -399,40 +399,16 @@ pub fn select_weekly_character(
     characters: &[destiny_app::Character],
     selector: Option<&destiny_app::CharacterId>,
 ) -> Result<destiny_app::Character, CliError> {
-    let first = characters.first().ok_or_else(CliError::invalid_request)?;
-    let Some(selector) = selector else {
-        let highest = characters
-            .iter()
-            .filter_map(|character| character.light)
-            .max();
-        let mut winners = characters
-            .iter()
-            .filter(|character| highest.is_some() && character.light == highest);
-        return Ok(match (winners.next(), winners.next()) {
-            (Some(winner), None) => winner.clone(),
-            _ => first.clone(),
-        });
-    };
-    let exact = characters.iter().any(|character| character.id == *selector);
-    let is_class = ["hunter", "titan", "warlock"]
-        .iter()
-        .any(|class| selector.as_str().eq_ignore_ascii_case(class));
-    let mut matches = characters.iter().filter(|character| {
-        if exact {
-            character.id == *selector
-        } else {
-            is_class
-                && character
-                    .class
-                    .as_deref()
-                    .is_some_and(|class| class.eq_ignore_ascii_case(selector.as_str()))
+    destiny_app::weekly_selection::select_weekly_character(characters, selector).map_err(|error| {
+        match error {
+            destiny_app::weekly_selection::WeeklySelectionError::InvalidRequest => {
+                CliError::invalid_request()
+            }
+            destiny_app::weekly_selection::WeeklySelectionError::AmbiguousMatch => {
+                CliError::from_category(ErrorCategory::AmbiguousMatch)
+            }
         }
-    });
-    let selected = matches.next().ok_or_else(CliError::invalid_request)?;
-    if matches.next().is_some() {
-        return Err(CliError::from_category(ErrorCategory::AmbiguousMatch));
-    }
-    Ok(selected.clone())
+    })
 }
 
 /// Reuses authenticated read composition, including its configured refresh source.
@@ -850,6 +826,54 @@ mod tests {
             .code(),
             "ambiguous_match"
         );
+    }
+
+    #[test]
+    fn weekly_selection_errors_preserve_baseline_rendered_messages() {
+        use crate::output::{OutputMode, render_error};
+        let characters = vec![weekly_character("123"), weekly_character("456")];
+        for selector in ["unknown", "", " ", "id\nvalue"] {
+            let error = super::select_weekly_character(
+                &characters,
+                Some(&destiny_app::CharacterId::new(selector)),
+            )
+            .unwrap_err();
+            assert_eq!(
+                render_error(OutputMode::Human, &error),
+                "error: the request arguments are invalid"
+            );
+            let json: serde_json::Value =
+                serde_json::from_str(&render_error(OutputMode::Json, &error)).unwrap();
+            assert_eq!(json["error"]["code"], "invalid_request");
+            assert_eq!(
+                json["error"]["message"],
+                "the request arguments are invalid"
+            );
+        }
+        for (characters, selector, code, message) in [
+            (
+                vec![],
+                None,
+                "invalid_request",
+                "the request arguments are invalid",
+            ),
+            (
+                characters,
+                Some(destiny_app::CharacterId::new("hunter")),
+                "ambiguous_match",
+                "the request matched multiple items",
+            ),
+        ] {
+            let error = super::select_weekly_character(&characters, selector.as_ref()).unwrap_err();
+            assert_eq!(
+                render_error(OutputMode::Human, &error),
+                format!("error: {message}")
+            );
+            let json: serde_json::Value =
+                serde_json::from_str(&render_error(OutputMode::Json, &error)).unwrap();
+            assert_eq!(json["error"]["code"], code);
+            assert_eq!(json["error"]["message"], message);
+        }
     }
 
     #[test]

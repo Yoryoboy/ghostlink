@@ -47,6 +47,7 @@ pub const MOVE_ITEM_TOOL: &str = "move_item";
 
 /// Stable tool name for the credential-free public rotation.
 pub const WEEKLY_RESET_TOOL: &str = "weekly_reset";
+pub const WEEKLY_TOOL: &str = "weekly";
 
 const LIST_CHARACTERS_DESCRIPTION: &str = "List the signed-in account's characters with the freshness metadata of the committed profile projection.";
 
@@ -104,6 +105,9 @@ pub fn tool_specs() -> Vec<Tool> {
         )
         .with_input_schema::<WeeklyResetArgs>()
         .with_output_schema::<WeeklyResetOutput>(),
+        Tool::new(WEEKLY_TOOL, "Read reliable per-character weekly content and progress. Requires login and `ghostlink sync-manifest`. Reprise is omitted. Vanguard alerts report GM, challenged Crucible, and challenged Vanguard Op variants with visible reward unions; these are not verified in-game weapon assignments. Character accepts an exact id or unique hunter|titan|warlock class; omitted selects strictly highest light, ties use deterministic first.", JsonObject::new())
+            .with_input_schema::<WeeklyArgs>()
+            .with_output_schema::<WeeklyOutput>(),
     ]
 }
 
@@ -129,6 +133,87 @@ pub struct ListCharactersArgs {}
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WeeklyResetArgs {}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WeeklyArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub character: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename = "weekly")]
+pub struct WeeklyOutput {
+    pub character: WeeklyCharacterView,
+    pub definition_version: String,
+    pub vanguard_alerts: VanguardAlertsView,
+    pub featured_raids: Vec<PersonalGroupView>,
+    pub featured_dungeons: Vec<PersonalGroupView>,
+
+    pub expedition: Option<PersonalGroupView>,
+    #[serde(rename = "override")]
+    pub override_activity: Option<PersonalGroupView>,
+
+    pub milestones: Vec<PersonalEntityView>,
+    pub unclassified_unresolved: usize,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct VanguardAlertsView {
+    pub grandmaster: Option<PersonalGroupView>,
+    pub crucible: Vec<PersonalGroupView>,
+    pub quickplay: Vec<PersonalGroupView>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct WeeklyCharacterView {
+    pub id: String,
+    pub name: Option<String>,
+    pub class: Option<String>,
+    pub race: Option<String>,
+    pub gender: Option<String>,
+    pub light: Option<u16>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PersonalEntityView {
+    pub hash: u32,
+    pub name: Option<String>,
+    pub resolved: bool,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PersonalGroupView {
+    pub root: String,
+    pub reward_names: Vec<String>,
+    pub activity_type: Option<PersonalEntityView>,
+    pub variants: Vec<PersonalActivityView>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PersonalActivityView {
+    #[serde(flatten)]
+    pub entity: PersonalEntityView,
+    pub activity_type: Option<PersonalEntityView>,
+    pub rewards: Vec<PersonalEntityView>,
+    pub modifiers: Vec<PersonalEntityView>,
+    pub challenge_objectives: Vec<PersonalEntityView>,
+    pub challenges: Vec<PersonalChallengeView>,
+    pub phases: Option<PersonalPhaseView>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PersonalChallengeView {
+    #[serde(flatten)]
+    pub entity: PersonalEntityView,
+    pub progress: i64,
+    pub completion_value: i64,
+    pub complete: bool,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PersonalPhaseView {
+    pub complete: usize,
+    pub total: usize,
+}
+impl WeeklyOutput {
+    pub fn into_call_tool_result(self) -> CallToolResult {
+        structured_result(self)
+    }
+}
 
 /// Structured public rotation, matching the CLI JSON contract.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -672,7 +757,8 @@ mod tests {
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 INSPECT_ITEM_TOOL,
-                super::WEEKLY_RESET_TOOL
+                super::WEEKLY_RESET_TOOL,
+                super::WEEKLY_TOOL
             ]
         );
         for tool in &tools {
