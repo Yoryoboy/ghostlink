@@ -1360,6 +1360,7 @@ mod tests {
                     expires_at: Timestamp::new(EXPIRES_AT),
                 },
                 material: CredentialMaterial::from_bytes(MATERIAL),
+                refresh_grant: None,
             })
         }
     }

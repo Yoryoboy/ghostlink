@@ -12,7 +12,7 @@ pub mod state;
 
 pub use auth::{
     AccessCredential, AccessCredentialMetadata, AuthorizationCallback, AuthorizationCode,
-    AuthorizationState, CallbackResult,
+    AuthorizationState, CallbackResult, RefreshGrant, RefreshToken,
 };
 pub use domain::{
     Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, PerkSummary,
@@ -33,11 +33,11 @@ pub use mutation::{
 };
 pub use ports::{
     AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,
-    CredentialStore, DefinitionReplacementInput, DefinitionRepository, DestinyMembership,
-    InventoryRepository, InventorySnapshotInput, ManifestAcquisition, ManifestDefinitionCandidate,
-    ManifestDefinitions, ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange,
-    SearchRepository, SecureRandom, TransferGateway, TransferOutcome, TransferRejection,
-    TransferRequest,
+    CredentialSource, CredentialStore, DefinitionReplacementInput, DefinitionRepository,
+    DestinyMembership, InventoryRepository, InventorySnapshotInput, ManifestAcquisition,
+    ManifestDefinitionCandidate, ManifestDefinitions, ManifestGateway, PlanIdGenerator,
+    ProfileGateway, PublicTokenExchange, SearchRepository, SecureRandom, StaticCredentialSource,
+    TokenRefresh, TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
 };
 pub use query::{
     CharacterListResult, DefinitionSearchQuery, InspectItemRequest, InstanceSearchQuery,

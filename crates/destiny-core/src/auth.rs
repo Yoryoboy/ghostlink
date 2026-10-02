@@ -26,6 +26,44 @@ macro_rules! opaque_value {
 opaque_value!(AuthorizationState, "AuthorizationState");
 opaque_value!(AuthorizationCode, "AuthorizationCode");
 
+/// Opaque refresh material, exposed only to trusted adapters through bytes.
+#[derive(Clone, Eq, PartialEq)]
+pub struct RefreshToken(crate::redact::Redacted<Vec<u8>>);
+
+impl RefreshToken {
+    /// Matches the existing credential store's 4 KiB material bound.
+    pub const MAX_LENGTH: usize = 4 * 1024;
+
+    /// Rejects empty or oversized material without including it in the error.
+    pub fn from_bytes(bytes: impl Into<Vec<u8>>) -> Result<Self, crate::error::AppError> {
+        let bytes = bytes.into();
+        if bytes.is_empty() || bytes.len() > Self::MAX_LENGTH {
+            return Err(crate::error::AppError::new(
+                crate::error::ErrorCategory::ProviderValidation,
+            ));
+        }
+        Ok(Self(crate::redact::Redacted::new(bytes)))
+    }
+
+    /// Exposes secret bytes to a trusted credential-store/provider adapter.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.expose_secret().as_slice()
+    }
+}
+
+impl fmt::Debug for RefreshToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        crate::redact::opaque(formatter, "RefreshToken")
+    }
+}
+
+/// Refresh material paired with its provider-reported expiry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefreshGrant {
+    pub token: RefreshToken,
+    pub expires_at: Timestamp,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AccessCredentialMetadata {
     pub expires_at: Timestamp,
@@ -35,6 +73,31 @@ pub struct AccessCredentialMetadata {
 pub struct AccessCredential {
     pub metadata: AccessCredentialMetadata,
     pub material: crate::ports::CredentialMaterial,
+    pub refresh_grant: Option<RefreshGrant>,
+}
+
+impl AccessCredential {
+    /// Builds an access-only credential, preserving public-client behavior.
+    pub fn new(
+        metadata: AccessCredentialMetadata,
+        material: crate::ports::CredentialMaterial,
+    ) -> Self {
+        Self {
+            metadata,
+            material,
+            refresh_grant: None,
+        }
+    }
+
+    /// Attaches a provider-issued refresh grant, replacing any previous grant.
+    pub fn with_refresh_grant(mut self, grant: RefreshGrant) -> Self {
+        self.refresh_grant = Some(grant);
+        self
+    }
+
+    pub fn refresh_grant(&self) -> Option<&RefreshGrant> {
+        self.refresh_grant.as_ref()
+    }
 }
 
 impl fmt::Debug for AccessCredential {
@@ -65,6 +128,77 @@ mod tests {
     use crate::state::Timestamp;
 
     #[test]
+    fn refresh_token_is_bounded_and_opaque() {
+        use crate::{ErrorCategory, RefreshToken};
+
+        for bytes in [Vec::new(), vec![b'x'; RefreshToken::MAX_LENGTH + 1]] {
+            let error = RefreshToken::from_bytes(bytes).expect_err("invalid token");
+            assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+            assert!(!format!("{error:?}").contains("xxx"));
+        }
+        for bytes in [vec![b'x'], vec![b'x'; RefreshToken::MAX_LENGTH]] {
+            let token = RefreshToken::from_bytes(bytes.clone()).expect("bounded token");
+            assert_eq!(token.as_bytes(), bytes);
+        }
+        let token = RefreshToken::from_bytes(b"refresh-sentinel").expect("token");
+        assert_eq!(format!("{token:?}"), "RefreshToken");
+        assert!(!format!("{token:?}").contains("refresh-sentinel"));
+    }
+
+    #[test]
+    fn access_credential_refresh_grant_is_optional_and_redacted() {
+        use crate::{RefreshGrant, RefreshToken};
+
+        let credential = AccessCredential::new(
+            AccessCredentialMetadata {
+                expires_at: Timestamp::new(100),
+            },
+            CredentialMaterial::from_bytes(b"access-sentinel"),
+        );
+        assert_eq!(credential.refresh_grant(), None);
+        let grant = RefreshGrant {
+            token: RefreshToken::from_bytes(b"refresh-sentinel").expect("token"),
+            expires_at: Timestamp::new(200),
+        };
+        let credential = credential.with_refresh_grant(grant.clone());
+        assert_eq!(credential.refresh_grant(), Some(&grant));
+        assert_eq!(format!("{credential:?}"), "AccessCredential");
+        let rendered = format!("{credential:?} {grant:?}");
+        for secret in ["access-sentinel", "refresh-sentinel"] {
+            assert!(!rendered.contains(secret));
+        }
+    }
+
+    #[test]
+    fn static_credential_source_returns_independent_clones_repeatedly() {
+        use crate::{CredentialSource, RefreshGrant, RefreshToken, StaticCredentialSource};
+
+        let credential = AccessCredential::new(
+            AccessCredentialMetadata {
+                expires_at: Timestamp::new(100),
+            },
+            CredentialMaterial::from_bytes(b"access-sentinel"),
+        )
+        .with_refresh_grant(RefreshGrant {
+            token: RefreshToken::from_bytes(b"refresh-sentinel").expect("token"),
+            expires_at: Timestamp::new(200),
+        });
+        let source = StaticCredentialSource::new(credential.clone());
+        let shared: &dyn CredentialSource = &source;
+        let mut first = shared.current().expect("credential");
+        assert_eq!(first, credential);
+        first.metadata.expires_at = Timestamp::new(0);
+        for _ in 0..3 {
+            assert_eq!(shared.current().expect("credential"), credential);
+        }
+        let public = AccessCredential::new(credential.metadata, credential.material.clone());
+        assert_eq!(
+            StaticCredentialSource::new(public.clone()).current(),
+            Ok(public)
+        );
+    }
+
+    #[test]
     fn authorization_values_and_access_credentials_render_only_their_type_name() {
         let state = AuthorizationState::from_bytes(b"state-sentinel");
         let code = AuthorizationCode::from_bytes(b"code-sentinel");
@@ -73,6 +207,7 @@ mod tests {
                 expires_at: Timestamp::new(1_724_000_000),
             },
             material: CredentialMaterial::from_bytes(b"material-sentinel".to_vec()),
+            refresh_grant: None,
         };
 
         // Each value-hiding type renders exactly its stable type name and never

@@ -399,6 +399,7 @@ mod tests {
                 expires_at: Timestamp::new(1_700_000_000),
             },
             material: CredentialMaterial::from_bytes(CREDENTIAL_SENTINEL.as_bytes().to_vec()),
+            refresh_grant: None,
         }
     }
 

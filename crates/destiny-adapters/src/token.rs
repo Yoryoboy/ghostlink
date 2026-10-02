@@ -518,6 +518,7 @@ fn decode_success(
     Ok(AccessCredential {
         metadata: AccessCredentialMetadata { expires_at },
         material: CredentialMaterial::from_bytes(access_token.as_bytes().to_vec()),
+        refresh_grant: None,
     })
 }
 
