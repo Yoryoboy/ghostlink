@@ -1,5 +1,11 @@
 //! One provider-neutral weekly presentation contract for CLI and MCP.
-use crate::{Character, DefinitionResolution, PersonalActivity, PersonalGroup, WeeklyPersonal};
+use crate::weekly_personal::{
+    ModifierCategory, UnclassifiedReason, UnclassifiedSource, modifier_category,
+};
+use crate::{
+    Character, DefinitionResolution, PersonalActivity, PersonalChallenge, PersonalGroup,
+    WeeklyPersonal,
+};
 
 /// Presentation adapters supply their JSON representation, not classification policy.
 pub trait WeeklyJson {
@@ -14,30 +20,54 @@ pub trait WeeklyJson {
 fn optional<J: WeeklyJson>(value: Option<&str>) -> J::Value {
     value.map_or_else(J::null, J::string)
 }
-fn entity<J: WeeklyJson>(hash: u32, definition: &DefinitionResolution) -> J::Value {
-    let name = match definition {
-        DefinitionResolution::Resolved { name, .. } => Some(name.as_str()),
+fn name(definition: &DefinitionResolution) -> Option<&str> {
+    match definition {
+        DefinitionResolution::Resolved { name, .. } => Some(name),
         DefinitionResolution::Unresolved => None,
-    };
-    J::object(vec![
+    }
+}
+fn entity_fields<J: WeeklyJson>(
+    hash: u32,
+    definition: &DefinitionResolution,
+) -> Vec<(&'static str, J::Value)> {
+    let name = name(definition);
+    vec![
         ("hash", J::integer(hash.into())),
         ("name", optional::<J>(name)),
         ("resolved", J::boolean(name.is_some())),
-    ])
+    ]
+}
+fn entity<J: WeeklyJson>(hash: u32, definition: &DefinitionResolution) -> J::Value {
+    J::object(entity_fields::<J>(hash, definition))
+}
+fn modifier<J: WeeklyJson>(hash: u32, definition: &DefinitionResolution) -> J::Value {
+    // Derived/name-based English hint, not an API taxonomy; unresolved -> Other.
+    let category = match modifier_category(name(definition).unwrap_or("")) {
+        ModifierCategory::Surge => "surge",
+        ModifierCategory::Overcharge => "overcharge",
+        ModifierCategory::Champions => "champions",
+        ModifierCategory::Other => "other",
+    };
+    let mut fields = entity_fields::<J>(hash, definition);
+    fields.push(("category", J::string(category)));
+    J::object(fields)
+}
+fn challenge<J: WeeklyJson>(c: &PersonalChallenge) -> J::Value {
+    let mut fields = entity_fields::<J>(c.objective_hash, &c.definition);
+    fields.extend([
+        ("progress", J::integer(c.progress)),
+        ("completion_value", J::integer(c.completion_value)),
+        ("complete", J::boolean(c.complete)),
+    ]);
+    J::object(fields)
 }
 fn activity_type<J: WeeklyJson>(a: &PersonalActivity) -> J::Value {
     a.activity_type_hash
         .map_or_else(J::null, |hash| entity::<J>(hash, &a.activity_type))
 }
 fn activity<J: WeeklyJson>(a: &PersonalActivity) -> J::Value {
-    let name = match &a.definition {
-        DefinitionResolution::Resolved { name, .. } => Some(name.as_str()),
-        DefinitionResolution::Unresolved => None,
-    };
-    J::object(vec![
-        ("hash", J::integer(a.hash.into())),
-        ("name", optional::<J>(name)),
-        ("resolved", J::boolean(name.is_some())),
+    let mut fields = entity_fields::<J>(a.hash, &a.definition);
+    fields.extend([
         ("activity_type", activity_type::<J>(a)),
         (
             "rewards",
@@ -53,7 +83,7 @@ fn activity<J: WeeklyJson>(a: &PersonalActivity) -> J::Value {
             J::array(
                 a.modifiers
                     .iter()
-                    .map(|m| entity::<J>(m.hash, &m.definition))
+                    .map(|m| modifier::<J>(m.hash, &m.definition))
                     .collect(),
             ),
         ),
@@ -68,25 +98,7 @@ fn activity<J: WeeklyJson>(a: &PersonalActivity) -> J::Value {
         ),
         (
             "challenges",
-            J::array(
-                a.challenges
-                    .iter()
-                    .map(|c| {
-                        let name = match &c.definition {
-                            DefinitionResolution::Resolved { name, .. } => Some(name.as_str()),
-                            DefinitionResolution::Unresolved => None,
-                        };
-                        J::object(vec![
-                            ("hash", J::integer(c.objective_hash.into())),
-                            ("name", optional::<J>(name)),
-                            ("resolved", J::boolean(name.is_some())),
-                            ("progress", J::integer(c.progress)),
-                            ("completion_value", J::integer(c.completion_value)),
-                            ("complete", J::boolean(c.complete)),
-                        ])
-                    })
-                    .collect(),
-            ),
+            J::array(a.challenges.iter().map(challenge::<J>).collect()),
         ),
         (
             "phases",
@@ -97,10 +109,11 @@ fn activity<J: WeeklyJson>(a: &PersonalActivity) -> J::Value {
                 ])
             }),
         ),
-    ])
+    ]);
+    J::object(fields)
 }
-fn group<J: WeeklyJson>(g: &PersonalGroup) -> J::Value {
-    J::object(vec![
+fn group_fields<J: WeeklyJson>(g: &PersonalGroup) -> Vec<(&'static str, J::Value)> {
+    vec![
         ("root", J::string(&g.root_name)),
         (
             "reward_names",
@@ -116,7 +129,38 @@ fn group<J: WeeklyJson>(g: &PersonalGroup) -> J::Value {
             "variants",
             J::array(g.activities.iter().map(activity::<J>).collect()),
         ),
-    ])
+    ]
+}
+fn group<J: WeeklyJson>(g: &PersonalGroup) -> J::Value {
+    J::object(group_fields::<J>(g))
+}
+fn quickplay<J: WeeklyJson>(g: &PersonalGroup) -> J::Value {
+    let mut fields = group_fields::<J>(g);
+    fields.push((
+        "pools",
+        J::array(
+            g.pools
+                .iter()
+                .map(|pool| {
+                    J::object(vec![
+                        (
+                            "objectives",
+                            J::array(pool.objectives.iter().map(challenge::<J>).collect()),
+                        ),
+                        (
+                            "rewards",
+                            J::array(pool.rewards.iter().map(|n| J::string(n)).collect()),
+                        ),
+                        (
+                            "variants",
+                            J::array(pool.variants.iter().map(activity::<J>).collect()),
+                        ),
+                    ])
+                })
+                .collect(),
+        ),
+    ));
+    J::object(fields)
 }
 fn groups<J: WeeklyJson>(g: &[PersonalGroup]) -> J::Value {
     J::array(g.iter().map(group::<J>).collect())
@@ -163,7 +207,17 @@ pub fn weekly_projection<J: WeeklyJson>(
                         .map_or_else(J::null, group::<J>),
                 ),
                 ("crucible", groups::<J>(&weekly.vanguard_alerts.crucible)),
-                ("quickplay", groups::<J>(&weekly.vanguard_alerts.quickplay)),
+                (
+                    "quickplay",
+                    J::array(
+                        weekly
+                            .vanguard_alerts
+                            .quickplay
+                            .iter()
+                            .map(quickplay::<J>)
+                            .collect(),
+                    ),
+                ),
             ]),
         ),
         (
@@ -193,8 +247,43 @@ pub fn weekly_projection<J: WeeklyJson>(
             ),
         ),
         (
+            "unclassified",
+            J::array(
+                weekly
+                    .unclassified
+                    .iter()
+                    .map(|a| {
+                        J::object(vec![
+                            ("hash", J::integer(a.hash.into())),
+                            ("name", optional::<J>(a.name.as_deref())),
+                            (
+                                "reason",
+                                J::string(match a.reason {
+                                    UnclassifiedReason::ActivityDefinitionMissing => {
+                                        "activity_definition_missing"
+                                    }
+                                    UnclassifiedReason::ActivityTypeMissing => {
+                                        "activity_type_missing"
+                                    }
+                                }),
+                            ),
+                            (
+                                "source",
+                                J::string(match a.source {
+                                    UnclassifiedSource::PublicMilestones => "public_milestones",
+                                    UnclassifiedSource::CharacterActivities => {
+                                        "character_activities"
+                                    }
+                                }),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
             "unclassified_unresolved",
-            J::integer(weekly.unclassified_unresolved as i64),
+            J::integer(weekly.unclassified.len() as i64),
         ),
     ])
 }

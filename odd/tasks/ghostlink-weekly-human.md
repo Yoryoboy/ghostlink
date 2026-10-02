@@ -32,10 +32,10 @@ Non-goals: translating objective texts; claiming raid encounter challenges (they
 - Worktree `/home/yoryo/apps/ghostlink-human` with its own `target/`; the user's `~/apps/ghostlink` binary is untouched until merge.
 
 ## Tasks
-- [ ] **WHU-001 — Model.** Unclassified list with reason and source; Quickplay reward pools; derived modifier categories; JSON fields and parity.
+- [x] **WHU-001 — Model.** Delegated writer, test-first (RED: missing unclassified types, `modifier_category`, `pools`; GREEN). Unclassified list `{hash, name|null, reason, source}` (definition missing takes precedence; `unclassified_unresolved` = list length kept); Quickplay `pools` merge only identical challenges and identical exact-name reward sets ([A] and [A, A] merge, consistent with the dedupe rule); derived `category` per modifier, commented as name-based. CLI/MCP parity and MCP schema updated; text layout unchanged. Independent verifier FAILED on coverage only (the `contains("Champion")` rule was not discriminated) -> parent added "Match Game: Champions" and proved it with a mutation (`starts_with` failed the test). Checks: fmt, workspace tests, clippy, diff check. Commit evidence: see git log for `feat(weekly): model unclassified activities, quickplay pools and modifier categories`.
 - [ ] **WHU-002 — Default renderer.** Dashboard layout and rules above, pinned by tests.
 - [ ] **WHU-003 — `--details` and `--debug`.** Flags, grouped modifiers, diagnostic output, pinned by tests.
 - [ ] **WHU-004 — Live validation, docs, close.** Live run for the Hunter on a database copy; README.
 
 ## Next step
-WHU-001.
+WHU-002.

@@ -156,12 +156,13 @@ pub struct WeeklyOutput {
 
     pub milestones: Vec<PersonalEntityView>,
     pub unclassified_unresolved: usize,
+    pub unclassified: Vec<UnclassifiedActivityView>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct VanguardAlertsView {
     pub grandmaster: Option<PersonalGroupView>,
     pub crucible: Vec<PersonalGroupView>,
-    pub quickplay: Vec<PersonalGroupView>,
+    pub quickplay: Vec<QuickplayAlertView>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct WeeklyCharacterView {
@@ -191,10 +192,56 @@ pub struct PersonalActivityView {
     pub entity: PersonalEntityView,
     pub activity_type: Option<PersonalEntityView>,
     pub rewards: Vec<PersonalEntityView>,
-    pub modifiers: Vec<PersonalEntityView>,
+    pub modifiers: Vec<PersonalModifierView>,
     pub challenge_objectives: Vec<PersonalEntityView>,
     pub challenges: Vec<PersonalChallengeView>,
     pub phases: Option<PersonalPhaseView>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct QuickplayAlertView {
+    #[serde(flatten)]
+    pub group: PersonalGroupView,
+    pub pools: Vec<QuickplayPoolView>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct QuickplayPoolView {
+    pub objectives: Vec<PersonalChallengeView>,
+    pub rewards: Vec<String>,
+    pub variants: Vec<PersonalActivityView>,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct UnclassifiedActivityView {
+    pub hash: u32,
+    pub name: Option<String>,
+    pub reason: UnclassifiedReasonView,
+    pub source: UnclassifiedSourceView,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnclassifiedReasonView {
+    ActivityDefinitionMissing,
+    ActivityTypeMissing,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnclassifiedSourceView {
+    PublicMilestones,
+    CharacterActivities,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PersonalModifierView {
+    #[serde(flatten)]
+    pub entity: PersonalEntityView,
+    /// Derived, name-based English presentation hint, not an API taxonomy.
+    pub category: ModifierCategoryView,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModifierCategoryView {
+    Surge,
+    Overcharge,
+    Champions,
+    Other,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct PersonalChallengeView {

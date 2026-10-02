@@ -305,10 +305,10 @@ pub fn render_weekly(
     if !rotators.is_empty() {
         lines.push(rotators.join(" / "));
     }
-    if weekly.unclassified_unresolved > 0 {
+    if !weekly.unclassified.is_empty() {
         lines.push(format!(
             "note: {} activities could not be classified (missing definitions; run ghostlink sync-manifest)",
-            weekly.unclassified_unresolved
+            weekly.unclassified.len()
         ));
     }
     lines.join("\n")
@@ -788,10 +788,11 @@ mod tests {
             activity_type_name: "Raid".into(),
             activities: vec![activity.clone()],
             reward_names: Vec::new(),
+            pools: Vec::new(),
         };
         let mut weekly = WeeklyPersonal {
             definition_version: destiny_app::DefinitionVersion::new("v1"),
-            unclassified_unresolved: 0,
+            unclassified: Vec::new(),
             vanguard_alerts: VanguardAlerts {
                 grandmaster: Some(group.clone()),
                 crucible: vec![group.clone()],
@@ -842,10 +843,10 @@ mod tests {
             serde_json::json!({
                 "kind":"weekly", "character":super::character_json(&full_character()), "definition_version":"v1",
                 "featured_raids":groups, "featured_dungeons":groups,
-                "vanguard_alerts":{"grandmaster":groups[0],"crucible":groups,"quickplay":groups},
+                "vanguard_alerts":{"grandmaster":groups[0],"crucible":groups,"quickplay":[{"root":"Raid","reward_names":[],"activity_type":{"hash":30,"name":"Raid","resolved":true},"variants":[item],"pools":[]}] },
                 "expedition":{"root":"Expedition: Cosmodrome","reward_names":[],"activity_type":{"hash":30,"name":"Raid","resolved":true},"variants":[item]},
                 "override":{"root":"Override: Europa","reward_names":[],"activity_type":{"hash":30,"name":"Raid","resolved":true},"variants":[item]},
-                "milestones":[], "unclassified_unresolved":0
+                "milestones":[], "unclassified_unresolved":0, "unclassified":[]
             })
         );
         let mut variant = weekly.vanguard_alerts.quickplay[0].activities[0].clone();
@@ -887,7 +888,7 @@ mod tests {
                 "kind":"weekly", "character":super::character_json(&full_character()), "definition_version":"v1",
                 "featured_raids":[], "featured_dungeons":[],
                 "vanguard_alerts":{"grandmaster":null,"crucible":[],"quickplay":[]}, "expedition":null, "override":null,
-                "milestones":[], "unclassified_unresolved":0
+                "milestones":[], "unclassified_unresolved":0, "unclassified":[]
             })
         );
     }
@@ -923,8 +924,9 @@ mod tests {
                 grandmaster: Some(PersonalGroup {
                     root_name: raw.into(),
                     activity_type_name: raw.into(),
-                    activities: vec![activity],
+                    activities: vec![activity.clone()],
                     reward_names: Vec::new(),
+                    pools: Vec::new(),
                 }),
                 ..VanguardAlerts::default()
             },
@@ -934,7 +936,10 @@ mod tests {
                 hash: 3,
                 definition: DefinitionResolution::Unresolved,
             }],
-            unclassified_unresolved: 2,
+            unclassified: unclassified_activities(
+                std::slice::from_ref(&activity),
+                std::slice::from_ref(&activity),
+            ),
         };
         let value: serde_json::Value = serde_json::from_str(&super::render_weekly(
             OutputMode::Json,
@@ -996,7 +1001,7 @@ mod tests {
         };
         let mut weekly = WeeklyPersonal {
             definition_version: DefinitionVersion::new("v1"),
-            unclassified_unresolved: 0,
+            unclassified: Vec::new(),
             featured_raids: Vec::new(),
             featured_dungeons: Vec::new(),
             vanguard_alerts: VanguardAlerts::default(),
@@ -1020,8 +1025,8 @@ mod tests {
         unresolved.activity_type = DefinitionResolution::Unresolved;
         weekly.character_activities.push(unresolved);
         weekly.weekly_rotators = classify_rotators(&weekly.character_activities);
-        weekly.unclassified_unresolved =
-            count_unclassified_unresolved(&weekly.character_activities, &weekly.public_activities);
+        weekly.unclassified =
+            unclassified_activities(&weekly.character_activities, &weekly.public_activities);
         let value: serde_json::Value = serde_json::from_str(&super::render_weekly(
             OutputMode::Json,
             &full_character(),
