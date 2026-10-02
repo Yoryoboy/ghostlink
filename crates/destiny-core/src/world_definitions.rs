@@ -65,6 +65,78 @@ pub struct WorldDefinitionsAcquisition {
     pub modifiers: WorldDefinitionTable<ActivityModifierDefinition>,
 }
 
+impl WorldDefinitionsAcquisition {
+    /// Validate a complete, bounded, duplicate-free publication against the item version.
+    pub fn validate_for(&self, version: &DefinitionVersion) -> Result<(), AppError> {
+        fn valid(hashes: impl Iterator<Item = u32>, count: usize, cap: usize) -> bool {
+            count > 0
+                && count <= cap
+                && hashes.collect::<std::collections::HashSet<_>>().len() == count
+        }
+        if &self.version != version
+            || !valid(
+                self.milestones
+                    .definitions
+                    .iter()
+                    .map(MilestoneDefinition::hash),
+                self.milestones.definitions.len(),
+                1000,
+            )
+            || !valid(
+                self.activities
+                    .definitions
+                    .iter()
+                    .map(ActivityDefinition::hash),
+                self.activities.definitions.len(),
+                50000,
+            )
+            || !valid(
+                self.modifiers
+                    .definitions
+                    .iter()
+                    .map(ActivityModifierDefinition::hash),
+                self.modifiers.definitions.len(),
+                10000,
+            )
+        {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(())
+    }
+
+    pub fn counts(&self) -> [usize; 3] {
+        [
+            self.milestones.definitions.len(),
+            self.activities.definitions.len(),
+            self.modifiers.definitions.len(),
+        ]
+    }
+
+    pub fn skipped_counts(&self) -> [usize; 3] {
+        [
+            self.milestones.skipped_count,
+            self.activities.skipped_count,
+            self.modifiers.skipped_count,
+        ]
+    }
+
+    /// Canonicalize set order and discard acquisition-only skip counts.
+    pub fn canonicalize(&mut self) {
+        self.milestones
+            .definitions
+            .sort_by_key(MilestoneDefinition::hash);
+        self.activities
+            .definitions
+            .sort_by_key(ActivityDefinition::hash);
+        self.modifiers
+            .definitions
+            .sort_by_key(ActivityModifierDefinition::hash);
+        self.milestones.skipped_count = 0;
+        self.activities.skipped_count = 0;
+        self.modifiers.skipped_count = 0;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

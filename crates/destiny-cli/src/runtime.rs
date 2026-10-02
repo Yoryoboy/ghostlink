@@ -305,7 +305,8 @@ where
 pub trait ManifestFoundations {
     type Transport: destiny_adapters::manifest::ManifestTransport;
     type Clock: Clock;
-    type Repository: destiny_app::DefinitionCatalogRepository;
+    type Repository: destiny_app::DefinitionCatalogRepository
+        + destiny_app::WorldDefinitionRepository;
 
     fn config(&mut self) -> Result<ReadRuntimeConfig, AppError>;
     fn clock(&mut self) -> Result<Self::Clock, AppError>;
@@ -642,28 +643,41 @@ mod tests {
                     store: Some(store),
                 };
                 if unchanged {
-                    use destiny_app::DefinitionRepository;
+                    use destiny_app::{ManifestGateway, WorldDefinitionRepository};
+                    let mut gateway = destiny_adapters::manifest::BungieManifestGateway::new(
+                        destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL).unwrap(),
+                        ManifestTransport,
+                        ScriptedClock {
+                            now: Ok(NOW),
+                            log: Rc::clone(&log),
+                        },
+                    );
+                    let index = gateway.fetch_index().unwrap();
+                    let world = gateway.load_world_components(&index).unwrap();
                     foundations
                         .store
                         .as_mut()
                         .unwrap()
-                        .replace_definitions(destiny_app::DefinitionReplacementInput {
-                            definitions: destiny_app::ManifestDefinitions {
-                                version: destiny_app::DefinitionVersion::new("v1"),
-                                definitions: vec![destiny_app::ItemDefinition {
-                                    hash: destiny_app::ItemHash::new(1),
-                                    bucket_hash: None,
-                                    name: "Item".into(),
-                                    item_type: None,
-                                    tier: None,
-                                    element: None,
-                                    tags: Vec::new(),
+                        .publish_manifest(
+                            destiny_app::DefinitionReplacementInput {
+                                definitions: destiny_app::ManifestDefinitions {
                                     version: destiny_app::DefinitionVersion::new("v1"),
-                                }],
+                                    definitions: vec![destiny_app::ItemDefinition {
+                                        hash: destiny_app::ItemHash::new(1),
+                                        bucket_hash: None,
+                                        name: "Item".into(),
+                                        item_type: None,
+                                        tier: None,
+                                        element: None,
+                                        tags: Vec::new(),
+                                        version: destiny_app::DefinitionVersion::new("v1"),
+                                    }],
+                                },
+                                checked_at: NOW,
+                                source: destiny_app::SourceMarker::Manifest,
                             },
-                            checked_at: NOW,
-                            source: destiny_app::SourceMarker::Manifest,
-                        })
+                            world,
+                        )
                         .unwrap();
                     log.borrow_mut().clear();
                 }
@@ -678,14 +692,16 @@ mod tests {
                 assert!(output.stderr.is_empty());
                 let expected = match (json, unchanged) {
                     (false, false) => {
-                        "manifest: updated\nversion: v1\ndefinitions: 1\nskipped: 1\n"
+                        "manifest: updated\nversion: v1\ndefinitions: 1\nskipped: 1\nmilestones: 1\nmilestones_skipped: 1\nactivities: 1\nactivities_skipped: 1\nactivity_modifiers: 1\nactivity_modifiers_skipped: 1\n"
                     }
-                    (false, true) => "manifest: unchanged\nversion: v1\ndefinitions: 1\n",
+                    (false, true) => {
+                        "manifest: unchanged\nversion: v1\ndefinitions: 1\nmilestones: 1\nactivities: 1\nactivity_modifiers: 1\n"
+                    }
                     (true, false) => {
-                        "{\"definitions\":1,\"kind\":\"sync_manifest\",\"skipped\":1,\"status\":\"updated\",\"version\":\"v1\"}\n"
+                        "{\"activities\":1,\"activities_skipped\":1,\"activity_modifiers\":1,\"activity_modifiers_skipped\":1,\"definitions\":1,\"kind\":\"sync_manifest\",\"milestones\":1,\"milestones_skipped\":1,\"skipped\":1,\"status\":\"updated\",\"version\":\"v1\"}\n"
                     }
                     (true, true) => {
-                        "{\"definitions\":1,\"kind\":\"sync_manifest\",\"status\":\"unchanged\",\"version\":\"v1\"}\n"
+                        "{\"activities\":1,\"activity_modifiers\":1,\"definitions\":1,\"kind\":\"sync_manifest\",\"milestones\":1,\"status\":\"unchanged\",\"version\":\"v1\"}\n"
                     }
                 };
                 assert_eq!(output.stdout, expected);

@@ -186,6 +186,7 @@ pub struct InMemoryDefinitionRepository {
     definitions: Vec<ItemDefinition>,
     metadata: Option<SyncMetadata>,
     previous_input: Option<DefinitionReplacementInput>,
+    world: Option<destiny_core::WorldDefinitionsAcquisition>,
     publication_failure: Option<AppError>,
     metadata_failure: Option<AppError>,
     publication_attempts: usize,
@@ -343,10 +344,88 @@ impl DefinitionRepository for InMemoryDefinitionRepository {
             revision,
             definition_version: replacement.definitions.version.clone(),
         };
+        if self
+            .previous_input
+            .as_ref()
+            .is_none_or(|previous| !previous.content_eq(&replacement))
+        {
+            self.world = None;
+        }
         self.version = Some(replacement.definitions.version.clone());
         self.definitions = replacement.definitions.definitions.clone();
         self.metadata = Some(metadata.clone());
         self.previous_input = Some(replacement);
+        Ok(metadata)
+    }
+}
+
+impl destiny_core::ports::WorldDefinitionRepository for InMemoryDefinitionRepository {
+    fn lookup_milestone(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_core::MilestoneDefinition>, AppError> {
+        Ok(self.world.as_ref().and_then(|world| {
+            world
+                .milestones
+                .definitions
+                .iter()
+                .find(|d| d.hash() == hash)
+                .cloned()
+        }))
+    }
+    fn lookup_activity(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_core::ActivityDefinition>, AppError> {
+        Ok(self.world.as_ref().and_then(|world| {
+            world
+                .activities
+                .definitions
+                .iter()
+                .find(|d| d.hash() == hash)
+                .cloned()
+        }))
+    }
+    fn lookup_activity_modifier(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_core::ActivityModifierDefinition>, AppError> {
+        Ok(self.world.as_ref().and_then(|world| {
+            world
+                .modifiers
+                .definitions
+                .iter()
+                .find(|d| d.hash() == hash)
+                .cloned()
+        }))
+    }
+    fn world_definition_counts(&self) -> Result<[usize; 3], AppError> {
+        Ok(self
+            .world
+            .as_ref()
+            .map_or([0; 3], destiny_core::WorldDefinitionsAcquisition::counts))
+    }
+    fn publish_manifest(
+        &mut self,
+        items: DefinitionReplacementInput,
+        mut world: destiny_core::WorldDefinitionsAcquisition,
+    ) -> Result<SyncMetadata, AppError> {
+        world.validate_for(&items.definitions.version)?;
+        world.canonicalize();
+        let world_changed = self.world.as_ref() != Some(&world);
+        let items_unchanged = self
+            .previous_input
+            .as_ref()
+            .is_some_and(|previous| previous.content_eq(&items));
+        let mut candidate = self.clone();
+        if world_changed && items_unchanged {
+            candidate.previous_input = None;
+        }
+        let result = candidate.replace_definitions(items);
+        self.publication_attempts = candidate.publication_attempts;
+        let metadata = result?;
+        candidate.world = Some(world);
+        *self = candidate;
         Ok(metadata)
     }
 }
@@ -699,12 +778,40 @@ impl TransferGateway for QueuedTransferGateway {
     }
 }
 
+/// Minimal valid world acquisition for deterministic item-focused sync tests.
+pub fn synthetic_world(version: DefinitionVersion) -> destiny_core::WorldDefinitionsAcquisition {
+    use destiny_core::*;
+    WorldDefinitionsAcquisition {
+        version,
+        milestones: WorldDefinitionTable {
+            definitions: vec![
+                MilestoneDefinition::new(1, "Milestone".into(), "".into(), 3).unwrap(),
+            ],
+            skipped_count: 2,
+        },
+        activities: WorldDefinitionTable {
+            definitions: vec![
+                ActivityDefinition::new(2, "Activity".into(), "".into(), 4, 2000).unwrap(),
+            ],
+            skipped_count: 3,
+        },
+        modifiers: WorldDefinitionTable {
+            definitions: vec![
+                ActivityModifierDefinition::new(3, "Modifier".into(), "".into()).unwrap(),
+            ],
+            skipped_count: 4,
+        },
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct QueuedManifestGateway {
     indexes: VecDeque<Result<destiny_core::ports::ManifestIndex, AppError>>,
     outcomes: VecDeque<Result<ManifestAcquisition, AppError>>,
     index_calls: usize,
     component_calls: usize,
+    world_calls: usize,
+    worlds: VecDeque<Result<destiny_core::WorldDefinitionsAcquisition, AppError>>,
 }
 
 impl QueuedManifestGateway {
@@ -723,6 +830,7 @@ impl QueuedManifestGateway {
                     activity_path: "/common/destiny2_content/activities.json".into(),
                     modifier_path: "/common/destiny2_content/modifiers.json".into(),
                 }));
+                self.queue_world(Ok(synthetic_world(batch.version.clone())));
                 self.queue_component(Ok(batch));
             }
             Err(error) => self.queue_index(Err(error)),
@@ -735,6 +843,17 @@ impl QueuedManifestGateway {
 
     pub fn queue_component(&mut self, outcome: Result<ManifestAcquisition, AppError>) {
         self.outcomes.push_back(outcome);
+    }
+
+    pub fn queue_world(
+        &mut self,
+        outcome: Result<destiny_core::WorldDefinitionsAcquisition, AppError>,
+    ) {
+        self.worlds.push_back(outcome);
+    }
+
+    pub const fn world_calls(&self) -> usize {
+        self.world_calls
     }
 
     pub const fn calls(&self) -> usize {
@@ -755,7 +874,10 @@ impl ManifestGateway for QueuedManifestGateway {
         &mut self,
         _index: &destiny_core::ports::ManifestIndex,
     ) -> Result<destiny_core::WorldDefinitionsAcquisition, AppError> {
-        Err(AppError::new(ErrorCategory::ProviderUnavailable))
+        self.world_calls += 1;
+        self.worlds
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
     }
 
     fn fetch_index(&mut self) -> Result<destiny_core::ports::ManifestIndex, AppError> {

@@ -245,6 +245,24 @@ pub trait DefinitionCatalogRepository: DefinitionRepository {
     fn definition_count(&self) -> Result<usize, AppError>;
 }
 
+/// World lookups and atomic publication of all four Manifest catalogs.
+/// Counts are ordered milestone, activity, activity modifier. Failed publication
+/// leaves every catalog and the shared Manifest metadata unchanged.
+pub trait WorldDefinitionRepository: DefinitionRepository {
+    fn lookup_milestone(&self, hash: u32) -> Result<Option<crate::MilestoneDefinition>, AppError>;
+    fn lookup_activity(&self, hash: u32) -> Result<Option<crate::ActivityDefinition>, AppError>;
+    fn lookup_activity_modifier(
+        &self,
+        hash: u32,
+    ) -> Result<Option<crate::ActivityModifierDefinition>, AppError>;
+    fn world_definition_counts(&self) -> Result<[usize; 3], AppError>;
+    fn publish_manifest(
+        &mut self,
+        items: DefinitionReplacementInput,
+        world: crate::WorldDefinitionsAcquisition,
+    ) -> Result<SyncMetadata, AppError>;
+}
+
 /// Reads and atomically replaces the current normalized inventory projection.
 pub trait InventoryRepository {
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError>;

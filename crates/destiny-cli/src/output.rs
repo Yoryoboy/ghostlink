@@ -29,16 +29,33 @@ pub enum OutputMode {
 /// Renders the public version label and counts, never definition payloads.
 pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncReport) -> String {
     use destiny_app::ManifestSyncReport;
-    let (status, version, count, skipped) = match report {
+    let (status, version, count, skipped, world_counts, world_skipped) = match report {
         ManifestSyncReport::Updated {
             version,
             record_count,
             skipped,
-        } => ("updated", version, *record_count, Some(*skipped)),
+            world_counts,
+            world_skipped,
+        } => (
+            "updated",
+            version,
+            *record_count,
+            Some(*skipped),
+            world_counts,
+            Some(world_skipped),
+        ),
         ManifestSyncReport::Unchanged {
             version,
             record_count,
-        } => ("unchanged", version, *record_count, None),
+            world_counts,
+        } => (
+            "unchanged",
+            version,
+            *record_count,
+            None,
+            world_counts,
+            None,
+        ),
     };
     match mode {
         OutputMode::Human => {
@@ -49,12 +66,30 @@ pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncRepor
             if let Some(skipped) = skipped {
                 text.push_str(&format!("\nskipped: {skipped}"));
             }
+            for (index, label) in ["milestones", "activities", "activity_modifiers"]
+                .iter()
+                .enumerate()
+            {
+                text.push_str(&format!("\n{label}: {}", world_counts[index]));
+                if let Some(skipped) = world_skipped {
+                    text.push_str(&format!("\n{label}_skipped: {}", skipped[index]));
+                }
+            }
             text
         }
         OutputMode::Json => {
             let mut value = json!({"kind": "sync_manifest", "status": status, "version": version.as_str(), "definitions": count});
             if let Some(skipped) = skipped {
                 value["skipped"] = json!(skipped);
+            }
+            for (index, label) in ["milestones", "activities", "activity_modifiers"]
+                .iter()
+                .enumerate()
+            {
+                value[*label] = json!(world_counts[index]);
+                if let Some(skipped) = world_skipped {
+                    value[format!("{label}_skipped")] = json!(skipped[index]);
+                }
             }
             value.to_string()
         }
