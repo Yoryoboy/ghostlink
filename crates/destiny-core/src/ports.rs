@@ -237,6 +237,14 @@ pub trait DefinitionRepository {
     ) -> Result<SyncMetadata, AppError>;
 }
 
+/// Manifest sync read seam for repositories that expose the complete catalog count.
+///
+/// Kept separate from definition lookups so read-only composition wrappers need
+/// not implement publication summaries. Failures must propagate, not imply zero.
+pub trait DefinitionCatalogRepository: DefinitionRepository {
+    fn definition_count(&self) -> Result<usize, AppError>;
+}
+
 /// Reads and atomically replaces the current normalized inventory projection.
 pub trait InventoryRepository {
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError>;
@@ -527,10 +535,35 @@ pub struct ManifestAcquisition {
     pub skipped_count: usize,
 }
 
-/// Returns untrusted normalized-shape candidates, not locations, URLs, or
-/// serialized payloads.
+/// A small index with an exact version and an adapter-validated component plan.
+///
+/// The relative path is transport-neutral data, not an absolute URL. Adapters
+/// must validate it again on use because callers can construct this value.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ManifestIndex {
+    pub version: DefinitionVersion,
+    pub component_path: String,
+}
+
+impl fmt::Debug for ManifestIndex {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ManifestIndex")
+            .field("version", &self.version)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Separates the small version check from acquisition of the large component.
 pub trait ManifestGateway {
-    fn load_definitions(&mut self) -> Result<ManifestAcquisition, AppError>;
+    fn fetch_index(&mut self) -> Result<ManifestIndex, AppError>;
+    fn load_component(&mut self, index: &ManifestIndex) -> Result<ManifestAcquisition, AppError>;
+
+    /// Compatibility composition for callers requesting an unconditional acquisition.
+    fn load_definitions(&mut self) -> Result<ManifestAcquisition, AppError> {
+        let index = self.fetch_index()?;
+        self.load_component(&index)
+    }
 }
 
 /// One provider-neutral request to move one concrete item between two locations.

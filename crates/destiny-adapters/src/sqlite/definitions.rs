@@ -141,6 +141,16 @@ impl DefinitionRepository for SqliteStore {
     }
 }
 
+impl destiny_core::ports::DefinitionCatalogRepository for SqliteStore {
+    fn definition_count(&self) -> Result<usize, AppError> {
+        let count: i64 = self
+            .connection()
+            .query_row("SELECT COUNT(*) FROM definitions", [], |row| row.get(0))
+            .map_err(|_| storage_failure())?;
+        usize::try_from(count).map_err(|_| storage_failure())
+    }
+}
+
 /// Rejects a set that the application Manifest service should never publish.
 ///
 /// A publishable set is non-empty, internally consistent with one exact version,
@@ -192,31 +202,35 @@ fn replace_catalog(
         .execute("DELETE FROM definitions", [])
         .map_err(|_| storage_failure())?;
 
+    let mut insert_definition = connection
+        .prepare_cached(
+            "INSERT INTO definitions \
+             (hash, bucket_hash, name, item_type, tier, element, definition_version) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .map_err(|_| storage_failure())?;
+    let mut insert_tag = connection
+        .prepare_cached(
+            "INSERT INTO definition_tags (definition_hash, ordinal, tag) VALUES (?1, ?2, ?3)",
+        )
+        .map_err(|_| storage_failure())?;
     for definition in definitions {
-        connection
-            .execute(
-                "INSERT INTO definitions \
-                 (hash, bucket_hash, name, item_type, tier, element, definition_version) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![
-                    definition.hash.value(),
-                    definition.bucket_hash.map(BucketHash::value),
-                    definition.name,
-                    definition.item_type,
-                    definition.tier,
-                    definition.element,
-                    definition.version.as_str(),
-                ],
-            )
+        insert_definition
+            .execute(params![
+                definition.hash.value(),
+                definition.bucket_hash.map(BucketHash::value),
+                definition.name,
+                definition.item_type,
+                definition.tier,
+                definition.element,
+                definition.version.as_str(),
+            ])
             .map_err(|_| storage_failure())?;
 
         for (ordinal, tag) in definition.tags.iter().enumerate() {
             let ordinal = i64::try_from(ordinal).map_err(|_| storage_failure())?;
-            connection
-                .execute(
-                    "INSERT INTO definition_tags (definition_hash, ordinal, tag) VALUES (?1, ?2, ?3)",
-                    params![definition.hash.value(), ordinal, tag],
-                )
+            insert_tag
+                .execute(params![definition.hash.value(), ordinal, tag])
                 .map_err(|_| storage_failure())?;
         }
     }
@@ -416,4 +430,57 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
     }
 
     Ok(definitions)
+}
+
+#[cfg(test)]
+mod live_publish_tests {
+    use super::*;
+
+    #[test]
+    fn publishes_forty_thousand_definitions_with_tags() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let version = DefinitionVersion::new("large-synthetic-v1");
+        let definitions = (0..40_000)
+            .map(|hash| ItemDefinition {
+                hash: ItemHash::new(hash),
+                bucket_hash: Some(BucketHash::new(1)),
+                name: format!("Synthetic {hash}"),
+                item_type: Some("Weapon".into()),
+                tier: None,
+                element: None,
+                tags: vec!["synthetic".into(), "weapon".into()],
+                version: version.clone(),
+            })
+            .collect();
+        let start = std::time::Instant::now();
+        let metadata = store
+            .replace_definitions(DefinitionReplacementInput {
+                definitions: ManifestDefinitions {
+                    version: version.clone(),
+                    definitions,
+                },
+                checked_at: Timestamp::new(1_000),
+                source: SourceMarker::Manifest,
+            })
+            .unwrap();
+        // Write directly so the required workspace runner reports this evidence
+        // even when the test harness captures ordinary diagnostic output.
+        std::io::Write::write_fmt(
+            &mut std::io::stdout().lock(),
+            format_args!("40,000-definition publish: {:?}\n", start.elapsed()),
+        )
+        .unwrap();
+        assert_eq!(metadata.definition_version, version);
+        assert_eq!(metadata.revision.value(), 1);
+        assert_eq!(
+            read_committed_content(store.connection()).unwrap().len(),
+            40_000
+        );
+        assert_eq!(store.current_metadata().unwrap(), Some(metadata));
+        let Resolution::Unique(last) = store.lookup_definition(ItemHash::new(39_999)).unwrap()
+        else {
+            panic!("last definition missing");
+        };
+        assert_eq!(last.tags, ["synthetic", "weapon"]);
+    }
 }

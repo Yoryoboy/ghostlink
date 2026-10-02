@@ -50,6 +50,20 @@ pub struct PublicationOutcome {
     pub revision: SyncRevision,
 }
 
+/// Version-only labels and counts suitable for presentation; never catalog data.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ManifestSyncReport {
+    Unchanged {
+        version: DefinitionVersion,
+        record_count: usize,
+    },
+    Updated {
+        version: DefinitionVersion,
+        record_count: usize,
+        skipped: usize,
+    },
+}
+
 /// Acquires, validates, normalizes, and atomically publishes Manifest definitions.
 ///
 /// Publication is all-or-nothing: a gateway error, an invalid candidate, or a
@@ -70,6 +84,11 @@ where
             gateway,
             repository,
         }
+    }
+
+    /// Borrows the gateway for acquisition diagnostics in deterministic tests.
+    pub fn gateway(&self) -> &G {
+        &self.gateway
     }
 
     /// Borrows the repository so callers can read the visible state.
@@ -95,7 +114,16 @@ where
         &mut self,
         checked_at: Timestamp,
     ) -> Result<PublicationOutcome, AppError> {
-        let (definitions, skipped_count) = normalize_with_count(self.gateway.load_definitions()?)?;
+        let acquisition = self.gateway.load_definitions()?;
+        self.publish(acquisition, checked_at)
+    }
+
+    fn publish(
+        &mut self,
+        acquisition: ManifestAcquisition,
+        checked_at: Timestamp,
+    ) -> Result<PublicationOutcome, AppError> {
+        let (definitions, skipped_count) = normalize_with_count(acquisition)?;
         let version = definitions.version.clone();
         let definition_count = definitions.definitions.len();
         let metadata = self
@@ -110,6 +138,38 @@ where
             definition_count,
             skipped_count,
             revision: metadata.revision,
+        })
+    }
+}
+
+impl<G, R> ManifestService<G, R>
+where
+    G: ManifestGateway,
+    R: destiny_core::ports::DefinitionCatalogRepository,
+{
+    /// Fetches the small index first. An exact version match is a pure read:
+    /// no component acquisition, publication, revision, or timestamp change.
+    /// Only absent metadata means an empty store; storage failures propagate.
+    pub fn sync(&mut self, checked_at: Timestamp) -> Result<ManifestSyncReport, AppError> {
+        let index = self.gateway.fetch_index()?;
+        let version = normalize_version(index.version.as_str())?;
+        if let Some(metadata) = self.repository.current_metadata()?
+            && metadata.definition_version == version
+        {
+            return Ok(ManifestSyncReport::Unchanged {
+                version,
+                record_count: self.repository.definition_count()?,
+            });
+        }
+        let acquisition = self.gateway.load_component(&index)?;
+        if acquisition.version != version {
+            return Err(invalid());
+        }
+        let outcome = self.publish(acquisition, checked_at)?;
+        Ok(ManifestSyncReport::Updated {
+            version: outcome.version,
+            record_count: outcome.definition_count,
+            skipped: outcome.skipped_count,
         })
     }
 }
@@ -680,6 +740,145 @@ mod tests {
                 gateway.queue(outcome);
             }
             ManifestService::new(gateway, repository)
+        }
+
+        fn committed_repository() -> InMemoryDefinitionRepository {
+            let mut repository = seeded_repository();
+            repository
+                .replace_definitions(destiny_core::DefinitionReplacementInput {
+                    definitions: destiny_core::ManifestDefinitions {
+                        version: DefinitionVersion::new("manifest-prior"),
+                        definitions: vec![item_definition(7, "prior", "manifest-prior")],
+                    },
+                    checked_at: CHECKED_AT,
+                    source: SourceMarker::Manifest,
+                })
+                .unwrap();
+            repository
+        }
+
+        #[test]
+        fn sync_unchanged_skips_component_and_preserves_metadata() {
+            let repository = committed_repository();
+            let metadata = repository.current_metadata().unwrap();
+            let mut gateway = QueuedManifestGateway::new();
+            gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                version: DefinitionVersion::new("manifest-prior"),
+                component_path: "unused".into(),
+            }));
+            let mut service = ManifestService::new(gateway, repository);
+            assert_eq!(
+                service.sync(Timestamp::new(2_000)).unwrap(),
+                crate::manifest::ManifestSyncReport::Unchanged {
+                    version: DefinitionVersion::new("manifest-prior"),
+                    record_count: 1,
+                }
+            );
+            assert_eq!(service.gateway().index_calls(), 1);
+            assert_eq!(service.gateway().component_calls(), 0);
+            assert_eq!(service.repository().publication_attempts(), 1);
+            assert_eq!(service.repository().current_metadata().unwrap(), metadata);
+            assert_prior_state(service.repository());
+        }
+
+        #[test]
+        fn sync_changed_and_empty_stores_download_and_report_counts_without_names() {
+            for repository in [
+                committed_repository(),
+                InMemoryDefinitionRepository::default(),
+            ] {
+                let mut batch = acquisition(
+                    VERSION,
+                    vec![candidate(42, "item-name-sentinel"), candidate(43, " ")],
+                );
+                batch.skipped_count = 2;
+                let mut service = queued_service([Ok(batch)], repository);
+                let report = service.sync(CHECKED_AT).unwrap();
+                assert_eq!(
+                    report,
+                    crate::manifest::ManifestSyncReport::Updated {
+                        version: DefinitionVersion::new(VERSION),
+                        record_count: 1,
+                        skipped: 3,
+                    }
+                );
+                assert!(!format!("{report:?}").contains("item-name-sentinel"));
+                assert!(!format!("{report:?}").contains("common/destiny2_content"));
+                assert_eq!(service.gateway().index_calls(), 1);
+                assert_eq!(service.gateway().component_calls(), 1);
+                assert_eq!(service.repository().definition_count(), 1);
+                assert_eq!(
+                    service
+                        .repository()
+                        .current_definition_version()
+                        .unwrap()
+                        .as_str(),
+                    VERSION
+                );
+            }
+        }
+
+        #[test]
+        fn sync_index_and_component_failures_leave_catalog_and_metadata_intact() {
+            for component_failure in [false, true] {
+                let repository = committed_repository();
+                let metadata = repository.current_metadata().unwrap();
+                let mut gateway = QueuedManifestGateway::new();
+                let error = AppError::new(ErrorCategory::ProviderUnavailable);
+                if component_failure {
+                    gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                        version: DefinitionVersion::new(VERSION),
+                        component_path: "unused".into(),
+                    }));
+                    gateway.queue_component(Err(error));
+                } else {
+                    gateway.queue_index(Err(error));
+                }
+                let mut service = ManifestService::new(gateway, repository);
+                assert_eq!(service.sync(CHECKED_AT), Err(error));
+                assert_eq!(
+                    service.gateway().component_calls(),
+                    usize::from(component_failure)
+                );
+                assert_eq!(service.repository().publication_attempts(), 1);
+                assert_eq!(service.repository().current_metadata().unwrap(), metadata);
+                assert_prior_state(service.repository());
+            }
+        }
+
+        #[test]
+        fn sync_metadata_read_failure_is_not_an_empty_store() {
+            let repository = committed_repository()
+                .with_metadata_failure(AppError::new(ErrorCategory::LocalStorage));
+            let mut service = queued_service(
+                [Ok(acquisition(VERSION, vec![candidate(42, "Gamma")]))],
+                repository,
+            );
+            assert_eq!(
+                service.sync(CHECKED_AT).unwrap_err().category(),
+                ErrorCategory::LocalStorage
+            );
+            assert_eq!(service.gateway().component_calls(), 0);
+            assert_eq!(service.repository().publication_attempts(), 1);
+            assert_prior_state(service.repository());
+        }
+
+        #[test]
+        fn sync_rejects_component_version_that_disagrees_with_index() {
+            let mut gateway = QueuedManifestGateway::new();
+            gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                version: DefinitionVersion::new("other-version"),
+                component_path: "unused".into(),
+            }));
+            gateway.queue_component(Ok(acquisition(VERSION, vec![candidate(42, "Gamma")])));
+            let mut service = ManifestService::new(gateway, committed_repository());
+            let metadata = service.repository().current_metadata().unwrap();
+            assert_eq!(
+                service.sync(CHECKED_AT).unwrap_err().category(),
+                ErrorCategory::ProviderValidation
+            );
+            assert_eq!(service.repository().current_metadata().unwrap(), metadata);
+            assert_prior_state(service.repository());
         }
 
         #[test]

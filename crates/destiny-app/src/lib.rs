@@ -28,6 +28,7 @@ pub use config::{
 // through this crate. This block is the smallest additive surface that lets the
 // presentation layer implement that translation and lets its binary composition
 // root load a credential; it adds no behavior and no new abstraction.
+pub use destiny_core::ports::{DefinitionCatalogRepository, ManifestIndex};
 pub use destiny_core::{
     AccessCredential, AccessCredentialMetadata, AppError, BucketHash, Character, CharacterId,
     CharacterListResult, Clock, CredentialMaterial, CredentialSource, CredentialStore, Dataset,
@@ -44,7 +45,8 @@ pub use destiny_core::{
     SyncRevision, Timestamp, TokenRefresh, TransferGateway, TransferOutcome, TransferRejection,
     TransferRequest,
 };
-pub use manifest::{ManifestService, normalize_manifest};
+pub use destiny_core::{ManifestAcquisition, ManifestGateway};
+pub use manifest::{ManifestService, ManifestSyncReport, normalize_manifest};
 pub use mutation::{
     ExecutionAuthorization, ExecutionFailure, IncompleteExecution, MoveExecutionOutcome,
     MutationError, MutationService, VerificationFailure, VerificationFailureReason,
