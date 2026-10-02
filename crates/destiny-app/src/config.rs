@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use destiny_core::{AppError, DefinitionVersion, FreshnessPolicy};
 use url::Url;
 
+mod file;
+
 const API_KEY: &str = "BUNGIE_API_KEY";
 const CLIENT_ID: &str = "BUNGIE_PUBLIC_CLIENT_ID";
 const CALLBACK_URI: &str = "BUNGIE_CALLBACK_URI";
@@ -124,6 +126,8 @@ pub(crate) struct Config {
 
 #[allow(dead_code)]
 impl Config {
+    /// Loads the exact required keys from the environment, falling back per key
+    /// to the per-user configuration file. Present environment values win.
     pub fn from_env() -> Result<Self, AppError> {
         let values =
             exact_env_values(&[API_KEY, CLIENT_ID, CALLBACK_URI, REGISTERED_CALLBACK_URI])?;
@@ -219,12 +223,12 @@ pub struct LoginRuntimeConfig {
 }
 
 impl LoginRuntimeConfig {
-    /// Loads the login configuration from the process environment.
+    /// Loads login configuration from the environment and per-user file.
     ///
-    /// Only the exact required keys are read; unrelated process variables are
-    /// never inspected or retained, and a required value that is not valid
-    /// Unicode fails closed with the sanitized configuration category instead of
-    /// panicking.
+    /// Present process values win per key; absent keys fall back to the file.
+    /// Only the exact required keys are retained, apart from the environment
+    /// variables used to resolve the file path. Invalid Unicode and malformed
+    /// or insecure files fail closed with a sanitized configuration error.
     pub fn from_env() -> Result<Self, AppError> {
         let values = exact_env_values(&[CLIENT_ID, CALLBACK_URI, REGISTERED_CALLBACK_URI])?;
         Self::from_values(&values)
@@ -280,14 +284,27 @@ fn required(values: &HashMap<String, String>, name: &str) -> Result<String, AppE
     }
 }
 
-/// Reads exactly the named environment variables, and nothing else.
+/// Reads named configuration keys with process environment precedence per key.
 ///
-/// Unlike a bulk `std::env::vars()` snapshot this never reads, retains, or
-/// even inspects unrelated process variables, and it does not panic on a
-/// variable whose value is not valid Unicode: an unreadable required value
-/// becomes the sanitized configuration failure instead.
+/// The bounded per-user file supplies absent keys. Only path-selection variables
+/// and requested process keys are inspected; invalid Unicode fails sanitized.
 fn exact_env_values(names: &[&str]) -> Result<HashMap<String, String>, AppError> {
-    exact_key_values(names, |name| std::env::var_os(name))
+    exact_source_values(names, |name| std::env::var_os(name))
+}
+
+/// Composes file fallback with an injected environment lookup for deterministic
+/// tests. The parsed map remains private and is never rendered in diagnostics.
+fn exact_source_values<F>(
+    names: &[&str],
+    mut lookup: F,
+) -> Result<HashMap<String, String>, AppError>
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
+    let values = file::load(file::resolve_path(&mut lookup))?;
+    exact_key_values(names, |name| {
+        lookup(name).or_else(|| values.get(name).map(OsString::from))
+    })
 }
 
 /// The testable core of [`exact_env_values`] over an injected key lookup.
@@ -363,12 +380,12 @@ pub struct ReadRuntimeConfig {
 }
 
 impl ReadRuntimeConfig {
-    /// Loads the shared read runtime configuration from the process environment.
+    /// Loads shared read configuration from the environment and per-user file.
     ///
-    /// Only the exact required keys are read; unrelated process variables are
-    /// never inspected or retained, and a required value that is not valid
-    /// Unicode fails closed with the sanitized configuration category instead
-    /// of panicking.
+    /// Present process values win per key; absent keys fall back to the file.
+    /// Only the exact required keys are retained, apart from the environment
+    /// variables used to resolve the file path. Invalid Unicode and malformed
+    /// or insecure files fail closed with a sanitized configuration error.
     pub fn from_env() -> Result<Self, AppError> {
         let values = exact_env_values(&[
             API_KEY,
