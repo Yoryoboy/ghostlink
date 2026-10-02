@@ -48,8 +48,12 @@ pub use destiny_core::{
     SyncRevision, Timestamp, TokenRefresh, TransferGateway, TransferOutcome, TransferRejection,
     TransferRequest,
 };
+pub use destiny_core::{
+    ActivityDefinition, ActivityModifierDefinition, MilestoneDefinition, PublicMilestone,
+    PublicMilestoneActivity, PublicMilestonesGateway, PublicMilestonesSnapshot,
+    WorldDefinitionTable, WorldDefinitionsAcquisition,
+};
 pub use destiny_core::{ManifestAcquisition, ManifestDefinitions, ManifestGateway};
-pub use destiny_core::{PublicMilestonesGateway, PublicMilestonesSnapshot};
 pub use manifest::{ManifestService, ManifestSyncReport, normalize_manifest};
 pub use mutation::{
     ExecutionAuthorization, ExecutionFailure, IncompleteExecution, MoveExecutionOutcome,

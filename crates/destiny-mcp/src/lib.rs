@@ -1,7 +1,7 @@
 //! MCP-facing contracts and stdio server for the Destiny semantic tools.
 //!
 //! This crate owns the Model Context Protocol presentation for
-//! `list_characters`, `search_inventory`, `inspect_item`, and the single
+//! `list_characters`, `search_inventory`, `inspect_item`, `weekly_reset`, and the single
 //! intent-authorized `move_item` mutation. It translates MCP inputs and outputs
 //! against the shared application read and mutation services and keeps every
 //! official SDK type (`rmcp`) inside this crate, so the application and core
@@ -43,12 +43,17 @@ pub use schema::{
     VerificationFailureReasonView, VerificationFailureView, move_item_tool, structured_result,
     tool_specs,
 };
+pub use schema::{
+    WEEKLY_RESET_TOOL, WeeklyActivityView, WeeklyMilestoneView, WeeklyModifierView,
+    WeeklyResetArgs, WeeklyResetOutput,
+};
 pub use server::ReadToolServer;
 pub use service::{
     ComposedMutationService, InventoryReadService, ListCharactersRequest, MoveItemRequest,
     MutationToolService, QueryReadService, inspect_item_output, list_characters_output,
     move_item_output, search_inventory_output,
 };
+pub use service::{WeeklyReadService, weekly_reset_output};
 
 #[cfg(test)]
 mod tests {

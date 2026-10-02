@@ -16,13 +16,13 @@ fn validate_text(name: &str, description: &str) -> Result<(), AppError> {
 }
 
 macro_rules! definition {
-    ($kind:ident $(, $field:ident)*) => {
+    ($kind:ident $(, $field:ident: $type:ty)*) => {
         #[derive(Clone, Eq, PartialEq)]
         pub struct $kind {
             hash: u32,
             name: String,
             description: String,
-            $($field: u32,)*
+            $($field: $type,)*
         }
         impl std::fmt::Debug for $kind {
             fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -34,19 +34,19 @@ macro_rules! definition {
             }
         }
         impl $kind {
-            pub fn new(hash: u32, name: String, description: String $(, $field: u32)*) -> Result<Self, AppError> {
+            pub fn new(hash: u32, name: String, description: String $(, $field: $type)*) -> Result<Self, AppError> {
                 validate_text(&name, &description)?;
                 Ok(Self { hash, name, description, $($field,)* })
             }
             pub const fn hash(&self) -> u32 { self.hash }
             pub fn name(&self) -> &str { &self.name }
             pub fn description(&self) -> &str { &self.description }
-            $(pub const fn $field(&self) -> u32 { self.$field })*
+            $(pub const fn $field(&self) -> $type { self.$field })*
         }
     };
 }
-definition!(MilestoneDefinition, milestone_type);
-definition!(ActivityDefinition, activity_type_hash, light_level);
+definition!(MilestoneDefinition, milestone_type: u32);
+definition!(ActivityDefinition, activity_type_hash: u32, light_level: i32);
 definition!(ActivityModifierDefinition);
 
 /// One component's accepted definitions and omitted blank/redacted records.

@@ -293,7 +293,7 @@ CREATE TABLE activity_definitions (
     name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 256),
     description TEXT NOT NULL CHECK (length(description) <= 2048),
     activity_type_hash INTEGER NOT NULL CHECK (typeof(activity_type_hash) = 'integer' AND activity_type_hash BETWEEN 0 AND 4294967295),
-    light_level INTEGER NOT NULL CHECK (typeof(light_level) = 'integer' AND light_level BETWEEN 0 AND 4294967295),
+    light_level INTEGER NOT NULL CHECK (typeof(light_level) = 'integer' AND light_level BETWEEN -2147483648 AND 2147483647),
     definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128)
 ) STRICT;
 CREATE TABLE activity_modifier_definitions (

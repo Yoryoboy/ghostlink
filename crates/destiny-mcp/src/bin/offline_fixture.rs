@@ -160,7 +160,87 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         PlanLifetime::MAX,
     );
 
+    let read_service = destiny_mcp::service::WeeklyReadService::new(
+        destiny_app::weekly_reset::WeeklyResetService::new(PublicGateway, weekly_repository()),
+        read_service,
+        |t| destiny_adapters::format_reset_timestamp(t, false),
+    );
     ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
+}
+
+struct PublicGateway;
+
+impl destiny_app::PublicMilestonesGateway for PublicGateway {
+    fn load_public_milestones(
+        &mut self,
+    ) -> Result<destiny_app::PublicMilestonesSnapshot, AppError> {
+        Ok(destiny_app::PublicMilestonesSnapshot {
+            milestones: vec![destiny_app::PublicMilestone {
+                milestone_hash: 1,
+                order: 0,
+                start: Some(Timestamp::new(0)),
+                end: None,
+                activities: vec![destiny_app::PublicMilestoneActivity {
+                    activity_hash: 2,
+                    modifier_hashes: vec![99, 3],
+                }],
+            }],
+        })
+    }
+}
+
+fn weekly_repository() -> InMemoryDefinitionRepository {
+    use destiny_app::{
+        ActivityDefinition, ActivityModifierDefinition, DefinitionReplacementInput,
+        ManifestDefinitions, MilestoneDefinition, WorldDefinitionRepository, WorldDefinitionTable,
+        WorldDefinitionsAcquisition,
+    };
+    let mut repository = InMemoryDefinitionRepository::default();
+    if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("definitions-unavailable") {
+        return repository;
+    }
+    let version = DefinitionVersion::new(DEFINITION_VERSION);
+    repository
+        .publish_manifest(
+            DefinitionReplacementInput {
+                definitions: ManifestDefinitions {
+                    version: version.clone(),
+                    definitions: fixture_definitions(),
+                },
+                checked_at: NOW,
+                source: SourceMarker::Manifest,
+            },
+            WorldDefinitionsAcquisition {
+                version,
+                milestones: WorldDefinitionTable {
+                    definitions: vec![
+                        MilestoneDefinition::new(
+                            1,
+                            "Weekly raid".into(),
+                            "Public rotation".into(),
+                            0,
+                        )
+                        .unwrap(),
+                    ],
+                    skipped_count: 0,
+                },
+                activities: WorldDefinitionTable {
+                    definitions: vec![
+                        ActivityDefinition::new(2, "Raid".into(), "Activity".into(), 0, 0).unwrap(),
+                    ],
+                    skipped_count: 0,
+                },
+                modifiers: WorldDefinitionTable {
+                    definitions: vec![
+                        ActivityModifierDefinition::new(3, "Modifier".into(), "{var:42}".into())
+                            .unwrap(),
+                    ],
+                    skipped_count: 0,
+                },
+            },
+        )
+        .unwrap();
+    repository
 }
 
 /// The mutable provider world shared by the profile and transfer gateways.

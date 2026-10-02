@@ -8,6 +8,18 @@ use serde::{
 };
 use std::{collections::HashSet, fmt};
 
+/// Formats a public reset instant in UTC without exposing provider payloads.
+/// Unrepresentable domain timestamps are returned as `None`.
+pub fn format_reset_timestamp(timestamp: Timestamp, human: bool) -> Option<String> {
+    let seconds = i64::try_from(timestamp.seconds()).ok()?;
+    let date = chrono::DateTime::from_timestamp(seconds, 0)?;
+    Some(if human {
+        date.format("%Y-%m-%d %H:%MZ").to_string()
+    } else {
+        date.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    })
+}
+
 fn invalid() -> AppError {
     AppError::new(destiny_core::ErrorCategory::ProviderValidation)
 }
