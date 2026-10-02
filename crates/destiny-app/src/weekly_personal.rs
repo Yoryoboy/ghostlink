@@ -48,6 +48,8 @@ pub struct PhaseProgress {
 pub struct PersonalActivity {
     pub hash: u32,
     pub definition: DefinitionResolution,
+    /// Absent when the activity itself is unresolved; never invent a type hash.
+    pub activity_type_hash: Option<u32>,
     pub activity_type: DefinitionResolution,
     pub rewards: Vec<PersonalReward>,
     pub modifiers: Vec<WeeklyModifier>,
@@ -77,8 +79,9 @@ impl std::fmt::Debug for PersonalGroup {
 
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct WeeklyRotators {
-    pub expedition: Option<String>,
-    pub override_activity: Option<String>,
+    /// Exact classified variants; presentation must not re-select from raw inputs.
+    pub expedition: Option<PersonalGroup>,
+    pub override_activity: Option<PersonalGroup>,
 }
 
 impl std::fmt::Debug for WeeklyRotators {
@@ -96,6 +99,8 @@ pub struct PersonalMilestone {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WeeklyPersonal {
     pub definition_version: DefinitionVersion,
+    /// Number of character/public input observations with missing activity or type definitions.
+    pub unclassified_unresolved: usize,
     /// Type-adjacent groups of roots whose visible reward is exactly Weekly Reward.
     pub newest: Vec<PersonalGroup>,
     pub featured_raids: Vec<PersonalGroup>,
@@ -107,6 +112,20 @@ pub struct WeeklyPersonal {
     pub character_activities: Vec<PersonalActivity>,
     pub public_activities: Vec<PersonalActivity>,
     pub milestones: Vec<PersonalMilestone>,
+}
+
+/// Counts observations, not unique hashes: each source input contributes at most one.
+pub fn count_unclassified_unresolved(
+    character: &[PersonalActivity],
+    public: &[PersonalActivity],
+) -> usize {
+    character
+        .iter()
+        .chain(public)
+        .filter(|activity| {
+            name(&activity.definition).is_none() || name(&activity.activity_type).is_none()
+        })
+        .count()
 }
 
 fn name(definition: &DefinitionResolution) -> Option<&str> {
@@ -253,9 +272,10 @@ pub fn classify_grandmaster(character: &[PersonalActivity]) -> Option<PersonalAc
 /// Reclaim deliberately has no rule: its signal has not been established.
 pub fn classify_rotators(character: &[PersonalActivity]) -> WeeklyRotators {
     let single = |prefix: &str| {
-        let mut roots = Vec::new();
+        let mut roots: Vec<PersonalGroup> = Vec::new();
         for activity in character {
             if let Some(display) = name(&activity.definition)
+                && name(&activity.activity_type).is_some()
                 && display.starts_with(prefix)
             {
                 let root = display
@@ -264,8 +284,17 @@ pub fn classify_rotators(character: &[PersonalActivity]) -> WeeklyRotators {
                     .unwrap_or(display)
                     .trim()
                     .to_owned();
-                if !roots.contains(&root) {
-                    roots.push(root);
+                if let Some(group) = roots.iter_mut().find(|group| group.root_name == root) {
+                    group.activities.push(activity.clone());
+                } else {
+                    roots.push(PersonalGroup {
+                        root_name: root,
+                        activity_type_name: name(&activity.activity_type)
+                            .expect("resolved type checked above")
+                            .into(),
+                        activities: vec![activity.clone()],
+                        reward_names: Vec::new(),
+                    });
                 }
             }
         }
@@ -419,6 +448,10 @@ impl<P: PublicMilestonesGateway, G: WeeklyProfileGateway, R: WorldDefinitionRepo
         let newest = classify_newest(&character_activities);
         Ok(WeeklyPersonal {
             definition_version: metadata.definition_version,
+            unclassified_unresolved: count_unclassified_unresolved(
+                &character_activities,
+                &public_activities,
+            ),
             featured_raids: classify_featured_raids(&public_activities, &newest),
             featured_dungeons: classify_featured_dungeons(&character_activities, &newest),
             grandmaster_alert: classify_grandmaster(&character_activities),
@@ -468,6 +501,7 @@ impl<P: PublicMilestonesGateway, G: WeeklyProfileGateway, R: WorldDefinitionRepo
         }
         Ok(PersonalActivity {
             hash,
+            activity_type_hash: definition.as_ref().map(|d| d.activity_type_hash()),
             definition: definition.map_or(DefinitionResolution::Unresolved, |d| {
                 resolved(d.name(), d.description())
             }),
@@ -555,6 +589,7 @@ mod tests {
     fn activity(hash: u32, name: &str, kind: &str) -> PersonalActivity {
         PersonalActivity {
             hash,
+            activity_type_hash: Some(30),
             definition: resolved(name, ""),
             activity_type: resolved(kind, ""),
             rewards: vec![],
@@ -567,6 +602,25 @@ mod tests {
             has_challenge: true,
         }
     }
+    #[test]
+    fn unresolved_count_counts_each_input_once_for_missing_name_or_type() {
+        let known = activity(1, "Known", "Raid");
+        let mut missing_name = known.clone();
+        missing_name.definition = DefinitionResolution::Unresolved;
+        let mut missing_type = known.clone();
+        missing_type.activity_type = DefinitionResolution::Unresolved;
+        let mut missing_both = missing_name.clone();
+        missing_both.activity_type = DefinitionResolution::Unresolved;
+        assert_eq!(
+            count_unclassified_unresolved(std::slice::from_ref(&known), &[]),
+            0
+        );
+        assert_eq!(
+            count_unclassified_unresolved(&[missing_name, missing_both], &[known, missing_type]),
+            3
+        );
+    }
+
     fn reward(name: &str) -> PersonalReward {
         PersonalReward {
             hash: 99,
@@ -665,12 +719,40 @@ mod tests {
         let mut data = live_week();
         data.push(activity(15, "Expedition: Cosmodrome (Epic)", "Mission"));
         let result = classify_rotators(&data);
-        assert_eq!(result.expedition.as_deref(), Some("Expedition: Cosmodrome"));
         assert_eq!(
-            result.override_activity.as_deref(),
+            result
+                .expedition
+                .as_ref()
+                .map(|group| group.root_name.as_str()),
+            Some("Expedition: Cosmodrome")
+        );
+        assert_eq!(
+            result
+                .override_activity
+                .as_ref()
+                .map(|group| group.root_name.as_str()),
             Some("Override: Europa")
         );
     }
+    #[test]
+    fn rotators_with_unresolved_activity_types_are_not_classified() {
+        let mut expedition = activity(1, "Expedition: Europa", "Mission");
+        expedition.activity_type = DefinitionResolution::Unresolved;
+        assert_eq!(classify_rotators(&[expedition]), WeeklyRotators::default());
+    }
+
+    #[test]
+    fn rotators_carry_only_classified_variants_in_input_order() {
+        let standard = activity(1, "Expedition: Europa", "Mission");
+        let mut unresolved = activity(2, "Expedition: Europa (Unknown)", "Mission");
+        unresolved.activity_type = DefinitionResolution::Unresolved;
+        let epic = activity(3, "Expedition: Europa (Epic)", "Mission");
+        let inputs = vec![standard.clone(), unresolved, epic.clone()];
+        let result = classify_rotators(&inputs);
+        assert_eq!(result.expedition.unwrap().activities, vec![standard, epic]);
+        assert_eq!(count_unclassified_unresolved(&inputs, &[]), 1);
+    }
+
     #[test]
     fn rotators_two_expedition_roots_are_omitted() {
         let mut data = live_week();
@@ -1140,6 +1222,8 @@ mod tests {
             .challenge_objective_hashes = vec![999];
         let result = service.weekly(&character()).unwrap();
         assert!(result.newest.is_empty());
+        assert_eq!(result.unclassified_unresolved, 1);
+        assert_eq!(result.character_activities[1].activity_type_hash, None);
         let activity = &result.character_activities[0];
         assert_eq!(activity.rewards.len(), 1);
         assert_eq!(activity.rewards[0].hash, 999);

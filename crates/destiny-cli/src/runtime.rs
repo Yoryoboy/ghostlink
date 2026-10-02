@@ -274,7 +274,14 @@ where
     F: ReadFoundations,
 {
     let config = foundations.config()?;
-    let source = foundations.credential_source(&config)?;
+    compose_configured(foundations, &config)
+}
+
+fn compose_configured<F: ReadFoundations>(
+    foundations: &mut F,
+    config: &ReadRuntimeConfig,
+) -> Result<ReadRuntime<ComposedReadService<F>>, AppError> {
+    let source = foundations.credential_source(config)?;
     let clock = foundations.clock()?;
     // Exactly one reading supplies the freshness evaluation time; the shared
     // services own the skip/refresh decision against it.
@@ -288,7 +295,7 @@ where
         api_key,
         config.definition_version().clone(),
     )?;
-    let repository = foundations.store(&config)?;
+    let repository = foundations.store(config)?;
     let service = QueryService::new(ProfileSyncService::new(gateway, repository));
     let freshness = ReadFreshness {
         policy: config.freshness_policy(),
@@ -384,6 +391,106 @@ impl<F: ManifestFoundations> WeeklyResetFactory for ComposingManifestFactory<F> 
             .weekly_reset()
             .map_err(CliError::from)
     }
+}
+
+/// Exact IDs take precedence over case-insensitive class selectors.
+/// Default to unique highest light; ties/missing light retain canonical first.
+pub fn select_weekly_character(
+    characters: &[destiny_app::Character],
+    selector: Option<&destiny_app::CharacterId>,
+) -> Result<destiny_app::Character, CliError> {
+    let first = characters.first().ok_or_else(CliError::invalid_request)?;
+    let Some(selector) = selector else {
+        let highest = characters
+            .iter()
+            .filter_map(|character| character.light)
+            .max();
+        let mut winners = characters
+            .iter()
+            .filter(|character| highest.is_some() && character.light == highest);
+        return Ok(match (winners.next(), winners.next()) {
+            (Some(winner), None) => winner.clone(),
+            _ => first.clone(),
+        });
+    };
+    let exact = characters.iter().any(|character| character.id == *selector);
+    let is_class = ["hunter", "titan", "warlock"]
+        .iter()
+        .any(|class| selector.as_str().eq_ignore_ascii_case(class));
+    let mut matches = characters.iter().filter(|character| {
+        if exact {
+            character.id == *selector
+        } else {
+            is_class
+                && character
+                    .class
+                    .as_deref()
+                    .is_some_and(|class| class.eq_ignore_ascii_case(selector.as_str()))
+        }
+    });
+    let selected = matches.next().ok_or_else(CliError::invalid_request)?;
+    if matches.next().is_some() {
+        return Err(CliError::from_category(ErrorCategory::AmbiguousMatch));
+    }
+    Ok(selected.clone())
+}
+
+/// Reuses authenticated read composition, including its configured refresh source.
+/// Definitions gate precedes even membership/inventory requests.
+pub fn compose_weekly<F, T>(
+    foundations: &mut F,
+    public_transport: T,
+    selector: Option<&destiny_app::CharacterId>,
+) -> Result<
+    (
+        destiny_app::Character,
+        destiny_app::weekly_personal::WeeklyPersonal,
+    ),
+    CliError,
+>
+where
+    F: ReadFoundations,
+    F::Repository: destiny_app::WorldDefinitionRepository,
+    T: destiny_adapters::manifest::ManifestTransport,
+{
+    use destiny_app::{DestinyMembership, WorldDefinitionRepository};
+    let config = foundations.config()?;
+    let runtime = compose_configured(foundations, &config)?;
+    let freshness = runtime.freshness;
+    let mut service = runtime.service;
+    let repository = service.repository();
+    if repository.current_metadata()?.is_none()
+        || repository.world_definition_counts()?.contains(&0)
+    {
+        return Err(CliError::from_category(
+            ErrorCategory::DefinitionsUnavailable,
+        ));
+    }
+    let characters = service.list_characters(freshness.policy, freshness.now)?;
+    let character = select_weekly_character(&characters.characters, selector)?;
+    let snapshot = service
+        .repository()
+        .load_current()?
+        .ok_or_else(|| CliError::from_category(ErrorCategory::LocalStorage))?;
+    let membership = DestinyMembership::new(
+        snapshot.metadata.membership_type,
+        snapshot.metadata.membership_id,
+    )?;
+    let (gateway, repository) = service.into_sync().into_parts();
+    let public_key =
+        destiny_adapters::manifest::ManifestApiKey::new(config.api_key().expose_secret())?;
+    let public = destiny_adapters::manifest::BungieManifestGateway::new(
+        public_key,
+        public_transport,
+        destiny_adapters::SystemClock::new(),
+    );
+    let weekly =
+        destiny_app::weekly_personal::WeeklyPersonalService::new(public, gateway, repository)
+            .weekly(&destiny_app::weekly_personal::WeeklyCharacter {
+                membership,
+                character_id: character.id.clone(),
+            })?;
+    Ok((character, weekly))
 }
 
 #[cfg(test)]
@@ -695,6 +802,250 @@ mod tests {
         }
         fn store(&mut self, config: &ReadRuntimeConfig) -> Result<Self::Repository, AppError> {
             self.inner.store(config)
+        }
+    }
+
+    fn weekly_character(id: &str) -> destiny_app::Character {
+        destiny_app::Character {
+            id: destiny_app::CharacterId::new(id),
+            name: None,
+            class: Some("Hunter".into()),
+            race: None,
+            gender: None,
+            light: None,
+        }
+    }
+
+    #[test]
+    fn weekly_selection_missing_light_falls_back_and_unknown_ids_are_rejected() {
+        use super::select_weekly_character;
+        use destiny_app::CharacterId;
+        let characters = vec![weekly_character("123"), weekly_character("456")];
+        assert_eq!(
+            select_weekly_character(&characters, None).unwrap(),
+            characters[0]
+        );
+        assert_eq!(
+            select_weekly_character(&characters, Some(&CharacterId::new("456"))).unwrap(),
+            characters[1]
+        );
+        for id in [" 123", "unknown"] {
+            assert_eq!(
+                select_weekly_character(&characters, Some(&CharacterId::new(id)))
+                    .unwrap_err()
+                    .code(),
+                "invalid_request"
+            );
+        }
+        assert_eq!(
+            select_weekly_character(&[], None).unwrap_err().code(),
+            "invalid_request"
+        );
+        assert_eq!(
+            select_weekly_character(
+                &[characters[0].clone(), characters[0].clone()],
+                Some(&CharacterId::new("123"))
+            )
+            .unwrap_err()
+            .code(),
+            "ambiguous_match"
+        );
+    }
+
+    #[test]
+    fn weekly_default_uses_unique_highest_light_independent_of_order() {
+        let mut lower = weekly_character("123");
+        lower.light = Some(100);
+        let mut highest = weekly_character("456");
+        highest.light = Some(200);
+        for characters in [
+            vec![lower.clone(), highest.clone()],
+            vec![highest.clone(), lower.clone()],
+            vec![weekly_character("789"), highest.clone()],
+        ] {
+            assert_eq!(
+                super::select_weekly_character(&characters, None).unwrap(),
+                highest
+            );
+        }
+        lower.light = Some(200);
+        let characters = vec![weekly_character("789"), lower, highest];
+        assert_eq!(
+            super::select_weekly_character(&characters, None).unwrap(),
+            characters[0]
+        );
+    }
+
+    #[test]
+    fn weekly_class_selector_is_case_insensitive_unique_and_id_first() {
+        use destiny_app::CharacterId;
+        let hunter = weekly_character("123");
+        let mut titan = weekly_character("456");
+        titan.class = Some("Titan".into());
+        let mut warlock = weekly_character("789");
+        warlock.class = Some("Warlock".into());
+        let characters = vec![hunter.clone(), titan.clone(), warlock.clone()];
+        for (selector, expected) in [
+            ("hunter", &hunter),
+            ("HuNtEr", &hunter),
+            ("TITAN", &titan),
+            ("warlock", &warlock),
+            ("456", &titan),
+        ] {
+            assert_eq!(
+                super::select_weekly_character(&characters, Some(&CharacterId::new(selector)))
+                    .unwrap(),
+                *expected
+            );
+        }
+        let duplicate = vec![hunter.clone(), weekly_character("999")];
+        assert_eq!(
+            super::select_weekly_character(&duplicate, Some(&CharacterId::new("hunter")))
+                .unwrap_err()
+                .code(),
+            "ambiguous_match"
+        );
+        let mut exact = titan;
+        exact.id = CharacterId::new("hunter");
+        assert_eq!(
+            super::select_weekly_character(
+                &[hunter, exact.clone()],
+                Some(&CharacterId::new("hunter"))
+            )
+            .unwrap(),
+            exact
+        );
+    }
+
+    struct PersonalTransport {
+        calls: Rc<RefCell<Vec<&'static str>>>,
+    }
+    impl ProfileTransport for PersonalTransport {
+        fn get(
+            &mut self,
+            request: &ProfileHttpRequest<'_>,
+        ) -> Result<ProfileHttpResponse, ProfileTransportError> {
+            assert_eq!(
+                request.url(),
+                "https://www.bungie.net/Platform/Destiny2/3/Profile/999/Character/123/?components=202,204"
+            );
+            self.calls.borrow_mut().push("character-weekly");
+            Ok(ProfileHttpResponse::new(200, None, Some("application/json".into()), Box::new(std::io::Cursor::new(br#"{"ErrorCode":1,"Response":{"progressions":{"data":{"milestones":{}}},"activities":{"data":{"availableActivities":[]}}}}"#.to_vec()))))
+        }
+    }
+    struct PersonalFoundations {
+        store: Option<SqliteStore>,
+        calls: Rc<RefCell<Vec<&'static str>>>,
+        missing_login: bool,
+    }
+    impl ReadFoundations for PersonalFoundations {
+        type Source = destiny_app::StaticCredentialSource;
+        type Transport = PersonalTransport;
+        type Clock = ScriptedClock;
+        type Repository = SqliteStore;
+        fn config(&mut self) -> Result<ReadRuntimeConfig, AppError> {
+            Ok(config())
+        }
+        fn credential_source(&mut self, _: &ReadRuntimeConfig) -> Result<Self::Source, AppError> {
+            if self.missing_login {
+                return Err(AppError::new(ErrorCategory::AuthorizationRequired));
+            }
+            Ok(destiny_app::StaticCredentialSource::new(credential()))
+        }
+        fn clock(&mut self) -> Result<Self::Clock, AppError> {
+            Ok(ScriptedClock {
+                now: Ok(NOW),
+                log: Rc::clone(&self.calls),
+            })
+        }
+        fn transport(&mut self) -> Result<Self::Transport, AppError> {
+            Ok(PersonalTransport {
+                calls: Rc::clone(&self.calls),
+            })
+        }
+        fn store(&mut self, _: &ReadRuntimeConfig) -> Result<Self::Repository, AppError> {
+            Ok(self.store.take().unwrap())
+        }
+    }
+
+    #[test]
+    fn personal_composition_gates_providers_and_reuses_authenticated_sqlite_projection() {
+        use destiny_app::{InventoryRepository, ManifestGateway, WorldDefinitionRepository};
+        for (populated, missing_login) in [(false, false), (true, false), (true, true)] {
+            let mut store = SqliteStore::open_in_memory().unwrap();
+            if populated {
+                let mut gateway = destiny_adapters::manifest::BungieManifestGateway::new(
+                    destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL).unwrap(),
+                    ManifestTransport,
+                    ScriptedClock {
+                        now: Ok(NOW),
+                        log: log(),
+                    },
+                );
+                let index = gateway.fetch_index().unwrap();
+                let world = gateway.load_world_components(&index).unwrap();
+                store
+                    .publish_manifest(
+                        destiny_app::DefinitionReplacementInput {
+                            definitions: destiny_app::ManifestDefinitions {
+                                version: destiny_app::DefinitionVersion::new("v1"),
+                                definitions: vec![destiny_app::ItemDefinition {
+                                    hash: destiny_app::ItemHash::new(1),
+                                    bucket_hash: None,
+                                    name: "Item".into(),
+                                    item_type: None,
+                                    tier: None,
+                                    element: None,
+                                    tags: Vec::new(),
+                                    version: destiny_app::DefinitionVersion::new("v1"),
+                                }],
+                            },
+                            checked_at: NOW,
+                            source: destiny_app::SourceMarker::Manifest,
+                        },
+                        world,
+                    )
+                    .unwrap();
+                store
+                    .replace_current(destiny_app::InventorySnapshotInput {
+                        membership_id: destiny_app::MembershipId::new("999"),
+                        membership_type: destiny_app::MembershipType::new(3),
+                        checked_at: NOW,
+                        source: destiny_app::SourceMarker::Profile,
+                        definition_version: destiny_app::DefinitionVersion::new("v1"),
+                        characters: vec![weekly_character("123")],
+                        items: Vec::new(),
+                    })
+                    .unwrap();
+            }
+            let calls = log();
+            let mut foundations = PersonalFoundations {
+                store: Some(store),
+                calls: Rc::clone(&calls),
+                missing_login,
+            };
+            let result = super::compose_weekly(
+                &mut foundations,
+                WeeklyTransport {
+                    calls: Rc::clone(&calls),
+                },
+                None,
+            );
+            if missing_login {
+                assert_eq!(result.unwrap_err().code(), "authorization_required");
+            } else if populated {
+                let (character, weekly) = result.unwrap();
+                assert_eq!(character.id.as_str(), "123");
+                assert_eq!(weekly.definition_version.as_str(), "v1");
+                assert_eq!(
+                    &*calls.borrow(),
+                    &["now", "milestones", "now", "character-weekly"]
+                );
+            } else {
+                assert_eq!(result.unwrap_err().code(), "definitions_unavailable");
+                assert!(!calls.borrow().contains(&"milestones"));
+                assert!(!calls.borrow().contains(&"character-weekly"));
+            }
         }
     }
 

@@ -81,6 +81,7 @@ impl Cli {
             // unsupported-operation outcome instead of guessing at a read.
             Command::SyncManifest
             | Command::WeeklyReset
+            | Command::Weekly(_)
             | Command::Login(_)
             | Command::Callback(_) => {
                 Err(CliError::from_category(ErrorCategory::UnsupportedOperation))
@@ -99,6 +100,10 @@ pub enum Command {
     /// Show the public weekly reset using stored Manifest definitions.
     #[command(name = "weekly-reset")]
     WeeklyReset,
+
+    /// Show reliable weekly content and progress for one character.
+    #[command(name = "weekly")]
+    Weekly(WeeklyArgs),
 
     /// List the characters in the current profile projection.
     #[command(name = "list-characters")]
@@ -307,6 +312,27 @@ impl SearchInventoryArgs {
         };
         query.validate().map_err(|_| CliError::invalid_request())?;
         Ok(Some(query))
+    }
+}
+
+/// Weekly accepts opaque IDs and uniquely matched character classes.
+#[derive(Debug, Args)]
+pub struct WeeklyArgs {
+    /// Exact ID or hunter|titan|warlock (case-insensitive, unique class).
+    /// Defaults to strictly highest light; ties or missing light use deterministic first.
+    #[arg(long, value_name = "ID_OR_CLASS")]
+    pub character: Option<String>,
+}
+
+impl WeeklyArgs {
+    pub fn character_id(&self) -> Result<Option<CharacterId>, CliError> {
+        self.character
+            .as_deref()
+            .map(|value| {
+                validate_identity(value)?;
+                Ok(CharacterId::new(value))
+            })
+            .transpose()
     }
 }
 
@@ -654,6 +680,45 @@ mod tests {
             ReadRequest::SearchInventory(request) => request,
             other => panic!("expected a search request, found {other:?}"),
         }
+    }
+
+    #[test]
+    fn weekly_parses_exact_character_and_default() {
+        match parse(["weekly"]).command {
+            Command::Weekly(args) => assert_eq!(args.character_id().unwrap(), None),
+            _ => panic!("expected weekly"),
+        }
+        for selector in ["", " ", "id\nvalue"] {
+            match parse(["weekly", "--character", selector]).command {
+                Command::Weekly(args) => {
+                    assert_eq!(args.character_id().unwrap_err().code(), "invalid_request");
+                }
+                _ => panic!("expected weekly"),
+            }
+        }
+        let cli = parse(["weekly", "--character", "warlock", "--json"]);
+        assert_eq!(cli.output_mode(), OutputMode::Json);
+        match cli.command {
+            Command::Weekly(args) => assert_eq!(
+                args.character_id().unwrap(),
+                Some(destiny_app::CharacterId::new("warlock"))
+            ),
+            _ => panic!("expected weekly"),
+        }
+        let help = Cli::try_parse_from(["ghostlink", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            help.lines()
+                .any(|line| line.trim_start().starts_with("weekly "))
+        );
+        let help = Cli::try_parse_from(["ghostlink", "weekly", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("ID_OR_CLASS"));
+        assert!(help.contains("case-insensitive"));
+        assert!(help.contains("strictly highest light"));
+        assert!(help.contains("deterministic first"));
     }
 
     #[test]
