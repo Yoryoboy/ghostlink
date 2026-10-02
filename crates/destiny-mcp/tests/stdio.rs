@@ -274,6 +274,25 @@ async fn weekly_stdio_contract() {
         assert_eq!(response["result"]["isError"], false);
         assert_eq!(structured(&response)["kind"], "weekly");
         assert!(structured(&response)["unclassified_unresolved"].is_number());
+        let weekly = structured(&response);
+        assert!(weekly.get("newest").is_none());
+        assert!(weekly.get("portal_focus").is_none());
+        assert_eq!(weekly["override"]["root"], "Override: Europa");
+        assert_eq!(weekly["override"]["variants"].as_array().unwrap().len(), 2);
+        assert_eq!(weekly["expedition"]["root"], "Expedition: Cosmodrome");
+        assert_eq!(
+            weekly["vanguard_alerts"]["grandmaster"]["root"],
+            "The Disgraced"
+        );
+        assert_eq!(weekly["vanguard_alerts"]["crucible"][0]["root"], "Control");
+        assert_eq!(
+            weekly["vanguard_alerts"]["quickplay"][0]["reward_names"],
+            json!(["Gjallarhorn", "Fatebringer"])
+        );
+        assert_eq!(
+            weekly["vanguard_alerts"]["crucible"][0]["variants"][0]["challenges"][0]["progress"],
+            0
+        );
     }
     let rejected = session.call_tool("weekly", json!({"unknown": true})).await;
     assert_eq!(rejected["error"]["code"], -32602);

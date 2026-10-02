@@ -103,6 +103,10 @@ fn group<J: WeeklyJson>(g: &PersonalGroup) -> J::Value {
     J::object(vec![
         ("root", J::string(&g.root_name)),
         (
+            "reward_names",
+            J::array(g.reward_names.iter().map(|n| J::string(n)).collect()),
+        ),
+        (
             "activity_type",
             g.activities
                 .first()
@@ -145,15 +149,22 @@ pub fn weekly_projection<J: WeeklyJson>(
             "definition_version",
             J::string(weekly.definition_version.as_str()),
         ),
-        ("newest", groups::<J>(&weekly.newest)),
         ("featured_raids", groups::<J>(&weekly.featured_raids)),
         ("featured_dungeons", groups::<J>(&weekly.featured_dungeons)),
         (
-            "grandmaster_alert",
-            weekly
-                .grandmaster_alert
-                .as_ref()
-                .map_or_else(J::null, activity::<J>),
+            "vanguard_alerts",
+            J::object(vec![
+                (
+                    "grandmaster",
+                    weekly
+                        .vanguard_alerts
+                        .grandmaster
+                        .as_ref()
+                        .map_or_else(J::null, group::<J>),
+                ),
+                ("crucible", groups::<J>(&weekly.vanguard_alerts.crucible)),
+                ("quickplay", groups::<J>(&weekly.vanguard_alerts.quickplay)),
+            ]),
         ),
         (
             "expedition",
@@ -171,7 +182,6 @@ pub fn weekly_projection<J: WeeklyJson>(
                 .as_ref()
                 .map_or_else(J::null, group::<J>),
         ),
-        ("portal_focus", groups::<J>(&weekly.portal_focus)),
         (
             "milestones",
             J::array(

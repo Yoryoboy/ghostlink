@@ -58,15 +58,19 @@ fn weekly_cli_mcp_json_parity_on_the_same_fixture() {
     let weekly = WeeklyPersonal {
         definition_version: DefinitionVersion::new("v1"),
         unclassified_unresolved: 2,
-        newest: vec![group.clone()],
+        vanguard_alerts: VanguardAlerts {
+            grandmaster: Some(group.clone()),
+            crucible: vec![group.clone()],
+            quickplay: vec![group.clone()],
+        },
         featured_raids: vec![group.clone()],
         featured_dungeons: vec![group.clone()],
-        grandmaster_alert: Some(activity),
+
         weekly_rotators: WeeklyRotators {
             expedition: Some(group.clone()),
             override_activity: Some(group.clone()),
         },
-        portal_focus: vec![group],
+
         character_activities: vec![],
         public_activities: vec![],
         milestones: vec![PersonalMilestone {
@@ -79,8 +83,13 @@ fn weekly_cli_mcp_json_parity_on_the_same_fixture() {
     let mcp = destiny_mcp::service::weekly_output(&character, &weekly).unwrap();
     assert_eq!(cli, serde_json::to_value(mcp).unwrap());
     assert_eq!(
-        cli["newest"][0]["variants"][0]["name"],
+        cli["vanguard_alerts"]["grandmaster"]["variants"][0]["name"],
         serde_json::Value::Null
     );
-    assert_eq!(cli["newest"][0]["variants"][0]["hash"], 99);
+    assert_eq!(
+        cli["vanguard_alerts"]["grandmaster"]["variants"][0]["hash"],
+        99
+    );
+    assert!(cli.get("newest").is_none());
+    assert!(cli.get("portal_focus").is_none());
 }

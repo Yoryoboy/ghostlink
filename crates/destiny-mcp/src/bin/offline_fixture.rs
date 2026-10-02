@@ -189,7 +189,23 @@ impl destiny_app::WeeklyProfileGateway for PersonalGateway {
         Ok(destiny_app::CharacterWeeklySnapshot {
             character_id: character.clone(),
             milestones: vec![],
-            available_activities: vec![],
+            available_activities: (10..=16)
+                .map(|hash| destiny_app::AvailableActivity {
+                    activity_hash: hash,
+                    focused: false,
+                    completed_ever: false,
+                    recommended_light: Some(if hash == 10 { 400 } else { 300 }),
+                    difficulty_tier: None,
+                    modifier_hashes: vec![],
+                    challenges: vec![destiny_app::ChallengeProgress {
+                        objective_hash: 5,
+                        progress: 0,
+                        completion_value: 1,
+                        complete: false,
+                    }],
+                    visible_reward_item_hashes: vec![if hash == 13 { 2 } else { 1 }],
+                })
+                .collect(),
         })
     }
 }
@@ -250,6 +266,20 @@ fn weekly_repository() -> InMemoryDefinitionRepository {
                     definitions: vec![
                         destiny_app::ActivityTypeDefinition::new(4, "Raid".into(), "".into())
                             .unwrap(),
+                        destiny_app::ActivityTypeDefinition::new(6, "Mission".into(), "".into())
+                            .unwrap(),
+                        destiny_app::ActivityTypeDefinition::new(
+                            7,
+                            "The Crucible".into(),
+                            "".into(),
+                        )
+                        .unwrap(),
+                        destiny_app::ActivityTypeDefinition::new(
+                            8,
+                            "Vanguard Op".into(),
+                            "".into(),
+                        )
+                        .unwrap(),
                     ],
                     skipped_count: 0,
                 },
@@ -269,6 +299,38 @@ fn weekly_repository() -> InMemoryDefinitionRepository {
                 activities: WorldDefinitionTable {
                     definitions: vec![
                         ActivityDefinition::new(2, "Raid".into(), "Activity".into(), 0, 0).unwrap(),
+                        ActivityDefinition::new(10, "The Disgraced".into(), "".into(), 6, 0)
+                            .unwrap(),
+                        ActivityDefinition::new(11, "Control: Matchmade".into(), "".into(), 7, 0)
+                            .unwrap(),
+                        ActivityDefinition::new(12, "Quickplay: Matchmade".into(), "".into(), 8, 0)
+                            .unwrap(),
+                        ActivityDefinition::new(13, "Quickplay: Customize".into(), "".into(), 8, 0)
+                            .unwrap(),
+                        ActivityDefinition::new(
+                            14,
+                            "Override: Europa: Matchmade".into(),
+                            "".into(),
+                            6,
+                            0,
+                        )
+                        .unwrap(),
+                        ActivityDefinition::new(
+                            15,
+                            "Override: Europa: Customize".into(),
+                            "".into(),
+                            6,
+                            0,
+                        )
+                        .unwrap(),
+                        ActivityDefinition::new(
+                            16,
+                            "Expedition: Cosmodrome: Private".into(),
+                            "".into(),
+                            6,
+                            0,
+                        )
+                        .unwrap(),
                     ],
                     skipped_count: 0,
                 },

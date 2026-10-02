@@ -11,7 +11,9 @@ pub mod sync;
 pub mod weekly_personal;
 pub mod weekly_projection;
 pub mod weekly_selection;
-pub use destiny_core::{CharacterWeeklySnapshot, WeeklyProfileGateway};
+pub use destiny_core::{
+    AvailableActivity, ChallengeProgress, CharacterWeeklySnapshot, WeeklyProfileGateway,
+};
 pub mod weekly_reset;
 
 #[cfg(feature = "test-support")]
@@ -68,8 +70,8 @@ pub use session::{ConfiguredCredentialSource, RefreshingCredentialSource};
 pub use sync::ProfileSyncService;
 pub use weekly_personal::{
     PersonalActivity, PersonalChallenge, PersonalGroup, PersonalMilestone, PersonalObjective,
-    PersonalReward, PhaseProgress, WeeklyCharacter, WeeklyPersonal, WeeklyPersonalService,
-    WeeklyRotators,
+    PersonalReward, PhaseProgress, VanguardAlerts, WeeklyCharacter, WeeklyPersonal,
+    WeeklyPersonalService, WeeklyRotators,
 };
 pub use weekly_reset::{
     DefinitionResolution, WeeklyActivity, WeeklyMilestone, WeeklyModifier, WeeklyReset,

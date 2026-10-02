@@ -105,7 +105,7 @@ pub fn tool_specs() -> Vec<Tool> {
         )
         .with_input_schema::<WeeklyResetArgs>()
         .with_output_schema::<WeeklyResetOutput>(),
-        Tool::new(WEEKLY_TOOL, "Read reliable per-character weekly content and progress. Requires login and `ghostlink sync-manifest`. Reprise, Crucible alert weapon, and Quickplay are intentionally omitted. Character accepts an exact id or unique hunter|titan|warlock class; omitted selects strictly highest light, ties use deterministic first.", JsonObject::new())
+        Tool::new(WEEKLY_TOOL, "Read reliable per-character weekly content and progress. Requires login and `ghostlink sync-manifest`. Reprise is omitted. Vanguard alerts report GM, challenged Crucible, and challenged Vanguard Op variants with visible reward unions; these are not verified in-game weapon assignments. Character accepts an exact id or unique hunter|titan|warlock class; omitted selects strictly highest light, ties use deterministic first.", JsonObject::new())
             .with_input_schema::<WeeklyArgs>()
             .with_output_schema::<WeeklyOutput>(),
     ]
@@ -146,16 +146,22 @@ pub struct WeeklyArgs {
 pub struct WeeklyOutput {
     pub character: WeeklyCharacterView,
     pub definition_version: String,
-    pub newest: Vec<PersonalGroupView>,
+    pub vanguard_alerts: VanguardAlertsView,
     pub featured_raids: Vec<PersonalGroupView>,
     pub featured_dungeons: Vec<PersonalGroupView>,
-    pub grandmaster_alert: Option<PersonalActivityView>,
+
     pub expedition: Option<PersonalGroupView>,
     #[serde(rename = "override")]
     pub override_activity: Option<PersonalGroupView>,
-    pub portal_focus: Vec<PersonalGroupView>,
+
     pub milestones: Vec<PersonalEntityView>,
     pub unclassified_unresolved: usize,
+}
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct VanguardAlertsView {
+    pub grandmaster: Option<PersonalGroupView>,
+    pub crucible: Vec<PersonalGroupView>,
+    pub quickplay: Vec<PersonalGroupView>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct WeeklyCharacterView {
@@ -175,6 +181,7 @@ pub struct PersonalEntityView {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct PersonalGroupView {
     pub root: String,
+    pub reward_names: Vec<String>,
     pub activity_type: Option<PersonalEntityView>,
     pub variants: Vec<PersonalActivityView>,
 }

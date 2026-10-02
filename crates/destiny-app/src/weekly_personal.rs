@@ -101,17 +101,42 @@ pub struct WeeklyPersonal {
     pub definition_version: DefinitionVersion,
     /// Number of character/public input observations with missing activity or type definitions.
     pub unclassified_unresolved: usize,
-    /// Type-adjacent groups of roots whose visible reward is exactly Weekly Reward.
-    pub newest: Vec<PersonalGroup>,
+    pub vanguard_alerts: VanguardAlerts,
     pub featured_raids: Vec<PersonalGroup>,
     pub featured_dungeons: Vec<PersonalGroup>,
-    pub grandmaster_alert: Option<PersonalActivity>,
+
     pub weekly_rotators: WeeklyRotators,
-    pub portal_focus: Vec<PersonalGroup>,
+
     /// All resolved inputs retained so missing hashes remain explicit.
     pub character_activities: Vec<PersonalActivity>,
     pub public_activities: Vec<PersonalActivity>,
     pub milestones: Vec<PersonalMilestone>,
+}
+
+/// Alerts use exact activity types and challenges, not Portal focus flags.
+/// Quickplay reward names are a union, never attributed to Fireteam or Arena Ops.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct VanguardAlerts {
+    pub grandmaster: Option<PersonalGroup>,
+    pub crucible: Vec<PersonalGroup>,
+    pub quickplay: Vec<PersonalGroup>,
+}
+
+pub fn classify_alerts(character: &[PersonalActivity]) -> VanguardAlerts {
+    VanguardAlerts {
+        grandmaster: classify_grandmaster(character)
+            .and_then(|a| groups(std::iter::once(&a)).pop()),
+        crucible: groups(
+            character
+                .iter()
+                .filter(|a| a.has_challenge && name(&a.activity_type) == Some("The Crucible")),
+        ),
+        quickplay: groups(
+            character
+                .iter()
+                .filter(|a| a.has_challenge && name(&a.activity_type) == Some("Vanguard Op")),
+        ),
+    }
 }
 
 /// Counts observations, not unique hashes: each source input contributes at most one.
@@ -194,8 +219,10 @@ fn groups<'a>(activities: impl Iterator<Item = &'a PersonalActivity>) -> Vec<Per
     result
 }
 
-/// Newest content requires the exact resolved visible reward 'Weekly Reward'.
-pub fn classify_newest(activities: &[PersonalActivity]) -> Vec<PersonalGroup> {
+/// Internal rotator exclusion only: Weekly Reward also appears on older Master
+/// content, so it cannot identify newest content. Keep excluding these roots
+/// from featured raids/dungeons rather than presenting them as rotator features.
+fn classify_reward_exclusions(activities: &[PersonalActivity]) -> Vec<PersonalGroup> {
     let mut result = groups(activities.iter().filter(|a| {
         a.rewards
             .iter()
@@ -236,7 +263,7 @@ pub fn classify_featured_raids(
     featured(public, newest, "Raid")
 }
 
-/// Dungeons come from character activities with challenges, excluding newest roots.
+/// Dungeons come from challenged character activities minus Weekly Reward roots.
 pub fn classify_featured_dungeons(
     character: &[PersonalActivity],
     newest: &[PersonalGroup],
@@ -268,7 +295,7 @@ pub fn classify_grandmaster(character: &[PersonalActivity]) -> Option<PersonalAc
     Some(winner.clone())
 }
 
-/// Expedition/Override retain the location after ':', stripping only Epic suffixes.
+/// Expedition/Override retain locations; strip trailing matchmaking variants and Epic suffixes.
 /// Reclaim deliberately has no rule: its signal has not been established.
 pub fn classify_rotators(character: &[PersonalActivity]) -> WeeklyRotators {
     let single = |prefix: &str| {
@@ -278,12 +305,7 @@ pub fn classify_rotators(character: &[PersonalActivity]) -> WeeklyRotators {
                 && name(&activity.activity_type).is_some()
                 && display.starts_with(prefix)
             {
-                let root = display
-                    .split(" (")
-                    .next()
-                    .unwrap_or(display)
-                    .trim()
-                    .to_owned();
+                let root = rotator_root(display).to_owned();
                 if let Some(group) = roots.iter_mut().find(|group| group.root_name == root) {
                     group.activities.push(activity.clone());
                 } else {
@@ -306,11 +328,12 @@ pub fn classify_rotators(character: &[PersonalActivity]) -> WeeklyRotators {
     }
 }
 
-/// Focused activities grouped by root and exact type, excluding Quickplay roots.
-pub fn classify_portal(character: &[PersonalActivity]) -> Vec<PersonalGroup> {
-    groups(character.iter().filter(|a| {
-        a.focused && name(&a.definition).is_some_and(|n| activity_root(n) != "Quickplay")
-    }))
+fn rotator_root(display: &str) -> &str {
+    let display = display.split(" (").next().unwrap_or(display).trim();
+    [": Matchmade", ": Customize", ": Private"]
+        .iter()
+        .find_map(|suffix| display.strip_suffix(suffix))
+        .unwrap_or(display)
 }
 
 /// Phase completion is read solely from character milestone phases.
@@ -445,7 +468,7 @@ impl<P: PublicMilestonesGateway, G: WeeklyProfileGateway, R: WorldDefinitionRepo
                 milestones.push(self.load_milestone(milestone.milestone_hash)?);
             }
         }
-        let newest = classify_newest(&character_activities);
+        let newest = classify_reward_exclusions(&character_activities);
         Ok(WeeklyPersonal {
             definition_version: metadata.definition_version,
             unclassified_unresolved: count_unclassified_unresolved(
@@ -454,10 +477,9 @@ impl<P: PublicMilestonesGateway, G: WeeklyProfileGateway, R: WorldDefinitionRepo
             ),
             featured_raids: classify_featured_raids(&public_activities, &newest),
             featured_dungeons: classify_featured_dungeons(&character_activities, &newest),
-            grandmaster_alert: classify_grandmaster(&character_activities),
+            vanguard_alerts: classify_alerts(&character_activities),
             weekly_rotators: classify_rotators(&character_activities),
-            portal_focus: classify_portal(&character_activities),
-            newest,
+
             character_activities,
             public_activities,
             milestones,
@@ -638,7 +660,7 @@ mod tests {
         let mut portal = activity(10, "Portal Mission: Standard", "Mission");
         portal.focused = true;
         portal.rewards.push(reward("The Slammer"));
-        let mut quickplay = activity(11, "Quickplay: Vanguard", "Mission");
+        let mut quickplay = activity(11, "Quickplay: Matchmade", "Vanguard Op");
         quickplay.focused = true;
         vec![
             newest_raid,
@@ -652,13 +674,14 @@ mod tests {
             activity(9, "Override: Europa", "Mission"),
             portal,
             quickplay,
+            activity(17, "Control: Matchmade", "The Crucible"),
         ]
     }
     #[test]
-    fn newest_live_week_uses_exact_reward_and_groups_types() {
+    fn reward_exclusion_uses_exact_reward_and_groups_types() {
         let mut data = live_week();
         data[2].rewards.push(reward("Weekly Reward Gear"));
-        let result = classify_newest(&data);
+        let result = classify_reward_exclusions(&data);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].root_name, "The Desert Perpetual");
         assert_eq!(result[0].activity_type_name, "Raid");
@@ -677,7 +700,7 @@ mod tests {
         public.push(activity(14, "Deep Stone Crypt: Master", "Raid"));
         public.push(data[4].clone());
         public[0].has_challenge = false;
-        let result = classify_featured_raids(&public, &classify_newest(&data));
+        let result = classify_featured_raids(&public, &classify_reward_exclusions(&data));
         assert_eq!(
             result
                 .iter()
@@ -691,7 +714,7 @@ mod tests {
     #[test]
     fn featured_dungeons_live_week_excludes_newest() {
         let data = live_week();
-        let result = classify_featured_dungeons(&data, &classify_newest(&data));
+        let result = classify_featured_dungeons(&data, &classify_reward_exclusions(&data));
         assert_eq!(
             result
                 .iter()
@@ -700,6 +723,16 @@ mod tests {
             ["Ghosts of the Deep", "Shattered Throne"]
         );
     }
+    #[test]
+    fn master_weekly_reward_excludes_root_without_claiming_newest() {
+        let mut master = activity(90, "Vow of the Disciple: Master", "Raid");
+        master.rewards.push(reward("Weekly Reward"));
+        let public = vec![activity(91, "Vow of the Disciple: Standard", "Raid")];
+        assert!(
+            classify_featured_raids(&public, &classify_reward_exclusions(&[master])).is_empty()
+        );
+    }
+
     #[test]
     fn gm_live_week_strict_highest_mission_with_rewards() {
         let data = live_week();
@@ -718,6 +751,8 @@ mod tests {
     fn rotators_live_week_single_distinct_full_root() {
         let mut data = live_week();
         data.push(activity(15, "Expedition: Cosmodrome (Epic)", "Mission"));
+        data[8].definition = resolved("Override: Europa: Matchmade", "");
+        data.push(activity(16, "Override: Europa: Customize", "Mission"));
         let result = classify_rotators(&data);
         assert_eq!(
             result
@@ -760,13 +795,15 @@ mod tests {
         assert!(classify_rotators(&data).expedition.is_none());
     }
     #[test]
-    fn portal_live_week_excludes_quickplay_and_unions_rewards_in_order() {
+    fn alerts_include_quickplay_and_union_rewards_in_order() {
         let mut data = live_week();
-        let mut variant = activity(16, "Portal Mission: Master", "Mission");
+        data[9].activity_type = resolved("Vanguard Op", "");
+        data[9].definition = resolved("Quickplay: Matchmade", "");
+        let mut variant = activity(16, "Quickplay: Customize", "Vanguard Op");
         variant.focused = true;
         variant.rewards = vec![reward("The Slammer"), reward("Other")];
         data.push(variant);
-        let result = classify_portal(&data);
+        let result = classify_alerts(&data).quickplay;
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].reward_names, ["The Slammer", "Other"]);
     }
@@ -776,7 +813,7 @@ mod tests {
         data[0].rewards[0].definition = DefinitionResolution::Unresolved;
         data[1].activity_type = DefinitionResolution::Unresolved;
         data[6].definition = DefinitionResolution::Unresolved;
-        assert!(classify_newest(&data).is_empty());
+        assert!(classify_reward_exclusions(&data).is_empty());
         assert!(classify_grandmaster(&data).is_none());
     }
 
@@ -786,7 +823,7 @@ mod tests {
         let mut unchallenged = activity(20, "Vault of Glass: Standard", "Raid");
         unchallenged.has_challenge = false;
         public.push(unchallenged);
-        let result = classify_featured_raids(&public, &classify_newest(&live_week()));
+        let result = classify_featured_raids(&public, &classify_reward_exclusions(&live_week()));
         assert_eq!(result.len(), 2);
         assert!(result.iter().all(|g| g.root_name != "Vault of Glass"));
     }
@@ -796,7 +833,8 @@ mod tests {
         let mut unchallenged = activity(20, "Pit of Heresy", "Dungeon");
         unchallenged.has_challenge = false;
         character.push(unchallenged);
-        let result = classify_featured_dungeons(&character, &classify_newest(&character));
+        let result =
+            classify_featured_dungeons(&character, &classify_reward_exclusions(&character));
         assert_eq!(result.len(), 2);
         assert!(result.iter().all(|g| g.root_name != "Pit of Heresy"));
     }
@@ -818,7 +856,7 @@ mod tests {
         assert_eq!(classify_grandmaster(&character).unwrap().hash, 7);
     }
     #[test]
-    fn newest_groups_interleaved_roots_by_first_seen_type() {
+    fn reward_exclusions_group_interleaved_roots_by_first_seen_type() {
         let mut character = vec![
             activity(20, "Raid One: Standard", "Raid"),
             activity(21, "Dungeon One", "Dungeon"),
@@ -827,7 +865,7 @@ mod tests {
         for activity in &mut character {
             activity.rewards.push(reward("Weekly Reward"));
         }
-        let result = classify_newest(&character);
+        let result = classify_reward_exclusions(&character);
         let roots_and_types: Vec<_> = result
             .iter()
             .map(|g| (g.root_name.as_str(), g.activity_type_name.as_str()))
@@ -842,9 +880,9 @@ mod tests {
         );
     }
     #[test]
-    fn portal_separates_same_root_with_different_activity_types() {
+    fn alerts_separate_types_and_require_challenges_not_focus() {
         let mut character = vec![
-            activity(20, "Shared Root: Standard", "Mission"),
+            activity(20, "Shared Root: Standard", "The Crucible"),
             activity(21, "Shared Root: Master", "Vanguard Op"),
         ];
         for activity in &mut character {
@@ -852,11 +890,16 @@ mod tests {
         }
         character[0].rewards.push(reward("Mission Reward"));
         character[1].rewards.push(reward("Op Reward"));
-        let result = classify_portal(&character);
+        let alerts = classify_alerts(&character);
+        let result = [alerts.crucible[0].clone(), alerts.quickplay[0].clone()];
+        character[0].has_challenge = false;
+        character[1].has_challenge = false;
+        assert!(classify_alerts(&character).crucible.is_empty());
+        assert!(classify_alerts(&character).quickplay.is_empty());
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].root_name, "Shared Root");
         assert_eq!(result[1].root_name, "Shared Root");
-        assert_eq!(result[0].activity_type_name, "Mission");
+        assert_eq!(result[0].activity_type_name, "The Crucible");
         assert_eq!(result[1].activity_type_name, "Vanguard Op");
         assert_eq!(result[0].activities[0].hash, 20);
         assert_eq!(result[1].activities[0].hash, 21);
@@ -984,6 +1027,8 @@ mod tests {
                 let kind = match name(&a.activity_type).unwrap() {
                     "Raid" => 1,
                     "Dungeon" => 2,
+                    "Vanguard Op" => 4,
+                    "The Crucible" => 5,
                     _ => 3,
                 };
                 destiny_core::ActivityDefinition::new(
@@ -996,12 +1041,18 @@ mod tests {
                 .unwrap()
             })
             .collect();
-        world.activity_types.definitions = [(1, "Raid"), (2, "Dungeon"), (3, "Mission")]
-            .into_iter()
-            .map(|(hash, name)| {
-                destiny_core::ActivityTypeDefinition::new(hash, name.into(), String::new()).unwrap()
-            })
-            .collect();
+        world.activity_types.definitions = [
+            (1, "Raid"),
+            (2, "Dungeon"),
+            (3, "Mission"),
+            (4, "Vanguard Op"),
+            (5, "The Crucible"),
+        ]
+        .into_iter()
+        .map(|(hash, name)| {
+            destiny_core::ActivityTypeDefinition::new(hash, name.into(), String::new()).unwrap()
+        })
+        .collect();
         world.objectives.definitions =
             vec![destiny_core::ObjectiveDefinition::new(50, "Weekly challenge".into(), 1).unwrap()];
         let items = [(99, "Weekly Reward"), (100, "The Slammer")]
@@ -1149,10 +1200,34 @@ mod tests {
     #[test]
     fn service_live_week_progress_is_character_only_and_not_completed_ever() {
         let result = service().weekly(&character()).unwrap();
-        assert_eq!(result.newest.len(), 2);
+        assert_eq!(
+            classify_reward_exclusions(&result.character_activities).len(),
+            2
+        );
         assert_eq!(result.featured_raids.len(), 2);
         assert_eq!(result.featured_dungeons.len(), 2);
-        assert_eq!(result.grandmaster_alert.as_ref().unwrap().hash, 7);
+        assert_eq!(
+            result
+                .vanguard_alerts
+                .grandmaster
+                .as_ref()
+                .unwrap()
+                .activities[0]
+                .hash,
+            7
+        );
+        assert_eq!(
+            result.vanguard_alerts.crucible[0].activities[0].challenges[0].progress,
+            0
+        );
+        assert_eq!(result.vanguard_alerts.quickplay[0].root_name, "Quickplay");
+        assert!(
+            result
+                .featured_raids
+                .iter()
+                .chain(&result.featured_dungeons)
+                .all(|g| g.activity_type_name != "The Crucible")
+        );
         let raid = &result.featured_raids[0].activities[0];
         assert_eq!(
             raid.phases,
@@ -1168,7 +1243,7 @@ mod tests {
             Some("Weekly challenge")
         );
         assert_eq!(
-            result.newest[0].activities[0].modifiers[0].definition,
+            result.character_activities[0].modifiers[0].definition,
             DefinitionResolution::Unresolved
         );
         // Public challenges never fabricate a character's absent progress.
@@ -1221,7 +1296,7 @@ mod tests {
         service.public_gateway.result.as_mut().unwrap().milestones[0].activities[0]
             .challenge_objective_hashes = vec![999];
         let result = service.weekly(&character()).unwrap();
-        assert!(result.newest.is_empty());
+        assert!(classify_reward_exclusions(&result.character_activities).is_empty());
         assert_eq!(result.unclassified_unresolved, 1);
         assert_eq!(result.character_activities[1].activity_type_hash, None);
         let activity = &result.character_activities[0];
