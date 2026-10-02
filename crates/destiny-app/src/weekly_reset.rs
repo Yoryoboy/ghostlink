@@ -411,6 +411,7 @@ mod tests {
             activities: vec![PublicMilestoneActivity {
                 activity_hash: 2,
                 modifier_hashes: vec![3],
+                challenge_objective_hashes: vec![],
             }],
         }
     }
@@ -503,6 +504,7 @@ mod tests {
             PublicMilestoneActivity {
                 activity_hash: 88,
                 modifier_hashes: vec![77, 3],
+                challenge_objective_hashes: vec![],
             },
         );
         let result = service(vec![missing]).weekly_reset().unwrap();

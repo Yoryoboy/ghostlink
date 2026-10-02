@@ -25,6 +25,21 @@ fn fixture_projects_only_supported_fields() {
     assert!(snapshot.milestones[2].activities.is_empty());
 }
 #[test]
+fn retains_bounded_public_challenge_hashes() {
+    let mut value: Value = serde_json::from_slice(FIXTURE).unwrap();
+    value["Response"]["100"]["activities"][0]["challengeObjectiveHashes"] = json!([42, 43]);
+    assert_eq!(
+        decode(value.clone()).unwrap().milestones[0].activities[0].challenge_objective_hashes,
+        [42, 43]
+    );
+    value["Response"]["100"]["activities"][0]["challengeObjectiveHashes"] = json!(vec![42; 64]);
+    assert!(decode(value.clone()).is_ok());
+    value["Response"]["100"]["activities"][0]["challengeObjectiveHashes"] = json!(vec![42; 65]);
+    assert!(decode(value.clone()).is_err());
+    value["Response"]["100"]["activities"][0]["challengeObjectiveHashes"] = json!(["invalid"]);
+    assert!(decode(value).is_err());
+}
+#[test]
 fn rejects_mismatch_duplicates_and_invalid_timestamps() {
     let mut value: Value = serde_json::from_slice(FIXTURE).unwrap();
     value["Response"]["100"]["milestoneHash"] = json!(999);

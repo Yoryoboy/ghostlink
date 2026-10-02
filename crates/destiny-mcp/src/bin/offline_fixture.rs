@@ -183,6 +183,7 @@ impl destiny_app::PublicMilestonesGateway for PublicGateway {
                 activities: vec![destiny_app::PublicMilestoneActivity {
                     activity_hash: 2,
                     modifier_hashes: vec![99, 3],
+                    challenge_objective_hashes: vec![],
                 }],
             }],
         })

@@ -8,6 +8,7 @@ pub mod mutation;
 pub mod queries;
 pub mod session;
 pub mod sync;
+pub mod weekly_personal;
 pub mod weekly_reset;
 
 #[cfg(feature = "test-support")]
@@ -62,6 +63,11 @@ pub use mutation::{
 pub use queries::{QueryOperations, QueryService, SearchInventoryRequest};
 pub use session::{ConfiguredCredentialSource, RefreshingCredentialSource};
 pub use sync::ProfileSyncService;
+pub use weekly_personal::{
+    PersonalActivity, PersonalChallenge, PersonalGroup, PersonalMilestone, PersonalObjective,
+    PersonalReward, PhaseProgress, WeeklyCharacter, WeeklyPersonal, WeeklyPersonalService,
+    WeeklyRotators,
+};
 pub use weekly_reset::{
     DefinitionResolution, WeeklyActivity, WeeklyMilestone, WeeklyModifier, WeeklyReset,
     WeeklyResetService,

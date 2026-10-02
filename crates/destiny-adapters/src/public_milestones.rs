@@ -48,6 +48,8 @@ struct Activity {
     activity_hash: u32,
     #[serde(default)]
     modifier_hashes: Vec<u32>,
+    #[serde(default)]
+    challenge_objective_hashes: Vec<u32>,
 }
 struct Milestones(Vec<PublicMilestone>);
 impl<'de> Deserialize<'de> for Milestones {
@@ -94,6 +96,7 @@ impl<'de> Deserialize<'de> for Milestones {
                             .map(|activity| PublicMilestoneActivity {
                                 activity_hash: activity.activity_hash,
                                 modifier_hashes: activity.modifier_hashes,
+                                challenge_objective_hashes: activity.challenge_objective_hashes,
                             })
                             .collect(),
                     });
