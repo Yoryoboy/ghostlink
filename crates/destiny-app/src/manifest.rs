@@ -46,6 +46,7 @@ pub const MAX_TAG_LENGTH: usize = 64;
 pub struct PublicationOutcome {
     pub version: DefinitionVersion,
     pub definition_count: usize,
+    pub skipped_count: usize,
     pub revision: SyncRevision,
 }
 
@@ -94,7 +95,7 @@ where
         &mut self,
         checked_at: Timestamp,
     ) -> Result<PublicationOutcome, AppError> {
-        let definitions = normalize_manifest(self.gateway.load_definitions()?)?;
+        let (definitions, skipped_count) = normalize_with_count(self.gateway.load_definitions()?)?;
         let version = definitions.version.clone();
         let definition_count = definitions.definitions.len();
         let metadata = self
@@ -107,6 +108,7 @@ where
         Ok(PublicationOutcome {
             version,
             definition_count,
+            skipped_count,
             revision: metadata.revision,
         })
     }
@@ -141,11 +143,18 @@ where
 /// Validation rejects a blank, whitespace-padded, or oversized version; an empty
 /// or oversized candidate set; a candidate version that disagrees exactly with
 /// the batch version; duplicate definition hashes; missing or blank required
-/// search fields; prohibited control characters; and oversized fields. Every
+/// search fields (blank names are skipped); prohibited control characters; and oversized fields. Every
 /// rejection returns [`ErrorCategory::ProviderValidation`].
 pub fn normalize_manifest(
     acquisition: ManifestAcquisition,
 ) -> Result<ManifestDefinitions, AppError> {
+    normalize_with_count(acquisition).map(|(definitions, _)| definitions)
+}
+
+fn normalize_with_count(
+    acquisition: ManifestAcquisition,
+) -> Result<(ManifestDefinitions, usize), AppError> {
+    let mut skipped_count = acquisition.skipped_count;
     let version = normalize_version(acquisition.version.as_str())?;
     let candidates = acquisition.definitions;
     if candidates.is_empty() || candidates.len() > MAX_DEFINITION_COUNT {
@@ -161,10 +170,14 @@ pub fn normalize_manifest(
         if !seen.insert(candidate.hash) {
             return Err(invalid());
         }
+        let Some(name) = normalize_required_presentation(&candidate.name)? else {
+            skipped_count = skipped_count.checked_add(1).ok_or_else(invalid)?;
+            continue;
+        };
         definitions.push(ItemDefinition {
             hash: candidate.hash,
             bucket_hash: candidate.bucket_hash,
-            name: normalize_required_presentation(&candidate.name)?,
+            name,
             item_type: normalize_optional_presentation(candidate.item_type.as_deref())?,
             tier: normalize_optional_presentation(candidate.tier.as_deref())?,
             element: normalize_optional_presentation(candidate.element.as_deref())?,
@@ -172,11 +185,17 @@ pub fn normalize_manifest(
             version: version.clone(),
         });
     }
+    if definitions.is_empty() {
+        return Err(invalid());
+    }
     definitions.sort_by_key(|definition| definition.hash);
-    Ok(ManifestDefinitions {
-        version,
-        definitions,
-    })
+    Ok((
+        ManifestDefinitions {
+            version,
+            definitions,
+        },
+        skipped_count,
+    ))
 }
 
 fn invalid() -> AppError {
@@ -241,12 +260,9 @@ fn normalize_version(value: &str) -> Result<DefinitionVersion, AppError> {
     Ok(DefinitionVersion::new(value.to_owned()))
 }
 
-fn normalize_required_presentation(value: &str) -> Result<String, AppError> {
+fn normalize_required_presentation(value: &str) -> Result<Option<String>, AppError> {
     let normalized = normalize_presentation(value, MAX_TEXT_LENGTH)?;
-    if normalized.is_empty() {
-        return Err(invalid());
-    }
-    Ok(normalized)
+    Ok((!normalized.is_empty()).then_some(normalized))
 }
 
 fn normalize_optional_presentation(value: Option<&str>) -> Result<Option<String>, AppError> {
@@ -311,6 +327,7 @@ mod tests {
         ManifestAcquisition {
             version: DefinitionVersion::new(version),
             definitions,
+            skipped_count: 0,
         }
     }
 
@@ -417,6 +434,20 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(published.version.as_str(), "Manifest-V1");
+    }
+
+    #[test]
+    fn blank_required_names_are_skipped_when_records_remain() {
+        let published = normalize_manifest(acquisition(
+            VERSION,
+            vec![candidate(1, " \t\n"), candidate(2, "Kept")],
+        ))
+        .expect("remaining record");
+        assert_eq!(published.definitions.len(), 1);
+        assert_eq!(published.definitions[0].hash.value(), 2);
+        let mut batch = acquisition(VERSION, vec![candidate(1, " "), candidate(2, "Kept")]);
+        batch.skipped_count = 2;
+        assert_eq!(normalize_with_count(batch).unwrap().1, 3);
     }
 
     #[test]

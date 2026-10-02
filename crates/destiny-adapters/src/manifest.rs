@@ -9,8 +9,8 @@
 //! candidates are bounded, complete, and internally consistent, and it owns
 //! ordering.
 //!
-//! Input is handled as `serde_json::Value` only; the adapter never deserializes
-//! into provider structs. Optional fields whose value is unknown or wrongly
+//! The small index uses `serde_json::Value`; components stream through typed,
+//! field-limited records. Optional fields whose value is unknown or wrongly
 //! typed are dropped rather than rejected. Every failure is a sanitized
 //! `ErrorCategory::ProviderValidation` error, so no upstream version, path,
 //! hash, or identifier can escape through the failure path.
@@ -28,8 +28,16 @@ use destiny_core::{
     AppError, BucketHash, Clock, DefinitionVersion, ErrorCategory, ItemHash, ManifestAcquisition,
     ManifestDefinitionCandidate, ManifestGateway, Timestamp,
 };
+use serde::{
+    Deserialize,
+    de::{self, DeserializeSeed, IgnoredAny, MapAccess, Visitor},
+};
 use serde_json::{Map, Value};
-use std::{fmt, io::Read, time::Duration};
+use std::{
+    fmt,
+    io::{self, BufReader, Read},
+    time::Duration,
+};
 
 /// The only success code Bungie returns for a fulfilled request.
 const SUCCESS_ERROR_CODE: u64 = 1;
@@ -92,29 +100,161 @@ pub fn decode_manifest_index(bytes: &[u8]) -> Result<ManifestDownloadPlan, AppEr
 ///
 /// The component must be a non-empty JSON object with at most 100,000 records.
 /// Each key is a canonical decimal `u32`; each record is an object whose numeric
-/// `hash` equals its key and whose `displayProperties.name` is non-blank. The supplied
-/// `version` is attached to every candidate unchanged, and candidates are
-/// emitted in object iteration order: this function never sorts.
+/// `hash` equals its key. Blank-name and redacted records are skipped and counted;
+/// at least one named record must remain. The supplied `version` is attached to
+/// every candidate unchanged. Records stream in payload order without sorting.
 pub fn decode_inventory_items(
     version: DefinitionVersion,
     bytes: &[u8],
 ) -> Result<ManifestAcquisition, AppError> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|_| provider_validation())?;
-    let records = value.as_object().ok_or_else(provider_validation)?;
+    decode_inventory_reader(version, bytes, MAX_COMPONENT_BYTES)
+}
 
-    if records.is_empty() || records.len() > MAX_INVENTORY_RECORDS {
-        return Err(provider_validation());
+/// Counts bytes delivered after transport decompression, including ignored fields
+/// and trailing whitespace. A cap breach is distinct from a transfer failure.
+struct BoundedReader<R> {
+    inner: R,
+    remaining: usize,
+    exceeded: bool,
+    failed: bool,
+}
+
+impl<R: Read> Read for BoundedReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let length = buffer.len().min(self.remaining.saturating_add(1));
+        let count = self
+            .inner
+            .read(&mut buffer[..length])
+            .inspect_err(|_| self.failed = true)?;
+        if count > self.remaining {
+            self.exceeded = true;
+            return Err(io::Error::other("manifest size limit"));
+        }
+        self.remaining -= count;
+        Ok(count)
     }
+}
 
-    let mut definitions = Vec::with_capacity(records.len());
-    for (key, record) in records {
-        definitions.push(decode_record(key, record, &version)?);
-    }
-
-    Ok(ManifestAcquisition {
-        version,
-        definitions,
+fn decode_inventory_reader(
+    version: DefinitionVersion,
+    body: impl Read,
+    limit: usize,
+) -> Result<ManifestAcquisition, AppError> {
+    let mut bounded = BoundedReader {
+        inner: body,
+        remaining: limit,
+        exceeded: false,
+        failed: false,
+    };
+    let result = {
+        let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(&mut bounded));
+        InventorySeed(&version)
+            .deserialize(&mut deserializer)
+            .and_then(|batch| {
+                deserializer.end()?;
+                Ok(batch)
+            })
+    };
+    result.map_err(|_| {
+        if bounded.failed && !bounded.exceeded {
+            provider_unavailable()
+        } else {
+            provider_validation()
+        }
     })
+}
+
+// Optional values retain the existing tolerant projection semantics.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum OptionalField<T> {
+    Present(T),
+    Ignored(IgnoredAny),
+}
+impl<T> Default for OptionalField<T> {
+    fn default() -> Self {
+        Self::Ignored(IgnoredAny)
+    }
+}
+impl<T> OptionalField<T> {
+    fn into_option(self) -> Option<T> {
+        match self {
+            Self::Present(value) => Some(value),
+            Self::Ignored(_) => None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InventoryRecord {
+    hash: u32,
+    #[serde(default)]
+    display_properties: OptionalField<DisplayProperties>,
+    #[serde(default)]
+    inventory: OptionalField<InventoryFields>,
+    #[serde(default)]
+    item_type_display_name: OptionalField<String>,
+    #[serde(default)]
+    redacted: OptionalField<bool>,
+}
+#[derive(Deserialize)]
+struct DisplayProperties {
+    name: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InventoryFields {
+    #[serde(default)]
+    bucket_type_hash: OptionalField<u32>,
+    #[serde(default)]
+    tier_type_name: OptionalField<String>,
+}
+
+struct InventorySeed<'a>(&'a DefinitionVersion);
+impl<'de> DeserializeSeed<'de> for InventorySeed<'_> {
+    type Value = ManifestAcquisition;
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+impl<'de> Visitor<'de> for InventorySeed<'_> {
+    type Value = ManifestAcquisition;
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("inventory definitions")
+    }
+    fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+        let mut definitions = Vec::new();
+        let mut skipped_count = 0;
+        let mut count = 0;
+        while let Some(key) = map.next_key::<String>()? {
+            count += 1;
+            if count > MAX_INVENTORY_RECORDS {
+                return Err(de::Error::custom("invalid manifest"));
+            }
+            let record = map.next_value::<InventoryRecord>()?;
+            match decode_record(&key, record, self.0)
+                .map_err(|_| de::Error::custom("invalid manifest"))?
+            {
+                Some(candidate) => definitions.push(candidate),
+                None => skipped_count += 1,
+            }
+        }
+        if definitions.is_empty() {
+            return Err(de::Error::custom("empty manifest"));
+        }
+        Ok(ManifestAcquisition {
+            version: self.0.clone(),
+            definitions,
+            skipped_count,
+        })
+    }
 }
 
 fn decode_version(value: Option<&Value>) -> Result<DefinitionVersion, AppError> {
@@ -170,48 +310,47 @@ fn is_safe_component_path(path: &str) -> bool {
 
 fn decode_record(
     key: &str,
-    record: &Value,
+    record: InventoryRecord,
     version: &DefinitionVersion,
-) -> Result<ManifestDefinitionCandidate, AppError> {
+) -> Result<Option<ManifestDefinitionCandidate>, AppError> {
     let key_value = decode_decimal_u32(key)?;
-    let record = record.as_object().ok_or_else(provider_validation)?;
-
-    if record.get("hash").and_then(Value::as_u64) != Some(u64::from(key_value)) {
+    if record.hash != key_value {
         return Err(provider_validation());
     }
-
+    if record.redacted.into_option() == Some(true) {
+        return Ok(None);
+    }
     let name = record
-        .get("displayProperties")
-        .and_then(Value::as_object)
-        .and_then(|properties| properties.get("name"))
-        .and_then(Value::as_str)
-        .filter(|name| !name.trim().is_empty())
-        .ok_or_else(provider_validation)?;
-
-    let inventory = record.get("inventory").and_then(Value::as_object);
-    let bucket_hash = inventory
-        .and_then(|inventory| inventory.get("bucketTypeHash"))
-        .and_then(Value::as_u64)
-        .and_then(|bucket| u32::try_from(bucket).ok())
-        .map(|bucket| BucketHash::new(i64::from(bucket)));
-    let tier = inventory
-        .and_then(|inventory| inventory.get("tierTypeName"))
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-
-    Ok(ManifestDefinitionCandidate {
+        .display_properties
+        .into_option()
+        .ok_or_else(provider_validation)?
+        .name;
+    if name.trim().is_empty() {
+        return Ok(None);
+    }
+    if name.chars().count() > 256 {
+        return Err(provider_validation());
+    }
+    let inventory = record.inventory.into_option();
+    let (bucket_hash, tier) = inventory.map_or((None, None), |inventory| {
+        (
+            inventory
+                .bucket_type_hash
+                .into_option()
+                .map(|bucket| BucketHash::new(i64::from(bucket))),
+            inventory.tier_type_name.into_option(),
+        )
+    });
+    Ok(Some(ManifestDefinitionCandidate {
         hash: ItemHash::new(i64::from(key_value)),
         bucket_hash,
-        name: name.to_owned(),
-        item_type: record
-            .get("itemTypeDisplayName")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        name,
+        item_type: record.item_type_display_name.into_option(),
         tier,
         element: None,
         tags: Vec::new(),
         version: version.clone(),
-    })
+    }))
 }
 
 /// Requires a canonical unsigned decimal representation within `u32` range.
@@ -238,8 +377,11 @@ pub const MANIFEST_ORIGIN: &str = "https://www.bungie.net";
 /// Strict upper bound on the Manifest index response body (1 MiB).
 const MAX_INDEX_BYTES: usize = 1024 * 1024;
 
-/// Strict upper bound on one Manifest component response body (64 MiB).
-const MAX_COMPONENT_BYTES: usize = 64 * 1024 * 1024;
+/// Strict upper bound on one decompressed component (512 MiB).
+const MAX_COMPONENT_BYTES: usize = 512 * 1024 * 1024;
+
+/// Total component timeout, including body transfer.
+const COMPONENT_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// One total timeout covering connect, request, and body read.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -442,6 +584,7 @@ impl HttpManifestTransport {
         let client = reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
+            .gzip(true)
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
@@ -466,7 +609,12 @@ impl ManifestTransport for HttpManifestTransport {
         if !is_allowed_manifest_url(request.url()) {
             return Err(ManifestTransportError::Configuration);
         }
-        let mut builder = self.client.get(request.url());
+        let timeout = if request.url() == MANIFEST_ENDPOINT {
+            REQUEST_TIMEOUT
+        } else {
+            COMPONENT_TIMEOUT
+        };
+        let mut builder = self.client.get(request.url()).timeout(timeout);
         if let Some(api_key) = request.api_key() {
             let value = reqwest::header::HeaderValue::from_str(api_key.expose())
                 .map_err(|_| ManifestTransportError::Configuration)?;
@@ -596,14 +744,14 @@ where
 
         let component_url = format!("{MANIFEST_ORIGIN}{}", plan.component_path);
         let component_request = ManifestHttpRequest::new(&component_url, None);
-        let component_bytes = fetch_with_retry(
-            &mut self.transport,
-            &mut self.read_retry,
-            &self.clock,
-            &component_request,
-            MAX_COMPONENT_BYTES,
-        )?;
-        decode_inventory_items(plan.version, &component_bytes)
+        self.read_retry
+            .run(ReadRetryScope::RateLimitAndTransient, || {
+                let response = fetch_response(&mut self.transport, &component_request, || {
+                    self.clock.now().ok()
+                })?;
+                decode_inventory_reader(plan.version.clone(), response.body, MAX_COMPONENT_BYTES)
+                    .map_err(ReadFailure::terminal)
+            })
     }
 }
 
@@ -646,7 +794,17 @@ where
     T: ManifestTransport,
     F: FnOnce() -> Option<Timestamp>,
 {
-    let mut response = transport
+    let mut response = fetch_response(transport, request, retry_after_now)?;
+    read_bounded_body(&mut response.body, response.content_length, limit)
+        .map_err(ReadFailure::terminal)
+}
+
+fn fetch_response<T: ManifestTransport, F: FnOnce() -> Option<Timestamp>>(
+    transport: &mut T,
+    request: &ManifestHttpRequest<'_>,
+    retry_after_now: F,
+) -> Result<ManifestHttpResponse, ReadFailure> {
+    let response = transport
         .get(request)
         .map_err(map_transport_error)
         .map_err(ReadFailure::terminal)?;
@@ -660,8 +818,7 @@ where
     if !response.content_type().is_some_and(is_json_content_type) {
         return Err(ReadFailure::terminal(provider_validation()));
     }
-    read_bounded_body(&mut response.body, response.content_length, limit)
-        .map_err(ReadFailure::terminal)
+    Ok(response)
 }
 
 fn map_transport_error(error: ManifestTransportError) -> AppError {
@@ -918,6 +1075,64 @@ mod tests {
         assert_validation(decode_manifest_index(
             numeric_version.to_string().as_bytes(),
         ));
+    }
+
+    #[test]
+    fn decompressed_reader_counts_ignored_fields_and_trailing_bytes() {
+        let bytes =
+            br#"{"1":{"hash":1,"displayProperties":{"name":"sentinel"},"ignored":[1,2,3]}} "#;
+        assert!(super::decode_inventory_reader(version(), bytes.as_slice(), bytes.len()).is_ok());
+        let error = super::decode_inventory_reader(version(), bytes.as_slice(), bytes.len() - 1)
+            .unwrap_err();
+        assert_eq!(error, AppError::new(ErrorCategory::ProviderValidation));
+        assert!(!format!("{error:?}").contains("sentinel"));
+    }
+
+    #[test]
+    fn gzip_component_stream_decodes_and_bounds_expanded_bytes() {
+        use std::io::Write;
+        let bytes = br#"{"1":{"hash":1,"displayProperties":{"name":"kept"},"ignored":"padding padding padding padding"}}"#;
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(bytes).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let reader = || flate2::read::GzDecoder::new(compressed.as_slice());
+        assert_eq!(
+            super::decode_inventory_reader(version(), reader(), bytes.len())
+                .unwrap()
+                .definitions
+                .len(),
+            1
+        );
+        assert_validation(super::decode_inventory_reader(
+            version(),
+            reader(),
+            bytes.len() - 1,
+        ));
+        // This builder call is a compile-time guard that reqwest's gzip feature
+        // remains enabled; no sockets are opened by this test.
+        assert!(super::HttpManifestTransport::new().is_ok());
+    }
+
+    #[test]
+    fn all_redacted_or_blank_records_and_long_names_fail() {
+        assert_validation(decode_inventory_items(
+            version(),
+            br#"{"1":{"hash":1,"redacted":true}}"#,
+        ));
+        let component = json!({"1": {"hash": 1, "displayProperties": {"name": "x".repeat(257)}}});
+        assert_validation(decode_inventory_items(
+            version(),
+            component.to_string().as_bytes(),
+        ));
+    }
+
+    #[test]
+    fn blank_and_redacted_records_are_skipped() {
+        let bytes = br#"{"1":{"hash":1,"displayProperties":{"name":"  "}},"2":{"hash":2,"redacted":true,"displayProperties":{"name":"hidden"}},"3":{"hash":3,"displayProperties":{"name":"kept"},"unknown":{"large":[1,2,3]}}}"#;
+        let batch = decode_inventory_items(version(), bytes).expect("remaining record");
+        assert_eq!(batch.skipped_count, 2);
+        assert_eq!(batch.definitions.len(), 1);
+        assert_eq!(batch.definitions[0].hash.value(), 3);
     }
 
     #[test]

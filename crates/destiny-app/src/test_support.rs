@@ -1398,6 +1398,7 @@ mod tests {
         let acquisition = ManifestAcquisition {
             version: DefinitionVersion::new("v1"),
             definitions: Vec::new(),
+            skipped_count: 0,
         };
         manifest.queue(Ok(acquisition.clone()));
         manifest.queue(Err(AppError::new(ErrorCategory::ProviderValidation)));
