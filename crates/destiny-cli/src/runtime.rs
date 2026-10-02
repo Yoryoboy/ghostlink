@@ -297,6 +297,72 @@ where
     Ok(ReadRuntime::new(service, freshness))
 }
 
+/// Public Manifest acquisitions. Deliberately has no credential-store seam.
+///
+/// Reuses shared read config (API key, database path, definition label, TTL),
+/// which loads no OAuth-only key. Sync uses only the API key and database path;
+/// the configured definition label remains a label, not the live version.
+pub trait ManifestFoundations {
+    type Transport: destiny_adapters::manifest::ManifestTransport;
+    type Clock: Clock;
+    type Repository: destiny_app::DefinitionCatalogRepository;
+
+    fn config(&mut self) -> Result<ReadRuntimeConfig, AppError>;
+    fn clock(&mut self) -> Result<Self::Clock, AppError>;
+    fn transport(&mut self) -> Result<Self::Transport, AppError>;
+    fn store(&mut self, config: &ReadRuntimeConfig) -> Result<Self::Repository, AppError>;
+}
+
+impl ManifestFoundations for ProductionFoundations {
+    type Transport = destiny_adapters::manifest::HttpManifestTransport;
+    type Clock = SystemClock;
+    type Repository = SqliteStore;
+
+    fn config(&mut self) -> Result<ReadRuntimeConfig, AppError> {
+        ReadRuntimeConfig::from_env()
+    }
+    fn clock(&mut self) -> Result<Self::Clock, AppError> {
+        Ok(SystemClock::new())
+    }
+    fn transport(&mut self) -> Result<Self::Transport, AppError> {
+        destiny_adapters::manifest::HttpManifestTransport::new()
+    }
+    fn store(&mut self, config: &ReadRuntimeConfig) -> Result<Self::Repository, AppError> {
+        SqliteStore::open(config.database_path())
+    }
+}
+
+/// Runs one public Manifest sync; construction acquires nothing.
+pub trait ManifestFactory {
+    fn sync(&mut self) -> Result<destiny_app::ManifestSyncReport, CliError>;
+}
+
+pub struct ComposingManifestFactory<F> {
+    foundations: F,
+}
+impl<F> ComposingManifestFactory<F> {
+    pub fn new(foundations: F) -> Self {
+        Self { foundations }
+    }
+}
+impl<F: ManifestFoundations> ManifestFactory for ComposingManifestFactory<F> {
+    fn sync(&mut self) -> Result<destiny_app::ManifestSyncReport, CliError> {
+        let foundations = &mut self.foundations;
+        let config = foundations.config()?;
+        let clock = foundations.clock()?;
+        let checked_at = clock.now()?;
+        let transport = foundations.transport()?;
+        let api_key =
+            destiny_adapters::manifest::ManifestApiKey::new(config.api_key().expose_secret())?;
+        let gateway =
+            destiny_adapters::manifest::BungieManifestGateway::new(api_key, transport, clock);
+        let repository = foundations.store(&config)?;
+        destiny_app::ManifestService::new(gateway, repository)
+            .sync(checked_at)
+            .map_err(CliError::from)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -509,6 +575,125 @@ mod tests {
                 !rendered.contains(sentinel),
                 "a diagnostic leaked {sentinel}: {rendered}"
             );
+        }
+    }
+
+    struct FakeManifestFoundations {
+        log: Rc<RefCell<Vec<&'static str>>>,
+        store: Option<SqliteStore>,
+    }
+
+    struct ManifestTransport;
+    impl destiny_adapters::manifest::ManifestTransport for ManifestTransport {
+        fn get(
+            &mut self,
+            request: &destiny_adapters::manifest::ManifestHttpRequest<'_>,
+        ) -> Result<
+            destiny_adapters::manifest::ManifestHttpResponse,
+            destiny_adapters::manifest::ManifestTransportError,
+        > {
+            let body = if request.url().contains("/Platform/") {
+                r#"{"ErrorCode":1,"Response":{"version":"v1","jsonWorldComponentContentPaths":{"en":{"DestinyInventoryItemDefinition":"/common/destiny2_content/items.json"}}}}"#
+            } else {
+                r#"{"1":{"hash":1,"displayProperties":{"name":"Item"}},"2":{"hash":2,"displayProperties":{"name":""}}}"#
+            };
+            Ok(destiny_adapters::manifest::ManifestHttpResponse::new(
+                200,
+                None,
+                Some("application/json".into()),
+                Box::new(std::io::Cursor::new(body.as_bytes().to_vec())),
+            ))
+        }
+    }
+
+    impl super::ManifestFoundations for FakeManifestFoundations {
+        type Transport = ManifestTransport;
+        type Clock = ScriptedClock;
+        type Repository = SqliteStore;
+        fn config(&mut self) -> Result<ReadRuntimeConfig, AppError> {
+            self.log.borrow_mut().push("config");
+            Ok(config())
+        }
+        fn clock(&mut self) -> Result<Self::Clock, AppError> {
+            self.log.borrow_mut().push("clock");
+            Ok(ScriptedClock {
+                now: Ok(NOW),
+                log: Rc::clone(&self.log),
+            })
+        }
+        fn transport(&mut self) -> Result<Self::Transport, AppError> {
+            self.log.borrow_mut().push("transport");
+            Ok(ManifestTransport)
+        }
+        fn store(&mut self, _: &ReadRuntimeConfig) -> Result<Self::Repository, AppError> {
+            self.log.borrow_mut().push("store");
+            Ok(self.store.take().unwrap())
+        }
+    }
+
+    #[test]
+    fn manifest_foundations_render_both_outcomes_without_credentials() {
+        for json in [false, true] {
+            for unchanged in [false, true] {
+                let store = SqliteStore::open_in_memory().unwrap();
+                let log = log();
+                let mut foundations = FakeManifestFoundations {
+                    log: Rc::clone(&log),
+                    store: Some(store),
+                };
+                if unchanged {
+                    use destiny_app::DefinitionRepository;
+                    foundations
+                        .store
+                        .as_mut()
+                        .unwrap()
+                        .replace_definitions(destiny_app::DefinitionReplacementInput {
+                            definitions: destiny_app::ManifestDefinitions {
+                                version: destiny_app::DefinitionVersion::new("v1"),
+                                definitions: vec![destiny_app::ItemDefinition {
+                                    hash: destiny_app::ItemHash::new(1),
+                                    bucket_hash: None,
+                                    name: "Item".into(),
+                                    item_type: None,
+                                    tier: None,
+                                    element: None,
+                                    tags: Vec::new(),
+                                    version: destiny_app::DefinitionVersion::new("v1"),
+                                }],
+                            },
+                            checked_at: NOW,
+                            source: destiny_app::SourceMarker::Manifest,
+                        })
+                        .unwrap();
+                    log.borrow_mut().clear();
+                }
+                let mode = if json {
+                    OutputMode::Json
+                } else {
+                    OutputMode::Human
+                };
+                let mut factory = super::ComposingManifestFactory::new(foundations);
+                let output = crate::runner::run_manifest(&mut factory, mode);
+                assert_eq!(output.exit_code, 0, "{}", output.stderr);
+                assert!(output.stderr.is_empty());
+                let expected = match (json, unchanged) {
+                    (false, false) => {
+                        "manifest: updated\nversion: v1\ndefinitions: 1\nskipped: 1\n"
+                    }
+                    (false, true) => "manifest: unchanged\nversion: v1\ndefinitions: 1\n",
+                    (true, false) => {
+                        "{\"definitions\":1,\"kind\":\"sync_manifest\",\"skipped\":1,\"status\":\"updated\",\"version\":\"v1\"}\n"
+                    }
+                    (true, true) => {
+                        "{\"definitions\":1,\"kind\":\"sync_manifest\",\"status\":\"unchanged\",\"version\":\"v1\"}\n"
+                    }
+                };
+                assert_eq!(output.stdout, expected);
+                assert_eq!(
+                    &log.borrow()[..],
+                    ["config", "clock", "now", "transport", "store"]
+                );
+            }
         }
     }
 

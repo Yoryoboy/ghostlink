@@ -196,12 +196,21 @@ impl InMemoryDefinitionRepository {
     ///
     /// This bypasses publication validation on purpose so lookup behavior such
     /// as ambiguous matches stays directly testable. Publication always
-    /// validates the complete set before mutating state, and the seeded state
-    /// carries no committed metadata until the first successful publication.
+    /// validates the complete set before mutating state. Non-empty seeded
+    /// catalogs carry read metadata; use `default()` for an absent catalog.
+    /// Publication history remains unset so the first publish still owns its revision.
     pub fn new(version: DefinitionVersion, definitions: Vec<ItemDefinition>) -> Self {
+        let metadata = (!definitions.is_empty()).then(|| SyncMetadata {
+            dataset: Dataset::ManifestDefinitions,
+            checked_at: Timestamp::new(0),
+            source: SourceMarker::Manifest,
+            revision: SyncRevision::new(0),
+            definition_version: version.clone(),
+        });
         Self {
             version: Some(version),
             definitions,
+            metadata,
             ..Self::default()
         }
     }

@@ -556,6 +556,7 @@ fn error_code(category: ErrorCategory) -> &'static str {
         ErrorCategory::ProviderRateLimit => "provider_rate_limit",
         ErrorCategory::ProviderUnavailable => "provider_unavailable",
         ErrorCategory::ProviderValidation => "provider_validation",
+        ErrorCategory::DefinitionsUnavailable => "definitions_unavailable",
         ErrorCategory::StaleState => "stale_state",
         ErrorCategory::AmbiguousMatch => "ambiguous_match",
         ErrorCategory::UnsupportedOperation => "unsupported_operation",

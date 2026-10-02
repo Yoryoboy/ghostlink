@@ -29,13 +29,14 @@ pub use login::{
 };
 pub use output::{
     OutputMode, render_characters, render_error, render_inspection, render_login_authorized,
-    render_login_instruction, render_search,
+    render_login_instruction, render_manifest, render_search,
 };
 pub use runner::{
     ProcessOutput, ReadFreshness, dispatch, parse_process, run, run_binary, run_binary_with,
-    run_cli, run_login,
+    run_binary_with_manifest, run_cli, run_login, run_manifest,
 };
 pub use runtime::{
-    ComposedReadService, ComposingRuntimeFactory, ProductionFoundations, ReadFoundations,
-    ReadRuntime, RuntimeFactory, compose, production_runtime_factory,
+    ComposedReadService, ComposingManifestFactory, ComposingRuntimeFactory, ManifestFactory,
+    ManifestFoundations, ProductionFoundations, ReadFoundations, ReadRuntime, RuntimeFactory,
+    compose, production_runtime_factory,
 };

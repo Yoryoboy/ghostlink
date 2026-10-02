@@ -26,6 +26,41 @@ pub enum OutputMode {
     Json,
 }
 
+/// Renders the public version label and counts, never definition payloads.
+pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncReport) -> String {
+    use destiny_app::ManifestSyncReport;
+    let (status, version, count, skipped) = match report {
+        ManifestSyncReport::Updated {
+            version,
+            record_count,
+            skipped,
+        } => ("updated", version, *record_count, Some(*skipped)),
+        ManifestSyncReport::Unchanged {
+            version,
+            record_count,
+        } => ("unchanged", version, *record_count, None),
+    };
+    match mode {
+        OutputMode::Human => {
+            let mut text = format!(
+                "manifest: {status}\nversion: {}\ndefinitions: {count}",
+                sanitize(version.as_str())
+            );
+            if let Some(skipped) = skipped {
+                text.push_str(&format!("\nskipped: {skipped}"));
+            }
+            text
+        }
+        OutputMode::Json => {
+            let mut value = json!({"kind": "sync_manifest", "status": status, "version": version.as_str(), "definitions": count});
+            if let Some(skipped) = skipped {
+                value["skipped"] = json!(skipped);
+            }
+            value.to_string()
+        }
+    }
+}
+
 /// Renders one character listing in the selected mode.
 pub fn render_characters(mode: OutputMode, result: &CharacterListResult) -> String {
     match mode {
