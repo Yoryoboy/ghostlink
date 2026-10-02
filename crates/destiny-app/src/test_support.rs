@@ -719,6 +719,9 @@ impl QueuedManifestGateway {
                 self.queue_index(Ok(destiny_core::ports::ManifestIndex {
                     version: batch.version.clone(),
                     component_path: "/common/destiny2_content/test.json".into(),
+                    milestone_path: "/common/destiny2_content/milestones.json".into(),
+                    activity_path: "/common/destiny2_content/activities.json".into(),
+                    modifier_path: "/common/destiny2_content/modifiers.json".into(),
                 }));
                 self.queue_component(Ok(batch));
             }
@@ -748,6 +751,13 @@ impl QueuedManifestGateway {
 }
 
 impl ManifestGateway for QueuedManifestGateway {
+    fn load_world_components(
+        &mut self,
+        _index: &destiny_core::ports::ManifestIndex,
+    ) -> Result<destiny_core::WorldDefinitionsAcquisition, AppError> {
+        Err(AppError::new(ErrorCategory::ProviderUnavailable))
+    }
+
     fn fetch_index(&mut self) -> Result<destiny_core::ports::ManifestIndex, AppError> {
         self.index_calls += 1;
         self.indexes

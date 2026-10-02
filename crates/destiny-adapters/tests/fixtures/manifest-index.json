@@ -4,7 +4,10 @@
     "version": "manifest-fixture-v1",
     "jsonWorldComponentContentPaths": {
       "en": {
-        "DestinyInventoryItemDefinition": "/common/destiny2_content/json/en/DestinyInventoryItemDefinition-fixture.json"
+        "DestinyInventoryItemDefinition": "/common/destiny2_content/json/en/DestinyInventoryItemDefinition-fixture.json",
+        "DestinyMilestoneDefinition": "/common/destiny2_content/json/en/milestones-fixture.json",
+        "DestinyActivityDefinition": "/common/destiny2_content/json/en/activities-fixture.json",
+        "DestinyActivityModifierDefinition": "/common/destiny2_content/json/en/modifiers-fixture.json"
       }
     }
   }

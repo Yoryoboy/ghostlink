@@ -543,6 +543,9 @@ pub struct ManifestAcquisition {
 pub struct ManifestIndex {
     pub version: DefinitionVersion,
     pub component_path: String,
+    pub milestone_path: String,
+    pub activity_path: String,
+    pub modifier_path: String,
 }
 
 impl fmt::Debug for ManifestIndex {
@@ -558,6 +561,10 @@ impl fmt::Debug for ManifestIndex {
 pub trait ManifestGateway {
     fn fetch_index(&mut self) -> Result<ManifestIndex, AppError>;
     fn load_component(&mut self, index: &ManifestIndex) -> Result<ManifestAcquisition, AppError>;
+    fn load_world_components(
+        &mut self,
+        index: &ManifestIndex,
+    ) -> Result<crate::WorldDefinitionsAcquisition, AppError>;
 
     /// Compatibility composition for callers requesting an unconditional acquisition.
     fn load_definitions(&mut self) -> Result<ManifestAcquisition, AppError> {

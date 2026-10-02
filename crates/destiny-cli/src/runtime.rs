@@ -593,7 +593,7 @@ mod tests {
             destiny_adapters::manifest::ManifestTransportError,
         > {
             let body = if request.url().contains("/Platform/") {
-                r#"{"ErrorCode":1,"Response":{"version":"v1","jsonWorldComponentContentPaths":{"en":{"DestinyInventoryItemDefinition":"/common/destiny2_content/items.json"}}}}"#
+                r#"{"ErrorCode":1,"Response":{"version":"v1","jsonWorldComponentContentPaths":{"en":{"DestinyInventoryItemDefinition":"/common/destiny2_content/items.json","DestinyMilestoneDefinition":"/common/destiny2_content/m.json","DestinyActivityDefinition":"/common/destiny2_content/a.json","DestinyActivityModifierDefinition":"/common/destiny2_content/mod.json"}}}}"#
             } else {
                 r#"{"1":{"hash":1,"displayProperties":{"name":"Item"}},"2":{"hash":2,"displayProperties":{"name":""}}}"#
             };

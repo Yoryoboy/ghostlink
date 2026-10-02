@@ -36,8 +36,8 @@ Non-goals (WU-019): per-character progress (WU-020); SandboxPerk or other tables
 
 ## Tasks
 - [x] **WRS-001 — Live evidence and domain boundary.** Evidence-only (no source change); core types and ports move into WRS-002/WRS-004 next to their first consumer and tests. See "Live evidence" and "Boundary decisions" below. Commit evidence: this tracker update.
-- [ ] **WRS-002 — Multi-table Manifest acquisition.** Per-component download plan and typed decoders for Activity, Milestone, and ActivityModifier; version-aware sync covers all tables.
-- [ ] **WRS-003 — SQLite v3 storage.** Migration with definition tables for the new kinds and the widened `sync_metadata` datasets; atomic publish and lookups.
+- [x] **WRS-002 — Multi-table Manifest acquisition.** Delegated writer, test-first (RED: 11 compile errors for missing decoders/port method; GREEN). New `destiny-core/src/world_definitions.rs` (bounded validated types, versioned `WorldDefinitionsAcquisition`, per-kind skipped counts); index carries the three world paths, each `is_safe_component_path`-validated before download; typed streaming decoders with record/byte caps, blank/redacted skipped and counted, all-skipped rejected; content requests carry no API key. Independent verifier: all checks passed (885 tests) but FAILED on (high) no production caller of `load_world_components` -> moved to WRS-003 by scope, and (medium) derived `Debug` exposed provider text -> fixed with manual redacting `Debug` and a regression test (RED "provider name leaked", GREEN; 886 tests, fmt, clippy, diff check). Parent spot check: destiny-core 91 tests pass. Commit evidence: see git log for `feat(manifest): acquire world definition tables`. Per-component download plan and typed decoders for Activity, Milestone, and ActivityModifier, plus the `ManifestGateway::load_world_components` port method. Acquisition only; wiring the world tables into version-aware sync needs storage and moves to WRS-003.
+- [ ] **WRS-003 — SQLite v3 storage.** Migration with definition tables for the new kinds and the widened `sync_metadata` datasets; atomic publish and lookups; `ManifestService::sync` acquires and publishes all four tables (verifier finding on WRS-002: no production caller of `load_world_components` yet).
 - [ ] **WRS-004 — Public milestones gateway.** Allowlisted endpoint, byte cap, typed decode into the domain snapshot.
 - [ ] **WRS-005 — Weekly reset service.** App service resolving milestone, activity, and modifier hashes; explicit unresolved outcomes; definitions-unavailable error.
 - [ ] **WRS-006 — CLI `weekly-reset`.** Text and `--json` output, credential-free runtime composition.
@@ -48,4 +48,4 @@ Non-goals (WU-019): per-character progress (WU-020); SandboxPerk or other tables
 Branch `feature/ghostlink-weekly-reset` created in worktree `/home/yoryo/apps/ghostlink-weekly` from `main` at `083278a`.
 
 ## Next step
-WRS-002.
+WRS-003.

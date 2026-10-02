@@ -765,6 +765,9 @@ mod tests {
             gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
                 version: DefinitionVersion::new("manifest-prior"),
                 component_path: "unused".into(),
+                milestone_path: "unused".into(),
+                activity_path: "unused".into(),
+                modifier_path: "unused".into(),
             }));
             let mut service = ManifestService::new(gateway, repository);
             assert_eq!(
@@ -829,6 +832,9 @@ mod tests {
                     gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
                         version: DefinitionVersion::new(VERSION),
                         component_path: "unused".into(),
+                        milestone_path: "unused".into(),
+                        activity_path: "unused".into(),
+                        modifier_path: "unused".into(),
                     }));
                     gateway.queue_component(Err(error));
                 } else {
@@ -869,6 +875,9 @@ mod tests {
             gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
                 version: DefinitionVersion::new("other-version"),
                 component_path: "unused".into(),
+                milestone_path: "unused".into(),
+                activity_path: "unused".into(),
+                modifier_path: "unused".into(),
             }));
             gateway.queue_component(Ok(acquisition(VERSION, vec![candidate(42, "Gamma")])));
             let mut service = ManifestService::new(gateway, committed_repository());
