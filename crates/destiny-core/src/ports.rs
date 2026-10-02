@@ -493,7 +493,7 @@ impl DefinitionReplacementInput {
 /// [`ItemHash`]; definition and instance identity are separated by the type
 /// boundary, because a runtime instance identifier has no place in a Manifest
 /// record and needs no provider metadata to rule out.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct ManifestDefinitionCandidate {
     pub hash: ItemHash,
     pub bucket_hash: Option<BucketHash>,
@@ -505,6 +505,15 @@ pub struct ManifestDefinitionCandidate {
     pub version: DefinitionVersion,
 }
 
+impl fmt::Debug for ManifestDefinitionCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ManifestDefinitionCandidate")
+            .field("hash", &self.hash)
+            .finish_non_exhaustive()
+    }
+}
+
 /// One versioned batch of untrusted definition candidates from a Manifest gateway.
 ///
 /// Neither the batch version nor its candidates are trusted: they may be blank,
@@ -514,6 +523,8 @@ pub struct ManifestDefinitionCandidate {
 pub struct ManifestAcquisition {
     pub version: DefinitionVersion,
     pub definitions: Vec<ManifestDefinitionCandidate>,
+    /// Blank-name or redacted records omitted by the gateway.
+    pub skipped_count: usize,
 }
 
 /// Returns untrusted normalized-shape candidates, not locations, URLs, or

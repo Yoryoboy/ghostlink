@@ -11,10 +11,12 @@ getrandom = "0.4"
 keyring-core.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+flate2 = "1.1"
 destiny-app = { path = "../destiny-app", features = ["test-support"] }
 destiny-cli = { path = "../destiny-cli" }
 # Dev-only edge used by the CLI/MCP read-parity journey to serialize the real
