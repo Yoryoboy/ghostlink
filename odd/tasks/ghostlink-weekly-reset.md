@@ -14,6 +14,18 @@ Non-goals (WU-019): per-character progress (WU-020); SandboxPerk or other tables
 - CLI: credential-free `sync-manifest` path in `crates/destiny-cli/src/{command,runner,runtime,output}.rs` is the model. MCP: tool constants and specs in `crates/destiny-mcp/src/schema.rs`; exact tool lists asserted in `server.rs`, `schema.rs`, `main.rs`, and `tests/stdio.rs`.
 - Live sizes (WU-018): Activity 11 MB, ActivityModifier 206 KB, Milestone 38 KB.
 
+## Live evidence (2026-10-02, API key only, sanitized)
+- `GET /Platform/Destiny2/Milestones/`: HTTP 200, 4,698 bytes decoded (1,316 gzip), 12 milestones. Per milestone: `milestoneHash`, `order` (always); `startDate`, `endDate` (11/12, ISO-8601 UTC, reset window `2026-09-29T17:00:00Z`..`2026-10-06T17:00:00Z`); `activities` (10/12); `availableQuests` (1/12, `questItemHash` only).
+- Per activity: `activityHash`, `modifierHashes` (max 15), `challengeObjectiveHashes` (4 total), `phaseHashes`.
+- Every milestone, activity, and modifier hash in the live response resolves against the new tables (12 milestones such as The Desert Perpetual, Last Wish, Weekly Clan Engrams; 13 activities such as "Salvation's Edge: Master"); one modifier has a blank name.
+- Tables (en): Milestone 37,712 bytes / 31 records / 0 blank / max name 29; ActivityModifier 206,195 / 351 / 1 blank / 61; Activity 10,988,279 / 4,069 / 325 blank / 63. Modifier descriptions contain `{var:<hash>}` templates (names do not).
+
+## Boundary decisions
+- Store per kind: hash, name, description (bounded), plus milestone `milestoneType` and activity `activityTypeHash`, `activityLightLevel`. No raw payloads.
+- Blank/redacted records are skipped and counted, as for items; a hash that does not resolve is reported as unresolved.
+- Ignored for WU-019: `phaseHashes`, `challengeObjectiveHashes` (would need DestinyObjectiveDefinition), `availableQuests` (would need the items table, already stored; deferred). `{var:...}` templates are stripped or left verbatim, never expanded.
+- Milestones response cap 1 MiB (live 4.7 KB); bounded counts: 64 milestones, 64 activities per milestone, 64 modifiers per activity.
+
 ## Constraints and acceptance
 - Hardening stays: endpoint allowlist, no redirects or proxy, bounded retry, explicit byte caps, typed field-limited decoding, sanitized errors, API key only on index and milestones requests.
 - `sync-manifest` stays version-aware: an unchanged version downloads nothing; an updated version replaces all four tables atomically.
@@ -23,7 +35,7 @@ Non-goals (WU-019): per-character progress (WU-020); SandboxPerk or other tables
 - Delivery: work-unit commits on `feature/ghostlink-weekly-reset`; push/PR/merge are user decisions.
 
 ## Tasks
-- [ ] **WRS-001 — Live evidence and domain boundary.** Measure the live GetPublicMilestones payload (size, fields used) and the shape of the three new tables; define core domain types (activity, milestone, modifier definitions; public milestone snapshot) and ports.
+- [x] **WRS-001 — Live evidence and domain boundary.** Evidence-only (no source change); core types and ports move into WRS-002/WRS-004 next to their first consumer and tests. See "Live evidence" and "Boundary decisions" below. Commit evidence: this tracker update.
 - [ ] **WRS-002 — Multi-table Manifest acquisition.** Per-component download plan and typed decoders for Activity, Milestone, and ActivityModifier; version-aware sync covers all tables.
 - [ ] **WRS-003 — SQLite v3 storage.** Migration with definition tables for the new kinds and the widened `sync_metadata` datasets; atomic publish and lookups.
 - [ ] **WRS-004 — Public milestones gateway.** Allowlisted endpoint, byte cap, typed decode into the domain snapshot.
@@ -36,4 +48,4 @@ Non-goals (WU-019): per-character progress (WU-020); SandboxPerk or other tables
 Branch `feature/ghostlink-weekly-reset` created in worktree `/home/yoryo/apps/ghostlink-weekly` from `main` at `083278a`.
 
 ## Next step
-WRS-001.
+WRS-002.
