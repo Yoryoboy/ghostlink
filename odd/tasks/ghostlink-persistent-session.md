@@ -28,7 +28,7 @@ This WU explicitly supersedes the earlier non-goals "no client secret, confident
 ## Tasks
 - [x] **PSR-001 — Establish tracker and branch.** Branch `feature/ghostlink-persistent-session` from `main` at `382c4f5`. Commit evidence: `071cd40`.
 - [x] **PSR-002 — Core types and ports.** `RefreshToken`, optional refresh grant on `AccessCredential`, token-refresh port, credential-source port with a static implementation. Delegated writer, test-first (RED: five missing-item compile errors; GREEN). Signatures: `RefreshToken::from_bytes` (non-empty, 4 KiB bound), `RefreshGrant { token, expires_at }`, `TokenRefresh::refresh(&mut self, &RefreshToken)`, `CredentialSource::current(&self)` (shared lock-backed sources), `StaticCredentialSource`. Non-core files only gained `refresh_grant: None`. Checks: fmt, build, 925 passed, clippy, diff check. Commit evidence: `abdaa31`.
-- [ ] **PSR-003 — Confidential token adapter.** Basic client auth when a secret is configured; decode `refresh_token`/`refresh_expires_in` (still rejected for public mode); refresh-grant request and decode with rotation.
+- [x] **PSR-003 — Confidential token adapter.** Basic client auth when a secret is configured; decode `refresh_token`/`refresh_expires_in` (still rejected for public mode); refresh-grant request and decode with rotation. Delegated writer, test-first (RED: unresolved `ClientSecret`; GREEN). `ClientSecret` in core; `BungieTokenExchange::confidential(..)` opt-in, `new(..)` unchanged; Basic header (RFC 6749 form-encoded id/secret, `base64` 0.22.1) carried as a separate redacted, `sensitive` header; confidential body omits `client_id`/`client_secret`; refresh fields paired; refresh 400/401 -> `ReauthorizationRequired`, 403 keeps `ProviderAuthentication`; public refresh refused at runtime before transport. Checks: fmt, build, 931 passed, clippy, diff check. Live risk: Bungie may not URL-decode Basic components; harmless for unreserved-character secrets. Commit evidence: `edcd004`.
 - [ ] **PSR-004 — Keyring record v2.** Persist the refresh grant; read v1 records unchanged.
 - [ ] **PSR-005 — Configuration.** Optional `BUNGIE_CLIENT_SECRET`; read runtime gains client id and optional secret; `config.example.env` and README.
 - [ ] **PSR-006 — Refreshing credential source and gateway consumption.** App-layer refresh policy (margin, rotation, single-flight lock, failure mapping); profile and transfer gateways request a credential per call.
@@ -39,4 +39,4 @@ This WU explicitly supersedes the earlier non-goals "no client secret, confident
 Exploration (read-only): no OAuth refresh code exists; `token.rs` decode rejects `refresh_token`; `CredentialStore` holds one credential (`GLCR` v1); gateways capture a fixed `AccessCredential` at composition (`destiny-cli/src/runtime.rs`, `destiny-mcp/src/main.rs`). User chose mid-session MCP refresh.
 
 ## Next step
-PSR-003.
+PSR-004.

@@ -12,7 +12,7 @@ pub mod state;
 
 pub use auth::{
     AccessCredential, AccessCredentialMetadata, AuthorizationCallback, AuthorizationCode,
-    AuthorizationState, CallbackResult, RefreshGrant, RefreshToken,
+    AuthorizationState, CallbackResult, ClientSecret, RefreshGrant, RefreshToken,
 };
 pub use domain::{
     Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, PerkSummary,

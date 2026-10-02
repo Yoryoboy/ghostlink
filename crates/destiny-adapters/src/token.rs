@@ -1,4 +1,4 @@
-//! Production public-client Bungie authorization-code token exchange.
+//! Production public/confidential Bungie OAuth token exchange.
 //!
 //! This module owns the only network-facing OAuth token path. It performs one
 //! blocking HTTPS `application/x-www-form-urlencoded` POST to the documented
@@ -14,16 +14,18 @@
 //!   the actual bytes read;
 //! - a strict `application/json` response media-type check with optional
 //!   parameters, evaluated before any response body is accepted as JSON;
-//! - no client secret, scope, refresh grant, authorization header, or API-key
-//!   header is ever constructed;
+//! - public requests never carry secrets or refresh material; confidential
+//!   requests use a redacted Basic header, never a client-secret form field;
 //! - diagnostics never expose request bodies, codes, tokens, client IDs,
 //!   redirect URIs, or upstream error text.
 //!
 //! Tests use the [`TokenTransport`] seam instead of live HTTP.
 
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use destiny_core::{
-    AccessCredential, AccessCredentialMetadata, AppError, AuthorizationCode, Clock,
-    CredentialMaterial, ErrorCategory, PublicTokenExchange, Timestamp,
+    AccessCredential, AccessCredentialMetadata, AppError, AuthorizationCode, ClientSecret, Clock,
+    CredentialMaterial, ErrorCategory, PublicTokenExchange, RefreshGrant, RefreshToken, Timestamp,
+    TokenRefresh,
 };
 use std::fmt;
 use std::io::Read;
@@ -81,6 +83,7 @@ pub struct TokenRequest {
     method: &'static str,
     url: String,
     headers: Vec<(&'static str, &'static str)>,
+    authorization: Option<destiny_core::Redacted<String>>,
     fields: Vec<(&'static str, String)>,
 }
 
@@ -91,6 +94,7 @@ impl TokenRequest {
             method: "POST",
             url: endpoint.to_owned(),
             headers: vec![("content-type", CONTENT_TYPE_FORM)],
+            authorization: None,
             fields: vec![
                 ("grant_type", GRANT_TYPE_AUTHORIZATION_CODE.to_owned()),
                 ("code", code.to_owned()),
@@ -98,6 +102,25 @@ impl TokenRequest {
                 ("redirect_uri", redirect_uri.to_owned()),
             ],
         }
+    }
+
+    /// Secret header value for trusted transports only; omitted from Debug.
+    pub fn authorization(&self) -> Option<&str> {
+        self.authorization
+            .as_ref()
+            .map(|value| value.expose_secret().as_str())
+    }
+
+    fn authenticate(&mut self, client_id: &str, secret: &ClientSecret) -> Result<(), AppError> {
+        let secret = std::str::from_utf8(secret.as_bytes()).map_err(|_| configuration())?;
+        let encode =
+            |value: &str| form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>();
+        let credentials = format!("{}:{}", encode(client_id), encode(secret));
+        self.authorization = Some(destiny_core::Redacted::new(format!(
+            "Basic {}",
+            STANDARD.encode(credentials)
+        )));
+        Ok(())
     }
 
     pub fn method(&self) -> &'static str {
@@ -263,6 +286,12 @@ impl TokenTransport for HttpTokenTransport {
                 .map_err(|_| TokenTransportError::Configuration)?;
             builder = builder.header(name, value);
         }
+        if let Some(authorization) = request.authorization() {
+            let mut value = reqwest::header::HeaderValue::from_str(authorization)
+                .map_err(|_| TokenTransportError::Configuration)?;
+            value.set_sensitive(true);
+            builder = builder.header(reqwest::header::AUTHORIZATION, value);
+        }
         let response = builder
             .body(request.encoded_body())
             .send()
@@ -293,14 +322,14 @@ fn classify_transport_error(error: reqwest::Error) -> TokenTransportError {
     }
 }
 
-/// The production public-client exchange adapter.
+/// The production public/confidential exchange adapter.
 ///
-/// It holds non-secret configuration (client ID and exact callback URI), a
-/// transport, and the injected application clock used to compute absolute
-/// access-token expiry.
+/// The clock computes absolute access and refresh expiry. Public refresh calls
+/// fail locally without constructing a request or invoking the transport.
 pub struct BungieTokenExchange<T, C> {
     client_id: String,
     redirect_uri: String,
+    client_secret: Option<ClientSecret>,
     transport: T,
     clock: C,
 }
@@ -321,9 +350,23 @@ impl<T, C> BungieTokenExchange<T, C> {
         Ok(Self {
             client_id,
             redirect_uri,
+            client_secret: None,
             transport,
             clock,
         })
+    }
+
+    /// Uses Basic authentication; the client ID is not duplicated in the body.
+    pub fn confidential(
+        client_id: impl Into<String>,
+        redirect_uri: impl Into<String>,
+        client_secret: ClientSecret,
+        transport: T,
+        clock: C,
+    ) -> Result<Self, AppError> {
+        let mut exchange = Self::new(client_id, redirect_uri, transport, clock)?;
+        exchange.client_secret = Some(client_secret);
+        Ok(exchange)
     }
 
     pub fn transport(&self) -> &T {
@@ -356,13 +399,49 @@ where
 {
     fn exchange(&mut self, code: AuthorizationCode) -> Result<AccessCredential, AppError> {
         let code = std::str::from_utf8(code.as_bytes()).map_err(|_| provider_validation())?;
-        let request = TokenRequest::authorization_code(
+        let mut request = TokenRequest::authorization_code(
             TOKEN_ENDPOINT,
             &self.client_id,
             &self.redirect_uri,
             code,
         );
-        let mut response = self.transport.send(&request).map_err(map_transport_error)?;
+        if let Some(secret) = &self.client_secret {
+            request.fields.retain(|(name, _)| *name != "client_id");
+            request.authenticate(&self.client_id, secret)?;
+        }
+        self.send_and_decode(&request, false)
+    }
+}
+
+impl<T: TokenTransport, C: Clock> TokenRefresh for BungieTokenExchange<T, C> {
+    fn refresh(&mut self, token: &RefreshToken) -> Result<AccessCredential, AppError> {
+        let secret = self.client_secret.as_ref().ok_or_else(configuration)?;
+        let token = std::str::from_utf8(token.as_bytes()).map_err(|_| provider_validation())?;
+        let mut request = TokenRequest {
+            method: "POST",
+            url: TOKEN_ENDPOINT.to_owned(),
+            headers: vec![("content-type", CONTENT_TYPE_FORM)],
+            authorization: None,
+            fields: vec![
+                ("grant_type", "refresh_token".to_owned()),
+                ("refresh_token", token.to_owned()),
+            ],
+        };
+        request.authenticate(&self.client_id, secret)?;
+        self.send_and_decode(&request, true)
+    }
+}
+
+impl<T: TokenTransport, C: Clock> BungieTokenExchange<T, C> {
+    fn send_and_decode(
+        &mut self,
+        request: &TokenRequest,
+        refresh: bool,
+    ) -> Result<AccessCredential, AppError> {
+        let mut response = self.transport.send(request).map_err(map_transport_error)?;
+        if refresh && matches!(response.status, 400 | 401) {
+            return Err(AppError::new(ErrorCategory::ReauthorizationRequired));
+        }
         if response.status != 200 {
             return Err(classify_status(response.status));
         }
@@ -374,7 +453,7 @@ where
             serde_json::from_slice(&body).map_err(|_| provider_validation())?;
         let object = value.as_object().ok_or_else(provider_validation)?;
         let now = self.clock.now()?;
-        decode_success(object, now)
+        decode_success(object, now, self.client_secret.is_some())
     }
 }
 
@@ -484,14 +563,16 @@ fn read_bounded_body(
 
 /// Decodes a strict 200 response into an [`AccessCredential`].
 ///
-/// Unknown non-secret keys (including the unused membership identity) are
-/// ignored, but any refresh material is treated as provider validation because
-/// a public client must never receive or store it.
+/// Unknown keys (including membership identity) are ignored. Refresh fields
+/// must be paired and are only accepted for confidential clients.
 fn decode_success(
     object: &serde_json::Map<String, serde_json::Value>,
     now: Timestamp,
+    confidential: bool,
 ) -> Result<AccessCredential, AppError> {
-    if object.contains_key("refresh_token") || object.contains_key("refresh_expires_in") {
+    if !confidential
+        && (object.contains_key("refresh_token") || object.contains_key("refresh_expires_in"))
+    {
         return Err(provider_validation());
     }
     let access_token = object
@@ -515,10 +596,30 @@ fn decode_success(
         .checked_add(expires_in)
         .map(Timestamp::new)
         .ok_or_else(provider_validation)?;
+    let refresh_grant = match (
+        object.get("refresh_token"),
+        object.get("refresh_expires_in"),
+    ) {
+        (None, None) => None,
+        (Some(token), Some(lifetime)) if confidential => {
+            let token = token.as_str().ok_or_else(provider_validation)?;
+            let seconds = expires_in_seconds(lifetime).ok_or_else(provider_validation)?;
+            let expires_at = now
+                .seconds()
+                .checked_add(seconds)
+                .map(Timestamp::new)
+                .ok_or_else(provider_validation)?;
+            Some(RefreshGrant {
+                token: RefreshToken::from_bytes(token.as_bytes())?,
+                expires_at,
+            })
+        }
+        _ => return Err(provider_validation()),
+    };
     Ok(AccessCredential {
         metadata: AccessCredentialMetadata { expires_at },
         material: CredentialMaterial::from_bytes(access_token.as_bytes().to_vec()),
-        refresh_grant: None,
+        refresh_grant,
     })
 }
 
@@ -665,15 +766,13 @@ mod tests {
             .iter()
             .map(|(name, value)| (*name, value.as_str()))
             .collect();
-        assert_eq!(
-            fields,
-            vec![
-                ("grant_type", "authorization_code"),
-                ("code", CODE_SENTINEL),
-                ("client_id", CLIENT_SENTINEL),
-                ("redirect_uri", REDIRECT_SENTINEL),
-            ]
-        );
+        let expected_fields = vec![
+            ("grant_type", "authorization_code"),
+            ("code", CODE_SENTINEL),
+            ("client_id", CLIENT_SENTINEL),
+            ("redirect_uri", REDIRECT_SENTINEL),
+        ];
+        assert!(fields == expected_fields);
         let field_names: Vec<&str> = request.fields().iter().map(|(name, _)| *name).collect();
         assert_eq!(
             field_names,
@@ -695,10 +794,8 @@ mod tests {
             );
         }
         let encoded = request.encoded_body();
-        assert_eq!(
-            encoded,
-            "grant_type=authorization_code&code=sentinel-authorization-code&client_id=sentinel-client-id&redirect_uri=http%3A%2F%2F127.0.0.1%3A43127%2Fsentinel-callback"
-        );
+        let expected_body = "grant_type=authorization_code&code=sentinel-authorization-code&client_id=sentinel-client-id&redirect_uri=http%3A%2F%2F127.0.0.1%3A43127%2Fsentinel-callback";
+        assert!(encoded == expected_body);
         for forbidden in [
             "client_secret=",
             "scope=",
@@ -726,10 +823,7 @@ mod tests {
         let (result, _) = run(FakeTransport::with(Ok(json_response(200, &body))), 1000);
         let credential = result.unwrap();
         assert_eq!(credential.metadata.expires_at, Timestamp::new(4600));
-        assert_eq!(
-            credential.material.expose_secret(),
-            TOKEN_SENTINEL.as_bytes()
-        );
+        assert!(credential.material.expose_secret() == TOKEN_SENTINEL.as_bytes());
     }
 
     #[test]
@@ -865,7 +959,7 @@ mod tests {
             assert_eq!(
                 failure_category(&result),
                 ErrorCategory::ProviderValidation,
-                "body {body} must be rejected"
+                "invalid required fields must be rejected"
             );
         }
     }
@@ -885,7 +979,7 @@ mod tests {
             assert_eq!(
                 failure_category(&result),
                 ErrorCategory::ProviderValidation,
-                "refresh material {extra} must be rejected"
+                "public refresh material must be rejected"
             );
         }
     }
@@ -896,10 +990,7 @@ mod tests {
             "{{\"access_token\":\"{TOKEN_SENTINEL}\",\"token_type\":\"Bearer\",\"expires_in\":60,\"membership_id\":\"4611686018484639825\",\"other\":\"ignored\"}}"
         );
         let (result, _) = run(FakeTransport::with(Ok(json_response(200, &body))), 0);
-        assert_eq!(
-            result.unwrap().material.expose_secret(),
-            TOKEN_SENTINEL.as_bytes()
-        );
+        assert!(result.unwrap().material.expose_secret() == TOKEN_SENTINEL.as_bytes());
     }
 
     #[test]
@@ -1065,11 +1156,194 @@ mod tests {
         assert!(!rendered.contains("body-sentinel"));
     }
 
+    const SECRET_SENTINEL: &str = "secret:+/%";
+    const REFRESH_SENTINEL: &str = "refresh:+/%";
+
+    fn confidential_with(
+        body: &str,
+        status: u16,
+        now: u64,
+    ) -> BungieTokenExchange<FakeTransport, FakeClock> {
+        BungieTokenExchange::confidential(
+            "client:+/%",
+            REDIRECT_SENTINEL,
+            ClientSecret::from_bytes(SECRET_SENTINEL).expect("secret"),
+            FakeTransport::with(Ok(json_response(status, body))),
+            FakeClock(now),
+        )
+        .expect("configuration")
+    }
+
+    fn grant_body(extra: &str) -> String {
+        let mut body = success_body("60");
+        body.pop();
+        body.push(',');
+        body.push_str(extra);
+        body.push('}');
+        body
+    }
+
+    #[test]
+    fn confidential_code_request_and_grant_are_exact_and_redacted() {
+        let body = grant_body(
+            "\"refresh_token\":\"refresh:+/%\",\"refresh_expires_in\":120,\"membership_id\":\"ignored\"",
+        );
+        let mut exchange = confidential_with(&body, 200, 1000);
+        let credential = exchange
+            .exchange(AuthorizationCode::from_bytes(CODE_SENTINEL))
+            .expect("credential");
+        assert_eq!(credential.metadata.expires_at, Timestamp::new(1060));
+        let grant = credential.refresh_grant().expect("grant");
+        assert_eq!(grant.expires_at, Timestamp::new(1120));
+        assert!(grant.token.as_bytes() == REFRESH_SENTINEL.as_bytes());
+        let request = exchange.transport().last_request();
+        // RFC 6749: encode each component first, then join with a colon.
+        let expected = "Basic Y2xpZW50JTNBJTJCJTJGJTI1OnNlY3JldCUzQSUyQiUyRiUyNQ==";
+        assert!(request.authorization() == Some(expected));
+        let expected_body = "grant_type=authorization_code&code=sentinel-authorization-code&redirect_uri=http%3A%2F%2F127.0.0.1%3A43127%2Fsentinel-callback";
+        assert!(request.encoded_body() == expected_body);
+        assert_no_secrets(
+            &format!("{request:?} {exchange:?} {credential:?}"),
+            &[
+                SECRET_SENTINEL,
+                REFRESH_SENTINEL,
+                TOKEN_SENTINEL,
+                CODE_SENTINEL,
+                expected,
+            ],
+        );
+    }
+
+    #[test]
+    fn confidential_refresh_fields_are_paired_bounded_and_checked() {
+        for extra in [
+            "\"refresh_token\":\"refresh:+/%\"",
+            "\"refresh_expires_in\":120",
+            "\"refresh_token\":null,\"refresh_expires_in\":120",
+            "\"refresh_token\":\"\",\"refresh_expires_in\":120",
+            "\"refresh_token\":\"refresh:+/%\",\"refresh_expires_in\":0",
+            "\"refresh_token\":\"refresh:+/%\",\"refresh_expires_in\":-1",
+            "\"refresh_token\":\"refresh:+/%\",\"refresh_expires_in\":1.5",
+            "\"refresh_token\":\"refresh:+/%\",\"refresh_expires_in\":120.0",
+            "\"refresh_token\":\"refresh:+/%\",\"refresh_expires_in\":\"120\"",
+            "\"refresh_token\":\"refresh:+/%\",\"refresh_expires_in\":null",
+            "\"refresh_token\":\"refresh:+/%\",\"refresh_expires_in\":18446744073709551615",
+        ] {
+            let mut exchange = confidential_with(&grant_body(extra), 200, 1000);
+            let result = exchange.exchange(AuthorizationCode::from_bytes(CODE_SENTINEL));
+            assert_eq!(failure_category(&result), ErrorCategory::ProviderValidation);
+        }
+        let oversized = format!(
+            "\"refresh_token\":\"{}\",\"refresh_expires_in\":120",
+            "x".repeat(RefreshToken::MAX_LENGTH + 1)
+        );
+        let mut exchange = confidential_with(&grant_body(&oversized), 200, 1000);
+        assert_eq!(
+            failure_category(&exchange.exchange(AuthorizationCode::from_bytes(CODE_SENTINEL))),
+            ErrorCategory::ProviderValidation
+        );
+        let mut exchange = confidential_with(&success_body("60"), 200, 1000);
+        assert!(
+            exchange
+                .exchange(AuthorizationCode::from_bytes(CODE_SENTINEL))
+                .expect("credential")
+                .refresh_grant()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn refresh_request_rotation_and_omission() {
+        for extra in [
+            None,
+            Some("\"refresh_token\":\"rotated-refresh\",\"refresh_expires_in\":120"),
+        ] {
+            let body = extra.map(grant_body).unwrap_or_else(|| success_body("60"));
+            let mut exchange = confidential_with(&body, 200, 1000);
+            let token = RefreshToken::from_bytes(REFRESH_SENTINEL).expect("token");
+            let credential = exchange.refresh(&token).expect("credential");
+            let request = exchange.transport().last_request();
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url(), TOKEN_ENDPOINT);
+            assert!(request.authorization().is_some());
+            let expected_body = "grant_type=refresh_token&refresh_token=refresh%3A%2B%2F%25";
+            assert!(request.encoded_body() == expected_body);
+            assert_eq!(credential.metadata.expires_at, Timestamp::new(1060));
+            if extra.is_some() {
+                let grant = credential.refresh_grant().expect("rotated grant");
+                let expected_token = b"rotated-refresh";
+                assert!(grant.token.as_bytes() == expected_token);
+                assert_eq!(grant.expires_at, Timestamp::new(1120));
+            } else {
+                assert!(credential.refresh_grant().is_none());
+            }
+            assert_no_secrets(
+                &format!("{request:?} {exchange:?} {credential:?}"),
+                &[
+                    SECRET_SENTINEL,
+                    REFRESH_SENTINEL,
+                    "rotated-refresh",
+                    TOKEN_SENTINEL,
+                    request.authorization().expect("header"),
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_validation_is_sanitized_before_and_after_transport() {
+        let mut exchange = confidential_with(&success_body("60"), 200, 1000);
+        let token = RefreshToken::from_bytes(vec![0xff]).expect("opaque token");
+        assert_eq!(
+            failure_category(&exchange.refresh(&token)),
+            ErrorCategory::ProviderValidation
+        );
+        assert!(exchange.transport().recorded.is_empty());
+        let token = RefreshToken::from_bytes(REFRESH_SENTINEL).expect("token");
+        let body = grant_body("\"refresh_token\":\"refresh:+/%\"");
+        let mut exchange = confidential_with(&body, 200, 1000);
+        let error = exchange.refresh(&token).expect_err("unpaired grant");
+        assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+        assert_no_secrets(
+            &format!("{error:?} {error}"),
+            &[REFRESH_SENTINEL, SECRET_SENTINEL, TOKEN_SENTINEL],
+        );
+    }
+
+    #[test]
+    fn refresh_rejection_requires_reauthorization_and_public_never_sends() {
+        let token = RefreshToken::from_bytes(REFRESH_SENTINEL).expect("token");
+        for (status, category) in [
+            (400, ErrorCategory::ReauthorizationRequired),
+            (401, ErrorCategory::ReauthorizationRequired),
+            (403, ErrorCategory::ProviderAuthentication),
+            (429, ErrorCategory::ProviderRateLimit),
+            (503, ErrorCategory::ProviderUnavailable),
+        ] {
+            let mut exchange = confidential_with("upstream-secret", status, 1000);
+            let error = exchange.refresh(&token).expect_err("rejected");
+            assert_eq!(error.category(), category);
+            assert_no_secrets(
+                &format!("{error:?} {error}"),
+                &[SECRET_SENTINEL, REFRESH_SENTINEL, "upstream-secret"],
+            );
+        }
+        let mut public = exchange_with(unused_transport(), 0);
+        assert_eq!(
+            public
+                .refresh(&token)
+                .expect_err("public refresh forbidden")
+                .category(),
+            ErrorCategory::ConfigurationError
+        );
+        assert!(public.transport().recorded.is_empty());
+    }
+
     fn assert_no_secrets(rendered: &str, secrets: &[&str]) {
         for secret in secrets {
             assert!(
                 !rendered.contains(secret),
-                "diagnostic leaked a sentinel: {rendered}"
+                "diagnostic leaked protected material"
             );
         }
     }
