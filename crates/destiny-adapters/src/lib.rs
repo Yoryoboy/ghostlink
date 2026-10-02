@@ -26,6 +26,7 @@ pub use profile_gateway::{
     ProfileHttpResponse, ProfileTransport, ProfileTransportError, decode_effective_membership,
     fetch_bounded, is_allowed_profile_url, profile_endpoint,
 };
+pub use public_milestones::format_reset_timestamp;
 pub use random::SystemSecureRandom;
 pub use token::{
     BungieTokenExchange, HttpTokenTransport, TOKEN_ENDPOINT, TokenHttpResponse, TokenRequest,

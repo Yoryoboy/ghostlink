@@ -364,6 +364,28 @@ impl<F: ManifestFoundations> ManifestFactory for ComposingManifestFactory<F> {
     }
 }
 
+/// Public weekly reads share the Manifest foundations, never account credentials.
+pub trait WeeklyResetFactory {
+    fn weekly_reset(&mut self) -> Result<destiny_app::weekly_reset::WeeklyReset, CliError>;
+}
+
+impl<F: ManifestFoundations> WeeklyResetFactory for ComposingManifestFactory<F> {
+    fn weekly_reset(&mut self) -> Result<destiny_app::weekly_reset::WeeklyReset, CliError> {
+        let foundations = &mut self.foundations;
+        let config = foundations.config()?;
+        let clock = foundations.clock()?;
+        let transport = foundations.transport()?;
+        let api_key =
+            destiny_adapters::manifest::ManifestApiKey::new(config.api_key().expose_secret())?;
+        let gateway =
+            destiny_adapters::manifest::BungieManifestGateway::new(api_key, transport, clock);
+        let repository = foundations.store(&config)?;
+        destiny_app::weekly_reset::WeeklyResetService::new(gateway, repository)
+            .weekly_reset()
+            .map_err(CliError::from)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -629,6 +651,121 @@ mod tests {
         fn store(&mut self, _: &ReadRuntimeConfig) -> Result<Self::Repository, AppError> {
             self.log.borrow_mut().push("store");
             Ok(self.store.take().unwrap())
+        }
+    }
+
+    struct WeeklyTransport {
+        calls: Rc<RefCell<Vec<&'static str>>>,
+    }
+    impl destiny_adapters::manifest::ManifestTransport for WeeklyTransport {
+        fn get(
+            &mut self,
+            request: &destiny_adapters::manifest::ManifestHttpRequest<'_>,
+        ) -> Result<
+            destiny_adapters::manifest::ManifestHttpResponse,
+            destiny_adapters::manifest::ManifestTransportError,
+        > {
+            assert_eq!(
+                request.url(),
+                "https://www.bungie.net/Platform/Destiny2/Milestones/"
+            );
+            self.calls.borrow_mut().push("milestones");
+            Ok(destiny_adapters::manifest::ManifestHttpResponse::new(200, None, Some("application/json".into()), Box::new(std::io::Cursor::new(br#"{"ErrorCode":1,"ErrorStatus":"Success","Response":{"1":{"milestoneHash":1,"order":1,"activities":[{"activityHash":1,"modifierHashes":[1]}]}}}"#.to_vec()))))
+        }
+    }
+    struct WeeklyFoundations {
+        inner: FakeManifestFoundations,
+    }
+    impl super::ManifestFoundations for WeeklyFoundations {
+        type Transport = WeeklyTransport;
+        type Clock = ScriptedClock;
+        type Repository = SqliteStore;
+        fn config(&mut self) -> Result<ReadRuntimeConfig, AppError> {
+            self.inner.config()
+        }
+        fn clock(&mut self) -> Result<Self::Clock, AppError> {
+            self.inner.clock()
+        }
+        fn transport(&mut self) -> Result<Self::Transport, AppError> {
+            Ok(WeeklyTransport {
+                calls: Rc::clone(&self.inner.log),
+            })
+        }
+        fn store(&mut self, config: &ReadRuntimeConfig) -> Result<Self::Repository, AppError> {
+            self.inner.store(config)
+        }
+    }
+
+    #[test]
+    fn weekly_reset_composition_uses_published_sqlite_and_gates_empty_definitions() {
+        use destiny_app::{ManifestGateway, WorldDefinitionRepository};
+        for populated in [false, true] {
+            // Private temporary SQLite database: no persistent state or credentials.
+            let mut store = SqliteStore::open_in_memory().unwrap();
+            if populated {
+                let mut gateway = destiny_adapters::manifest::BungieManifestGateway::new(
+                    destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL).unwrap(),
+                    ManifestTransport,
+                    ScriptedClock {
+                        now: Ok(NOW),
+                        log: log(),
+                    },
+                );
+                let index = gateway.fetch_index().unwrap();
+                let world = gateway.load_world_components(&index).unwrap();
+                store
+                    .publish_manifest(
+                        destiny_app::DefinitionReplacementInput {
+                            definitions: destiny_app::ManifestDefinitions {
+                                version: destiny_app::DefinitionVersion::new("v1"),
+                                definitions: vec![destiny_app::ItemDefinition {
+                                    hash: destiny_app::ItemHash::new(1),
+                                    bucket_hash: None,
+                                    name: "Item".into(),
+                                    item_type: None,
+                                    tier: None,
+                                    element: None,
+                                    tags: Vec::new(),
+                                    version: destiny_app::DefinitionVersion::new("v1"),
+                                }],
+                            },
+                            checked_at: NOW,
+                            source: destiny_app::SourceMarker::Manifest,
+                        },
+                        world,
+                    )
+                    .unwrap();
+            }
+            let calls = log();
+            let mut factory = super::ComposingManifestFactory::new(WeeklyFoundations {
+                inner: FakeManifestFoundations {
+                    log: Rc::clone(&calls),
+                    store: Some(store),
+                },
+            });
+            let output = crate::runner::run_weekly_reset(&mut factory, OutputMode::Human);
+            if populated {
+                assert_eq!(output.exit_code, 0, "{}", output.stderr);
+                assert_eq!(
+                    output.stdout,
+                    "Weekly reset (manifest v1)\nItem\n  - Item\n    modifiers: Item\n"
+                );
+                assert_eq!(
+                    calls
+                        .borrow()
+                        .iter()
+                        .filter(|step| **step == "milestones")
+                        .count(),
+                    1
+                );
+            } else {
+                assert_eq!(output.exit_code, 33);
+                assert_eq!(
+                    output.stderr,
+                    "error: definitions not loaded; run ghostlink sync-manifest\n"
+                );
+                assert!(!calls.borrow().contains(&"milestones"));
+            }
         }
     }
 

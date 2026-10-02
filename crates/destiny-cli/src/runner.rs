@@ -245,11 +245,44 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
+    let mut weekly =
+        crate::runtime::ComposingManifestFactory::new(crate::runtime::ProductionFoundations);
+    run_binary_with_public(
+        read_factory,
+        login_factory,
+        manifest_factory,
+        &mut weekly,
+        present,
+        args,
+    )
+}
+
+/// Injectable routing for both credential-free public commands.
+pub fn run_binary_with_public<F, G, M, W, P, I, T>(
+    read_factory: &mut F,
+    login_factory: &mut G,
+    manifest_factory: &mut M,
+    weekly_factory: &mut W,
+    present: &mut P,
+    args: I,
+) -> ProcessOutput
+where
+    F: RuntimeFactory,
+    G: LoginFactory,
+    M: crate::runtime::ManifestFactory,
+    W: crate::runtime::WeeklyResetFactory,
+    P: FnMut(&str) -> Result<(), CliError>,
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
     let cli = match parse_process(args) {
         Ok(cli) => cli,
         Err(output) => return output,
     };
     let mode = cli.output_mode();
+    if let Command::WeeklyReset = &cli.command {
+        return run_weekly_reset(weekly_factory, mode);
+    }
     if let Command::SyncManifest = &cli.command {
         return run_manifest(manifest_factory, mode);
     }
@@ -284,6 +317,17 @@ pub fn run_manifest<M: crate::runtime::ManifestFactory>(
 ) -> ProcessOutput {
     match factory.sync() {
         Ok(report) => ProcessOutput::success(crate::output::render_manifest(mode, &report)),
+        Err(error) => ProcessOutput::failure(mode, error),
+    }
+}
+
+/// Runs a fresh public weekly read through its credential-free composition.
+pub fn run_weekly_reset<W: crate::runtime::WeeklyResetFactory>(
+    factory: &mut W,
+    mode: OutputMode,
+) -> ProcessOutput {
+    match factory.weekly_reset() {
+        Ok(reset) => ProcessOutput::success(crate::output::render_weekly_reset(mode, &reset)),
         Err(error) => ProcessOutput::failure(mode, error),
     }
 }
@@ -880,6 +924,58 @@ mod tests {
         assert_eq!(
             output.stderr,
             "{\"error\":{\"code\":\"provider_unavailable\",\"message\":\"the provider is unavailable\"}}\n"
+        );
+    }
+
+    #[test]
+    fn weekly_routing_never_builds_read_login_or_manifest() {
+        struct Public;
+        impl crate::runtime::ManifestFactory for Public {
+            fn sync(&mut self) -> Result<destiny_app::ManifestSyncReport, CliError> {
+                panic!("weekly read must not sync")
+            }
+        }
+        struct Weekly(usize);
+        impl crate::runtime::WeeklyResetFactory for Weekly {
+            fn weekly_reset(&mut self) -> Result<destiny_app::weekly_reset::WeeklyReset, CliError> {
+                self.0 += 1;
+                Err(CliError::from_category(
+                    ErrorCategory::DefinitionsUnavailable,
+                ))
+            }
+        }
+        let mut read = FakeFactory::new(RecordingService::new());
+        let mut login = FakeLoginFactory::default();
+        let mut weekly = Weekly(0);
+        for arguments in [
+            vec!["weekly-reset", "--unknown"],
+            vec!["weekly-reset", "--help"],
+        ] {
+            super::run_binary_with_public(
+                &mut read,
+                &mut login,
+                &mut Public,
+                &mut weekly,
+                &mut |_| panic!("weekly read must not present login"),
+                argv(arguments),
+            );
+        }
+        assert_eq!(weekly.0, 0);
+        let output = super::run_binary_with_public(
+            &mut read,
+            &mut login,
+            &mut Public,
+            &mut weekly,
+            &mut |_| panic!("weekly read must not present login"),
+            argv(["weekly-reset", "--json"]),
+        );
+        assert_eq!(weekly.0, 1);
+        assert_eq!(read.build_count(), 0);
+        assert!(login.modes().is_empty());
+        assert_eq!(output.exit_code, 33);
+        assert_eq!(
+            output.stderr,
+            "{\"error\":{\"code\":\"definitions_unavailable\",\"message\":\"definitions not loaded; run ghostlink sync-manifest\"}}\n"
         );
     }
 

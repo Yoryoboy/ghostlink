@@ -96,6 +96,69 @@ pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncRepor
     }
 }
 
+/// Renders the resolved public reset; unknown hashes stay explicitly unresolved.
+pub fn render_weekly_reset(
+    mode: OutputMode,
+    reset: &destiny_app::weekly_reset::WeeklyReset,
+) -> String {
+    use destiny_adapters::format_reset_timestamp;
+    use destiny_app::weekly_reset::DefinitionResolution;
+    let fields = |definition: &DefinitionResolution| match definition {
+        DefinitionResolution::Resolved { name, description } => {
+            (Some(name.clone()), Some(description.clone()), true)
+        }
+        DefinitionResolution::Unresolved => (None, None, false),
+    };
+    let label = |hash: u32, definition: &DefinitionResolution| match definition {
+        DefinitionResolution::Resolved { name, .. } => sanitize(name),
+        DefinitionResolution::Unresolved => format!("unresolved #{hash}"),
+    };
+    match mode {
+        OutputMode::Human => {
+            let mut lines = vec![format!("Weekly reset (manifest {})", sanitize(reset.definition_version.as_str()))];
+            for milestone in &reset.milestones {
+                let mut header = label(milestone.hash, &milestone.definition);
+                match (
+                    milestone.start.and_then(|t| format_reset_timestamp(t, true)),
+                    milestone.end.and_then(|t| format_reset_timestamp(t, true)),
+                ) {
+                    (Some(start), Some(end)) => {
+                        header.push_str(&format!(" [{start} -> {end}]"));
+                    }
+                    (Some(start), None) => header.push_str(&format!(" [from {start}]")),
+                    (None, Some(end)) => header.push_str(&format!(" [until {end}]")),
+                    (None, None) => {}
+                }
+                lines.push(header);
+                for activity in &milestone.activities {
+                    lines.push(format!("  - {}", label(activity.hash, &activity.definition)));
+                    if !activity.modifiers.is_empty() {
+                        lines.push(format!("    modifiers: {}", activity.modifiers.iter().map(|modifier| label(modifier.hash, &modifier.definition)).collect::<Vec<_>>().join(", ")));
+                    }
+                }
+            }
+            lines.join("\n")
+        }
+        OutputMode::Json => json!({
+            "kind": "weekly_reset", "definition_version": reset.definition_version.as_str(),
+            "milestones": reset.milestones.iter().map(|milestone| {
+                let (name, description, resolved) = fields(&milestone.definition);
+                json!({"hash": milestone.hash, "order": milestone.order, "name": name, "description": description, "resolved": resolved,
+                    "start": milestone.start.and_then(|t| format_reset_timestamp(t, false)),
+                    "end": milestone.end.and_then(|t| format_reset_timestamp(t, false)),
+                    "activities": milestone.activities.iter().map(|activity| {
+                        let (name, _, resolved) = fields(&activity.definition);
+                        json!({"hash": activity.hash, "name": name, "resolved": resolved,
+                            "modifiers": activity.modifiers.iter().map(|modifier| {
+                                let (name, description, resolved) = fields(&modifier.definition);
+                                json!({"hash": modifier.hash, "name": name, "description": description, "resolved": resolved})
+                            }).collect::<Vec<_>>()})
+                    }).collect::<Vec<_>>()})
+            }).collect::<Vec<_>>()
+        }).to_string(),
+    }
+}
+
 /// Renders one character listing in the selected mode.
 pub fn render_characters(mode: OutputMode, result: &CharacterListResult) -> String {
     match mode {

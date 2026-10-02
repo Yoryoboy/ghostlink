@@ -79,7 +79,10 @@ impl Cli {
             // A `login` command line carries no read, and the hidden `callback`
             // handler is not a read either, so both report the stable
             // unsupported-operation outcome instead of guessing at a read.
-            Command::SyncManifest | Command::Login(_) | Command::Callback(_) => {
+            Command::SyncManifest
+            | Command::WeeklyReset
+            | Command::Login(_)
+            | Command::Callback(_) => {
                 Err(CliError::from_category(ErrorCategory::UnsupportedOperation))
             }
         }
@@ -92,6 +95,10 @@ pub enum Command {
     /// Download and publish the public English Manifest item definitions.
     #[command(name = "sync-manifest")]
     SyncManifest,
+
+    /// Show the public weekly reset using stored Manifest definitions.
+    #[command(name = "weekly-reset")]
+    WeeklyReset,
 
     /// List the characters in the current profile projection.
     #[command(name = "list-characters")]
@@ -647,6 +654,35 @@ mod tests {
             ReadRequest::SearchInventory(request) => request,
             other => panic!("expected a search request, found {other:?}"),
         }
+    }
+
+    #[test]
+    fn weekly_reset_parses_with_global_json_and_public_help() {
+        for arguments in [
+            vec!["weekly-reset"],
+            vec!["--json", "weekly-reset"],
+            vec!["weekly-reset", "--json"],
+        ] {
+            let cli = parse(arguments.clone());
+            assert_eq!(
+                cli.output_mode() == OutputMode::Json,
+                arguments.contains(&"--json")
+            );
+            assert_eq!(
+                cli.into_read_request().unwrap_err().code(),
+                "unsupported_operation"
+            );
+        }
+        let help = Cli::try_parse_from(["ghostlink", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("weekly-reset"));
+        assert_eq!(
+            Cli::try_parse_from(["ghostlink", "weekly-reset", "--help"])
+                .unwrap_err()
+                .kind(),
+            clap::error::ErrorKind::DisplayHelp
+        );
     }
 
     #[test]
