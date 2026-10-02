@@ -285,6 +285,27 @@ fn fake_and_sqlite_share_world_publication_and_lookup_contract() {
 }
 
 #[test]
+fn world_publication_round_trips_signed_light_levels() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    for light_level in [-10, i32::MIN, i32::MAX] {
+        let mut definitions = world("v1", "Raid");
+        let activity =
+            ActivityDefinition::new(2, "Raid".into(), "".into(), 4, light_level).unwrap();
+        definitions.activities.definitions = vec![activity.clone()];
+        let metadata = store
+            .publish_manifest(items("v1", "Raid"), definitions.clone())
+            .unwrap();
+        assert_eq!(store.lookup_activity(2).unwrap(), Some(activity));
+        assert_eq!(
+            store
+                .publish_manifest(items("v1", "Raid"), definitions)
+                .unwrap(),
+            metadata
+        );
+    }
+}
+
+#[test]
 fn world_schema_enforces_bounds_and_strict_integer_domains() {
     let store = SqliteStore::open_in_memory().unwrap();
     for sql in [
@@ -293,13 +314,15 @@ fn world_schema_enforces_bounds_and_strict_integer_domains() {
         "INSERT INTO milestone_definitions VALUES (1, '', '', 3, 'v1')",
         "INSERT INTO milestone_definitions VALUES (1, 'name', '', 3.5, 'v1')",
         "INSERT INTO activity_definitions VALUES (1, 'name', '', 4294967296, 2000, 'v1')",
-        "INSERT INTO activity_definitions VALUES (1, 'name', '', 3, -1, 'v1')",
+        "INSERT INTO activity_definitions VALUES (1, 'name', '', 3, -2147483649, 'v1')",
+        "INSERT INTO activity_definitions VALUES (1, 'name', '', 3, 2147483648, 'v1')",
+        "INSERT INTO activity_definitions VALUES (1, 'name', '', 3, 3.5, 'v1')",
         "INSERT INTO activity_modifier_definitions VALUES (1, 'name', '', '')",
         "INSERT INTO activity_modifier_definitions VALUES (1, 'name', zeroblob(2049), 'v1')",
     ] {
         assert!(store.connection().execute(sql, []).is_err());
     }
-    store.connection().execute("INSERT INTO activity_definitions VALUES (4294967295, 'name', '', 4294967295, 4294967295, 'v1')", []).unwrap();
+    store.connection().execute("INSERT INTO activity_definitions VALUES (4294967295, 'name', '', 4294967295, 2147483647, 'v1')", []).unwrap();
     let activity = store.lookup_activity(u32::MAX).unwrap().unwrap();
-    assert_eq!(activity.light_level(), u32::MAX);
+    assert_eq!(activity.light_level(), i32::MAX);
 }

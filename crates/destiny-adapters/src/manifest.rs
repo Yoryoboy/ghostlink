@@ -281,7 +281,7 @@ struct WorldRecord {
     #[serde(default)]
     activity_type_hash: u32,
     #[serde(default)]
-    activity_light_level: u32,
+    activity_light_level: i32,
 }
 #[derive(Deserialize)]
 struct WorldDisplay {
@@ -1249,6 +1249,22 @@ mod tests {
                     .to_string();
             assert_validation(super::decode_activity_modifiers(body.as_bytes()));
         }
+    }
+
+    #[test]
+    fn activities_accept_negative_light_level_and_skip_blank_names() {
+        let bytes = br#"{"1":{"hash":1,"displayProperties":{"name":"Raid"},"activityLightLevel":-10},"2":{"hash":2,"displayProperties":{"name":" "},"activityLightLevel":-10}}"#;
+        let activities = super::decode_activities(bytes).unwrap();
+        assert_eq!(activities.skipped_count, 1);
+        assert_eq!(activities.definitions.len(), 1);
+        assert_eq!(activities.definitions[0].name(), "Raid");
+        assert_eq!(activities.definitions[0].light_level(), -10);
+    }
+
+    #[test]
+    fn activities_reject_unparseable_field_even_on_blank_name_record() {
+        let bytes = br#"{"1":{"hash":1,"displayProperties":{"name":"Raid"}},"2":{"hash":2,"displayProperties":{"name":" "},"activityLightLevel":"unparseable"}}"#;
+        assert_validation(super::decode_activities(bytes));
     }
 
     #[test]
