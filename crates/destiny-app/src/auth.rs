@@ -249,6 +249,7 @@ mod tests {
                     expires_at: Timestamp::new(expires_at),
                 },
                 material: CredentialMaterial::from_bytes(b"credential-sentinel"),
+                refresh_grant: None,
             }
         }
 

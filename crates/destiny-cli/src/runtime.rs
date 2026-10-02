@@ -394,6 +394,7 @@ mod tests {
                 expires_at: Timestamp::new(4_000_000_000),
             },
             material: CredentialMaterial::from_bytes(BEARER_SENTINEL.as_bytes().to_vec()),
+            refresh_grant: None,
         }
     }
 

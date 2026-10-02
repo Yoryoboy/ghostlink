@@ -190,6 +190,7 @@ fn decode_credential(record: &[u8]) -> Result<AccessCredential, AppError> {
             expires_at: Timestamp::new(expires_at),
         },
         material: CredentialMaterial::from_bytes(material.to_vec()),
+        refresh_grant: None,
     })
 }
 
@@ -338,6 +339,7 @@ mod tests {
                 expires_at: Timestamp::new(1_700_000_000),
             },
             material: CredentialMaterial::from_bytes(SENTINEL.as_bytes().to_vec()),
+            refresh_grant: None,
         }
     }
 
@@ -389,6 +391,7 @@ mod tests {
                     expires_at: Timestamp::new(7),
                 },
                 material: CredentialMaterial::from_bytes(material.clone()),
+                refresh_grant: None,
             };
             adapter.save(credential.clone()).expect("save succeeds");
             let loaded = adapter
@@ -428,6 +431,7 @@ mod tests {
                 expires_at: Timestamp::new(1),
             },
             material: CredentialMaterial::from_bytes(vec![0u8; MAX_MATERIAL_LENGTH + 1]),
+            refresh_grant: None,
         };
         let error = adapter.save(oversized).expect_err("oversized is refused");
         assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
@@ -661,6 +665,7 @@ mod tests {
                 expires_at: Timestamp::new(0),
             },
             material: CredentialMaterial::from_bytes(Vec::new()),
+            refresh_grant: None,
         };
         let encoded = encode_credential(&boundary).expect("encode");
         assert_eq!(encoded.len(), RECORD_HEADER_LENGTH);

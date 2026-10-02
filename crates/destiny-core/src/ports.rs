@@ -1,6 +1,8 @@
 //! Minimal provider-neutral behavioral ports.
 
-use crate::auth::{AccessCredential, AuthorizationCallback, AuthorizationCode, AuthorizationState};
+use crate::auth::{
+    AccessCredential, AuthorizationCallback, AuthorizationCode, AuthorizationState, RefreshToken,
+};
 use crate::domain::{
     Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, SyncMetadata,
 };
@@ -40,9 +42,52 @@ pub trait CallbackReceiver {
     fn receive(&mut self) -> Result<AuthorizationCallback, AppError>;
 }
 
-/// Exchanges a code for public-client access material; no refresh or secret API exists here.
+/// Exchanges a code for access material without exposing client configuration.
+///
+/// Public mode returns access-only credentials; confidential mode may also
+/// return a refresh grant. The historical trait name is retained for compatibility.
 pub trait PublicTokenExchange {
     fn exchange(&mut self, code: AuthorizationCode) -> Result<AccessCredential, AppError>;
+}
+
+/// Exchanges opaque refresh material for a new access credential.
+///
+/// A successful response may omit a refresh grant; the caller must then retain
+/// the previous grant. A returned grant replaces the previous one (rotation).
+/// Provider rejection with HTTP 400 or 401 maps to
+/// [`ErrorCategory::ReauthorizationRequired`], never to raw provider text.
+pub trait TokenRefresh {
+    fn refresh(&mut self, token: &RefreshToken) -> Result<AccessCredential, AppError>;
+}
+
+/// Supplies a currently valid access credential for each provider request.
+///
+/// Refreshing implementations own expiry policy and synchronize refresh/store
+/// mutation internally. Shared access lets multiple gateways use one lock-backed
+/// source without requiring exclusive access to the source itself.
+pub trait CredentialSource {
+    fn current(&self) -> Result<AccessCredential, AppError>;
+}
+
+/// Fixed credential source for access-only compositions and deterministic tests.
+///
+/// Always returns a clone without checking time or refreshing. The caller is
+/// responsible for supplying a credential valid for its intended requests.
+#[derive(Clone, Debug)]
+pub struct StaticCredentialSource {
+    credential: AccessCredential,
+}
+
+impl StaticCredentialSource {
+    pub fn new(credential: AccessCredential) -> Self {
+        Self { credential }
+    }
+}
+
+impl CredentialSource for StaticCredentialSource {
+    fn current(&self) -> Result<AccessCredential, AppError> {
+        Ok(self.credential.clone())
+    }
 }
 
 pub trait PlanIdGenerator {

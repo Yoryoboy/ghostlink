@@ -1848,6 +1848,7 @@ mod tests {
                 expires_at: Timestamp::new(42),
             },
             material,
+            refresh_grant: None,
         };
         let mut store = InMemoryCredentialStore::default();
         store.save(credential.clone()).unwrap();

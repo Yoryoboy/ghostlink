@@ -2024,6 +2024,7 @@ mod tests {
                 expires_at: Timestamp::new(expires_at),
             },
             material: CredentialMaterial::from_bytes(BEARER_SENTINEL.as_bytes().to_vec()),
+            refresh_grant: None,
         }
     }
 
@@ -2679,6 +2680,7 @@ mod tests {
                     expires_at: Timestamp::new(GATEWAY_EXPIRES_AT),
                 },
                 material: CredentialMaterial::from_bytes(material),
+                refresh_grant: None,
             };
             let error = BungieProfileGateway::new(
                 FakeProfileTransport::queue(vec![]),

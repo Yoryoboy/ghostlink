@@ -312,6 +312,7 @@ fn credential() -> AccessCredential {
             expires_at: Timestamp::new(CREDENTIAL_EXPIRES_AT),
         },
         material: CredentialMaterial::from_bytes(BEARER_SENTINEL.as_bytes().to_vec()),
+        refresh_grant: None,
     }
 }
 
