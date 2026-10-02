@@ -25,6 +25,12 @@ pub enum AuthorizationOutcome {
     Started,
     Authorizing,
     Authorized(AccessCredentialMetadata),
+    /// Token-free summary of a successfully persisted renewable session.
+    AuthorizedSession {
+        access: AccessCredentialMetadata,
+        refresh_available: bool,
+        refresh_expires_at: Option<Timestamp>,
+    },
     SignedOut,
     Cancelled,
     Denied,
@@ -45,6 +51,7 @@ pub struct AuthorizationService<R, B, C, X, S, K> {
     store: S,
     clock: K,
     ttl_seconds: u64,
+    refresh_expires_at: Option<Timestamp>,
 }
 
 impl<R, B, C, X, S, K> AuthorizationService<R, B, C, X, S, K>
@@ -74,6 +81,7 @@ where
             store,
             clock,
             ttl_seconds,
+            refresh_expires_at: None,
         }
     }
 
@@ -160,12 +168,25 @@ where
             }
         };
         let metadata = credential.metadata;
+        let refresh_expires_at = credential.refresh_grant().map(|grant| grant.expires_at);
         if self.store.save(credential).is_err() {
             self.state = AuthState::ReauthorizationRequired;
             return Err(AppError::new(ErrorCategory::CredentialStoreUnavailable));
         }
         self.state = AuthState::Authorized { access: metadata };
-        Ok(AuthorizationOutcome::Authorized(metadata))
+        self.refresh_expires_at = refresh_expires_at;
+        Ok(self.authorized_outcome(metadata))
+    }
+
+    fn authorized_outcome(&self, access: AccessCredentialMetadata) -> AuthorizationOutcome {
+        match self.refresh_expires_at {
+            Some(refresh_expires_at) => AuthorizationOutcome::AuthorizedSession {
+                access,
+                refresh_available: self.refresh_expires_at.is_some(),
+                refresh_expires_at: Some(refresh_expires_at),
+            },
+            None => AuthorizationOutcome::Authorized(access),
+        }
     }
 
     pub fn access_status(&mut self) -> Result<AuthorizationOutcome, AppError> {
@@ -178,7 +199,7 @@ where
                     self.state = AuthState::ReauthorizationRequired;
                     Ok(AuthorizationOutcome::ReauthorizationRequired)
                 } else {
-                    Ok(AuthorizationOutcome::Authorized(access))
+                    Ok(self.authorized_outcome(access))
                 }
             }
         }
@@ -289,6 +310,40 @@ mod tests {
             );
             assert_eq!(service.begin(), Ok(AuthorizationOutcome::Started));
             service
+        }
+
+        #[test]
+        fn persisted_refresh_grant_is_reported_without_token_material() {
+            let mut service = started_service(InMemoryCredentialStore::default());
+            service.exchange.outcomes.clear();
+            let mut renewable = credential(100);
+            renewable.refresh_grant = Some(destiny_core::RefreshGrant {
+                token: destiny_core::RefreshToken::from_bytes(b"refresh-sentinel").unwrap(),
+                expires_at: Timestamp::new(900),
+            });
+            service.exchange.outcomes.push_back(Ok(renewable));
+            let state = match service.state() {
+                AuthState::Authorizing { state, .. } => state.clone(),
+                _ => unreachable!(),
+            };
+            let outcome = service
+                .handle_callback(callback(
+                    &state,
+                    CallbackResult::Code(AuthorizationCode::from_bytes(b"code-sentinel")),
+                ))
+                .unwrap();
+            assert_eq!(
+                outcome,
+                AuthorizationOutcome::AuthorizedSession {
+                    access: AccessCredentialMetadata {
+                        expires_at: Timestamp::new(100)
+                    },
+                    refresh_available: true,
+                    refresh_expires_at: Some(Timestamp::new(900)),
+                }
+            );
+            assert_eq!(service.access_status().unwrap(), outcome);
+            assert!(!format!("{outcome:?}").contains("sentinel"));
         }
 
         #[test]

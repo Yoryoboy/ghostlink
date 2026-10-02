@@ -102,10 +102,7 @@ pub fn render_login_instruction(mode: OutputMode, instruction: &LoginInstruction
 
 /// Renders one completed authorization.
 ///
-/// Only the expiry the shared outcome carries is rendered: the credential material
-/// itself never reaches this function, so no mode can print it. The human form
-/// states the public-client consequence explicitly, because a public client
-/// receives no refresh token and the human has to authorize again after expiry.
+/// Access-only compatibility output. Credential material never reaches the renderer.
 pub fn render_login_authorized(mode: OutputMode, access: &AccessCredentialMetadata) -> String {
     match mode {
         OutputMode::Human => format!(
@@ -119,6 +116,18 @@ pub fn render_login_authorized(mode: OutputMode, access: &AccessCredentialMetada
             "status": "authorized",
         })
         .to_string(),
+    }
+}
+
+/// Renders only the persisted grant's expiry, never its token material.
+pub fn render_login_renewable(
+    mode: OutputMode,
+    access: &AccessCredentialMetadata,
+    refresh_expires_at: destiny_app::Timestamp,
+) -> String {
+    match mode {
+        OutputMode::Human => format!("authorized\nexpires_at: {}\nsession renews automatically until {}", access.expires_at.seconds(), refresh_expires_at.seconds()),
+        OutputMode::Json => json!({ "expires_at": access.expires_at.seconds(), "kind": "login", "refresh_expires_at": refresh_expires_at.seconds(), "refresh_token": true, "status": "authorized" }).to_string(),
     }
 }
 
@@ -608,6 +617,21 @@ mod tests {
         let json = render_login_instruction(OutputMode::Json, &instruction);
         assert!(!json.contains("\nstatus"));
         assert!(serde_json::from_str::<serde_json::Value>(&json).is_ok());
+    }
+
+    #[test]
+    fn renewable_login_reports_only_refresh_expiry() {
+        let access = AccessCredentialMetadata {
+            expires_at: Timestamp::new(100),
+        };
+        assert_eq!(
+            super::render_login_renewable(OutputMode::Human, &access, Timestamp::new(900)),
+            "authorized\nexpires_at: 100\nsession renews automatically until 900"
+        );
+        assert_eq!(
+            super::render_login_renewable(OutputMode::Json, &access, Timestamp::new(900)),
+            r#"{"expires_at":100,"kind":"login","refresh_expires_at":900,"refresh_token":true,"status":"authorized"}"#
+        );
     }
 
     #[test]

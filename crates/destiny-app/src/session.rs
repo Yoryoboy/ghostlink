@@ -6,6 +6,57 @@ use destiny_core::{
 };
 use std::sync::{Arc, Mutex};
 
+/// Runtime mode selection with one load before any token transport is built.
+/// Clones of the renewable variant share the same refresh lock and cache.
+pub enum ConfiguredCredentialSource<S: CredentialStore, R: TokenRefresh, C: Clock> {
+    Static(destiny_core::StaticCredentialSource),
+    Refreshing(RefreshingCredentialSource<S, R, C>),
+}
+
+impl<S: CredentialStore, R: TokenRefresh, C: Clock> Clone for ConfiguredCredentialSource<S, R, C> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Static(source) => Self::Static(source.clone()),
+            Self::Refreshing(source) => Self::Refreshing(source.clone()),
+        }
+    }
+}
+
+impl<S: CredentialStore, R: TokenRefresh, C: Clock> ConfiguredCredentialSource<S, R, C> {
+    pub fn new<F>(store: S, refresh: Option<F>, clock: C) -> Result<Self, AppError>
+    where
+        F: FnOnce() -> Result<R, AppError>,
+    {
+        let credential = store
+            .load()?
+            .ok_or_else(|| AppError::new(ErrorCategory::AuthorizationRequired))?;
+        match refresh {
+            None => Ok(Self::Static(destiny_core::StaticCredentialSource::new(
+                credential,
+            ))),
+            Some(build) => Ok(Self::Refreshing(RefreshingCredentialSource {
+                state: Arc::new(Mutex::new(SessionState {
+                    store,
+                    refresh: build()?,
+                    credential: Some(credential),
+                })),
+                clock: Arc::new(clock),
+            })),
+        }
+    }
+}
+
+impl<S: CredentialStore, R: TokenRefresh, C: Clock> CredentialSource
+    for ConfiguredCredentialSource<S, R, C>
+{
+    fn current(&self) -> Result<AccessCredential, AppError> {
+        match self {
+            Self::Static(source) => source.current(),
+            Self::Refreshing(source) => source.current(),
+        }
+    }
+}
+
 /// Refresh at or inside this many seconds before access expiry.
 pub const ACCESS_REFRESH_MARGIN_SECONDS: u64 = 60;
 
@@ -138,6 +189,50 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn configured_session_loads_before_refresh_factory_and_shares_refresh() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct Counting(Arc<AtomicUsize>);
+        impl TokenRefresh for Counting {
+            fn refresh(&mut self, _: &RefreshToken) -> Result<AccessCredential, AppError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(credential(1000, None))
+            }
+        }
+        let count = Arc::new(AtomicUsize::new(0));
+        for renewable in [false, true] {
+            let mut store = InMemoryCredentialStore::default();
+            store
+                .save(credential(150, Some(("old-refresh", 900))))
+                .unwrap();
+            let source = super::ConfiguredCredentialSource::new(
+                store,
+                renewable.then_some(|| Ok(Counting(count.clone()))),
+                FakeClock::fixed(Timestamp::new(100)),
+            )
+            .unwrap();
+            let expected_expiry = if renewable { 1000 } else { 150 };
+            for shared in [source.clone(), source] {
+                assert_eq!(
+                    shared.current().unwrap().metadata.expires_at.seconds(),
+                    expected_expiry
+                );
+            }
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        let result = super::ConfiguredCredentialSource::new(
+            InMemoryCredentialStore::default(),
+            Some(|| -> Result<Counting, AppError> {
+                panic!("missing credential must precede transport construction")
+            }),
+            FakeClock::fixed(Timestamp::new(100)),
+        );
+        assert_eq!(
+            result.err().unwrap().category(),
+            ErrorCategory::AuthorizationRequired
+        );
+    }
+
     #[test]
     fn store_load_failure_preserves_its_sanitized_category() {
         let result = RefreshingCredentialSource::new(

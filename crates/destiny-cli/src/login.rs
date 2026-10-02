@@ -2,7 +2,7 @@
 //!
 //! This module composes the existing public-client authorization service with the
 //! provider adapters into exactly one login attempt. The provider rejects an HTTP
-//! loopback redirect for this registered public client, so the registered
+//! loopback redirect for this registered client, so the registered
 //! callback is the custom-scheme URI `ghostlink://oauth/callback`. Nothing on the
 //! machine listens for that scheme, and this product deliberately registers no
 //! operating-system URI handler: the human authorizes in the browser, then copies
@@ -1142,17 +1142,34 @@ struct LoginAdapters {
     clock: SystemClock,
 }
 
+/// Selects confidential exchange only when configuration supplies a secret.
+fn configured_exchange<T: destiny_adapters::token::TokenTransport, C: destiny_app::Clock>(
+    config: &LoginRuntimeConfig,
+    transport: T,
+    clock: C,
+) -> Result<BungieTokenExchange<T, C>, AppError> {
+    match config.client_secret() {
+        Some(secret) => BungieTokenExchange::confidential(
+            config.public_client_id(),
+            config.callback_uri().exact(),
+            secret.clone(),
+            transport,
+            clock,
+        ),
+        None => BungieTokenExchange::new(
+            config.public_client_id(),
+            config.callback_uri().exact(),
+            transport,
+            clock,
+        ),
+    }
+}
+
 /// Builds the shared adapters over the validated configuration.
 fn login_adapters(config: &LoginRuntimeConfig) -> Result<LoginAdapters, CliError> {
-    let callback_uri = config.callback_uri().exact();
     let transport = HttpTokenTransport::new().map_err(CliError::from)?;
-    let exchange = BungieTokenExchange::new(
-        config.public_client_id(),
-        callback_uri,
-        transport,
-        SystemClock::new(),
-    )
-    .map_err(CliError::from)?;
+    let exchange =
+        configured_exchange(config, transport, SystemClock::new()).map_err(CliError::from)?;
     let store = NativeCredentialStore::new().map_err(CliError::from)?;
     Ok(LoginAdapters {
         exchange,
@@ -1284,6 +1301,66 @@ fn composed_handler_login(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn configured_exchange_selects_basic_auth_without_secret_form_fields() {
+        use destiny_adapters::token::{
+            TokenHttpResponse, TokenRequest, TokenTransport, TokenTransportError,
+        };
+        use destiny_app::{AuthorizationCode, PublicTokenExchange, Timestamp};
+        struct Recording(bool);
+        impl TokenTransport for Recording {
+            fn send(
+                &mut self,
+                request: &TokenRequest,
+            ) -> Result<TokenHttpResponse, TokenTransportError> {
+                assert_eq!(request.authorization().is_some(), self.0);
+                if self.0 {
+                    assert!(request.authorization().unwrap().starts_with("Basic "));
+                }
+                assert!(!request.fields().iter().any(
+                    |(key, value)| *key == "client_secret" || value.contains("secret-sentinel")
+                ));
+                let body = if self.0 {
+                    r#"{"access_token":"access-sentinel","token_type":"Bearer","expires_in":100,"refresh_token":"refresh-sentinel","refresh_expires_in":900}"#
+                } else {
+                    r#"{"access_token":"access-sentinel","token_type":"Bearer","expires_in":100}"#
+                };
+                Ok(TokenHttpResponse::new(
+                    200,
+                    None,
+                    Some("application/json".into()),
+                    Box::new(std::io::Cursor::new(body.as_bytes().to_vec())),
+                ))
+            }
+        }
+        for confidential in [false, true] {
+            let mut values = std::collections::HashMap::from([
+                ("BUNGIE_PUBLIC_CLIENT_ID".into(), "123".into()),
+                (
+                    "BUNGIE_CALLBACK_URI".into(),
+                    "ghostlink://oauth/callback".into(),
+                ),
+                (
+                    "BUNGIE_REGISTERED_CALLBACK_URI".into(),
+                    "ghostlink://oauth/callback".into(),
+                ),
+            ]);
+            if confidential {
+                values.insert("BUNGIE_CLIENT_SECRET".into(), "secret-sentinel".into());
+            }
+            let config = destiny_app::LoginRuntimeConfig::from_values(&values).unwrap();
+            let mut exchange = super::configured_exchange(
+                &config,
+                Recording(confidential),
+                destiny_app::test_support::FakeClock::fixed(Timestamp::new(100)),
+            )
+            .unwrap();
+            let credential = exchange
+                .exchange(AuthorizationCode::from_bytes(b"code-sentinel"))
+                .unwrap();
+            assert_eq!(credential.refresh_grant().is_some(), confidential);
+        }
+    }
     use super::{
         AUTHORIZATION_TTL_SECONDS, LoginInstruction, LoginInstructionSource, LoginSession,
         NoInstruction, SharedInstructionSource, SharedManualBrowser,
