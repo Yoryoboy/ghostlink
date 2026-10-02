@@ -38,5 +38,9 @@ This WU explicitly supersedes the earlier non-goals "no client secret, confident
 ## Progress
 Exploration (read-only): no OAuth refresh code exists; `token.rs` decode rejects `refresh_token`; `CredentialStore` holds one credential (`GLCR` v1); gateways capture a fixed `AccessCredential` at composition (`destiny-cli/src/runtime.rs`, `destiny-mcp/src/main.rs`). User chose mid-session MCP refresh.
 
+## Live validation log (PSR-008)
+- 2026-10-02: Human switched the Bungie app to Confidential, added `BUNGIE_CLIENT_SECRET` to the 0600 config file, ran `ghostlink login --callback handler`: `authorized`, `expires_at: 1790944068`, `session renews automatically until 1798716468` (refresh window 7,772,400 s = 90 days minus the 1 h access lifetime, consistent with Bungie docs). Basic auth accepted live. Agent then ran `list-characters` in the confidential read path: native keyring v2 record loaded, live fetch (`checked_at` = now), 3 characters, `fresh`.
+- Pending: read after access expiry (09:27 -03) to observe an automatic refresh without login.
+
 ## Next step
-PSR-008 (human-run live validation).
+PSR-008: post-expiry refresh check.
