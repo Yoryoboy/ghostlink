@@ -66,8 +66,9 @@
 //! from ever being reported as a clean failure or a false success.
 
 use destiny_core::{
-    AccessCredential, AppError, CharacterId, Clock, ErrorCategory, ItemLocation, Timestamp,
-    TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
+    AppError, CharacterId, Clock, CredentialSource, ErrorCategory, ItemLocation,
+    StaticCredentialSource, Timestamp, TransferGateway, TransferOutcome, TransferRejection,
+    TransferRequest,
 };
 use serde_json::{Map, Value};
 use std::fmt;
@@ -479,42 +480,35 @@ fn classify_transport_error(error: reqwest::Error) -> TransferTransportError {
 
 /// The production authenticated Bungie transfer gateway.
 ///
-/// It owns the transport, the injected application clock, the access credential,
-/// and the API key. Construction converts the credential material into a
-/// validated [`TransferBearerToken`]; a non-UTF-8 or otherwise invalid secret is
-/// a sanitized configuration failure.
+/// It owns the transport, the injected application clock, a credential source,
+/// and the API key. Each request validates fetched material as a
+/// [`TransferBearerToken`]; invalid material is a sanitized configuration failure.
 ///
 /// Every call refuses to act once the credential is at or past its expiry, then
 /// issues exactly one request and never surfaces a credential, token, API key,
 /// or raw provider payload.
-pub struct BungieTransferGateway<T, C> {
+pub struct BungieTransferGateway<T, C, S = StaticCredentialSource> {
     transport: T,
     clock: C,
-    credential: AccessCredential,
-    bearer: TransferBearerToken,
+    source: S,
     api_key: TransferApiKey,
 }
 
-impl<T, C> BungieTransferGateway<T, C> {
-    /// Builds the gateway, validating the credential material as a Bearer token.
+impl<T, C, S> BungieTransferGateway<T, C, S> {
+    /// Builds the gateway without consulting the source until a request.
     ///
-    /// Empty, non-UTF-8, whitespace-bearing, control-bearing, or non-ASCII
-    /// credential material is a sanitized `ConfigurationError`; no secret value
-    /// is included in the failure.
+    /// Per-request Bearer validation rejects empty, non-UTF-8, whitespace,
+    /// control, or non-ASCII material as a sanitized `ConfigurationError`.
     pub fn new(
         transport: T,
         clock: C,
-        credential: AccessCredential,
+        source: S,
         api_key: TransferApiKey,
     ) -> Result<Self, AppError> {
-        let bearer = std::str::from_utf8(credential.material.expose_secret())
-            .map_err(|_| configuration())
-            .and_then(|token| TransferBearerToken::new(token.to_owned()))?;
         Ok(Self {
             transport,
             clock,
-            credential,
-            bearer,
+            source,
             api_key,
         })
     }
@@ -528,7 +522,7 @@ impl<T, C> BungieTransferGateway<T, C> {
     }
 }
 
-impl<T, C> fmt::Debug for BungieTransferGateway<T, C> {
+impl<T, C, S> fmt::Debug for BungieTransferGateway<T, C, S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("BungieTransferGateway")
@@ -547,24 +541,24 @@ fn ensure_unexpired(now: Timestamp, expires_at: Timestamp) -> Result<(), AppErro
     Ok(())
 }
 
-impl<T, C> TransferGateway for BungieTransferGateway<T, C>
+impl<T, C, S> TransferGateway for BungieTransferGateway<T, C, S>
 where
     T: TransferTransport,
     C: Clock,
+    S: CredentialSource,
 {
     fn transfer(&mut self, request: &TransferRequest) -> Result<TransferOutcome, AppError> {
-        let now = self.clock.now()?;
-        ensure_unexpired(now, self.credential.metadata.expires_at)?;
-
+        let credential = self.source.current()?;
+        let bearer = std::str::from_utf8(credential.material.expose_secret())
+            .map_err(|_| configuration())
+            .and_then(|token| TransferBearerToken::new(token.to_owned()))?;
         // An unrepresentable request never dispatches, so it is an `Err`, not an
         // uncertain outcome.
         let body = build_body(request)?;
-        let http_request = TransferHttpRequest::new(
-            TRANSFER_ENDPOINT,
-            body,
-            Some(&self.api_key),
-            Some(&self.bearer),
-        );
+        let http_request =
+            TransferHttpRequest::new(TRANSFER_ENDPOINT, body, Some(&self.api_key), Some(&bearer));
+        let now = self.clock.now()?;
+        ensure_unexpired(now, credential.metadata.expires_at)?;
 
         let mut response = match self.transport.post(&http_request) {
             Ok(response) => response,
@@ -967,6 +961,51 @@ mod tests {
         }
     }
 
+    struct ChangingSource(std::sync::Mutex<VecDeque<Result<AccessCredential, AppError>>>);
+    impl destiny_core::CredentialSource for ChangingSource {
+        fn current(&self) -> Result<AccessCredential, AppError> {
+            self.0.lock().unwrap().pop_front().expect("scripted source")
+        }
+    }
+    #[test]
+    fn gateway_fetches_source_for_each_request_and_aborts_source_errors() {
+        let mut second = credential(GATEWAY_EXPIRES_AT);
+        second.material = CredentialMaterial::from_bytes(b"second-access");
+        let source = ChangingSource(std::sync::Mutex::new(VecDeque::from([
+            Ok(credential(GATEWAY_EXPIRES_AT)),
+            Ok(second),
+            Err(AppError::new(ErrorCategory::ReauthorizationRequired)),
+        ])));
+        let mut gateway = BungieTransferGateway::new(
+            FakeTransferTransport::queue(vec![
+                Ok(json_response(200, SUCCESS_BODY)),
+                Ok(json_response(200, SUCCESS_BODY)),
+            ]),
+            FakeClock(GATEWAY_NOW),
+            source,
+            api_key(),
+        )
+        .unwrap();
+        gateway.transfer(&to_vault_request()).unwrap();
+        gateway.transfer(&to_vault_request()).unwrap();
+        assert_eq!(
+            gateway.transport().recorded()[0].bearer.as_deref(),
+            Some(BEARER_SENTINEL)
+        );
+        assert_eq!(
+            gateway.transport().recorded()[1].bearer.as_deref(),
+            Some("second-access")
+        );
+        assert_eq!(
+            gateway
+                .transfer(&to_vault_request())
+                .unwrap_err()
+                .category(),
+            ErrorCategory::ReauthorizationRequired
+        );
+        assert_eq!(gateway.transport().recorded().len(), 2);
+    }
+
     type TestGateway = BungieTransferGateway<FakeTransferTransport, FakeClock>;
 
     fn gateway(
@@ -977,7 +1016,7 @@ mod tests {
         BungieTransferGateway::new(
             FakeTransferTransport::queue(responses),
             FakeClock(now),
-            credential(expires_at),
+            destiny_core::StaticCredentialSource::new(credential(expires_at)),
             api_key(),
         )
         .expect("valid gateway configuration")
@@ -1651,7 +1690,7 @@ mod tests {
     }
 
     #[test]
-    fn gateway_construction_rejects_invalid_credential_material() {
+    fn gateway_request_rejects_invalid_credential_material() {
         for material in [
             b"".to_vec(),
             b"has space".to_vec(),
@@ -1666,13 +1705,17 @@ mod tests {
                 material: CredentialMaterial::from_bytes(material),
                 refresh_grant: None,
             };
-            let error = BungieTransferGateway::new(
+            let mut gateway = BungieTransferGateway::new(
                 FakeTransferTransport::queue(vec![]),
                 FakeClock(GATEWAY_NOW),
-                credential,
+                destiny_core::StaticCredentialSource::new(credential),
                 api_key(),
             )
-            .expect_err("invalid credential material must be rejected");
+            .unwrap();
+            let error = gateway
+                .transfer(&to_vault_request())
+                .expect_err("invalid credential material must be rejected");
+            assert!(gateway.transport().recorded().is_empty());
             assert_eq!(error.category(), ErrorCategory::ConfigurationError);
             assert!(!format!("{error:?}").contains(BEARER_SENTINEL));
         }

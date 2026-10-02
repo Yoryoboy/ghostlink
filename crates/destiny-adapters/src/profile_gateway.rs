@@ -58,9 +58,9 @@ use destiny_core::ports::{
     ReadFailure, ReadRetry, ReadRetryScope, RetryAfterHeader, parse_retry_after_header_bytes,
 };
 use destiny_core::{
-    AccessCredential, AppError, Clock, DefinitionVersion, DestinyMembership, ErrorCategory,
+    AppError, Clock, CredentialSource, DefinitionVersion, DestinyMembership, ErrorCategory,
     InventorySnapshotInput, MembershipId, MembershipType, ProfileGateway, ProfileSyncReason,
-    Timestamp,
+    StaticCredentialSource, Timestamp,
 };
 use serde_json::Value;
 use std::collections::HashSet;
@@ -991,11 +991,10 @@ fn read_bounded_body(
 
 /// The production authenticated Bungie profile gateway.
 ///
-/// It owns the transport, the injected application clock, the access credential,
+/// It owns the transport, the injected application clock, a credential source,
 /// the API key, the fixed Manifest definition version, and a bounded read-retry
-/// runtime. Construction converts the credential material into a validated
-/// [`ProfileBearerToken`]; a non-UTF-8 or otherwise invalid secret is a
-/// sanitized configuration failure.
+/// runtime. Each attempt fetches a credential and validates its material as a
+/// [`ProfileBearerToken`]; invalid material is a sanitized configuration failure.
 ///
 /// Both operations are read-only and bounded: they refuse to act once the
 /// credential is at or past its expiry, then perform one bounded, paced read
@@ -1008,38 +1007,32 @@ fn read_bounded_body(
 /// unavailable observation, not a completed one, and must be reported rather
 /// than silently absorbed. Neither operation surfaces a credential, token, API
 /// key, or raw provider payload.
-pub struct BungieProfileGateway<T, C> {
+pub struct BungieProfileGateway<T, C, S = StaticCredentialSource> {
     transport: T,
     clock: C,
-    credential: AccessCredential,
-    bearer: ProfileBearerToken,
+    source: S,
     api_key: ProfileApiKey,
     definition_version: DefinitionVersion,
     read_retry: ReadRetry,
 }
 
-impl<T, C> BungieProfileGateway<T, C> {
-    /// Builds the gateway, validating the credential material as a Bearer token.
+impl<T, C, S> BungieProfileGateway<T, C, S> {
+    /// Builds the gateway without consulting the source until a request.
     ///
-    /// Empty, non-UTF-8, whitespace-bearing, control-bearing, or non-ASCII
-    /// credential material is a sanitized `ConfigurationError`; no secret value
-    /// is included in the failure. The default read-retry runtime is
-    /// [`ReadRetry::default`] with a real bounded pacing implementation.
+    /// Per-attempt Bearer validation rejects empty, non-UTF-8, whitespace,
+    /// control, or non-ASCII material as a sanitized `ConfigurationError`.
+    /// The default retry runtime uses real bounded pacing.
     pub fn new(
         transport: T,
         clock: C,
-        credential: AccessCredential,
+        source: S,
         api_key: ProfileApiKey,
         definition_version: DefinitionVersion,
     ) -> Result<Self, AppError> {
-        let bearer = std::str::from_utf8(credential.material.expose_secret())
-            .map_err(|_| configuration())
-            .and_then(|token| ProfileBearerToken::new(token.to_owned()))?;
         Ok(Self {
             transport,
             clock,
-            credential,
-            bearer,
+            source,
             api_key,
             definition_version,
             read_retry: ReadRetry::default(),
@@ -1062,7 +1055,7 @@ impl<T, C> BungieProfileGateway<T, C> {
     }
 }
 
-impl<T, C> fmt::Debug for BungieProfileGateway<T, C> {
+impl<T, C, S> fmt::Debug for BungieProfileGateway<T, C, S> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("BungieProfileGateway")
@@ -1082,10 +1075,11 @@ fn ensure_unexpired(now: Timestamp, expires_at: Timestamp) -> Result<(), AppErro
     Ok(())
 }
 
-impl<T, C> BungieProfileGateway<T, C>
+impl<T, C, S> BungieProfileGateway<T, C, S>
 where
     T: ProfileTransport,
     C: Clock,
+    S: CredentialSource,
 {
     /// Runs one bounded, paced read, re-validating the credential expiry
     /// immediately before every attempted HTTP call.
@@ -1120,15 +1114,21 @@ where
         limit: usize,
         scope: ReadRetryScope,
     ) -> Result<(Vec<u8>, Timestamp), AppError> {
-        let request = ProfileHttpRequest::new(endpoint, Some(&self.api_key), Some(&self.bearer));
-        let expires_at = self.credential.metadata.expires_at;
+        let source = &self.source;
+        let api_key = &self.api_key;
         let clock = &self.clock;
         let read_retry = &mut self.read_retry;
         let transport = &mut self.transport;
         let mut observed_at = None;
         let bytes = read_retry.run(scope, || {
+            let credential = source.current().map_err(ReadFailure::terminal)?;
+            let bearer = std::str::from_utf8(credential.material.expose_secret())
+                .map_err(|_| configuration())
+                .and_then(|token| ProfileBearerToken::new(token.to_owned()))
+                .map_err(ReadFailure::terminal)?;
+            let request = ProfileHttpRequest::new(endpoint, Some(api_key), Some(&bearer));
             let now = clock.now().map_err(ReadFailure::terminal)?;
-            ensure_unexpired(now, expires_at).map_err(ReadFailure::terminal)?;
+            ensure_unexpired(now, credential.metadata.expires_at).map_err(ReadFailure::terminal)?;
             let bytes = fetch_once(transport, &request, limit, || clock.now().ok())?;
             observed_at = Some(now);
             Ok(bytes)
@@ -1163,10 +1163,11 @@ where
     }
 }
 
-impl<T, C> ProfileGateway for BungieProfileGateway<T, C>
+impl<T, C, S> ProfileGateway for BungieProfileGateway<T, C, S>
 where
     T: ProfileTransport,
     C: Clock,
+    S: CredentialSource,
 {
     fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
         // The unscoped method keeps the conservative observation scope: a
@@ -2028,6 +2029,52 @@ mod tests {
         }
     }
 
+    struct ChangingSource(Mutex<VecDeque<Result<AccessCredential, AppError>>>);
+    impl destiny_core::CredentialSource for ChangingSource {
+        fn current(&self) -> Result<AccessCredential, AppError> {
+            self.0.lock().unwrap().pop_front().expect("scripted source")
+        }
+    }
+    #[test]
+    fn gateway_fetches_source_for_each_attempt_and_aborts_source_errors() {
+        let mut second = credential(GATEWAY_EXPIRES_AT);
+        second.material = CredentialMaterial::from_bytes(b"second-access");
+        let source = ChangingSource(Mutex::new(VecDeque::from([
+            Ok(credential(GATEWAY_EXPIRES_AT)),
+            Ok(second),
+            Err(AppError::new(ErrorCategory::ReauthorizationRequired)),
+        ])));
+        let mut gateway = BungieProfileGateway::new(
+            FakeProfileTransport::queue(vec![
+                Ok(json_response(429, "")),
+                Ok(json_response_bytes(200, &membership_body())),
+            ]),
+            FakeClock(GATEWAY_NOW),
+            source,
+            api_key(),
+            DefinitionVersion::new(DEFINITION_VERSION),
+        )
+        .unwrap()
+        .with_read_retry(ReadRetry::new(
+            ReadRetryPolicy::new(2, Duration::ZERO, Duration::ZERO),
+            RecordingDelay::default(),
+        ));
+        gateway.resolve_membership().unwrap();
+        assert_eq!(
+            gateway.transport().recorded()[0].bearer.as_deref(),
+            Some(BEARER_SENTINEL)
+        );
+        assert_eq!(
+            gateway.transport().recorded()[1].bearer.as_deref(),
+            Some("second-access")
+        );
+        assert_eq!(
+            gateway.resolve_membership().unwrap_err().category(),
+            ErrorCategory::ReauthorizationRequired
+        );
+        assert_eq!(gateway.transport().recorded().len(), 2);
+    }
+
     type TestGateway = BungieProfileGateway<FakeProfileTransport, FakeClock>;
 
     type StepGateway = BungieProfileGateway<FakeProfileTransport, StepClock>;
@@ -2106,7 +2153,7 @@ mod tests {
         let gateway = BungieProfileGateway::new(
             FakeProfileTransport::queue(responses),
             StepClock::new(readings),
-            credential(expires_at),
+            destiny_core::StaticCredentialSource::new(credential(expires_at)),
             api_key(),
             DefinitionVersion::new(DEFINITION_VERSION),
         )
@@ -2126,7 +2173,7 @@ mod tests {
         BungieProfileGateway::new(
             FakeProfileTransport::queue(responses),
             FakeClock(now),
-            credential(expires_at),
+            destiny_core::StaticCredentialSource::new(credential(expires_at)),
             api_key(),
             DefinitionVersion::new(DEFINITION_VERSION),
         )
@@ -2665,7 +2712,7 @@ mod tests {
     }
 
     #[test]
-    fn gateway_construction_rejects_invalid_credential_material() {
+    fn gateway_request_rejects_invalid_credential_material() {
         // Empty, non-UTF-8, whitespace-bearing, and control-bearing material are
         // sanitized configuration failures.
         for material in [
@@ -2682,14 +2729,18 @@ mod tests {
                 material: CredentialMaterial::from_bytes(material),
                 refresh_grant: None,
             };
-            let error = BungieProfileGateway::new(
+            let mut gateway = BungieProfileGateway::new(
                 FakeProfileTransport::queue(vec![]),
                 FakeClock(GATEWAY_NOW),
-                credential,
+                destiny_core::StaticCredentialSource::new(credential),
                 api_key(),
                 DefinitionVersion::new(DEFINITION_VERSION),
             )
-            .expect_err("invalid credential material must be rejected");
+            .unwrap();
+            let error = gateway
+                .resolve_membership()
+                .expect_err("invalid credential material must be rejected");
+            assert!(gateway.transport().recorded().is_empty());
             assert_eq!(error.category(), ErrorCategory::ConfigurationError);
             assert!(!format!("{error:?}").contains(BEARER_SENTINEL));
         }
@@ -3118,7 +3169,7 @@ mod tests {
                 Ok(json_response_bytes(200, &membership_body())),
             ]),
             OnceThenFailClock::new(Timestamp::new(GATEWAY_NOW)),
-            credential(GATEWAY_EXPIRES_AT),
+            destiny_core::StaticCredentialSource::new(credential(GATEWAY_EXPIRES_AT)),
             api_key(),
             DefinitionVersion::new(DEFINITION_VERSION),
         )

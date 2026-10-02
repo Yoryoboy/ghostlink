@@ -102,14 +102,14 @@ fn compose_server<S: CredentialStore>(
     let profile_gateway = BungieProfileGateway::new(
         HttpProfileTransport::new()?,
         SystemClock::new(),
-        credential.clone(),
+        destiny_app::StaticCredentialSource::new(credential.clone()),
         ProfileApiKey::new(config.api_key().expose_secret())?,
         config.definition_version().clone(),
     )?;
     let transfer = BungieTransferGateway::new(
         HttpTransferTransport::new()?,
         SystemClock::new(),
-        credential,
+        destiny_app::StaticCredentialSource::new(credential),
         TransferApiKey::new(config.api_key().expose_secret())?,
     )?;
     let repository = SqliteStore::open(config.database_path())?;
@@ -577,7 +577,7 @@ mod tests {
         let profile_gateway = BungieProfileGateway::new(
             HttpProfileTransport::new().expect("profile transport"),
             SystemClock::new(),
-            credential.clone(),
+            destiny_app::StaticCredentialSource::new(credential.clone()),
             ProfileApiKey::new(API_KEY_SENTINEL).expect("valid profile API key"),
             DefinitionVersion::new("manifest-v1"),
         )
@@ -585,7 +585,7 @@ mod tests {
         let transfer = BungieTransferGateway::new(
             HttpTransferTransport::new().expect("transfer transport"),
             SystemClock::new(),
-            credential,
+            destiny_app::StaticCredentialSource::new(credential),
             TransferApiKey::new(API_KEY_SENTINEL).expect("valid transfer API key"),
         )
         .expect("transfer gateway");
