@@ -21,6 +21,8 @@
 //! cannot revive encoded traversal or separators, and decimal hash keys must be
 //! canonical so leading-zero aliases cannot yield duplicate semantic hashes.
 
+pub use crate::public_milestones::decode_public_milestones;
+
 use destiny_core::ports::{
     ReadFailure, ReadRetry, ReadRetryScope, RetryAfterHeader, parse_retry_after_header_bytes,
 };
@@ -539,6 +541,9 @@ fn decode_decimal_u32(key: &str) -> Result<u32, AppError> {
 /// The documented Bungie Destiny 2 Manifest index endpoint.
 pub const MANIFEST_ENDPOINT: &str = "https://www.bungie.net/Platform/Destiny2/Manifest/";
 
+/// Fixed API-key-only public milestone endpoint.
+pub const MILESTONES_ENDPOINT: &str = "https://www.bungie.net/Platform/Destiny2/Milestones/";
+
 /// The only origin the production transport is permitted to contact.
 pub const MANIFEST_ORIGIN: &str = "https://www.bungie.net";
 
@@ -777,7 +782,7 @@ impl ManifestTransport for HttpManifestTransport {
         if !is_allowed_manifest_url(request.url()) {
             return Err(ManifestTransportError::Configuration);
         }
-        let timeout = if request.url() == MANIFEST_ENDPOINT {
+        let timeout = if matches!(request.url(), MANIFEST_ENDPOINT | MILESTONES_ENDPOINT) {
             REQUEST_TIMEOUT
         } else {
             COMPONENT_TIMEOUT
@@ -814,6 +819,7 @@ impl ManifestTransport for HttpManifestTransport {
 /// fixed origin, so the production transport can never be pointed elsewhere.
 fn is_allowed_manifest_url(url: &str) -> bool {
     url == MANIFEST_ENDPOINT
+        || url == MILESTONES_ENDPOINT
         || url
             .strip_prefix(MANIFEST_ORIGIN)
             .is_some_and(is_safe_component_path)
@@ -916,6 +922,24 @@ impl<T, C> fmt::Debug for BungieManifestGateway<T, C> {
         formatter
             .debug_struct("BungieManifestGateway")
             .finish_non_exhaustive()
+    }
+}
+
+impl<T: ManifestTransport, C: Clock> destiny_core::PublicMilestonesGateway
+    for BungieManifestGateway<T, C>
+{
+    fn load_public_milestones(
+        &mut self,
+    ) -> Result<destiny_core::PublicMilestonesSnapshot, AppError> {
+        let request = ManifestHttpRequest::new(MILESTONES_ENDPOINT, Some(&self.api_key));
+        let bytes = fetch_with_retry(
+            &mut self.transport,
+            &mut self.read_retry,
+            &self.clock,
+            &request,
+            MAX_INDEX_BYTES,
+        )?;
+        decode_public_milestones(&bytes)
     }
 }
 

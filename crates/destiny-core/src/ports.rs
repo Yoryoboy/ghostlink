@@ -575,6 +575,12 @@ impl fmt::Debug for ManifestIndex {
     }
 }
 
+/// API-key-only acquisition of public milestones, with no account credentials.
+/// Uses the same synchronous acquisition style as [`ManifestGateway`].
+pub trait PublicMilestonesGateway {
+    fn load_public_milestones(&mut self) -> Result<crate::PublicMilestonesSnapshot, AppError>;
+}
+
 /// Separates the small version check from acquisition of the large component.
 pub trait ManifestGateway {
     fn fetch_index(&mut self) -> Result<ManifestIndex, AppError>;
