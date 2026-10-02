@@ -145,6 +145,60 @@ stronger than the desktop session it runs in.
    ghostlink login --callback handler
    ```
 
+## Troubleshooting: the browser opens instead of the handler
+
+Symptom: after authorizing, the browser opens a new window or a profile
+chooser, and `ghostlink login --callback handler` keeps waiting for the
+callback. The callback was dispatched, but to the browser. The
+`xdg-mime query` in Install step 4 can report the handler correctly while
+another layer still selects the browser. Check both layers below.
+
+1. **Contradictory `mimeapps.list` sections.** An earlier choice can leave the
+   browser under `[Added Associations]` while `[Default Applications]` names
+   the handler. Inspect both sections, not only the `xdg-mime` result:
+
+   ```sh
+   grep -n 'x-scheme-handler/ghostlink' ~/.config/mimeapps.list
+   ```
+
+   Every line should name `ghostlink-callback.desktop`.
+
+2. **Remembered portal choice (Wayland).** Browsers such as Chrome on a Wayland
+   session can open custom schemes through `xdg-desktop-portal`, which keeps
+   its own per-application "open with" history in the permission store table
+   `desktop-used-apps`. Once a choice reaches its threshold, the portal stops
+   asking and launches it directly, regardless of `mimeapps.list`. Inspect it:
+
+   ```sh
+   busctl --user call org.freedesktop.impl.portal.PermissionStore \
+     /org/freedesktop/impl/portal/PermissionStore \
+     org.freedesktop.impl.portal.PermissionStore \
+     Lookup ss desktop-used-apps x-scheme-handler/ghostlink
+   ```
+
+   A reply such as `"com.google.Chrome" 3 "google-chrome" "3" "3"` means the
+   portal launches the browser. Record that reply for Revert, back up
+   `~/.local/share/flatpak/db/desktop-used-apps`, then point the requesting
+   application's entry at the handler (the third value is the desktop id
+   without `.desktop`):
+
+   ```sh
+   busctl --user call org.freedesktop.impl.portal.PermissionStore \
+     /org/freedesktop/impl/portal/PermissionStore \
+     org.freedesktop.impl.portal.PermissionStore \
+     SetPermission sbssas desktop-used-apps true x-scheme-handler/ghostlink \
+     com.google.Chrome 3 ghostlink-callback 3 3
+   ```
+
+   Replace `com.google.Chrome` with the application id from the Lookup reply.
+   To revert, run the same `SetPermission` with the recorded values.
+
+The journal shows which desktop file actually received the callback:
+
+```sh
+journalctl --user --since "5 min ago" | grep -Ei 'ghostlink|chrome'
+```
+
 ## Revert
 
 Restore exactly the association recorded in Install step 1, then remove this
@@ -175,3 +229,11 @@ cargo test -p destiny-cli --all-features
 
 No live authorization, desktop registration, or provider call is performed or
 claimed by this runbook.
+
+## Human live validation
+
+On 2026-10-01 the human operator completed `ghostlink login --callback handler`
+live on KDE Plasma 6 (Wayland) with Google Chrome, after applying the portal fix
+from Troubleshooting. The login reported `authorized` with an expiry and no
+refresh token. That is one environment, recorded by the operator; other
+desktops and browsers are unverified.
