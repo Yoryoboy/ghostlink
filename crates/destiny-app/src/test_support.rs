@@ -399,11 +399,35 @@ impl destiny_core::ports::WorldDefinitionRepository for InMemoryDefinitionReposi
                 .cloned()
         }))
     }
-    fn world_definition_counts(&self) -> Result<[usize; 3], AppError> {
+    fn lookup_objective(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_core::ObjectiveDefinition>, AppError> {
+        Ok(self.world.as_ref().and_then(|w| {
+            w.objectives
+                .definitions
+                .iter()
+                .find(|d| d.hash() == hash)
+                .cloned()
+        }))
+    }
+    fn lookup_activity_type(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_core::ActivityTypeDefinition>, AppError> {
+        Ok(self.world.as_ref().and_then(|w| {
+            w.activity_types
+                .definitions
+                .iter()
+                .find(|d| d.hash() == hash)
+                .cloned()
+        }))
+    }
+    fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
         Ok(self
             .world
             .as_ref()
-            .map_or([0; 3], destiny_core::WorldDefinitionsAcquisition::counts))
+            .map_or([0; 5], destiny_core::WorldDefinitionsAcquisition::counts))
     }
     fn publish_manifest(
         &mut self,
@@ -783,6 +807,14 @@ pub fn synthetic_world(version: DefinitionVersion) -> destiny_core::WorldDefinit
     use destiny_core::*;
     WorldDefinitionsAcquisition {
         version,
+        objectives: WorldDefinitionTable {
+            definitions: vec![ObjectiveDefinition::new(5, "Progress".into(), 1).unwrap()],
+            skipped_count: 5,
+        },
+        activity_types: WorldDefinitionTable {
+            definitions: vec![ActivityTypeDefinition::new(4, "Type".into(), "".into()).unwrap()],
+            skipped_count: 6,
+        },
         milestones: WorldDefinitionTable {
             definitions: vec![
                 MilestoneDefinition::new(1, "Milestone".into(), "".into(), 3).unwrap(),
@@ -829,6 +861,8 @@ impl QueuedManifestGateway {
                     milestone_path: "/common/destiny2_content/milestones.json".into(),
                     activity_path: "/common/destiny2_content/activities.json".into(),
                     modifier_path: "/common/destiny2_content/modifiers.json".into(),
+                    objective_path: "/common/destiny2_content/objectives.json".into(),
+                    activity_type_path: "/common/destiny2_content/types.json".into(),
                 }));
                 self.queue_world(Ok(synthetic_world(batch.version.clone())));
                 self.queue_component(Ok(batch));

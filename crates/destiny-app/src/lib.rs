@@ -49,9 +49,9 @@ pub use destiny_core::{
     TransferRequest,
 };
 pub use destiny_core::{
-    ActivityDefinition, ActivityModifierDefinition, MilestoneDefinition, PublicMilestone,
-    PublicMilestoneActivity, PublicMilestonesGateway, PublicMilestonesSnapshot,
-    WorldDefinitionTable, WorldDefinitionsAcquisition,
+    ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, MilestoneDefinition,
+    ObjectiveDefinition, PublicMilestone, PublicMilestoneActivity, PublicMilestonesGateway,
+    PublicMilestonesSnapshot, WorldDefinitionTable, WorldDefinitionsAcquisition,
 };
 pub use destiny_core::{ManifestAcquisition, ManifestDefinitions, ManifestGateway};
 pub use manifest::{ManifestService, ManifestSyncReport, normalize_manifest};

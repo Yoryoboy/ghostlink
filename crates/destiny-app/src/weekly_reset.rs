@@ -93,7 +93,7 @@ impl<G: PublicMilestonesGateway, R: WorldDefinitionRepository> WeeklyResetServic
             .repository
             .current_metadata()?
             .ok_or_else(|| AppError::new(ErrorCategory::DefinitionsUnavailable))?;
-        if self.repository.world_definition_counts()?.contains(&0) {
+        if self.repository.world_definition_counts()?[..3].contains(&0) {
             return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
         }
         let mut snapshot = self.gateway.load_public_milestones()?;
@@ -174,7 +174,7 @@ mod tests {
 
     struct RepositoryDouble {
         inner: InMemoryDefinitionRepository,
-        counts: [usize; 3],
+        counts: [usize; 5],
         failure: Option<ReadFailure>,
     }
 
@@ -213,7 +213,19 @@ mod tests {
     }
 
     impl WorldDefinitionRepository for RepositoryDouble {
-        fn world_definition_counts(&self) -> Result<[usize; 3], AppError> {
+        fn lookup_objective(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::ObjectiveDefinition>, AppError> {
+            self.inner.lookup_objective(hash)
+        }
+        fn lookup_activity_type(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::ActivityTypeDefinition>, AppError> {
+            self.inner.lookup_activity_type(hash)
+        }
+        fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
             if matches!(self.failure, Some(ReadFailure::Counts)) {
                 return Err(AppError::new(ErrorCategory::LocalStorage));
             }
@@ -258,7 +270,7 @@ mod tests {
 
     #[test]
     fn each_empty_world_table_prevents_acquisition() {
-        for counts in [[0, 1, 1], [1, 0, 1], [1, 1, 0]] {
+        for counts in [[0, 1, 1, 1, 1], [1, 0, 1, 1, 1], [1, 1, 0, 1, 1]] {
             let original = service(vec![milestone(1, 0)]);
             let mut service = WeeklyResetService::new(
                 original.gateway,
@@ -283,7 +295,7 @@ mod tests {
                         .unwrap()
                         .is_some(),
                 ],
-                counts.map(|count| count > 0)
+                [counts[0] > 0, counts[1] > 0, counts[2] > 0]
             );
             assert_eq!(
                 service.weekly_reset().unwrap_err(),
@@ -305,7 +317,7 @@ mod tests {
                 original.gateway,
                 RepositoryDouble {
                     inner: original.repository,
-                    counts: [1; 3],
+                    counts: [1; 5],
                     failure: Some(failure),
                 },
             );
@@ -344,6 +356,9 @@ mod tests {
                     source: SourceMarker::Manifest,
                 },
                 WorldDefinitionsAcquisition {
+                    objectives: crate::test_support::synthetic_world(version.clone()).objectives,
+                    activity_types: crate::test_support::synthetic_world(version.clone())
+                        .activity_types,
                     version,
                     milestones: WorldDefinitionTable {
                         definitions: vec![

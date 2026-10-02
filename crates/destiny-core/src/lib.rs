@@ -16,8 +16,8 @@ pub mod weekly_profile;
 pub use weekly_profile::*;
 pub mod world_definitions;
 pub use world_definitions::{
-    ActivityDefinition, ActivityModifierDefinition, MilestoneDefinition, WorldDefinitionTable,
-    WorldDefinitionsAcquisition,
+    ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, MilestoneDefinition,
+    ObjectiveDefinition, WorldDefinitionTable, WorldDefinitionsAcquisition,
 };
 
 pub use auth::{
