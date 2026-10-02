@@ -99,6 +99,29 @@ Add the global `--json` flag to select machine output:
 cargo run -p destiny-cli -- --json search-inventory --text gjallar --item-hash 1001
 ```
 
+### Manifest definitions
+
+Item names, types and tiers come from the Destiny 2 Manifest, which must be
+loaded once before `search-inventory` or `inspect-item` can resolve them:
+
+```sh
+ghostlink sync-manifest          # or: ghostlink --json sync-manifest
+```
+
+- The Manifest is public: the command needs only `BUNGIE_API_KEY` and
+  `DESTINY_DATABASE_PATH`, never an OAuth login, the keyring, or a client
+  secret.
+- It downloads the English `DestinyInventoryItemDefinition` table (about 10 MB
+  gzip, about 200 MB uncompressed, decoded as a stream) and replaces the
+  stored catalog atomically. Records without a display name or marked
+  redacted are skipped and counted.
+- Re-running it fetches only the small Manifest index; when the live version
+  equals the stored one it reports `unchanged` and downloads nothing. Run it
+  again after a Destiny patch.
+- Until a catalog is loaded, `search-inventory` and `inspect-item` fail with
+  `definitions not loaded; run ghostlink sync-manifest` (CLI and MCP) instead
+  of returning an empty result.
+
 ### Output contract
 
 - Human success output is line-oriented text with a `revision` / `checked_at` /

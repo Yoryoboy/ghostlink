@@ -161,6 +161,7 @@ where
             instances.validate()?;
         }
 
+        self.require_definitions()?;
         let outcome = self.synchronize(policy, now)?;
         let metadata = query_metadata(&outcome, policy, now);
 
@@ -203,6 +204,7 @@ where
         policy: FreshnessPolicy,
         now: Timestamp,
     ) -> Result<Resolution<ItemInspection>, AppError> {
+        self.require_definitions()?;
         let outcome = self.synchronize(policy, now)?;
         let metadata = query_metadata(&outcome, policy, now);
 
@@ -221,6 +223,13 @@ where
             instance,
             metadata,
         }))
+    }
+
+    fn require_definitions(&self) -> Result<(), AppError> {
+        if self.repository().current_metadata()?.is_none() {
+            return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+        }
+        Ok(())
     }
 
     /// Runs one ordinary policy-driven synchronization.
@@ -704,6 +713,61 @@ mod tests {
         let mut repository = CompositeRepository::with_definitions(standard_definitions());
         repository.commit(snapshot_input(fresh_checked_at(), characters, items));
         service(shared, repository)
+    }
+
+    #[test]
+    fn absent_manifest_is_distinct_from_loaded_catalog_without_matches() {
+        let shared = gateway();
+        let mut empty = service(&shared, CompositeRepository::default());
+        let request = search_request(
+            DefinitionSearchQuery {
+                text: Some(SearchTerm::new("no such item").unwrap()),
+                item_type: None,
+                tags: Vec::new(),
+                limit: 5,
+            },
+            None,
+        );
+        let error = empty.search_inventory(&request, TTL, NOW).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "definitions not loaded; run ghostlink sync-manifest"
+        );
+        let mut loaded = fresh_service(&shared, Vec::new(), Vec::new());
+        assert!(
+            loaded
+                .search_inventory(&request, TTL, NOW)
+                .unwrap()
+                .candidates
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn manifest_metadata_failure_is_not_reported_as_an_absent_catalog() {
+        let shared = gateway();
+        let repository = CompositeRepository {
+            definitions: InMemoryDefinitionRepository::default()
+                .with_metadata_failure(AppError::new(ErrorCategory::LocalStorage)),
+            ..CompositeRepository::default()
+        };
+        let mut service = service(&shared, repository);
+        let request = search_request(
+            DefinitionSearchQuery {
+                text: None,
+                item_type: None,
+                tags: Vec::new(),
+                limit: 5,
+            },
+            None,
+        );
+        assert_eq!(
+            service
+                .search_inventory(&request, TTL, NOW)
+                .unwrap_err()
+                .category(),
+            ErrorCategory::LocalStorage
+        );
     }
 
     #[test]

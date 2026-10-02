@@ -16,6 +16,7 @@ pub enum ErrorCategory {
     ProviderRateLimit,
     ProviderUnavailable,
     ProviderValidation,
+    DefinitionsUnavailable,
     StaleState,
     AmbiguousMatch,
     UnsupportedOperation,
@@ -85,6 +86,9 @@ impl fmt::Display for AppError {
             ErrorCategory::ProviderRateLimit => "the provider rate limit was reached",
             ErrorCategory::ProviderUnavailable => "the provider is unavailable",
             ErrorCategory::ProviderValidation => "the provider rejected the request",
+            ErrorCategory::DefinitionsUnavailable => {
+                "definitions not loaded; run ghostlink sync-manifest"
+            }
             ErrorCategory::StaleState => "local state is stale",
             ErrorCategory::AmbiguousMatch => "the request matched multiple items",
             ErrorCategory::UnsupportedOperation => "the operation is unsupported",

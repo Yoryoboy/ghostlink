@@ -79,7 +79,7 @@ impl Cli {
             // A `login` command line carries no read, and the hidden `callback`
             // handler is not a read either, so both report the stable
             // unsupported-operation outcome instead of guessing at a read.
-            Command::Login(_) | Command::Callback(_) => {
+            Command::SyncManifest | Command::Login(_) | Command::Callback(_) => {
                 Err(CliError::from_category(ErrorCategory::UnsupportedOperation))
             }
         }
@@ -89,6 +89,10 @@ impl Cli {
 /// The three read commands and the interactive login command this journey exposes.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Download and publish the public English Manifest item definitions.
+    #[command(name = "sync-manifest")]
+    SyncManifest,
+
     /// List the characters in the current profile projection.
     #[command(name = "list-characters")]
     ListCharacters,
@@ -358,6 +362,7 @@ pub fn category_outcome(category: ErrorCategory) -> ErrorOutcome {
         ErrorCategory::ProviderUnavailable => ("provider_unavailable", 21),
         ErrorCategory::CallbackTimeout => ("provider_unavailable", 21),
         ErrorCategory::ProviderValidation => ("invalid_request", 2),
+        ErrorCategory::DefinitionsUnavailable => ("definitions_unavailable", 33),
         ErrorCategory::StaleState => ("stale_state", 30),
         ErrorCategory::AmbiguousMatch => ("ambiguous_match", 31),
         ErrorCategory::UnsupportedOperation => ("unsupported_operation", 40),
@@ -509,7 +514,7 @@ mod tests {
         SearchInventoryRequest, SyncMetadata, Timestamp,
     };
 
-    const ALL_CATEGORIES: [ErrorCategory; 21] = [
+    const ALL_CATEGORIES: [ErrorCategory; 22] = [
         ErrorCategory::AuthorizationRequired,
         ErrorCategory::ReauthorizationRequired,
         ErrorCategory::AlreadyAuthorizing,
@@ -521,6 +526,7 @@ mod tests {
         ErrorCategory::ProviderRateLimit,
         ErrorCategory::ProviderUnavailable,
         ErrorCategory::ProviderValidation,
+        ErrorCategory::DefinitionsUnavailable,
         ErrorCategory::StaleState,
         ErrorCategory::AmbiguousMatch,
         ErrorCategory::UnsupportedOperation,
@@ -568,6 +574,10 @@ mod tests {
             ErrorCategory::ProviderValidation => ErrorOutcome {
                 code: "invalid_request",
                 exit_code: 2,
+            },
+            ErrorCategory::DefinitionsUnavailable => ErrorOutcome {
+                code: "definitions_unavailable",
+                exit_code: 33,
             },
             ErrorCategory::StaleState => ErrorOutcome {
                 code: "stale_state",
@@ -637,6 +647,21 @@ mod tests {
             ReadRequest::SearchInventory(request) => request,
             other => panic!("expected a search request, found {other:?}"),
         }
+    }
+
+    #[test]
+    fn sync_manifest_parses_and_has_public_help() {
+        let cli = parse(["sync-manifest"]);
+        assert_eq!(
+            cli.into_read_request().unwrap_err().code(),
+            "unsupported_operation"
+        );
+        let help = Cli::try_parse_from(["ghostlink", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("sync-manifest"));
+        let help = Cli::try_parse_from(["ghostlink", "sync-manifest", "--help"]).unwrap_err();
+        assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
     }
 
     #[test]
@@ -907,7 +932,7 @@ mod tests {
     fn the_error_matrix_is_stable_over_every_current_category() {
         assert_eq!(
             ALL_CATEGORIES.len(),
-            21,
+            22,
             "a new ErrorCategory needs a matrix entry and a test expectation"
         );
         for category in ALL_CATEGORIES {

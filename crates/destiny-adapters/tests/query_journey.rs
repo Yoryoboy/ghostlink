@@ -576,6 +576,52 @@ fn cli_argv(arguments: &[&str]) -> Vec<String> {
 
 /// Drives the real CLI runner over the composed service, exactly as the binary
 /// process boundary does, and returns the fully rendered process result.
+#[test]
+fn absent_manifest_errors_in_cli_and_mcp_but_loaded_no_match_is_empty() {
+    let journey = Journey::new();
+    let mut service = journey.service();
+    let hint = "definitions not loaded; run ghostlink sync-manifest";
+    for command in [
+        vec!["search-inventory"],
+        vec!["inspect-item", INSTANCE_MISSING],
+    ] {
+        let output = cli(&mut service, &command, NOW);
+        assert_eq!(output.exit_code, 33);
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, format!("error: {hint}\n"));
+        assert_no_secrets(&output.stderr);
+    }
+    let output = cli(&mut service, &["--json", "search-inventory"], NOW);
+    assert_eq!(
+        output.stderr,
+        format!("{{\"error\":{{\"code\":\"definitions_unavailable\",\"message\":\"{hint}\"}}}}\n")
+    );
+    let mut reads = QueryReadService::new(service, TestClock(Rc::clone(&journey.clock)), TTL);
+    let args: SearchInventoryArgs = serde_json::from_value(json!({})).unwrap();
+    let error = reads
+        .search_inventory(&args.into_request().unwrap())
+        .unwrap_err();
+    assert_eq!(error.code(), "definitions_unavailable");
+    assert_eq!(error.to_string(), hint);
+    assert_no_secrets(&format!("{error:?} {error}"));
+    let tool_error = serde_json::to_value(error.into_call_tool_result()).unwrap();
+    assert_eq!(tool_error["isError"], true);
+    assert_eq!(
+        tool_error["structuredContent"]["code"],
+        "definitions_unavailable"
+    );
+    assert_eq!(tool_error["structuredContent"]["message"], hint);
+    assert!(journey.transport.borrow().recorded_urls.is_empty());
+    let mut service = journey.service();
+    seed(&journey, &mut service);
+    let output = cli_json(
+        &mut service,
+        &["--json", "search-inventory", "--text", "no such item"],
+    );
+    assert_eq!(output["candidates"], json!([]));
+    assert_eq!(output["hits"], json!([]));
+}
+
 fn cli(service: &mut Service, arguments: &[&str], now: Timestamp) -> ProcessOutput {
     destiny_cli::run(service, cli_argv(arguments), cli_freshness(now))
 }

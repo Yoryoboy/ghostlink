@@ -45,7 +45,7 @@ pub use destiny_core::{
     SyncRevision, Timestamp, TokenRefresh, TransferGateway, TransferOutcome, TransferRejection,
     TransferRequest,
 };
-pub use destiny_core::{ManifestAcquisition, ManifestGateway};
+pub use destiny_core::{ManifestAcquisition, ManifestDefinitions, ManifestGateway};
 pub use manifest::{ManifestService, ManifestSyncReport, normalize_manifest};
 pub use mutation::{
     ExecutionAuthorization, ExecutionFailure, IncompleteExecution, MoveExecutionOutcome,

@@ -224,11 +224,35 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
+    let mut manifest =
+        crate::runtime::ComposingManifestFactory::new(crate::runtime::ProductionFoundations);
+    run_binary_with_manifest(read_factory, login_factory, &mut manifest, present, args)
+}
+
+/// Injectable routing including the public Manifest path.
+pub fn run_binary_with_manifest<F, G, M, P, I, T>(
+    read_factory: &mut F,
+    login_factory: &mut G,
+    manifest_factory: &mut M,
+    present: &mut P,
+    args: I,
+) -> ProcessOutput
+where
+    F: RuntimeFactory,
+    G: LoginFactory,
+    M: crate::runtime::ManifestFactory,
+    P: FnMut(&str) -> Result<(), CliError>,
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+{
     let cli = match parse_process(args) {
         Ok(cli) => cli,
         Err(output) => return output,
     };
     let mode = cli.output_mode();
+    if let Command::SyncManifest = &cli.command {
+        return run_manifest(manifest_factory, mode);
+    }
     if let Command::Login(arguments) = &cli.command {
         let mut login =
             match login_factory.build(arguments.mode.authorization_mode(), arguments.callback) {
@@ -249,6 +273,17 @@ where
             let freshness = runtime.freshness();
             dispatch(runtime.service_mut(), request, mode, freshness)
         }
+        Err(error) => ProcessOutput::failure(mode, error),
+    }
+}
+
+/// Runs a public Manifest sync through its credential-free composition.
+pub fn run_manifest<M: crate::runtime::ManifestFactory>(
+    factory: &mut M,
+    mode: OutputMode,
+) -> ProcessOutput {
+    match factory.sync() {
+        Ok(report) => ProcessOutput::success(crate::output::render_manifest(mode, &report)),
         Err(error) => ProcessOutput::failure(mode, error),
     }
 }
@@ -802,6 +837,50 @@ mod tests {
             "a read command must not compose a login"
         );
         (output, login)
+    }
+
+    #[test]
+    fn manifest_routing_never_builds_read_or_login_and_sanitizes_failures() {
+        struct Manifest {
+            calls: usize,
+        }
+        impl crate::runtime::ManifestFactory for Manifest {
+            fn sync(&mut self) -> Result<destiny_app::ManifestSyncReport, CliError> {
+                self.calls += 1;
+                Err(CliError::from_category(ErrorCategory::ProviderUnavailable))
+            }
+        }
+        let mut read = FakeFactory::new(RecordingService::new());
+        let mut login = FakeLoginFactory::default();
+        let mut manifest = Manifest { calls: 0 };
+        for arguments in [
+            vec!["sync-manifest", "--unknown"],
+            vec!["sync-manifest", "--help"],
+        ] {
+            super::run_binary_with_manifest(
+                &mut read,
+                &mut login,
+                &mut manifest,
+                &mut |_| panic!("sync must not present login"),
+                argv(arguments),
+            );
+        }
+        assert_eq!(manifest.calls, 0);
+        let output = super::run_binary_with_manifest(
+            &mut read,
+            &mut login,
+            &mut manifest,
+            &mut |_| panic!("sync must not present login"),
+            argv(["--json", "sync-manifest"]),
+        );
+        assert_eq!(manifest.calls, 1);
+        assert_eq!(read.build_count(), 0);
+        assert!(login.modes().is_empty());
+        assert_eq!(output.exit_code, 21);
+        assert_eq!(
+            output.stderr,
+            "{\"error\":{\"code\":\"provider_unavailable\",\"message\":\"the provider is unavailable\"}}\n"
+        );
     }
 
     #[test]
