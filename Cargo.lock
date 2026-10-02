@@ -439,6 +439,7 @@ dependencies = [
  "destiny-cli",
  "destiny-core",
  "destiny-mcp",
+ "getrandom 0.4.3",
  "keyring-core",
  "reqwest",
  "rusqlite",
