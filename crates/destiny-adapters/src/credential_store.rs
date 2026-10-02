@@ -28,12 +28,20 @@
 //!   reinterpreted, and a corrupted record fails closed with a sanitized
 //!   category instead of a guessed value.
 //!
+//! Record layout (all integers big-endian): `GLCR`, version byte, access expiry
+//! (`u64`), material length (`u32`), material bytes. Version 2 (always written)
+//! appends a grant flag: 0 ends the record; 1 adds refresh expiry (`u64`), token
+//! length (`u32`), and token bytes. Material and token are each bounded to 4 KiB;
+//! refresh tokens must be nonempty. Version 1 ends after the material and loads
+//! without a grant. Unknown versions, flags, truncation, oversized fields, and
+//! trailing bytes map to `CredentialStoreUnavailable`, as corrupted v1 did.
+//!
 //! Tests inject `keyring_core`'s in-memory mock store and never touch a real
 //! operating system credential store.
 
 use destiny_core::{
     AccessCredential, AccessCredentialMetadata, AppError, CredentialMaterial, CredentialStore,
-    ErrorCategory, Timestamp,
+    ErrorCategory, RefreshGrant, RefreshToken, Timestamp,
 };
 use keyring_core::{CredentialStore as KeyringStore, Entry};
 use std::fmt;
@@ -54,8 +62,8 @@ pub const CREDENTIAL_USER: &str = "destiny-access-credential";
 /// the marker but is otherwise malformed is a corrupted record.
 const RECORD_MAGIC: [u8; 4] = *b"GLCR";
 
-/// The only stored-record layout this build can read or write.
-const RECORD_VERSION: u8 = 1;
+/// The stored-record layout written by this build (version 1 stays readable).
+const RECORD_VERSION: u8 = 2;
 
 /// Fixed header length: magic (4) + version (1) + expiry seconds (8, big-endian)
 /// + material length (4, big-endian).
@@ -69,7 +77,8 @@ const RECORD_HEADER_LENGTH: usize = 17;
 const MAX_MATERIAL_LENGTH: usize = 4 * 1024;
 
 /// Strict upper bound on a complete stored record.
-const MAX_RECORD_LENGTH: usize = RECORD_HEADER_LENGTH + MAX_MATERIAL_LENGTH;
+const MAX_RECORD_LENGTH: usize =
+    RECORD_HEADER_LENGTH + MAX_MATERIAL_LENGTH + 1 + 12 + MAX_MATERIAL_LENGTH;
 
 fn credential_store_unavailable() -> AppError {
     AppError::new(ErrorCategory::CredentialStoreUnavailable)
@@ -128,13 +137,32 @@ fn encode_credential(credential: &AccessCredential) -> Result<Vec<u8>, AppError>
     if material.len() > MAX_MATERIAL_LENGTH {
         return Err(credential_store_unavailable());
     }
-    let mut record = Vec::with_capacity(RECORD_HEADER_LENGTH + material.len());
+    let grant = credential.refresh_grant();
+    if grant.is_some_and(|grant| grant.token.as_bytes().len() > MAX_MATERIAL_LENGTH) {
+        return Err(credential_store_unavailable());
+    }
+    let mut record = Vec::with_capacity(
+        RECORD_HEADER_LENGTH
+            + material.len()
+            + 1
+            + grant.map_or(0, |grant| 12 + grant.token.as_bytes().len()),
+    );
     record.extend_from_slice(&RECORD_MAGIC);
     record.push(RECORD_VERSION);
     record.extend_from_slice(&credential.metadata.expires_at.seconds().to_be_bytes());
     // The bound above proves the length fits the four-byte field.
     record.extend_from_slice(&(material.len() as u32).to_be_bytes());
     record.extend_from_slice(material);
+    match grant {
+        None => record.push(0),
+        Some(grant) => {
+            let token = grant.token.as_bytes();
+            record.push(1);
+            record.extend_from_slice(&grant.expires_at.seconds().to_be_bytes());
+            record.extend_from_slice(&(token.len() as u32).to_be_bytes());
+            record.extend_from_slice(token);
+        }
+    }
     Ok(record)
 }
 
@@ -161,9 +189,7 @@ fn decode_credential(record: &[u8]) -> Result<AccessCredential, AppError> {
     if record.len() > MAX_RECORD_LENGTH {
         return Err(credential_store_unavailable());
     }
-    if record.len() < RECORD_HEADER_LENGTH
-        || record.get(RECORD_MAGIC.len()) != Some(&RECORD_VERSION)
-    {
+    if record.len() < RECORD_HEADER_LENGTH || !matches!(record[4], 1 | RECORD_VERSION) {
         return Err(credential_store_unavailable());
     }
     let expires_at = u64::from_be_bytes(
@@ -179,18 +205,51 @@ fn decode_credential(record: &[u8]) -> Result<AccessCredential, AppError> {
     if declared_material_length > MAX_MATERIAL_LENGTH {
         return Err(credential_store_unavailable());
     }
+    // The field bound proves this addition cannot overflow, even on 32-bit targets.
+    let material_end = RECORD_HEADER_LENGTH + declared_material_length;
     let material = record
-        .get(RECORD_HEADER_LENGTH..)
+        .get(RECORD_HEADER_LENGTH..material_end)
         .ok_or_else(credential_store_unavailable)?;
-    if material.len() != declared_material_length {
-        return Err(credential_store_unavailable());
-    }
+    let suffix = record
+        .get(material_end..)
+        .ok_or_else(credential_store_unavailable)?;
+    let refresh_grant = if record[4] == 1 {
+        if !suffix.is_empty() {
+            return Err(credential_store_unavailable());
+        }
+        None
+    } else {
+        match suffix.first() {
+            Some(0) if suffix.len() == 1 => None,
+            Some(1) if suffix.len() >= 13 => {
+                let refresh_expires_at = u64::from_be_bytes(
+                    suffix[1..9]
+                        .try_into()
+                        .map_err(|_| credential_store_unavailable())?,
+                );
+                let token_length = u32::from_be_bytes(
+                    suffix[9..13]
+                        .try_into()
+                        .map_err(|_| credential_store_unavailable())?,
+                ) as usize;
+                if token_length > MAX_MATERIAL_LENGTH || suffix.len() - 13 != token_length {
+                    return Err(credential_store_unavailable());
+                }
+                Some(RefreshGrant {
+                    token: RefreshToken::from_bytes(suffix[13..].to_vec())
+                        .map_err(|_| credential_store_unavailable())?,
+                    expires_at: Timestamp::new(refresh_expires_at),
+                })
+            }
+            _ => return Err(credential_store_unavailable()),
+        }
+    };
     Ok(AccessCredential {
         metadata: AccessCredentialMetadata {
             expires_at: Timestamp::new(expires_at),
         },
         material: CredentialMaterial::from_bytes(material.to_vec()),
-        refresh_grant: None,
+        refresh_grant,
     })
 }
 
@@ -343,6 +402,127 @@ mod tests {
         }
     }
 
+    const REFRESH_SENTINEL: &str = "refresh-token-canary";
+
+    fn grant_credential() -> AccessCredential {
+        canary_credential().with_refresh_grant(destiny_core::RefreshGrant {
+            token: destiny_core::RefreshToken::from_bytes(REFRESH_SENTINEL.as_bytes().to_vec())
+                .expect("valid refresh token"),
+            expires_at: Timestamp::new(1_800_000_000),
+        })
+    }
+
+    // Independent fixture builder: never rely on the encoder under test.
+    fn fixture(version: u8, material: &[u8]) -> Vec<u8> {
+        let mut record = b"GLCR".to_vec();
+        record.push(version);
+        record.extend_from_slice(&1_700_000_000u64.to_be_bytes());
+        record.extend_from_slice(&(material.len() as u32).to_be_bytes());
+        record.extend_from_slice(material);
+        record
+    }
+
+    fn grant_fixture() -> Vec<u8> {
+        let mut record = fixture(2, SENTINEL.as_bytes());
+        record.push(1);
+        record.extend_from_slice(&1_800_000_000u64.to_be_bytes());
+        record.extend_from_slice(&(REFRESH_SENTINEL.len() as u32).to_be_bytes());
+        record.extend_from_slice(REFRESH_SENTINEL.as_bytes());
+        record
+    }
+
+    #[test]
+    fn v2_round_trips_with_and_without_refresh_grant() {
+        for credential in [canary_credential(), grant_credential()] {
+            let store = mock_store();
+            let mut adapter = NativeCredentialStore::with_store(Arc::clone(&store));
+            adapter.save(credential.clone()).expect("save");
+            assert_eq!(raw_stored_record(&store)[4], 2);
+            assert_eq!(adapter.load().expect("load"), Some(credential));
+        }
+    }
+
+    #[test]
+    fn v1_fixture_remains_readable_without_refresh_grant() {
+        let store = mock_store();
+        write_raw_record(&store, &fixture(1, SENTINEL.as_bytes()));
+        let adapter = NativeCredentialStore::with_store(store);
+        assert_eq!(adapter.load().expect("v1 load"), Some(canary_credential()));
+    }
+
+    #[test]
+    fn v2_fixture_and_every_truncation_are_checked_without_leaking_tokens() {
+        let record = grant_fixture();
+        let store = mock_store();
+        write_raw_record(&store, &record);
+        let adapter = NativeCredentialStore::with_store(Arc::clone(&store));
+        let loaded = adapter.load().expect("v2 fixture load").expect("present");
+        assert_eq!(loaded, grant_credential());
+        assert!(!format!("{loaded:?} {adapter:?}").contains(REFRESH_SENTINEL));
+
+        for length in 4..record.len() {
+            write_raw_record(&store, &record[..length]);
+            let error = adapter.load().expect_err("truncated v2");
+            assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
+            assert!(!format!("{error} {error:?}").contains(REFRESH_SENTINEL));
+        }
+    }
+
+    #[test]
+    fn v2_rejects_invalid_flags_lengths_versions_and_trailing_bytes() {
+        let flag_offset = 17 + SENTINEL.len();
+        let mut bad_flag = grant_fixture();
+        bad_flag[flag_offset] = 2;
+        let mut oversized_token = grant_fixture();
+        oversized_token[flag_offset + 9..flag_offset + 13].copy_from_slice(&4097u32.to_be_bytes());
+        let mut empty_token = grant_fixture();
+        empty_token[flag_offset + 9..flag_offset + 13].copy_from_slice(&0u32.to_be_bytes());
+        empty_token.truncate(flag_offset + 13);
+        let mut oversized_material = grant_fixture();
+        oversized_material[13..17].copy_from_slice(&4097u32.to_be_bytes());
+        let mut unknown_version = grant_fixture();
+        unknown_version[4] = 3;
+        let mut trailing = grant_fixture();
+        trailing.push(0);
+        let mut absent_with_trailing = fixture(2, SENTINEL.as_bytes());
+        absent_with_trailing.extend_from_slice(&[0, 0]);
+        for record in [
+            bad_flag,
+            oversized_token,
+            empty_token,
+            oversized_material,
+            unknown_version,
+            trailing,
+            absent_with_trailing,
+        ] {
+            let store = mock_store();
+            write_raw_record(&store, &record);
+            let adapter = NativeCredentialStore::with_store(store);
+            let error = adapter.load().expect_err("invalid v2");
+            assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
+            assert!(!format!("{error} {error:?} {adapter:?}").contains(REFRESH_SENTINEL));
+        }
+    }
+
+    #[test]
+    fn v2_accepts_both_secrets_at_their_maximum_lengths() {
+        let credential = AccessCredential {
+            metadata: AccessCredentialMetadata {
+                expires_at: Timestamp::new(u64::MAX),
+            },
+            material: CredentialMaterial::from_bytes(vec![0xff; 4096]),
+            refresh_grant: Some(destiny_core::RefreshGrant {
+                token: destiny_core::RefreshToken::from_bytes(vec![0xfe; 4096]).expect("bounded"),
+                expires_at: Timestamp::new(u64::MAX),
+            }),
+        };
+        let store = mock_store();
+        let mut adapter = NativeCredentialStore::with_store(Arc::clone(&store));
+        adapter.save(credential.clone()).expect("save maximum");
+        assert_eq!(raw_stored_record(&store).len(), 17 + 4096 + 1 + 12 + 4096);
+        assert_eq!(adapter.load().expect("load maximum"), Some(credential));
+    }
+
     fn canary_material() -> CredentialMaterial {
         CredentialMaterial::from_bytes(SENTINEL.as_bytes().to_vec())
     }
@@ -413,7 +593,7 @@ mod tests {
         let raw = raw_stored_record(&store);
         assert_eq!(&raw[..4], &RECORD_MAGIC);
         assert_eq!(raw[4], RECORD_VERSION);
-        assert_eq!(raw.len(), RECORD_HEADER_LENGTH + SENTINEL.len());
+        assert_eq!(raw.len(), RECORD_HEADER_LENGTH + SENTINEL.len() + 1);
         assert!(
             !raw.starts_with(SENTINEL.as_bytes()),
             "the raw material must never be the stored value"
@@ -657,7 +837,7 @@ mod tests {
     fn record_bounds_are_consistent() {
         assert_eq!(
             MAX_RECORD_LENGTH,
-            RECORD_HEADER_LENGTH + MAX_MATERIAL_LENGTH
+            RECORD_HEADER_LENGTH + MAX_MATERIAL_LENGTH + 1 + 12 + MAX_MATERIAL_LENGTH
         );
         // The empty-material boundary record is exactly decodable.
         let boundary = AccessCredential {
@@ -668,7 +848,7 @@ mod tests {
             refresh_grant: None,
         };
         let encoded = encode_credential(&boundary).expect("encode");
-        assert_eq!(encoded.len(), RECORD_HEADER_LENGTH);
+        assert_eq!(encoded.len(), RECORD_HEADER_LENGTH + 1);
         assert_eq!(decode_credential(&encoded).expect("decode"), boundary);
     }
 }
