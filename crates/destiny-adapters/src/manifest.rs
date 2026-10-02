@@ -293,6 +293,7 @@ struct WorldRecord {
 }
 #[derive(Deserialize)]
 struct WorldDisplay {
+    #[serde(default)]
     name: String,
     #[serde(default)]
     description: String,
@@ -1341,6 +1342,13 @@ mod tests {
         let types = super::decode_activity_types(br#"{"1":{"hash":1,"displayProperties":{"name":"Raid"}},"2":{"hash":2,"redacted":true},"3":{"hash":3,"displayProperties":{"name":" "}}}"#).unwrap();
         assert_eq!(types.skipped_count, 2);
         assert_eq!(types.definitions[0].name(), "Raid");
+        // Live data has displayProperties objects without a name key: skip, never fail the batch.
+        let nameless = super::decode_activity_types(
+            br#"{"1":{"hash":1,"displayProperties":{"name":"Raid"}},"2":{"hash":2,"displayProperties":{"description":"x"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(nameless.skipped_count, 1);
+        assert_eq!(nameless.definitions.len(), 1);
         for bad in [
             br#"{"1":{"hash":2,"progressDescription":""}}"#.as_slice(),
             br#"{"1":{"hash":1},"1":{"hash":1}}"#,
