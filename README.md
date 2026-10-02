@@ -101,8 +101,9 @@ cargo run -p destiny-cli -- --json search-inventory --text gjallar --item-hash 1
 
 ### Manifest definitions
 
-Item names, types and tiers come from the Destiny 2 Manifest, which must be
-loaded once before `search-inventory` or `inspect-item` can resolve them:
+Item names, types and tiers, and the activity, milestone and modifier names
+used by `weekly-reset`, come from the Destiny 2 Manifest, which must be loaded
+once before those commands can resolve them:
 
 ```sh
 ghostlink sync-manifest          # or: ghostlink --json sync-manifest
@@ -112,15 +113,34 @@ ghostlink sync-manifest          # or: ghostlink --json sync-manifest
   `DESTINY_DATABASE_PATH`, never an OAuth login, the keyring, or a client
   secret.
 - It downloads the English `DestinyInventoryItemDefinition` table (about 10 MB
-  gzip, about 200 MB uncompressed, decoded as a stream) and replaces the
-  stored catalog atomically. Records without a display name or marked
+  gzip, about 200 MB uncompressed, decoded as a stream) plus the
+  `DestinyMilestoneDefinition`, `DestinyActivityDefinition` and
+  `DestinyActivityModifierDefinition` tables, and replaces all four stored
+  catalogs in one transaction. Records without a display name or marked
   redacted are skipped and counted.
 - Re-running it fetches only the small Manifest index; when the live version
-  equals the stored one it reports `unchanged` and downloads nothing. Run it
-  again after a Destiny patch.
+  equals the stored one and all four catalogs are populated it reports
+  `unchanged` and downloads nothing. Run it again after a Destiny patch.
+- Opening the database with this version migrates it to schema v3; binaries
+  built before the weekly reset support refuse a v3 database.
 - Until a catalog is loaded, `search-inventory` and `inspect-item` fail with
   `definitions not loaded; run ghostlink sync-manifest` (CLI and MCP) instead
   of returning an empty result.
+
+### Weekly reset
+
+```sh
+ghostlink weekly-reset           # or: ghostlink --json weekly-reset
+```
+
+Shows the current public weekly rotation from Bungie `GetPublicMilestones`:
+each milestone with its reset window (UTC), its activities, and their
+modifiers. Like `sync-manifest`, it needs only `BUNGIE_API_KEY` and
+`DESTINY_DATABASE_PATH`, never an OAuth login. Names are resolved against the
+stored Manifest; a hash with no stored definition is shown as
+`unresolved #<hash>` (JSON: `"resolved": false`, `"name": null`) and is never
+guessed. Modifier descriptions may contain `{var:<hash>}` placeholders, which
+are shown verbatim. Per-character weekly progress is not covered yet.
 
 ### Output contract
 
@@ -178,13 +198,14 @@ live account and is not a live-success claim.
 
 ## destiny-mcp
 
-`destiny-mcp` serves the three read tools plus one default-enabled semantic
+`destiny-mcp` serves four read tools plus one default-enabled semantic
 mutation over the Model Context Protocol stdio transport:
 
 ```text
 list_characters   list the signed-in account's characters
 search_inventory  search Manifest definitions and concrete instances
 inspect_item      inspect exactly one concrete instance by instance identifier
+weekly_reset      show the current public weekly rotation (same data as the CLI)
 move_item         move one concrete instance to the Vault or to a character
 ```
 
