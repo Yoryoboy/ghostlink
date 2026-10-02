@@ -568,7 +568,7 @@ fn cli_freshness(now: Timestamp) -> ReadFreshness {
 
 /// Builds one process argument vector with the binary name first.
 fn cli_argv(arguments: &[&str]) -> Vec<String> {
-    let mut argv = vec!["destiny-cli".to_string()];
+    let mut argv = vec!["ghostlink".to_string()];
     argv.extend(arguments.iter().map(|argument| (*argument).to_string()));
     argv
 }

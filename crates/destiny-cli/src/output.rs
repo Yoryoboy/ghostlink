@@ -9,12 +9,13 @@
 use serde_json::{Value, json};
 
 use destiny_app::{
-    Character, CharacterListResult, FreshnessStatus, InventorySearchHit, InventorySearchResult,
-    ItemDefinition, ItemInspection, ItemInstance, ItemLocation, PerkSummary, QueryMetadata,
-    SourceMarker,
+    AccessCredentialMetadata, Character, CharacterListResult, FreshnessStatus, InventorySearchHit,
+    InventorySearchResult, ItemDefinition, ItemInspection, ItemInstance, ItemLocation, PerkSummary,
+    QueryMetadata, SourceMarker,
 };
 
-use crate::command::CliError;
+use crate::command::{CallbackMode, CliError};
+use crate::login::LoginInstruction;
 
 /// The output mode selected by the global `--json` flag.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,6 +62,61 @@ pub fn render_error(mode: OutputMode, error: &CliError) -> String {
                 "code": error.code(),
                 "message": error.to_string(),
             }
+        })
+        .to_string(),
+    }
+}
+
+/// Renders the operator instruction one interactive login produced.
+///
+/// The instruction is emitted before the terminal read blocks, because a human
+/// cannot act on a URL that only appears after the program is already waiting.
+/// Human output is a short labelled block and JSON output is exactly one bounded
+/// `authorizing` object, so a program can read the URL it has to present and a
+/// reader of the terminal still sees a bounded stream of objects.
+///
+/// The authorization URL carries the CSRF state the provider sends to the browser
+/// anyway; the callback the human pastes back is never part of an instruction, and
+/// no credential, code, or token value is ever rendered.
+pub fn render_login_instruction(mode: OutputMode, instruction: &LoginInstruction) -> String {
+    match mode {
+        OutputMode::Human => match instruction.callback_mode {
+            CallbackMode::Paste => format!(
+                "authorization required\nopen this url in a browser:\n  {}\nafter authorizing, copy the full callback address from the browser and paste it here\npaste the callback url and press enter:\nwaiting for the pasted callback",
+                sanitize(&instruction.authorization_url),
+            ),
+            CallbackMode::Handler => format!(
+                "authorization required\nopen this url in a browser:\n  {}\nafter authorizing, the browser callback is delivered to this window automatically; keep it open\nwaiting for the browser callback",
+                sanitize(&instruction.authorization_url),
+            ),
+        },
+        OutputMode::Json => json!({
+            "authorization_url": instruction.authorization_url,
+            "callback_mode": instruction.callback_mode.as_str(),
+            "kind": "login",
+            "status": "authorizing",
+        })
+        .to_string(),
+    }
+}
+
+/// Renders one completed authorization.
+///
+/// Only the expiry the shared outcome carries is rendered: the credential material
+/// itself never reaches this function, so no mode can print it. The human form
+/// states the public-client consequence explicitly, because a public client
+/// receives no refresh token and the human has to authorize again after expiry.
+pub fn render_login_authorized(mode: OutputMode, access: &AccessCredentialMetadata) -> String {
+    match mode {
+        OutputMode::Human => format!(
+            "authorized\nexpires_at: {}\na public client receives no refresh token; run login again after expiry",
+            access.expires_at.seconds(),
+        ),
+        OutputMode::Json => json!({
+            "expires_at": access.expires_at.seconds(),
+            "kind": "login",
+            "refresh_token": false,
+            "status": "authorized",
         })
         .to_string(),
     }
@@ -352,13 +408,18 @@ const fn source_text(source: SourceMarker) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{OutputMode, render_characters, render_error, render_inspection, render_search};
+    use super::{
+        OutputMode, render_characters, render_error, render_inspection, render_login_authorized,
+        render_login_instruction, render_search,
+    };
+    use crate::command::CallbackMode;
     use crate::command::CliError;
+    use crate::login::LoginInstruction;
     use destiny_app::{
-        BucketHash, Character, CharacterId, CharacterListResult, Dataset, DefinitionVersion,
-        FreshnessStatus, InventorySearchHit, InventorySearchResult, ItemDefinition, ItemHash,
-        ItemInspection, ItemInstance, ItemInstanceId, ItemLocation, PerkHash, PerkSummary,
-        QueryMetadata, SourceMarker, SyncMetadata, SyncRevision, Timestamp,
+        AccessCredentialMetadata, BucketHash, Character, CharacterId, CharacterListResult, Dataset,
+        DefinitionVersion, FreshnessStatus, InventorySearchHit, InventorySearchResult,
+        ItemDefinition, ItemHash, ItemInspection, ItemInstance, ItemInstanceId, ItemLocation,
+        PerkHash, PerkSummary, QueryMetadata, SourceMarker, SyncMetadata, SyncRevision, Timestamp,
     };
 
     const DEFINITION_JSON: &str = concat!(
@@ -479,6 +540,98 @@ mod tests {
             instance: instance("inst-1", 1, ItemLocation::Vault),
             metadata: metadata(FreshnessStatus::Fresh),
         }
+    }
+
+    #[test]
+    fn login_instruction_renders_a_labelled_block_or_one_bounded_object() {
+        let instruction = LoginInstruction {
+            authorization_url: "https://www.bungie.net/en/oauth/authorize?state=abc".to_string(),
+            callback_mode: CallbackMode::Paste,
+        };
+
+        assert_eq!(
+            render_login_instruction(OutputMode::Human, &instruction),
+            concat!(
+                "authorization required\n",
+                "open this url in a browser:\n",
+                "  https://www.bungie.net/en/oauth/authorize?state=abc\n",
+                "after authorizing, copy the full callback address from the browser and paste it here\n",
+                "paste the callback url and press enter:\n",
+                "waiting for the pasted callback",
+            )
+        );
+
+        let json = render_login_instruction(OutputMode::Json, &instruction);
+        assert_eq!(
+            json,
+            concat!(
+                r#"{"authorization_url":"https://www.bungie.net/en/oauth/authorize?state=abc","#,
+                r#""callback_mode":"paste","kind":"login","status":"authorizing"}"#,
+            )
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("one valid JSON object");
+        assert_eq!(parsed["kind"], "login");
+        assert_eq!(parsed["status"], "authorizing");
+        assert_eq!(parsed["callback_mode"], "paste");
+    }
+
+    #[test]
+    fn the_handler_instruction_describes_automatic_delivery() {
+        let instruction = LoginInstruction {
+            authorization_url: "https://www.bungie.net/en/oauth/authorize?state=abc".to_string(),
+            callback_mode: CallbackMode::Handler,
+        };
+
+        let rendered = render_login_instruction(OutputMode::Human, &instruction);
+        assert!(rendered.contains("delivered to this window automatically"));
+        assert!(rendered.contains("waiting for the browser callback"));
+        assert!(!rendered.contains("paste the callback url"));
+
+        let json = render_login_instruction(OutputMode::Json, &instruction);
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("one valid JSON object");
+        assert_eq!(parsed["callback_mode"], "handler");
+        assert_eq!(parsed["status"], "authorizing");
+    }
+
+    #[test]
+    fn login_instruction_cannot_forge_an_extra_human_line() {
+        let instruction = LoginInstruction {
+            authorization_url: "https://example.test/?state=abc\nstatus: authorized".to_string(),
+            callback_mode: CallbackMode::Paste,
+        };
+
+        let rendered = render_login_instruction(OutputMode::Human, &instruction);
+        assert!(rendered.contains("state=abc?status: authorized"));
+        assert_eq!(rendered.matches("\nstatus: authorized").count(), 0);
+
+        // JSON relies on the encoder's escaping instead.
+        let json = render_login_instruction(OutputMode::Json, &instruction);
+        assert!(!json.contains("\nstatus"));
+        assert!(serde_json::from_str::<serde_json::Value>(&json).is_ok());
+    }
+
+    #[test]
+    fn login_authorization_reports_expiry_and_the_public_client_consequence() {
+        let access = AccessCredentialMetadata {
+            expires_at: Timestamp::new(1_724_000_000),
+        };
+
+        assert_eq!(
+            render_login_authorized(OutputMode::Human, &access),
+            concat!(
+                "authorized\n",
+                "expires_at: 1724000000\n",
+                "a public client receives no refresh token; run login again after expiry",
+            )
+        );
+
+        assert_eq!(
+            render_login_authorized(OutputMode::Json, &access),
+            concat!(
+                r#"{"expires_at":1724000000,"kind":"login","refresh_token":false,"#,
+                r#""status":"authorized"}"#,
+            )
+        );
     }
 
     #[test]

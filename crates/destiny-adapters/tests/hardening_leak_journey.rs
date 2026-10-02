@@ -11,7 +11,7 @@
 //! - the real [`SqliteStore`] persists the committed projection to an on-disk
 //!   SQLite file and its WAL/shm/journal sidecars;
 //! - the real [`QueryService`] answers the reads; and
-//! - the real CLI runner renders the exact bytes the `destiny-cli` process
+//! - the real CLI runner renders the exact bytes the `ghostlink` process
 //!   writes with [`destiny_cli::run`].
 //!
 //! The only injected seams are the two the production code already takes by
@@ -31,7 +31,7 @@
 //!
 //! # CLI process boundary
 //!
-//! The `destiny-cli` process cannot be driven to the SQLite success path
+//! The `ghostlink` process cannot be driven to the SQLite success path
 //! offline: its production composition loads the OS-keyring credential before it
 //! opens the store, so without a live credential it exits before any read. The
 //! success-path streams are therefore proven through the CLI runner that produces
@@ -444,7 +444,7 @@ fn assert_no_secret(rendered: &str, boundary: &str) {
 }
 
 fn cli_argv(arguments: &[&str]) -> Vec<String> {
-    let mut argv = vec!["destiny-cli".to_string()];
+    let mut argv = vec!["ghostlink".to_string()];
     argv.extend(arguments.iter().map(|argument| (*argument).to_string()));
     argv
 }
@@ -472,18 +472,18 @@ fn control_search() -> SearchInventoryRequest {
     }
 }
 
-/// Locates the built `destiny-cli` binary beside the test executable.
+/// Locates the built `ghostlink` binary beside the test executable.
 fn cli_binary() -> Option<PathBuf> {
     let mut directory = std::env::current_exe().ok()?;
     directory.pop(); // the `deps` directory
     if directory.file_name().and_then(|name| name.to_str()) == Some("deps") {
         directory.pop();
     }
-    let candidate = directory.join(format!("destiny-cli{}", std::env::consts::EXE_SUFFIX));
+    let candidate = directory.join(format!("ghostlink{}", std::env::consts::EXE_SUFFIX));
     candidate.is_file().then_some(candidate)
 }
 
-/// Runs the real `destiny-cli` child process with a cleared environment.
+/// Runs the real `ghostlink` child process with a cleared environment.
 ///
 /// The environment is cleared so no ambient `DBUS_SESSION_BUS_ADDRESS` or
 /// inherited credential reaches the keyring seam; only `PATH` and `HOME` are
@@ -655,7 +655,7 @@ fn serialized_error_shapes_never_carry_a_shared_sentinel() {
     }
 }
 
-/// The real `destiny-cli` child process sanitizes both streams, including the
+/// The real `ghostlink` child process sanitizes both streams, including the
 /// JSON failure shape, and never echoes secret-bearing configuration.
 ///
 /// The success path is out of reach offline (the production composition loads an
@@ -664,7 +664,7 @@ fn serialized_error_shapes_never_carry_a_shared_sentinel() {
 /// unopenable database path guarantees the process fails before any read, so the
 /// check can never reach the network even on a machine holding a credential.
 ///
-/// The check requires the built `destiny-cli` binary and fails loudly when it is
+/// The check requires the built `ghostlink` binary and fails loudly when it is
 /// absent rather than skipping: a silently skipped process check would report a
 /// clean subprocess leak scan without ever running the process. Build the
 /// binary with `cargo build -p destiny-cli` before a focused
@@ -672,7 +672,7 @@ fn serialized_error_shapes_never_carry_a_shared_sentinel() {
 #[test]
 fn the_real_cli_process_streams_carry_no_shared_sentinel() {
     let binary = cli_binary().expect(
-        "the real `destiny-cli` subprocess leak check requires the built binary; \
+        "the real `ghostlink` subprocess leak check requires the built binary; \
          run `cargo build -p destiny-cli` before `cargo test -p destiny-adapters`",
     );
     let scratch = TempDirectory::new("cli");

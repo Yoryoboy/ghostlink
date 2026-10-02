@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Ghostlink OAuth Callback
+Comment=Deliver a ghostlink://oauth/callback URI to a waiting ghostlink login
+# Replace `ghostlink` with the absolute path to the binary. Desktop entries do
+# not inherit the shell PATH. If that path contains spaces or reserved
+# characters, enclose it in double quotes and escape " ` $ \ inside the quotes;
+# write a literal % as %%. The required %u field code stays unescaped. See
+# packaging/ghostlink-callback-handler.md.
+Exec=ghostlink callback %u
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/ghostlink;
+Categories=Network;

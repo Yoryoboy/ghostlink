@@ -17,11 +17,15 @@ use std::ffi::OsString;
 
 use clap::Parser;
 
-use destiny_app::{FreshnessPolicy, QueryOperations, Timestamp};
+use destiny_app::{
+    AuthorizationOutcome, ErrorCategory, FreshnessPolicy, QueryOperations, Timestamp,
+};
 
-use crate::command::{Cli, CliError, ReadRequest, SUCCESS_EXIT_CODE, inspection_outcome};
+use crate::command::{Cli, CliError, Command, ReadRequest, SUCCESS_EXIT_CODE, inspection_outcome};
+use crate::login::{LoginFactory, LoginOperations};
 use crate::output::{
-    OutputMode, render_characters, render_error, render_inspection, render_search,
+    OutputMode, render_characters, render_error, render_inspection, render_login_authorized,
+    render_login_instruction, render_search,
 };
 use crate::runtime::RuntimeFactory;
 
@@ -171,32 +175,52 @@ where
 
 /// The production process boundary of the binary.
 ///
-/// It builds the production runtime factory, which performs no acquisition on
-/// construction, and delegates to [`run_binary_with`]. The request is parsed and
-/// semantically validated before the factory is asked to build anything, so an
-/// invalid request never reads configuration, a credential store, the database,
-/// a clock, or a transport. A valid request is dispatched through the existing
-/// runner path over the composed [`destiny_app::QueryService`].
+/// It builds the production read and login factories, neither of which acquires
+/// anything on construction, and delegates to [`run_binary_with`]. The request is
+/// parsed and then routed before either factory is asked to build anything, so an
+/// invalid command line never reads configuration, binds a callback port, touches
+/// a credential store, opens a database, reads a clock, or reaches a transport.
+/// A valid read is dispatched through the existing runner path over the composed
+/// [`destiny_app::QueryService`]; a valid login is dispatched through the login
+/// composition.
 pub fn run_binary<I, T>(args: I) -> ProcessOutput
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
-    let mut factory = crate::runtime::production_runtime_factory();
-    run_binary_with(&mut factory, args)
+    let mut read_factory = crate::runtime::production_runtime_factory();
+    let mut login_factory = crate::login::ProductionLoginFactory::new();
+    run_binary_with(
+        &mut read_factory,
+        &mut login_factory,
+        &mut present_to_stdout,
+        args,
+    )
 }
 
-/// Runs one command line against an injectable runtime factory.
+/// Runs one command line against injectable read and login factories.
 ///
-/// The order is fixed: parse, then semantically validate the read request, and
-/// only then ask the factory for the runtime. A parse or validation failure is
-/// reported before the factory is called at all, so an invalid request can
-/// never trigger a configuration read, a credential lookup, a keyring access, a
-/// database open, a clock read, or a network call. A runtime failure is mapped
-/// through the same stable, sanitized outcome matrix as any other failure.
-pub fn run_binary_with<F, I, T>(factory: &mut F, args: I) -> ProcessOutput
+/// The order is fixed: parse, then route on the parsed command. A read command is
+/// semantically validated before the read factory is asked for a runtime, and a
+/// login command is never validated as a read; a login command is passed to the
+/// login factory before the read factory is touched. A parse, validation, or
+/// factory failure is reported before anything else is built, so a rejected
+/// request can never trigger a configuration read, a loopback bind, a keyring
+/// access, a database open, a clock read, or a network call.
+///
+/// The `present` sink receives any operator instruction the selected login mode
+/// produced; it exists so the instruction reaches the human before the callback is
+/// awaited, and so tests can observe the exact text without a terminal.
+pub fn run_binary_with<F, G, P, I, T>(
+    read_factory: &mut F,
+    login_factory: &mut G,
+    present: &mut P,
+    args: I,
+) -> ProcessOutput
 where
     F: RuntimeFactory,
+    G: LoginFactory,
+    P: FnMut(&str) -> Result<(), CliError>,
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
@@ -205,17 +229,178 @@ where
         Err(output) => return output,
     };
     let mode = cli.output_mode();
+    if let Command::Login(arguments) = &cli.command {
+        let mut login =
+            match login_factory.build(arguments.mode.authorization_mode(), arguments.callback) {
+                Ok(login) => login,
+                Err(error) => return ProcessOutput::failure(mode, error),
+            };
+        return run_login(login.as_mut(), mode, present);
+    }
+    if let Command::Callback(arguments) = &cli.command {
+        return run_callback(&arguments.callback_uri, mode);
+    }
     let request = match cli.into_read_request() {
         Ok(request) => request,
         Err(error) => return ProcessOutput::failure(mode, error),
     };
-    match factory.build() {
+    match read_factory.build() {
         Ok(mut runtime) => {
             let freshness = runtime.freshness();
             dispatch(runtime.service_mut(), request, mode, freshness)
         }
         Err(error) => ProcessOutput::failure(mode, error),
     }
+}
+
+/// Runs one composed login attempt and renders it.
+///
+/// The order is the security-relevant part: the authorization request is started
+/// first, the operator instruction the selected mode produced is presented before
+/// the callback is awaited (a headless operator cannot act on it otherwise), and
+/// only then is exactly one callback awaited. Presentation is fallible: when the
+/// instruction cannot be delivered to the operator, the attempt fails closed with
+/// a sanitized error and the callback is never awaited, because a wait the
+/// operator cannot satisfy would only block on a terminal read forever. Nothing
+/// here inspects, stores, or renders credential material: the shared outcome
+/// carries expiry metadata only.
+pub fn run_login<L, P>(login: &mut L, mode: OutputMode, present: &mut P) -> ProcessOutput
+where
+    L: LoginOperations + ?Sized,
+    P: FnMut(&str) -> Result<(), CliError>,
+{
+    if let Err(error) = login.begin() {
+        return ProcessOutput::failure(mode, CliError::from(error));
+    }
+    if let Some(instruction) = login.instruction()
+        && let Err(error) = present(&render_login_instruction(mode, &instruction))
+    {
+        return ProcessOutput::failure(mode, error);
+    }
+    match login.receive_callback() {
+        Ok(outcome) => login_result(mode, outcome),
+        Err(error) => ProcessOutput::failure(mode, CliError::from(error)),
+    }
+}
+
+/// Delivers one operating-system callback to a waiting login process.
+///
+/// The installed desktop entry invokes the hidden `ghostlink callback <uri>`
+/// subcommand with the exact callback URI as its single argument. The value is
+/// validated for shape, forwarded once over the per-user rendezvous, and never
+/// rendered, logged, or persisted. A desktop `%u` expansion necessarily places
+/// the one-use authorization code in this process's argv for the moment of the
+/// forward; that exposure is inherent to desktop custom-scheme handling and is
+/// not claimed away.
+///
+/// A successful result means only that the URI was delivered to a waiting login
+/// over the rendezvous; it never means the authorization succeeded. The waiting
+/// login still owns the cryptographic state comparison, replay rejection, and the
+/// code exchange, so it — not this handler — reports the authorization outcome.
+/// The handler is silent on both streams in either mode: the operating system
+/// runs it with `Terminal=false`, so it has no one to address.
+fn run_callback(callback_uri: &str, mode: OutputMode) -> ProcessOutput {
+    match callback_delivery(callback_uri) {
+        Ok(()) => callback_delivered(),
+        Err(error) => ProcessOutput::failure(mode, CliError::from(error)),
+    }
+}
+
+/// The result of a handler that delivered exactly one callback.
+///
+/// Exit success here is deliberately separate from the login's authorization
+/// outcome: delivery is the only thing this process observed. Nothing is written
+/// to either stream, so no success text can be mistaken for, or rendered as, an
+/// authorization result.
+fn callback_delivered() -> ProcessOutput {
+    ProcessOutput {
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: SUCCESS_EXIT_CODE,
+    }
+}
+
+/// Forwards one callback to the waiting login on Linux.
+#[cfg(target_os = "linux")]
+fn callback_delivery(callback_uri: &str) -> Result<(), destiny_app::AppError> {
+    destiny_adapters::oauth::forward_callback(callback_uri)
+}
+
+/// A platform without the Linux rendezvous refuses the handler explicitly.
+#[cfg(not(target_os = "linux"))]
+fn callback_delivery(callback_uri: &str) -> Result<(), destiny_app::AppError> {
+    let _ = callback_uri;
+    Err(destiny_app::AppError::new(
+        ErrorCategory::UnsupportedOperation,
+    ))
+}
+
+/// Maps one completed authorization outcome to the sanitized process result.
+///
+/// Every arm is a fixed, value-free outcome from the shared matrix. A callback
+/// the human denied fails as denied, a cancellation and every outcome that leaves
+/// no authorized session fail as authorization still being required, a rejected or
+/// replayed state fails as the authorization state being rejected, an expired
+/// window fails as the callback timing out, and a failed or rejected exchange
+/// fails as reauthorization being required. No arm can render provider text, a
+/// code, a state, or a credential.
+fn login_result(mode: OutputMode, outcome: AuthorizationOutcome) -> ProcessOutput {
+    match outcome {
+        AuthorizationOutcome::Authorized(access) => {
+            ProcessOutput::success(render_login_authorized(mode, &access))
+        }
+        AuthorizationOutcome::Denied => ProcessOutput::failure(
+            mode,
+            CliError::from_category(ErrorCategory::AuthorizationDenied),
+        ),
+        AuthorizationOutcome::StateMismatch | AuthorizationOutcome::Replay => {
+            ProcessOutput::failure(
+                mode,
+                CliError::from_category(ErrorCategory::CsrfStateMismatch),
+            )
+        }
+        AuthorizationOutcome::Expired => ProcessOutput::failure(
+            mode,
+            CliError::from_category(ErrorCategory::CallbackTimeout),
+        ),
+        AuthorizationOutcome::ExchangeFailed | AuthorizationOutcome::ReauthorizationRequired => {
+            ProcessOutput::failure(
+                mode,
+                CliError::from_category(ErrorCategory::ReauthorizationRequired),
+            )
+        }
+        // A cancellation, and every other outcome, leaves the caller without an
+        // authorized session, so the honest outcome is that authorization is
+        // still required. `Started`, `Authorizing`, `SignedOut` and `LoggedOut`
+        // are not part of the callback vocabulary and are handled here as the same
+        // sanitized outcome rather than guessed at.
+        AuthorizationOutcome::Cancelled
+        | AuthorizationOutcome::Started
+        | AuthorizationOutcome::Authorizing
+        | AuthorizationOutcome::SignedOut
+        | AuthorizationOutcome::LoggedOut => ProcessOutput::failure(
+            mode,
+            CliError::from_category(ErrorCategory::AuthorizationRequired),
+        ),
+    }
+}
+
+/// Writes one instruction line to stdout and flushes it immediately.
+///
+/// The instruction has to reach the operator before the callback is awaited, so it
+/// is written and flushed as its own line instead of being buffered into the final
+/// [`ProcessOutput`]. A write or flush failure is reported as a sanitized local
+/// I/O failure; the raw operating-system error is never rendered. The caller
+/// treats that failure as fatal to the attempt, so the callback is never awaited
+/// for an operator who never saw the authorization URL.
+fn present_to_stdout(text: &str) -> Result<(), CliError> {
+    use std::io::Write;
+
+    let stdout = std::io::stdout();
+    let mut handle = stdout.lock();
+    writeln!(handle, "{text}")
+        .and_then(|()| handle.flush())
+        .map_err(|_| CliError::from_category(ErrorCategory::LocalStorage))
 }
 
 /// Selects the output mode from an explicit `--json` token in the raw argv.
@@ -250,17 +435,25 @@ fn parse_failure(mode: OutputMode, error: &clap::Error) -> ProcessOutput {
 
 #[cfg(test)]
 mod tests {
+    // The read/login test helpers below take `impl AsRef<[&str]>` so a caller can
+    // pass either a slice or an array literal. With that flexible test API the
+    // `&[...]` borrow at a call site is intentional and reads as the test's
+    // argument list, so the generic-argument borrow lint is allowed here.
+    #![allow(clippy::needless_borrows_for_generic_args)]
     use super::{
         ProcessOutput, ReadFreshness, dispatch, parse_process, run, run_binary, run_binary_with,
+        run_login,
     };
-    use crate::command::{Cli, CliError, ReadRequest};
+    use crate::command::{CallbackMode, Cli, CliError, ReadRequest};
+    use crate::login::{LoginFactory, LoginInstruction, LoginOperations};
     use crate::output::OutputMode;
     use crate::runtime::{ReadRuntime, RuntimeFactory};
+    use destiny_app::auth_ux::AuthorizationMode;
     use destiny_app::{
-        AppError, Character, CharacterId, CharacterListResult, Dataset, DefinitionVersion,
-        ErrorCategory, FreshnessPolicy, FreshnessStatus, InspectItemRequest, InventorySearchHit,
-        InventorySearchResult, ItemDefinition, ItemHash, ItemInspection, ItemInstance,
-        ItemInstanceId, ItemLocation, QueryMetadata, QueryOperations, Resolution,
+        AppError, AuthorizationOutcome, Character, CharacterId, CharacterListResult, Dataset,
+        DefinitionVersion, ErrorCategory, FreshnessPolicy, FreshnessStatus, InspectItemRequest,
+        InventorySearchHit, InventorySearchResult, ItemDefinition, ItemHash, ItemInspection,
+        ItemInstance, ItemInstanceId, ItemLocation, QueryMetadata, QueryOperations, Resolution,
         SearchInventoryRequest, SourceMarker, SyncMetadata, SyncRevision, Timestamp,
     };
     use std::cell::{Cell, RefCell};
@@ -458,10 +651,126 @@ mod tests {
         }
     }
 
-    fn argv(arguments: &[&str]) -> Vec<String> {
-        let mut argv = vec!["destiny-cli".to_string()];
-        argv.extend(arguments.iter().map(|argument| (*argument).to_string()));
+    fn argv<'a>(arguments: impl AsRef<[&'a str]>) -> Vec<String> {
+        let mut argv = vec!["ghostlink".to_string()];
+        argv.extend(
+            arguments
+                .as_ref()
+                .iter()
+                .map(|argument| (*argument).to_string()),
+        );
         argv
+    }
+
+    /// The call log of one scripted login.
+    type LoginCalls = Rc<RefCell<Vec<&'static str>>>;
+
+    /// A login that records its calls and returns one scripted outcome per step.
+    #[derive(Clone)]
+    struct ScriptedLogin {
+        calls: LoginCalls,
+        begin: Result<AuthorizationOutcome, AppError>,
+        callback: Result<AuthorizationOutcome, AppError>,
+        instruction: Option<LoginInstruction>,
+    }
+
+    impl ScriptedLogin {
+        fn authorized() -> Self {
+            Self {
+                calls: Rc::new(RefCell::new(Vec::new())),
+                begin: Ok(AuthorizationOutcome::Started),
+                callback: Ok(AuthorizationOutcome::Authorized(
+                    destiny_app::AccessCredentialMetadata {
+                        expires_at: Timestamp::new(1_724_000_000),
+                    },
+                )),
+                instruction: None,
+            }
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls.borrow().clone()
+        }
+    }
+
+    impl LoginOperations for ScriptedLogin {
+        fn begin(&mut self) -> Result<AuthorizationOutcome, AppError> {
+            self.calls.borrow_mut().push("begin");
+            self.begin.clone()
+        }
+
+        fn receive_callback(&mut self) -> Result<AuthorizationOutcome, AppError> {
+            self.calls.borrow_mut().push("receive_callback");
+            self.callback.clone()
+        }
+
+        fn instruction(&self) -> Option<LoginInstruction> {
+            self.calls.borrow_mut().push("instruction");
+            self.instruction.clone()
+        }
+    }
+
+    /// A login factory that records every mode it was asked to compose.
+    #[derive(Clone, Default)]
+    struct FakeLoginFactory {
+        modes: Rc<RefCell<Vec<AuthorizationMode>>>,
+        callbacks: Rc<RefCell<Vec<CallbackMode>>>,
+        failure: Option<CliError>,
+        script: Option<ScriptedLogin>,
+    }
+
+    impl FakeLoginFactory {
+        fn modes(&self) -> Vec<AuthorizationMode> {
+            self.modes.borrow().clone()
+        }
+
+        fn callbacks(&self) -> Vec<CallbackMode> {
+            self.callbacks.borrow().clone()
+        }
+    }
+
+    impl LoginFactory for FakeLoginFactory {
+        fn build(
+            &mut self,
+            mode: AuthorizationMode,
+            callback: CallbackMode,
+        ) -> Result<Box<dyn LoginOperations>, CliError> {
+            self.modes.borrow_mut().push(mode);
+            self.callbacks.borrow_mut().push(callback);
+            match (self.failure, self.script.clone()) {
+                (Some(error), _) => Err(error),
+                (None, Some(script)) => Ok(Box::new(script)),
+                (None, None) => Ok(Box::new(ScriptedLogin::authorized())),
+            }
+        }
+    }
+
+    /// Runs one read command line through the boundary with an observable login
+    /// factory, and proves the login seam was not touched by a read.
+    fn run_read_boundary<'a, F: RuntimeFactory>(
+        factory: &mut F,
+        arguments: impl AsRef<[&'a str]>,
+    ) -> (ProcessOutput, FakeLoginFactory) {
+        let mut login = FakeLoginFactory::default();
+        let mut presented: Vec<String> = Vec::new();
+        let output = run_binary_with(
+            factory,
+            &mut login,
+            &mut |text: &str| {
+                presented.push(text.to_string());
+                Ok(())
+            },
+            argv(arguments),
+        );
+        assert!(
+            presented.is_empty(),
+            "a read command presents no login instruction"
+        );
+        assert!(
+            login.modes().is_empty(),
+            "a read command must not compose a login"
+        );
+        (output, login)
     }
 
     #[test]
@@ -677,10 +986,10 @@ mod tests {
 
     #[test]
     fn dispatch_accepts_a_trait_object_and_calls_it_once() {
-        let mut service = RecordingService::new();
-        let target: &mut dyn QueryOperations = &mut service;
+        let service = RecordingService::new();
+        let mut target: Box<dyn QueryOperations> = Box::new(service.clone());
         let output = dispatch(
-            target,
+            target.as_mut(),
             ReadRequest::ListCharacters,
             OutputMode::Human,
             freshness(),
@@ -696,17 +1005,17 @@ mod tests {
         let mut factory = FakeFactory::new(service.clone());
 
         // A clap syntax failure.
-        let output = run_binary_with(&mut factory, argv(&["inspect-item", "--unknown"]));
+        let (output, _) = run_read_boundary(&mut factory, &["inspect-item", "--unknown"]);
         assert_eq!(output.exit_code, 2);
         assert_eq!(output.stderr, "error: the request arguments are invalid\n");
 
         // A parsed but semantically invalid request.
-        let output = run_binary_with(&mut factory, argv(&["search-inventory", "--limit", "0"]));
+        let (output, _) = run_read_boundary(&mut factory, &["search-inventory", "--limit", "0"]);
         assert_eq!(output.exit_code, 2);
         assert_eq!(output.stderr, "error: the request arguments are invalid\n");
 
         // A missing required argument is rejected before any runtime work too.
-        let output = run_binary_with(&mut factory, argv(&["inspect-item"]));
+        let (output, _) = run_read_boundary(&mut factory, &["inspect-item"]);
         assert_eq!(output.exit_code, 2);
 
         assert_eq!(factory.build_count(), 0);
@@ -721,7 +1030,7 @@ mod tests {
         let mut factory = FakeFactory::new(service.clone());
         factory.freshness = ReadFreshness { policy, now };
 
-        let output = run_binary_with(&mut factory, argv(&["list-characters"]));
+        let (output, _) = run_read_boundary(&mut factory, &["list-characters"]);
 
         assert_eq!(output.exit_code, 0);
         assert!(output.stderr.is_empty());
@@ -739,7 +1048,7 @@ mod tests {
             ErrorCategory::CredentialStoreUnavailable,
         ));
 
-        let output = run_binary_with(&mut factory, argv(&["list-characters"]));
+        let (output, _) = run_read_boundary(&mut factory, &["list-characters"]);
         assert_eq!(output.exit_code, 50);
         assert!(output.stdout.is_empty());
         assert_eq!(output.stderr, "error: credential storage is unavailable\n");
@@ -748,7 +1057,7 @@ mod tests {
 
         let mut factory = FakeFactory::new(service.clone());
         factory.failure = Some(CliError::from_category(ErrorCategory::ConfigurationError));
-        let output = run_binary_with(&mut factory, argv(&["--json", "list-characters"]));
+        let (output, _) = run_read_boundary(&mut factory, &["--json", "list-characters"]);
         assert_eq!(output.exit_code, 52);
         assert!(output.stdout.is_empty());
         assert_eq!(
@@ -775,5 +1084,360 @@ mod tests {
 
         let invalid = parse_process(argv(&["list-characters", "--unknown"])).unwrap_err();
         assert_eq!(invalid.exit_code, CliError::invalid_request().exit_code());
+    }
+
+    /// Runs one login command line through the boundary, with an observable login
+    /// factory and a read factory that must never be built.
+    fn run_login_boundary(
+        login: &mut FakeLoginFactory,
+        arguments: &[&str],
+    ) -> (ProcessOutput, Vec<String>) {
+        let mut read_factory = FakeFactory::new(RecordingService::new());
+        let mut presented: Vec<String> = Vec::new();
+        let output = run_binary_with(
+            &mut read_factory,
+            login,
+            &mut |text: &str| {
+                presented.push(text.to_string());
+                Ok(())
+            },
+            argv(arguments),
+        );
+        assert_eq!(
+            read_factory.build_count(),
+            0,
+            "a login command must never build the read runtime"
+        );
+        (output, presented)
+    }
+
+    #[test]
+    fn login_routes_to_the_login_seam_and_never_to_the_read_runtime() {
+        let script = ScriptedLogin::authorized();
+        let recorded = script.clone();
+        let mut login = FakeLoginFactory {
+            script: Some(script),
+            ..FakeLoginFactory::default()
+        };
+
+        let (output, presented) = run_login_boundary(&mut login, ["login"].as_slice());
+
+        assert_eq!(output.exit_code, 0);
+        assert!(output.stderr.is_empty());
+        assert!(output.stdout.contains("authorized"));
+        assert!(presented.is_empty());
+        assert_eq!(login.modes(), [AuthorizationMode::Auto]);
+        // The authorization request starts, the instruction is read, and only
+        // then is the callback awaited.
+        assert_eq!(
+            recorded.calls(),
+            ["begin", "instruction", "receive_callback"],
+            "the login order is fixed"
+        );
+    }
+
+    #[test]
+    fn the_requested_login_mode_reaches_the_composition_unresolved() {
+        for (flag, expected) in [
+            (None, AuthorizationMode::Auto),
+            (Some("browser"), AuthorizationMode::Browser),
+            (Some("headless"), AuthorizationMode::Headless),
+        ] {
+            let mut login = FakeLoginFactory::default();
+            let arguments: Vec<&str> = match flag {
+                Some(value) => vec!["login", "--mode", value],
+                None => vec!["login"],
+            };
+
+            let (output, _) = run_login_boundary(&mut login, arguments.as_slice());
+
+            assert_eq!(output.exit_code, 0, "flag: {flag:?}");
+            assert_eq!(login.modes(), [expected], "flag: {flag:?}");
+        }
+    }
+
+    #[test]
+    fn the_requested_callback_strategy_reaches_the_composition() {
+        for (flag, expected) in [
+            (None, CallbackMode::Paste),
+            (Some("paste"), CallbackMode::Paste),
+            (Some("handler"), CallbackMode::Handler),
+        ] {
+            let mut login = FakeLoginFactory::default();
+            let arguments: Vec<&str> = match flag {
+                Some(value) => vec!["login", "--callback", value],
+                None => vec!["login"],
+            };
+
+            let (output, _) = run_login_boundary(&mut login, arguments.as_slice());
+
+            assert_eq!(output.exit_code, 0, "flag: {flag:?}");
+            assert_eq!(login.callbacks(), [expected], "flag: {flag:?}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_hidden_callback_handler_routes_to_the_forwarder_and_is_silent() {
+        // A malformed argument is rejected by the forwarder's shape check before
+        // any rendezvous is touched, which proves the callback route and keeps the
+        // test independent of the host's runtime directory.
+        let mut read_factory = FakeFactory::new(RecordingService::new());
+        let mut login = FakeLoginFactory::default();
+        let mut presented: Vec<String> = Vec::new();
+        let output = run_binary_with(
+            &mut read_factory,
+            &mut login,
+            &mut |text: &str| {
+                presented.push(text.to_string());
+                Ok(())
+            },
+            argv(
+                [
+                    "callback",
+                    "https://evil.test/oauth/callback?state=s&code=c",
+                ]
+                .as_slice(),
+            ),
+        );
+
+        assert_eq!(output.exit_code, 10);
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, "error: authorization state was rejected\n");
+        assert!(presented.is_empty());
+        assert_eq!(read_factory.build_count(), 0);
+        assert!(login.modes().is_empty());
+        assert!(login.callbacks().is_empty());
+    }
+
+    #[test]
+    fn an_invalid_login_command_never_composes_a_login() {
+        let mut login = FakeLoginFactory::default();
+
+        let (output, presented) =
+            run_login_boundary(&mut login, ["login", "--mode", "bogus"].as_slice());
+
+        assert_eq!(output.exit_code, 2);
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
+        assert!(presented.is_empty());
+        assert!(login.modes().is_empty());
+    }
+
+    #[test]
+    fn a_login_composition_failure_is_sanitized_in_both_output_modes() {
+        let mut login = FakeLoginFactory {
+            failure: Some(CliError::from_category(ErrorCategory::ConfigurationError)),
+            ..FakeLoginFactory::default()
+        };
+
+        let (output, _) = run_login_boundary(&mut login, ["login"].as_slice());
+        assert_eq!(output.exit_code, 52);
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            output.stderr,
+            "error: required runtime configuration is missing or invalid\n"
+        );
+        assert_eq!(login.modes(), [AuthorizationMode::Auto]);
+
+        let mut login = FakeLoginFactory {
+            failure: Some(CliError::from_category(
+                ErrorCategory::CredentialStoreUnavailable,
+            )),
+            ..FakeLoginFactory::default()
+        };
+        let (output, _) = run_login_boundary(&mut login, ["--json", "login"].as_slice());
+        assert_eq!(output.exit_code, 50);
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            output.stderr,
+            "{\"error\":{\"code\":\"credential_store_unavailable\",\"message\":\"credential storage is unavailable\"}}\n"
+        );
+    }
+
+    #[test]
+    fn login_outcomes_map_to_the_stable_sanitized_matrix() {
+        let cases = [
+            (AuthorizationOutcome::Denied, "authorization_denied", 10),
+            (
+                AuthorizationOutcome::Cancelled,
+                "authorization_required",
+                10,
+            ),
+            (
+                AuthorizationOutcome::StateMismatch,
+                "authorization_state",
+                10,
+            ),
+            (AuthorizationOutcome::Replay, "authorization_state", 10),
+            (AuthorizationOutcome::Expired, "provider_unavailable", 21),
+            (AuthorizationOutcome::Started, "authorization_required", 10),
+            (
+                AuthorizationOutcome::Authorizing,
+                "authorization_required",
+                10,
+            ),
+            (
+                AuthorizationOutcome::SignedOut,
+                "authorization_required",
+                10,
+            ),
+            (
+                AuthorizationOutcome::LoggedOut,
+                "authorization_required",
+                10,
+            ),
+            (
+                AuthorizationOutcome::ExchangeFailed,
+                "reauthorization_required",
+                11,
+            ),
+            (
+                AuthorizationOutcome::ReauthorizationRequired,
+                "reauthorization_required",
+                11,
+            ),
+        ];
+
+        for (outcome, code, exit_code) in cases {
+            let mut script = ScriptedLogin::authorized();
+            script.callback = Ok(outcome.clone());
+            let mut login = FakeLoginFactory {
+                script: Some(script),
+                ..FakeLoginFactory::default()
+            };
+
+            let (output, _) = run_login_boundary(&mut login, ["--json", "login"].as_slice());
+
+            assert_eq!(output.exit_code, exit_code, "outcome: {outcome:?}");
+            assert!(output.stdout.is_empty(), "outcome: {outcome:?}");
+            let parsed: serde_json::Value =
+                serde_json::from_str(output.stderr.trim()).expect("one bounded JSON object");
+            assert_eq!(parsed["error"]["code"], code, "outcome: {outcome:?}");
+            assert!(
+                !output.stderr.contains("sentinel"),
+                "a failure never echoes a supplied value"
+            );
+        }
+    }
+
+    #[test]
+    fn a_login_step_failure_is_reported_as_a_typed_sanitized_outcome() {
+        let mut script = ScriptedLogin::authorized();
+        script.begin = Err(AppError::new(ErrorCategory::ProviderUnavailable));
+        let mut login = FakeLoginFactory {
+            script: Some(script),
+            ..FakeLoginFactory::default()
+        };
+        let (output, presented) = run_login_boundary(&mut login, ["login"].as_slice());
+        assert_eq!(output.exit_code, 21);
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, "error: the provider is unavailable\n");
+        // A failed start is never followed by a callback wait.
+        assert!(presented.is_empty());
+
+        let mut script = ScriptedLogin::authorized();
+        script.callback = Err(AppError::new(ErrorCategory::CallbackTimeout));
+        let mut login = FakeLoginFactory {
+            script: Some(script.clone()),
+            ..FakeLoginFactory::default()
+        };
+        let (output, _) = run_login_boundary(&mut login, ["login"].as_slice());
+        assert_eq!(output.exit_code, 21);
+        assert_eq!(
+            output.stderr,
+            "error: the authorization callback timed out\n"
+        );
+        assert_eq!(script.calls(), ["begin", "instruction", "receive_callback"]);
+    }
+
+    #[test]
+    fn a_headless_login_presents_its_instruction_before_the_outcome() {
+        let mut script = ScriptedLogin::authorized();
+        script.instruction = Some(LoginInstruction {
+            authorization_url: "https://www.bungie.net/en/oauth/authorize?state=abc".to_string(),
+            callback_mode: CallbackMode::Paste,
+        });
+        let recorded = script.clone();
+        let mut login = FakeLoginFactory {
+            script: Some(script),
+            ..FakeLoginFactory::default()
+        };
+
+        let (output, presented) =
+            run_login_boundary(&mut login, ["login", "--mode", "headless"].as_slice());
+
+        assert_eq!(output.exit_code, 0);
+        assert_eq!(presented.len(), 1, "one instruction block is presented");
+        assert!(presented[0].contains("authorization required"));
+        assert!(presented[0].contains("state=abc"));
+        assert!(presented[0].contains("paste the callback url"));
+        assert!(output.stdout.contains("authorized"));
+        assert_eq!(login.modes(), [AuthorizationMode::Headless]);
+        assert_eq!(
+            recorded.calls(),
+            ["begin", "instruction", "receive_callback"]
+        );
+    }
+
+    #[test]
+    fn run_login_accepts_a_trait_object_and_orders_its_calls() {
+        let script = ScriptedLogin::authorized();
+        let recorded = script.clone();
+        let mut login: Box<dyn LoginOperations> = Box::new(script);
+        let mut presented: Vec<String> = Vec::new();
+
+        let output = run_login(login.as_mut(), OutputMode::Human, &mut |text: &str| {
+            presented.push(text.to_string());
+            Ok(())
+        });
+
+        assert_eq!(output.exit_code, 0);
+        assert!(presented.is_empty());
+        assert_eq!(
+            recorded.calls(),
+            ["begin", "instruction", "receive_callback"]
+        );
+    }
+
+    #[test]
+    fn a_failed_instruction_presentation_fails_closed_before_the_callback() {
+        // A headless operator cannot authorize without the URL, so a presentation
+        // failure must never fall through to a callback wait that can never be
+        // satisfied. The attempt fails with a sanitized error and the terminal read
+        // is never entered.
+        let mut script = ScriptedLogin::authorized();
+        script.instruction = Some(LoginInstruction {
+            authorization_url: "https://www.bungie.net/en/oauth/authorize?state=abc".to_string(),
+            callback_mode: CallbackMode::Paste,
+        });
+        let recorded = script.clone();
+        let mut login: Box<dyn LoginOperations> = Box::new(script);
+
+        let output = run_login(login.as_mut(), OutputMode::Human, &mut |_: &str| {
+            Err(CliError::from_category(ErrorCategory::LocalStorage))
+        });
+
+        assert_eq!(output.exit_code, 51);
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, "error: local storage failed\n");
+        assert_eq!(
+            recorded.calls(),
+            ["begin", "instruction"],
+            "a failed presentation is never followed by a callback wait"
+        );
+    }
+
+    #[test]
+    fn the_read_entries_refuse_a_login_command_rather_than_guessing_at_a_read() {
+        // A read entry point handed a login command line has no read to run, so it
+        // reports the stable unsupported-operation outcome instead of an empty or
+        // invented read. The process boundary never routes login here.
+        let mut service = RecordingService::new();
+        let output = run(&mut service, argv(["login"].as_slice()), freshness());
+        assert_eq!(output.exit_code, 40);
+        assert!(output.stdout.is_empty());
+        assert_eq!(output.stderr, "error: the operation is unsupported\n");
+        assert!(service.recorded().is_empty());
     }
 }

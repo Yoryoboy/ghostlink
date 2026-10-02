@@ -9,8 +9,9 @@
 
 use std::fmt;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
+use destiny_app::auth_ux::AuthorizationMode;
 use destiny_app::{
     AppError, CharacterId, DefinitionSearchQuery, ErrorCategory, InspectItemRequest,
     InstanceSearchQuery, ItemHash, ItemHashFilter, ItemInspection, ItemInstanceId,
@@ -25,19 +26,24 @@ pub const SUCCESS_CODE: &str = "ok";
 /// The process exit status reported for a successful outcome.
 pub const SUCCESS_EXIT_CODE: i32 = 0;
 
-/// The read-only Destiny command surface.
+/// The product command surface: the shared read commands and interactive login.
+///
+/// The crate keeps the internal `destiny-cli` name, so the parsed program name
+/// is the product name `ghostlink`. The explicit `about` and `long_about` keep
+/// this developer documentation out of the product's help output.
 #[derive(Debug, Parser)]
 #[command(
-    name = "destiny-cli",
+    name = "ghostlink",
     version,
-    about = "Read-only Destiny profile, inventory, and item inspection"
+    about = "Read-only Destiny profile, inventory, and item inspection, and safe interactive login",
+    long_about = "Read Destiny profile, inventory, and item data, and authorize this machine against the provider by opening the authorization URL and pasting the returned callback."
 )]
 pub struct Cli {
     /// Emit exactly one bounded JSON object instead of human text.
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// The read command to run.
+    /// The read command to run, or the interactive login command.
     #[command(subcommand)]
     pub command: Command,
 }
@@ -54,9 +60,13 @@ impl Cli {
 
     /// Converts the parsed arguments into one validated read request.
     ///
-    /// Every validation failure is reported as [`CliError::invalid_request`], so
-    /// an invalid request can never reach a shared service and can never echo
-    /// the rejected value.
+    /// Every read validation failure is reported as [`CliError::invalid_request`],
+    /// so an invalid request can never reach a shared service and can never echo
+    /// the rejected value. A `login` command line carries no read at all, so this
+    /// read-only conversion reports it as [`ErrorCategory::UnsupportedOperation`]
+    /// instead of guessing at a read. The process boundary routes `login` to the
+    /// login composition before it calls this conversion, so that outcome is only
+    /// reachable from a caller that asked a read-only entry point to run login.
     pub fn into_read_request(self) -> Result<ReadRequest, CliError> {
         match self.command {
             Command::ListCharacters => Ok(ReadRequest::ListCharacters),
@@ -66,11 +76,17 @@ impl Cli {
             Command::InspectItem(arguments) => {
                 arguments.into_request().map(ReadRequest::InspectItem)
             }
+            // A `login` command line carries no read, and the hidden `callback`
+            // handler is not a read either, so both report the stable
+            // unsupported-operation outcome instead of guessing at a read.
+            Command::Login(_) | Command::Callback(_) => {
+                Err(CliError::from_category(ErrorCategory::UnsupportedOperation))
+            }
         }
     }
 }
 
-/// The three read commands this journey exposes.
+/// The three read commands and the interactive login command this journey exposes.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// List the characters in the current profile projection.
@@ -84,6 +100,108 @@ pub enum Command {
     /// Inspect exactly one concrete item instance.
     #[command(name = "inspect-item")]
     InspectItem(InspectItemArgs),
+
+    /// Authorize this machine against the provider.
+    ///
+    /// The human owns the Bungie application registration and the browser
+    /// authorization. This command prints the authorization URL, opens the
+    /// browser when the mode allows it, and then reads the custom-scheme callback
+    /// URI the provider redirected to from the terminal. It never asks for, reads,
+    /// or prints a password, a client secret, or a token value, and it never
+    /// registers an operating-system URI handler.
+    #[command(name = "login")]
+    Login(LoginArgs),
+
+    /// Internal custom-scheme callback handler.
+    ///
+    /// The installed desktop entry invokes `ghostlink callback <uri>`, which
+    /// forwards one operating-system callback to a waiting `ghostlink login`
+    /// process over the per-user rendezvous. It is hidden because the operating
+    /// system, not a person, runs it. The URI is never rendered, logged, or
+    /// persisted. A successful run means only that the URI was delivered to a
+    /// waiting login; the login, not this handler, owns and reports the
+    /// authorization outcome, so exit success here is delivery, not authorization.
+    #[command(name = "callback", hide = true)]
+    Callback(CallbackArgs),
+}
+
+/// How the authorization page is presented to the human.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum LoginMode {
+    /// Detect the available surface and choose `browser` or `headless`.
+    #[default]
+    Auto,
+    /// Print the authorization URL and open it in the local system browser.
+    Browser,
+    /// Print the authorization URL without opening a browser.
+    Headless,
+}
+
+impl LoginMode {
+    /// The shared authorization mode this flag names.
+    pub const fn authorization_mode(self) -> AuthorizationMode {
+        match self {
+            Self::Auto => AuthorizationMode::Auto,
+            Self::Browser => AuthorizationMode::Browser,
+            Self::Headless => AuthorizationMode::Headless,
+        }
+    }
+}
+
+/// Arguments for `login`.
+///
+/// The mode only controls whether the authorization URL is also opened in a
+/// browser; the callback is always pasted into the terminal manually, because the
+/// provider redirects to a custom scheme this product deliberately does not
+/// claim from the operating system.
+#[derive(Debug, Args)]
+pub struct LoginArgs {
+    /// Whether to open the authorization URL in the local system browser.
+    #[arg(long, value_enum, default_value = "auto", value_name = "MODE")]
+    pub mode: LoginMode,
+
+    /// How the custom-scheme callback reaches this process.
+    #[arg(long, value_enum, default_value = "paste", value_name = "CALLBACK")]
+    pub callback: CallbackMode,
+}
+
+/// Arguments for the internal `callback` handler.
+///
+/// The value is the single URI the operating system handed to this process. On
+/// the desktop that argument is a `%u` expansion, so the one-use authorization
+/// code is transiently present in this process's argv; that exposure is inherent
+/// to desktop custom-scheme handling and is minimized here by validating,
+/// forwarding once, and never rendering or storing the value.
+///
+/// The handler's exit status reports delivery only. The waiting login validates
+/// the callback state and exchanges the code, so authorization success and
+/// failure are never observed or reported here.
+#[derive(Debug, Args)]
+pub struct CallbackArgs {
+    /// The exact callback URI the operating system handed to this process.
+    #[arg(value_name = "CALLBACK_URI")]
+    pub callback_uri: String,
+}
+
+/// How the custom-scheme callback reaches the waiting login process.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum CallbackMode {
+    /// Read the callback from the terminal (default; available everywhere).
+    #[default]
+    Paste,
+    /// Receive the callback from the installed desktop handler over the
+    /// per-user Unix-socket rendezvous (Linux only).
+    Handler,
+}
+
+impl CallbackMode {
+    /// The stable machine label for this callback strategy.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Paste => "paste",
+            Self::Handler => "handler",
+        }
+    }
 }
 
 /// Arguments for `search-inventory`.
@@ -152,9 +270,9 @@ impl SearchInventoryArgs {
     /// Builds the optional instance query, or `None` when no instance filter
     /// was supplied.
     fn instance_query(&self) -> Result<Option<InstanceSearchQuery>, CliError> {
-        let has_instance_filter =
-            !self.item_hash.is_empty() || self.perk_hash.is_some() || self.character.is_some();
-        if !has_instance_filter {
+        let no_instance_filter =
+            self.item_hash.is_empty() && self.perk_hash.is_none() && self.character.is_none();
+        if no_instance_filter {
             return Ok(None);
         }
 
@@ -380,8 +498,8 @@ fn validate_identity(value: &str) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, CliError, Command, ErrorOutcome, ReadRequest, SUCCESS_CODE, SUCCESS_EXIT_CODE,
-        category_outcome, inspection_outcome,
+        CallbackMode, Cli, CliError, Command, ErrorOutcome, ReadRequest, SUCCESS_CODE,
+        SUCCESS_EXIT_CODE, category_outcome, inspection_outcome,
     };
     use crate::output::OutputMode;
     use clap::Parser;
@@ -543,6 +661,38 @@ mod tests {
             Command::InspectItem(arguments) => assert_eq!(arguments.instance_id, "inst-1"),
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_hidden_callback_handler_parses_and_is_never_a_read() {
+        let parsed = parse(["callback", "ghostlink://oauth/callback?state=s&code=c"]);
+        match parsed.command {
+            Command::Callback(arguments) => {
+                assert_eq!(
+                    arguments.callback_uri,
+                    "ghostlink://oauth/callback?state=s&code=c"
+                );
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        // A read entry point refuses the handler rather than inventing a read.
+        let error = rejected(["callback", "ghostlink://oauth/callback?state=s&code=c"]);
+        assert_eq!(error.code(), "unsupported_operation");
+        assert_eq!(error.exit_code(), 40);
+    }
+
+    #[test]
+    fn the_login_callback_strategy_parses_and_defaults_to_paste() {
+        match parse(["login"]).command {
+            Command::Login(arguments) => assert_eq!(arguments.callback, CallbackMode::Paste),
+            other => panic!("unexpected command: {other:?}"),
+        }
+        match parse(["login", "--callback", "handler"]).command {
+            Command::Login(arguments) => assert_eq!(arguments.callback, CallbackMode::Handler),
+            other => panic!("unexpected command: {other:?}"),
+        }
+        assert_eq!(CallbackMode::Paste.as_str(), "paste");
+        assert_eq!(CallbackMode::Handler.as_str(), "handler");
     }
 
     #[test]
