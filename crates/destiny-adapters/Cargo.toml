@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 base64 = "0.22.1"
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 destiny-core.workspace = true
 getrandom = "0.4"
 keyring-core.workspace = true

@@ -6,6 +6,7 @@ pub mod manifest;
 pub mod oauth;
 pub mod profile;
 pub mod profile_gateway;
+mod public_milestones;
 pub mod random;
 pub mod sqlite;
 pub mod token;

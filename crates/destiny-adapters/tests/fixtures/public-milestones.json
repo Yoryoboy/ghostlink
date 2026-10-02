@@ -1,0 +1,14 @@
+{
+  "ErrorCode": 1,
+  "ErrorStatus": "Success",
+  "Message": "",
+  "Response": {
+    "100": {
+      "milestoneHash": 100, "order": 1,
+      "startDate": "2026-09-29T17:00:00Z", "endDate": "2026-10-06T17:00:00Z",
+      "activities": [{"activityHash": 200, "modifierHashes": [300, 301], "phaseHashes": [400], "challengeObjectiveHashes": [500]}]
+    },
+    "101": {"milestoneHash": 101, "order": 2},
+    "102": {"milestoneHash": 102, "order": 3, "availableQuests": [{"questItemHash": 600}]}
+  }
+}
