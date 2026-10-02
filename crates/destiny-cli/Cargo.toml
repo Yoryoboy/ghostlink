@@ -4,8 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# The crate keeps the internal `destiny-cli` name; the executable installed for
+# people is the product name `ghostlink`. The library target is what the
+# workspace reuses, so the rename is confined to the bin target.
+[[bin]]
+name = "ghostlink"
+path = "src/main.rs"
+
 [dependencies]
 clap.workspace = true
 destiny-adapters = { path = "../destiny-adapters" }
 destiny-app.workspace = true
 serde_json.workspace = true
+
+# Terminal echo suppression for the interactive paste login. Echo is a device
+# property, so only the Unix binding needs the raw termios and signal surface;
+# Windows uses the console API through a local binding instead.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

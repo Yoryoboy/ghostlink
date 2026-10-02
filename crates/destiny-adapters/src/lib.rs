@@ -6,6 +6,7 @@ pub mod manifest;
 pub mod oauth;
 pub mod profile;
 pub mod profile_gateway;
+pub mod random;
 pub mod sqlite;
 pub mod token;
 pub mod transfer;
@@ -24,6 +25,7 @@ pub use profile_gateway::{
     ProfileHttpResponse, ProfileTransport, ProfileTransportError, decode_effective_membership,
     fetch_bounded, is_allowed_profile_url, profile_endpoint,
 };
+pub use random::SystemSecureRandom;
 pub use token::{
     BungieTokenExchange, HttpTokenTransport, TOKEN_ENDPOINT, TokenHttpResponse, TokenRequest,
     TokenTransport, TokenTransportError,

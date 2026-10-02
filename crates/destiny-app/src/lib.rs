@@ -12,7 +12,10 @@ pub mod sync;
 pub mod test_support;
 
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
-pub use config::{MAX_READ_FRESHNESS_TTL_SECONDS, ReadApiKey, ReadRuntimeConfig};
+pub use config::{
+    LoginCallbackUri, LoginRuntimeConfig, MAX_READ_FRESHNESS_TTL_SECONDS, ReadApiKey,
+    ReadRuntimeConfig,
+};
 // Additive provider-neutral re-exports for presentation crates.
 //
 // `destiny-mcp` must translate MCP inputs and outputs against the shared read
@@ -46,6 +49,19 @@ pub use mutation::{
 };
 pub use queries::{QueryOperations, QueryService, SearchInventoryRequest};
 pub use sync::ProfileSyncService;
+
+// Additive provider-neutral re-exports for the interactive login composition.
+//
+// `destiny-cli` composes the public-client authorization service from the shared
+// ports and the provider adapters, and it must do so without naming
+// `destiny-core` in its manifest. The authorization values, outcomes, and ports
+// that the shared service and its adapters exchange therefore have to be
+// reachable through this crate. This block adds no behavior and no new
+// abstraction; it only makes the existing composition vocabulary public.
+pub use destiny_core::{
+    AuthorizationCallback, AuthorizationCode, AuthorizationRequest, AuthorizationState,
+    BrowserAuthorization, CallbackReceiver, CallbackResult, PublicTokenExchange, SecureRandom,
+};
 
 /// Reports that the application foundation is available.
 pub fn foundation_ready() -> bool {

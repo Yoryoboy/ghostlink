@@ -4,3 +4,8 @@
 
 # Rust build output
 target/
+
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example

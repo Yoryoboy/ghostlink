@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 destiny-core.workspace = true
+getrandom = "0.4"
 keyring-core.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
