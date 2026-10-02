@@ -12,6 +12,16 @@ const API_KEY: &str = "BUNGIE_API_KEY";
 const CLIENT_ID: &str = "BUNGIE_PUBLIC_CLIENT_ID";
 const CALLBACK_URI: &str = "BUNGIE_CALLBACK_URI";
 const REGISTERED_CALLBACK_URI: &str = "BUNGIE_REGISTERED_CALLBACK_URI";
+
+/// The exact custom-scheme components of the registered product callback.
+///
+/// The provider rejects an HTTP loopback redirect for this registered public
+/// client, so the product callback is a custom-scheme URI. The interactive flow
+/// renders it into the authorization URL and compares a pasted callback against
+/// it, so only these exact components are accepted.
+const PRODUCT_CALLBACK_SCHEME: &str = "ghostlink";
+const PRODUCT_CALLBACK_HOST: &str = "oauth";
+const PRODUCT_CALLBACK_PATH: &str = "/callback";
 const READ_DATABASE_PATH: &str = "DESTINY_DATABASE_PATH";
 const READ_DEFINITION_VERSION: &str = "DESTINY_DEFINITION_VERSION";
 const READ_FRESHNESS_TTL_SECONDS: &str = "DESTINY_FRESHNESS_TTL_SECONDS";
@@ -144,6 +154,122 @@ impl Config {
 
     pub fn registered_callback_uri(&self) -> &CallbackUri {
         &self.registered_callback_uri
+    }
+}
+
+/// A validated product custom-scheme callback URI.
+///
+/// The registered provider redirect for this product is a custom-scheme URI
+/// (`ghostlink://oauth/callback`) rather than an HTTP loopback address, because
+/// the portal rejects a loopback redirect for this registered public client.
+/// The value is a fixed, non-secret configuration string: the interactive flow
+/// renders it into the authorization URL and compares a pasted callback against
+/// it, so the exact scheme, authority, and path are validated and no other
+/// scheme, host, path, port, query, or fragment is accepted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoginCallbackUri {
+    exact: String,
+}
+
+impl LoginCallbackUri {
+    /// Parses and validates one product callback URI.
+    pub fn parse(value: &str) -> Result<Self, AppError> {
+        if value.is_empty() || value.trim() != value {
+            return Err(AppError::configuration());
+        }
+        let url = Url::parse(value).map_err(|_| AppError::configuration())?;
+        if url.scheme() != PRODUCT_CALLBACK_SCHEME
+            || url.username() != ""
+            || url.password().is_some()
+            || url.host_str() != Some(PRODUCT_CALLBACK_HOST)
+            || url.port().is_some()
+            || url.path() != PRODUCT_CALLBACK_PATH
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err(AppError::configuration());
+        }
+        Ok(Self {
+            exact: value.to_owned(),
+        })
+    }
+
+    /// The exact validated callback string.
+    pub fn exact(&self) -> &str {
+        &self.exact
+    }
+}
+
+/// Validated public-client configuration for the interactive login composition.
+///
+/// It carries exactly the two values one login attempt needs — the public client
+/// identifier and the exact custom-scheme callback URI the provider has
+/// registered — and nothing else. The API key the read runtime requires is
+/// deliberately absent: starting an OAuth authorization and exchanging the
+/// returned code is a public-client callback flow that needs no API key, so
+/// login never loads one.
+///
+/// Every field is private and reachable only through a trusted accessor.
+/// [`fmt::Debug`] renders no value, and every parse failure is a sanitized
+/// [`AppError`] that never echoes the supplied configuration.
+#[derive(Clone, Eq, PartialEq)]
+pub struct LoginRuntimeConfig {
+    public_client_id: String,
+    callback_uri: LoginCallbackUri,
+}
+
+impl LoginRuntimeConfig {
+    /// Loads the login configuration from the process environment.
+    ///
+    /// Only the exact required keys are read; unrelated process variables are
+    /// never inspected or retained, and a required value that is not valid
+    /// Unicode fails closed with the sanitized configuration category instead of
+    /// panicking.
+    pub fn from_env() -> Result<Self, AppError> {
+        let values = exact_env_values(&[CLIENT_ID, CALLBACK_URI, REGISTERED_CALLBACK_URI])?;
+        Self::from_values(&values)
+    }
+
+    /// Validates the login configuration from an explicit value map.
+    ///
+    /// The configured callback and the provider-registered callback must be the
+    /// exact same string, so a redirect the provider has not registered is
+    /// refused before anything is opened or read.
+    pub fn from_values(values: &HashMap<String, String>) -> Result<Self, AppError> {
+        let public_client_id = required(values, CLIENT_ID)?;
+        let callback = LoginCallbackUri::parse(&required(values, CALLBACK_URI)?)?;
+        let registered = LoginCallbackUri::parse(&required(values, REGISTERED_CALLBACK_URI)?)?;
+        if callback.exact() != registered.exact() {
+            return Err(AppError::configuration());
+        }
+        Ok(Self {
+            public_client_id,
+            callback_uri: callback,
+        })
+    }
+
+    /// The trusted public-client identifier accessor.
+    ///
+    /// The value is public by contract, but it is still a provider-issued
+    /// identifier used in an authorization URL, so it stays behind an accessor
+    /// and out of every diagnostic surface.
+    pub fn public_client_id(&self) -> &str {
+        &self.public_client_id
+    }
+
+    /// The exact validated custom-scheme callback URI to send to the provider.
+    pub fn callback_uri(&self) -> &LoginCallbackUri {
+        &self.callback_uri
+    }
+}
+
+impl fmt::Debug for LoginRuntimeConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LoginRuntimeConfig")
+            .field("public_client_id", &destiny_core::redact::REDACTED)
+            .field("callback_uri", &destiny_core::redact::REDACTED)
+            .finish()
     }
 }
 
@@ -364,8 +490,8 @@ fn read_freshness_ttl(value: &str) -> Result<u64, AppError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CallbackUri, Config, MAX_READ_FRESHNESS_TTL_SECONDS, ReadApiKey, ReadRuntimeConfig,
-        exact_key_values,
+        CallbackUri, Config, LoginRuntimeConfig, MAX_READ_FRESHNESS_TTL_SECONDS, ReadApiKey,
+        ReadRuntimeConfig, exact_key_values,
     };
     use destiny_core::ErrorCategory;
     use std::collections::HashMap;
@@ -460,6 +586,111 @@ mod tests {
         assert!(!message.contains("super-secret-api-key"));
         assert!(!message.contains("secret"));
         assert!(!message.contains("example.test"));
+    }
+
+    fn login_values() -> HashMap<String, String> {
+        HashMap::from([
+            (
+                "BUNGIE_PUBLIC_CLIENT_ID".into(),
+                "client-id-placeholder".into(),
+            ),
+            (
+                "BUNGIE_CALLBACK_URI".into(),
+                "ghostlink://oauth/callback".into(),
+            ),
+            (
+                "BUNGIE_REGISTERED_CALLBACK_URI".into(),
+                "ghostlink://oauth/callback".into(),
+            ),
+        ])
+    }
+
+    #[test]
+    fn login_config_reads_the_exact_product_callback_and_requires_every_value() {
+        let config = LoginRuntimeConfig::from_values(&login_values()).expect("valid login config");
+        assert_eq!(config.public_client_id(), "client-id-placeholder");
+        assert_eq!(config.callback_uri().exact(), "ghostlink://oauth/callback");
+
+        for key in [
+            "BUNGIE_PUBLIC_CLIENT_ID",
+            "BUNGIE_CALLBACK_URI",
+            "BUNGIE_REGISTERED_CALLBACK_URI",
+        ] {
+            let mut missing = login_values();
+            missing.remove(key);
+            assert!(
+                LoginRuntimeConfig::from_values(&missing).is_err(),
+                "{key} should be required"
+            );
+            let mut empty = login_values();
+            empty.insert(key.into(), String::new());
+            assert!(
+                LoginRuntimeConfig::from_values(&empty).is_err(),
+                "{key} should reject an empty value"
+            );
+        }
+
+        // Login never loads an API key: the read-only credential is not part of
+        // this configuration, so a machine that cannot supply one still
+        // configures an interactive authorization.
+        assert!(!login_values().contains_key("BUNGIE_API_KEY"));
+    }
+
+    #[test]
+    fn login_config_rejects_an_unregistered_or_non_product_callback() {
+        let mut unregistered = login_values();
+        unregistered.insert(
+            "BUNGIE_REGISTERED_CALLBACK_URI".into(),
+            "ghostlink://oauth/other".into(),
+        );
+        assert!(LoginRuntimeConfig::from_values(&unregistered).is_err());
+
+        // Only the exact registered custom scheme, authority, and path are
+        // accepted; an HTTP loopback redirect the provider rejects, a different
+        // scheme or host, a port, a query, or a fragment is refused, so login
+        // cannot be pointed off the registered callback.
+        for value in [
+            "http://127.0.0.1:43127/oauth/callback",
+            "https://oauth/callback",
+            "ghostlink://evil.test/callback",
+            "ghostlink://oauth:1337/callback",
+            "ghostlink://oauth/callback?code=secret",
+            "ghostlink://oauth/callback#fragment",
+        ] {
+            let mut invalid = login_values();
+            invalid.insert("BUNGIE_CALLBACK_URI".into(), value.into());
+            invalid.insert("BUNGIE_REGISTERED_CALLBACK_URI".into(), value.into());
+            assert!(
+                LoginRuntimeConfig::from_values(&invalid).is_err(),
+                "{value} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn login_config_debug_and_errors_are_value_redacted() {
+        let mut secret = login_values();
+        secret.insert(
+            "BUNGIE_PUBLIC_CLIENT_ID".into(),
+            "client-id-sentinel".into(),
+        );
+        let config = LoginRuntimeConfig::from_values(&secret).expect("valid login config");
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("client-id-sentinel"), "{rendered}");
+        assert!(!rendered.contains("ghostlink"), "{rendered}");
+
+        // A rejected callback carrying a sentinel is never echoed by its error.
+        let mut invalid = login_values();
+        invalid.insert(
+            "BUNGIE_CALLBACK_URI".into(),
+            "ghostlink://oauth/callback-sentinel".into(),
+        );
+        let error = LoginRuntimeConfig::from_values(&invalid).expect_err("mismatched callback");
+        assert_eq!(
+            error.to_string(),
+            "required runtime configuration is missing or invalid"
+        );
+        assert!(!format!("{error} {error:?}").contains("callback-sentinel"));
     }
 
     fn read_runtime_values() -> HashMap<String, String> {
@@ -619,8 +850,8 @@ mod tests {
 
     #[test]
     fn exact_key_values_reads_only_requested_keys_and_omits_absent_ones() {
-        let names: &[&str] = &["FIRST_KEY", "SECOND_KEY", "ABSENT_KEY"];
-        let values = exact_key_values(names, |name| {
+        let names: Vec<&str> = vec!["FIRST_KEY", "SECOND_KEY", "ABSENT_KEY"];
+        let values = exact_key_values(names.as_slice(), |name| {
             match name {
                 "FIRST_KEY" => Some(OsString::from("first")),
                 "SECOND_KEY" => Some(OsString::from("second")),
