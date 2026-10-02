@@ -9,10 +9,11 @@
 //!
 //! [`compose`] builds the runtime in one exact fail-fast order:
 //!
-//! 1. [`ReadRuntimeConfig::from_env`] reads only the four required keys;
+//! 1. [`ReadRuntimeConfig::from_env`] reads validated configuration;
 //! 2. the native credential store is built and the complete stored
 //!    [`AccessCredential`] is loaded, and a missing credential is reported as
-//!    the stable [`ErrorCategory::AuthorizationRequired`] outcome;
+//!    the stable [`ErrorCategory::AuthorizationRequired`] outcome. Confidential
+//!    mode builds a refreshing source only after that load; public mode stays static;
 //! 3. the production [`SystemClock`] is built and read exactly once;
 //! 4. the hardened [`HttpProfileTransport`] is built;
 //! 5. the [`ProfileApiKey`] is derived from the validated [`ReadApiKey`];
@@ -56,6 +57,8 @@ use crate::runner::ReadFreshness;
 /// composition with scripted foundations while the production implementation
 /// uses the real adapter types.
 pub trait ReadFoundations {
+    /// Per-request credentials, selected by validated configuration.
+    type Source: destiny_app::CredentialSource;
     /// The transport the gateway sends over.
     type Transport: ProfileTransport;
     /// The clock the gateway and the freshness input read.
@@ -67,7 +70,7 @@ pub trait ReadFoundations {
     fn config(&mut self) -> Result<ReadRuntimeConfig, AppError>;
 
     /// Loads the complete stored access credential.
-    fn credential(&mut self) -> Result<AccessCredential, AppError>;
+    fn credential_source(&mut self, config: &ReadRuntimeConfig) -> Result<Self::Source, AppError>;
 
     /// Builds the production clock. Building it is not a clock reading.
     fn clock(&mut self) -> Result<Self::Clock, AppError>;
@@ -103,6 +106,11 @@ where
 pub struct ProductionFoundations;
 
 impl ReadFoundations for ProductionFoundations {
+    type Source = destiny_app::ConfiguredCredentialSource<
+        NativeCredentialStore,
+        destiny_adapters::BungieTokenExchange<destiny_adapters::HttpTokenTransport, SystemClock>,
+        SystemClock,
+    >;
     type Transport = HttpProfileTransport;
     type Clock = SystemClock;
     type Repository = SqliteStore;
@@ -111,9 +119,22 @@ impl ReadFoundations for ProductionFoundations {
         ReadRuntimeConfig::from_env()
     }
 
-    fn credential(&mut self) -> Result<AccessCredential, AppError> {
+    fn credential_source(&mut self, config: &ReadRuntimeConfig) -> Result<Self::Source, AppError> {
         let store = NativeCredentialStore::new()?;
-        load_required_credential(&store)
+        compose_credentials(
+            config,
+            store,
+            |client| {
+                destiny_adapters::BungieTokenExchange::confidential(
+                    client.client_id(),
+                    "ghostlink://oauth/callback",
+                    client.client_secret().clone(),
+                    destiny_adapters::HttpTokenTransport::new()?,
+                    SystemClock::new(),
+                )
+            },
+            SystemClock::new(),
+        )
     }
 
     fn clock(&mut self) -> Result<SystemClock, AppError> {
@@ -129,9 +150,35 @@ impl ReadFoundations for ProductionFoundations {
     }
 }
 
+/// Selects the per-request source before any profile or database acquisition.
+fn compose_credentials<S, R, C, F>(
+    config: &ReadRuntimeConfig,
+    store: S,
+    refresh: F,
+    clock: C,
+) -> Result<destiny_app::ConfiguredCredentialSource<S, R, C>, AppError>
+where
+    S: CredentialStore,
+    R: destiny_app::TokenRefresh,
+    C: Clock,
+    F: FnOnce(&destiny_app::RefreshClientConfig) -> Result<R, AppError>,
+{
+    if let Some(client) = config.refresh_client() {
+        destiny_app::ConfiguredCredentialSource::new(store, Some(|| refresh(client)), clock)
+    } else {
+        Ok(destiny_app::ConfiguredCredentialSource::Static(
+            destiny_app::StaticCredentialSource::new(load_required_credential(&store)?),
+        ))
+    }
+}
+
 /// The assembled read service type for one set of foundations.
 pub type ComposedReadService<F> = QueryService<
-    BungieProfileGateway<<F as ReadFoundations>::Transport, <F as ReadFoundations>::Clock>,
+    BungieProfileGateway<
+        <F as ReadFoundations>::Transport,
+        <F as ReadFoundations>::Clock,
+        <F as ReadFoundations>::Source,
+    >,
     <F as ReadFoundations>::Repository,
 >;
 
@@ -227,7 +274,7 @@ where
     F: ReadFoundations,
 {
     let config = foundations.config()?;
-    let credential = foundations.credential()?;
+    let source = foundations.credential_source(&config)?;
     let clock = foundations.clock()?;
     // Exactly one reading supplies the freshness evaluation time; the shared
     // services own the skip/refresh decision against it.
@@ -237,7 +284,7 @@ where
     let gateway = BungieProfileGateway::new(
         transport,
         clock,
-        destiny_app::StaticCredentialSource::new(credential),
+        source,
         api_key,
         config.definition_version().clone(),
     )?;
@@ -339,6 +386,11 @@ mod tests {
     }
 
     impl ReadFoundations for FakeFoundations {
+        type Source = destiny_app::ConfiguredCredentialSource<
+            FakeCredentialStore,
+            FakeRefresh,
+            ScriptedClock,
+        >;
         type Transport = UnreachableTransport;
         type Clock = ScriptedClock;
         type Repository = SqliteStore;
@@ -348,9 +400,25 @@ mod tests {
             self.config.clone()
         }
 
-        fn credential(&mut self) -> Result<AccessCredential, AppError> {
+        fn credential_source(
+            &mut self,
+            config: &ReadRuntimeConfig,
+        ) -> Result<Self::Source, AppError> {
             self.record("credential");
-            self.credential.clone()
+            super::compose_credentials(
+                config,
+                FakeCredentialStore {
+                    result: self.credential.clone().map(Some),
+                },
+                |_| {
+                    self.record("refreshing");
+                    Ok(FakeRefresh)
+                },
+                ScriptedClock {
+                    now: Ok(NOW),
+                    log: Rc::clone(&self.log),
+                },
+            )
         }
 
         fn clock(&mut self) -> Result<ScriptedClock, AppError> {
@@ -422,6 +490,13 @@ mod tests {
         }
     }
 
+    struct FakeRefresh;
+    impl destiny_app::TokenRefresh for FakeRefresh {
+        fn refresh(&mut self, _: &destiny_app::RefreshToken) -> Result<AccessCredential, AppError> {
+            Ok(credential())
+        }
+    }
+
     /// One scripted foundation failure and its expected stable CLI outcome.
     type FailureCase = (&'static str, fn(&mut FakeFoundations), &'static str, i32);
 
@@ -434,6 +509,49 @@ mod tests {
                 !rendered.contains(sentinel),
                 "a diagnostic leaked {sentinel}: {rendered}"
             );
+        }
+    }
+
+    #[test]
+    fn confidential_composition_selects_refreshing_credentials_and_fails_early() {
+        for missing in [false, true] {
+            let log = log();
+            let mut foundations = FakeFoundations::store_failure(Rc::clone(&log));
+            foundations.config = Ok(ReadRuntimeConfig::from_values(&HashMap::from([
+                ("BUNGIE_API_KEY".into(), API_KEY_SENTINEL.into()),
+                ("DESTINY_DATABASE_PATH".into(), DATABASE_SENTINEL.into()),
+                ("DESTINY_DEFINITION_VERSION".into(), "manifest-v1".into()),
+                ("DESTINY_FRESHNESS_TTL_SECONDS".into(), "900".into()),
+                ("BUNGIE_PUBLIC_CLIENT_ID".into(), "123".into()),
+                ("BUNGIE_CLIENT_SECRET".into(), "secret-sentinel".into()),
+            ]))
+            .unwrap());
+            if missing {
+                foundations.credential = Err(AppError::new(ErrorCategory::AuthorizationRequired));
+            }
+            let error = compose(&mut foundations).unwrap_err();
+            assert_eq!(
+                error.category(),
+                if missing {
+                    ErrorCategory::AuthorizationRequired
+                } else {
+                    ErrorCategory::LocalStorage
+                }
+            );
+            let expected: &[&str] = if missing {
+                &["config", "credential"]
+            } else {
+                &[
+                    "config",
+                    "credential",
+                    "refreshing",
+                    "clock",
+                    "now",
+                    "transport",
+                    "store",
+                ]
+            };
+            assert_eq!(&log.borrow()[..], expected);
         }
     }
 

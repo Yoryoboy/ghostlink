@@ -41,13 +41,12 @@ use destiny_adapters::{
     NativeCredentialStore, ProfileApiKey, SystemClock, TransferApiKey,
 };
 use destiny_app::{
-    AccessCredential, AppError, Clock, CredentialStore, DefinitionReplacementInput,
-    DefinitionRepository, DefinitionSearchQuery, DefinitionVersion, DestinyMembership,
-    ErrorCategory, FreshnessPolicy, InstanceSearchQuery, InventoryRepository, InventorySnapshot,
-    InventorySnapshotInput, ItemDefinition, ItemHash, ItemInstance, ItemInstanceId,
-    MutationService, PlanId, PlanIdGenerator, PlanLifetime, ProfileGateway, ProfileSyncReason,
-    ProfileSyncService, QueryService, ReadRuntimeConfig, Resolution, SearchRepository,
-    SyncMetadata,
+    AppError, Clock, CredentialStore, DefinitionReplacementInput, DefinitionRepository,
+    DefinitionSearchQuery, DefinitionVersion, DestinyMembership, ErrorCategory, FreshnessPolicy,
+    InstanceSearchQuery, InventoryRepository, InventorySnapshot, InventorySnapshotInput,
+    ItemDefinition, ItemHash, ItemInstance, ItemInstanceId, MutationService, PlanId,
+    PlanIdGenerator, PlanLifetime, ProfileGateway, ProfileSyncReason, ProfileSyncService,
+    QueryService, ReadRuntimeConfig, Resolution, SearchRepository, SyncMetadata,
 };
 use destiny_mcp::runtime::serve_stdio;
 use destiny_mcp::{ComposedMutationService, QueryReadService, ReadToolServer};
@@ -76,7 +75,7 @@ async fn main() {
 async fn run() -> Result<(), AppError> {
     let config = ReadRuntimeConfig::from_env()?;
     let store = NativeCredentialStore::new()?;
-    let server = compose_server(&config, &store)?;
+    let server = compose_server(&config, store)?;
     serve_stdio(server).await
 }
 
@@ -92,24 +91,38 @@ async fn run() -> Result<(), AppError> {
 /// transport and a single SQLite connection. The read service keeps the exact
 /// three read tools it always had; composing the mutation service appends the
 /// single `move_item` tool and never changes read behavior.
-fn compose_server<S: CredentialStore>(
+fn compose_server<S: CredentialStore + Send + 'static>(
     config: &ReadRuntimeConfig,
-    store: &S,
+    store: S,
 ) -> Result<ReadToolServer, AppError> {
-    let credential = load_credential(store)?;
+    let (profile_source, transfer_source) = gateway_credentials(
+        store,
+        config.refresh_client().map(|client| {
+            move || {
+                destiny_adapters::BungieTokenExchange::confidential(
+                    client.client_id(),
+                    "ghostlink://oauth/callback",
+                    client.client_secret().clone(),
+                    destiny_adapters::HttpTokenTransport::new()?,
+                    SystemClock::new(),
+                )
+            }
+        }),
+        SystemClock::new(),
+    )?;
     let policy = config.freshness_policy();
 
     let profile_gateway = BungieProfileGateway::new(
         HttpProfileTransport::new()?,
         SystemClock::new(),
-        destiny_app::StaticCredentialSource::new(credential.clone()),
+        profile_source,
         ProfileApiKey::new(config.api_key().expose_secret())?,
         config.definition_version().clone(),
     )?;
     let transfer = BungieTransferGateway::new(
         HttpTransferTransport::new()?,
         SystemClock::new(),
-        destiny_app::StaticCredentialSource::new(credential),
+        transfer_source,
         TransferApiKey::new(config.api_key().expose_secret())?,
     )?;
     let repository = SqliteStore::open(config.database_path())?;
@@ -121,6 +134,27 @@ fn compose_server<S: CredentialStore>(
     ))
 }
 
+/// Creates one session, then shares its lock-backed cache between both gateways.
+type GatewayCredentials<S, R, C> = (
+    destiny_app::ConfiguredCredentialSource<S, R, C>,
+    destiny_app::ConfiguredCredentialSource<S, R, C>,
+);
+
+fn gateway_credentials<S, R, C, F>(
+    store: S,
+    refresh: Option<F>,
+    clock: C,
+) -> Result<GatewayCredentials<S, R, C>, AppError>
+where
+    S: CredentialStore,
+    R: destiny_app::TokenRefresh,
+    C: Clock,
+    F: FnOnce() -> Result<R, AppError>,
+{
+    let source = destiny_app::ConfiguredCredentialSource::new(store, refresh, clock)?;
+    Ok((source.clone(), source))
+}
+
 /// Wires the concrete adapters into one read-plus-mutation tool server.
 ///
 /// The read service and the mutation service share the profile gateway and the
@@ -128,9 +162,9 @@ fn compose_server<S: CredentialStore>(
 /// server advertises the single `move_item` tool by default. A plan is created
 /// and executed inside one request, so the bounded maximum plan lifetime is the
 /// safest accepted window.
-fn assemble_server(
-    profile_gateway: BungieProfileGateway<HttpProfileTransport, SystemClock>,
-    transfer: BungieTransferGateway<HttpTransferTransport, SystemClock>,
+fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
+    profile_gateway: BungieProfileGateway<HttpProfileTransport, SystemClock, C>,
+    transfer: BungieTransferGateway<HttpTransferTransport, SystemClock, C>,
     repository: SqliteStore,
     policy: FreshnessPolicy,
 ) -> ReadToolServer {
@@ -163,7 +197,10 @@ fn assemble_server(
 /// a plaintext file. A store error propagates unchanged, so a legacy
 /// raw-material entry stays [`ErrorCategory::ReauthorizationRequired`] and a
 /// corrupt or unavailable store stays [`ErrorCategory::CredentialStoreUnavailable`].
-fn load_credential<S: CredentialStore>(store: &S) -> Result<AccessCredential, AppError> {
+#[cfg(test)]
+fn load_credential<S: CredentialStore>(
+    store: &S,
+) -> Result<destiny_app::AccessCredential, AppError> {
     match store.load()? {
         Some(credential) => Ok(credential),
         None => Err(AppError::new(ErrorCategory::AuthorizationRequired)),
@@ -404,6 +441,108 @@ mod tests {
     }
 
     #[test]
+    fn composed_gateway_credentials_refresh_once_across_profile_and_transfer() {
+        use destiny_adapters::profile_gateway::{
+            ProfileHttpRequest, ProfileHttpResponse, ProfileTransport, ProfileTransportError,
+        };
+        use destiny_adapters::transfer::{
+            TransferHttpRequest, TransferHttpResponse, TransferTransport, TransferTransportError,
+        };
+        use destiny_app::{RefreshGrant, RefreshToken, TokenRefresh, TransferGateway};
+        struct Offline;
+        impl ProfileTransport for Offline {
+            fn get(
+                &mut self,
+                _: &ProfileHttpRequest<'_>,
+            ) -> Result<ProfileHttpResponse, ProfileTransportError> {
+                Err(ProfileTransportError::Unavailable)
+            }
+        }
+        impl TransferTransport for Offline {
+            fn post(
+                &mut self,
+                _: &TransferHttpRequest<'_>,
+            ) -> Result<TransferHttpResponse, TransferTransportError> {
+                Err(TransferTransportError::NotDispatched)
+            }
+        }
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct Refresh(Arc<AtomicUsize>);
+        impl TokenRefresh for Refresh {
+            fn refresh(&mut self, _: &RefreshToken) -> Result<AccessCredential, AppError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                let mut credential = credential();
+                credential.metadata.expires_at = Timestamp::new(1000);
+                Ok(credential)
+            }
+        }
+        let mut store = InMemoryCredentialStore::default();
+        let mut old = credential();
+        old.metadata.expires_at = Timestamp::new(150);
+        old.refresh_grant = Some(RefreshGrant {
+            token: RefreshToken::from_bytes(b"refresh-sentinel").unwrap(),
+            expires_at: Timestamp::new(900),
+        });
+        store.save(old).unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let (profile, transfer) = super::gateway_credentials(
+            store,
+            Some(|| Ok(Refresh(count.clone()))),
+            FakeClock::fixed(Timestamp::new(100)),
+        )
+        .unwrap();
+        let mut profile = super::BungieProfileGateway::new(
+            Offline,
+            FakeClock::fixed(Timestamp::new(100)),
+            profile,
+            super::ProfileApiKey::new(API_KEY_SENTINEL).unwrap(),
+            destiny_app::DefinitionVersion::new("manifest-v1"),
+        )
+        .unwrap();
+        assert!(destiny_app::ProfileGateway::resolve_membership(&mut profile).is_err());
+        let mut transfer = super::BungieTransferGateway::new(
+            Offline,
+            FakeClock::fixed(Timestamp::new(100)),
+            transfer,
+            super::TransferApiKey::new(API_KEY_SENTINEL).unwrap(),
+        )
+        .unwrap();
+        let membership = destiny_app::DestinyMembership::new(
+            destiny_app::MembershipType::new(3),
+            destiny_app::MembershipId::new("123"),
+        )
+        .unwrap();
+        let request = destiny_app::TransferRequest::new(
+            membership,
+            destiny_app::ItemInstanceId::new("456"),
+            destiny_app::ItemHash::new(789),
+            1,
+            destiny_app::ItemLocation::Character(destiny_app::CharacterId::new("123")),
+            destiny_app::ItemLocation::Vault,
+        )
+        .unwrap();
+        assert!(transfer.transfer(&request).is_err());
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn confidential_missing_credential_stops_before_token_transport() {
+        let mut values = values("/unreachable/destiny.db");
+        values.insert("BUNGIE_PUBLIC_CLIENT_ID".into(), "123".into());
+        values.insert("BUNGIE_CLIENT_SECRET".into(), "secret-sentinel".into());
+        let config = ReadRuntimeConfig::from_values(&values).unwrap();
+        assert_eq!(
+            compose_server(&config, InMemoryCredentialStore::default())
+                .unwrap_err()
+                .category(),
+            ErrorCategory::AuthorizationRequired
+        );
+    }
+
+    #[test]
     fn shared_gateway_forwards_the_exact_sync_reason_to_the_inner_scoped_reads() {
         use super::SharedGateway;
         use destiny_app::{
@@ -529,7 +668,7 @@ mod tests {
         // The database path does not exist and the transport is never built,
         // because the missing credential fails first. This proves the ordering
         // of the composition root without a live keyring, network, or database.
-        let error = compose_server(&config(), &InMemoryCredentialStore::default())
+        let error = compose_server(&config(), InMemoryCredentialStore::default())
             .expect_err("missing credential stops composition");
         assert_eq!(error.category(), ErrorCategory::AuthorizationRequired);
         assert!(!error.to_string().contains(API_KEY_SENTINEL));
@@ -541,7 +680,7 @@ mod tests {
             error: destiny_app::AppError::new(ErrorCategory::ReauthorizationRequired),
         };
         let error =
-            compose_server(&config(), &store).expect_err("legacy credential stops composition");
+            compose_server(&config(), store).expect_err("legacy credential stops composition");
         assert_eq!(error.category(), ErrorCategory::ReauthorizationRequired);
     }
 
@@ -555,7 +694,7 @@ mod tests {
             error: destiny_app::AppError::new(ErrorCategory::CredentialStoreUnavailable),
         };
         let error =
-            compose_server(&config(), &store).expect_err("an unavailable store stops composition");
+            compose_server(&config(), store).expect_err("an unavailable store stops composition");
         assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
         assert!(!error.to_string().contains(API_KEY_SENTINEL));
     }

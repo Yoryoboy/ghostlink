@@ -346,6 +346,14 @@ fn callback_delivery(callback_uri: &str) -> Result<(), destiny_app::AppError> {
 /// code, a state, or a credential.
 fn login_result(mode: OutputMode, outcome: AuthorizationOutcome) -> ProcessOutput {
     match outcome {
+        AuthorizationOutcome::AuthorizedSession {
+            access,
+            refresh_available,
+            refresh_expires_at,
+        } => ProcessOutput::success(match (refresh_available, refresh_expires_at) {
+            (true, Some(expiry)) => crate::output::render_login_renewable(mode, &access, expiry),
+            _ => render_login_authorized(mode, &access),
+        }),
         AuthorizationOutcome::Authorized(access) => {
             ProcessOutput::success(render_login_authorized(mode, &access))
         }
@@ -435,11 +443,34 @@ fn parse_failure(mode: OutputMode, error: &clap::Error) -> ProcessOutput {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::needless_borrows_for_generic_args)]
+
+    #[test]
+    fn renewable_login_dispatch_renders_token_free_summary() {
+        for mode in [
+            crate::output::OutputMode::Human,
+            crate::output::OutputMode::Json,
+        ] {
+            let output = super::login_result(
+                mode,
+                destiny_app::AuthorizationOutcome::AuthorizedSession {
+                    access: destiny_app::AccessCredentialMetadata {
+                        expires_at: destiny_app::Timestamp::new(100),
+                    },
+                    refresh_available: true,
+                    refresh_expires_at: Some(destiny_app::Timestamp::new(900)),
+                },
+            );
+            assert_eq!(output.exit_code, 0);
+            assert!(output.stderr.is_empty());
+            assert!(!output.stdout.contains("sentinel"));
+            assert!(output.stdout.contains("900"));
+        }
+    }
     // The read/login test helpers below take `impl AsRef<[&str]>` so a caller can
     // pass either a slice or an array literal. With that flexible test API the
     // `&[...]` borrow at a call site is intentional and reads as the test's
     // argument list, so the generic-argument borrow lint is allowed here.
-    #![allow(clippy::needless_borrows_for_generic_args)]
     use super::{
         ProcessOutput, ReadFreshness, dispatch, parse_process, run, run_binary, run_binary_with,
         run_login,

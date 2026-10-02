@@ -30,7 +30,7 @@ pub use config::{
 // root load a credential; it adds no behavior and no new abstraction.
 pub use destiny_core::{
     AccessCredential, AccessCredentialMetadata, AppError, BucketHash, Character, CharacterId,
-    CharacterListResult, Clock, CredentialMaterial, CredentialStore, Dataset,
+    CharacterListResult, Clock, CredentialMaterial, CredentialSource, CredentialStore, Dataset,
     DefinitionReplacementInput, DefinitionRepository, DefinitionSearchQuery, DefinitionVersion,
     DestinationSelector, DestinyMembership, ErrorCategory, ExecutionEvidence, FreshnessPolicy,
     FreshnessStatus, InspectItemRequest, InstanceSearchQuery, InventoryRepository,
@@ -39,9 +39,10 @@ pub use destiny_core::{
     ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH,
     MAX_TAG_FILTERS, MembershipId, MembershipType, MoveEffects, MoveIntentAuthorization, MovePlan,
     MoveRequest, PerkHash, PerkSummary, PlanId, PlanIdGenerator, PlanLifetime, ProfileGateway,
-    ProfileSyncOutcome, ProfileSyncReason, QueryMetadata, Resolution, SearchRepository, SearchTerm,
-    SourceMarker, StaticCredentialSource, StepOutcome, SyncMetadata, SyncRevision, Timestamp,
-    TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
+    ProfileSyncOutcome, ProfileSyncReason, QueryMetadata, RefreshGrant, RefreshToken, Resolution,
+    SearchRepository, SearchTerm, SourceMarker, StaticCredentialSource, StepOutcome, SyncMetadata,
+    SyncRevision, Timestamp, TokenRefresh, TransferGateway, TransferOutcome, TransferRejection,
+    TransferRequest,
 };
 pub use manifest::{ManifestService, normalize_manifest};
 pub use mutation::{
@@ -49,12 +50,12 @@ pub use mutation::{
     MutationError, MutationService, VerificationFailure, VerificationFailureReason,
 };
 pub use queries::{QueryOperations, QueryService, SearchInventoryRequest};
-pub use session::RefreshingCredentialSource;
+pub use session::{ConfiguredCredentialSource, RefreshingCredentialSource};
 pub use sync::ProfileSyncService;
 
 // Additive provider-neutral re-exports for the interactive login composition.
 //
-// `destiny-cli` composes the public-client authorization service from the shared
+// `destiny-cli` composes the authorization service from the shared
 // ports and the provider adapters, and it must do so without naming
 // `destiny-core` in its manifest. The authorization values, outcomes, and ports
 // that the shared service and its adapters exchange therefore have to be
