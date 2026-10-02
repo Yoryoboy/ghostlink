@@ -256,7 +256,7 @@ impl Journey {
         let gateway = BungieProfileGateway::new(
             SharedTransport(Rc::clone(&self.transport)),
             TestClock(Rc::clone(&self.clock)),
-            credential(),
+            destiny_core::StaticCredentialSource::new(credential()),
             api_key(),
             DefinitionVersion::new(DEFINITION_VERSION),
         )

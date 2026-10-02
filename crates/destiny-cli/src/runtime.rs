@@ -237,7 +237,7 @@ where
     let gateway = BungieProfileGateway::new(
         transport,
         clock,
-        credential,
+        destiny_app::StaticCredentialSource::new(credential),
         api_key,
         config.definition_version().clone(),
     )?;

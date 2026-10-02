@@ -545,7 +545,7 @@ impl Journey {
                 faults: Rc::clone(&self.profile_faults),
             },
             TestClock(Rc::clone(&self.clock)),
-            credential(),
+            destiny_core::StaticCredentialSource::new(credential()),
             ProfileApiKey::new(API_KEY_SENTINEL).expect("valid API key"),
             DefinitionVersion::new(DEFINITION_VERSION),
         )
@@ -561,7 +561,7 @@ impl Journey {
                 script: Rc::clone(&self.script),
             },
             TestClock(Rc::clone(&self.clock)),
-            credential(),
+            destiny_core::StaticCredentialSource::new(credential()),
             TransferApiKey::new(API_KEY_SENTINEL).expect("valid transfer API key"),
         )
         .expect("valid transfer gateway configuration")

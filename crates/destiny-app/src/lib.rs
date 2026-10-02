@@ -6,6 +6,7 @@ mod config;
 pub mod manifest;
 pub mod mutation;
 pub mod queries;
+pub mod session;
 pub mod sync;
 
 #[cfg(feature = "test-support")]
@@ -39,8 +40,8 @@ pub use destiny_core::{
     MAX_TAG_FILTERS, MembershipId, MembershipType, MoveEffects, MoveIntentAuthorization, MovePlan,
     MoveRequest, PerkHash, PerkSummary, PlanId, PlanIdGenerator, PlanLifetime, ProfileGateway,
     ProfileSyncOutcome, ProfileSyncReason, QueryMetadata, Resolution, SearchRepository, SearchTerm,
-    SourceMarker, StepOutcome, SyncMetadata, SyncRevision, Timestamp, TransferGateway,
-    TransferOutcome, TransferRejection, TransferRequest,
+    SourceMarker, StaticCredentialSource, StepOutcome, SyncMetadata, SyncRevision, Timestamp,
+    TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
 };
 pub use manifest::{ManifestService, normalize_manifest};
 pub use mutation::{
@@ -48,6 +49,7 @@ pub use mutation::{
     MutationError, MutationService, VerificationFailure, VerificationFailureReason,
 };
 pub use queries::{QueryOperations, QueryService, SearchInventoryRequest};
+pub use session::RefreshingCredentialSource;
 pub use sync::ProfileSyncService;
 
 // Additive provider-neutral re-exports for the interactive login composition.
