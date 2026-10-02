@@ -280,6 +280,21 @@ where
         Err(output) => return output,
     };
     let mode = cli.output_mode();
+    if let Command::Weekly(arguments) = &cli.command {
+        let result = arguments.character_id().and_then(|selector| {
+            crate::runtime::compose_weekly(
+                &mut crate::runtime::ProductionFoundations,
+                destiny_adapters::manifest::HttpManifestTransport::new()?,
+                selector.as_ref(),
+            )
+        });
+        return match result {
+            Ok((character, weekly)) => {
+                ProcessOutput::success(crate::output::render_weekly(mode, &character, &weekly))
+            }
+            Err(error) => ProcessOutput::failure(mode, error),
+        };
+    }
     if let Command::WeeklyReset = &cli.command {
         return run_weekly_reset(weekly_factory, mode);
     }

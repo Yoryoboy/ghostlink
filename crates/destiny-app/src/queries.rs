@@ -103,6 +103,11 @@ where
         Self { sync }
     }
 
+    /// Returns the composed sync service for a subsequent authenticated read.
+    pub fn into_sync(self) -> ProfileSyncService<G, R> {
+        self.sync
+    }
+
     /// Borrows the composed sync service.
     pub fn sync(&self) -> &ProfileSyncService<G, R> {
         &self.sync

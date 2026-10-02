@@ -58,6 +58,11 @@ where
         }
     }
 
+    /// Transfers the authenticated gateway and committed repository together.
+    pub fn into_parts(self) -> (G, R) {
+        (self.gateway, self.repository)
+    }
+
     /// Borrows the repository so callers can read the visible projection.
     pub fn repository(&self) -> &R {
         &self.repository

@@ -171,6 +171,219 @@ pub fn render_weekly_reset(
     }
 }
 
+/// Renders only classified weekly sections; progress always comes from character data.
+pub fn render_weekly(
+    mode: OutputMode,
+    character: &Character,
+    weekly: &destiny_app::weekly_personal::WeeklyPersonal,
+) -> String {
+    use destiny_app::DefinitionResolution;
+    use destiny_app::weekly_personal::{PersonalActivity, PersonalGroup};
+    let label = |hash: u32, definition: &DefinitionResolution| match definition {
+        DefinitionResolution::Resolved { name, .. } => sanitize(name),
+        DefinitionResolution::Unresolved => format!("unresolved #{hash}"),
+    };
+    // Real entities retain their actual hash and resolution, with JSON escaping
+    // rather than the line-oriented text sanitizer.
+    let entity = |hash: u32, definition: &DefinitionResolution| {
+        let name = match definition {
+            DefinitionResolution::Resolved { name, .. } => Some(name.as_str()),
+            DefinitionResolution::Unresolved => None,
+        };
+        json!({"hash": hash, "name": name, "resolved": name.is_some()})
+    };
+    let type_json = |activity: &PersonalActivity| {
+        activity
+            .activity_type_hash
+            .map(|hash| entity(hash, &activity.activity_type))
+    };
+    let activity_json = |activity: &PersonalActivity| {
+        let mut value = entity(activity.hash, &activity.definition);
+        value["activity_type"] = json!(type_json(activity));
+        value["rewards"] = json!(
+            activity
+                .rewards
+                .iter()
+                .map(|r| entity(r.hash, &r.definition))
+                .collect::<Vec<_>>()
+        );
+        value["modifiers"] = json!(
+            activity
+                .modifiers
+                .iter()
+                .map(|m| entity(m.hash, &m.definition))
+                .collect::<Vec<_>>()
+        );
+        value["challenge_objectives"] = json!(
+            activity
+                .challenge_objectives
+                .iter()
+                .map(|o| entity(o.hash, &o.definition))
+                .collect::<Vec<_>>()
+        );
+        value["challenges"] = json!(
+            activity
+                .challenges
+                .iter()
+                .map(|c| {
+                    let mut value = entity(c.objective_hash, &c.definition);
+                    value["progress"] = json!(c.progress);
+                    value["completion_value"] = json!(c.completion_value);
+                    value["complete"] = json!(c.complete);
+                    value
+                })
+                .collect::<Vec<_>>()
+        );
+        value["phases"] = json!(
+            activity
+                .phases
+                .as_ref()
+                .map(|p| json!({"complete": p.complete, "total": p.total}))
+        );
+        value
+    };
+    let group_json = |group: &PersonalGroup| {
+        // root is a derived display label, not a definition entity:
+        // it has no hash/resolved flag and is preserved via JSON escaping.
+        // Render only the app's classified variants, never raw snapshot inputs.
+        json!({
+            "root": group.root_name,
+            "activity_type": group.activities.first().and_then(&type_json),
+            "variants": group.activities.iter().map(&activity_json).collect::<Vec<_>>()
+        })
+    };
+    let groups_json = |groups: &[PersonalGroup]| groups.iter().map(&group_json).collect::<Vec<_>>();
+    if mode == OutputMode::Json {
+        return json!({
+            "kind": "weekly", "character": character_json(character),
+            "definition_version": weekly.definition_version.as_str(),
+            "newest": groups_json(&weekly.newest),
+            "featured_raids": groups_json(&weekly.featured_raids),
+            "featured_dungeons": groups_json(&weekly.featured_dungeons),
+            "grandmaster_alert": weekly.grandmaster_alert.as_ref().map(&activity_json),
+            "expedition": weekly.weekly_rotators.expedition.as_ref().map(&group_json),
+            "override": weekly.weekly_rotators.override_activity.as_ref().map(&group_json),
+            "portal_focus": groups_json(&weekly.portal_focus),
+            "milestones": weekly.milestones.iter().map(|m| entity(m.hash, &m.definition)).collect::<Vec<_>>(),
+            "unclassified_unresolved": weekly.unclassified_unresolved
+        })
+        .to_string();
+    }
+    let progress = |activity: &PersonalActivity| {
+        let mut parts = activity
+            .challenges
+            .iter()
+            .map(|c| {
+                format!(
+                    "challenge {} {}/{}",
+                    label(c.objective_hash, &c.definition),
+                    c.progress,
+                    c.completion_value
+                )
+            })
+            .collect::<Vec<_>>();
+        if let Some(phases) = &activity.phases {
+            parts.push(format!("phases {}/{}", phases.complete, phases.total));
+        }
+        parts.join("; ")
+    };
+    let mut lines = vec![format!(
+        "Weekly ({}, manifest {})",
+        sanitize(character.class.as_deref().unwrap_or("unknown")),
+        sanitize(weekly.definition_version.as_str())
+    )];
+    for (heading, groups) in [
+        ("Newest", &weekly.newest),
+        ("Featured raids", &weekly.featured_raids),
+        ("Featured dungeons", &weekly.featured_dungeons),
+        ("Portal focus", &weekly.portal_focus),
+    ] {
+        if groups.is_empty() {
+            continue;
+        }
+        lines.push(format!(
+            "{heading}: {}",
+            groups
+                .iter()
+                .map(|group| {
+                    let variants = group
+                        .activities
+                        .iter()
+                        .map(|a| label(a.hash, &a.definition))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    format!(
+                        "{} ({}): {variants}",
+                        sanitize(&group.root_name),
+                        sanitize(&group.activity_type_name)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+        for group in groups {
+            for activity in &group.activities {
+                let rewards = activity
+                    .rewards
+                    .iter()
+                    .map(|r| label(r.hash, &r.definition))
+                    .collect::<Vec<_>>();
+                let mut detail = progress(activity);
+                if !rewards.is_empty() {
+                    if !detail.is_empty() {
+                        detail.push_str(" — ");
+                    }
+                    detail.push_str(&format!("reward {}", rewards.join(", ")));
+                }
+                if !detail.is_empty() {
+                    lines.push(format!(
+                        "  {} — {detail}",
+                        label(activity.hash, &activity.definition)
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(activity) = &weekly.grandmaster_alert {
+        let rewards = activity
+            .rewards
+            .iter()
+            .map(|r| label(r.hash, &r.definition))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut line = format!(
+            "Grandmaster alert: {}",
+            label(activity.hash, &activity.definition)
+        );
+        if !rewards.is_empty() {
+            line.push_str(&format!(" — reward {rewards}"));
+        }
+        let detail = progress(activity);
+        if !detail.is_empty() {
+            line.push_str(&format!(" — {detail}"));
+        }
+        lines.push(line);
+    }
+    let rotators = [
+        weekly.weekly_rotators.expedition.as_ref(),
+        weekly.weekly_rotators.override_activity.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|group| sanitize(&group.root_name))
+    .collect::<Vec<_>>();
+    if !rotators.is_empty() {
+        lines.push(rotators.join(" / "));
+    }
+    if weekly.unclassified_unresolved > 0 {
+        lines.push(format!(
+            "note: {} activities could not be classified (missing definitions; run ghostlink sync-manifest)",
+            weekly.unclassified_unresolved
+        ));
+    }
+    lines.join("\n")
+}
+
 /// Renders one character listing in the selected mode.
 pub fn render_characters(mode: OutputMode, result: &CharacterListResult) -> String {
     match mode {
@@ -604,6 +817,276 @@ mod tests {
             },
             freshness,
         }
+    }
+
+    #[test]
+    fn weekly_sections_and_json_are_pinned() {
+        use destiny_app::DefinitionResolution;
+        use destiny_app::weekly_personal::*;
+        let resolved = |name: &str| DefinitionResolution::Resolved {
+            name: name.into(),
+            description: String::new(),
+        };
+        let activity = PersonalActivity {
+            hash: 10,
+            activity_type_hash: Some(30),
+            definition: resolved("Raid: Standard"),
+            activity_type: resolved("Raid"),
+            rewards: vec![PersonalReward {
+                hash: 99,
+                definition: DefinitionResolution::Unresolved,
+            }],
+            modifiers: Vec::new(),
+            challenge_objectives: Vec::new(),
+            challenges: vec![PersonalChallenge {
+                objective_hash: 20,
+                definition: resolved("Activities"),
+                progress: 0,
+                completion_value: 1,
+                complete: false,
+            }],
+            phases: Some(PhaseProgress {
+                complete: 0,
+                total: 4,
+            }),
+            focused: true,
+            recommended_light: Some(2000),
+            has_challenge: true,
+        };
+        let group = PersonalGroup {
+            root_name: "Raid".into(),
+            activity_type_name: "Raid".into(),
+            activities: vec![activity.clone()],
+            reward_names: Vec::new(),
+        };
+        let mut weekly = WeeklyPersonal {
+            definition_version: destiny_app::DefinitionVersion::new("v1"),
+            unclassified_unresolved: 0,
+            newest: vec![group.clone()],
+            featured_raids: vec![group.clone()],
+            featured_dungeons: vec![group.clone()],
+            grandmaster_alert: Some(activity),
+            weekly_rotators: WeeklyRotators {
+                expedition: Some(PersonalGroup {
+                    root_name: "Expedition: Cosmodrome".into(),
+                    ..group.clone()
+                }),
+                override_activity: Some(PersonalGroup {
+                    root_name: "Override: Europa".into(),
+                    ..group.clone()
+                }),
+            },
+            portal_focus: vec![group],
+            character_activities: Vec::new(),
+            public_activities: Vec::new(),
+            milestones: Vec::new(),
+        };
+        let human = super::render_weekly(OutputMode::Human, &full_character(), &weekly);
+        assert_eq!(
+            human,
+            "Weekly (Warlock, manifest v1)\nNewest: Raid (Raid): Raid: Standard\n  Raid: Standard — challenge Activities 0/1; phases 0/4 — reward unresolved #99\nFeatured raids: Raid (Raid): Raid: Standard\n  Raid: Standard — challenge Activities 0/1; phases 0/4 — reward unresolved #99\nFeatured dungeons: Raid (Raid): Raid: Standard\n  Raid: Standard — challenge Activities 0/1; phases 0/4 — reward unresolved #99\nPortal focus: Raid (Raid): Raid: Standard\n  Raid: Standard — challenge Activities 0/1; phases 0/4 — reward unresolved #99\nGrandmaster alert: Raid: Standard — reward unresolved #99 — challenge Activities 0/1; phases 0/4\nExpedition: Cosmodrome / Override: Europa"
+        );
+        let value: serde_json::Value = serde_json::from_str(&super::render_weekly(
+            OutputMode::Json,
+            &full_character(),
+            &weekly,
+        ))
+        .unwrap();
+        let item = serde_json::json!({"hash":10,"name":"Raid: Standard","resolved":true,"activity_type":{"hash":30,"name":"Raid","resolved":true},"rewards":[{"hash":99,"name":null,"resolved":false}],"modifiers":[],"challenge_objectives":[],"challenges":[{"hash":20,"name":"Activities","resolved":true,"progress":0,"completion_value":1,"complete":false}],"phases":{"complete":0,"total":4}});
+        let groups = serde_json::json!([{"root":"Raid","activity_type":{"hash":30,"name":"Raid","resolved":true},"variants":[item.clone()]}]);
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind":"weekly", "character":super::character_json(&full_character()), "definition_version":"v1",
+                "newest":groups, "featured_raids":groups, "featured_dungeons":groups,
+                "grandmaster_alert":item, "portal_focus":groups,
+                "expedition":{"root":"Expedition: Cosmodrome","activity_type":{"hash":30,"name":"Raid","resolved":true},"variants":[item]},
+                "override":{"root":"Override: Europa","activity_type":{"hash":30,"name":"Raid","resolved":true},"variants":[item]},
+                "milestones":[], "unclassified_unresolved":0
+            })
+        );
+        weekly.newest.clear();
+        weekly.featured_raids.clear();
+        weekly.featured_dungeons.clear();
+        weekly.portal_focus.clear();
+        weekly.grandmaster_alert = None;
+        weekly.weekly_rotators = WeeklyRotators::default();
+        assert_eq!(
+            super::render_weekly(OutputMode::Human, &full_character(), &weekly),
+            "Weekly (Warlock, manifest v1)"
+        );
+        let value: serde_json::Value = serde_json::from_str(&super::render_weekly(
+            OutputMode::Json,
+            &full_character(),
+            &weekly,
+        ))
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind":"weekly", "character":super::character_json(&full_character()), "definition_version":"v1",
+                "newest":[], "featured_raids":[], "featured_dungeons":[],
+                "grandmaster_alert":null, "portal_focus":[], "expedition":null, "override":null,
+                "milestones":[], "unclassified_unresolved":0
+            })
+        );
+    }
+
+    #[test]
+    fn weekly_json_preserves_entity_text_and_reports_unclassified() {
+        use destiny_app::DefinitionResolution;
+        use destiny_app::weekly_personal::*;
+        let raw = "name\n\"quoted\"";
+        let activity = PersonalActivity {
+            hash: 1,
+            activity_type_hash: Some(2),
+            definition: DefinitionResolution::Resolved {
+                name: raw.into(),
+                description: String::new(),
+            },
+            activity_type: DefinitionResolution::Unresolved,
+            rewards: Vec::new(),
+            modifiers: Vec::new(),
+            challenge_objectives: Vec::new(),
+            challenges: Vec::new(),
+            phases: None,
+            focused: true,
+            recommended_light: None,
+            has_challenge: false,
+        };
+        let weekly = WeeklyPersonal {
+            definition_version: DefinitionVersion::new("v1"),
+            newest: Vec::new(),
+            featured_raids: Vec::new(),
+            featured_dungeons: Vec::new(),
+            grandmaster_alert: Some(activity.clone()),
+            weekly_rotators: WeeklyRotators::default(),
+            portal_focus: vec![PersonalGroup {
+                root_name: raw.into(),
+                activity_type_name: raw.into(),
+                activities: vec![activity],
+                reward_names: Vec::new(),
+            }],
+            character_activities: Vec::new(),
+            public_activities: Vec::new(),
+            milestones: vec![PersonalMilestone {
+                hash: 3,
+                definition: DefinitionResolution::Unresolved,
+            }],
+            unclassified_unresolved: 2,
+        };
+        let value: serde_json::Value = serde_json::from_str(&super::render_weekly(
+            OutputMode::Json,
+            &full_character(),
+            &weekly,
+        ))
+        .unwrap();
+        assert_eq!(value["grandmaster_alert"]["name"], raw);
+        assert_eq!(
+            value["grandmaster_alert"]["activity_type"],
+            serde_json::json!({"hash":2,"name":null,"resolved":false})
+        );
+        assert_eq!(value["portal_focus"][0]["root"], raw);
+        assert_eq!(
+            value["milestones"],
+            serde_json::json!([{"hash":3,"name":null,"resolved":false}])
+        );
+        assert_eq!(value["unclassified_unresolved"], 2);
+        let human = super::render_weekly(OutputMode::Human, &full_character(), &weekly);
+        assert!(human.ends_with("note: 2 activities could not be classified (missing definitions; run ghostlink sync-manifest)"));
+        assert!(!human.contains(raw));
+    }
+
+    #[test]
+    fn weekly_rotator_json_uses_real_variant_and_objective_entities() {
+        use destiny_app::DefinitionResolution;
+        use destiny_app::weekly_personal::*;
+        let mut activity = PersonalActivity {
+            hash: 11,
+            activity_type_hash: Some(12),
+            definition: DefinitionResolution::Resolved {
+                name: "Expedition: Europa (Epic)".into(),
+                description: String::new(),
+            },
+            activity_type: DefinitionResolution::Resolved {
+                name: "Mission".into(),
+                description: String::new(),
+            },
+            rewards: vec![PersonalReward {
+                hash: 13,
+                definition: DefinitionResolution::Resolved {
+                    name: "reward\nname".into(),
+                    description: String::new(),
+                },
+            }],
+            modifiers: Vec::new(),
+            challenge_objectives: vec![PersonalObjective {
+                hash: 14,
+                definition: DefinitionResolution::Unresolved,
+            }],
+            challenges: Vec::new(),
+            phases: None,
+            focused: false,
+            recommended_light: None,
+            has_challenge: false,
+        };
+        let mut weekly = WeeklyPersonal {
+            definition_version: DefinitionVersion::new("v1"),
+            unclassified_unresolved: 0,
+            newest: Vec::new(),
+            featured_raids: Vec::new(),
+            featured_dungeons: Vec::new(),
+            grandmaster_alert: None,
+            weekly_rotators: WeeklyRotators::default(),
+            portal_focus: Vec::new(),
+            character_activities: vec![activity.clone()],
+            public_activities: Vec::new(),
+            milestones: Vec::new(),
+        };
+        activity.hash = 15;
+        activity.definition = DefinitionResolution::Resolved {
+            name: "Override: Europa".into(),
+            description: String::new(),
+        };
+        weekly.character_activities.push(activity);
+        let mut unresolved = weekly.character_activities[0].clone();
+        unresolved.hash = 99;
+        unresolved.definition = DefinitionResolution::Resolved {
+            name: "Expedition: Europa (Unresolved)".into(),
+            description: String::new(),
+        };
+        unresolved.activity_type = DefinitionResolution::Unresolved;
+        weekly.character_activities.push(unresolved);
+        weekly.weekly_rotators = classify_rotators(&weekly.character_activities);
+        weekly.unclassified_unresolved =
+            count_unclassified_unresolved(&weekly.character_activities, &weekly.public_activities);
+        let value: serde_json::Value = serde_json::from_str(&super::render_weekly(
+            OutputMode::Json,
+            &full_character(),
+            &weekly,
+        ))
+        .unwrap();
+        assert_eq!(value["expedition"]["root"], "Expedition: Europa");
+        assert_eq!(value["expedition"]["variants"][0]["hash"], 11);
+        assert_eq!(
+            value["expedition"]["variants"][0]["name"],
+            "Expedition: Europa (Epic)"
+        );
+        assert_eq!(
+            value["expedition"]["variants"][0]["rewards"],
+            serde_json::json!([{"hash":13,"name":"reward\nname","resolved":true}])
+        );
+        assert_eq!(
+            value["expedition"]["variants"][0]["challenge_objectives"],
+            serde_json::json!([{"hash":14,"name":null,"resolved":false}])
+        );
+        assert_eq!(value["override"]["variants"][0]["hash"], 15);
+        assert_eq!(value["expedition"]["variants"].as_array().unwrap().len(), 1);
+        assert_eq!(value["unclassified_unresolved"], 1);
+        let human = super::render_weekly(OutputMode::Human, &full_character(), &weekly);
+        assert!(human.contains("Expedition: Europa"));
+        assert!(!human.contains("Unresolved"));
+        assert!(human.ends_with("note: 1 activities could not be classified (missing definitions; run ghostlink sync-manifest)"));
     }
 
     fn full_character() -> Character {
