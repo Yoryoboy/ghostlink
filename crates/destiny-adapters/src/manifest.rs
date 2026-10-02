@@ -66,6 +66,9 @@ fn provider_validation() -> AppError {
 pub struct ManifestDownloadPlan {
     pub version: DefinitionVersion,
     pub component_path: String,
+    pub milestone_path: String,
+    pub activity_path: String,
+    pub modifier_path: String,
 }
 
 /// Validates a Bungie Manifest index envelope into a download plan.
@@ -88,11 +91,17 @@ pub fn decode_manifest_index(bytes: &[u8]) -> Result<ManifestDownloadPlan, AppEr
         .ok_or_else(provider_validation)?;
 
     let version = decode_version(response.get("version"))?;
-    let component_path = decode_component_path(response)?;
+    let component_path = decode_component_path(response, "DestinyInventoryItemDefinition")?;
+    let milestone_path = decode_component_path(response, "DestinyMilestoneDefinition")?;
+    let activity_path = decode_component_path(response, "DestinyActivityDefinition")?;
+    let modifier_path = decode_component_path(response, "DestinyActivityModifierDefinition")?;
 
     Ok(ManifestDownloadPlan {
         version,
         component_path,
+        milestone_path,
+        activity_path,
+        modifier_path,
     })
 }
 
@@ -257,6 +266,165 @@ impl<'de> Visitor<'de> for InventorySeed<'_> {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorldRecord {
+    hash: u32,
+    #[serde(default)]
+    redacted: bool,
+    #[serde(default)]
+    display_properties: Option<WorldDisplay>,
+    #[serde(default)]
+    milestone_type: u32,
+    #[serde(default)]
+    activity_type_hash: u32,
+    #[serde(default)]
+    activity_light_level: u32,
+}
+#[derive(Deserialize)]
+struct WorldDisplay {
+    name: String,
+    #[serde(default)]
+    description: String,
+}
+
+type WorldProjection<T> = fn(WorldRecord, WorldDisplay) -> Result<T, AppError>;
+struct WorldSeed<T> {
+    cap: usize,
+    project: WorldProjection<T>,
+}
+impl<'de, T> DeserializeSeed<'de> for WorldSeed<T> {
+    type Value = destiny_core::WorldDefinitionTable<T>;
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+impl<'de, T> Visitor<'de> for WorldSeed<T> {
+    type Value = destiny_core::WorldDefinitionTable<T>;
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("world definitions")
+    }
+    fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+        let mut definitions = Vec::new();
+        let mut skipped_count = 0;
+        let mut seen = std::collections::HashSet::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let hash =
+                decode_decimal_u32(&key).map_err(|_| de::Error::custom("invalid manifest"))?;
+            if !seen.insert(hash) || seen.len() > self.cap {
+                return Err(de::Error::custom("invalid manifest"));
+            }
+            let mut record = map.next_value::<WorldRecord>()?;
+            if record.hash != hash {
+                return Err(de::Error::custom("invalid manifest"));
+            }
+            if record.redacted {
+                skipped_count += 1;
+                continue;
+            }
+            let display = record
+                .display_properties
+                .take()
+                .ok_or_else(|| de::Error::custom("invalid manifest"))?;
+            if display.name.trim().is_empty() {
+                skipped_count += 1;
+                continue;
+            }
+            definitions.push(
+                (self.project)(record, display)
+                    .map_err(|_| de::Error::custom("invalid manifest"))?,
+            );
+        }
+        if definitions.is_empty() {
+            return Err(de::Error::custom("empty manifest"));
+        }
+        Ok(destiny_core::WorldDefinitionTable {
+            definitions,
+            skipped_count,
+        })
+    }
+}
+fn decode_world_reader<T>(
+    body: impl Read,
+    limit: usize,
+    cap: usize,
+    project: WorldProjection<T>,
+) -> Result<destiny_core::WorldDefinitionTable<T>, AppError> {
+    let mut bounded = BoundedReader {
+        inner: body,
+        remaining: limit,
+        exceeded: false,
+        failed: false,
+    };
+    let result = {
+        let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(&mut bounded));
+        WorldSeed { cap, project }
+            .deserialize(&mut deserializer)
+            .and_then(|batch| {
+                deserializer.end()?;
+                Ok(batch)
+            })
+    };
+    result.map_err(|_| {
+        if bounded.failed && !bounded.exceeded {
+            provider_unavailable()
+        } else {
+            provider_validation()
+        }
+    })
+}
+fn project_milestone(
+    record: WorldRecord,
+    display: WorldDisplay,
+) -> Result<destiny_core::MilestoneDefinition, AppError> {
+    destiny_core::MilestoneDefinition::new(
+        record.hash,
+        display.name,
+        display.description,
+        record.milestone_type,
+    )
+}
+fn project_activity(
+    record: WorldRecord,
+    display: WorldDisplay,
+) -> Result<destiny_core::ActivityDefinition, AppError> {
+    destiny_core::ActivityDefinition::new(
+        record.hash,
+        display.name,
+        display.description,
+        record.activity_type_hash,
+        record.activity_light_level,
+    )
+}
+fn project_modifier(
+    record: WorldRecord,
+    display: WorldDisplay,
+) -> Result<destiny_core::ActivityModifierDefinition, AppError> {
+    destiny_core::ActivityModifierDefinition::new(record.hash, display.name, display.description)
+}
+/// Streams a bounded English milestone table.
+pub fn decode_milestones(
+    bytes: &[u8],
+) -> Result<destiny_core::WorldDefinitionTable<destiny_core::MilestoneDefinition>, AppError> {
+    decode_world_reader(bytes, MAX_COMPONENT_BYTES, 1000, project_milestone)
+}
+/// Streams a bounded English activity table.
+pub fn decode_activities(
+    bytes: &[u8],
+) -> Result<destiny_core::WorldDefinitionTable<destiny_core::ActivityDefinition>, AppError> {
+    decode_world_reader(bytes, MAX_COMPONENT_BYTES, 50000, project_activity)
+}
+/// Streams a bounded English activity modifier table; templates remain verbatim.
+pub fn decode_activity_modifiers(
+    bytes: &[u8],
+) -> Result<destiny_core::WorldDefinitionTable<destiny_core::ActivityModifierDefinition>, AppError>
+{
+    decode_world_reader(bytes, MAX_COMPONENT_BYTES, 10000, project_modifier)
+}
+
 fn decode_version(value: Option<&Value>) -> Result<DefinitionVersion, AppError> {
     let raw = value
         .and_then(Value::as_str)
@@ -274,13 +442,13 @@ fn decode_version(value: Option<&Value>) -> Result<DefinitionVersion, AppError> 
     Ok(DefinitionVersion::new(raw))
 }
 
-fn decode_component_path(response: &Map<String, Value>) -> Result<String, AppError> {
+fn decode_component_path(response: &Map<String, Value>, kind: &str) -> Result<String, AppError> {
     let path = response
         .get("jsonWorldComponentContentPaths")
         .and_then(Value::as_object)
         .and_then(|paths| paths.get("en"))
         .and_then(Value::as_object)
-        .and_then(|en| en.get("DestinyInventoryItemDefinition"))
+        .and_then(|en| en.get(kind))
         .and_then(Value::as_str)
         .ok_or_else(provider_validation)?;
 
@@ -718,6 +886,31 @@ impl<T, C> BungieManifestGateway<T, C> {
     }
 }
 
+impl<T: ManifestTransport, C: Clock> BungieManifestGateway<T, C> {
+    fn load_world_table<D>(
+        &mut self,
+        path: &str,
+        cap: usize,
+        project: WorldProjection<D>,
+    ) -> Result<destiny_core::WorldDefinitionTable<D>, AppError> {
+        let url = format!("{MANIFEST_ORIGIN}{path}");
+        let request = ManifestHttpRequest::new(&url, None);
+        self.read_retry
+            .run(ReadRetryScope::RateLimitAndTransient, || {
+                let response =
+                    fetch_response(&mut self.transport, &request, || self.clock.now().ok())?;
+                if response
+                    .content_length
+                    .is_some_and(|length| length > MAX_COMPONENT_BYTES as u64)
+                {
+                    return Err(ReadFailure::terminal(provider_validation()));
+                }
+                decode_world_reader(response.body, MAX_COMPONENT_BYTES, cap, project)
+                    .map_err(ReadFailure::terminal)
+            })
+    }
+}
+
 impl<T, C> fmt::Debug for BungieManifestGateway<T, C> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -744,6 +937,32 @@ where
         Ok(destiny_core::ports::ManifestIndex {
             version: plan.version,
             component_path: plan.component_path,
+            milestone_path: plan.milestone_path,
+            activity_path: plan.activity_path,
+            modifier_path: plan.modifier_path,
+        })
+    }
+
+    fn load_world_components(
+        &mut self,
+        plan: &destiny_core::ports::ManifestIndex,
+    ) -> Result<destiny_core::WorldDefinitionsAcquisition, AppError> {
+        // Validate the entire plan before issuing any content request.
+        for path in [
+            &plan.milestone_path,
+            &plan.activity_path,
+            &plan.modifier_path,
+        ] {
+            if !is_safe_component_path(path) {
+                return Err(provider_validation());
+            }
+        }
+        decode_version(Some(&Value::String(plan.version.as_str().to_owned())))?;
+        Ok(destiny_core::WorldDefinitionsAcquisition {
+            version: plan.version.clone(),
+            milestones: self.load_world_table(&plan.milestone_path, 1000, project_milestone)?,
+            activities: self.load_world_table(&plan.activity_path, 50000, project_activity)?,
+            modifiers: self.load_world_table(&plan.modifier_path, 10000, project_modifier)?,
         })
     }
 
@@ -959,7 +1178,7 @@ mod tests {
             "Response": {
                 "version": version,
                 "jsonWorldComponentContentPaths": {
-                    "en": { "DestinyInventoryItemDefinition": path }
+                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path }
                 }
             }
         })
@@ -970,6 +1189,130 @@ mod tests {
     fn assert_validation<T: std::fmt::Debug>(result: Result<T, AppError>) {
         let error = result.expect_err("expected a provider-validation failure");
         assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+    }
+
+    #[test]
+    fn world_tables_skip_blank_and_redacted_and_validate_fields() {
+        let bytes = br#"{"1":{"hash":1,"displayProperties":{"name":"Raid","description":"Line\nTwo"},"milestoneType":3,"activityTypeHash":4,"activityLightLevel":2000},"2":{"hash":2,"redacted":true},"3":{"hash":3,"displayProperties":{"name":" "}}}"#;
+        let milestones = super::decode_milestones(bytes).unwrap();
+        assert_eq!(milestones.skipped_count, 2);
+        assert_eq!(milestones.definitions[0].milestone_type(), 3);
+        assert_eq!(milestones.definitions[0].description(), "Line\nTwo");
+        let activities = super::decode_activities(bytes).unwrap();
+        assert_eq!(activities.definitions[0].activity_type_hash(), 4);
+        assert_eq!(activities.definitions[0].light_level(), 2000);
+        assert_eq!(
+            super::decode_activity_modifiers(bytes).unwrap().definitions[0].name(),
+            "Raid"
+        );
+        for bad in [
+            b"{}".as_slice(),
+            br#"{"1":{"hash":1,"redacted":true}}"#,
+            br#"{"01":{"hash":1,"displayProperties":{"name":"x"}}}"#,
+            br#"{"1":{"hash":2,"displayProperties":{"name":"x"}}}"#,
+            br#"{"1":{"hash":1,"displayProperties":{"name":"x\u0001"}}}"#,
+        ] {
+            assert_validation(super::decode_milestones(bad));
+            assert_validation(super::decode_activities(bad));
+            assert_validation(super::decode_activity_modifiers(bad));
+        }
+        for (name, description) in [
+            ("x".repeat(257), String::new()),
+            ("x".into(), "d".repeat(2049)),
+        ] {
+            let body =
+                json!({"1":{"hash":1,"displayProperties":{"name":name,"description":description}}})
+                    .to_string();
+            assert_validation(super::decode_activity_modifiers(body.as_bytes()));
+        }
+    }
+
+    #[test]
+    fn world_table_caps_include_skipped_records() {
+        assert_eq!(
+            super::decode_milestones(build_component(1000).as_bytes())
+                .unwrap()
+                .definitions
+                .len(),
+            1000
+        );
+        assert_eq!(
+            super::decode_activity_modifiers(build_component(10000).as_bytes())
+                .unwrap()
+                .definitions
+                .len(),
+            10000
+        );
+        assert_eq!(
+            super::decode_activities(build_component(50000).as_bytes())
+                .unwrap()
+                .definitions
+                .len(),
+            50000
+        );
+        let skipped = build_component(1001)
+            .replace("displayProperties", "ignoredDisplay")
+            .replace("\"hash\":", "\"redacted\":true,\"hash\":");
+        assert_validation(super::decode_milestones(skipped.as_bytes()));
+        assert_validation(super::decode_milestones(build_component(1001).as_bytes()));
+        assert_validation(super::decode_activity_modifiers(
+            build_component(10001).as_bytes(),
+        ));
+        assert_validation(super::decode_activities(build_component(50001).as_bytes()));
+    }
+
+    #[test]
+    fn world_reader_bounds_ignored_bytes_and_rejects_duplicates_and_trailing_data() {
+        let bytes = br#"{"1":{"hash":1,"displayProperties":{"name":"x"},"ignored":[1,2,3]}} "#;
+        assert!(
+            super::decode_world_reader(bytes.as_slice(), bytes.len(), 1, super::project_modifier)
+                .is_ok()
+        );
+        assert_validation(super::decode_world_reader(
+            bytes.as_slice(),
+            bytes.len() - 1,
+            1,
+            super::project_modifier,
+        ));
+        for bad in [
+            br#"{"1":{"hash":1,"displayProperties":{"name":" "}}}"#.as_slice(),
+            br#"{"1":{"hash":1,"displayProperties":{"name":"x"}},"1":{"hash":1,"displayProperties":{"name":"x"}}}"#,
+            br#"{"1":{"hash":1,"displayProperties":{"name":"x"}}} []"#,
+        ] {
+            assert_validation(super::decode_activity_modifiers(bad));
+        }
+    }
+
+    #[test]
+    fn world_paths_are_required_and_safe() {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&index_bytes("v1", VALID_PATH)).unwrap();
+        let en = value["Response"]["jsonWorldComponentContentPaths"]["en"]
+            .as_object_mut()
+            .unwrap();
+        for kind in [
+            "DestinyMilestoneDefinition",
+            "DestinyActivityDefinition",
+            "DestinyActivityModifierDefinition",
+        ] {
+            en.insert(kind.into(), json!(VALID_PATH));
+        }
+        for kind in [
+            "DestinyMilestoneDefinition",
+            "DestinyActivityDefinition",
+            "DestinyActivityModifierDefinition",
+        ] {
+            let mut missing = value.clone();
+            missing["Response"]["jsonWorldComponentContentPaths"]["en"]
+                .as_object_mut()
+                .unwrap()
+                .remove(kind);
+            assert_validation(decode_manifest_index(missing.to_string().as_bytes()));
+            let mut unsafe_path = value.clone();
+            unsafe_path["Response"]["jsonWorldComponentContentPaths"]["en"][kind] =
+                json!("/common/destiny2_content/../secret.json");
+            assert_validation(decode_manifest_index(unsafe_path.to_string().as_bytes()));
+        }
     }
 
     #[test]
@@ -1476,7 +1819,7 @@ mod transport_tests {
             "Response": {
                 "version": "manifest-v1",
                 "jsonWorldComponentContentPaths": {
-                    "en": { "DestinyInventoryItemDefinition": path }
+                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path }
                 }
             }
         })
@@ -1549,6 +1892,47 @@ mod transport_tests {
     impl Read for FailingReader {
         fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
             Err(io::Error::other("reader failure"))
+        }
+    }
+
+    #[test]
+    fn gateway_world_components_use_three_urls_without_key() {
+        let mut index: serde_json::Value =
+            serde_json::from_str(&index_body(COMPONENT_PATH)).unwrap();
+        let paths = [
+            "/common/destiny2_content/m.json",
+            "/common/destiny2_content/a.json",
+            "/common/destiny2_content/mod.json",
+        ];
+        for (kind, path) in [
+            "DestinyMilestoneDefinition",
+            "DestinyActivityDefinition",
+            "DestinyActivityModifierDefinition",
+        ]
+        .into_iter()
+        .zip(paths)
+        {
+            index["Response"]["jsonWorldComponentContentPaths"]["en"][kind] = json!(path);
+        }
+        let transport = FakeTransport::with(vec![
+            Ok(json_response(index.to_string())),
+            Ok(json_response(component_body())),
+            Ok(json_response(component_body())),
+            Ok(json_response(component_body())),
+        ]);
+        let mut gateway = BungieManifestGateway::new(key(), transport, clock());
+        let index = gateway.fetch_index().unwrap();
+        let batch = gateway.load_world_components(&index).unwrap();
+        assert_eq!(batch.version.as_str(), "manifest-v1");
+        assert_eq!(batch.milestones.definitions.len(), 1);
+        assert_eq!(batch.activities.definitions.len(), 1);
+        assert_eq!(batch.modifiers.definitions.len(), 1);
+        let requests = &gateway.transport().requests;
+        assert_eq!(requests.len(), 4);
+        assert!(requests[0].has_api_key);
+        for (request, path) in requests[1..].iter().zip(paths) {
+            assert_eq!(request.url, format!("{MANIFEST_ORIGIN}{path}"));
+            assert!(!request.has_api_key);
         }
     }
 

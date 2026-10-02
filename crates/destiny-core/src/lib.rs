@@ -9,6 +9,11 @@ pub mod ports;
 pub mod query;
 pub mod redact;
 pub mod state;
+pub mod world_definitions;
+pub use world_definitions::{
+    ActivityDefinition, ActivityModifierDefinition, MilestoneDefinition, WorldDefinitionTable,
+    WorldDefinitionsAcquisition,
+};
 
 pub use auth::{
     AccessCredential, AccessCredentialMetadata, AuthorizationCallback, AuthorizationCode,

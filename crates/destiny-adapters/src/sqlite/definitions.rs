@@ -77,6 +77,19 @@ impl DefinitionRepository for SqliteStore {
         &mut self,
         replacement: DefinitionReplacementInput,
     ) -> Result<SyncMetadata, AppError> {
+        self.publish_catalog(replacement, None)
+    }
+}
+
+impl SqliteStore {
+    pub(super) fn publish_catalog(
+        &mut self,
+        replacement: DefinitionReplacementInput,
+        world: Option<destiny_core::WorldDefinitionsAcquisition>,
+    ) -> Result<SyncMetadata, AppError> {
+        if let Some(world) = &world {
+            world.validate_for(&replacement.definitions.version)?;
+        }
         // Everything that can be rejected without touching storage is rejected
         // here, before the transaction is opened, so the prior committed state
         // stays readable and no write is ever attempted.
@@ -99,6 +112,10 @@ impl DefinitionRepository for SqliteStore {
             Some(_) => {
                 let committed = read_committed_content(&transaction)?;
                 contents_match(&committed, &replacement.definitions.definitions)
+                    && match &world {
+                        Some(world) => super::world::contents_match(&transaction, world)?,
+                        None => true,
+                    }
             }
             None => false,
         };
@@ -127,6 +144,13 @@ impl DefinitionRepository for SqliteStore {
         // freshness metadata; changed content replaces every row.
         if !unchanged {
             replace_catalog(&transaction, &replacement.definitions.definitions)?;
+            if let Some(world) = &world {
+                super::world::replace_catalog(&transaction, world)?;
+            } else if super::migrations::read_user_version(&transaction)? >= 3 {
+                // An item-only publication must not leave stale world rows
+                // carrying a different version under the shared metadata.
+                super::world::clear_catalog(&transaction)?;
+            }
         }
         upsert_metadata(&transaction, &replacement, revision)?;
         transaction.commit().map_err(|_| storage_failure())?;

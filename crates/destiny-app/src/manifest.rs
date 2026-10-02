@@ -56,11 +56,15 @@ pub enum ManifestSyncReport {
     Unchanged {
         version: DefinitionVersion,
         record_count: usize,
+        /// Milestone, activity, activity-modifier counts, in that order.
+        world_counts: [usize; 3],
     },
     Updated {
         version: DefinitionVersion,
         record_count: usize,
         skipped: usize,
+        world_counts: [usize; 3],
+        world_skipped: [usize; 3],
     },
 }
 
@@ -145,31 +149,52 @@ where
 impl<G, R> ManifestService<G, R>
 where
     G: ManifestGateway,
-    R: destiny_core::ports::DefinitionCatalogRepository,
+    R: destiny_core::ports::DefinitionCatalogRepository
+        + destiny_core::ports::WorldDefinitionRepository,
 {
-    /// Fetches the small index first. An exact version match is a pure read:
-    /// no component acquisition, publication, revision, or timestamp change.
-    /// Only absent metadata means an empty store; storage failures propagate.
+    /// Fetches the small index first. An exact version match with all three
+    /// world catalogs populated is a pure read. Missing world catalogs (including
+    /// a migrated item-only store) require a complete atomic publication.
+    /// Storage failures propagate rather than implying an empty catalog.
     pub fn sync(&mut self, checked_at: Timestamp) -> Result<ManifestSyncReport, AppError> {
         let index = self.gateway.fetch_index()?;
         let version = normalize_version(index.version.as_str())?;
         if let Some(metadata) = self.repository.current_metadata()?
             && metadata.definition_version == version
         {
-            return Ok(ManifestSyncReport::Unchanged {
-                version,
-                record_count: self.repository.definition_count()?,
-            });
+            let world_counts = self.repository.world_definition_counts()?;
+            if world_counts.iter().all(|count| *count > 0) {
+                return Ok(ManifestSyncReport::Unchanged {
+                    version,
+                    record_count: self.repository.definition_count()?,
+                    world_counts,
+                });
+            }
         }
         let acquisition = self.gateway.load_component(&index)?;
         if acquisition.version != version {
             return Err(invalid());
         }
-        let outcome = self.publish(acquisition, checked_at)?;
+        let (definitions, skipped) = normalize_with_count(acquisition)?;
+        let world = self.gateway.load_world_components(&index)?;
+        world.validate_for(&version)?;
+        let world_counts = world.counts();
+        let world_skipped = world.skipped_counts();
+        let record_count = definitions.definitions.len();
+        self.repository.publish_manifest(
+            DefinitionReplacementInput {
+                definitions,
+                checked_at,
+                source: SourceMarker::Manifest,
+            },
+            world,
+        )?;
         Ok(ManifestSyncReport::Updated {
-            version: outcome.version,
-            record_count: outcome.definition_count,
-            skipped: outcome.skipped_count,
+            version,
+            record_count,
+            skipped,
+            world_counts,
+            world_skipped,
         })
     }
 }
@@ -743,16 +768,20 @@ mod tests {
         }
 
         fn committed_repository() -> InMemoryDefinitionRepository {
+            use destiny_core::ports::WorldDefinitionRepository;
             let mut repository = seeded_repository();
             repository
-                .replace_definitions(destiny_core::DefinitionReplacementInput {
-                    definitions: destiny_core::ManifestDefinitions {
-                        version: DefinitionVersion::new("manifest-prior"),
-                        definitions: vec![item_definition(7, "prior", "manifest-prior")],
+                .publish_manifest(
+                    destiny_core::DefinitionReplacementInput {
+                        definitions: destiny_core::ManifestDefinitions {
+                            version: DefinitionVersion::new("manifest-prior"),
+                            definitions: vec![item_definition(7, "prior", "manifest-prior")],
+                        },
+                        checked_at: CHECKED_AT,
+                        source: SourceMarker::Manifest,
                     },
-                    checked_at: CHECKED_AT,
-                    source: SourceMarker::Manifest,
-                })
+                    crate::test_support::synthetic_world(DefinitionVersion::new("manifest-prior")),
+                )
                 .unwrap();
             repository
         }
@@ -765,6 +794,9 @@ mod tests {
             gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
                 version: DefinitionVersion::new("manifest-prior"),
                 component_path: "unused".into(),
+                milestone_path: "unused".into(),
+                activity_path: "unused".into(),
+                modifier_path: "unused".into(),
             }));
             let mut service = ManifestService::new(gateway, repository);
             assert_eq!(
@@ -772,8 +804,10 @@ mod tests {
                 crate::manifest::ManifestSyncReport::Unchanged {
                     version: DefinitionVersion::new("manifest-prior"),
                     record_count: 1,
+                    world_counts: [1; 3],
                 }
             );
+            assert_eq!(service.gateway().world_calls(), 0);
             assert_eq!(service.gateway().index_calls(), 1);
             assert_eq!(service.gateway().component_calls(), 0);
             assert_eq!(service.repository().publication_attempts(), 1);
@@ -800,12 +834,25 @@ mod tests {
                         version: DefinitionVersion::new(VERSION),
                         record_count: 1,
                         skipped: 3,
+                        world_counts: [1; 3],
+                        world_skipped: [2, 3, 4],
                     }
                 );
                 assert!(!format!("{report:?}").contains("item-name-sentinel"));
                 assert!(!format!("{report:?}").contains("common/destiny2_content"));
                 assert_eq!(service.gateway().index_calls(), 1);
                 assert_eq!(service.gateway().component_calls(), 1);
+                assert_eq!(service.gateway().world_calls(), 1);
+                use destiny_core::ports::WorldDefinitionRepository;
+                assert!(service.repository().lookup_milestone(1).unwrap().is_some());
+                assert!(service.repository().lookup_activity(2).unwrap().is_some());
+                assert!(
+                    service
+                        .repository()
+                        .lookup_activity_modifier(3)
+                        .unwrap()
+                        .is_some()
+                );
                 assert_eq!(service.repository().definition_count(), 1);
                 assert_eq!(
                     service
@@ -829,6 +876,9 @@ mod tests {
                     gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
                         version: DefinitionVersion::new(VERSION),
                         component_path: "unused".into(),
+                        milestone_path: "unused".into(),
+                        activity_path: "unused".into(),
+                        modifier_path: "unused".into(),
                     }));
                     gateway.queue_component(Err(error));
                 } else {
@@ -844,6 +894,87 @@ mod tests {
                 assert_eq!(service.repository().current_metadata().unwrap(), metadata);
                 assert_prior_state(service.repository());
             }
+        }
+
+        #[test]
+        fn sync_world_failure_or_version_mismatch_preserves_prior_catalogs() {
+            use destiny_core::ports::WorldDefinitionRepository;
+            for mismatch in [false, true] {
+                let mut repository = committed_repository();
+                repository
+                    .publish_manifest(
+                        destiny_core::DefinitionReplacementInput {
+                            definitions: destiny_core::ManifestDefinitions {
+                                version: DefinitionVersion::new("manifest-prior"),
+                                definitions: vec![item_definition(7, "prior", "manifest-prior")],
+                            },
+                            checked_at: CHECKED_AT,
+                            source: SourceMarker::Manifest,
+                        },
+                        crate::test_support::synthetic_world(DefinitionVersion::new(
+                            "manifest-prior",
+                        )),
+                    )
+                    .unwrap();
+                let metadata = repository.current_metadata().unwrap();
+                let mut gateway = QueuedManifestGateway::new();
+                gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                    version: DefinitionVersion::new(VERSION),
+                    component_path: "unused".into(),
+                    milestone_path: "unused".into(),
+                    activity_path: "unused".into(),
+                    modifier_path: "unused".into(),
+                }));
+                gateway.queue_component(Ok(acquisition(VERSION, vec![candidate(42, "next")])));
+                gateway.queue_world(if mismatch {
+                    Ok(crate::test_support::synthetic_world(
+                        DefinitionVersion::new("wrong-version"),
+                    ))
+                } else {
+                    Err(AppError::new(ErrorCategory::ProviderUnavailable))
+                });
+                let mut service = ManifestService::new(gateway, repository);
+                assert_eq!(
+                    service.sync(CHECKED_AT).unwrap_err().category(),
+                    if mismatch {
+                        ErrorCategory::ProviderValidation
+                    } else {
+                        ErrorCategory::ProviderUnavailable
+                    }
+                );
+                assert_eq!(service.gateway().world_calls(), 1);
+                assert_eq!(service.repository().current_metadata().unwrap(), metadata);
+                assert_eq!(
+                    service.repository().world_definition_counts().unwrap(),
+                    [1; 3]
+                );
+                assert_prior_state(service.repository());
+            }
+        }
+
+        #[test]
+        fn sync_updated_then_unchanged_downloads_all_components_only_once() {
+            let mut gateway = QueuedManifestGateway::new();
+            gateway.queue(Ok(acquisition(VERSION, vec![candidate(42, "next")])));
+            gateway.queue(Ok(acquisition(
+                VERSION,
+                vec![candidate(43, "must not download")],
+            )));
+            let mut service =
+                ManifestService::new(gateway, InMemoryDefinitionRepository::default());
+            service.sync(CHECKED_AT).unwrap();
+            let metadata = service.repository().current_metadata().unwrap();
+            assert_eq!(
+                service.sync(Timestamp::new(2000)).unwrap(),
+                crate::manifest::ManifestSyncReport::Unchanged {
+                    version: DefinitionVersion::new(VERSION),
+                    record_count: 1,
+                    world_counts: [1; 3],
+                }
+            );
+            assert_eq!(service.gateway().component_calls(), 1);
+            assert_eq!(service.gateway().world_calls(), 1);
+            assert_eq!(service.repository().current_metadata().unwrap(), metadata);
         }
 
         #[test]
@@ -869,6 +1000,9 @@ mod tests {
             gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
                 version: DefinitionVersion::new("other-version"),
                 component_path: "unused".into(),
+                milestone_path: "unused".into(),
+                activity_path: "unused".into(),
+                modifier_path: "unused".into(),
             }));
             gateway.queue_component(Ok(acquisition(VERSION, vec![candidate(42, "Gamma")])));
             let mut service = ManifestService::new(gateway, committed_repository());

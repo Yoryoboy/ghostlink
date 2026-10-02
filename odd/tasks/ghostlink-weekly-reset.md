@@ -1,0 +1,54 @@
+# Ghostlink Weekly Reset (WU-019 public, WU-020 personal)
+
+## Objective and scope
+WU-019 (this branch): show what the current Destiny 2 weekly reset offers without credentials. Load the Activity, Milestone, and ActivityModifier Manifest tables through `sync-manifest`, read Bungie `GET /Destiny2/Milestones/` (GetPublicMilestones, API key only), resolve hashes against stored definitions, and expose the result as a `ghostlink weekly-reset` CLI command and a read-only MCP tool.
+
+WU-020 (chained branch on top of WU-019): per-character weekly progress from profile components 202 (CharacterProgressions, milestones) and 204 (CharacterActivities), through a separate profile gateway method so the inventory request string stays unchanged.
+
+Non-goals (WU-019): per-character progress (WU-020); SandboxPerk or other tables; languages other than English; Portal/activity-graph navigation; an MCP sync tool; caching milestones beyond their own reset window.
+
+## Exploration findings
+- `crates/destiny-adapters/src/manifest.rs` decodes only `DestinyInventoryItemDefinition`. `ManifestDownloadPlan` and the core `ManifestGateway` port (`crates/destiny-core/src/ports.rs:505-558`) are single-component and item-shaped.
+- SQLite schema `LATEST_VERSION = 2`; `sync_metadata.dataset` CHECK allows only `manifest_definitions` and `profile_inventory`, so a v3 migration needs a table rebuild to add datasets.
+- `is_allowed_manifest_url` gates the transport; GetPublicMilestones needs its own allowlisted endpoint and byte cap.
+- CLI: credential-free `sync-manifest` path in `crates/destiny-cli/src/{command,runner,runtime,output}.rs` is the model. MCP: tool constants and specs in `crates/destiny-mcp/src/schema.rs`; exact tool lists asserted in `server.rs`, `schema.rs`, `main.rs`, and `tests/stdio.rs`.
+- Live sizes (WU-018): Activity 11 MB, ActivityModifier 206 KB, Milestone 38 KB.
+
+## Live evidence (2026-10-02, API key only, sanitized)
+- `GET /Platform/Destiny2/Milestones/`: HTTP 200, 4,698 bytes decoded (1,316 gzip), 12 milestones. Per milestone: `milestoneHash`, `order` (always); `startDate`, `endDate` (11/12, ISO-8601 UTC, reset window `2026-09-29T17:00:00Z`..`2026-10-06T17:00:00Z`); `activities` (10/12); `availableQuests` (1/12, `questItemHash` only).
+- Per activity: `activityHash`, `modifierHashes` (max 15), `challengeObjectiveHashes` (4 total), `phaseHashes`.
+- Every milestone, activity, and modifier hash in the live response resolves against the new tables (12 milestones such as The Desert Perpetual, Last Wish, Weekly Clan Engrams; 13 activities such as "Salvation's Edge: Master"); one modifier has a blank name.
+- Tables (en): Milestone 37,712 bytes / 31 records / 0 blank / max name 29; ActivityModifier 206,195 / 351 / 1 blank / 61; Activity 10,988,279 / 4,069 / 325 blank / 63. Modifier descriptions contain `{var:<hash>}` templates (names do not).
+
+## Boundary decisions
+- Store per kind: hash, name, description (bounded), plus milestone `milestoneType` and activity `activityTypeHash`, `activityLightLevel`. No raw payloads.
+- Blank/redacted records are skipped and counted, as for items; a hash that does not resolve is reported as unresolved.
+- Ignored for WU-019: `phaseHashes`, `challengeObjectiveHashes` (would need DestinyObjectiveDefinition), `availableQuests` (would need the items table, already stored; deferred). `{var:...}` templates are stripped or left verbatim, never expanded.
+- Milestones response cap 1 MiB (live 4.7 KB); bounded counts: 64 milestones, 64 activities per milestone, 64 modifiers per activity.
+
+## Constraints and acceptance
+- Hardening stays: endpoint allowlist, no redirects or proxy, bounded retry, explicit byte caps, typed field-limited decoding, sanitized errors, API key only on index and milestones requests.
+- `sync-manifest` stays version-aware: an unchanged version downloads nothing; an updated version replaces all four tables atomically.
+- `weekly-reset` reports each public milestone with resolved names, its activities and modifiers, and the reset window; unknown hashes are reported as unresolved, never guessed. Missing definitions return the existing `definitions not loaded; run ghostlink sync-manifest` outcome.
+- Test-first for every behavior task (RED, then GREEN). Checks per task: `cargo fmt --all -- --check`, `cargo build -p destiny-cli`, `cargo test --workspace --all-features`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `git diff --check`.
+- Worktree `/home/yoryo/apps/ghostlink-weekly` (own `target/`), so the main-worktree binary used by the URI handler is untouched.
+- Delivery: work-unit commits on `feature/ghostlink-weekly-reset`; push/PR/merge are user decisions.
+
+## Tasks
+- [x] **WRS-001 — Live evidence and domain boundary.** Evidence-only (no source change); core types and ports move into WRS-002/WRS-004 next to their first consumer and tests. See "Live evidence" and "Boundary decisions" below. Commit evidence: this tracker update.
+- [x] **WRS-002 — Multi-table Manifest acquisition.** Delegated writer, test-first (RED: 11 compile errors for missing decoders/port method; GREEN). New `destiny-core/src/world_definitions.rs` (bounded validated types, versioned `WorldDefinitionsAcquisition`, per-kind skipped counts); index carries the three world paths, each `is_safe_component_path`-validated before download; typed streaming decoders with record/byte caps, blank/redacted skipped and counted, all-skipped rejected; content requests carry no API key. Independent verifier: all checks passed (885 tests) but FAILED on (high) no production caller of `load_world_components` -> moved to WRS-003 by scope, and (medium) derived `Debug` exposed provider text -> fixed with manual redacting `Debug` and a regression test (RED "provider name leaked", GREEN; 886 tests, fmt, clippy, diff check). Parent spot check: destiny-core 91 tests pass. Commit evidence: see git log for `feat(manifest): acquire world definition tables`. Per-component download plan and typed decoders for Activity, Milestone, and ActivityModifier, plus the `ManifestGateway::load_world_components` port method. Acquisition only; wiring the world tables into version-aware sync needs storage and moves to WRS-003.
+- [x] **WRS-003 — SQLite v3 storage.** Delegated writer, test-first (RED: 17 compile errors for missing port/methods; CLI old-output assertion failed; GREEN). Design: all four catalogs share the existing `manifest_definitions` metadata row (one version, one revision, one transaction), so `sync_metadata` needs no rebuild; v3 adds STRICT bounded world tables and `down` drops only them. New `WorldDefinitionRepository` port (lookups by hash), `sqlite/world.rs`, combined IMMEDIATE-transaction publish in `sqlite/definitions.rs`, fake/SQLite parity. `ManifestService::sync` publishes items + world; report and CLI text/`--json` show world counts and skipped counts. Parent-caught defect from the writer's risks: a live database already at the current version would stay `Unchanged` with empty world tables -> `Unchanged` now also requires all three world tables populated (RED: returned Unchanged; GREEN). Independent verifier PASSED: 893 tests, fmt, build, clippy, diff check; populated v2->v3->v2 round trip, newer-db fail closed, mid-publish rollback, backfill cases. Commit evidence: see git log for `feat(storage): persist world definitions in schema v3`.
+- [ ] **WRS-004 — Public milestones gateway.** Allowlisted endpoint, byte cap, typed decode into the domain snapshot.
+- [ ] **WRS-005 — Weekly reset service.** App service resolving milestone, activity, and modifier hashes; explicit unresolved outcomes; definitions-unavailable error.
+- [ ] **WRS-006 — CLI `weekly-reset`.** Text and `--json` output, credential-free runtime composition.
+- [ ] **WRS-007 — MCP read tool.** `weekly_reset` tool with schemas, dispatch, and updated tool-list assertions.
+- [ ] **WRS-008 — Live validation, docs, and close.** Live run with sanitized output, README section, tracker closure.
+
+## Progress
+Branch `feature/ghostlink-weekly-reset` created in worktree `/home/yoryo/apps/ghostlink-weekly` from `main` at `083278a`.
+
+## Live-run caution
+The database path is shared across worktrees. Once a v3 binary opens it, binaries built from `main` (schema v2, including the URI handler binary) fail closed on it until this WU merges. Before WRS-008 live validation, point `DESTINY_DATABASE_PATH` at a copy or accept rebuilding the main binary after merge.
+
+## Next step
+WRS-004.

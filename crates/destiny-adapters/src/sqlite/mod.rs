@@ -30,6 +30,7 @@ mod definitions;
 mod inventory;
 mod migrations;
 mod search;
+mod world;
 
 #[cfg(test)]
 mod definition_tests;
@@ -39,6 +40,8 @@ mod inventory_tests;
 mod tests;
 #[cfg(test)]
 mod verification_tests;
+#[cfg(test)]
+mod world_tests;
 
 use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;

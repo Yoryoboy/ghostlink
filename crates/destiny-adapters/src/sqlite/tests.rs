@@ -10,13 +10,16 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 7] = [
+const EXPECTED_TABLE_NAMES: [&str; 10] = [
     "active_profile",
+    "activity_definitions",
+    "activity_modifier_definitions",
     "characters",
     "definition_tags",
     "definitions",
     "item_perks",
     "items",
+    "milestone_definitions",
     "sync_metadata",
 ];
 
@@ -26,7 +29,26 @@ const EXPECTED_INDEX_NAMES: [&str; 2] = ["items_definition_hash_idx", "items_loc
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 38] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 53] = [
+    ("activity_definitions", "hash", "INTEGER"),
+    ("activity_definitions", "name", "TEXT"),
+    ("activity_definitions", "description", "TEXT"),
+    ("activity_definitions", "activity_type_hash", "INTEGER"),
+    ("activity_definitions", "light_level", "INTEGER"),
+    ("activity_definitions", "definition_version", "TEXT"),
+    ("activity_modifier_definitions", "hash", "INTEGER"),
+    ("activity_modifier_definitions", "name", "TEXT"),
+    ("activity_modifier_definitions", "description", "TEXT"),
+    (
+        "activity_modifier_definitions",
+        "definition_version",
+        "TEXT",
+    ),
+    ("milestone_definitions", "hash", "INTEGER"),
+    ("milestone_definitions", "name", "TEXT"),
+    ("milestone_definitions", "description", "TEXT"),
+    ("milestone_definitions", "milestone_type", "INTEGER"),
+    ("milestone_definitions", "definition_version", "TEXT"),
     ("active_profile", "singleton", "INTEGER"),
     ("active_profile", "membership_id", "TEXT"),
     ("active_profile", "membership_type", "TEXT"),
@@ -314,7 +336,7 @@ fn reject_membership_type(store: &SqliteStore, value: &str) {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 2);
+    assert_eq!(LATEST_SCHEMA_VERSION, 3);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION
@@ -523,7 +545,7 @@ fn v2_down_drops_only_item_perks_then_reapply_up_preserves_v1_rows() {
 
     // The entire v1 -> v2 -> v1 -> v2 cycle stays durable across a reopen.
     let store = SqliteStore::open(temp.path()).expect("reopen after the cycle");
-    assert_eq!(store.schema_version().expect("read schema version"), 2);
+    assert_eq!(store.schema_version().expect("read schema version"), 3);
     assert_eq!(row_count(&store, "items"), 1);
     assert_eq!(row_count(&store, "item_perks"), 0);
 }
