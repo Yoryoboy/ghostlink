@@ -187,6 +187,7 @@ pub struct InMemoryDefinitionRepository {
     metadata: Option<SyncMetadata>,
     previous_input: Option<DefinitionReplacementInput>,
     publication_failure: Option<AppError>,
+    metadata_failure: Option<AppError>,
     publication_attempts: usize,
 }
 
@@ -208,6 +209,12 @@ impl InMemoryDefinitionRepository {
     /// Injects a sanitized publication failure; reads keep serving prior state.
     pub fn with_publication_failure(mut self, error: AppError) -> Self {
         self.publication_failure = Some(error);
+        self
+    }
+
+    /// Injects a real metadata read failure, distinct from absent metadata.
+    pub fn with_metadata_failure(mut self, error: AppError) -> Self {
+        self.metadata_failure = Some(error);
         self
     }
 
@@ -279,6 +286,9 @@ impl DefinitionRepository for InMemoryDefinitionRepository {
     }
 
     fn current_metadata(&self) -> Result<Option<SyncMetadata>, AppError> {
+        if let Some(error) = self.metadata_failure {
+            return Err(error);
+        }
         Ok(self.metadata.clone())
     }
 
@@ -329,6 +339,12 @@ impl DefinitionRepository for InMemoryDefinitionRepository {
         self.metadata = Some(metadata.clone());
         self.previous_input = Some(replacement);
         Ok(metadata)
+    }
+}
+
+impl destiny_core::ports::DefinitionCatalogRepository for InMemoryDefinitionRepository {
+    fn definition_count(&self) -> Result<usize, AppError> {
+        Ok(self.definitions.len())
     }
 }
 
@@ -676,33 +692,68 @@ impl TransferGateway for QueuedTransferGateway {
 
 #[derive(Debug, Default)]
 pub struct QueuedManifestGateway {
+    indexes: VecDeque<Result<destiny_core::ports::ManifestIndex, AppError>>,
     outcomes: VecDeque<Result<ManifestAcquisition, AppError>>,
-    calls: usize,
+    index_calls: usize,
+    component_calls: usize,
 }
 
 impl QueuedManifestGateway {
     pub fn new() -> Self {
-        Self {
-            outcomes: VecDeque::new(),
-            calls: 0,
+        Self::default()
+    }
+
+    /// Compatibility shorthand: queue an index and its component together.
+    pub fn queue(&mut self, outcome: Result<ManifestAcquisition, AppError>) {
+        match outcome {
+            Ok(batch) => {
+                self.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                    version: batch.version.clone(),
+                    component_path: "/common/destiny2_content/test.json".into(),
+                }));
+                self.queue_component(Ok(batch));
+            }
+            Err(error) => self.queue_index(Err(error)),
         }
     }
-    pub fn queue(&mut self, outcome: Result<ManifestAcquisition, AppError>) {
+
+    pub fn queue_index(&mut self, outcome: Result<destiny_core::ports::ManifestIndex, AppError>) {
+        self.indexes.push_back(outcome);
+    }
+
+    pub fn queue_component(&mut self, outcome: Result<ManifestAcquisition, AppError>) {
         self.outcomes.push_back(outcome);
     }
+
     pub const fn calls(&self) -> usize {
-        self.calls
+        self.index_calls
+    }
+
+    pub const fn index_calls(&self) -> usize {
+        self.index_calls
+    }
+
+    pub const fn component_calls(&self) -> usize {
+        self.component_calls
     }
 }
 
 impl ManifestGateway for QueuedManifestGateway {
-    fn load_definitions(&mut self) -> Result<ManifestAcquisition, AppError> {
-        self.calls += 1;
-        self.outcomes.pop_front().unwrap_or_else(|| {
-            Err(AppError::new(
-                destiny_core::ErrorCategory::ProviderUnavailable,
-            ))
-        })
+    fn fetch_index(&mut self) -> Result<destiny_core::ports::ManifestIndex, AppError> {
+        self.index_calls += 1;
+        self.indexes
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
+    }
+
+    fn load_component(
+        &mut self,
+        _index: &destiny_core::ports::ManifestIndex,
+    ) -> Result<ManifestAcquisition, AppError> {
+        self.component_calls += 1;
+        self.outcomes
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
     }
 }
 

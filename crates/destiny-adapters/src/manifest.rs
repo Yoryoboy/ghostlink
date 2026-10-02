@@ -731,7 +731,7 @@ where
     T: ManifestTransport,
     C: Clock,
 {
-    fn load_definitions(&mut self) -> Result<ManifestAcquisition, AppError> {
+    fn fetch_index(&mut self) -> Result<destiny_core::ports::ManifestIndex, AppError> {
         let index_request = ManifestHttpRequest::new(MANIFEST_ENDPOINT, Some(&self.api_key));
         let index_bytes = fetch_with_retry(
             &mut self.transport,
@@ -741,7 +741,20 @@ where
             MAX_INDEX_BYTES,
         )?;
         let plan = decode_manifest_index(&index_bytes)?;
+        Ok(destiny_core::ports::ManifestIndex {
+            version: plan.version,
+            component_path: plan.component_path,
+        })
+    }
 
+    fn load_component(
+        &mut self,
+        plan: &destiny_core::ports::ManifestIndex,
+    ) -> Result<ManifestAcquisition, AppError> {
+        if !is_safe_component_path(&plan.component_path) {
+            return Err(provider_validation());
+        }
+        decode_version(Some(&Value::String(plan.version.as_str().to_owned())))?;
         let component_url = format!("{MANIFEST_ORIGIN}{}", plan.component_path);
         let component_request = ManifestHttpRequest::new(&component_url, None);
         self.read_retry
