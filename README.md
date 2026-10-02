@@ -21,10 +21,10 @@ The five crates are intentionally minimal.
 
 ## Configuration
 
-Configuration is a Bungie public-client API key, public OAuth client ID, HTTP
-loopback callback URI, and a separately configured registered callback URI. The
-two callback values must match exactly, including case. There is no
-client-secret configuration.
+Configuration is a Bungie public-client API key, public OAuth client ID,
+custom-scheme callback URI (`ghostlink://oauth/callback`), and a separately
+configured registered callback URI. The two callback values must match exactly,
+including case. There is no client-secret configuration.
 
 The shared read composition roots (the CLI and the MCP server) additionally read
 the database path, Manifest definition version, and a positive freshness TTL:
@@ -36,8 +36,35 @@ DESTINY_DEFINITION_VERSION    Manifest definition version to persist and compare
 DESTINY_FRESHNESS_TTL_SECONDS Positive freshness TTL in seconds (max 2592000)
 ```
 
-Copy `config.example.env` and replace its obvious placeholders locally; do not
-commit credentials. Startup diagnostics are typed and sanitized.
+### Configuration file
+
+Every binary reads its configuration itself, so secrets never need to be
+exported in the shell that launches it (or in an agent session that runs it).
+For each required key, a value present in the process environment wins;
+otherwise the value comes from the per-user configuration file, resolved in
+this order:
+
+1. `$GHOSTLINK_CONFIG_FILE`, when set and non-empty;
+2. `$XDG_CONFIG_HOME/ghostlink/config.env`, when `XDG_CONFIG_HOME` is absolute;
+3. `$HOME/.config/ghostlink/config.env`.
+
+A missing file is not an error; the environment alone is then used. The file
+holds `KEY=value` lines (blank lines, `#` comments, an optional `export`
+prefix, and one pair of surrounding quotes are accepted) and is limited to
+64 KiB. On Unix it must not be accessible by group or others: a file with any
+group/other permission bit is refused. Every failure is the sanitized
+`configuration_error`; no line, value, or key content is ever printed.
+
+Create it from the template and fill in the values locally, never in a shared
+session:
+
+```sh
+mkdir -p ~/.config/ghostlink
+install -m 600 config.example.env ~/.config/ghostlink/config.env
+$EDITOR ~/.config/ghostlink/config.env
+```
+
+Do not commit credentials. Startup diagnostics are typed and sanitized.
 
 ## Destiny CLI (read-only)
 
