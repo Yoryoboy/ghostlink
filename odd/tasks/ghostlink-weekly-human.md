@@ -23,7 +23,7 @@ Non-goals: translating objective texts; claiming raid encounter challenges (they
 - Rewards and modifiers: deduplicate by exact name in default and `--details`; `--debug` keeps every entry with its hash.
 - Quickplay: one line per distinct reward pool, `○ <objective> → <rewards>`, never merged into one activity.
 - Modifier categories (derived, name-based, English): Surge (name ends with "Surge"), Overcharge (name starts with "Overcharged"), Champions (name contains "Champion"), everything else "Other modifiers". JSON exposes it as a derived `category` field.
-- Unclassified activities: list of `{hash, name|null, reason, source}`; reason `activity_definition_missing` or `activity_type_missing`; source `public_milestones` or `character_activities`. Default and `--details` show one warning line at the end; `--debug` lists them.
+- Unclassified activities: list of `{hash, name|null, reason, source}`; reason `activity_definition_missing` or `activity_type_missing`; source `public_milestones` or `character_activities`. Default and `--details` show one warning at the end (count line plus the `ghostlink sync-manifest` hint line, as agreed with the user); `--debug` lists them.
 
 ## Constraints and acceptance
 - Classification rules from WU-020 are unchanged; this WU changes the model only where listed and the renderer.
@@ -33,9 +33,9 @@ Non-goals: translating objective texts; claiming raid encounter challenges (they
 
 ## Tasks
 - [x] **WHU-001 — Model.** Delegated writer, test-first (RED: missing unclassified types, `modifier_category`, `pools`; GREEN). Unclassified list `{hash, name|null, reason, source}` (definition missing takes precedence; `unclassified_unresolved` = list length kept); Quickplay `pools` merge only identical challenges and identical exact-name reward sets ([A] and [A, A] merge, consistent with the dedupe rule); derived `category` per modifier, commented as name-based. CLI/MCP parity and MCP schema updated; text layout unchanged. Independent verifier FAILED on coverage only (the `contains("Champion")` rule was not discriminated) -> parent added "Match Game: Champions" and proved it with a mutation (`starts_with` failed the test). Checks: fmt, workspace tests, clippy, diff check. Commit evidence: see git log for `feat(weekly): model unclassified activities, quickplay pools and modifier categories`.
-- [ ] **WHU-002 — Default renderer.** Dashboard layout and rules above, pinned by tests.
+- [x] **WHU-002 — Default renderer.** Delegated writer, test-first (RED: six human-render assertions; GREEN). New `crates/destiny-cli/src/weekly_human.rs` renders the dashboard from app-classified groups and pools; JSON unchanged. Parent live run on a database copy: layout as specified; Quickplay shows three pools because the live Normal and Master variants of the second pair differ by "Ops Bonus Drop" (faithful to the data, kept). Parent fixes: one-line entities listed adjacently (RED then GREEN). Independent verifier FAILED: (medium) objective dedupe ignored `complete` -> added to the key (RED: test failed, GREEN); (low) mixed sections with one-line entities still get gaps -> accepted, no such section exists today; (low) warning is two lines -> tracker updated to the agreed two-line form. Checks: fmt, workspace tests, clippy, diff check. Commit evidence: see git log for `feat(cli): render weekly as a player dashboard`.
 - [ ] **WHU-003 — `--details` and `--debug`.** Flags, grouped modifiers, diagnostic output, pinned by tests.
 - [ ] **WHU-004 — Live validation, docs, close.** Live run for the Hunter on a database copy; README.
 
 ## Next step
-WHU-002.
+WHU-003.
