@@ -378,10 +378,16 @@ fn missing_component_profile() -> Vec<u8> {
     serde_json::to_vec(&value).expect("payload serializes")
 }
 
-/// A profile response whose character component is privacy-denied.
+/// A profile response whose character component is privacy-denied: private
+/// and, unlike an owner-authorized response, without `data`.
 fn private_component_profile() -> Vec<u8> {
     let mut value: Value = serde_json::from_slice(FIXTURE).expect("fixture is JSON");
-    value["Response"]["characters"]["privacy"] = json!(2);
+    let characters = &mut value["Response"]["characters"];
+    characters["privacy"] = json!(2);
+    characters
+        .as_object_mut()
+        .expect("characters")
+        .remove("data");
     serde_json::to_vec(&value).expect("payload serializes")
 }
 

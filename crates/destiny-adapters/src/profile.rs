@@ -11,8 +11,10 @@
 //! Input is handled as `serde_json::Value` only; the adapter never
 //! deserializes into provider structs. The candidate is strict and complete:
 //! every required component wrapper must be present with `data`, no component
-//! may be `disabled`, and a component whose privacy is `2` (Private) is
-//! rejected. Characters, profile inventories, character inventories, character
+//! may be `disabled`, and a privacy value outside `0` (None), `1` (Public), and
+//! `2` (Private) is rejected. Bungie returns owner-only components as privacy
+//! `2` with `data` for the authorized owner, so a private component is accepted
+//! exactly when its `data` is present. Characters, profile inventories, character inventories, character
 //! equipment, item instances, and item perks must all be internally
 //! consistent, so a partial, private, or malformed response never yields a
 //! candidate.
@@ -36,8 +38,9 @@
 //! - State bit `1` marks an item locked. An item's equipment status must agree
 //!   with the provider `isEquipped` flag, so a vault item or a character
 //!   inventory item can never be equipped while an equipment item must be.
-//! - `primaryStat.value` maps to an optional `u16` power and `light` maps to an
-//!   optional `u16`.
+//! - `primaryStat.value` maps to an optional `u16` power, where an integer
+//!   outside that range is an unknown power, and `light` maps to an optional
+//!   `u16`.
 //! - Perk summaries preserve provider order and duplicate hashes. Per the
 //!   official `Destiny.Perks.DestinyPerkReference` contract, `perkHash` is a
 //!   `uint32` and `isActive` and `visible` are booleans; both flags are kept
@@ -61,6 +64,7 @@ const SUCCESS_ERROR_CODE: u64 = 1;
 /// Provider privacy values that are accepted when present.
 const PRIVACY_NONE: u64 = 0;
 const PRIVACY_PUBLIC: u64 = 1;
+const PRIVACY_PRIVATE: u64 = 2;
 
 /// The longest decimal identifier the durable profile projection accepts.
 const MAX_IDENTIFIER_DIGITS: usize = 128;
@@ -223,9 +227,10 @@ fn required_component<'a>(
 /// Validates one component wrapper and returns its `data` object.
 ///
 /// A wrapper must be an object with an object `data`. It must not be
-/// `disabled`, and a present `privacy` value must be `0` (None) or `1`
-/// (Public); `2` (Private) and any other value are rejected. An absent
-/// `privacy` is accepted.
+/// `disabled`, and a present `privacy` value must be `0` (None), `1` (Public),
+/// or `2` (Private); any other value is rejected. An absent `privacy` is
+/// accepted. A private component is usable only because the owner-authorized
+/// response still carries its `data`; one without `data` is rejected below.
 fn component_data(value: &Value) -> Result<&Map<String, Value>, AppError> {
     let wrapper = value.as_object().ok_or_else(provider_validation)?;
 
@@ -235,7 +240,7 @@ fn component_data(value: &Value) -> Result<&Map<String, Value>, AppError> {
 
     if let Some(privacy) = wrapper.get("privacy") {
         let privacy = privacy.as_u64().ok_or_else(provider_validation)?;
-        if privacy != PRIVACY_NONE && privacy != PRIVACY_PUBLIC {
+        if !matches!(privacy, PRIVACY_NONE | PRIVACY_PUBLIC | PRIVACY_PRIVATE) {
             return Err(provider_validation());
         }
     }
@@ -458,10 +463,22 @@ fn decode_optional_u16(value: Option<&Value>) -> Result<Option<u16>, AppError> {
     }
 }
 
+/// Decodes the optional power from `primaryStat.value`.
+///
+/// Live profiles include items whose primary stat is an integer outside the
+/// power range (a negative value has been observed), so any integer that does
+/// not fit `u16` is an unknown power rather than a malformed response. A
+/// non-integer value or a non-object `primaryStat` is still rejected.
 fn decode_power(instance: &Map<String, Value>) -> Result<Option<u16>, AppError> {
     match instance.get("primaryStat") {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Object(stat)) => decode_optional_u16(stat.get("value")),
+        Some(Value::Object(stat)) => match stat.get("value") {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Number(number)) if number.is_i64() || number.is_u64() => {
+                Ok(number.as_u64().and_then(|raw| u16::try_from(raw).ok()))
+            }
+            Some(_) => Err(provider_validation()),
+        },
         Some(_) => Err(provider_validation()),
     }
 }
@@ -772,13 +789,20 @@ mod tests {
                 .remove("profileInventory");
         }));
         assert_validation(decode_mutated(|value| {
-            value["Response"]["characters"]["privacy"] = json!(2);
+            let characters = &mut value["Response"]["characters"];
+            characters["privacy"] = json!(2);
+            characters
+                .as_object_mut()
+                .expect("characters")
+                .remove("data");
         }));
         assert_validation(decode_mutated(|value| {
             value["Response"]["characterEquipment"]["privacy"] = json!(3);
         }));
         assert_validation(decode_mutated(|value| {
-            value["Response"]["itemComponents"]["perks"]["privacy"] = json!(2);
+            let perks = &mut value["Response"]["itemComponents"]["perks"];
+            perks["privacy"] = json!(2);
+            perks.as_object_mut().expect("perks").remove("data");
         }));
         assert_validation(decode_mutated(|value| {
             value["Response"]["characters"]["disabled"] = json!(true);
@@ -816,6 +840,21 @@ mod tests {
             value["Response"]["characters"]["privacy"] = json!(1);
         })
         .expect("privacy 1 is accepted");
+    }
+
+    #[test]
+    fn owner_private_components_with_data_are_accepted() {
+        // Bungie marks owner-only components (vault, character inventories,
+        // equipment, item components) as privacy 2 and still includes `data`
+        // when the request is authorized as the owner.
+        decode_mutated(|value| {
+            value["Response"]["profileInventory"]["privacy"] = json!(2);
+            value["Response"]["characterInventories"]["privacy"] = json!(2);
+            value["Response"]["characterEquipment"]["privacy"] = json!(2);
+            value["Response"]["itemComponents"]["instances"]["privacy"] = json!(2);
+            value["Response"]["itemComponents"]["perks"]["privacy"] = json!(2);
+        })
+        .expect("owner-private components with data are accepted");
     }
 
     #[test]
@@ -903,10 +942,30 @@ mod tests {
     }
 
     #[test]
+    fn out_of_range_integer_power_is_unknown_power() {
+        // Live profiles carry items whose primary stat is negative (observed
+        // -10); an integer outside the power range is not a malformed response.
+        for raw in [json!(-10), json!(70000)] {
+            let snapshot =
+                decode_mutated(|value| {
+                    value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"]
+                        ["primaryStat"]["value"] = raw;
+                })
+                .expect("an out-of-range integer power is accepted");
+            let item = snapshot
+                .items
+                .iter()
+                .find(|item| item.instance_id == instance_id("700000000000000001"))
+                .expect("the item is decoded");
+            assert_eq!(item.power, None);
+        }
+    }
+
+    #[test]
     fn malformed_power_and_perks_are_rejected() {
         assert_validation(decode_mutated(|value| {
             value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"]["primaryStat"]
-                ["value"] = json!(70000);
+                ["value"] = json!(1800.5);
         }));
         assert_validation(decode_mutated(|value| {
             value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"]["primaryStat"]
