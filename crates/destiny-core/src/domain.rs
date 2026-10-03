@@ -95,7 +95,7 @@ pub struct ItemInstance {
     pub perks: Vec<PerkSummary>,
     /// Enabled, non-empty plugs in socket order; duplicate hashes are semantic.
     /// Acquisition is classification-neutral. Publication keeps weapon perks,
-    /// armor mods and unknown definitions using [`classify_plug`].
+    /// armor mods, armor archetypes and unknown definitions using [`classify_plug`].
     pub plugs: Vec<PlugSummary>,
     /// Unique stats in ascending hash order; order is not semantic.
     pub stats: Vec<StatSummary>,
@@ -213,12 +213,15 @@ pub struct ItemDefinition {
 pub enum PlugKind {
     WeaponPerk,
     ArmorMod,
+    ArmorArchetype,
     Other,
 }
 
 /// Stable, case-sensitive categories, independent of localized display names.
 pub fn classify_plug(category: &str) -> PlugKind {
-    if category.contains("masterworks") {
+    if category == "armor_archetypes" {
+        PlugKind::ArmorArchetype
+    } else if category.contains("masterworks") {
         PlugKind::Other
     } else if is_weapon_perk_plug(category) {
         PlugKind::WeaponPerk
@@ -261,6 +264,17 @@ pub fn is_weapon_perk_plug(category: &str) -> bool {
 
 #[cfg(test)]
 mod plug_tests {
+    #[test]
+    fn archetype_category_is_searchable_and_exact() {
+        assert_ne!(
+            super::classify_plug("armor_archetypes"),
+            super::PlugKind::Other
+        );
+        for category in ["shader", "Armor_archetypes", "armor_archetypes.extra"] {
+            assert_eq!(super::classify_plug(category), super::PlugKind::Other);
+        }
+    }
+
     #[test]
     fn plug_kind_classification_table() {
         use super::{PlugKind, classify_plug};

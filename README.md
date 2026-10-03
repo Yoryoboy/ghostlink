@@ -104,7 +104,7 @@ cargo run -p destiny-cli -- --json search-inventory --text gjallar --item-hash 1
 Filter Manifest candidates and owned hits by definition attributes and power:
 
 ```sh
-ghostlink search-inventory --type "Hand Cannon" --element solar --min-power 400
+ghostlink search-inventory --type "Hand Cannon" --element solar --min-power 440
 ghostlink search-inventory --slot helmet --class hunter
 ghostlink search-inventory --perk Rampage
 ghostlink search-inventory --mod "Harmonic Siphon"
@@ -118,7 +118,7 @@ Names are case-insensitive:
 | `--element <NAME>` | kinetic, arc, solar, void, stasis, strand |
 | `--slot <NAME>` | kinetic, energy, power, helmet, gauntlets, chest, legs, classitem, other, unknown |
 | `--class <NAME>` | titan, hunter, warlock, any, unknown |
-| `--min-power <N>` | 0–65535; instances without power never match |
+| `--min-power <N>` | 0–65535 accepted; Edge of Fate power scale is 10–550 (soft cap 440); instances without power never match |
 
 `--text`, `--type`, `--tag`, and the new definition filters also constrain owned
 hits. An unfiltered search returns definition candidates only. Text and JSON
@@ -149,6 +149,32 @@ Armor hits show socket-ordered mod names with a `mods:` label in text and a
 `mods` array in JSON and MCP output; weapon perks remain separate. MCP accepts
 `mod_name`. Existing databases pick up armor mods after the next profile sync
 (`ghostlink sync`); no migration is needed.
+
+### Armor archetypes (`--archetype`)
+
+Search owned armor by its socketed archetype:
+
+```sh
+ghostlink search-inventory --archetype Specialist
+ghostlink search-inventory --slot helmet --archetype Specialist --stat "Class>=30"
+```
+
+| Archetype | Primary stat | Secondary stat |
+| --- | --- | --- |
+| Brawler | Melee | Health |
+| Gunner | Weapons | Grenade |
+| Specialist | Class | Weapons |
+| Grenadier | Grenade | Super |
+| Paragon | Super | — |
+| Bulwark | Health | — |
+
+Matching is exact, case-insensitive and whitespace-normalized, armor-only,
+using the Manifest category `armor_archetypes` (a shader named Paragon does
+not match). Armor hits expose `archetype:` in text and `archetype` in JSON
+and MCP output; if multiple archetype plugs exist, the first in socket order
+is displayed. MCP accepts the top-level `archetype` field; its closed schema
+rejects unknown fields such as `archetype_name`. Archetypes appear after the
+next profile sync (`ghostlink sync`); no migration is needed.
 
 ### Manifest definitions
 

@@ -190,6 +190,7 @@ impl SearchRepository for SqliteStore {
                     .is_some_and(|criteria| criteria.has_filters())
                     || query.perk_name.is_some()
                     || query.mod_name.is_some()
+                    || query.archetype.is_some()
                 {
                     match self.lookup_definition(instance.item_hash)? {
                         Resolution::Unique(definition) => Some(definition),
@@ -200,7 +201,10 @@ impl SearchRepository for SqliteStore {
                     None
                 };
                 let mut plugs = Vec::new();
-                if query.perk_name.is_some() || query.mod_name.is_some() {
+                if query.perk_name.is_some()
+                    || query.mod_name.is_some()
+                    || query.archetype.is_some()
+                {
                     for plug in &instance.plugs {
                         if let std::collections::hash_map::Entry::Vacant(entry) =
                             plug_definitions.entry(plug.plug_hash)
@@ -536,6 +540,7 @@ mod tests {
             perk_hash: perk_hash.map(PerkHash::new),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             stats: Vec::new(),
             character_id: character.map(CharacterId::new),
             definitions: None,
@@ -684,6 +689,51 @@ mod tests {
             let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
             query.perk_name = perk.map(term);
             query.mod_name = mod_name.map(term);
+            let actual = store.search_instances(&query).unwrap();
+            assert_eq!(actual, fake.search_instances(&query).unwrap());
+            assert_eq!(names(&actual), expected);
+        }
+    }
+
+    #[test]
+    fn archetype_search_matches_fake_before_limit_and_excludes_paragon_shader() {
+        use destiny_core::{PlugSummary, domain::ItemSlot};
+        let temp = TempDatabase::new();
+        let mut store = SqliteStore::open(temp.path()).unwrap();
+        let mut armor = definition(1, "Helmet", None, &[]);
+        armor.slot = Some(ItemSlot::Helmet);
+        let mut weapon = definition(2, "Weapon", None, &[]);
+        weapon.slot = Some(ItemSlot::Energy);
+        let mut archetype = definition(60, "Paragon", None, &[]);
+        archetype.plug_category = Some("armor_archetypes".into());
+        let mut shader = definition(61, "Paragon", None, &[]);
+        shader.plug_category = Some("shader".into());
+        let definitions = vec![armor, weapon, archetype, shader];
+        let items = [
+            ("a-shader", 1, 61),
+            ("b-weapon", 2, 60),
+            ("c-unresolved", 99, 60),
+            ("d-unknown-plug", 1, 99),
+            ("e-armor", 1, 60),
+            ("f-armor", 1, 60),
+        ]
+        .into_iter()
+        .map(|(id, hash, plug)| {
+            let mut item = instance(id, hash, ItemLocation::Vault, &[]);
+            item.plugs = vec![PlugSummary {
+                plug_hash: ItemHash::new(plug),
+                enabled: true,
+            }];
+            item
+        })
+        .collect::<Vec<_>>();
+        seed_definitions(&mut store, &definitions);
+        seed_instances(&mut store, items.clone());
+        let mut fake = InMemorySearchRepository::with_definitions(definitions);
+        fake.set_instances(items);
+        for (name, expected) in [("  PARAGON  ", vec!["e-armor"]), ("para", vec![])] {
+            let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
+            query.archetype = Some(term(name));
             let actual = store.search_instances(&query).unwrap();
             assert_eq!(actual, fake.search_instances(&query).unwrap());
             assert_eq!(names(&actual), expected);

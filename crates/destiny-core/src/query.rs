@@ -308,6 +308,8 @@ pub struct InstanceSearchQuery {
     pub perk_name: Option<SearchTerm>,
     /// Exact normalized armor-mod name; validated by `SearchTerm` construction.
     pub mod_name: Option<SearchTerm>,
+    /// Exact normalized armor-archetype name.
+    pub archetype: Option<SearchTerm>,
     pub character_id: Option<CharacterId>,
     /// Definition criteria applied before the instance limit; its limit is ignored.
     pub definitions: Option<Box<DefinitionSearchQuery>>,
@@ -444,6 +446,10 @@ pub fn instance_matches_with_definition(
             || definition.is_some_and(|definition| {
                 definition.hash == instance.item_hash && is_weapon_slot(definition.slot)
             }))
+        && (query.archetype.is_none()
+            || definition.is_some_and(|definition| {
+                definition.hash == instance.item_hash && is_armor_slot(definition.slot)
+            }))
         && (query.mod_name.is_none()
             || definition.is_some_and(|definition| {
                 definition.hash == instance.item_hash && is_armor_slot(definition.slot)
@@ -496,12 +502,34 @@ fn is_armor_slot(slot: Option<ItemSlot>) -> bool {
 /// in `instance_matches_with_definition`. Missing plug definitions never match.
 pub fn instance_matches_plug_names(query: &InstanceSearchQuery, plugs: &[ItemDefinition]) -> bool {
     instance_matches_perk_name(query, plugs)
+        && query.archetype.as_ref().is_none_or(|term| {
+            plugs.iter().any(|plug| {
+                is_armor_archetype(plug) && normalize_search_text(&plug.name) == term.as_str()
+            })
+        })
         && query.mod_name.as_ref().is_none_or(|term| {
             plugs.iter().any(|definition| {
                 is_named_armor_mod(definition)
                     && normalize_search_text(&definition.name) == term.as_str()
             })
         })
+}
+
+fn is_armor_archetype(definition: &ItemDefinition) -> bool {
+    definition.plug_category.as_deref().is_some_and(|category| {
+        crate::domain::classify_plug(category) == crate::domain::PlugKind::ArmorArchetype
+    })
+}
+
+/// First resolved armor archetype in socket order; non-armor exposes none.
+pub fn inventory_archetype(
+    definition: &ItemDefinition,
+    plugs: &[ItemDefinition],
+) -> Option<String> {
+    is_armor_slot(definition.slot)
+        .then(|| plugs.iter().find(|plug| is_armor_archetype(plug)))
+        .flatten()
+        .map(|plug| plug.name.clone())
 }
 
 /// An armor-mod plug that is not an empty-socket placeholder. The provider
@@ -592,6 +620,8 @@ pub struct InventorySearchHit {
     pub perk_names: Vec<String>,
     /// Resolved armor-mod names for armor only, in stored socket order.
     pub mod_names: Vec<String>,
+    /// First resolved archetype in socket order, for armor only.
+    pub archetype: Option<String>,
     pub stats: Vec<NamedStat>,
 }
 
@@ -713,6 +743,7 @@ mod tests {
             perk_hash,
             perk_name: None,
             mod_name: None,
+            archetype: None,
             stats: Vec::new(),
             character_id: None,
             definitions: None,
@@ -794,6 +825,69 @@ mod tests {
             &item,
             Some(&armor)
         ));
+        assert!(!instance_matches_with_definition(&filter, &item, None));
+    }
+
+    #[test]
+    fn archetype_names_are_exact_category_and_armor_guarded_with_first_output() {
+        use crate::domain::ItemSlot;
+        let item = instance("owned", 7);
+        let mut armor = definition(7, "Helmet");
+        let mut paragon = definition(10, "Paragon");
+        paragon.plug_category = Some("armor_archetypes".into());
+        let mut specialist = definition(11, "Specialist");
+        specialist.plug_category = Some("armor_archetypes".into());
+        let mut shader = definition(12, "Paragon");
+        shader.plug_category = Some("shader".into());
+        let mut filter = instance_query(ItemHashFilter::Any, None);
+        filter.archetype = Some(term("  PARAGON "));
+        for slot in [
+            ItemSlot::Helmet,
+            ItemSlot::Gauntlets,
+            ItemSlot::Chest,
+            ItemSlot::Legs,
+            ItemSlot::ClassItem,
+        ] {
+            armor.slot = Some(slot);
+            assert!(instance_matches_with_definition(
+                &filter,
+                &item,
+                Some(&armor)
+            ));
+            assert_eq!(
+                super::inventory_archetype(
+                    &armor,
+                    &[shader.clone(), specialist.clone(), paragon.clone()]
+                ),
+                Some("Specialist".into())
+            );
+        }
+        assert!(super::instance_matches_plug_names(
+            &filter,
+            &[paragon.clone()]
+        ));
+        assert!(!super::instance_matches_plug_names(&filter, &[shader]));
+        assert!(!super::instance_matches_plug_names(&filter, &[]));
+        filter.archetype = Some(term("para"));
+        assert!(!super::instance_matches_plug_names(
+            &filter,
+            &[paragon.clone()]
+        ));
+        for slot in [
+            ItemSlot::Kinetic,
+            ItemSlot::Energy,
+            ItemSlot::Power,
+            ItemSlot::Other,
+            ItemSlot::Unknown,
+        ] {
+            armor.slot = Some(slot);
+            assert!(!instance_matches_with_definition(
+                &filter,
+                &item,
+                Some(&armor)
+            ));
+            assert_eq!(super::inventory_archetype(&armor, &[paragon.clone()]), None);
+        }
         assert!(!instance_matches_with_definition(&filter, &item, None));
     }
 

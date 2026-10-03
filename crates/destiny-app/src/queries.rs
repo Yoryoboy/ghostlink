@@ -201,6 +201,7 @@ where
                 perk_hash: None,
                 perk_name: None,
                 mod_name: None,
+                archetype: None,
                 stats: Vec::new(),
                 character_id: None,
                 definitions: None,
@@ -256,6 +257,7 @@ where
                     .map(|(name, _, value)| destiny_core::NamedStat { name, value })
                     .collect();
                 hits.push(InventorySearchHit {
+                    archetype: destiny_core::query::inventory_archetype(&definition, &plugs),
                     stats,
                     definition,
                     perk_names,
@@ -803,6 +805,7 @@ mod tests {
             perk_hash,
             perk_name: None,
             mod_name: None,
+            archetype: None,
             stats: Vec::new(),
             character_id,
             definitions: None,
@@ -878,10 +881,14 @@ mod tests {
             .find(|definition| definition.hash == ItemHash::new(1))
             .unwrap()
             .slot = Some(destiny_core::domain::ItemSlot::Helmet);
-        definitions.extend([armor_mod, intrinsic]);
+        let mut archetype = definition(62, "Specialist", None, vec![]);
+        archetype.plug_category = Some("armor_archetypes".into());
+        let mut second = definition(63, "Paragon", None, vec![]);
+        second.plug_category = Some("armor_archetypes".into());
+        definitions.extend([armor_mod, intrinsic, archetype, second]);
         let mut repository = CompositeRepository::with_definitions(definitions);
         let mut item = instance("owned", 1, ItemLocation::Vault, vec![]);
-        item.plugs = [61, 60, 99, 60]
+        item.plugs = [61, 60, 99, 62, 63, 60]
             .into_iter()
             .map(|hash| destiny_core::PlugSummary {
                 plug_hash: ItemHash::new(hash),
@@ -892,6 +899,7 @@ mod tests {
         let mut service = service(&shared, repository);
         let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
         query.mod_name = Some(SearchTerm::new(" harmonic  siphon ").unwrap());
+        query.archetype = Some(SearchTerm::new("specialist").unwrap());
         let request = search_request(definition_query(None, None, vec![], 1), Some(query));
         let result = service.search_inventory(&request, TTL, NOW).unwrap();
         assert_eq!(
@@ -899,6 +907,7 @@ mod tests {
             ["Harmonic Siphon", "Harmonic Siphon"]
         );
         assert!(result.hits[0].perk_names.is_empty());
+        assert_eq!(result.hits[0].archetype.as_deref(), Some("Specialist"));
     }
 
     #[test]

@@ -776,6 +776,7 @@ mod tests {
                 instance: instance("inst-1", 1),
                 perk_names: Vec::new(),
                 mod_names: Vec::new(),
+                archetype: None,
                 stats: Vec::new(),
             }],
             metadata: metadata(FreshnessStatus::Fresh),
@@ -1147,6 +1148,7 @@ mod tests {
                 perk_hash: None,
                 perk_name: None,
                 mod_name: None,
+                archetype: None,
                 stats: Vec::new(),
                 character_id: None,
                 definitions: Some(Box::new(destiny_app::DefinitionSearchQuery {

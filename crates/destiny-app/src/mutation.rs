@@ -1193,6 +1193,7 @@ where
                         perk_hash: None,
                         perk_name: None,
                         mod_name: None,
+                        archetype: None,
                         stats: Vec::new(),
                         character_id: None,
                         definitions: None,

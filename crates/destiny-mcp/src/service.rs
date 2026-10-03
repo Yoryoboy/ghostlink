@@ -684,6 +684,12 @@ impl SearchInventoryArgs {
             .map(SearchTerm::new)
             .transpose()
             .map_err(McpError::from)?;
+        let archetype = self
+            .archetype
+            .as_deref()
+            .map(SearchTerm::new)
+            .transpose()
+            .map_err(McpError::from)?;
         let stats = self
             .stats
             .iter()
@@ -698,7 +704,8 @@ impl SearchInventoryArgs {
                 || definitions.has_filters()
                 || self.min_power.is_some()
                 || perk_name.is_some()
-                || mod_name.is_some())
+                || mod_name.is_some()
+                || archetype.is_some())
         {
             instances = Some(
                 InstanceQueryArgs {
@@ -715,6 +722,7 @@ impl SearchInventoryArgs {
             query.min_power = query.min_power.max(self.min_power);
             query.perk_name = perk_name;
             query.mod_name = mod_name;
+            query.archetype = archetype;
             query.stats = stats;
             query.validate().map_err(McpError::from)?;
         }
@@ -751,6 +759,7 @@ impl InstanceQueryArgs {
             perk_hash: self.perk_hash.map(PerkHash::new),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             stats: Vec::new(),
             character_id: self.character_id.map(CharacterId::new),
             definitions: None,
@@ -840,6 +849,7 @@ pub fn search_inventory_output(result: &InventorySearchResult) -> SearchInventor
                 instance: instance_view(&hit.instance),
                 perk_names: hit.perk_names.clone(),
                 mods: hit.mod_names.clone(),
+                archetype: hit.archetype.clone(),
                 stats: hit
                     .stats
                     .iter()
@@ -1470,6 +1480,7 @@ mod tests {
             stats: Vec::new(),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             item_type: None,
             tags: tags.into_iter().map(str::to_owned).collect(),
             element: None,
@@ -1492,6 +1503,7 @@ mod tests {
             stats: Vec::new(),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             element: None,
             slot: None,
             class_type: None,
@@ -1697,6 +1709,7 @@ mod tests {
             stats: Vec::new(),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             item_type: None,
             element: None,
             slot: None,
@@ -1767,11 +1780,13 @@ mod tests {
         assert_eq!(result.hits.len(), 1);
         result.hits[0].perk_names.clear();
         result.hits[0].mod_names = vec!["Harmonic Siphon".into(), "Ashes to Assets".into()];
+        result.hits[0].archetype = Some("Specialist".into());
         let value = serde_json::to_value(search_inventory_output(&result)).unwrap();
         assert_eq!(
             value["hits"][0]["mods"],
             serde_json::json!(["Harmonic Siphon", "Ashes to Assets"])
         );
+        assert_eq!(value["hits"][0]["archetype"], "Specialist");
         assert_eq!(value["hits"][0]["perk_names"], serde_json::json!([]));
     }
 
@@ -1919,6 +1934,7 @@ mod tests {
             }),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             stats: Vec::new(),
         };
         let output = mcp
@@ -1963,6 +1979,7 @@ mod tests {
             }),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             stats: Vec::new(),
         };
         let request = args.into_request().expect("valid arguments");

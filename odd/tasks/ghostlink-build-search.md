@@ -23,7 +23,7 @@ Make `search-inventory` (CLI and MCP, scriptable via `--json`) useful for planni
 
 ## Tasks
 - [x] **GBS-001 — Establish tracker and branch.** Branch `feature/ghostlink-build-search` from `main` at `381281f`.
-- [ ] **GBS-002 — Armor archetypes.** Classify `armor_archetypes`, keep on sync, archetype in armor hit output, `--archetype` (CLI) / `archetype` (MCP), README incl. power scale.
+- [x] **GBS-002 — Armor archetypes.** Classify `armor_archetypes`, keep on sync, archetype in armor hit output, `--archetype` (CLI) / `archetype` (MCP), README incl. power scale. Delegated writer, test-first (RED: classification regression). `PlugKind::ArmorArchetype` for `armor_archetypes`, sync retention, armor-only exact `archetype` criterion (Paragon shader excluded), first-socket archetype in hit output (CLI text/JSON, MCP), CLI `--archetype`, MCP `archetype`, parity test, README archetype table and Edge of Fate power scale. Checks (writer): fmt, build, workspace all-features 1,090 passed/26 suites, clippy both variants, diff check. Parent live check after forced refresh: `--slot helmet --class hunter --archetype Specialist` -> 5 helmets (Exodus Down Mask, Dark Age Mask, Iron Battalion Cowl, Mask of the Taken King, Wormhusk Crown) with archetype and stats; `--archetype Paragon` -> 7 armor pieces. Commit evidence: see git log.
 - [ ] **GBS-003 — Forgiving name matching.** Exact, partial, suggestion resolution shared by perk, mod, stat and archetype; typed no-match error with suggestions; matched names reported in output.
 - [ ] **GBS-004 — Alternative plugs.** Component 310 decode and storage, available perk/mod names in hits, opt-in flag to match available plugs.
 - [ ] **GBS-005 — Verification and live validation.** Full checks, live searches, close tracker.
@@ -32,4 +32,4 @@ Make `search-inventory` (CLI and MCP, scriptable via `--json`) useful for planni
 Research 2026-10-03: Edge of Fate power cap 550, soft cap 440 (IGN, gamingpromax); Armor 3.0 archetypes are plug items in an armor socket (Bungie API issue #1981). Live DB: archetype definitions exist with category `armor_archetypes`; 0 stored on items because sync classifies them as Other.
 
 ## Next step
-GBS-002.
+GBS-003.

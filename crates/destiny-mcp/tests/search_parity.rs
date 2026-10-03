@@ -111,6 +111,48 @@ fn mod_only_search_builds_owned_query_and_rejects_invalid_names() {
 }
 
 #[test]
+fn archetype_only_search_builds_owned_query_and_rejects_invalid_names() {
+    use clap::Parser;
+    let cli = cli_command::Cli::try_parse_from([
+        "ghostlink",
+        "search-inventory",
+        "--archetype",
+        "Specialist",
+    ])
+    .unwrap()
+    .into_read_request()
+    .unwrap();
+    let cli_command::ReadRequest::SearchInventory(request) = cli else {
+        panic!("search request")
+    };
+    assert!(request.instances.is_some());
+    for name in [
+        "".to_owned(),
+        "  ".to_owned(),
+        "a".repeat(257),
+        "bad\u{7}".to_owned(),
+    ] {
+        let cli = cli_command::Cli::try_parse_from([
+            "ghostlink",
+            "search-inventory",
+            "--archetype",
+            &name,
+        ])
+        .unwrap();
+        assert!(cli.into_read_request().is_err());
+        let mcp: destiny_mcp::schema::SearchInventoryArgs =
+            serde_json::from_value(serde_json::json!({"archetype": name})).unwrap();
+        assert!(mcp.into_request().is_err());
+    }
+    assert!(
+        serde_json::from_value::<destiny_mcp::schema::SearchInventoryArgs>(
+            serde_json::json!({"archetype_name": "Specialist"})
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn search_cli_mcp_request_parity() {
     use clap::Parser;
     use destiny_mcp::schema::SearchInventoryArgs;
@@ -118,6 +160,23 @@ fn search_cli_mcp_request_parity() {
 
     for (flags, args) in [
         (vec![], json!({})),
+        (
+            vec!["--archetype", "  SPECIALIST "],
+            json!({"archetype": "  SPECIALIST "}),
+        ),
+        (
+            vec![
+                "--slot",
+                "helmet",
+                "--archetype",
+                "Specialist",
+                "--stat",
+                "Class>=30",
+                "--limit",
+                "1",
+            ],
+            json!({"slot": "helmet", "archetype": "Specialist", "stats": ["Class>=30"], "limit": 1}),
+        ),
         (
             vec!["--stat", " Weapons >= 30 "],
             json!({"stats": [" Weapons >= 30 "]}),

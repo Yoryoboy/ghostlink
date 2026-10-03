@@ -365,6 +365,12 @@ pub struct SearchInventoryArgs {
     #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
     pub mod_name: Option<String>,
 
+    /// Exact normalized socketed armor-archetype name; searches owned armor.
+    /// Use `archetype`, not `archetype_name`; unknown fields are rejected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub archetype: Option<String>,
+
     /// Stat comparisons: Name>=N, Name<=N, Name=N. All must hold; names are
     /// exact and case-insensitive, and any matching hash may satisfy a name.
     /// A stat-only filter searches owned instances.
@@ -554,6 +560,8 @@ pub struct InventorySearchHitView {
     pub perk_names: Vec<String>,
     /// Resolved armor-mod names in socket order, never plug hashes.
     pub mods: Vec<String>,
+    /// First armor archetype in socket order; absent for other slots.
+    pub archetype: Option<String>,
     pub stats: Vec<NamedStatView>,
 }
 

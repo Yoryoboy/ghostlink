@@ -394,6 +394,7 @@ fn search_json(result: &InventorySearchResult) -> String {
                 "instance": instance_json(&hit.instance),
                 "perk_names": hit.perk_names,
                 "mods": hit.mod_names,
+                "archetype": hit.archetype,
                 "stats": hit.stats.iter().map(|stat| serde_json::json!({"name": stat.name, "value": stat.value})).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>(),
@@ -506,6 +507,9 @@ fn instance_line(hit: &InventorySearchHit) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
+    }
+    if let Some(archetype) = &hit.archetype {
+        parts.push(format!("archetype: {}", sanitize(archetype)));
     }
     if !hit.mod_names.is_empty() {
         parts.push(format!(
@@ -1089,6 +1093,7 @@ mod tests {
                 instance: instance("inst-1", 1, ItemLocation::Vault),
                 perk_names: Vec::new(),
                 mod_names: Vec::new(),
+                archetype: None,
                 stats: Vec::new(),
             }],
             metadata: metadata(FreshnessStatus::Fresh),
@@ -1268,14 +1273,17 @@ mod tests {
         let mut result = search_result();
         result.hits[0].definition.slot = Some("helmet".parse().unwrap());
         result.hits[0].mod_names = vec!["Harmonic Siphon".into(), "Safe\nMod".into()];
+        result.hits[0].archetype = Some("Safe\nArchetype".into());
         let human = super::search_human(&result);
         assert!(human.contains("mods: Harmonic Siphon, Safe?Mod"));
+        assert!(human.contains("archetype: Safe?Archetype"));
         assert!(!human.contains("perks:"));
         let value: serde_json::Value = serde_json::from_str(&super::search_json(&result)).unwrap();
         assert_eq!(
             value["hits"][0]["mods"],
             serde_json::json!(["Harmonic Siphon", "Safe\nMod"])
         );
+        assert_eq!(value["hits"][0]["archetype"], "Safe\nArchetype");
         assert_eq!(value["hits"][0]["perk_names"], serde_json::json!([]));
     }
 
@@ -1330,7 +1338,7 @@ mod tests {
     #[test]
     fn search_renders_one_bounded_json_object() {
         let expected = format!(
-            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON}}}"#
+            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"archetype":null,"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON}}}"#
         );
         assert_eq!(render_search(OutputMode::Json, &search_result()), expected);
     }

@@ -70,6 +70,7 @@ fn query(conditions: &[&str]) -> InstanceSearchQuery {
         perk_hash: None,
         perk_name: None,
         mod_name: None,
+        archetype: None,
         character_id: None,
         definitions: None,
         min_power: None,

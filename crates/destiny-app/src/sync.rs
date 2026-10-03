@@ -338,6 +338,7 @@ mod tests {
                 (63, None),
                 (64, Some("shader")),
                 (65, Some("enhancements.v2_head")),
+                (66, Some("armor_archetypes")),
             ]
             .into_iter()
             .map(|(hash, category)| ItemDefinition {
@@ -365,7 +366,7 @@ mod tests {
             let shared = gateway();
             for cosmetic in [61, 64] {
                 let mut candidate = inventory(&resolved, NOW, 1);
-                candidate.items[0].plugs = [60, cosmetic, 65, 62, 63, 60]
+                candidate.items[0].plugs = [60, cosmetic, 65, 66, 62, 63, 60]
                     .into_iter()
                     .map(|hash| PlugSummary {
                         plug_hash: ItemHash::new(hash),
@@ -387,7 +388,7 @@ mod tests {
                     .map(|plug| plug.plug_hash.value())
                     .collect();
                 // Known non-plugs (category None) are dropped, missing definitions kept.
-                assert_eq!(hashes, [60, 65, 62, 60]);
+                assert_eq!(hashes, [60, 65, 66, 62, 60]);
             }
         }
 
