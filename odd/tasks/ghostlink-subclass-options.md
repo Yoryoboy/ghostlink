@@ -45,7 +45,7 @@ ornaments, mods).
 ## Tasks
 
 - [x] **SO-001 — Decode and persist subclass plug sets.** `PlugSetEntry`/`PlugSetScope`, migration v12 `subclass_plug_options`. RED→GREEN; workspace 1184, clippy clean; live sync stored 304 options (181 can_insert). Commit `f252ac2`.
-- [ ] **SO-002 — Options query.** Per-character options grouped by element/kind with status.
+- [x] **SO-002 — Options query.** `QueryService::subclass_options`, `SubclassElement`, `OptionStatus`; migration v13 `characters.date_last_played` (live: Hunter 2026, Warlock 2021, Titan 2020). RED→GREEN; workspace 1188, clippy clean. Commit `bee7fba`.
 - [ ] **SO-003 — CLI command.** `subclass-options [--character] [--element]`, text and JSON.
 - [ ] **SO-004 — MCP tool and docs.** `get_subclass_options`, parity tests, README.
 
@@ -55,4 +55,4 @@ ornaments, mods).
 
 ## Next step
 
-SO-002.
+SO-003.
