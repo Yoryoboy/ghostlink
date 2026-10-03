@@ -189,6 +189,14 @@ pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult)
     }
 }
 
+#[cfg(test)]
+#[path = "subclass_options_output_tests.rs"]
+mod subclass_options_tests;
+
+#[path = "subclass_options_output.rs"]
+mod subclass_options_output;
+pub use subclass_options_output::{render_subclass_options, subclass_options_json};
+
 #[path = "subclass_output.rs"]
 mod subclass_output;
 pub use subclass_output::subclass_json;
@@ -1349,6 +1357,7 @@ mod tests {
             race: Some("Awoken".to_string()),
             gender: Some("Female".to_string()),
             light: Some(1810),
+            date_last_played: None,
         }
     }
 
@@ -1360,6 +1369,7 @@ mod tests {
             race: None,
             gender: None,
             light: None,
+            date_last_played: None,
         }
     }
 

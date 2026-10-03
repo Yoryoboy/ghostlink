@@ -161,15 +161,31 @@ where
         // abort without writing; missing or ambiguous definitions are unknown
         // and retained. A known definition without a category is not a perk.
         let mut categories = std::collections::HashMap::new();
-        for hash in candidate.items.iter().flat_map(|item| {
-            item.plugs
-                .iter()
-                .map(|plug| plug.plug_hash)
-                .chain(item.available_plugs.iter().map(|plug| plug.plug_hash))
-        }) {
+        let mut subclass_options = std::collections::HashSet::new();
+        for hash in candidate
+            .items
+            .iter()
+            .flat_map(|item| {
+                item.plugs
+                    .iter()
+                    .map(|plug| plug.plug_hash)
+                    .chain(item.available_plugs.iter().map(|plug| plug.plug_hash))
+            })
+            .chain(candidate.plug_set_entries.iter().map(|plug| plug.plug_hash))
+        {
             if let std::collections::hash_map::Entry::Vacant(entry) = categories.entry(hash) {
                 let category = match (self.lookup_plug)(&self.repository, hash)? {
                     destiny_core::Resolution::Unique(definition) => {
+                        if definition
+                            .plug_category
+                            .as_deref()
+                            .and_then(destiny_core::classify_subclass_plug)
+                            .is_some()
+                            && !(definition.name.starts_with("Empty ")
+                                && definition.name.ends_with(" Socket"))
+                        {
+                            subclass_options.insert(hash);
+                        }
                         Some(definition.plug_category.unwrap_or_default())
                     }
                     _ => None,
@@ -184,6 +200,11 @@ where
                     .and_then(|category| category.as_deref())
             });
         }
+        // Unlike item plugs, unknown plug-set definitions are dropped: live
+        // profiles contain ~924 sets, mostly cosmetics, not subclass options.
+        candidate
+            .plug_set_entries
+            .retain(|entry| subclass_options.contains(&entry.plug_hash));
         let snapshot = self.repository.replace_current(candidate)?;
         Ok(ProfileSyncOutcome::Refreshed {
             metadata: snapshot.metadata,
@@ -266,6 +287,7 @@ mod tests {
             quantity: u32,
         ) -> InventorySnapshotInput {
             InventorySnapshotInput {
+                plug_set_entries: Vec::new(),
                 membership_id: membership.membership_id().clone(),
                 membership_type: membership.membership_type(),
                 definition_version: DefinitionVersion::new(DEFINITION_VERSION),

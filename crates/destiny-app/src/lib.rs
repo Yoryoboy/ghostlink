@@ -75,7 +75,9 @@ pub use destiny_core::{
     PublicMilestonesSnapshot, StatDefinition, WorldDefinitionTable, WorldDefinitionsAcquisition,
 };
 pub use destiny_core::{
-    CharacterSubclass, SubclassConfig, SubclassPlugKind, SubclassResult, SubclassSlot,
+    CharacterSubclass, CharacterSubclassOptions, ElementOptions, OptionGroup, OptionStatus,
+    SubclassConfig, SubclassElement, SubclassOption, SubclassOptionsResult, SubclassPlugKind,
+    SubclassResult, SubclassSlot,
 };
 pub use destiny_core::{MAX_STAT_CONDITIONS, NamedStat, StatCondition, StatOp};
 pub use destiny_core::{ManifestAcquisition, ManifestDefinitions, ManifestGateway};

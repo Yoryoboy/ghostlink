@@ -410,6 +410,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             GET_LOADOUTS_TOOL,
             WEEKLY_RESET_TOOL,
             "weekly",
+            "get_subclass_options",
             MOVE_ITEM_TOOL
         ],
         "the product-equivalent server discovers the four reads plus move_item"
@@ -452,6 +453,23 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             .iter()
             .all(|character| character["subclass"].is_null())
     );
+
+    let options = session
+        .call_tool(
+            "get_subclass_options",
+            json!({"character": "warlock", "element": "arc"}),
+        )
+        .await;
+    assert_eq!(options["result"]["isError"], false);
+    assert_eq!(structured(&options)["kind"], "subclass_options");
+    assert_eq!(
+        structured(&options)["characters"].as_array().unwrap().len(),
+        1
+    );
+    let invalid = session
+        .call_tool("get_subclass_options", json!({"locked": true}))
+        .await;
+    assert!(invalid.get("error").is_some());
 
     let artifact = session.call_tool(GET_ARTIFACT_TOOL, json!({})).await;
     assert_eq!(artifact["result"]["isError"], false);

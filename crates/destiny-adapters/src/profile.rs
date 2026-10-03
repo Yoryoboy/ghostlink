@@ -267,6 +267,7 @@ pub fn decode_profile(
     });
 
     let snapshot = InventorySnapshotInput {
+        plug_set_entries: decode_plug_sets(response, &character_ids)?,
         membership_id: membership.membership_id().clone(),
         membership_type: membership.membership_type(),
         definition_version,
@@ -281,6 +282,96 @@ pub fn decode_profile(
     } else {
         Err(provider_validation())
     }
+}
+
+/// Optional owner-only components can be absent or withheld for privacy.
+fn optional_plug_set_data<'a>(
+    response: &'a Map<String, Value>,
+    name: &str,
+) -> Result<Option<&'a Map<String, Value>>, AppError> {
+    let Some(wrapper) = response.get(name).filter(|value| !value.is_null()) else {
+        return Ok(None);
+    };
+    let object = wrapper.as_object().ok_or_else(provider_validation)?;
+    if object.get("disabled") == Some(&Value::Bool(true)) {
+        return Ok(None);
+    }
+    if object.get("data").is_none_or(Value::is_null) {
+        if object.get("privacy").and_then(Value::as_u64) == Some(PRIVACY_PRIVATE) {
+            return Ok(None);
+        }
+        return Err(provider_validation());
+    }
+    component_data(wrapper).map(Some)
+}
+
+/// Bound all sets across both components before merging identical scoped hashes.
+fn decode_plug_sets(
+    response: &Map<String, Value>,
+    character_ids: &BTreeSet<String>,
+) -> Result<Vec<destiny_core::PlugSetEntry>, AppError> {
+    use destiny_core::{PlugSetEntry, PlugSetScope};
+    let mut entries = std::collections::BTreeMap::new();
+    let mut set_count = 0;
+    let mut merge = |scope: PlugSetScope, data: &Map<String, Value>| -> Result<(), AppError> {
+        let sets = data
+            .get("plugs")
+            .and_then(Value::as_object)
+            .ok_or_else(provider_validation)?;
+        set_count += sets.len();
+        if set_count > 4096 {
+            return Err(provider_validation());
+        }
+        for (key, value) in sets {
+            validate_decimal_id(key)?;
+            key.parse::<u32>().map_err(|_| provider_validation())?;
+            let plugs = value.as_array().ok_or_else(provider_validation)?;
+            if plugs.len() > 512 {
+                return Err(provider_validation());
+            }
+            for plug in plugs {
+                let hash = decode_item_hash(plug.get("plugItemHash"))?;
+                let can_insert = plug
+                    .get("canInsert")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(provider_validation)?;
+                let enabled = plug
+                    .get("enabled")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(provider_validation)?;
+                let entry = entries
+                    .entry((scope.clone(), hash))
+                    .or_insert(PlugSetEntry {
+                        scope: scope.clone(),
+                        plug_hash: hash,
+                        can_insert: false,
+                        enabled: false,
+                    });
+                entry.can_insert |= can_insert;
+                entry.enabled |= enabled;
+            }
+        }
+        Ok(())
+    };
+    if let Some(data) = optional_plug_set_data(response, "profilePlugSets")? {
+        merge(PlugSetScope::Profile, data)?;
+    }
+    if let Some(data) = optional_plug_set_data(response, "characterPlugSets")? {
+        if data.len() > character_ids.len() {
+            return Err(provider_validation());
+        }
+        for (id, value) in data {
+            validate_decimal_id(id)?;
+            if !character_ids.contains(id) {
+                return Err(provider_validation());
+            }
+            merge(
+                PlugSetScope::Character(CharacterId::new(id)),
+                value.as_object().ok_or_else(provider_validation)?,
+            )?;
+        }
+    }
+    Ok(entries.into_values().collect())
 }
 
 /// Selectable plugs are bounded before filtering and sorted by numeric socket index.
@@ -467,6 +558,18 @@ fn decode_character(key: &str, value: &Value) -> Result<Character, AppError> {
             GENDER_NAMES.as_slice(),
         )?),
         light: decode_optional_u16(object.get("light"))?,
+        date_last_played: object
+            .get("dateLastPlayed")
+            .filter(|value| !value.is_null())
+            .map(|value| -> Result<Timestamp, AppError> {
+                let raw = value.as_str().ok_or_else(provider_validation)?;
+                let date =
+                    chrono::DateTime::parse_from_rfc3339(raw).map_err(|_| provider_validation())?;
+                Ok(Timestamp::new(
+                    u64::try_from(date.timestamp()).map_err(|_| provider_validation())?,
+                ))
+            })
+            .transpose()?,
     })
 }
 
@@ -837,6 +940,46 @@ mod tests {
         )
     }
 
+    #[test]
+    fn character_last_played_normalizes_dates_and_rejects_invalid_values() {
+        use super::decode_character;
+        let value = serde_json::json!({
+            "characterId": "1", "classType": 1, "raceType": 0, "genderType": 0,
+            "dateLastPlayed": "2024-01-01T01:00:00+01:00"
+        });
+        assert_eq!(
+            decode_character("1", &value).unwrap().date_last_played,
+            Some(Timestamp::new(1704067200))
+        );
+        for invalid in [
+            serde_json::json!(42),
+            serde_json::json!("bad"),
+            serde_json::json!("1960-01-01T00:00:00Z"),
+        ] {
+            let mut value = value.clone();
+            value["dateLastPlayed"] = invalid;
+            assert_eq!(
+                decode_character("1", &value).unwrap_err().category(),
+                ErrorCategory::ProviderValidation
+            );
+        }
+        let mut value = value;
+        value.as_object_mut().unwrap().remove("dateLastPlayed");
+        assert!(
+            decode_character("1", &value)
+                .unwrap()
+                .date_last_played
+                .is_none()
+        );
+        value["dateLastPlayed"] = Value::Null;
+        assert!(
+            decode_character("1", &value)
+                .unwrap()
+                .date_last_played
+                .is_none()
+        );
+    }
+
     fn fixture_value() -> Value {
         serde_json::from_slice(FIXTURE).expect("fixture is JSON")
     }
@@ -1058,10 +1201,125 @@ mod tests {
     }
 
     #[test]
+    fn plug_sets_decode_both_scopes_and_merge_flags_independently() {
+        use destiny_core::{PlugSetEntry, PlugSetScope};
+        let character = fixture_value()["Response"]["characters"]["data"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        let plug = |can_insert, enabled| json!({"plugItemHash": 42, "canInsert": can_insert, "enabled": enabled});
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["profilePlugSets"] = json!({"privacy": 2, "data": {"plugs": {"1": [plug(false, true)], "2": [plug(true, false), plug(false, false)]}}});
+            value["Response"]["characterPlugSets"] = json!({"data": {character.clone(): {"plugs": {"3": [plug(false, false)]}}}});
+        }).unwrap();
+        assert_eq!(
+            snapshot.plug_set_entries,
+            vec![
+                PlugSetEntry {
+                    scope: PlugSetScope::Profile,
+                    plug_hash: ItemHash::new(42),
+                    can_insert: true,
+                    enabled: true
+                },
+                PlugSetEntry {
+                    scope: PlugSetScope::Character(CharacterId::new(character)),
+                    plug_hash: ItemHash::new(42),
+                    can_insert: false,
+                    enabled: false
+                },
+            ]
+        );
+        assert!(decode(FIXTURE).unwrap().plug_set_entries.is_empty());
+        for wrapper in [
+            json!({"privacy": 2}),
+            json!({"disabled": true}),
+            Value::Null,
+        ] {
+            assert!(
+                decode_mutated(|value| {
+                    value["Response"]["profilePlugSets"] = wrapper.clone();
+                    value["Response"]["characterPlugSets"] = wrapper;
+                })
+                .unwrap()
+                .plug_set_entries
+                .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn plug_sets_reject_noncanonical_keys_and_excessive_bounds() {
+        for plugs in [
+            json!({"01": []}),
+            json!({"4294967296": []}),
+            json!({"1": vec![json!({"plugItemHash": 42, "canInsert": true, "enabled": true}); 513]}),
+            Value::Object(
+                (0..4097)
+                    .map(|hash| (hash.to_string(), json!([])))
+                    .collect(),
+            ),
+        ] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["profilePlugSets"] = json!({"data": {"plugs": plugs}});
+            }));
+        }
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characterPlugSets"] = json!({"data": {"01": {"plugs": {}}}});
+        }));
+    }
+
+    #[test]
+    fn plug_set_bounds_are_inclusive_and_shared_between_scopes() {
+        let character = fixture_value()["Response"]["characters"]["data"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+        let plugs = vec![json!({"plugItemHash": 42, "canInsert": false, "enabled": false}); 512];
+        let sets: serde_json::Map<String, Value> = (0..4096)
+            .map(|hash| {
+                (
+                    hash.to_string(),
+                    if hash == 0 { json!(plugs) } else { json!([]) },
+                )
+            })
+            .collect();
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["profilePlugSets"] = json!({"data": {"plugs": sets.clone()}});
+        })
+        .unwrap();
+        assert_eq!(snapshot.plug_set_entries.len(), 1);
+        assert!(!snapshot.plug_set_entries[0].can_insert);
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["profilePlugSets"] = json!({"data": {"plugs": sets}});
+            value["Response"]["characterPlugSets"] =
+                json!({"data": {character.clone(): {"plugs": {"1": []}}}});
+        }));
+        for sets in [
+            json!({"01": []}),
+            json!({"1": vec![json!({"plugItemHash": 42, "canInsert": true, "enabled": true}); 513]}),
+            json!({"1": [{"plugItemHash": -1, "canInsert": true, "enabled": true}]}),
+            json!({"1": [{"plugItemHash": 42, "canInsert": "true", "enabled": true}]}),
+            json!({"1": [{"plugItemHash": 42, "canInsert": true}]}),
+        ] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["characterPlugSets"] =
+                    json!({"data": {character.clone(): {"plugs": sets}}});
+            }));
+        }
+    }
+
+    #[test]
     fn complete_fixture_normalizes_the_full_snapshot() {
         let snapshot = decode(FIXTURE).expect("complete fixture");
 
         let expected = InventorySnapshotInput {
+            plug_set_entries: Vec::new(),
             membership_id: MembershipId::new(MEMBERSHIP_ID),
             membership_type: MembershipType::new(MEMBERSHIP_TYPE),
             definition_version: DefinitionVersion::new(DEFINITION_VERSION),
@@ -1075,6 +1333,7 @@ mod tests {
                     race: Some("Awoken".to_owned()),
                     gender: Some("Male".to_owned()),
                     light: Some(1810),
+                    date_last_played: None,
                 },
                 Character {
                     id: character_id("900000000000000002"),
@@ -1083,6 +1342,7 @@ mod tests {
                     race: Some("Human".to_owned()),
                     gender: Some("Female".to_owned()),
                     light: Some(1795),
+                    date_last_played: None,
                 },
             ],
             items: vec![

@@ -68,6 +68,7 @@ pub(super) fn fixture() -> (Character, WeeklyPersonal) {
         race: None,
         gender: None,
         light: Some(432),
+        date_last_played: None,
     };
     let mut quickplay = group("Quickplay", Vec::new(), &[], false);
     quickplay.pools = vec![

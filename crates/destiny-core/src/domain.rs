@@ -35,6 +35,8 @@ pub struct Character {
     pub race: Option<String>,
     pub gender: Option<String>,
     pub light: Option<u16>,
+    /// Component-200 `dateLastPlayed`, normalized to Unix seconds; absent in legacy snapshots.
+    pub date_last_played: Option<Timestamp>,
 }
 
 /// One provider-neutral summary of a perk the provider reports for an item instance.
@@ -225,6 +227,50 @@ pub struct ItemDefinition {
     pub plug_category: Option<String>,
     pub tags: Vec<String>,
     pub version: DefinitionVersion,
+}
+
+/// Supported subclass elements, distinct from weapon damage types.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SubclassElement {
+    Arc,
+    Solar,
+    Void,
+    Stasis,
+    Strand,
+    Prismatic,
+}
+
+stable_filter_name!(SubclassElement, Arc => "arc", Solar => "solar", Void => "void", Stasis => "stasis", Strand => "strand", Prismatic => "prismatic");
+
+impl std::str::FromStr for SubclassElement {
+    type Err = crate::AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "arc" => Ok(Self::Arc),
+            "solar" => Ok(Self::Solar),
+            "void" => Ok(Self::Void),
+            "stasis" => Ok(Self::Stasis),
+            "strand" => Ok(Self::Strand),
+            "prism" | "prismatic" => Ok(Self::Prismatic),
+            _ => Err(crate::AppError::new(
+                crate::ErrorCategory::ProviderValidation,
+            )),
+        }
+    }
+}
+
+/// Parse stable Manifest categories, including element-independent shared fragments.
+/// Unknown elements cannot be safely assigned to a group and are omitted.
+pub fn parse_subclass_category(
+    category: &str,
+) -> Option<(&str, Option<SubclassElement>, SubclassPlugKind)> {
+    let kind = classify_subclass_plug(category)?;
+    if category == "shared.fragments" {
+        return Some(("shared", None, kind));
+    }
+    let mut parts = category.split('.');
+    Some((parts.next()?, Some(parts.next()?.parse().ok()?), kind))
 }
 
 /// Equipped subclass socket kind, identified only by stable Manifest categories.
@@ -650,8 +696,25 @@ impl SyncMetadata {
     }
 }
 
+/// Scope of a provider plug-set option; flags are independent per scope.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum PlugSetScope {
+    Profile,
+    Character(CharacterId),
+}
+
+/// One normalized option, deduplicated across plug sets within its scope.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct PlugSetEntry {
+    pub scope: PlugSetScope,
+    pub plug_hash: ItemHash,
+    pub can_insert: bool,
+    pub enabled: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySnapshot {
+    pub plug_set_entries: Vec<PlugSetEntry>,
     pub metadata: SnapshotMetadata,
     pub characters: Vec<Character>,
     pub items: Vec<ItemInstance>,
@@ -659,6 +722,39 @@ pub struct InventorySnapshot {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn subclass_element_parser_and_categories() {
+        use super::{SubclassElement as E, SubclassPlugKind as K, parse_subclass_category};
+        for element in [
+            E::Arc,
+            E::Solar,
+            E::Void,
+            E::Stasis,
+            E::Strand,
+            E::Prismatic,
+        ] {
+            assert_eq!(element.as_str().parse::<E>().unwrap(), element);
+        }
+        assert_eq!(" PRISM ".parse::<E>().unwrap(), E::Prismatic);
+        assert!("kinetic".parse::<E>().is_err());
+        assert_eq!(
+            parse_subclass_category("hunter.prism.supers"),
+            Some(("hunter", Some(E::Prismatic), K::Super))
+        );
+        assert_eq!(
+            parse_subclass_category("shared.fragments"),
+            Some(("shared", None, K::Fragment))
+        );
+        for invalid in [
+            "hunter.unknown.supers",
+            "other.arc.supers",
+            "hunter.arc.supers.extra",
+            "shared.arc.shader",
+        ] {
+            assert!(parse_subclass_category(invalid).is_none());
+        }
+    }
+
     use super::{Character, InventorySnapshot, ItemLocation, SnapshotMetadata, SyncMetadata};
     use crate::ids::{CharacterId, DefinitionVersion, MembershipId, MembershipType, SyncRevision};
     use crate::state::{Dataset, SourceMarker, Timestamp};
@@ -708,6 +804,7 @@ mod tests {
     #[test]
     fn snapshot_records_are_normalized_and_provider_neutral() {
         let snapshot = InventorySnapshot {
+            plug_set_entries: Vec::new(),
             metadata: SnapshotMetadata {
                 membership_id: MembershipId::new("membership"),
                 membership_type: MembershipType::new(3),
@@ -723,6 +820,7 @@ mod tests {
                 race: None,
                 gender: None,
                 light: Some(1810),
+                date_last_played: None,
             }],
             items: Vec::new(),
         };

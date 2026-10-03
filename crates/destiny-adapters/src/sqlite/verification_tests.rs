@@ -141,6 +141,7 @@ fn profile(
     checked_at: u64,
 ) -> InventorySnapshotInput {
     InventorySnapshotInput {
+        plug_set_entries: Vec::new(),
         membership_id: MembershipId::new(membership_id),
         membership_type: MembershipType::new(3),
         definition_version: DefinitionVersion::new("defs-v1"),
@@ -153,6 +154,7 @@ fn profile(
             race: Some("Awoken".into()),
             gender: Some("Female".into()),
             light: Some(1810),
+            date_last_played: None,
         }],
         items: vec![ItemInstance {
             available_plugs: Vec::new(),

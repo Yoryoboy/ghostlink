@@ -313,6 +313,155 @@ where
         Ok(destiny_core::SubclassResult { characters: output })
     }
 
+    /// Lists selectable subclass plugs; raw flags are retained even when status is unknown.
+    /// Reference selection uses all characters, before applying the selector.
+    /// Equal timestamps choose the lexicographically smallest ID for determinism.
+    pub fn subclass_options(
+        &mut self,
+        character_id: Option<&destiny_core::CharacterId>,
+        element: Option<destiny_core::SubclassElement>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::SubclassOptionsResult, AppError> {
+        use destiny_core::{
+            CharacterSubclassOptions, ElementOptions, OptionGroup, OptionStatus, PlugSetScope,
+            SubclassElement as E, SubclassOption, SubclassPlugKind as K,
+        };
+        self.require_definitions()?;
+        self.synchronize(policy, now)?;
+        let snapshot = self.committed_snapshot()?;
+        let reference = snapshot
+            .characters
+            .iter()
+            .filter(|c| c.date_last_played.is_some())
+            .max_by(|a, b| {
+                a.date_last_played
+                    .cmp(&b.date_last_played)
+                    .then_with(|| b.id.as_str().cmp(a.id.as_str()))
+            });
+        let reference_character_id = reference.map(|c| c.id.clone());
+        let reference_class = reference.and_then(|c| c.class.as_deref());
+        let characters = match character_id {
+            Some(selector) => vec![
+                crate::weekly_selection::select_weekly_character(
+                    &snapshot.characters,
+                    Some(selector),
+                )
+                .map_err(|error| {
+                    AppError::new(match error {
+                        crate::weekly_selection::WeeklySelectionError::InvalidRequest => {
+                            ErrorCategory::ProviderValidation
+                        }
+                        crate::weekly_selection::WeeklySelectionError::AmbiguousMatch => {
+                            ErrorCategory::AmbiguousMatch
+                        }
+                    })
+                })?,
+            ],
+            None => snapshot.characters.clone(),
+        };
+        let mut enrichment = InstanceEnrichment::default();
+        let mut output = Vec::new();
+        for character in characters {
+            let class = character.class.as_deref();
+            let status_reliable = class
+                .zip(reference_class)
+                .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
+            let mut deduped = std::collections::BTreeMap::<ItemHash, (bool, bool)>::new();
+            for entry in &snapshot.plug_set_entries {
+                if matches!(&entry.scope, PlugSetScope::Character(id) if id != &character.id) {
+                    continue;
+                }
+                let flags = deduped.entry(entry.plug_hash).or_default();
+                flags.0 |= entry.can_insert;
+                flags.1 |= entry.enabled;
+            }
+            let mut grouped = Vec::new();
+            for (hash, (can_insert, enabled)) in deduped {
+                for definition in
+                    enrichment.resolve_plugs(self.repository(), std::iter::once(hash))?
+                {
+                    let Some((prefix, plug_element, kind)) = definition
+                        .plug_category
+                        .as_deref()
+                        .and_then(destiny_core::parse_subclass_category)
+                    else {
+                        continue;
+                    };
+                    if (prefix != "shared"
+                        && !class.is_some_and(|c| c.eq_ignore_ascii_case(prefix)))
+                        || element.is_some_and(|e| plug_element != Some(e))
+                    {
+                        continue;
+                    }
+                    let status = if !status_reliable {
+                        OptionStatus::Unknown
+                    } else if can_insert {
+                        OptionStatus::Unlocked
+                    } else {
+                        OptionStatus::Locked
+                    };
+                    grouped.push((
+                        plug_element,
+                        kind,
+                        SubclassOption {
+                            plug_hash: hash,
+                            name: Some(definition.name),
+                            status,
+                            can_insert,
+                            enabled,
+                        },
+                    ));
+                }
+            }
+            let mut elements = Vec::new();
+            for element in [
+                Some(E::Prismatic),
+                Some(E::Arc),
+                Some(E::Solar),
+                Some(E::Void),
+                Some(E::Stasis),
+                Some(E::Strand),
+                None,
+            ] {
+                let mut groups = Vec::new();
+                for kind in [
+                    K::Super,
+                    K::ClassAbility,
+                    K::Movement,
+                    K::Melee,
+                    K::Grenade,
+                    K::Aspect,
+                    K::Fragment,
+                    K::Transcendence,
+                ] {
+                    let mut options: Vec<_> = grouped
+                        .iter()
+                        .filter(|(e, k, _)| *e == element && *k == kind)
+                        .map(|(_, _, option)| option.clone())
+                        .collect();
+                    options.sort_by(|a, b| (&a.name, a.plug_hash).cmp(&(&b.name, b.plug_hash)));
+                    if !options.is_empty() {
+                        groups.push(OptionGroup { kind, options });
+                    }
+                }
+                if !groups.is_empty() {
+                    elements.push(ElementOptions { element, groups });
+                }
+            }
+            output.push(CharacterSubclassOptions {
+                character_id: character.id,
+                class: character.class,
+                status_reliable,
+                elements,
+            });
+        }
+        Ok(destiny_core::SubclassOptionsResult {
+            reference_character_id,
+            characters: output,
+        })
+    }
+
     /// Searches definitions, and optionally concrete instances, after syncing.
     ///
     /// Both queries are validated before the refresh so a malformed request
@@ -525,6 +674,14 @@ where
 /// associated types, or `Self`-typed returns, so `&mut dyn QueryOperations` is
 /// a valid dispatch target.
 pub trait QueryOperations {
+    fn subclass_options(
+        &mut self,
+        character_id: Option<&destiny_core::CharacterId>,
+        element: Option<destiny_core::SubclassElement>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::SubclassOptionsResult, AppError>;
+
     /// Reads equipped subclasses for one selector, or all characters.
     fn character_subclasses(
         &mut self,
@@ -565,6 +722,16 @@ where
         + DefinitionRepository
         + destiny_core::StatDefinitionRepository,
 {
+    fn subclass_options(
+        &mut self,
+        character_id: Option<&destiny_core::CharacterId>,
+        element: Option<destiny_core::SubclassElement>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::SubclassOptionsResult, AppError> {
+        QueryService::subclass_options(self, character_id, element, policy, now)
+    }
+
     fn character_subclasses(
         &mut self,
         character_id: Option<&destiny_core::CharacterId>,
@@ -857,6 +1024,7 @@ mod tests {
     fn character(id: &str) -> Character {
         Character {
             id: CharacterId::new(id),
+            date_last_played: None,
             name: Some(format!("name-{id}")),
             class: None,
             race: None,
@@ -945,6 +1113,7 @@ mod tests {
     ) -> InventorySnapshotInput {
         let membership = membership();
         InventorySnapshotInput {
+            plug_set_entries: Vec::new(),
             membership_id: membership.membership_id().clone(),
             membership_type: membership.membership_type(),
             definition_version: DefinitionVersion::new(DEFINITION_VERSION),
@@ -1231,6 +1400,170 @@ mod tests {
         let mut repository = CompositeRepository::with_definitions(standard_definitions());
         repository.commit(snapshot_input(fresh_checked_at(), characters, items));
         service(shared, repository)
+    }
+
+    #[test]
+    fn subclass_options_groups_filters_scopes_and_status() {
+        use destiny_core::{
+            OptionStatus, PlugSetEntry, PlugSetScope, SubclassElement, SubclassPlugKind,
+        };
+        let cases = [
+            (1, "Zulu", "hunter.prism.supers"),
+            (2, "Alpha", "hunter.prism.supers"),
+            (3, "Dodge", "hunter.prism.class_abilities"),
+            (4, "Jump", "hunter.prism.movement"),
+            (5, "Melee", "hunter.prism.melee"),
+            (6, "Grenade", "hunter.prism.prism_grenade"),
+            (7, "Aspect", "hunter.prism.aspects"),
+            (8, "Fragment", "hunter.prism.fragments"),
+            (9, "Transcendence", "hunter.prism.transcendence"),
+            (10, "Arc", "shared.arc.grenades"),
+            (11, "Solar", "shared.solar.grenades"),
+            (12, "Void", "shared.void.grenades"),
+            (13, "Stasis", "shared.stasis.grenades"),
+            (14, "Strand", "shared.strand.grenades"),
+            (15, "Shared", "shared.fragments"),
+            (16, "Titan", "titan.prism.supers"),
+            (17, "Personal", "shared.fragments"),
+        ];
+        let definitions = cases
+            .iter()
+            .map(|(hash, name, category)| {
+                let mut plug = definition(*hash, name, None, vec![]);
+                plug.plug_category = Some((*category).into());
+                plug
+            })
+            .collect();
+        let mut hunter = character("1");
+        hunter.class = Some("Hunter".into());
+        hunter.date_last_played = Some(Timestamp::new(200));
+        let mut titan = character("2");
+        titan.class = Some("Titan".into());
+        titan.date_last_played = Some(Timestamp::new(100));
+        let mut second_hunter = character("3");
+        second_hunter.class = Some("Hunter".into());
+        let mut input = snapshot_input(
+            fresh_checked_at(),
+            vec![hunter, titan, second_hunter],
+            vec![],
+        );
+        input.plug_set_entries = (1..=16)
+            .map(|hash| PlugSetEntry {
+                scope: PlugSetScope::Profile,
+                plug_hash: ItemHash::new(hash),
+                can_insert: hash != 2,
+                enabled: false,
+            })
+            .collect();
+        input.plug_set_entries.push(PlugSetEntry {
+            scope: PlugSetScope::Character(CharacterId::new("1")),
+            plug_hash: ItemHash::new(2),
+            can_insert: true,
+            enabled: true,
+        });
+        input.plug_set_entries.push(PlugSetEntry {
+            scope: PlugSetScope::Character(CharacterId::new("2")),
+            plug_hash: ItemHash::new(17),
+            can_insert: false,
+            enabled: true,
+        });
+        let mut repository = CompositeRepository::with_definitions(definitions);
+        repository.commit(input);
+        let shared = gateway();
+        let mut service = service(&shared, repository);
+        let result = service.subclass_options(None, None, TTL, NOW).unwrap();
+        assert_eq!(result.reference_character_id, Some(CharacterId::new("1")));
+        let hunter = &result.characters[0];
+        assert!(hunter.status_reliable);
+        assert_eq!(
+            hunter
+                .elements
+                .iter()
+                .map(|e| e.element)
+                .collect::<Vec<_>>(),
+            vec![
+                Some(SubclassElement::Prismatic),
+                Some(SubclassElement::Arc),
+                Some(SubclassElement::Solar),
+                Some(SubclassElement::Void),
+                Some(SubclassElement::Stasis),
+                Some(SubclassElement::Strand),
+                None,
+            ]
+        );
+        assert_eq!(
+            hunter.elements[0]
+                .groups
+                .iter()
+                .map(|g| g.kind)
+                .collect::<Vec<_>>(),
+            vec![
+                SubclassPlugKind::Super,
+                SubclassPlugKind::ClassAbility,
+                SubclassPlugKind::Movement,
+                SubclassPlugKind::Melee,
+                SubclassPlugKind::Grenade,
+                SubclassPlugKind::Aspect,
+                SubclassPlugKind::Fragment,
+                SubclassPlugKind::Transcendence,
+            ]
+        );
+        let supers = &hunter.elements[0].groups[0].options;
+        assert_eq!(supers.len(), 2);
+        assert_eq!(supers[0].name.as_deref(), Some("Alpha"));
+        assert!(supers[0].can_insert && supers[0].enabled);
+        assert_eq!(supers[0].status, OptionStatus::Unlocked);
+        assert_eq!(hunter.elements.last().unwrap().groups[0].options.len(), 1);
+        let titan = &result.characters[1];
+        assert!(!titan.status_reliable);
+        assert!(
+            titan
+                .elements
+                .iter()
+                .flat_map(|e| &e.groups)
+                .flat_map(|g| &g.options)
+                .all(|o| o.status == OptionStatus::Unknown)
+        );
+        assert_eq!(titan.elements.last().unwrap().groups[0].options.len(), 2);
+        let other_hunter = &result.characters[2];
+        assert!(other_hunter.status_reliable);
+        assert_eq!(
+            other_hunter.elements[0].groups[0].options[0].status,
+            OptionStatus::Locked
+        );
+        let filtered = service
+            .subclass_options(
+                Some(&CharacterId::new("2")),
+                Some(SubclassElement::Arc),
+                TTL,
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(
+            filtered.reference_character_id,
+            result.reference_character_id
+        );
+        assert_eq!(filtered.characters.len(), 1);
+        assert_eq!(
+            filtered.characters[0].elements,
+            vec![titan.elements[1].clone()]
+        );
+        assert!(
+            service
+                .subclass_options(Some(&CharacterId::new("missing")), None, TTL, NOW)
+                .is_err()
+        );
+        assert_eq!(shared.borrow().membership_calls(), 0);
+    }
+
+    #[test]
+    fn subclass_options_without_last_played_is_unreliable() {
+        let shared = gateway();
+        let mut service = fresh_service(&shared, vec![character("a")], vec![]);
+        let result = service.subclass_options(None, None, TTL, NOW).unwrap();
+        assert!(result.reference_character_id.is_none());
+        assert!(!result.characters[0].status_reliable);
+        assert!(result.characters[0].elements.is_empty());
     }
 
     #[test]

@@ -849,6 +849,50 @@ pub struct CharacterListResult {
     pub metadata: QueryMetadata,
 }
 
+/// Unlock flags are reliable only for the most recently played character's class.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OptionStatus {
+    Unlocked,
+    Locked,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubclassOptionsResult {
+    pub reference_character_id: Option<crate::CharacterId>,
+    pub characters: Vec<CharacterSubclassOptions>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CharacterSubclassOptions {
+    pub character_id: crate::CharacterId,
+    pub class: Option<String>,
+    pub status_reliable: bool,
+    pub elements: Vec<ElementOptions>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ElementOptions {
+    /// `None` means element-independent shared options.
+    pub element: Option<crate::SubclassElement>,
+    pub groups: Vec<OptionGroup>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OptionGroup {
+    pub kind: crate::SubclassPlugKind,
+    pub options: Vec<SubclassOption>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubclassOption {
+    pub plug_hash: ItemHash,
+    pub name: Option<String>,
+    pub status: OptionStatus,
+    pub can_insert: bool,
+    pub enabled: bool,
+}
+
 /// Manifest bucket for equipped subclass items.
 pub const SUBCLASS_BUCKET_HASH: crate::BucketHash = crate::BucketHash::new(3284755031);
 /// Equipped seasonal artifact inventory bucket.

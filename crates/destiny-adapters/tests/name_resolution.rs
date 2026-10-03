@@ -89,6 +89,7 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
         .unwrap();
     store
         .replace_current(InventorySnapshotInput {
+            plug_set_entries: Vec::new(),
             membership_id: MembershipId::new("123"),
             membership_type: MembershipType::new(3),
             definition_version: DefinitionVersion::new("v1"),

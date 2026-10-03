@@ -228,6 +228,16 @@ fn dispatch_locked(
         SEARCH_INVENTORY_TOOL => dispatch_search_inventory(guard.as_mut(), arguments),
         INSPECT_ITEM_TOOL => dispatch_inspect_item(guard.as_mut(), arguments),
         crate::schema::GET_SUBCLASS_TOOL => dispatch_get_subclass(guard.as_mut(), arguments),
+        crate::schema::GET_SUBCLASS_OPTIONS_TOOL => {
+            let arguments: crate::schema::GetSubclassOptionsArgs = deserialize(arguments)?;
+            let (character, element) = match arguments.into_request() {
+                Ok(request) => request,
+                Err(error) => return Ok(error.into_call_tool_result()),
+            };
+            Ok(guard
+                .get_subclass_options(character.as_ref(), element)
+                .map_or_else(tool_error, |output| output.into_call_tool_result()))
+        }
         crate::schema::GET_LOADOUTS_TOOL => {
             let arguments: crate::schema::GetLoadoutsArgs = deserialize(arguments)?;
             let character = match arguments.into_request() {
@@ -481,6 +491,24 @@ mod tests {
             self.leave();
             result
         }
+        fn get_subclass_options(
+            &mut self,
+            character: Option<&destiny_app::CharacterId>,
+            element: Option<destiny_app::SubclassElement>,
+        ) -> Result<crate::schema::GetSubclassOptionsOutput, McpError> {
+            assert_eq!(character.map(|id| id.as_str()), Some("hunter"));
+            assert_eq!(element, Some(destiny_app::SubclassElement::Arc));
+            self.enter("get_subclass_options");
+            let result = match self.failure {
+                Some(category) => Err(McpError::new(category)),
+                None => Ok(crate::schema::GetSubclassOptionsOutput {
+                    reference_character_id: None,
+                    characters: vec![],
+                }),
+            };
+            self.leave();
+            result
+        }
         fn get_subclass(
             &mut self,
             character: Option<&destiny_app::CharacterId>,
@@ -689,7 +717,8 @@ mod tests {
                 "get_artifact",
                 "get_loadouts",
                 "weekly_reset",
-                "weekly"
+                "weekly",
+                "get_subclass_options"
             ]
         );
         for tool in &tools {
@@ -869,6 +898,52 @@ mod tests {
     }
 
     #[test]
+    fn subclass_options_dispatch_validates_filters_and_preserves_errors() {
+        let (server, handle) = server(RecordingService::new());
+        for value in ["".to_owned(), "a".repeat(513), "bad\u{7}".to_owned()] {
+            let result = server
+                .dispatch("get_subclass_options", args(json!({"character": value})))
+                .unwrap();
+            assert_eq!(structured(&result)["code"], "provider_validation");
+        }
+        for invalid in [
+            json!({"locked": true}),
+            json!({"element": "kinetic"}),
+            json!({"character": 1}),
+        ] {
+            assert_eq!(
+                server
+                    .dispatch("get_subclass_options", args(invalid))
+                    .unwrap_err()
+                    .code
+                    .0,
+                -32602
+            );
+        }
+        assert!(handle.recorded().is_empty());
+        let request = json!({"character": "hunter", "element": "arc"});
+        let result = server
+            .dispatch("get_subclass_options", args(request.clone()))
+            .unwrap();
+        assert_eq!(
+            structured(&result),
+            json!({"kind": "subclass_options", "reference_character_id": null, "characters": []})
+        );
+        assert_eq!(handle.recorded(), ["get_subclass_options"]);
+        let (server, _) = self::server(RecordingService::with_failure(
+            ErrorCategory::DefinitionsUnavailable,
+        ));
+        assert_eq!(
+            structured(
+                &server
+                    .dispatch("get_subclass_options", args(request))
+                    .unwrap()
+            )["code"],
+            "definitions_unavailable"
+        );
+    }
+
+    #[test]
     fn subclass_dispatch_validates_and_forwards_selector_and_errors() {
         let (server, handle) = server(RecordingService::new());
         for value in ["".to_owned(), "a".repeat(513), "bad\u{7}".to_owned()] {
@@ -1023,7 +1098,8 @@ mod tests {
                 "get_artifact",
                 "get_loadouts",
                 "weekly_reset",
-                "weekly"
+                "weekly",
+                "get_subclass_options"
             ]
         );
         assert!(
@@ -1059,6 +1135,7 @@ mod tests {
                 "get_loadouts",
                 "weekly_reset",
                 "weekly",
+                "get_subclass_options",
                 MOVE_ITEM_TOOL
             ]
         );

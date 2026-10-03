@@ -46,8 +46,8 @@ use super::{SqliteStore, encode_decimal, parse_decimal, storage_failure};
 use destiny_core::{
     AppError, Character, CharacterId, Dataset, DefinitionVersion, ErrorCategory,
     InventoryRepository, InventorySnapshot, InventorySnapshotInput, ItemHash, ItemInstance,
-    ItemLocation, MembershipId, MembershipType, PerkHash, PerkSummary, PlugSummary,
-    SnapshotMetadata, SourceMarker, SyncMetadata, SyncRevision, Timestamp,
+    ItemLocation, MembershipId, MembershipType, PerkHash, PerkSummary, PlugSetEntry, PlugSetScope,
+    PlugSummary, SnapshotMetadata, SourceMarker, SyncMetadata, SyncRevision, Timestamp,
 };
 use rusqlite::{Connection, Error as SqlError, TransactionBehavior, params};
 use std::collections::HashSet;
@@ -132,6 +132,7 @@ impl InventoryRepository for SqliteStore {
         transaction.commit().map_err(|_| storage_failure())?;
 
         Ok(InventorySnapshot {
+            plug_set_entries: ordered.plug_set_entries,
             metadata: SnapshotMetadata {
                 membership_id: ordered.membership_id,
                 membership_type: ordered.membership_type,
@@ -148,6 +149,7 @@ impl InventoryRepository for SqliteStore {
 
 /// Returns the input with its collections in the deterministic canonical order.
 fn canonicalize(mut input: InventorySnapshotInput) -> InventorySnapshotInput {
+    input.plug_set_entries.sort();
     input
         .characters
         .sort_by(|left, right| left.id.cmp(&right.id));
@@ -200,6 +202,7 @@ fn read_projection(connection: &Connection) -> Result<Option<InventorySnapshot>,
             items.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
 
             Ok(Some(InventorySnapshot {
+                plug_set_entries: read_subclass_options(connection, &characters)?,
                 metadata: SnapshotMetadata {
                     membership_id,
                     membership_type,
@@ -326,14 +329,73 @@ fn projection_rows_exist(connection: &Connection) -> Result<bool, AppError> {
             row.get(0)
         })
         .map_err(|_| storage_failure())?;
-    Ok(perks > 0 || plugs > 0 || stats > 0 || available > 0)
+    let options: i64 = connection
+        .query_row("SELECT count(*) FROM subclass_plug_options", [], |row| {
+            row.get(0)
+        })
+        .map_err(|_| storage_failure())?;
+    Ok(perks > 0 || plugs > 0 || stats > 0 || available > 0 || options > 0)
+}
+
+/// Reconstructs scoped options, rejecting corrupt flags, hashes and references.
+fn read_subclass_options(
+    connection: &Connection,
+    characters: &[Character],
+) -> Result<Vec<PlugSetEntry>, AppError> {
+    let mut statement = connection
+        .prepare("SELECT scope, plug_hash, can_insert, enabled FROM subclass_plug_options")
+        .map_err(|_| storage_failure())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|_| storage_failure())?;
+    let mut entries = Vec::new();
+    let mut keys = HashSet::new();
+    for row in rows {
+        let (scope, hash, can_insert, enabled) = row.map_err(|_| storage_failure())?;
+        let scope = if scope == "profile" {
+            PlugSetScope::Profile
+        } else {
+            if scope.is_empty()
+                || scope.len() > 128
+                || !scope.bytes().all(|byte| byte.is_ascii_digit())
+                || (scope.len() > 1 && scope.starts_with('0'))
+                || !characters
+                    .iter()
+                    .any(|character| character.id.as_str() == scope)
+            {
+                return Err(storage_failure());
+            }
+            PlugSetScope::Character(CharacterId::new(scope))
+        };
+        if u32::try_from(hash).is_err()
+            || !keys.insert((scope.clone(), hash))
+            || entries.len() >= 4096 * 512
+        {
+            return Err(storage_failure());
+        }
+        entries.push(PlugSetEntry {
+            scope,
+            plug_hash: ItemHash::new(hash),
+            can_insert: decode_boolean(can_insert)?,
+            enabled: decode_boolean(enabled)?,
+        });
+    }
+    entries.sort();
+    Ok(entries)
 }
 
 /// Reconstructs every stored character with its optional fields, checked.
 fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> {
     let mut statement = connection
         .prepare(
-            "SELECT character_id, name, class_name, race, gender, light \
+            "SELECT character_id, name, class_name, race, gender, light, date_last_played \
              FROM characters ORDER BY character_id",
         )
         .map_err(|_| storage_failure())?;
@@ -346,13 +408,15 @@ fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> 
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })
         .map_err(|_| storage_failure())?;
 
     let mut characters = Vec::new();
     for row in rows {
-        let (id, name, class, race, gender, light) = row.map_err(|_| storage_failure())?;
+        let (id, name, class, race, gender, light, date_last_played) =
+            row.map_err(|_| storage_failure())?;
         characters.push(Character {
             id: CharacterId::new(id),
             name,
@@ -360,6 +424,11 @@ fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> 
             race,
             gender,
             light: decode_optional_u16(light)?,
+            date_last_played: date_last_played
+                .as_deref()
+                .map(parse_decimal)
+                .transpose()?
+                .map(Timestamp::new),
         });
     }
     Ok(characters)
@@ -668,6 +737,9 @@ fn replace_projection(
     input: &InventorySnapshotInput,
 ) -> Result<(), AppError> {
     connection
+        .execute("DELETE FROM subclass_plug_options", [])
+        .map_err(|_| storage_failure())?;
+    connection
         .execute("DELETE FROM item_perks", [])
         .map_err(|_| storage_failure())?;
     connection
@@ -694,8 +766,8 @@ fn replace_projection(
     for character in &input.characters {
         connection
             .execute(
-                "INSERT INTO characters (character_id, name, class_name, race, gender, light) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO characters (character_id, name, class_name, race, gender, light, date_last_played) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     character.id.as_str(),
                     character.name,
@@ -703,6 +775,7 @@ fn replace_projection(
                     character.race,
                     character.gender,
                     character.light.map(i64::from),
+                    character.date_last_played.map(|date| encode_decimal(date.seconds())),
                 ],
             )
             .map_err(|_| storage_failure())?;
@@ -782,6 +855,23 @@ fn replace_projection(
                 )
                 .map_err(|_| storage_failure())?;
         }
+    }
+    for entry in &input.plug_set_entries {
+        let scope = match &entry.scope {
+            PlugSetScope::Profile => "profile",
+            PlugSetScope::Character(id) => id.as_str(),
+        };
+        connection
+            .execute(
+                "INSERT INTO subclass_plug_options (scope, plug_hash, can_insert, enabled) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    scope,
+                    entry.plug_hash.value(),
+                    encode_boolean(entry.can_insert),
+                    encode_boolean(entry.enabled),
+                ],
+            )
+            .map_err(|_| storage_failure())?;
     }
     Ok(())
 }

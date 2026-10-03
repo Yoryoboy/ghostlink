@@ -45,6 +45,9 @@ pub const INSPECT_ITEM_TOOL: &str = "inspect_item";
 /// Stable tool name for equipped subclass configuration.
 pub const GET_SUBCLASS_TOOL: &str = "get_subclass";
 
+/// Stable tool name for available subclass options.
+pub const GET_SUBCLASS_OPTIONS_TOOL: &str = "get_subclass_options";
+
 /// Stable tool name for live seasonal artifact state.
 pub const GET_ARTIFACT_TOOL: &str = "get_artifact";
 
@@ -138,6 +141,13 @@ pub fn tool_specs() -> Vec<Tool> {
         Tool::new(WEEKLY_TOOL, "Read reliable per-character weekly content and progress. Requires login and `ghostlink sync-manifest`. Reprise is omitted. Vanguard alerts report GM, challenged Crucible, and challenged Vanguard Op variants with visible reward unions; these are not verified in-game weapon assignments. Character accepts an exact id or unique hunter|titan|warlock class; omitted selects strictly highest light, ties use deterministic first.", JsonObject::new())
             .with_input_schema::<WeeklyArgs>()
             .with_output_schema::<WeeklyOutput>(),
+        Tool::new(
+            GET_SUBCLASS_OPTIONS_TOOL,
+            "Return available subclass options (supers, abilities, aspects, fragments) per character with unlocked/locked/unknown status. Status is reliable only for the most recently played character's class; raw can_insert/enabled are included. Omit character for all characters or select an exact id or unique hunter|titan|warlock class; optionally filter element. Requires loaded Manifest definitions.",
+            JsonObject::new(),
+        )
+        .with_input_schema::<GetSubclassOptionsArgs>()
+        .with_output_schema::<GetSubclassOptionsOutput>(),
     ]
 }
 
@@ -614,6 +624,78 @@ pub struct LoadoutPlugView {
 }
 
 impl GetLoadoutsOutput {
+    pub fn into_call_tool_result(self) -> CallToolResult {
+        structured_result(self)
+    }
+}
+
+/// Optional bounded character and element selectors; no status filtering.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetSubclassOptionsArgs {
+    /// Exact character id or unique hunter|titan|warlock class (case-insensitive).
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub character: Option<String>,
+    pub element: Option<SubclassElementView>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubclassElementView {
+    Arc,
+    Solar,
+    Void,
+    Stasis,
+    Strand,
+    Prismatic,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OptionStatusView {
+    Unlocked,
+    Locked,
+    Unknown,
+}
+
+/// Full CLI-compatible options envelope, including raw provider flags.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename = "subclass_options")]
+pub struct GetSubclassOptionsOutput {
+    pub reference_character_id: Option<String>,
+    pub characters: Vec<CharacterSubclassOptionsView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct CharacterSubclassOptionsView {
+    pub character_id: String,
+    pub class: Option<String>,
+    pub status_reliable: bool,
+    pub elements: Vec<ElementOptionsView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ElementOptionsView {
+    pub element: Option<SubclassElementView>,
+    pub groups: Vec<OptionGroupView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct OptionGroupView {
+    pub kind: SubclassPlugKindView,
+    pub options: Vec<SubclassOptionView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct SubclassOptionView {
+    pub plug_hash: i64,
+    pub name: Option<String>,
+    pub status: OptionStatusView,
+    pub can_insert: bool,
+    pub enabled: bool,
+}
+
+impl GetSubclassOptionsOutput {
     pub fn into_call_tool_result(self) -> CallToolResult {
         structured_result(self)
     }
@@ -1150,7 +1232,8 @@ mod tests {
                 super::GET_ARTIFACT_TOOL,
                 super::GET_LOADOUTS_TOOL,
                 super::WEEKLY_RESET_TOOL,
-                super::WEEKLY_TOOL
+                super::WEEKLY_TOOL,
+                super::GET_SUBCLASS_OPTIONS_TOOL
             ]
         );
         for tool in &tools {

@@ -12,6 +12,7 @@ fn weekly_cli_mcp_json_parity_on_the_same_fixture() {
         race: None,
         gender: None,
         light: Some(2000),
+        date_last_played: None,
     };
     let unresolved = DefinitionResolution::Unresolved;
     let activity = PersonalActivity {

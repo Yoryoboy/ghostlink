@@ -1516,6 +1516,7 @@ mod tests {
             race: None,
             gender: None,
             light: None,
+            date_last_played: None,
         }
     }
 
@@ -1573,6 +1574,7 @@ mod tests {
         items: Vec<ItemInstance>,
     ) -> InventorySnapshotInput {
         InventorySnapshotInput {
+            plug_set_entries: Vec::new(),
             membership_id: membership_id(),
             membership_type: destiny_core::MembershipType::new(3),
             definition_version: DefinitionVersion::new(DEFINITION_VERSION),

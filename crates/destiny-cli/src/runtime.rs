@@ -826,6 +826,7 @@ mod tests {
             race: None,
             gender: None,
             light: None,
+            date_last_played: None,
         }
     }
 
@@ -1072,6 +1073,7 @@ mod tests {
                     .unwrap();
                 store
                     .replace_current(destiny_app::InventorySnapshotInput {
+                        plug_set_entries: Vec::new(),
                         membership_id: destiny_app::MembershipId::new("999"),
                         membership_type: destiny_app::MembershipType::new(3),
                         checked_at: NOW,

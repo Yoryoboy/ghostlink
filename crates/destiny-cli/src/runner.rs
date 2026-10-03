@@ -25,7 +25,7 @@ use crate::command::{Cli, CliError, Command, ReadRequest, SUCCESS_EXIT_CODE, ins
 use crate::login::{LoginFactory, LoginOperations};
 use crate::output::{
     OutputMode, render_characters, render_error, render_inspection, render_login_authorized,
-    render_login_instruction, render_search, render_subclasses,
+    render_login_instruction, render_search, render_subclass_options, render_subclasses,
 };
 use crate::runtime::RuntimeFactory;
 
@@ -156,6 +156,19 @@ where
         ReadRequest::Artifact { .. } | ReadRequest::Loadouts { .. } => {
             Err(CliError::from_category(ErrorCategory::UnsupportedOperation))
         }
+        ReadRequest::SubclassOptions {
+            character_id,
+            element,
+            locked,
+        } => service
+            .subclass_options(
+                character_id.as_ref(),
+                element,
+                freshness.policy,
+                freshness.now,
+            )
+            .map(|result| render_subclass_options(mode, &result, locked))
+            .map_err(CliError::from),
         ReadRequest::Subclass(character_id) => service
             .character_subclasses(character_id.as_ref(), freshness.policy, freshness.now)
             .map(|result| render_subclasses(mode, &result))
@@ -726,6 +739,7 @@ mod tests {
         Search(SearchInventoryRequest),
         Inspect(InspectItemRequest),
         Subclass(Option<CharacterId>),
+        SubclassOptions(Option<CharacterId>, Option<destiny_app::SubclassElement>),
         Artifact(Option<CharacterId>),
         Loadouts(Option<CharacterId>),
     }
@@ -766,6 +780,24 @@ mod tests {
     }
 
     impl QueryOperations for RecordingService {
+        fn subclass_options(
+            &mut self,
+            character_id: Option<&destiny_app::CharacterId>,
+            element: Option<destiny_app::SubclassElement>,
+            policy: FreshnessPolicy,
+            now: Timestamp,
+        ) -> Result<destiny_app::SubclassOptionsResult, AppError> {
+            self.record(
+                Recorded::SubclassOptions(character_id.cloned(), element),
+                policy,
+                now,
+            );
+            Ok(destiny_app::SubclassOptionsResult {
+                reference_character_id: None,
+                characters: vec![],
+            })
+        }
+
         fn character_subclasses(
             &mut self,
             character_id: Option<&CharacterId>,
@@ -926,6 +958,62 @@ mod tests {
     }
 
     #[test]
+    fn subclass_options_dispatches_filters_and_freshness_once() {
+        for selector in [None, Some("hunter"), Some("123")] {
+            for element in [None, Some(destiny_app::SubclassElement::Prismatic)] {
+                for locked in [false, true] {
+                    let mut service = RecordingService::new();
+                    let mut args = vec!["ghostlink", "subclass-options"];
+                    if let Some(selector) = selector {
+                        args.extend(["--character", selector]);
+                    }
+                    if let Some(element) = element {
+                        args.extend(["--element", element.as_str()]);
+                    }
+                    if locked {
+                        args.push("--locked");
+                    } else {
+                        args.push("--json");
+                    }
+                    let output = run(&mut service, args, freshness());
+                    assert_eq!(output.exit_code, 0);
+                    assert!(output.stderr.is_empty());
+                    assert_eq!(
+                        service.recorded(),
+                        vec![(
+                            Recorded::SubclassOptions(selector.map(CharacterId::new), element),
+                            TTL,
+                            NOW
+                        )]
+                    );
+                    if !locked {
+                        assert_eq!(
+                            serde_json::from_str::<serde_json::Value>(&output.stdout).unwrap(),
+                            serde_json::json!({"kind":"subclass_options", "reference_character_id":null, "characters":[]})
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn subclass_options_invalid_requests_never_dispatch() {
+        for args in [
+            vec!["ghostlink", "subclass-options", "--character", " "],
+            vec!["ghostlink", "subclass-options", "--element", "kinetic"],
+            vec!["ghostlink", "subclass-options", "--locked", "--json"],
+            vec!["ghostlink", "--json", "subclass-options", "--locked"],
+        ] {
+            let mut service = RecordingService::new();
+            let output = run(&mut service, args, freshness());
+            assert_eq!(output.exit_code, 2);
+            assert!(output.stdout.is_empty());
+            assert!(service.recorded().is_empty());
+        }
+    }
+
+    #[test]
     fn subclass_dispatches_selector_and_freshness_once() {
         for selector in [None, Some("hunter"), Some("123")] {
             let mut service = RecordingService::new();
@@ -1043,6 +1131,7 @@ mod tests {
                 race: None,
                 gender: None,
                 light: Some(1_810),
+                date_last_played: None,
             }],
             metadata: metadata(FreshnessStatus::Fresh),
         }
