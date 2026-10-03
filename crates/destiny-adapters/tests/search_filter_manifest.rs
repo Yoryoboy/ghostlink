@@ -69,6 +69,7 @@ fn search_filter_manifest_attributes_survive_decode_normalization_and_storage() 
             assert_eq!(
                 store
                     .search_definitions(&DefinitionSearchQuery {
+                        tier: None,
                         element: expected_damage,
                         slot: Some(expected_slot),
                         class_type: expected_class,

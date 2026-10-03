@@ -583,6 +583,7 @@ mod tests {
         limit: usize,
     ) -> DefinitionSearchQuery {
         DefinitionSearchQuery {
+            tier: None,
             text: text.map(term),
             item_type: item_type.map(term),
             tags: tags.iter().map(|tag| term(tag)).collect(),
@@ -600,6 +601,8 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            location: None,
+            equipped: None,
             include_available: false,
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),

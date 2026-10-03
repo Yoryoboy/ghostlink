@@ -336,6 +336,20 @@ pub struct SearchInventoryArgs {
     #[schemars(length(max = MAX_SEARCH_TEXT_LENGTH))]
     pub item_type: Option<String>,
 
+    /// Exact stored definition tier (case-insensitive); unknown names match nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = MAX_SEARCH_TEXT_LENGTH))]
+    pub tier: Option<String>,
+
+    /// Instance location class; combined with character restrictions using AND.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<LocationSchema>")]
+    pub location: Option<String>,
+
+    /// Instance equipped state; supplying false also enables instance search.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub equipped: Option<bool>,
+
     /// Optional tag filters; every listed tag must be present.
     #[serde(default)]
     #[schemars(
@@ -403,6 +417,14 @@ pub struct SearchInventoryArgs {
     /// Optional concrete-instance restrictions, combined with definition filters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instances: Option<InstanceQueryArgs>,
+}
+
+#[derive(JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
+enum LocationSchema {
+    Vault,
+    Character,
 }
 
 /// Bounded concrete-instance search arguments.

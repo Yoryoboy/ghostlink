@@ -238,6 +238,18 @@ pub struct SearchInventoryArgs {
     #[arg(long = "type", value_name = "TYPE")]
     pub item_type: Option<String>,
 
+    /// Exact stored tier, matched case-insensitively; unknown names match nothing.
+    #[arg(long, value_name = "NAME")]
+    pub tier: Option<String>,
+
+    /// Instance location: vault or character (combined with --character using AND).
+    #[arg(long, value_name = "LOCATION")]
+    pub location: Option<String>,
+
+    /// Instance equipped state: true or false.
+    #[arg(long, value_name = "BOOL")]
+    pub equipped: Option<String>,
+
     /// Definition tag that must be present; repeat for several tags.
     #[arg(long = "tag", value_name = "TAG")]
     pub tag: Vec<String>,
@@ -297,6 +309,7 @@ impl SearchInventoryArgs {
         let definitions = DefinitionSearchQuery {
             text: search_term(self.text.as_deref(), "--text")?,
             item_type: search_term(self.item_type.as_deref(), "--type")?,
+            tier: search_term(self.tier.as_deref(), "--tier")?,
             tags: self
                 .tag
                 .iter()
@@ -343,7 +356,9 @@ impl SearchInventoryArgs {
             && self.perk.is_empty()
             && self.mod_name.is_empty()
             && self.archetype.is_none()
-            && self.character.is_none();
+            && self.character.is_none()
+            && self.location.is_none()
+            && self.equipped.is_none();
         if no_instance_filter && !definitions.has_filters() && self.min_power.is_none() {
             return Ok(None);
         }
@@ -374,6 +389,21 @@ impl SearchInventoryArgs {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(CliError::query_validation)?,
             character_id,
+            location: self
+                .location
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(CliError::query_validation)?,
+            equipped: self
+                .equipped
+                .as_deref()
+                .map(|value| {
+                    value.parse::<bool>().map_err(|_| {
+                        CliError::invalid_argument("--equipped", "expected true or false")
+                    })
+                })
+                .transpose()?,
             definitions: definitions
                 .has_filters()
                 .then(|| Box::new(definitions.clone())),
@@ -405,6 +435,7 @@ fn validate_filter(value: &str, filter: &str) -> Result<String, String> {
     let mut query = DefinitionSearchQuery {
         text: None,
         item_type: None,
+        tier: None,
         tags: Vec::new(),
         element: None,
         slot: None,
@@ -598,6 +629,7 @@ impl CliError {
     fn query_validation(error: AppError) -> Self {
         let message = error.to_string();
         for (name, flag) in [
+            ("location", "--location"),
             ("limit", "--limit"),
             ("perk", "--perk"),
             ("mod", "--mod"),

@@ -13,6 +13,105 @@ mod output {
 }
 
 #[test]
+fn tier_location_equipped_cli_mcp_parity() {
+    use clap::Parser;
+    for (flags, args) in [
+        (
+            vec!["--tier", "eXoTiC"],
+            serde_json::json!({"tier": "eXoTiC"}),
+        ),
+        (
+            vec!["--tier", "imaginary"],
+            serde_json::json!({"tier": "imaginary"}),
+        ),
+        (
+            vec!["--location", "vault"],
+            serde_json::json!({"location": "vault"}),
+        ),
+        (
+            vec!["--equipped", "false"],
+            serde_json::json!({"equipped": false}),
+        ),
+        (
+            vec!["--equipped", "true"],
+            serde_json::json!({"equipped": true}),
+        ),
+        (
+            vec!["--location", "character", "--equipped", "true"],
+            serde_json::json!({"location": "character", "equipped": true}),
+        ),
+        (
+            vec!["--location", "vault", "--character", "123"],
+            serde_json::json!({"location": "vault", "instances": {"character_id": "123"}}),
+        ),
+    ] {
+        let mut argv = vec!["ghostlink", "search-inventory"];
+        argv.extend(flags);
+        let cli = cli_command::Cli::try_parse_from(argv)
+            .unwrap()
+            .into_read_request()
+            .unwrap();
+        let cli_command::ReadRequest::SearchInventory(cli) = cli else {
+            panic!("search request")
+        };
+        let mcp: destiny_mcp::schema::SearchInventoryArgs = serde_json::from_value(args).unwrap();
+        assert!(cli.instances.is_some());
+        assert_eq!(cli, mcp.into_request().unwrap());
+    }
+}
+
+#[test]
+fn invalid_location_and_equipped_name_the_argument() {
+    use clap::Parser;
+    for (flag, value, allowed) in [
+        ("--location", "orbit", "vault"),
+        ("--equipped", "yes", "true"),
+    ] {
+        let cli = cli_command::Cli::try_parse_from(["ghostlink", "search-inventory", flag, value])
+            .unwrap();
+        let error = cli.into_read_request().unwrap_err();
+        assert!(error.to_string().contains(flag));
+        assert!(error.to_string().contains(allowed));
+    }
+    let mcp: destiny_mcp::schema::SearchInventoryArgs =
+        serde_json::from_value(serde_json::json!({"location": "orbit"})).unwrap();
+    assert_eq!(
+        mcp.into_request().unwrap_err().message(),
+        "invalid location: expected one of vault, character"
+    );
+    assert!(
+        serde_json::from_value::<destiny_mcp::schema::SearchInventoryArgs>(
+            serde_json::json!({"equipped": "true"})
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn filter_schema_exposes_tier_location_and_equipped() {
+    let schema = serde_json::to_value(schemars::schema_for!(
+        destiny_mcp::schema::SearchInventoryArgs
+    ))
+    .unwrap();
+    assert!(schema["properties"]["tier"].is_object());
+    assert!(
+        schema["properties"]["equipped"]
+            .to_string()
+            .contains("boolean")
+    );
+    assert!(
+        schema["properties"]["location"]
+            .to_string()
+            .contains("LocationSchema")
+    );
+    assert_eq!(
+        schema["$defs"]["LocationSchema"]["enum"],
+        serde_json::json!(["vault", "character"])
+    );
+    assert_eq!(schema["additionalProperties"], false);
+}
+
+#[test]
 fn available_flag_builds_identical_cli_and_mcp_queries() {
     use clap::Parser;
     for enabled in [false, true] {

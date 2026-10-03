@@ -1288,6 +1288,7 @@ mod tests {
         limit: usize,
     ) -> DefinitionSearchQuery {
         DefinitionSearchQuery {
+            tier: None,
             text: text.map(|value| SearchTerm::new(value).unwrap()),
             item_type: item_type.map(|value| SearchTerm::new(value).unwrap()),
             tags: tags
@@ -1308,6 +1309,8 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            location: None,
+            equipped: None,
             include_available: false,
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),

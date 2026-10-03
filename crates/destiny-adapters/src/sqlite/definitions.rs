@@ -604,6 +604,7 @@ mod live_publish_tests {
                 );
                 assert_eq!(
                     store.search_definitions(&DefinitionSearchQuery {
+                        tier: None,
                         text: None,
                         item_type: None,
                         tags: vec![],

@@ -202,6 +202,8 @@ fn validate_search_limit(limit: usize) -> Result<(), AppError> {
 pub struct DefinitionSearchQuery {
     pub text: Option<SearchTerm>,
     pub item_type: Option<SearchTerm>,
+    /// Exact normalized stored tier; unknown names match nothing.
+    pub tier: Option<SearchTerm>,
     pub tags: Vec<SearchTerm>,
     pub element: Option<DamageType>,
     pub slot: Option<ItemSlot>,
@@ -214,6 +216,7 @@ impl DefinitionSearchQuery {
     pub fn has_filters(&self) -> bool {
         self.text.is_some()
             || self.item_type.is_some()
+            || self.tier.is_some()
             || !self.tags.is_empty()
             || self.element.is_some()
             || self.slot.is_some()
@@ -333,6 +336,28 @@ pub fn instance_matches_stats(
     })
 }
 
+/// Instance location class. Unknown provider locations match neither class.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocationFilter {
+    Vault,
+    Character,
+}
+
+impl std::str::FromStr for LocationFilter {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "vault" => Ok(Self::Vault),
+            "character" => Ok(Self::Character),
+            _ => Err(AppError::invalid_argument(
+                "location",
+                "expected one of vault, character",
+            )),
+        }
+    }
+}
+
 /// Maximum independent names per perk/mod filter.
 pub const MAX_NAME_TERMS: usize = 8;
 
@@ -357,6 +382,8 @@ pub struct InstanceSearchQuery {
     /// Exact normalized armor-archetype name.
     pub archetype: Option<SearchTerm>,
     pub character_id: Option<CharacterId>,
+    pub location: Option<LocationFilter>,
+    pub equipped: Option<bool>,
     /// Definition criteria applied before the instance limit; its limit is ignored.
     pub definitions: Option<Box<DefinitionSearchQuery>>,
     pub min_power: Option<u16>,
@@ -442,6 +469,15 @@ pub fn definition_matches(query: &DefinitionSearchQuery, definition: &ItemDefini
         }
     }
 
+    if let Some(tier) = &query.tier
+        && !definition
+            .tier
+            .as_deref()
+            .is_some_and(|candidate| tier.matches_name(candidate))
+    {
+        return false;
+    }
+
     if !query.tags.is_empty() {
         let stored: Vec<String> = definition
             .tags
@@ -484,6 +520,20 @@ pub fn instance_matches(query: &InstanceSearchQuery, instance: &ItemInstance) ->
             .perks
             .iter()
             .any(|perk| perk.perk_hash == perk_hash)
+    {
+        return false;
+    }
+
+    if query
+        .equipped
+        .is_some_and(|equipped| instance.equipped != equipped)
+        || query.location.is_some_and(|location| {
+            !matches!(
+                (location, &instance.location),
+                (LocationFilter::Vault, ItemLocation::Vault)
+                    | (LocationFilter::Character, ItemLocation::Character(_))
+            )
+        })
     {
         return false;
     }
@@ -858,6 +908,7 @@ mod tests {
         DefinitionSearchQuery {
             text: text.map(term),
             item_type: item_type.map(term),
+            tier: None,
             tags: tags.into_iter().map(term).collect(),
             element: None,
             slot: None,
@@ -879,10 +930,58 @@ mod tests {
             archetype: None,
             stats: Vec::new(),
             character_id: None,
+            location: None,
+            equipped: None,
             definitions: None,
             min_power: None,
             limit: MAX_SEARCH_LIMIT,
         }
+    }
+
+    #[test]
+    fn tier_location_and_equipped_filters_match_exactly() {
+        let mut definitions = query(None, None, vec![]);
+        definitions.tier = Some(term("EXOTIC"));
+        assert!(definitions.has_filters());
+        let mut item = definition(1, "Weapon");
+        assert!(!definition_matches(&definitions, &item));
+        item.tier = Some("Exotic".into());
+        assert!(definition_matches(&definitions, &item));
+        item.tier = Some("Exotic Extra".into());
+        assert!(!definition_matches(&definitions, &item));
+        item.tier = Some("Exotic".into());
+        let mut filter = instance_query(ItemHashFilter::Any, None);
+        filter.definitions = Some(Box::new(definitions));
+        filter.location = Some(super::LocationFilter::Vault);
+        filter.equipped = Some(false);
+        let mut owned = instance("a", 1);
+        assert!(super::instance_matches_with_definition(
+            &filter,
+            &owned,
+            Some(&item)
+        ));
+        assert!(!super::instance_matches_with_definition(
+            &filter, &owned, None
+        ));
+        owned.equipped = true;
+        assert!(!instance_matches(&filter, &owned));
+        filter.equipped = Some(true);
+        assert!(instance_matches(&filter, &owned));
+        filter.character_id = Some(CharacterId::new("123"));
+        assert!(!instance_matches(&filter, &owned));
+        owned.location = ItemLocation::Character(CharacterId::new("123"));
+        assert!(!instance_matches(&filter, &owned));
+        filter.location = Some(super::LocationFilter::Character);
+        assert!(instance_matches(&filter, &owned));
+        owned.location = ItemLocation::other("unknown");
+        assert!(!instance_matches(&filter, &owned));
+        assert_eq!(
+            "orbit"
+                .parse::<super::LocationFilter>()
+                .unwrap_err()
+                .to_string(),
+            "invalid location: expected one of vault, character"
+        );
     }
 
     #[test]

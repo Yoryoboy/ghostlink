@@ -17,7 +17,7 @@ fn definitions(
                 bucket_hash: None,
                 name: "Helmet".into(),
                 item_type: None,
-                tier: None,
+                tier: Some("Exotic".into()),
                 element: None,
                 slot: Some(ItemSlot::Helmet),
                 class_type: None,
@@ -66,6 +66,8 @@ fn definitions(
 }
 fn query(conditions: &[&str]) -> InstanceSearchQuery {
     InstanceSearchQuery {
+        location: None,
+        equipped: None,
         include_available: false,
         item_hashes: ItemHashFilter::Any,
         perk_hash: None,
@@ -119,9 +121,13 @@ fn seeded(stats: Vec<StatDefinition>) -> (SqliteStore, InMemorySearchRepository)
         available_plugs: Vec::new(),
         instance_id: id.into(),
         item_hash: ItemHash::new(1),
-        location: ItemLocation::Vault,
+        location: if id == "b" {
+            ItemLocation::Character(CharacterId::new("123"))
+        } else {
+            ItemLocation::Vault
+        },
         quantity: 1,
-        equipped: false,
+        equipped: id == "b",
         locked: false,
         power: None,
         perks: vec![],
@@ -137,7 +143,14 @@ fn seeded(stats: Vec<StatDefinition>) -> (SqliteStore, InMemorySearchRepository)
             definition_version: DefinitionVersion::new("v1"),
             checked_at: Timestamp::new(1),
             source: SourceMarker::Profile,
-            characters: vec![],
+            characters: vec![Character {
+                id: CharacterId::new("123"),
+                name: None,
+                class: None,
+                race: None,
+                gender: None,
+                light: None,
+            }],
             items: instances,
         })
         .unwrap();
@@ -150,6 +163,59 @@ fn catalog() -> Vec<StatDefinition> {
         StatDefinition::new(3, "Health".into()).unwrap(),
     ]
 }
+#[test]
+fn tier_location_equipped_search_has_sqlite_fake_parity() {
+    let (store, fake) = seeded(vec![]);
+    for (location, equipped, character, tier, count) in [
+        (Some(LocationFilter::Vault), Some(false), None, None, 1),
+        (Some(LocationFilter::Character), None, None, None, 1),
+        (None, Some(true), None, None, 1),
+        (
+            Some(LocationFilter::Character),
+            Some(true),
+            Some("123"),
+            Some("EXOTIC"),
+            1,
+        ),
+        (Some(LocationFilter::Character), Some(false), None, None, 0),
+        (Some(LocationFilter::Vault), None, Some("123"), None, 0),
+        (None, None, None, Some("exotic"), 1),
+        (None, None, None, Some("legendary"), 0),
+        (None, None, None, Some("imaginary"), 0),
+    ] {
+        let mut q = query(&[]);
+        q.location = location;
+        q.equipped = equipped;
+        q.character_id = character.map(CharacterId::new);
+        if let Some(tier) = tier {
+            q.definitions = Some(Box::new(DefinitionSearchQuery {
+                tier: Some(SearchTerm::new(tier).unwrap()),
+                text: None,
+                item_type: None,
+                tags: vec![],
+                element: None,
+                slot: None,
+                class_type: None,
+                limit: 1,
+            }));
+        }
+        let actual = store.search_instances(&q).unwrap();
+        assert_eq!(actual, fake.search_instances(&q).unwrap());
+        assert_eq!(actual.len(), count);
+        if count > 0 && (equipped == Some(true) || location == Some(LocationFilter::Character)) {
+            assert_eq!(actual[0].instance_id.as_str(), "b");
+        }
+        if let Some(definitions) = &q.definitions {
+            let actual = store.search_definitions(definitions).unwrap();
+            assert_eq!(actual, fake.search_definitions(definitions).unwrap());
+            assert_eq!(
+                actual.len(),
+                usize::from(tier.is_some_and(|tier| tier.eq_ignore_ascii_case("exotic")))
+            );
+        }
+    }
+}
+
 #[test]
 fn stat_search_matches_any_duplicate_name_before_limit_with_fake_parity() {
     let (store, fake) = seeded(catalog());
@@ -180,6 +246,7 @@ fn stat_names_are_validated_before_sync_and_named_hits_are_ordered() {
     let mut app = QueryService::new(ProfileSyncService::new(QueuedProfileGateway::new(), store));
     let mut request = SearchInventoryRequest {
         definitions: DefinitionSearchQuery {
+            tier: None,
             text: None,
             item_type: None,
             tags: vec![],

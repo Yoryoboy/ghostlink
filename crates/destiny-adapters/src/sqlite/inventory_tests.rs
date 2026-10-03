@@ -396,6 +396,8 @@ fn stats_round_trip_search_and_revision_identity() {
     assert_eq!(
         store
             .search_instances(&destiny_core::InstanceSearchQuery {
+                location: None,
+                equipped: None,
                 include_available: false,
                 item_hashes: destiny_core::ItemHashFilter::Any,
                 perk_hash: None,

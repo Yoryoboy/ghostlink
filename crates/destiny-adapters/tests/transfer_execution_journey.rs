@@ -728,6 +728,7 @@ fn term(value: &str) -> SearchTerm {
 
 fn definition_query(text: Option<&str>, limit: usize) -> DefinitionSearchQuery {
     DefinitionSearchQuery {
+        tier: None,
         text: text.map(term),
         item_type: None,
         tags: Vec::new(),
@@ -740,6 +741,8 @@ fn definition_query(text: Option<&str>, limit: usize) -> DefinitionSearchQuery {
 
 fn instance_query(item_hashes: ItemHashFilter, limit: usize) -> InstanceSearchQuery {
     InstanceSearchQuery {
+        location: None,
+        equipped: None,
         include_available: false,
         item_hashes,
         perk_hash: None,
