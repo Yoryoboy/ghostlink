@@ -1,5 +1,10 @@
 //! Application-facing configuration, services, and sanitized diagnostics.
 
+pub mod artifact;
+pub use artifact::{
+    ArtifactOperations, ArtifactPerkView, ArtifactResult, ArtifactService, ArtifactSummary,
+    ArtifactTierView, CharacterArtifact, CharacterArtifactState,
+};
 pub mod auth;
 pub mod auth_ux;
 mod config;

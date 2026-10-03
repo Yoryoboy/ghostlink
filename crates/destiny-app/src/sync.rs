@@ -82,6 +82,11 @@ where
         (self.gateway, self.repository)
     }
 
+    /// Shares the authenticated gateway with sibling live-only reads.
+    pub(crate) fn gateway_mut(&mut self) -> &mut G {
+        &mut self.gateway
+    }
+
     /// Borrows the repository so callers can read the visible projection.
     pub fn repository(&self) -> &R {
         &self.repository
