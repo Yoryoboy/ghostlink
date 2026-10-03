@@ -5,6 +5,7 @@ pub use artifact::{
     ArtifactOperations, ArtifactPerkView, ArtifactResult, ArtifactService, ArtifactSummary,
     ArtifactTierView, CharacterArtifact, CharacterArtifactState,
 };
+pub use destiny_core::{ArtifactGateway, ArtifactSnapshot};
 pub mod auth;
 pub mod auth_ux;
 mod config;

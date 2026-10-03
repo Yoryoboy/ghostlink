@@ -15,6 +15,148 @@ mod output {
 #[path = "../../destiny-cli/src/subclass_output.rs"]
 mod cli_subclass_output;
 
+#[path = "../../destiny-cli/src/artifact_output.rs"]
+mod cli_artifact_output;
+
+#[test]
+fn artifact_cli_mcp_json_parity() {
+    use destiny_app::{
+        ArtifactPerkView, ArtifactResult, ArtifactSummary, ArtifactTierView, CharacterArtifact,
+        CharacterArtifactState, CharacterId, ItemHash,
+    };
+    let perk = ArtifactPerkView {
+        item_hash: ItemHash::new(7),
+        name: None,
+        active: true,
+    };
+    let mut result = ArtifactResult {
+        artifact: Some(ArtifactSummary {
+            artifact_hash: ItemHash::new(3),
+            name: Some("Artifact".into()),
+            points_acquired: 12,
+            power_bonus: 9,
+        }),
+        characters: vec![
+            CharacterArtifact {
+                character_id: CharacterId::new("1"),
+                class: Some("Hunter".into()),
+                state: Some(CharacterArtifactState {
+                    points_used: 1,
+                    reset_count: 2,
+                    active_perks: vec![perk.clone()],
+                    tiers: vec![
+                        ArtifactTierView {
+                            index: 1,
+                            unlocked: true,
+                            points_to_unlock: 0,
+                            perks: vec![perk],
+                        },
+                        ArtifactTierView {
+                            index: 2,
+                            unlocked: false,
+                            points_to_unlock: 5,
+                            perks: vec![],
+                        },
+                    ],
+                }),
+            },
+            CharacterArtifact {
+                character_id: CharacterId::new("2"),
+                class: None,
+                state: None,
+            },
+            CharacterArtifact {
+                character_id: CharacterId::new("3"),
+                class: None,
+                state: Some(CharacterArtifactState {
+                    points_used: 0,
+                    reset_count: 0,
+                    active_perks: vec![],
+                    tiers: vec![],
+                }),
+            },
+        ],
+    };
+    for _ in 0..2 {
+        let cli = cli_artifact_output::artifact_json(&result);
+        let mcp = destiny_mcp::service::artifact_output(&result).into_call_tool_result();
+        assert_eq!(mcp.structured_content.unwrap(), cli);
+        result.artifact = None;
+        result.characters.clear();
+    }
+}
+
+#[test]
+fn artifact_tool_has_closed_bounded_arguments() {
+    use destiny_mcp::schema::GetArtifactArgs;
+    for selector in [None, Some("123"), Some("hUnTeR")] {
+        use clap::Parser;
+        let mut argv = vec!["ghostlink", "--json", "artifact"];
+        if let Some(value) = selector {
+            argv.extend(["--character", value]);
+        }
+        let cli = cli_command::Cli::try_parse_from(argv)
+            .unwrap()
+            .into_read_request()
+            .unwrap();
+        let cli_command::ReadRequest::Artifact {
+            character_id,
+            tiers,
+        } = cli
+        else {
+            panic!("artifact request")
+        };
+        assert!(!tiers);
+        assert_eq!(
+            character_id,
+            GetArtifactArgs {
+                character: selector.map(str::to_owned)
+            }
+            .into_request()
+            .unwrap()
+        );
+    }
+    for value in [
+        "".to_owned(),
+        " ".to_owned(),
+        "a".repeat(513),
+        "bad\u{7}".to_owned(),
+    ] {
+        assert!(
+            GetArtifactArgs {
+                character: Some(value)
+            }
+            .into_request()
+            .is_err()
+        );
+    }
+    assert!(
+        GetArtifactArgs {
+            character: Some("a".repeat(512))
+        }
+        .into_request()
+        .is_ok()
+    );
+    for value in [
+        serde_json::json!({"unknown": 1}),
+        serde_json::json!({"character": 1}),
+    ] {
+        assert!(serde_json::from_value::<GetArtifactArgs>(value).is_err());
+    }
+    let tool = destiny_mcp::schema::tool_specs()
+        .into_iter()
+        .find(|tool| tool.name == "get_artifact")
+        .expect("artifact tool registered");
+    let schema = tool.schema_as_json_value();
+    assert_eq!(schema["additionalProperties"], false);
+    assert!(
+        schema["properties"]["character"]
+            .to_string()
+            .contains("512")
+    );
+    assert!(tool.output_schema.is_some());
+}
+
 #[test]
 fn subclass_cli_mcp_json_parity() {
     use destiny_app::{

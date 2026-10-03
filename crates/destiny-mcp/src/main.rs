@@ -228,6 +228,16 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         destiny_adapters::format_reset_timestamp(t, false)
     });
 
+    let read_service = destiny_mcp::service::ArtifactReadService::new(
+        destiny_app::ArtifactService::new(ProfileSyncService::new_with_definitions(
+            gateway.clone(),
+            repository.clone(),
+        )),
+        read_service,
+        SystemClock::new(),
+        policy,
+    );
+
     let mutations = MutationService::new(
         ProfileSyncService::new_with_definitions(gateway, repository),
         SystemPlanIds::new(SystemClock::new()),
@@ -354,6 +364,15 @@ impl<G: destiny_app::WeeklyProfileGateway> destiny_app::WeeklyProfileGateway for
         character: &destiny_app::CharacterId,
     ) -> Result<destiny_app::CharacterWeeklySnapshot, AppError> {
         self.lock()?.load_character_weekly(membership, character)
+    }
+}
+
+impl<G: destiny_app::ArtifactGateway> destiny_app::ArtifactGateway for SharedGateway<G> {
+    fn load_artifact(
+        &mut self,
+        membership: &DestinyMembership,
+    ) -> Result<destiny_app::ArtifactSnapshot, AppError> {
+        self.lock()?.load_artifact(membership)
     }
 }
 
@@ -837,6 +856,7 @@ mod tests {
                 "search_inventory",
                 "inspect_item",
                 "get_subclass",
+                "get_artifact",
                 "weekly_reset",
                 "weekly",
                 "move_item"

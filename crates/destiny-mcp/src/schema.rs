@@ -45,6 +45,9 @@ pub const INSPECT_ITEM_TOOL: &str = "inspect_item";
 /// Stable tool name for equipped subclass configuration.
 pub const GET_SUBCLASS_TOOL: &str = "get_subclass";
 
+/// Stable tool name for live seasonal artifact state.
+pub const GET_ARTIFACT_TOOL: &str = "get_artifact";
+
 /// Stable tool name for the single semantic mutation.
 pub const MOVE_ITEM_TOOL: &str = "move_item";
 
@@ -108,6 +111,13 @@ pub fn tool_specs() -> Vec<Tool> {
         )
         .with_input_schema::<GetSubclassArgs>()
         .with_output_schema::<GetSubclassOutput>(),
+        Tool::new(
+            GET_ARTIFACT_TOOL,
+            "Return the seasonal artifact name, points, power bonus and per-character active perks and tiers. Omit character for all characters, or select an exact id or unique hunter|titan|warlock class. Requires login and loaded Manifest definitions; reads live state.",
+            JsonObject::new(),
+        )
+        .with_input_schema::<GetArtifactArgs>()
+        .with_output_schema::<GetArtifactOutput>(),
         Tool::new(
             WEEKLY_RESET_TOOL,
             "Read the current week's public rotation without account credentials. Run `ghostlink sync-manifest` first to load the required definitions.",
@@ -488,6 +498,65 @@ pub struct GetSubclassArgs {
     /// Exact character id or unique hunter|titan|warlock class (case-insensitive).
     #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
     pub character: Option<String>,
+}
+
+/// Optional bounded character selector for the live artifact read.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetArtifactArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub character: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename = "artifact")]
+pub struct GetArtifactOutput {
+    pub artifact: Option<ArtifactSummaryView>,
+    pub characters: Vec<CharacterArtifactView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ArtifactSummaryView {
+    pub artifact_hash: i64,
+    pub name: Option<String>,
+    pub points_acquired: u32,
+    pub power_bonus: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct CharacterArtifactView {
+    pub character_id: String,
+    pub class: Option<String>,
+    pub state: Option<CharacterArtifactStateView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct CharacterArtifactStateView {
+    pub points_used: u32,
+    pub reset_count: u32,
+    pub active_perks: Vec<ArtifactPerkView>,
+    pub tiers: Vec<ArtifactTierView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ArtifactPerkView {
+    pub item_hash: i64,
+    pub name: Option<String>,
+    pub active: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ArtifactTierView {
+    pub index: usize,
+    pub unlocked: bool,
+    pub points_to_unlock: u32,
+    pub perks: Vec<ArtifactPerkView>,
+}
+
+impl GetArtifactOutput {
+    pub fn into_call_tool_result(self) -> CallToolResult {
+        structured_result(self)
+    }
 }
 
 /// Equipped subclass configuration, matching the CLI JSON envelope.
@@ -1018,6 +1087,7 @@ mod tests {
                 SEARCH_INVENTORY_TOOL,
                 INSPECT_ITEM_TOOL,
                 super::GET_SUBCLASS_TOOL,
+                super::GET_ARTIFACT_TOOL,
                 super::WEEKLY_RESET_TOOL,
                 super::WEEKLY_TOOL
             ]
