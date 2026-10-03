@@ -266,6 +266,8 @@ fn normalize_with_count(
             item_type: normalize_optional_presentation(candidate.item_type.as_deref())?,
             tier: normalize_optional_presentation(candidate.tier.as_deref())?,
             element: normalize_optional_presentation(candidate.element.as_deref())?,
+            slot: None,
+            class_type: None,
             tags: normalize_tags(&candidate.tags)?,
             version: version.clone(),
         });
@@ -609,6 +611,8 @@ mod tests {
             element,
             tags,
             version,
+            slot: _,
+            class_type: _,
         } = published.definitions.into_iter().next().unwrap();
 
         assert_eq!(hash, ItemHash::new(1));
@@ -732,6 +736,8 @@ mod tests {
                 item_type: None,
                 tier: None,
                 element: None,
+                slot: None,
+                class_type: None,
                 tags: Vec::new(),
                 version: DefinitionVersion::new(version),
             }

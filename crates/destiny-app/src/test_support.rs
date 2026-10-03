@@ -12,7 +12,6 @@ use destiny_core::{
     ManifestAcquisition, ManifestDefinitions, ManifestGateway, PlanId, PlanIdGenerator,
     ProfileGateway, Resolution, SearchRepository, SnapshotMetadata, SourceMarker, SyncMetadata,
     SyncRevision, Timestamp, TransferGateway, TransferOutcome, TransferRequest, definition_matches,
-    instance_matches,
 };
 use std::collections::{HashSet, VecDeque};
 
@@ -649,7 +648,19 @@ impl SearchRepository for InMemorySearchRepository {
         let mut matches: Vec<ItemInstance> = self
             .instances
             .iter()
-            .filter(|instance| instance_matches(query, instance))
+            .filter(|instance| {
+                let mut definitions = self
+                    .definitions
+                    .iter()
+                    .filter(|definition| definition.hash == instance.item_hash);
+                let definition = definitions.next();
+                let unique = if definitions.next().is_none() {
+                    definition
+                } else {
+                    None
+                };
+                destiny_core::query::instance_matches_with_definition(query, instance, unique)
+            })
             .cloned()
             .collect();
         matches.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
@@ -1088,6 +1099,8 @@ mod tests {
             item_type: None,
             tier: None,
             element: None,
+            slot: None,
+            class_type: None,
             tags: Vec::new(),
             version: DefinitionVersion::new(version),
         }
@@ -1143,6 +1156,9 @@ mod tests {
                 .into_iter()
                 .map(|tag| SearchTerm::new(tag).unwrap())
                 .collect(),
+            element: None,
+            slot: None,
+            class_type: None,
             limit,
         }
     }
@@ -1157,6 +1173,8 @@ mod tests {
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),
             character_id: character.map(CharacterId::new),
+            definitions: None,
+            min_power: None,
             limit,
         }
     }
@@ -1188,6 +1206,44 @@ mod tests {
             checked_at: Timestamp::new(200),
             source: SourceMarker::Manifest,
         }
+    }
+
+    #[test]
+    fn instance_definition_filters_apply_before_limit_and_match_core() {
+        let definitions = vec![
+            typed_definition(1, "Other", Some("Rocket Launcher"), vec![]),
+            typed_definition(2, "Wanted", Some("Hand Cannon"), vec!["exotic"]),
+        ];
+        let mut repo = InMemorySearchRepository::with_definitions(definitions.clone());
+        let items = vec![
+            search_instance("a", 1, ItemLocation::Vault, vec![]),
+            search_instance("b", 99, ItemLocation::Vault, vec![]),
+            search_instance("c", 2, ItemLocation::Vault, vec![]),
+        ];
+        repo.set_instances(items.clone());
+        let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
+        query.definitions = Some(Box::new(definition_query(
+            None,
+            Some("hand cannon"),
+            vec![],
+            100,
+        )));
+        let actual = repo.search_instances(&query).unwrap();
+        assert_eq!(instance_names(&actual), ["c"]);
+        let expected: Vec<_> = items
+            .into_iter()
+            .filter(|item| {
+                destiny_core::query::instance_matches_with_definition(
+                    &query,
+                    item,
+                    definitions
+                        .iter()
+                        .find(|definition| definition.hash == item.item_hash),
+                )
+            })
+            .take(query.limit)
+            .collect();
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -1592,6 +1648,8 @@ mod tests {
             item_type: None,
             tier: None,
             element: None,
+            slot: None,
+            class_type: None,
             tags: Vec::new(),
             version: DefinitionVersion::new("definitions-v1"),
         };

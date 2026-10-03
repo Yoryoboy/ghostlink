@@ -110,6 +110,8 @@ fn definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
         item_type: Some("Auto Rifle".into()),
         tier: Some("Legendary".into()),
         element: Some("Void".into()),
+        slot: None,
+        class_type: None,
         tags: vec!["weapon".into()],
         version: DefinitionVersion::new(version),
     }

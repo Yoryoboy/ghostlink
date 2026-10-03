@@ -351,6 +351,8 @@ fn definition(hash: i64, name: &str, item_type: Option<&str>, tags: &[&str]) -> 
         item_type: item_type.map(str::to_owned),
         tier: None,
         element: None,
+        slot: None,
+        class_type: None,
         tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
         version: DefinitionVersion::new(DEFINITION_VERSION),
     }
@@ -426,6 +428,9 @@ fn definition_query(
         text: text.map(term),
         item_type: item_type.map(term),
         tags: tags.iter().map(|tag| term(tag)).collect(),
+        element: None,
+        slot: None,
+        class_type: None,
         limit,
     }
 }
@@ -440,6 +445,8 @@ fn instance_query(
         item_hashes,
         perk_hash: perk_hash.map(PerkHash::new),
         character_id: character.map(CharacterId::new),
+        definitions: None,
+        min_power: None,
         limit,
     }
 }

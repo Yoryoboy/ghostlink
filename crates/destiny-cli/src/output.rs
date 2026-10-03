@@ -964,6 +964,8 @@ mod tests {
             item_type: Some("Rocket Launcher".to_string()),
             tier: Some("Exotic".to_string()),
             element: Some("Solar".to_string()),
+            slot: None,
+            class_type: None,
             tags: vec!["exotic".to_string()],
             version: DefinitionVersion::new("manifest-v1"),
         }

@@ -42,6 +42,8 @@ fn items(version: &str, name: &str) -> DefinitionReplacementInput {
                 item_type: None,
                 tier: None,
                 element: None,
+                slot: None,
+                class_type: None,
                 tags: vec![],
                 version: DefinitionVersion::new(version),
             }],

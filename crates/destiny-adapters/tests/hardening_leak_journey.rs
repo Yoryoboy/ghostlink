@@ -353,6 +353,8 @@ fn control_definition() -> ItemDefinition {
         item_type: Some("Rocket Launcher".to_owned()),
         tier: None,
         element: None,
+        slot: None,
+        class_type: None,
         tags: vec!["control".to_owned()],
         version: DefinitionVersion::new(DEFINITION_VERSION),
     }
@@ -467,6 +469,9 @@ fn control_search() -> SearchInventoryRequest {
             text: Some(SearchTerm::new(CONTROL_TERM).expect("valid search term")),
             item_type: None,
             tags: Vec::new(),
+            element: None,
+            slot: None,
+            class_type: None,
             limit: MAX_SEARCH_LIMIT,
         },
         instances: None,

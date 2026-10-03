@@ -322,6 +322,8 @@ fn definition(hash: i64, name: &str) -> ItemDefinition {
         item_type: None,
         tier: None,
         element: None,
+        slot: None,
+        class_type: None,
         tags: Vec::new(),
         version: DefinitionVersion::new(DEFINITION_VERSION),
     }

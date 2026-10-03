@@ -2636,6 +2636,8 @@ mod transport_tests {
                 item_type: None,
                 tier: None,
                 element: None,
+                slot: None,
+                class_type: None,
                 tags: Vec::new(),
                 version: prior_version,
             }],

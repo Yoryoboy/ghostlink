@@ -587,6 +587,8 @@ mod tests {
             item_type: item_type.map(str::to_string),
             tier: None,
             element: None,
+            slot: None,
+            class_type: None,
             tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
             version: DefinitionVersion::new(DEFINITION_VERSION),
         }
@@ -682,6 +684,9 @@ mod tests {
             text: text.map(term),
             item_type: item_type.map(term),
             tags: tags.into_iter().map(term).collect(),
+            element: None,
+            slot: None,
+            class_type: None,
             limit,
         }
     }
@@ -696,6 +701,8 @@ mod tests {
             item_hashes,
             perk_hash,
             character_id,
+            definitions: None,
+            min_power: None,
             limit,
         }
     }
@@ -729,6 +736,9 @@ mod tests {
                 text: Some(SearchTerm::new("no such item").unwrap()),
                 item_type: None,
                 tags: Vec::new(),
+                element: None,
+                slot: None,
+                class_type: None,
                 limit: 5,
             },
             None,
@@ -762,6 +772,9 @@ mod tests {
                 text: None,
                 item_type: None,
                 tags: Vec::new(),
+                element: None,
+                slot: None,
+                class_type: None,
                 limit: 5,
             },
             None,

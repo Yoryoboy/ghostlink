@@ -371,6 +371,8 @@ mod tests {
             item_type: item_type.map(str::to_owned),
             tier: Some("Legendary".to_owned()),
             element: None,
+            slot: None,
+            class_type: None,
             tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
             version: DefinitionVersion::new(MANIFEST_VERSION),
         }
@@ -457,6 +459,9 @@ mod tests {
             text: text.map(term),
             item_type: item_type.map(term),
             tags: tags.iter().map(|tag| term(tag)).collect(),
+            element: None,
+            slot: None,
+            class_type: None,
             limit,
         }
     }
@@ -471,6 +476,8 @@ mod tests {
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),
             character_id: character.map(CharacterId::new),
+            definitions: None,
+            min_power: None,
             limit,
         }
     }

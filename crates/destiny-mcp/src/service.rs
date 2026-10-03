@@ -640,6 +640,9 @@ impl SearchInventoryArgs {
                 .map(|value| SearchTerm::new(value))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(McpError::from)?,
+            element: None,
+            slot: None,
+            class_type: None,
             limit: self.limit,
         };
         definitions.validate().map_err(McpError::from)?;
@@ -680,6 +683,8 @@ impl InstanceQueryArgs {
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
             character_id: self.character_id.map(CharacterId::new),
+            definitions: None,
+            min_power: None,
             limit: self.limit,
         };
         query.validate().map_err(McpError::from)?;
@@ -1224,6 +1229,8 @@ mod tests {
             item_type: item_type.map(str::to_string),
             tier: None,
             element: None,
+            slot: None,
+            class_type: None,
             tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
             version: DefinitionVersion::new(DEFINITION_VERSION),
         }

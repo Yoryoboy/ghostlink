@@ -365,6 +365,8 @@ fn read_definition(
             item_type,
             tier,
             element,
+            slot: None,
+            class_type: None,
             tags: read_tags(connection, hash.value())?,
             version: DefinitionVersion::new(version),
         })),
@@ -427,6 +429,8 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
                 item_type,
                 tier,
                 element,
+                slot: None,
+                class_type: None,
                 tags: Vec::new(),
                 version: DefinitionVersion::new(version),
             });
@@ -472,6 +476,8 @@ mod live_publish_tests {
                 item_type: Some("Weapon".into()),
                 tier: None,
                 element: None,
+                slot: None,
+                class_type: None,
                 tags: vec!["synthetic".into(), "weapon".into()],
                 version: version.clone(),
             })

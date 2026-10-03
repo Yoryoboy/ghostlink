@@ -270,6 +270,9 @@ impl SearchInventoryArgs {
                 .map(|value| SearchTerm::new(value.as_str()))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|_| CliError::invalid_request())?,
+            element: None,
+            slot: None,
+            class_type: None,
             limit: self.limit,
         };
         definitions
@@ -308,6 +311,8 @@ impl SearchInventoryArgs {
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
             character_id,
+            definitions: None,
+            min_power: None,
             limit: self.limit,
         };
         query.validate().map_err(|_| CliError::invalid_request())?;
@@ -1146,6 +1151,8 @@ mod tests {
                 item_type: None,
                 tier: None,
                 element: None,
+                slot: None,
+                class_type: None,
                 tags: Vec::new(),
                 version: destiny_app::DefinitionVersion::new("manifest-v1"),
             },

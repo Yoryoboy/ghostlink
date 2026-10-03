@@ -729,6 +729,8 @@ mod tests {
             item_type: Some("Rocket Launcher".to_string()),
             tier: None,
             element: None,
+            slot: None,
+            class_type: None,
             tags: Vec::new(),
             version: DefinitionVersion::new("manifest-v1"),
         }
@@ -1127,12 +1129,17 @@ mod tests {
                 text: Some(destiny_app::SearchTerm::new("gjallar").unwrap()),
                 item_type: None,
                 tags: Vec::new(),
+                element: None,
+                slot: None,
+                class_type: None,
                 limit: 5,
             },
             instances: Some(destiny_app::InstanceSearchQuery {
                 item_hashes: destiny_app::ItemHashFilter::AnyOf(vec![ItemHash::new(1)]),
                 perk_hash: None,
                 character_id: None,
+                definitions: None,
+                min_power: None,
                 limit: 5,
             }),
         };

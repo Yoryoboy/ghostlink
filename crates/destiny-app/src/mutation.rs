@@ -1166,6 +1166,9 @@ where
                         text: Some(term.clone()),
                         item_type: None,
                         tags: Vec::new(),
+                        element: None,
+                        slot: None,
+                        class_type: None,
                         limit: MAX_SEARCH_LIMIT,
                     })
                     .map_err(MutationError::from)?;
@@ -1189,6 +1192,8 @@ where
                         ),
                         perk_hash: None,
                         character_id: None,
+                        definitions: None,
+                        min_power: None,
                         limit: MAX_SEARCH_LIMIT,
                     })
                     .map_err(MutationError::from)?;
@@ -1517,6 +1522,8 @@ mod tests {
             item_type: None,
             tier: None,
             element: None,
+            slot: None,
+            class_type: None,
             tags: Vec::new(),
             version: DefinitionVersion::new(DEFINITION_VERSION),
         }

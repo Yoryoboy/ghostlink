@@ -81,6 +81,65 @@ pub struct ItemInstance {
     pub perks: Vec<PerkSummary>,
 }
 
+/// Manifest damage type; independent of an item's inventory slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DamageType {
+    Kinetic,
+    Arc,
+    Solar,
+    Void,
+    Stasis,
+    Strand,
+}
+
+/// Provider-neutral equipment slot. Unknown provider categories remain explicit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ItemSlot {
+    Kinetic,
+    Energy,
+    Power,
+    Helmet,
+    Gauntlets,
+    Chest,
+    Legs,
+    ClassItem,
+    Other,
+    Unknown,
+}
+
+/// Class restriction, with unrestricted and unknown kept distinct.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClassType {
+    Titan,
+    Hunter,
+    Warlock,
+    Any,
+    Unknown,
+}
+
+macro_rules! parse_filter_name {
+    ($kind:ty, $($variant:ident),+ $(,)?) => {
+        impl std::str::FromStr for $kind {
+            type Err = crate::error::AppError;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                $(if value.trim().eq_ignore_ascii_case(stringify!($variant)) {
+                    return Ok(Self::$variant);
+                })+
+                Err(crate::error::AppError::new(
+                    crate::error::ErrorCategory::ProviderValidation,
+                ))
+            }
+        }
+    };
+}
+
+parse_filter_name!(DamageType, Kinetic, Arc, Solar, Void, Stasis, Strand);
+parse_filter_name!(
+    ItemSlot, Kinetic, Energy, Power, Helmet, Gauntlets, Chest, Legs, ClassItem, Other, Unknown
+);
+parse_filter_name!(ClassType, Titan, Hunter, Warlock, Any, Unknown);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemDefinition {
     pub hash: ItemHash,
@@ -88,7 +147,10 @@ pub struct ItemDefinition {
     pub name: String,
     pub item_type: Option<String>,
     pub tier: Option<String>,
+    /// Kept as text for compatibility with existing projections.
     pub element: Option<String>,
+    pub slot: Option<ItemSlot>,
+    pub class_type: Option<ClassType>,
     pub tags: Vec<String>,
     pub version: DefinitionVersion,
 }
@@ -139,6 +201,37 @@ mod tests {
     use super::{Character, InventorySnapshot, ItemLocation, SnapshotMetadata, SyncMetadata};
     use crate::ids::{CharacterId, DefinitionVersion, MembershipId, MembershipType, SyncRevision};
     use crate::state::{Dataset, SourceMarker, Timestamp};
+
+    #[test]
+    fn filter_names_parse_case_insensitively_and_reject_unknown_names() {
+        use super::{ClassType, DamageType, ItemSlot};
+        for name in ["Kinetic", "Arc", "Solar", "Void", "Stasis", "Strand"] {
+            assert_eq!(name.parse::<DamageType>(), name.to_lowercase().parse());
+            assert!(name.parse::<DamageType>().is_ok());
+        }
+        for name in [
+            "Kinetic",
+            "Energy",
+            "Power",
+            "Helmet",
+            "Gauntlets",
+            "Chest",
+            "Legs",
+            "ClassItem",
+            "Other",
+            "Unknown",
+        ] {
+            assert_eq!(name.parse::<ItemSlot>(), name.to_lowercase().parse());
+            assert!(name.parse::<ItemSlot>().is_ok());
+        }
+        for name in ["Titan", "Hunter", "Warlock", "Any", "Unknown"] {
+            assert_eq!(name.parse::<ClassType>(), name.to_lowercase().parse());
+            assert!(name.parse::<ClassType>().is_ok());
+        }
+        assert!("invalid".parse::<DamageType>().is_err());
+        assert!("invalid".parse::<ItemSlot>().is_err());
+        assert!("invalid".parse::<ClassType>().is_err());
+    }
 
     #[test]
     fn locations_preserve_unknown_provider_values() {

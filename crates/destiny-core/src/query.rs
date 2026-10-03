@@ -57,7 +57,10 @@
 //! instance identifiers, so both orders are total, and an invalid projection
 //! with duplicate keys is outside this contract.
 
-use crate::domain::{Character, ItemDefinition, ItemInstance, ItemLocation, SyncMetadata};
+use crate::domain::{
+    Character, ClassType, DamageType, ItemDefinition, ItemInstance, ItemLocation, ItemSlot,
+    SyncMetadata,
+};
 use crate::error::{AppError, ErrorCategory};
 use crate::ids::{CharacterId, ItemHash, ItemInstanceId, PerkHash};
 use crate::state::FreshnessStatus;
@@ -173,10 +176,23 @@ pub struct DefinitionSearchQuery {
     pub text: Option<SearchTerm>,
     pub item_type: Option<SearchTerm>,
     pub tags: Vec<SearchTerm>,
+    pub element: Option<DamageType>,
+    pub slot: Option<ItemSlot>,
+    pub class_type: Option<ClassType>,
     pub limit: usize,
 }
 
 impl DefinitionSearchQuery {
+    /// Whether matching requires a resolved definition. The limit is not a filter.
+    pub fn has_filters(&self) -> bool {
+        self.text.is_some()
+            || self.item_type.is_some()
+            || !self.tags.is_empty()
+            || self.element.is_some()
+            || self.slot.is_some()
+            || self.class_type.is_some()
+    }
+
     /// Rejects an out-of-range limit or too many tag filters.
     pub fn validate(&self) -> Result<(), AppError> {
         validate_search_limit(self.limit)?;
@@ -222,6 +238,9 @@ pub struct InstanceSearchQuery {
     pub item_hashes: ItemHashFilter,
     pub perk_hash: Option<PerkHash>,
     pub character_id: Option<CharacterId>,
+    /// Definition criteria applied before the instance limit; its limit is ignored.
+    pub definitions: Option<Box<DefinitionSearchQuery>>,
+    pub min_power: Option<u16>,
     pub limit: usize,
 }
 
@@ -229,6 +248,9 @@ impl InstanceSearchQuery {
     /// Rejects an out-of-range limit or an over-large definition-hash list.
     pub fn validate(&self) -> Result<(), AppError> {
         validate_search_limit(self.limit)?;
+        if let Some(definitions) = &self.definitions {
+            definitions.validate()?;
+        }
         if let ItemHashFilter::AnyOf(hashes) = &self.item_hashes
             && hashes.len() > MAX_HASH_FILTERS
         {
@@ -245,6 +267,20 @@ impl InstanceSearchQuery {
 /// implementation can be checked against it and the in-memory fake can never
 /// drift from the documented behavior.
 pub fn definition_matches(query: &DefinitionSearchQuery, definition: &ItemDefinition) -> bool {
+    if query.element.is_some_and(|element| {
+        definition
+            .element
+            .as_deref()
+            .and_then(|value| value.parse::<DamageType>().ok())
+            != Some(element)
+    }) || query.slot.is_some_and(|slot| definition.slot != Some(slot))
+        || query
+            .class_type
+            .is_some_and(|class_type| definition.class_type != Some(class_type))
+    {
+        return false;
+    }
+
     if let Some(term) = &query.text
         && !normalize_search_text(&definition.name).contains(term.as_str())
     {
@@ -283,6 +319,12 @@ pub fn definition_matches(query: &DefinitionSearchQuery, definition: &ItemDefini
 /// independent of the `active` and `visible` flags: a visible or inactive perk
 /// still satisfies the filter, and a duplicated perk hash is harmless.
 pub fn instance_matches(query: &InstanceSearchQuery, instance: &ItemInstance) -> bool {
+    if query
+        .min_power
+        .is_some_and(|minimum| instance.power.is_none_or(|power| power < minimum))
+    {
+        return false;
+    }
     if let ItemHashFilter::AnyOf(hashes) = &query.item_hashes
         && !hashes.contains(&instance.item_hash)
     {
@@ -309,6 +351,24 @@ pub fn instance_matches(query: &InstanceSearchQuery, instance: &ItemInstance) ->
     }
 
     true
+}
+
+/// Matches instance criteria and, when requested, its resolved definition.
+/// Missing or incorrectly paired definitions fail every active definition filter.
+/// An empty definition query imposes no resolution requirement.
+pub fn instance_matches_with_definition(
+    query: &InstanceSearchQuery,
+    instance: &ItemInstance,
+    definition: Option<&ItemDefinition>,
+) -> bool {
+    instance_matches(query, instance)
+        && query.definitions.as_ref().is_none_or(|criteria| {
+            !criteria.has_filters()
+                || definition.is_some_and(|definition| {
+                    definition.hash == instance.item_hash
+                        && definition_matches(criteria, definition)
+                })
+        })
 }
 
 /// The projection metadata and freshness that accompany one query answer.
@@ -392,7 +452,7 @@ mod tests {
     use super::{
         DefinitionSearchQuery, InstanceSearchQuery, ItemHashFilter, MAX_HASH_FILTERS,
         MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS, SearchTerm, definition_matches,
-        instance_matches, normalize_search_text,
+        instance_matches, instance_matches_with_definition, normalize_search_text,
     };
     use crate::domain::{ItemDefinition, ItemInstance, ItemLocation, PerkSummary};
     use crate::error::{AppError, ErrorCategory};
@@ -410,6 +470,8 @@ mod tests {
             item_type: None,
             tier: None,
             element: None,
+            slot: None,
+            class_type: None,
             tags: Vec::new(),
             version: DefinitionVersion::new("manifest-v1"),
         }
@@ -437,6 +499,9 @@ mod tests {
             text: text.map(term),
             item_type: item_type.map(term),
             tags: tags.into_iter().map(term).collect(),
+            element: None,
+            slot: None,
+            class_type: None,
             limit: MAX_SEARCH_LIMIT,
         }
     }
@@ -449,8 +514,84 @@ mod tests {
             item_hashes,
             perk_hash,
             character_id: None,
+            definitions: None,
+            min_power: None,
             limit: MAX_SEARCH_LIMIT,
         }
+    }
+
+    #[test]
+    fn new_definition_filters_require_matching_attributes() {
+        use crate::domain::{ClassType, DamageType, ItemSlot};
+        let mut item = definition(7, "Solar weapon");
+        item.element = Some("sOLar".into());
+        item.slot = Some(ItemSlot::Energy);
+        item.class_type = Some(ClassType::Hunter);
+        let mut filter = query(None, None, Vec::new());
+        filter.element = Some(DamageType::Solar);
+        assert!(definition_matches(&filter, &item));
+        filter.element = Some(DamageType::Void);
+        assert!(!definition_matches(&filter, &item));
+        filter.element = None;
+        filter.slot = Some(ItemSlot::Energy);
+        assert!(definition_matches(&filter, &item));
+        filter.slot = Some(ItemSlot::Power);
+        assert!(!definition_matches(&filter, &item));
+        filter.slot = None;
+        filter.class_type = Some(ClassType::Hunter);
+        assert!(definition_matches(&filter, &item));
+        filter.class_type = Some(ClassType::Titan);
+        assert!(!definition_matches(&filter, &item));
+        assert!(!definition_matches(&filter, &definition(8, "Unknown")));
+    }
+
+    #[test]
+    fn instance_definition_filters_exclude_other_types_and_missing_definitions() {
+        let item = instance("owned", 7);
+        let mut weapon = definition(7, "Solar weapon");
+        weapon.item_type = Some("Hand Cannon".into());
+        weapon.tags = vec!["exotic".into()];
+        let mut filter = instance_query(ItemHashFilter::Any, None);
+        assert!(instance_matches_with_definition(&filter, &item, None));
+        filter.definitions = Some(Box::new(query(None, Some("hand cannon"), Vec::new())));
+        assert!(instance_matches_with_definition(
+            &filter,
+            &item,
+            Some(&weapon)
+        ));
+        assert!(!instance_matches_with_definition(&filter, &item, None));
+        weapon.item_type = Some("Rocket Launcher".into());
+        assert!(!instance_matches_with_definition(
+            &filter,
+            &item,
+            Some(&weapon)
+        ));
+        filter.definitions = Some(Box::new(query(Some("solar"), None, vec!["exotic"])));
+        assert!(instance_matches_with_definition(
+            &filter,
+            &item,
+            Some(&weapon)
+        ));
+        weapon.tags.clear();
+        assert!(!instance_matches_with_definition(
+            &filter,
+            &item,
+            Some(&weapon)
+        ));
+    }
+
+    #[test]
+    fn minimum_power_is_inclusive_and_missing_power_fails() {
+        let mut item = instance("owned", 7);
+        let mut filter = instance_query(ItemHashFilter::Any, None);
+        filter.min_power = Some(1800);
+        assert!(!instance_matches(&filter, &item));
+        item.power = Some(1799);
+        assert!(!instance_matches(&filter, &item));
+        item.power = Some(1800);
+        assert!(instance_matches(&filter, &item));
+        item.power = Some(1801);
+        assert!(instance_matches(&filter, &item));
     }
 
     #[test]
