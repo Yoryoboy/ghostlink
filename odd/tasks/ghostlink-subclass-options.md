@@ -33,6 +33,10 @@ ornaments, mods).
 - Options are listed for a character's own class plus `shared.*`, grouped by
   element and kind.
 
+## Open questions
+
+- OPEN (user to verify in-game): Hunter Strand reports `canInsert: false` for Whirling Maelstrom and Threaded Specter while Threaded Specter is equipped on Prismatic. If they are unlocked in-game, `canInsert` is not a reliable unlock signal even for the most recent class and the status rule must change. Until then, outputs also expose raw `can_insert`/`enabled`.
+
 ## Constraints and acceptance
 
 - Sync stays bounded; snapshot publication remains atomic.
@@ -51,4 +55,4 @@ ornaments, mods).
 
 ## Next step
 
-SO-002 (pending: canInsert semantics check with user).
+SO-002.
