@@ -593,6 +593,8 @@ mod tests {
 
     /// The exact read a recording service observed.
     #[derive(Clone, Debug, Eq, PartialEq)]
+    // Test-only command log mirrors the shared bounded request without boxing.
+    #[allow(clippy::large_enum_variant)]
     enum Recorded {
         List,
         Search(SearchInventoryRequest),
@@ -746,6 +748,7 @@ mod tests {
             equipped: false,
             locked: false,
             power: Some(1_350),
+            stats: Vec::new(),
             plugs: Vec::new(),
             perks: Vec::new(),
         }
@@ -773,6 +776,7 @@ mod tests {
                 instance: instance("inst-1", 1),
                 perk_names: Vec::new(),
                 mod_names: Vec::new(),
+                stats: Vec::new(),
             }],
             metadata: metadata(FreshnessStatus::Fresh),
         }
@@ -1143,6 +1147,7 @@ mod tests {
                 perk_hash: None,
                 perk_name: None,
                 mod_name: None,
+                stats: Vec::new(),
                 character_id: None,
                 definitions: Some(Box::new(destiny_app::DefinitionSearchQuery {
                     text: Some(destiny_app::SearchTerm::new("gjallar").unwrap()),

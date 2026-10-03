@@ -226,6 +226,71 @@ pub enum ItemHashFilter {
     AnyOf(Vec<ItemHash>),
 }
 
+/// Maximum number of stat conditions in one search.
+pub const MAX_STAT_CONDITIONS: usize = 8;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatOp {
+    AtLeast,
+    AtMost,
+    Equals,
+}
+
+/// A validated exact normalized stat name and signed integer comparison.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatCondition {
+    pub name: SearchTerm,
+    pub op: StatOp,
+    pub value: i32,
+}
+
+impl std::str::FromStr for StatCondition {
+    type Err = AppError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        reject_prohibited_text(input, MAX_SEARCH_TEXT_LENGTH + 32)?;
+        let index = input.find(['<', '>', '=']).ok_or_else(invalid_query)?;
+        let raw_name = input[..index].trim();
+        if raw_name.contains('!') {
+            return Err(invalid_query());
+        }
+        let name = SearchTerm::new(raw_name)?;
+        let tail = &input[index..];
+        let (op, number) = if let Some(number) = tail.strip_prefix(">=") {
+            (StatOp::AtLeast, number)
+        } else if let Some(number) = tail.strip_prefix("<=") {
+            (StatOp::AtMost, number)
+        } else if let Some(number) = tail.strip_prefix('=') {
+            (StatOp::Equals, number)
+        } else {
+            return Err(invalid_query());
+        };
+        let value = number.trim().parse().map_err(|_| invalid_query())?;
+        Ok(Self { name, op, value })
+    }
+}
+
+/// All conditions must hold; any hash with the same normalized name may satisfy
+/// each condition. Missing or unnamed stats never satisfy a condition.
+pub fn instance_matches_stats(
+    query: &InstanceSearchQuery,
+    instance: &ItemInstance,
+    definitions: &[crate::StatDefinition],
+) -> bool {
+    query.stats.iter().all(|condition| {
+        instance.stats.iter().any(|stat| {
+            definitions.iter().any(|definition| {
+                definition.hash() == stat.stat_hash
+                    && normalize_search_text(definition.name()) == condition.name.as_str()
+            }) && match condition.op {
+                StatOp::AtLeast => stat.value >= condition.value,
+                StatOp::AtMost => stat.value <= condition.value,
+                StatOp::Equals => stat.value == condition.value,
+            }
+        })
+    })
+}
+
 /// A validated instance-level inventory search.
 ///
 /// A concrete instance matches when it satisfies the [`ItemHashFilter`], carries
@@ -247,6 +312,7 @@ pub struct InstanceSearchQuery {
     /// Definition criteria applied before the instance limit; its limit is ignored.
     pub definitions: Option<Box<DefinitionSearchQuery>>,
     pub min_power: Option<u16>,
+    pub stats: Vec<StatCondition>,
     pub limit: usize,
 }
 
@@ -254,6 +320,12 @@ impl InstanceSearchQuery {
     /// Rejects an out-of-range limit or an over-large definition-hash list.
     pub fn validate(&self) -> Result<(), AppError> {
         validate_search_limit(self.limit)?;
+        if self.stats.len() > MAX_STAT_CONDITIONS {
+            return Err(invalid_query());
+        }
+        for condition in &self.stats {
+            crate::normalize_stat_name(condition.name.as_str())?;
+        }
         if let Some(definitions) = &self.definitions {
             definitions.validate()?;
         }
@@ -520,6 +592,14 @@ pub struct InventorySearchHit {
     pub perk_names: Vec<String>,
     /// Resolved armor-mod names for armor only, in stored socket order.
     pub mod_names: Vec<String>,
+    pub stats: Vec<NamedStat>,
+}
+
+/// Resolved stat display data; hashes remain internal to ordering and matching.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NamedStat {
+    pub name: String,
+    pub value: i32,
 }
 
 /// A bounded inventory search answer.
@@ -602,6 +682,7 @@ mod tests {
             equipped: false,
             locked: false,
             power: None,
+            stats: Vec::new(),
             plugs: Vec::new(),
             perks: Vec::new(),
         }
@@ -632,6 +713,7 @@ mod tests {
             perk_hash,
             perk_name: None,
             mod_name: None,
+            stats: Vec::new(),
             character_id: None,
             definitions: None,
             min_power: None,

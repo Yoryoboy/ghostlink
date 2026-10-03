@@ -50,6 +50,44 @@ definition!(ActivityDefinition, activity_type_hash: u32, light_level: i32);
 definition!(ActivityModifierDefinition);
 definition!(ActivityTypeDefinition);
 
+/// Minimal named stat identity; no other provider fields are retained.
+#[derive(Clone, Eq, PartialEq)]
+pub struct StatDefinition {
+    hash: u32,
+    name: String,
+}
+impl std::fmt::Debug for StatDefinition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StatDefinition")
+            .field("hash", &self.hash)
+            .finish_non_exhaustive()
+    }
+}
+impl StatDefinition {
+    pub fn new(hash: u32, name: String) -> Result<Self, AppError> {
+        normalize_stat_name(&name)?;
+        Ok(Self { hash, name })
+    }
+    pub const fn hash(&self) -> u32 {
+        self.hash
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+/// Exact, case-insensitive stat-name matching with collapsed whitespace.
+pub fn normalize_stat_name(name: &str) -> Result<String, AppError> {
+    validate_text(name, "")?;
+    let normalized = name
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    validate_text(&normalized, "")?;
+    Ok(normalized)
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub struct ObjectiveDefinition {
     hash: u32,
@@ -101,7 +139,7 @@ pub struct WorldDefinitionTable<T> {
     pub skipped_count: usize,
 }
 
-/// The five world components acquired against one exact index version.
+/// The six non-item components acquired against one exact index version.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorldDefinitionsAcquisition {
     pub version: DefinitionVersion,
@@ -110,6 +148,7 @@ pub struct WorldDefinitionsAcquisition {
     pub modifiers: WorldDefinitionTable<ActivityModifierDefinition>,
     pub objectives: WorldDefinitionTable<ObjectiveDefinition>,
     pub activity_types: WorldDefinitionTable<ActivityTypeDefinition>,
+    pub stats: WorldDefinitionTable<StatDefinition>,
 }
 
 impl WorldDefinitionsAcquisition {
@@ -120,7 +159,11 @@ impl WorldDefinitionsAcquisition {
                 && count <= cap
                 && hashes.collect::<std::collections::HashSet<_>>().len() == count
         }
-        if &self.version != version
+        if !valid(
+            self.stats.definitions.iter().map(StatDefinition::hash),
+            self.stats.definitions.len(),
+            1000,
+        ) || &self.version != version
             || !valid(
                 self.milestones
                     .definitions
@@ -209,6 +252,8 @@ impl WorldDefinitionsAcquisition {
             .sort_by_key(ActivityTypeDefinition::hash);
         self.objectives.skipped_count = 0;
         self.activity_types.skipped_count = 0;
+        self.stats.definitions.sort_by_key(StatDefinition::hash);
+        self.stats.skipped_count = 0;
     }
 }
 
@@ -235,6 +280,10 @@ mod tests {
         assert!(definitions[1].contains("light_level: 2000"));
         let acquisition = WorldDefinitionsAcquisition {
             version: DefinitionVersion::new("v1"),
+            stats: WorldDefinitionTable {
+                definitions: vec![StatDefinition::new(8, name.into()).unwrap()],
+                skipped_count: 0,
+            },
             objectives: WorldDefinitionTable {
                 definitions: vec![ObjectiveDefinition::new(6, description.into(), 1).unwrap()],
                 skipped_count: 0,

@@ -251,6 +251,10 @@ pub struct SearchInventoryArgs {
     #[arg(long = "class", value_name = "NAME", value_parser = parse_class)]
     pub class_type: Option<String>,
 
+    /// Stat comparison (Name>=N, Name<=N, Name=N); repeat to require all.
+    #[arg(long = "stat", value_name = "COND")]
+    pub stat: Vec<String>,
+
     /// Minimum instance power; items without power do not match.
     #[arg(long, value_name = "N")]
     pub min_power: Option<u16>,
@@ -328,7 +332,8 @@ impl SearchInventoryArgs {
         &self,
         definitions: &DefinitionSearchQuery,
     ) -> Result<Option<InstanceSearchQuery>, CliError> {
-        let no_instance_filter = self.item_hash.is_empty()
+        let no_instance_filter = self.stat.is_empty()
+            && self.item_hash.is_empty()
             && self.perk_hash.is_none()
             && self.perk.is_none()
             && self.mod_name.is_none()
@@ -354,6 +359,12 @@ impl SearchInventoryArgs {
             perk_hash: self.perk_hash.map(PerkHash::new),
             perk_name: search_term(self.perk.as_deref())?,
             mod_name: search_term(self.mod_name.as_deref())?,
+            stats: self
+                .stat
+                .iter()
+                .map(|value| value.parse())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| CliError::invalid_request())?,
             character_id,
             definitions: definitions
                 .has_filters()
@@ -472,6 +483,8 @@ impl InspectItemArgs {
 ///
 /// Each variant carries the exact shared request type, so the CLI adds no query
 /// concept of its own and a malformed value can never reach a service.
+// A single bounded command request; keep the shared request directly accessible.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReadRequest {
     ListCharacters,
@@ -507,6 +520,7 @@ pub fn category_outcome(category: ErrorCategory) -> ErrorOutcome {
         ErrorCategory::CallbackTimeout => ("provider_unavailable", 21),
         ErrorCategory::ProviderValidation => ("invalid_request", 2),
         ErrorCategory::DefinitionsUnavailable => ("definitions_unavailable", 33),
+        ErrorCategory::UnknownStatName => ("unknown_stat_name", 2),
         ErrorCategory::StaleState => ("stale_state", 30),
         ErrorCategory::AmbiguousMatch => ("ambiguous_match", 31),
         ErrorCategory::UnsupportedOperation => ("unsupported_operation", 40),
@@ -658,7 +672,7 @@ mod tests {
         SearchInventoryRequest, SyncMetadata, Timestamp,
     };
 
-    const ALL_CATEGORIES: [ErrorCategory; 22] = [
+    const ALL_CATEGORIES: [ErrorCategory; 23] = [
         ErrorCategory::AuthorizationRequired,
         ErrorCategory::ReauthorizationRequired,
         ErrorCategory::AlreadyAuthorizing,
@@ -671,6 +685,7 @@ mod tests {
         ErrorCategory::ProviderUnavailable,
         ErrorCategory::ProviderValidation,
         ErrorCategory::DefinitionsUnavailable,
+        ErrorCategory::UnknownStatName,
         ErrorCategory::StaleState,
         ErrorCategory::AmbiguousMatch,
         ErrorCategory::UnsupportedOperation,
@@ -717,6 +732,10 @@ mod tests {
             },
             ErrorCategory::ProviderValidation => ErrorOutcome {
                 code: "invalid_request",
+                exit_code: 2,
+            },
+            ErrorCategory::UnknownStatName => ErrorOutcome {
+                code: "unknown_stat_name",
                 exit_code: 2,
             },
             ErrorCategory::DefinitionsUnavailable => ErrorOutcome {
@@ -1241,7 +1260,7 @@ mod tests {
     fn the_error_matrix_is_stable_over_every_current_category() {
         assert_eq!(
             ALL_CATEGORIES.len(),
-            22,
+            23,
             "a new ErrorCategory needs a matrix entry and a test expectation"
         );
         for category in ALL_CATEGORIES {
@@ -1301,6 +1320,7 @@ mod tests {
                 equipped: false,
                 locked: false,
                 power: None,
+                stats: Vec::new(),
                 plugs: Vec::new(),
                 perks: Vec::new(),
             },

@@ -13,6 +13,37 @@ mod output {
 }
 
 #[test]
+fn invalid_stat_conditions_are_rejected_by_both_surfaces() {
+    use clap::Parser;
+    for conditions in [
+        vec!["Weapons>30".to_owned()],
+        vec!["=20".to_owned()],
+        vec!["Health=20".to_owned(); 9],
+        vec![format!("{}=1", "a".repeat(257))],
+    ] {
+        let mut argv = vec!["ghostlink".to_owned(), "search-inventory".to_owned()];
+        for condition in &conditions {
+            argv.extend(["--stat".to_owned(), condition.clone()]);
+        }
+        assert!(
+            cli_command::Cli::try_parse_from(argv)
+                .unwrap()
+                .into_read_request()
+                .is_err()
+        );
+        let mcp: destiny_mcp::schema::SearchInventoryArgs =
+            serde_json::from_value(serde_json::json!({"stats": conditions})).unwrap();
+        assert!(mcp.into_request().is_err());
+    }
+    assert!(
+        serde_json::from_value::<destiny_mcp::schema::SearchInventoryArgs>(
+            serde_json::json!({"stat": ["Weapons>=30"]})
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn invalid_perk_names_are_rejected_by_both_surfaces() {
     use clap::Parser;
     for name in [
@@ -87,6 +118,23 @@ fn search_cli_mcp_request_parity() {
 
     for (flags, args) in [
         (vec![], json!({})),
+        (
+            vec!["--stat", " Weapons >= 30 "],
+            json!({"stats": [" Weapons >= 30 "]}),
+        ),
+        (
+            vec![
+                "--slot",
+                "helmet",
+                "--class",
+                "hunter",
+                "--stat",
+                "Class<=35",
+                "--stat",
+                "Health=20",
+            ],
+            json!({"slot": "helmet", "class_type": "hunter", "stats": ["Class<=35", "Health=20"]}),
+        ),
         (
             vec!["--mod", "  HARMONIC   SIPHON "],
             json!({"mod_name": "  HARMONIC   SIPHON "}),

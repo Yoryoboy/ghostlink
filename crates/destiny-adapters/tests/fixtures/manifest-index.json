@@ -9,7 +9,8 @@
         "DestinyActivityDefinition": "/common/destiny2_content/json/en/activities-fixture.json",
         "DestinyActivityModifierDefinition": "/common/destiny2_content/json/en/modifiers-fixture.json",
         "DestinyObjectiveDefinition": "/common/destiny2_content/json/en/objectives-fixture.json",
-        "DestinyActivityTypeDefinition": "/common/destiny2_content/json/en/types-fixture.json"
+        "DestinyActivityTypeDefinition": "/common/destiny2_content/json/en/types-fixture.json",
+        "DestinyStatDefinition": "/common/destiny2_content/json/en/stats-fixture.json"
       }
     }
   }

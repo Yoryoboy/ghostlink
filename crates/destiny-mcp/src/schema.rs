@@ -365,6 +365,13 @@ pub struct SearchInventoryArgs {
     #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
     pub mod_name: Option<String>,
 
+    /// Stat comparisons: Name>=N, Name<=N, Name=N. All must hold; names are
+    /// exact and case-insensitive, and any matching hash may satisfy a name.
+    /// A stat-only filter searches owned instances.
+    #[serde(default)]
+    #[schemars(length(max = destiny_app::MAX_STAT_CONDITIONS), inner(length(min = 1, max = 288)))]
+    pub stats: Vec<String>,
+
     /// Minimum owned instance power (0..65535); items without power do not match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_power: Option<u16>,
@@ -547,6 +554,13 @@ pub struct InventorySearchHitView {
     pub perk_names: Vec<String>,
     /// Resolved armor-mod names in socket order, never plug hashes.
     pub mods: Vec<String>,
+    pub stats: Vec<NamedStatView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct NamedStatView {
+    pub name: String,
+    pub value: i32,
 }
 
 /// Structured result of `search_inventory`.
@@ -798,6 +812,7 @@ fn error_code(category: ErrorCategory) -> &'static str {
         ErrorCategory::ProviderUnavailable => "provider_unavailable",
         ErrorCategory::ProviderValidation => "provider_validation",
         ErrorCategory::DefinitionsUnavailable => "definitions_unavailable",
+        ErrorCategory::UnknownStatName => "unknown_stat_name",
         ErrorCategory::StaleState => "stale_state",
         ErrorCategory::AmbiguousMatch => "ambiguous_match",
         ErrorCategory::UnsupportedOperation => "unsupported_operation",

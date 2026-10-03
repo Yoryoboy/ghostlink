@@ -154,6 +154,9 @@ fn canonicalize(mut input: InventorySnapshotInput) -> InventorySnapshotInput {
     input
         .items
         .sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+    for item in &mut input.items {
+        item.stats.sort_by_key(|stat| stat.stat_hash);
+    }
     input
 }
 
@@ -315,7 +318,10 @@ fn projection_rows_exist(connection: &Connection) -> Result<bool, AppError> {
     let plugs: i64 = connection
         .query_row("SELECT count(*) FROM item_plugs", [], |row| row.get(0))
         .map_err(|_| storage_failure())?;
-    Ok(perks > 0 || plugs > 0)
+    let stats: i64 = connection
+        .query_row("SELECT count(*) FROM item_stats", [], |row| row.get(0))
+        .map_err(|_| storage_failure())?;
+    Ok(perks > 0 || plugs > 0 || stats > 0)
 }
 
 /// Reconstructs every stored character with its optional fields, checked.
@@ -412,6 +418,7 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
         };
 
         let plugs = read_plugs(connection, &instance_id)?;
+        let stats = read_stats(connection, &instance_id)?;
         items.push(ItemInstance {
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
@@ -421,6 +428,7 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
             locked: decode_boolean(locked)?,
             power: decode_optional_u16(power)?,
             plugs,
+            stats,
             perks: Vec::new(),
         });
     }
@@ -429,7 +437,9 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
     let orphan: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM item_plugs p LEFT JOIN items i \
-         ON p.instance_id = i.instance_id WHERE i.instance_id IS NULL)",
+         ON p.instance_id = i.instance_id WHERE i.instance_id IS NULL) OR \
+         EXISTS(SELECT 1 FROM item_stats s LEFT JOIN items i \
+         ON s.instance_id = i.instance_id WHERE i.instance_id IS NULL)",
             [],
             |row| row.get(0),
         )
@@ -438,6 +448,38 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
         return Err(storage_failure());
     }
     Ok(items)
+}
+
+/// Shared checked reconstruction of a bounded, hash-sorted stat set.
+pub(super) fn read_stats(
+    connection: &Connection,
+    instance_id: &str,
+) -> Result<Vec<destiny_core::StatSummary>, AppError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT stat_hash, value FROM item_stats WHERE instance_id = ?1 ORDER BY stat_hash",
+        )
+        .map_err(|_| storage_failure())?;
+    let rows = statement
+        .query_map([instance_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|_| storage_failure())?;
+    let mut stats = Vec::new();
+    let mut previous = None;
+    for row in rows {
+        let (hash, value) = row.map_err(|_| storage_failure())?;
+        let hash = u32::try_from(hash).map_err(|_| storage_failure())?;
+        if stats.len() >= 64 || previous.is_some_and(|previous| previous >= hash) {
+            return Err(storage_failure());
+        }
+        previous = Some(hash);
+        stats.push(destiny_core::StatSummary {
+            stat_hash: hash,
+            value: i32::try_from(value).map_err(|_| storage_failure())?,
+        });
+    }
+    Ok(stats)
 }
 
 /// Shared inventory/search reconstruction of enabled plugs in contiguous order.
@@ -645,6 +687,18 @@ fn replace_projection(
             )
             .map_err(|_| storage_failure())?;
 
+        for stat in &item.stats {
+            connection
+                .execute(
+                    "INSERT INTO item_stats (instance_id, stat_hash, value) VALUES (?1, ?2, ?3)",
+                    params![
+                        item.instance_id.as_str(),
+                        i64::from(stat.stat_hash),
+                        i64::from(stat.value)
+                    ],
+                )
+                .map_err(|_| storage_failure())?;
+        }
         for (ordinal, plug) in item.plugs.iter().enumerate() {
             connection
                 .execute(

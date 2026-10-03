@@ -97,7 +97,10 @@ pub struct QueryService<G, R> {
 impl<G, R> QueryService<G, R>
 where
     G: ProfileGateway,
-    R: InventoryRepository + SearchRepository + DefinitionRepository,
+    R: InventoryRepository
+        + SearchRepository
+        + DefinitionRepository
+        + destiny_core::StatDefinitionRepository,
 {
     /// Wraps one profile sync service and the repository behind it.
     pub fn new(sync: ProfileSyncService<G, R>) -> Self {
@@ -168,6 +171,22 @@ where
         }
 
         self.require_definitions()?;
+        if let Some(query) = &request.instances
+            && !query.stats.is_empty()
+        {
+            if self.repository().stat_definition_count()? == 0 {
+                return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+            }
+            for condition in &query.stats {
+                if self
+                    .repository()
+                    .stat_hashes_by_name(condition.name.as_str())?
+                    .is_empty()
+                {
+                    return Err(AppError::new(ErrorCategory::UnknownStatName));
+                }
+            }
+        }
         let outcome = self.synchronize(policy, now)?;
         let metadata = query_metadata(&outcome, policy, now);
 
@@ -182,6 +201,7 @@ where
                 perk_hash: None,
                 perk_name: None,
                 mod_name: None,
+                stats: Vec::new(),
                 character_id: None,
                 definitions: None,
                 min_power: None,
@@ -197,6 +217,7 @@ where
             let instances = self.sync.repository().search_instances(instance_query)?;
             hits.reserve(instances.len());
             let mut resolved_plugs = std::collections::HashMap::new();
+            let mut resolved_stats = std::collections::HashMap::new();
             for instance in instances {
                 let definition = self.resolve_definition(instance.item_hash)?;
                 let mut plugs = Vec::new();
@@ -218,7 +239,24 @@ where
                 }
                 let (perk_names, mod_names) =
                     destiny_core::query::inventory_plug_names(&definition, &plugs);
+                let mut named = Vec::new();
+                for stat in &instance.stats {
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        resolved_stats.entry(stat.stat_hash)
+                    {
+                        entry.insert(self.repository().lookup_stat(stat.stat_hash)?);
+                    }
+                    if let Some(definition) = &resolved_stats[&stat.stat_hash] {
+                        named.push((definition.name().to_owned(), stat.stat_hash, stat.value));
+                    }
+                }
+                named.sort_by(|left, right| (&left.0, left.1).cmp(&(&right.0, right.1)));
+                let stats = named
+                    .into_iter()
+                    .map(|(name, _, value)| destiny_core::NamedStat { name, value })
+                    .collect();
                 hits.push(InventorySearchHit {
+                    stats,
                     definition,
                     perk_names,
                     mod_names,
@@ -348,7 +386,10 @@ pub trait QueryOperations {
 impl<G, R> QueryOperations for QueryService<G, R>
 where
     G: ProfileGateway,
-    R: InventoryRepository + SearchRepository + DefinitionRepository,
+    R: InventoryRepository
+        + SearchRepository
+        + DefinitionRepository
+        + destiny_core::StatDefinitionRepository,
 {
     fn list_characters(
         &mut self,
@@ -568,6 +609,18 @@ mod tests {
         }
     }
 
+    impl destiny_core::StatDefinitionRepository for CompositeRepository {
+        fn lookup_stat(&self, hash: u32) -> Result<Option<destiny_core::StatDefinition>, AppError> {
+            self.definitions.lookup_stat(hash)
+        }
+        fn stat_hashes_by_name(&self, name: &str) -> Result<Vec<u32>, AppError> {
+            self.definitions.stat_hashes_by_name(name)
+        }
+        fn stat_definition_count(&self) -> Result<usize, AppError> {
+            self.definitions.stat_definition_count()
+        }
+    }
+
     /// A read-only spy over the fake gateway the sync service owns by value.
     struct SharedGateway(Rc<RefCell<QueuedProfileGateway>>);
 
@@ -685,6 +738,7 @@ mod tests {
             equipped: false,
             locked: false,
             power: None,
+            stats: Vec::new(),
             plugs: Vec::new(),
             perks,
         }
@@ -749,6 +803,7 @@ mod tests {
             perk_hash,
             perk_name: None,
             mod_name: None,
+            stats: Vec::new(),
             character_id,
             definitions: None,
             min_power: None,

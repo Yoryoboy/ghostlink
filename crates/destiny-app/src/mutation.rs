@@ -1193,6 +1193,7 @@ where
                         perk_hash: None,
                         perk_name: None,
                         mod_name: None,
+                        stats: Vec::new(),
                         character_id: None,
                         definitions: None,
                         min_power: None,
@@ -1545,6 +1546,7 @@ mod tests {
             equipped: false,
             locked: false,
             power: None,
+            stats: Vec::new(),
             plugs: Vec::new(),
             perks: Vec::new(),
         }

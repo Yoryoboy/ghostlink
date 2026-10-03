@@ -29,34 +29,42 @@ pub enum OutputMode {
 /// Renders the public version label and counts, never definition payloads.
 pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncReport) -> String {
     use destiny_app::ManifestSyncReport;
-    let (status, version, count, skipped, world_counts, world_skipped) = match report {
-        ManifestSyncReport::Updated {
-            version,
-            record_count,
-            skipped,
-            world_counts,
-            world_skipped,
-        } => (
-            "updated",
-            version,
-            *record_count,
-            Some(*skipped),
-            world_counts,
-            Some(world_skipped),
-        ),
-        ManifestSyncReport::Unchanged {
-            version,
-            record_count,
-            world_counts,
-        } => (
-            "unchanged",
-            version,
-            *record_count,
-            None,
-            world_counts,
-            None,
-        ),
-    };
+    let (status, version, count, skipped, world_counts, world_skipped, stat_count, stat_skipped) =
+        match report {
+            ManifestSyncReport::Updated {
+                version,
+                record_count,
+                skipped,
+                world_counts,
+                world_skipped,
+                stat_count,
+                stat_skipped,
+            } => (
+                "updated",
+                version,
+                *record_count,
+                Some(*skipped),
+                world_counts,
+                Some(world_skipped),
+                *stat_count,
+                Some(*stat_skipped),
+            ),
+            ManifestSyncReport::Unchanged {
+                version,
+                record_count,
+                world_counts,
+                stat_count,
+            } => (
+                "unchanged",
+                version,
+                *record_count,
+                None,
+                world_counts,
+                None,
+                *stat_count,
+                None,
+            ),
+        };
     match mode {
         OutputMode::Human => {
             let mut text = format!(
@@ -81,6 +89,10 @@ pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncRepor
                     text.push_str(&format!("\n{label}_skipped: {}", skipped[index]));
                 }
             }
+            text.push_str(&format!("\nstat_definitions: {stat_count}"));
+            if let Some(skipped) = stat_skipped {
+                text.push_str(&format!("\nstat_definitions_skipped: {skipped}"));
+            }
             text
         }
         OutputMode::Json => {
@@ -102,6 +114,10 @@ pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncRepor
                 if let Some(skipped) = world_skipped {
                     value[format!("{label}_skipped")] = json!(skipped[index]);
                 }
+            }
+            value["stat_definitions"] = json!(stat_count);
+            if let Some(skipped) = stat_skipped {
+                value["stat_definitions_skipped"] = json!(skipped);
             }
             value.to_string()
         }
@@ -378,6 +394,7 @@ fn search_json(result: &InventorySearchResult) -> String {
                 "instance": instance_json(&hit.instance),
                 "perk_names": hit.perk_names,
                 "mods": hit.mod_names,
+                "stats": hit.stats.iter().map(|stat| serde_json::json!({"name": stat.name, "value": stat.value})).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>(),
         "kind": "inventory_search",
@@ -496,6 +513,16 @@ fn instance_line(hit: &InventorySearchHit) -> String {
             hit.mod_names
                 .iter()
                 .map(|name| sanitize(name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !hit.stats.is_empty() {
+        parts.push(format!(
+            "stats: {}",
+            hit.stats
+                .iter()
+                .map(|stat| format!("{} {}", sanitize(&stat.name), stat.value))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -1025,6 +1052,7 @@ mod tests {
             equipped: false,
             locked: true,
             power: Some(1350),
+            stats: Vec::new(),
             plugs: Vec::new(),
             perks: vec![
                 PerkSummary {
@@ -1061,6 +1089,7 @@ mod tests {
                 instance: instance("inst-1", 1, ItemLocation::Vault),
                 perk_names: Vec::new(),
                 mod_names: Vec::new(),
+                stats: Vec::new(),
             }],
             metadata: metadata(FreshnessStatus::Fresh),
         }
@@ -1301,7 +1330,7 @@ mod tests {
     #[test]
     fn search_renders_one_bounded_json_object() {
         let expected = format!(
-            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON}}}"#
+            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON}}}"#
         );
         assert_eq!(render_search(OutputMode::Json, &search_result()), expected);
     }

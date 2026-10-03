@@ -453,6 +453,38 @@ impl destiny_core::ports::WorldDefinitionRepository for InMemoryDefinitionReposi
     }
 }
 
+impl destiny_core::ports::StatDefinitionRepository for InMemoryDefinitionRepository {
+    fn lookup_stat(&self, hash: u32) -> Result<Option<destiny_core::StatDefinition>, AppError> {
+        Ok(self.world.as_ref().and_then(|world| {
+            world
+                .stats
+                .definitions
+                .iter()
+                .find(|stat| stat.hash() == hash)
+                .cloned()
+        }))
+    }
+    fn stat_hashes_by_name(&self, name: &str) -> Result<Vec<u32>, AppError> {
+        let normalized = destiny_core::normalize_stat_name(name)?;
+        let mut hashes = Vec::new();
+        if let Some(world) = &self.world {
+            for stat in &world.stats.definitions {
+                if destiny_core::normalize_stat_name(stat.name())? == normalized {
+                    hashes.push(stat.hash());
+                }
+            }
+        }
+        hashes.sort_unstable();
+        Ok(hashes)
+    }
+    fn stat_definition_count(&self) -> Result<usize, AppError> {
+        Ok(self
+            .world
+            .as_ref()
+            .map_or(0, |world| world.stats.definitions.len()))
+    }
+}
+
 impl destiny_core::ports::DefinitionCatalogRepository for InMemoryDefinitionRepository {
     fn definition_count(&self) -> Result<usize, AppError> {
         Ok(self.definitions.len())
@@ -533,6 +565,9 @@ impl InventoryRepository for InMemoryInventoryRepository {
         input
             .items
             .sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+        for item in &mut input.items {
+            item.stats.sort_by_key(|stat| stat.stat_hash);
+        }
         let revision = match (self.current.as_ref(), self.previous_input.as_ref()) {
             (Some(current), Some(previous)) if previous.content_eq(&input) => {
                 current.metadata.revision
@@ -579,6 +614,7 @@ impl InventoryRepository for InMemoryInventoryRepository {
 /// tests exercise definition-versus-instance behavior without a database.
 #[derive(Clone, Debug, Default)]
 pub struct InMemorySearchRepository {
+    stat_definitions: Vec<destiny_core::StatDefinition>,
     definitions: Vec<ItemDefinition>,
     instances: Vec<ItemInstance>,
 }
@@ -593,6 +629,7 @@ impl InMemorySearchRepository {
     pub fn with_definitions(definitions: Vec<ItemDefinition>) -> Self {
         Self {
             definitions,
+            stat_definitions: Vec::new(),
             instances: Vec::new(),
         }
     }
@@ -601,8 +638,13 @@ impl InMemorySearchRepository {
     pub fn with_projection(definitions: Vec<ItemDefinition>, snapshot: &InventorySnapshot) -> Self {
         Self {
             definitions,
+            stat_definitions: Vec::new(),
             instances: snapshot.items.clone(),
         }
+    }
+
+    pub fn set_stat_definitions(&mut self, definitions: Vec<destiny_core::StatDefinition>) {
+        self.stat_definitions = definitions;
     }
 
     /// Replaces every visible definition, as a completed Manifest publication would.
@@ -677,6 +719,11 @@ impl SearchRepository for InMemorySearchRepository {
                     .collect();
                 destiny_core::query::instance_matches_with_definition(query, instance, unique)
                     && destiny_core::query::instance_matches_plug_names(query, &plugs)
+                    && destiny_core::query::instance_matches_stats(
+                        query,
+                        instance,
+                        &self.stat_definitions,
+                    )
             })
             .cloned()
             .collect();
@@ -835,6 +882,10 @@ pub fn synthetic_world(version: DefinitionVersion) -> destiny_core::WorldDefinit
     use destiny_core::*;
     WorldDefinitionsAcquisition {
         version,
+        stats: WorldDefinitionTable {
+            definitions: vec![StatDefinition::new(5, "Weapons".into()).unwrap()],
+            skipped_count: 7,
+        },
         objectives: WorldDefinitionTable {
             definitions: vec![ObjectiveDefinition::new(5, "Progress".into(), 1).unwrap()],
             skipped_count: 5,
@@ -891,6 +942,7 @@ impl QueuedManifestGateway {
                     modifier_path: "/common/destiny2_content/modifiers.json".into(),
                     objective_path: "/common/destiny2_content/objectives.json".into(),
                     activity_type_path: "/common/destiny2_content/types.json".into(),
+                    stat_path: "/common/destiny2_content/stats.json".into(),
                 }));
                 self.queue_world(Ok(synthetic_world(batch.version.clone())));
                 self.queue_component(Ok(batch));
@@ -1063,6 +1115,7 @@ mod tests {
                 equipped: false,
                 locked: false,
                 power: None,
+                stats: Vec::new(),
                 plugs: Vec::new(),
                 perks: Vec::new(),
             }],
@@ -1103,6 +1156,7 @@ mod tests {
                     equipped: false,
                     locked: false,
                     power: Some(100),
+                    stats: Vec::new(),
                     plugs: Vec::new(),
                     perks: vec![
                         PerkSummary {
@@ -1125,6 +1179,7 @@ mod tests {
                     equipped: true,
                     locked: true,
                     power: Some(200),
+                    stats: Vec::new(),
                     plugs: Vec::new(),
                     perks: Vec::new(),
                 },
@@ -1185,6 +1240,7 @@ mod tests {
             equipped: false,
             locked: false,
             power: None,
+            stats: Vec::new(),
             plugs: Vec::new(),
             perks: perk_hashes
                 .into_iter()
@@ -1228,6 +1284,7 @@ mod tests {
             perk_hash: perk_hash.map(PerkHash::new),
             perk_name: None,
             mod_name: None,
+            stats: Vec::new(),
             character_id: character.map(CharacterId::new),
             definitions: None,
             min_power: None,

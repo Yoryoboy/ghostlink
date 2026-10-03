@@ -377,6 +377,7 @@ mod tests {
                     source: SourceMarker::Manifest,
                 },
                 WorldDefinitionsAcquisition {
+                    stats: crate::test_support::synthetic_world(version.clone()).stats,
                     objectives: crate::test_support::synthetic_world(version.clone()).objectives,
                     activity_types: crate::test_support::synthetic_world(version.clone())
                         .activity_types,

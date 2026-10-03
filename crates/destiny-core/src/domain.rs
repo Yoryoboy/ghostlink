@@ -68,6 +68,13 @@ pub struct PlugSummary {
     pub enabled: bool,
 }
 
+/// One instance stat, keyed by its unsigned Manifest definition hash.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatSummary {
+    pub stat_hash: u32,
+    pub value: i32,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemInstance {
     pub instance_id: ItemInstanceId,
@@ -90,6 +97,8 @@ pub struct ItemInstance {
     /// Acquisition is classification-neutral. Publication keeps weapon perks,
     /// armor mods and unknown definitions using [`classify_plug`].
     pub plugs: Vec<PlugSummary>,
+    /// Unique stats in ascending hash order; order is not semantic.
+    pub stats: Vec<StatSummary>,
 }
 
 impl ItemInstance {
@@ -291,6 +300,7 @@ mod plug_tests {
             locked: false,
             power: None,
             perks: vec![],
+            stats: Vec::new(),
             plugs: [1, 2, 3, 4, 1, 5, 6]
                 .into_iter()
                 .map(|hash| PlugSummary {
