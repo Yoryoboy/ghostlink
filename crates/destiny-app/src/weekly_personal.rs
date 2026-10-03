@@ -1158,6 +1158,9 @@ mod tests {
         }
     }
     impl WorldDefinitionRepository for Repository {
+        fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
+            self.inner.lookup_loadout_name(hash)
+        }
         fn lookup_milestone(
             &self,
             hash: u32,

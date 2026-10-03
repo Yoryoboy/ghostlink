@@ -856,6 +856,7 @@ mod tests {
                 objective_path: "unused".into(),
                 activity_type_path: "unused".into(),
                 stat_path: "unused".into(),
+                loadout_name_path: "unused".into(),
             }));
             let mut service = ManifestService::new(gateway, repository);
             assert_eq!(
@@ -944,6 +945,7 @@ mod tests {
                         objective_path: "unused".into(),
                         activity_type_path: "unused".into(),
                         stat_path: "unused".into(),
+                        loadout_name_path: "unused".into(),
                     }));
                     gateway.queue_component(Err(error.clone()));
                 } else {
@@ -992,6 +994,7 @@ mod tests {
                     objective_path: "unused".into(),
                     activity_type_path: "unused".into(),
                     stat_path: "unused".into(),
+                    loadout_name_path: "unused".into(),
                 }));
                 gateway.queue_component(Ok(acquisition(VERSION, vec![candidate(42, "next")])));
                 gateway.queue_world(if mismatch {
@@ -1075,6 +1078,7 @@ mod tests {
                 objective_path: "unused".into(),
                 activity_type_path: "unused".into(),
                 stat_path: "unused".into(),
+                loadout_name_path: "unused".into(),
             }));
             gateway.queue_component(Ok(acquisition(VERSION, vec![candidate(42, "Gamma")])));
             let mut service = ManifestService::new(gateway, committed_repository());

@@ -3,9 +3,166 @@ use destiny_app::test_support::InMemoryDefinitionRepository;
 use destiny_core::ports::{DefinitionCatalogRepository, WorldDefinitionRepository};
 use destiny_core::*;
 
+#[test]
+fn loadout_names_roundtrip_replace_and_remain_optional_for_readiness() {
+    fn exercise<R: WorldDefinitionRepository>(mut repository: R) {
+        assert_eq!(repository.lookup_loadout_name(7).unwrap(), None);
+        let mut catalog = world("v1", "World");
+        catalog.loadout_names.definitions =
+            vec![LoadoutNameDefinition::new(7, "PvE".into()).unwrap()];
+        repository
+            .publish_manifest(items("v1", "item"), catalog.clone())
+            .unwrap();
+        assert_eq!(
+            repository.lookup_loadout_name(7).unwrap(),
+            Some("PvE".into())
+        );
+        assert_eq!(repository.lookup_loadout_name(99).unwrap(), None);
+        let mut bad = catalog.clone();
+        bad.loadout_names
+            .definitions
+            .push(bad.loadout_names.definitions[0].clone());
+        assert!(
+            repository
+                .publish_manifest(items("v1", "item"), bad)
+                .is_err()
+        );
+        catalog.loadout_names.definitions[0] = LoadoutNameDefinition::new(7, "PvP".into()).unwrap();
+        repository
+            .publish_manifest(items("v1", "item"), catalog.clone())
+            .unwrap();
+        assert_eq!(
+            repository.lookup_loadout_name(7).unwrap(),
+            Some("PvP".into())
+        );
+        catalog.loadout_names.definitions.clear();
+        repository
+            .publish_manifest(items("v1", "item"), catalog)
+            .unwrap();
+        assert_eq!(repository.lookup_loadout_name(7).unwrap(), None);
+        assert!(!repository.world_definition_counts().unwrap().contains(&0));
+    }
+    exercise(SqliteStore::open_in_memory().unwrap());
+    exercise(InMemoryDefinitionRepository::default());
+}
+
+#[test]
+fn loadout_name_reads_validate_version_and_text_and_publication_is_atomic() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut catalog = world("v1", "World");
+    catalog.loadout_names.definitions = vec![LoadoutNameDefinition::new(7, "PvE".into()).unwrap()];
+    store
+        .publish_manifest(items("v1", "prior"), catalog.clone())
+        .unwrap();
+    let metadata = store.current_metadata().unwrap();
+    store.connection().execute_batch("CREATE TRIGGER fail_loadout BEFORE INSERT ON loadout_name_definitions BEGIN SELECT RAISE(ABORT, 'failure'); END;").unwrap();
+    catalog.version = DefinitionVersion::new("v2");
+    assert_eq!(
+        store
+            .publish_manifest(items("v2", "next"), catalog)
+            .unwrap_err()
+            .category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(store.current_metadata().unwrap(), metadata);
+    assert_eq!(store.lookup_loadout_name(7).unwrap(), Some("PvE".into()));
+    assert!(
+        matches!(store.lookup_definition(ItemHash::new(10)).unwrap(), Resolution::Unique(item) if item.name == "prior")
+    );
+    store
+        .connection()
+        .execute(
+            "UPDATE loadout_name_definitions SET definition_version='v2'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        store.lookup_loadout_name(7).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    store
+        .connection()
+        .execute(
+            "UPDATE loadout_name_definitions SET definition_version='v1', name=' '",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        store.lookup_loadout_name(7).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+}
+
+#[test]
+fn loadout_name_v11_upgrade_preserves_data_and_invalidates_manifest_freshness() {
+    let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+    migrations::migrate_to(&mut connection, 10).unwrap();
+    connection.execute_batch("INSERT INTO definitions(hash,name,definition_version) VALUES(1,'Item','v1'); INSERT INTO stat_definitions VALUES(2,'Stat','v1'); INSERT INTO sync_metadata VALUES('manifest_definitions','1','manifest','8','v1'),('profile_inventory','1','profile','2','v1');").unwrap();
+    migrations::migrate_to(&mut connection, 11).unwrap();
+    assert_eq!(migrations::read_user_version(&connection).unwrap(), 11);
+    assert_eq!(
+        connection
+            .query_row("SELECT name FROM definitions", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "Item"
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT name FROM stat_definitions", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "Stat"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT revision FROM sync_metadata WHERE dataset='profile_inventory'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "2"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM sync_metadata WHERE dataset='manifest_definitions'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    for sql in [
+        "INSERT INTO loadout_name_definitions VALUES(-1,'Name','v1')",
+        "INSERT INTO loadout_name_definitions VALUES(4294967296,'Name','v1')",
+        "INSERT INTO loadout_name_definitions VALUES(1,'','v1')",
+    ] {
+        assert!(connection.execute(sql, []).is_err());
+    }
+    migrations::migrate_to(&mut connection, 10).unwrap();
+    assert!(
+        connection
+            .prepare("SELECT * FROM loadout_name_definitions")
+            .is_err()
+    );
+    assert_eq!(
+        connection
+            .query_row("SELECT name FROM definitions", [], |r| r
+                .get::<_, String>(0))
+            .unwrap(),
+        "Item"
+    );
+}
+
 fn world(version: &str, name: &str) -> WorldDefinitionsAcquisition {
     WorldDefinitionsAcquisition {
         version: DefinitionVersion::new(version),
+        loadout_names: WorldDefinitionTable {
+            definitions: vec![],
+            skipped_count: 0,
+        },
         stats: WorldDefinitionTable {
             definitions: vec![StatDefinition::new(6, name.into()).unwrap()],
             skipped_count: 7,

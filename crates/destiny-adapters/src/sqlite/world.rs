@@ -80,6 +80,12 @@ macro_rules! lookup {
 }
 
 impl WorldDefinitionRepository for SqliteStore {
+    fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
+        Ok(read_loadout_names(self.connection())?
+            .into_iter()
+            .find(|(definition, _)| definition.hash() == hash)
+            .map(|(definition, _)| definition.name().to_owned()))
+    }
     lookup!(
         lookup_milestone,
         MilestoneDefinition,
@@ -139,7 +145,50 @@ impl WorldDefinitionRepository for SqliteStore {
     }
 }
 
+fn read_loadout_names(
+    connection: &Connection,
+) -> Result<Vec<(LoadoutNameDefinition, String)>, AppError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT hash, name, definition_version FROM loadout_name_definitions ORDER BY hash",
+        )
+        .map_err(|_| storage_failure())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, u32>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|_| storage_failure())?;
+    let metadata = super::definitions::read_manifest_metadata(connection)?;
+    let mut definitions = Vec::new();
+    for row in rows {
+        let (hash, name, version) = row.map_err(|_| storage_failure())?;
+        if !metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.definition_version.as_str() == version)
+        {
+            return Err(storage_failure());
+        }
+        definitions.push((
+            LoadoutNameDefinition::new(hash, name).map_err(|_| storage_failure())?,
+            version,
+        ));
+        if definitions.len() > 1000 {
+            return Err(storage_failure());
+        }
+    }
+    Ok(definitions)
+}
+
 pub(super) fn clear_catalog(connection: &Connection) -> Result<(), AppError> {
+    if super::migrations::read_user_version(connection)? >= 11 {
+        connection
+            .execute("DELETE FROM loadout_name_definitions", [])
+            .map_err(|_| storage_failure())?;
+    }
     if super::migrations::read_user_version(connection)? >= 8 {
         connection
             .execute("DELETE FROM stat_definitions", [])
@@ -155,6 +204,16 @@ pub(super) fn replace_catalog(
 ) -> Result<(), AppError> {
     clear_catalog(connection)?;
     let version = world.version.as_str();
+    if super::migrations::read_user_version(connection)? >= 11 {
+        for definition in &world.loadout_names.definitions {
+            connection
+                .execute(
+                    "INSERT INTO loadout_name_definitions VALUES (?1, ?2, ?3)",
+                    params![definition.hash(), definition.name(), version],
+                )
+                .map_err(|_| storage_failure())?;
+        }
+    }
     if super::migrations::read_user_version(connection)? >= 8 {
         for definition in &world.stats.definitions {
             connection
@@ -271,7 +330,23 @@ pub(super) fn contents_match(
     } else {
         true
     };
-    Ok(stats_match
+    let loadout_names_match = if super::migrations::read_user_version(connection)? >= 11 {
+        let mut incoming = world.loadout_names.definitions.clone();
+        incoming.sort_by_key(LoadoutNameDefinition::hash);
+        let stored = read_loadout_names(connection)?;
+        stored
+            .iter()
+            .all(|(_, version)| version == world.version.as_str())
+            && stored
+                .into_iter()
+                .map(|(definition, _)| definition)
+                .collect::<Vec<_>>()
+                == incoming
+    } else {
+        true
+    };
+    Ok(loadout_names_match
+        && stats_match
         && table_matches!(
             connection,
             world,

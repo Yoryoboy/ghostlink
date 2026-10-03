@@ -23,6 +23,76 @@
 
 pub use crate::public_milestones::decode_public_milestones;
 
+#[cfg(test)]
+mod loadout_name_tests {
+    use super::*;
+    #[test]
+    fn loadout_names_use_top_level_name_and_validate_records() {
+        let table = decode_loadout_names(br#"{"3192132835":{"hash":3192132835,"index":0,"redacted":false,"name":"PvE","displayProperties":{"name":"Wrong"}},"2":{"hash":2,"name":" "},"3":{"hash":3,"redacted":true}}"#).unwrap();
+        assert_eq!(table.definitions[0].hash(), 3192132835);
+        assert_eq!(table.definitions[0].name(), "PvE");
+        assert_eq!(table.skipped_count, 2);
+        for invalid in [
+            br#"{"1":{"hash":2,"name":"PvE"}}"#.as_slice(),
+            br#"{"01":{"hash":1,"name":"PvE"}}"#,
+            br#"{"1":{"hash":1,"name":3}}"#,
+            br#"{"1":{"hash":1,"displayProperties":{"name":"PvE"}}}"#,
+            br#"{"1":{"hash":1,"name":"PvE"},"1":{"hash":1,"name":"PvP"}}"#,
+        ] {
+            assert!(decode_loadout_names(invalid).is_err());
+        }
+        let oversized = format!("{{\"1\":{{\"hash\":1,\"name\":\"{}\"}}}}", "x".repeat(257));
+        assert!(decode_loadout_names(oversized.as_bytes()).is_err());
+        let records: serde_json::Map<String, Value> = (0..1000)
+            .map(|hash| {
+                (
+                    hash.to_string(),
+                    serde_json::json!({"hash":hash,"name":"PvE"}),
+                )
+            })
+            .collect();
+        assert_eq!(
+            decode_loadout_names(&serde_json::to_vec(&records).unwrap())
+                .unwrap()
+                .definitions
+                .len(),
+            1000
+        );
+        let mut over_cap = records;
+        over_cap.insert("1000".into(), serde_json::json!({"hash":1000,"name":"PvE"}));
+        assert!(decode_loadout_names(&serde_json::to_vec(&over_cap).unwrap()).is_err());
+    }
+    #[test]
+    fn manifest_plan_includes_loadout_name_path() {
+        let mut en = serde_json::Map::new();
+        for component in [
+            "DestinyInventoryItemDefinition",
+            "DestinyMilestoneDefinition",
+            "DestinyActivityDefinition",
+            "DestinyActivityModifierDefinition",
+            "DestinyObjectiveDefinition",
+            "DestinyActivityTypeDefinition",
+            "DestinyStatDefinition",
+            "DestinyLoadoutNameDefinition",
+        ] {
+            en.insert(
+                component.into(),
+                Value::String("/common/destiny2_content/names.json".into()),
+            );
+        }
+        let mut index = serde_json::json!({"ErrorCode":1,"Response":{"version":"v1","jsonWorldComponentContentPaths":{"en":en}}});
+        assert_eq!(
+            decode_manifest_index(&serde_json::to_vec(&index).unwrap())
+                .unwrap()
+                .loadout_name_path,
+            "/common/destiny2_content/names.json"
+        );
+        index["Response"]["jsonWorldComponentContentPaths"]["en"]["DestinyLoadoutNameDefinition"] =
+            Value::String("/common/destiny2_content/../bad.json".into());
+        assert!(decode_manifest_index(&serde_json::to_vec(&index).unwrap()).is_err());
+    }
+}
+
 use destiny_core::ports::{
     ReadFailure, ReadRetry, ReadRetryScope, RetryAfterHeader, parse_retry_after_header_bytes,
 };
@@ -74,6 +144,7 @@ pub struct ManifestDownloadPlan {
     pub objective_path: String,
     pub activity_type_path: String,
     pub stat_path: String,
+    pub loadout_name_path: String,
 }
 
 /// Validates a Bungie Manifest index envelope into a download plan.
@@ -110,6 +181,7 @@ pub fn decode_manifest_index(bytes: &[u8]) -> Result<ManifestDownloadPlan, AppEr
         objective_path: decode_component_path(response, "DestinyObjectiveDefinition")?,
         activity_type_path: decode_component_path(response, "DestinyActivityTypeDefinition")?,
         stat_path: decode_component_path(response, "DestinyStatDefinition")?,
+        loadout_name_path: decode_component_path(response, "DestinyLoadoutNameDefinition")?,
     })
 }
 
@@ -368,6 +440,45 @@ pub fn decode_stats(
 ) -> Result<destiny_core::WorldDefinitionTable<destiny_core::StatDefinition>, AppError> {
     decode_world_reader(bytes, MAX_COMPONENT_BYTES, 1000, project_stat)
 }
+#[derive(Deserialize)]
+struct LoadoutNameRecord {
+    hash: u32,
+    #[serde(default)]
+    redacted: bool,
+    #[serde(default)]
+    name: String,
+}
+impl WorldKind for destiny_core::LoadoutNameDefinition {
+    fn read_record<'de, M: MapAccess<'de>>(map: &mut M) -> Result<WorldRecord, M::Error> {
+        let record = map.next_value::<LoadoutNameRecord>()?;
+        Ok(WorldRecord {
+            hash: record.hash,
+            redacted: record.redacted,
+            display_properties: Some(WorldDisplay {
+                name: record.name,
+                description: String::new(),
+            }),
+            milestone_type: 0,
+            activity_type_hash: 0,
+            activity_light_level: 0,
+            progress_description: String::new(),
+            completion_value: 0,
+        })
+    }
+}
+fn project_loadout_name(
+    record: WorldRecord,
+    display: WorldDisplay,
+) -> Result<destiny_core::LoadoutNameDefinition, AppError> {
+    destiny_core::LoadoutNameDefinition::new(record.hash, display.name)
+}
+/// Streams at most 1,000 loadout names from their top-level `name` field.
+pub fn decode_loadout_names(
+    bytes: &[u8],
+) -> Result<destiny_core::WorldDefinitionTable<destiny_core::LoadoutNameDefinition>, AppError> {
+    decode_world_reader(bytes, MAX_COMPONENT_BYTES, 1000, project_loadout_name)
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ObjectiveRecord {
@@ -1148,6 +1259,7 @@ where
             objective_path: plan.objective_path,
             activity_type_path: plan.activity_type_path,
             stat_path: plan.stat_path,
+            loadout_name_path: plan.loadout_name_path,
         })
     }
 
@@ -1163,6 +1275,7 @@ where
             &plan.objective_path,
             &plan.activity_type_path,
             &plan.stat_path,
+            &plan.loadout_name_path,
         ] {
             if !is_safe_component_path(path) {
                 return Err(provider_validation());
@@ -1181,6 +1294,11 @@ where
                 project_activity_type,
             )?,
             stats: self.load_world_table(&plan.stat_path, 1000, project_stat)?,
+            loadout_names: self.load_world_table(
+                &plan.loadout_name_path,
+                1000,
+                project_loadout_name,
+            )?,
         })
     }
 
@@ -1413,7 +1531,7 @@ mod tests {
             "Response": {
                 "version": version,
                 "jsonWorldComponentContentPaths": {
-                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path }
+                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path }
                 }
             }
         })
@@ -1655,6 +1773,7 @@ mod tests {
             "DestinyObjectiveDefinition",
             "DestinyActivityTypeDefinition",
             "DestinyStatDefinition",
+            "DestinyLoadoutNameDefinition",
         ] {
             en.insert(kind.into(), json!(VALID_PATH));
         }
@@ -1665,6 +1784,7 @@ mod tests {
             "DestinyObjectiveDefinition",
             "DestinyActivityTypeDefinition",
             "DestinyStatDefinition",
+            "DestinyLoadoutNameDefinition",
         ] {
             let mut missing = value.clone();
             missing["Response"]["jsonWorldComponentContentPaths"]["en"]
@@ -2183,7 +2303,7 @@ mod transport_tests {
             "Response": {
                 "version": "manifest-v1",
                 "jsonWorldComponentContentPaths": {
-                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path }
+                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path }
                 }
             }
         })
@@ -2260,7 +2380,7 @@ mod transport_tests {
     }
 
     #[test]
-    fn gateway_world_components_use_six_urls_without_key() {
+    fn gateway_world_components_use_seven_urls_without_key() {
         let mut index: serde_json::Value =
             serde_json::from_str(&index_body(COMPONENT_PATH)).unwrap();
         let paths = [
@@ -2270,6 +2390,7 @@ mod transport_tests {
             "/common/destiny2_content/objectives.json",
             "/common/destiny2_content/types.json",
             "/common/destiny2_content/stats.json",
+            "/common/destiny2_content/loadout-names.json",
         ];
         for (kind, path) in [
             "DestinyMilestoneDefinition",
@@ -2278,6 +2399,7 @@ mod transport_tests {
             "DestinyObjectiveDefinition",
             "DestinyActivityTypeDefinition",
             "DestinyStatDefinition",
+            "DestinyLoadoutNameDefinition",
         ]
         .into_iter()
         .zip(paths)
@@ -2295,14 +2417,23 @@ mod transport_tests {
         ]);
         let mut gateway = BungieManifestGateway::new(key(), transport, clock());
         let index = gateway.fetch_index().unwrap();
+        let mut unsafe_plan = index.clone();
+        unsafe_plan.loadout_name_path = "/common/destiny2_content/../bad.json".into();
+        assert!(gateway.load_world_components(&unsafe_plan).is_err());
+        assert_eq!(gateway.transport().requests.len(), 1);
+        // The new component has top-level names, unlike display-based records.
+        gateway.transport.responses.push_back(Ok(json_response(
+            r#"{"42":{"hash":42,"name":"PvE"}}"#.into(),
+        )));
         let batch = gateway.load_world_components(&index).unwrap();
         assert_eq!(batch.version.as_str(), "manifest-v1");
         assert_eq!(batch.milestones.definitions.len(), 1);
         assert_eq!(batch.activities.definitions.len(), 1);
         assert_eq!(batch.modifiers.definitions.len(), 1);
         assert_eq!(batch.stats.definitions.len(), 1);
+        assert_eq!(batch.loadout_names.definitions[0].name(), "PvE");
         let requests = &gateway.transport().requests;
-        assert_eq!(requests.len(), 7);
+        assert_eq!(requests.len(), 8);
         assert!(requests[0].has_api_key);
         for (request, path) in requests[1..].iter().zip(paths) {
             assert_eq!(request.url, format!("{MANIFEST_ORIGIN}{path}"));

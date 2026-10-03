@@ -282,6 +282,10 @@ fn weekly_repository() -> InMemoryDefinitionRepository {
                 source: SourceMarker::Manifest,
             },
             WorldDefinitionsAcquisition {
+                loadout_names: WorldDefinitionTable {
+                    definitions: vec![],
+                    skipped_count: 0,
+                },
                 stats: WorldDefinitionTable {
                     definitions: vec![
                         destiny_app::StatDefinition::new(1, "Weapons".into()).unwrap(),
