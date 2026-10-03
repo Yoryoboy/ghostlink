@@ -324,6 +324,7 @@ fn definition(hash: i64, name: &str) -> ItemDefinition {
         element: None,
         slot: None,
         class_type: None,
+        plug_category: None,
         tags: Vec::new(),
         version: DefinitionVersion::new(DEFINITION_VERSION),
     }

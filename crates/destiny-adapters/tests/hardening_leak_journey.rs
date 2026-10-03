@@ -355,6 +355,7 @@ fn control_definition() -> ItemDefinition {
         element: None,
         slot: None,
         class_type: None,
+        plug_category: None,
         tags: vec!["control".to_owned()],
         version: DefinitionVersion::new(DEFINITION_VERSION),
     }

@@ -44,6 +44,11 @@ use destiny_core::{
 pub struct ProfileSyncService<G, R> {
     gateway: G,
     repository: R,
+    lookup_plug: fn(
+        &R,
+        destiny_core::ItemHash,
+    )
+        -> Result<destiny_core::Resolution<destiny_core::ItemDefinition>, AppError>,
 }
 
 impl<G, R> ProfileSyncService<G, R>
@@ -55,6 +60,20 @@ where
         Self {
             gateway,
             repository,
+            lookup_plug: |_, _| Ok(destiny_core::Resolution::Missing),
+        }
+    }
+
+    /// Compose profile publication with read access to the same definition store.
+    /// The legacy inventory-only constructor treats all definitions as unknown.
+    pub fn new_with_definitions(gateway: G, repository: R) -> Self
+    where
+        R: destiny_core::DefinitionRepository,
+    {
+        Self {
+            gateway,
+            repository,
+            lookup_plug: |repository, hash| repository.lookup_definition(hash),
         }
     }
 
@@ -125,13 +144,37 @@ where
         }
 
         let membership = self.gateway.resolve_membership_scoped(reason)?;
-        let candidate = self.gateway.load_inventory_scoped(&membership, reason)?;
+        let mut candidate = self.gateway.load_inventory_scoped(&membership, reason)?;
         // The candidate must belong to the membership it was resolved for, so a
         // mismatched or partial provider response can never be published.
         if candidate.membership_id != *membership.membership_id()
             || candidate.membership_type != membership.membership_type()
         {
             return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        // Resolve each distinct plug once before publication. Lookup failures
+        // abort without writing; missing or ambiguous definitions are unknown
+        // and retained. A known definition without a category is not a perk.
+        let mut categories = std::collections::HashMap::new();
+        for plug in candidate.items.iter().flat_map(|item| &item.plugs) {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                categories.entry(plug.plug_hash)
+            {
+                let category = match (self.lookup_plug)(&self.repository, plug.plug_hash)? {
+                    destiny_core::Resolution::Unique(definition) => {
+                        Some(definition.plug_category.unwrap_or_default())
+                    }
+                    _ => None,
+                };
+                entry.insert(category);
+            }
+        }
+        for item in &mut candidate.items {
+            item.retain_weapon_perk_plugs(|hash| {
+                categories
+                    .get(&hash)
+                    .and_then(|category| category.as_deref())
+            });
         }
         let snapshot = self.repository.replace_current(candidate)?;
         Ok(ProfileSyncOutcome::Refreshed {
@@ -229,6 +272,7 @@ mod tests {
                     equipped: false,
                     locked: false,
                     power: None,
+                    plugs: Vec::new(),
                     perks: Vec::new(),
                 }],
             }
@@ -244,6 +288,126 @@ mod tests {
 
         fn fresh_seed(membership: &DestinyMembership) -> InventorySnapshotInput {
             inventory(membership, Timestamp::new(NOW.seconds() - 100), 1)
+        }
+
+        #[test]
+        fn sync_filters_known_cosmetics_keeps_unknowns_and_preserves_revision() {
+            use destiny_core::{
+                DefinitionReplacementInput, DefinitionRepository, ItemDefinition, PlugSummary,
+                Resolution, SyncMetadata,
+            };
+            struct Repository {
+                inventory: InMemoryInventoryRepository,
+                definitions: crate::test_support::InMemoryDefinitionRepository,
+            }
+            impl InventoryRepository for Repository {
+                fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
+                    self.inventory.load_current()
+                }
+                fn replace_current(
+                    &mut self,
+                    input: InventorySnapshotInput,
+                ) -> Result<InventorySnapshot, AppError> {
+                    self.inventory.replace_current(input)
+                }
+            }
+            impl DefinitionRepository for Repository {
+                fn current_definition_version(&self) -> Result<DefinitionVersion, AppError> {
+                    self.definitions.current_definition_version()
+                }
+                fn lookup_definition(
+                    &self,
+                    hash: ItemHash,
+                ) -> Result<Resolution<ItemDefinition>, AppError> {
+                    self.definitions.lookup_definition(hash)
+                }
+                fn current_metadata(&self) -> Result<Option<SyncMetadata>, AppError> {
+                    self.definitions.current_metadata()
+                }
+                fn replace_definitions(
+                    &mut self,
+                    input: DefinitionReplacementInput,
+                ) -> Result<SyncMetadata, AppError> {
+                    self.definitions.replace_definitions(input)
+                }
+            }
+            let definitions = [
+                (60, Some("frames")),
+                (61, Some("shader")),
+                (63, None),
+                (64, Some("shader")),
+            ]
+            .into_iter()
+            .map(|(hash, category)| ItemDefinition {
+                hash: ItemHash::new(hash),
+                bucket_hash: None,
+                name: "plug".into(),
+                item_type: None,
+                tier: None,
+                element: None,
+                slot: None,
+                class_type: None,
+                plug_category: category.map(str::to_owned),
+                tags: vec![],
+                version: DefinitionVersion::new(DEFINITION_VERSION),
+            })
+            .collect();
+            let repository = Repository {
+                inventory: InMemoryInventoryRepository::new(),
+                definitions: crate::test_support::InMemoryDefinitionRepository::new(
+                    DefinitionVersion::new(DEFINITION_VERSION),
+                    definitions,
+                ),
+            };
+            let resolved = membership();
+            let shared = gateway();
+            for cosmetic in [61, 64] {
+                let mut candidate = inventory(&resolved, NOW, 1);
+                candidate.items[0].plugs = [60, cosmetic, 62, 63, 60]
+                    .into_iter()
+                    .map(|hash| PlugSummary {
+                        plug_hash: ItemHash::new(hash),
+                        enabled: true,
+                    })
+                    .collect();
+                shared.borrow_mut().queue_membership(Ok(resolved.clone()));
+                shared.borrow_mut().queue_inventory(Ok(candidate));
+            }
+            let mut service =
+                ProfileSyncService::new_with_definitions(SharedGateway(shared), repository);
+            for _ in 0..2 {
+                let outcome = service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+                assert_eq!(outcome.revision().value(), 1);
+                let snapshot = service.repository().load_current().unwrap().unwrap();
+                let hashes: Vec<_> = snapshot.items[0]
+                    .plugs
+                    .iter()
+                    .map(|plug| plug.plug_hash.value())
+                    .collect();
+                // Known non-plugs (category None) are dropped, missing definitions kept.
+                assert_eq!(hashes, [60, 62, 60]);
+            }
+        }
+
+        #[test]
+        fn plug_definition_lookup_failure_propagates_without_publication() {
+            let resolved = membership();
+            let shared = gateway();
+            let mut candidate = inventory(&resolved, NOW, 1);
+            candidate.items[0].plugs.push(destiny_core::PlugSummary {
+                plug_hash: ItemHash::new(60),
+                enabled: true,
+            });
+            shared.borrow_mut().queue_membership(Ok(resolved.clone()));
+            shared.borrow_mut().queue_inventory(Ok(candidate));
+            let mut service = harness(&shared, Some(fresh_seed(&resolved)));
+            let before = committed_snapshot(&service);
+            service.lookup_plug = |_, _| Err(AppError::new(ErrorCategory::LocalStorage));
+            assert_eq!(
+                service.sync(ProfileSyncReason::Forced, TTL, NOW),
+                Err(AppError::new(ErrorCategory::LocalStorage))
+            );
+            assert_eq!(committed_snapshot(&service), before);
         }
 
         #[test]

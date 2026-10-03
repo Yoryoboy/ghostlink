@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 12] = [
+const EXPECTED_TABLE_NAMES: [&str; 13] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -19,6 +19,7 @@ const EXPECTED_TABLE_NAMES: [&str; 12] = [
     "definition_tags",
     "definitions",
     "item_perks",
+    "item_plugs",
     "items",
     "milestone_definitions",
     "objective_definitions",
@@ -31,7 +32,7 @@ const EXPECTED_INDEX_NAMES: [&str; 2] = ["items_definition_hash_idx", "items_loc
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 64] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 68] = [
     ("objective_definitions", "hash", "INTEGER"),
     ("objective_definitions", "progress_description", "TEXT"),
     ("objective_definitions", "completion_value", "INTEGER"),
@@ -81,6 +82,10 @@ const EXPECTED_COLUMNS: [(&str, &str, &str); 64] = [
     ("definitions", "damage_type", "TEXT"),
     ("definitions", "slot", "TEXT"),
     ("definitions", "class_type", "TEXT"),
+    ("definitions", "plug_category", "TEXT"),
+    ("item_plugs", "instance_id", "TEXT"),
+    ("item_plugs", "ordinal", "INTEGER"),
+    ("item_plugs", "plug_hash", "INTEGER"),
     ("item_perks", "instance_id", "TEXT"),
     ("item_perks", "ordinal", "INTEGER"),
     ("item_perks", "perk_hash", "INTEGER"),
@@ -349,7 +354,7 @@ fn reject_membership_type(store: &SqliteStore, value: &str) {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 5);
+    assert_eq!(LATEST_SCHEMA_VERSION, 7);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION
@@ -558,9 +563,62 @@ fn v2_down_drops_only_item_perks_then_reapply_up_preserves_v1_rows() {
 
     // The entire v1 -> v2 -> v1 -> v2 cycle stays durable across a reopen.
     let store = SqliteStore::open(temp.path()).expect("reopen after the cycle");
-    assert_eq!(store.schema_version().expect("read schema version"), 5);
+    assert_eq!(store.schema_version().expect("read schema version"), 7);
     assert_eq!(row_count(&store, "items"), 1);
     assert_eq!(row_count(&store, "item_perks"), 0);
+}
+
+#[test]
+fn v7_plugs_migration_reverses_without_touching_profile_or_perks() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(6).unwrap();
+    seed_v1_projection(&store);
+    store
+        .connection()
+        .execute("INSERT INTO item_perks VALUES ('item-1',0,42,1,1)", [])
+        .unwrap();
+    store.migrate_to(7).unwrap();
+    assert_eq!(row_count(&store, "item_plugs"), 0);
+    store
+        .connection()
+        .execute("INSERT INTO item_plugs VALUES ('item-1',0,42)", [])
+        .unwrap();
+    store.migrate_to(6).unwrap();
+    assert!(!table_names(&store).contains(&"item_plugs".to_owned()));
+    for table in [
+        "items",
+        "characters",
+        "active_profile",
+        "item_perks",
+        "sync_metadata",
+    ] {
+        assert_eq!(row_count(&store, table), 1);
+    }
+    store.migrate_to(7).unwrap();
+    assert_eq!(row_count(&store, "item_plugs"), 0);
+}
+
+#[test]
+fn item_plugs_schema_cascades_and_rejects_invalid_rows() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    seed_v1_projection(&store);
+    store
+        .connection()
+        .execute("INSERT INTO item_plugs VALUES ('item-1',0,42)", [])
+        .unwrap();
+    for sql in [
+        "INSERT INTO item_plugs VALUES ('item-1',0,1)",
+        "INSERT INTO item_plugs VALUES ('item-1',1,-1)",
+        "INSERT INTO item_plugs VALUES ('item-1',1,4294967296)",
+        "INSERT INTO item_plugs VALUES ('item-1',-1,1)",
+        "INSERT INTO item_plugs VALUES ('item-1',32,1)",
+        "INSERT INTO item_plugs VALUES ('missing',0,1)",
+        "INSERT INTO item_plugs VALUES ('item-1',1,1.5)",
+    ] {
+        expect_rejected(&store, sql);
+    }
+    store.connection().execute("DELETE FROM items", []).unwrap();
+    assert_eq!(row_count(&store, "item_plugs"), 0);
 }
 
 #[test]

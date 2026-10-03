@@ -203,6 +203,14 @@ impl InventorySnapshotInput {
         }
 
         for item in &self.items {
+            if item.plugs.len() > 32
+                || item
+                    .plugs
+                    .iter()
+                    .any(|plug| !plug.enabled || u32::try_from(plug.plug_hash.value()).is_err())
+            {
+                return false;
+            }
             if let ItemLocation::Character(character_id) = &item.location
                 && !character_ids.contains(character_id)
             {
@@ -535,6 +543,7 @@ pub struct ManifestDefinitionCandidate {
     pub damage_type: Option<crate::domain::DamageType>,
     pub slot: Option<crate::domain::ItemSlot>,
     pub class_type: Option<crate::domain::ClassType>,
+    pub plug_category: Option<String>,
     pub tags: Vec<String>,
     pub version: DefinitionVersion,
 }

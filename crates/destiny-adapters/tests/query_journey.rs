@@ -353,6 +353,7 @@ fn definition(hash: i64, name: &str, item_type: Option<&str>, tags: &[&str]) -> 
         element: None,
         slot: None,
         class_type: None,
+        plug_category: None,
         tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
         version: DefinitionVersion::new(DEFINITION_VERSION),
     }
@@ -444,6 +445,7 @@ fn instance_query(
     InstanceSearchQuery {
         item_hashes,
         perk_hash: perk_hash.map(PerkHash::new),
+        perk_name: None,
         character_id: character.map(CharacterId::new),
         definitions: None,
         min_power: None,

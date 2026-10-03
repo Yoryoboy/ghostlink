@@ -13,6 +13,31 @@ mod output {
 }
 
 #[test]
+fn invalid_perk_names_are_rejected_by_both_surfaces() {
+    use clap::Parser;
+    for name in [
+        "".to_owned(),
+        "  ".to_owned(),
+        "a".repeat(257),
+        "bad\u{7}".to_owned(),
+    ] {
+        let cli =
+            cli_command::Cli::try_parse_from(["ghostlink", "search-inventory", "--perk", &name])
+                .unwrap();
+        assert!(cli.into_read_request().is_err());
+        let mcp: destiny_mcp::schema::SearchInventoryArgs =
+            serde_json::from_value(serde_json::json!({"perk_name": name})).unwrap();
+        assert!(mcp.into_request().is_err());
+    }
+    assert!(
+        serde_json::from_value::<destiny_mcp::schema::SearchInventoryArgs>(
+            serde_json::json!({"perk": "Rampage"})
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn search_cli_mcp_request_parity() {
     use clap::Parser;
     use destiny_mcp::schema::SearchInventoryArgs;
@@ -20,6 +45,14 @@ fn search_cli_mcp_request_parity() {
 
     for (flags, args) in [
         (vec![], json!({})),
+        (
+            vec!["--perk", "  RAMPAGE "],
+            json!({"perk_name": "  RAMPAGE "}),
+        ),
+        (
+            vec!["--perk", "Rampage", "--limit", "1"],
+            json!({"perk_name": "Rampage", "limit": 1}),
+        ),
         (
             vec!["--type", "Hand Cannon"],
             json!({"item_type": "Hand Cannon"}),

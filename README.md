@@ -106,6 +106,7 @@ Filter Manifest candidates and owned hits by definition attributes and power:
 ```sh
 ghostlink search-inventory --type "Hand Cannon" --element solar --min-power 400
 ghostlink search-inventory --slot helmet --class hunter
+ghostlink search-inventory --perk Rampage
 ghostlink --json search-inventory --element arc --slot energy
 ```
 
@@ -129,6 +130,14 @@ if both minimums are supplied, the higher one applies.
 **After upgrading, run `ghostlink sync-manifest` once** to populate the new
 attributes, even if the live Manifest version has not changed.
 
+`--perk NAME` searches owned instances for a socketed weapon perk (traits,
+barrels, magazines, intrinsics and similar weapon-perk categories), not armor
+mods or cosmetics. Matching is exact and case-insensitive after trimming and
+collapsing whitespace: `Rampage` does not match `Rampage Spec`. Unknown plug
+definitions never match. Hits include resolved weapon-perk names in socket
+order in text, JSON (`perk_names`) and MCP output. MCP accepts the same filter
+as `perk_name`.
+
 ### Manifest definitions
 
 Item names, types and tiers, and the activity, milestone and modifier names
@@ -151,8 +160,9 @@ ghostlink sync-manifest          # or: ghostlink --json sync-manifest
 - Re-running it fetches only the small Manifest index; when the live version
   equals the stored one and all four catalogs are populated it reports
   `unchanged` and downloads nothing. Run it again after a Destiny patch.
-- Opening the database with this version migrates it to schema v5; older
-  binaries that do not support v5 refuse the database.
+- Opening the database with this version migrates it to schema v7; older
+  binaries that do not support v7 refuse the database. Run `sync-manifest`
+  once after upgrading to populate plug categories for perk-name searches.
 - Until a catalog is loaded, `search-inventory` and `inspect-item` fail with
   `definitions not loaded; run ghostlink sync-manifest` (CLI and MCP) instead
   of returning an empty result.

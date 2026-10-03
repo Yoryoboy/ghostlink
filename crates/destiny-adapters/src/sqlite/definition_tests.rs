@@ -59,6 +59,7 @@ fn item(hash: i64, name: &str) -> ItemDefinition {
         element: None,
         slot: None,
         class_type: None,
+        plug_category: None,
         tags: Vec::new(),
         version: DefinitionVersion::new("v1"),
     }
@@ -79,6 +80,7 @@ fn full_definition(hash: i64, tags: &[&str]) -> ItemDefinition {
         element: Some("Solar".into()),
         slot: None,
         class_type: None,
+        plug_category: None,
         tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
         version: DefinitionVersion::new("manifest-2026-09-21"),
     }
@@ -108,6 +110,7 @@ fn base_manifest() -> ManifestDefinitions {
                 element: Some("Void".into()),
                 slot: None,
                 class_type: None,
+                plug_category: None,
                 tags: vec!["first".into(), "second".into()],
                 version: DefinitionVersion::new("v1"),
             },
@@ -120,6 +123,7 @@ fn base_manifest() -> ManifestDefinitions {
                 element: None,
                 slot: None,
                 class_type: None,
+                plug_category: None,
                 tags: Vec::new(),
                 version: DefinitionVersion::new("v1"),
             },
@@ -139,6 +143,59 @@ fn tag_count(store: &SqliteStore) -> i64 {
         .connection()
         .query_row("SELECT count(*) FROM definition_tags", [], |row| row.get(0))
         .expect("count definition tags")
+}
+
+#[test]
+fn plug_category_round_trips_and_changes_revision() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut definition = item(1, "Trait");
+    definition.plug_category = Some("frames".into());
+    store
+        .replace_definitions(replacement("v1", vec![definition.clone()]))
+        .unwrap();
+    assert_eq!(
+        store.lookup_definition(definition.hash).unwrap(),
+        Resolution::Unique(definition.clone())
+    );
+    assert_eq!(
+        store
+            .replace_definitions(replacement("v1", vec![definition.clone()]))
+            .unwrap()
+            .revision
+            .value(),
+        1
+    );
+    definition.plug_category = Some("origins".into());
+    assert_eq!(
+        store
+            .replace_definitions(replacement("v1", vec![definition]))
+            .unwrap()
+            .revision
+            .value(),
+        2
+    );
+}
+
+#[test]
+fn plug_category_invalid_publication_rolls_back() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let prior = item(1, "Trait");
+    store
+        .replace_definitions(replacement("v1", vec![prior.clone()]))
+        .unwrap();
+    for category in ["".to_owned(), "x".repeat(257), "frames\0".to_owned()] {
+        let mut invalid = prior.clone();
+        invalid.plug_category = Some(category);
+        assert!(
+            store
+                .replace_definitions(replacement("v1", vec![invalid]))
+                .is_err()
+        );
+        assert_eq!(
+            store.lookup_definition(prior.hash).unwrap(),
+            Resolution::Unique(prior.clone())
+        );
+    }
 }
 
 #[test]

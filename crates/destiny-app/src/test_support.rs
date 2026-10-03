@@ -659,7 +659,24 @@ impl SearchRepository for InMemorySearchRepository {
                 } else {
                     None
                 };
+                let plugs: Vec<_> = instance
+                    .plugs
+                    .iter()
+                    .filter_map(|plug| {
+                        let mut matches = self
+                            .definitions
+                            .iter()
+                            .filter(|definition| definition.hash == plug.plug_hash);
+                        let first = matches.next();
+                        if matches.next().is_none() {
+                            first.cloned()
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 destiny_core::query::instance_matches_with_definition(query, instance, unique)
+                    && destiny_core::query::instance_matches_perk_name(query, &plugs)
             })
             .cloned()
             .collect();
@@ -996,6 +1013,38 @@ mod tests {
         MAX_SEARCH_LIMIT, MembershipId, MembershipType, PerkHash, PerkSummary, SearchTerm,
     };
 
+    #[test]
+    fn instance_plugs_round_trip_through_inventory_and_search_fakes() {
+        let mut candidate = input(1);
+        candidate.items[0].plugs = [60, 61, 60]
+            .into_iter()
+            .map(|hash| destiny_core::PlugSummary {
+                plug_hash: ItemHash::new(hash),
+                enabled: true,
+            })
+            .collect();
+        let mut repository = InMemoryInventoryRepository::new();
+        let snapshot = repository.replace_current(candidate.clone()).unwrap();
+        assert_eq!(snapshot.items[0].plugs, candidate.items[0].plugs);
+        assert_eq!(
+            repository.load_current().unwrap().unwrap().items,
+            snapshot.items
+        );
+        let search = InMemorySearchRepository::with_projection(vec![], &snapshot);
+        let found = search
+            .lookup_instance(&candidate.items[0].instance_id)
+            .unwrap();
+        assert_eq!(found, Resolution::Unique(candidate.items[0].clone()));
+        let unchanged = repository.replace_current(candidate.clone()).unwrap();
+        assert_eq!(unchanged.metadata.revision, snapshot.metadata.revision);
+        candidate.items[0].plugs.swap(0, 1);
+        let changed = repository.replace_current(candidate).unwrap();
+        assert_eq!(
+            changed.metadata.revision.value(),
+            snapshot.metadata.revision.value() + 1
+        );
+    }
+
     type RevisionMutation = (&'static str, fn(&mut InventorySnapshotInput));
 
     fn input(quantity: u32) -> InventorySnapshotInput {
@@ -1014,6 +1063,7 @@ mod tests {
                 equipped: false,
                 locked: false,
                 power: None,
+                plugs: Vec::new(),
                 perks: Vec::new(),
             }],
         }
@@ -1053,6 +1103,7 @@ mod tests {
                     equipped: false,
                     locked: false,
                     power: Some(100),
+                    plugs: Vec::new(),
                     perks: vec![
                         PerkSummary {
                             perk_hash: PerkHash::new(10),
@@ -1074,6 +1125,7 @@ mod tests {
                     equipped: true,
                     locked: true,
                     power: Some(200),
+                    plugs: Vec::new(),
                     perks: Vec::new(),
                 },
             ],
@@ -1101,6 +1153,7 @@ mod tests {
             element: None,
             slot: None,
             class_type: None,
+            plug_category: None,
             tags: Vec::new(),
             version: DefinitionVersion::new(version),
         }
@@ -1132,6 +1185,7 @@ mod tests {
             equipped: false,
             locked: false,
             power: None,
+            plugs: Vec::new(),
             perks: perk_hashes
                 .into_iter()
                 .map(|hash| PerkSummary {
@@ -1172,6 +1226,7 @@ mod tests {
         InstanceSearchQuery {
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),
+            perk_name: None,
             character_id: character.map(CharacterId::new),
             definitions: None,
             min_power: None,
@@ -1650,6 +1705,7 @@ mod tests {
             element: None,
             slot: None,
             class_type: None,
+            plug_category: None,
             tags: Vec::new(),
             version: DefinitionVersion::new("definitions-v1"),
         };

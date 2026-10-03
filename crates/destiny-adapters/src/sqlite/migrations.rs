@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 5;
+pub(crate) const LATEST_VERSION: u32 = 7;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 5] = [
+const MIGRATIONS: [Migration; 7] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -78,6 +78,16 @@ const MIGRATIONS: [Migration; 5] = [
         version: 5,
         up: SCHEMA_V5_UP,
         down: SCHEMA_V5_DOWN,
+    },
+    Migration {
+        version: 6,
+        up: SCHEMA_V6_UP,
+        down: SCHEMA_V6_DOWN,
+    },
+    Migration {
+        version: 7,
+        up: SCHEMA_V7_UP,
+        down: SCHEMA_V7_DOWN,
     },
 ];
 
@@ -359,6 +369,34 @@ ALTER TABLE definitions DROP COLUMN slot;
 ALTER TABLE definitions DROP COLUMN damage_type;
 "#;
 
+// As in v5, invalidate Manifest freshness so an unchanged live version is
+// downloaded again. Profile metadata and existing definition rows survive.
+const SCHEMA_V6_UP: &str = r#"
+ALTER TABLE definitions ADD COLUMN plug_category TEXT
+    CHECK (plug_category IS NULL OR length(plug_category) BETWEEN 1 AND 256);
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V6_DOWN: &str = r#"
+ALTER TABLE definitions DROP COLUMN plug_category;
+"#;
+
+/// Ordered enabled socket plugs; the ordinal bounds the list at 32 entries.
+const SCHEMA_V7_UP: &str = r#"
+CREATE TABLE item_plugs (
+    instance_id TEXT NOT NULL
+        REFERENCES items(instance_id) ON DELETE CASCADE
+        CHECK (length(instance_id) BETWEEN 1 AND 128),
+    ordinal INTEGER NOT NULL
+        CHECK (typeof(ordinal) = 'integer' AND ordinal BETWEEN 0 AND 31),
+    plug_hash INTEGER NOT NULL
+        CHECK (typeof(plug_hash) = 'integer' AND plug_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (instance_id, ordinal)
+) STRICT;
+"#;
+const SCHEMA_V7_DOWN: &str = r#"
+DROP TABLE IF EXISTS item_plugs;
+"#;
+
 /// Reads the recorded schema version from `PRAGMA user_version`.
 ///
 /// SQLite stores that value as a signed 32-bit integer; a negative or otherwise
@@ -440,6 +478,66 @@ pub(crate) fn apply_up_for_test(
 #[cfg(test)]
 mod filter_migration_tests {
     use super::*;
+
+    #[test]
+    fn plug_category_v6_up_down_invalidates_only_manifest_freshness() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        migrate_to(&mut connection, 5).unwrap();
+        connection.execute_batch("INSERT INTO definitions(hash,name,definition_version) VALUES(1,'Test','v1'); INSERT INTO sync_metadata VALUES('manifest_definitions','1','manifest','8','v1'),('profile_inventory','1','profile','2','v1');").unwrap();
+        migrate_to(&mut connection, 6).unwrap();
+        assert_eq!(read_user_version(&connection).unwrap(), 6);
+        assert_eq!(
+            connection
+                .query_row("SELECT plug_category FROM definitions", [], |row| row
+                    .get::<_, Option<String>>(0))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sync_metadata WHERE dataset='manifest_definitions'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT revision FROM sync_metadata WHERE dataset='profile_inventory'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "2"
+        );
+        for invalid in ["".to_owned(), "x".repeat(257)] {
+            assert!(
+                connection
+                    .execute("UPDATE definitions SET plug_category=?1", [invalid])
+                    .is_err()
+            );
+        }
+        connection
+            .execute("UPDATE definitions SET plug_category='frames'", [])
+            .unwrap();
+        migrate_to(&mut connection, 5).unwrap();
+        assert!(
+            connection
+                .prepare("SELECT plug_category FROM definitions")
+                .is_err()
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT name FROM definitions", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "Test"
+        );
+        migrate_to(&mut connection, 6).unwrap();
+    }
 
     #[test]
     fn search_filter_v5_up_down_invalidates_only_manifest_freshness() {

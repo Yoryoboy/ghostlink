@@ -111,7 +111,7 @@ pub enum Command {
 
     /// Search definitions and, optionally, concrete inventory instances.
     #[command(name = "search-inventory")]
-    SearchInventory(SearchInventoryArgs),
+    SearchInventory(Box<SearchInventoryArgs>),
 
     /// Inspect exactly one concrete item instance.
     #[command(name = "inspect-item")]
@@ -259,6 +259,10 @@ pub struct SearchInventoryArgs {
     #[arg(long = "item-hash", value_name = "HASH")]
     pub item_hash: Vec<i64>,
 
+    /// Exact case-insensitive socketed weapon-perk name.
+    #[arg(long = "perk", value_name = "NAME")]
+    pub perk: Option<String>,
+
     /// Restrict instance matches to one exact perk hash.
     #[arg(long = "perk-hash", value_name = "HASH")]
     pub perk_hash: Option<u32>,
@@ -320,8 +324,10 @@ impl SearchInventoryArgs {
         &self,
         definitions: &DefinitionSearchQuery,
     ) -> Result<Option<InstanceSearchQuery>, CliError> {
-        let no_instance_filter =
-            self.item_hash.is_empty() && self.perk_hash.is_none() && self.character.is_none();
+        let no_instance_filter = self.item_hash.is_empty()
+            && self.perk_hash.is_none()
+            && self.perk.is_none()
+            && self.character.is_none();
         if no_instance_filter && !definitions.has_filters() && self.min_power.is_none() {
             return Ok(None);
         }
@@ -341,6 +347,7 @@ impl SearchInventoryArgs {
         let query = InstanceSearchQuery {
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
+            perk_name: search_term(self.perk.as_deref())?,
             character_id,
             definitions: definitions
                 .has_filters()
@@ -1276,6 +1283,7 @@ mod tests {
                 element: None,
                 slot: None,
                 class_type: None,
+                plug_category: None,
                 tags: Vec::new(),
                 version: destiny_app::DefinitionVersion::new("manifest-v1"),
             },
@@ -1287,6 +1295,7 @@ mod tests {
                 equipped: false,
                 locked: false,
                 power: None,
+                plugs: Vec::new(),
                 perks: Vec::new(),
             },
             metadata: destiny_app::QueryMetadata {

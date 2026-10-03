@@ -296,7 +296,9 @@ fn compose_configured<F: ReadFoundations>(
         config.definition_version().clone(),
     )?;
     let repository = foundations.store(config)?;
-    let service = QueryService::new(ProfileSyncService::new(gateway, repository));
+    let service = QueryService::new(ProfileSyncService::new_with_definitions(
+        gateway, repository,
+    ));
     let freshness = ReadFreshness {
         policy: config.freshness_policy(),
         now,
@@ -1022,6 +1024,7 @@ mod tests {
                                     element: None,
                                     slot: None,
                                     class_type: None,
+                                    plug_category: None,
                                     tags: Vec::new(),
                                     version: destiny_app::DefinitionVersion::new("v1"),
                                 }],
@@ -1106,6 +1109,7 @@ mod tests {
                                     element: None,
                                     slot: None,
                                     class_type: None,
+                                    plug_category: None,
                                     tags: Vec::new(),
                                     version: destiny_app::DefinitionVersion::new("v1"),
                                 }],
@@ -1189,6 +1193,7 @@ mod tests {
                                         element: None,
                                         slot: None,
                                         class_type: None,
+                                        plug_category: None,
                                         tags: Vec::new(),
                                         version: destiny_app::DefinitionVersion::new("v1"),
                                     }],

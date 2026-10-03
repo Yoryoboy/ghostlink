@@ -1191,6 +1191,7 @@ where
                                 .collect(),
                         ),
                         perk_hash: None,
+                        perk_name: None,
                         character_id: None,
                         definitions: None,
                         min_power: None,
@@ -1524,6 +1525,7 @@ mod tests {
             element: None,
             slot: None,
             class_type: None,
+            plug_category: None,
             tags: Vec::new(),
             version: DefinitionVersion::new(DEFINITION_VERSION),
         }
@@ -1542,6 +1544,7 @@ mod tests {
             equipped: false,
             locked: false,
             power: None,
+            plugs: Vec::new(),
             perks: Vec::new(),
         }
     }

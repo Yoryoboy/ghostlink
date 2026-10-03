@@ -271,6 +271,7 @@ fn normalize_with_count(
             },
             slot: candidate.slot,
             class_type: candidate.class_type,
+            plug_category: normalize_optional_presentation(candidate.plug_category.as_deref())?,
             tags: normalize_tags(&candidate.tags)?,
             version: version.clone(),
         });
@@ -390,6 +391,24 @@ mod tests {
 
     const VERSION: &str = "manifest-2026-09-21";
 
+    #[test]
+    fn plug_category_normalization_preserves_identifier_and_bounds_input() {
+        let mut plug = candidate(1, "Trait");
+        plug.plug_category = Some(" frames ".into());
+        let published = normalize_manifest(acquisition(VERSION, vec![plug.clone()])).unwrap();
+        assert_eq!(
+            published.definitions[0].plug_category.as_deref(),
+            Some("frames")
+        );
+        plug.plug_category = Some(" ".into());
+        let published = normalize_manifest(acquisition(VERSION, vec![plug.clone()])).unwrap();
+        assert_eq!(published.definitions[0].plug_category, None);
+        for invalid in ["x".repeat(257), "frames\0".into()] {
+            plug.plug_category = Some(invalid);
+            assert!(normalize_manifest(acquisition(VERSION, vec![plug.clone()])).is_err());
+        }
+    }
+
     fn candidate(hash: i64, name: &str) -> ManifestDefinitionCandidate {
         ManifestDefinitionCandidate {
             hash: ItemHash::new(hash),
@@ -401,6 +420,7 @@ mod tests {
             damage_type: None,
             slot: None,
             class_type: None,
+            plug_category: None,
             tags: Vec::new(),
             version: DefinitionVersion::new(VERSION),
         }
@@ -439,6 +459,7 @@ mod tests {
                     damage_type: None,
                     slot: None,
                     class_type: None,
+                    plug_category: None,
                     tags: vec!["Tag-B".into(), "  tag-a ".into(), "TAG-A".into()],
                     version: DefinitionVersion::new(VERSION),
                 },
@@ -459,6 +480,7 @@ mod tests {
                     damage_type: None,
                     slot: None,
                     class_type: None,
+                    plug_category: None,
                     tags: vec!["tag-a".into(), "tag-b".into()],
                     version: DefinitionVersion::new(VERSION),
                 },
@@ -602,6 +624,7 @@ mod tests {
             damage_type: _,
             slot: _,
             class_type: _,
+            plug_category: _,
             tags,
             version,
         } = candidate(1, "Alpha");
@@ -628,6 +651,7 @@ mod tests {
             version,
             slot: _,
             class_type: _,
+            plug_category: _,
         } = published.definitions.into_iter().next().unwrap();
 
         assert_eq!(hash, ItemHash::new(1));
@@ -753,6 +777,7 @@ mod tests {
                 element: None,
                 slot: None,
                 class_type: None,
+                plug_category: None,
                 tags: Vec::new(),
                 version: DefinitionVersion::new(version),
             }

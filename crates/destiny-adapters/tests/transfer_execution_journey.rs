@@ -679,6 +679,7 @@ fn definition(hash: i64, name: &str) -> ItemDefinition {
         element: None,
         slot: None,
         class_type: None,
+        plug_category: None,
         tags: Vec::new(),
         version: DefinitionVersion::new(DEFINITION_VERSION),
     }
@@ -741,6 +742,7 @@ fn instance_query(item_hashes: ItemHashFilter, limit: usize) -> InstanceSearchQu
     InstanceSearchQuery {
         item_hashes,
         perk_hash: None,
+        perk_name: None,
         character_id: None,
         definitions: None,
         min_power: None,

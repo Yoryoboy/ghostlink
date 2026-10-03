@@ -7,9 +7,9 @@
 //! columns, so no raw provider payload, SQL statement, or stored value can
 //! escape through a returned value or a failure.
 //!
-//! The projection is exactly five tables read as one unit: the singleton
+//! The projection is six tables read as one unit: the singleton
 //! `active_profile` anchor, the `characters` rows, the `items` rows, each item's
-//! ordered `item_perks` child rows, and the single fixed `profile_inventory` row
+//! ordered `item_perks` and `item_plugs` child rows, and the fixed `profile_inventory` row
 //! in `sync_metadata`. A projection exists
 //! only when both the anchor and its metadata row are present, and the anchor
 //! must be exactly one row whose discriminator is `1`; a fully empty store
@@ -33,7 +33,8 @@
 //! characters and items are unordered sets keyed by their record identifiers, so
 //! a pure permutation is not a content change. An item's perk list is compared in
 //! its stored order, so perk order, perk hash, and both perk flags are part of
-//! revision identity. `checked_at` and `source` are
+//! revision identity. Enabled socket plug hashes and order also participate.
+//! `checked_at` and `source` are
 //! freshness and provenance, never content identity, so an otherwise identical
 //! refresh retains the revision and refreshes only the committed timestamp.
 //! Validation that needs no storage runs before the transaction is opened and
@@ -45,8 +46,8 @@ use super::{SqliteStore, encode_decimal, parse_decimal, storage_failure};
 use destiny_core::{
     AppError, Character, CharacterId, Dataset, DefinitionVersion, ErrorCategory,
     InventoryRepository, InventorySnapshot, InventorySnapshotInput, ItemHash, ItemInstance,
-    ItemLocation, MembershipId, MembershipType, PerkHash, PerkSummary, SnapshotMetadata,
-    SourceMarker, SyncMetadata, SyncRevision, Timestamp,
+    ItemLocation, MembershipId, MembershipType, PerkHash, PerkSummary, PlugSummary,
+    SnapshotMetadata, SourceMarker, SyncMetadata, SyncRevision, Timestamp,
 };
 use rusqlite::{Connection, Error as SqlError, TransactionBehavior, params};
 use std::collections::HashSet;
@@ -311,7 +312,10 @@ fn projection_rows_exist(connection: &Connection) -> Result<bool, AppError> {
     let perks: i64 = connection
         .query_row("SELECT count(*) FROM item_perks", [], |row| row.get(0))
         .map_err(|_| storage_failure())?;
-    Ok(perks > 0)
+    let plugs: i64 = connection
+        .query_row("SELECT count(*) FROM item_plugs", [], |row| row.get(0))
+        .map_err(|_| storage_failure())?;
+    Ok(perks > 0 || plugs > 0)
 }
 
 /// Reconstructs every stored character with its optional fields, checked.
@@ -407,6 +411,7 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
             _ => return Err(storage_failure()),
         };
 
+        let plugs = read_plugs(connection, &instance_id)?;
         items.push(ItemInstance {
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
@@ -415,12 +420,54 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
             equipped: decode_boolean(equipped)?,
             locked: decode_boolean(locked)?,
             power: decode_optional_u16(power)?,
+            plugs,
             perks: Vec::new(),
         });
     }
 
     attach_perks(connection, &mut items)?;
+    let orphan: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM item_plugs p LEFT JOIN items i \
+         ON p.instance_id = i.instance_id WHERE i.instance_id IS NULL)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| storage_failure())?;
+    if orphan {
+        return Err(storage_failure());
+    }
     Ok(items)
+}
+
+/// Shared inventory/search reconstruction of enabled plugs in contiguous order.
+pub(super) fn read_plugs(
+    connection: &Connection,
+    instance_id: &str,
+) -> Result<Vec<PlugSummary>, AppError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT ordinal, plug_hash FROM item_plugs WHERE instance_id = ?1 ORDER BY ordinal",
+        )
+        .map_err(|_| storage_failure())?;
+    let rows = statement
+        .query_map([instance_id], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })
+        .map_err(|_| storage_failure())?;
+    let mut plugs = Vec::new();
+    for (position, row) in rows.enumerate() {
+        let (ordinal, hash) = row.map_err(|_| storage_failure())?;
+        if position >= 32 || ordinal != i64::try_from(position).map_err(|_| storage_failure())? {
+            return Err(storage_failure());
+        }
+        let hash = u32::try_from(hash).map_err(|_| storage_failure())?;
+        plugs.push(PlugSummary {
+            plug_hash: ItemHash::new(i64::from(hash)),
+            enabled: true,
+        });
+    }
+    Ok(plugs)
 }
 
 /// One stored perk row before it is attached to its item.
@@ -598,6 +645,18 @@ fn replace_projection(
             )
             .map_err(|_| storage_failure())?;
 
+        for (ordinal, plug) in item.plugs.iter().enumerate() {
+            connection
+                .execute(
+                    "INSERT INTO item_plugs (instance_id, ordinal, plug_hash) VALUES (?1, ?2, ?3)",
+                    params![
+                        item.instance_id.as_str(),
+                        i64::try_from(ordinal).map_err(|_| storage_failure())?,
+                        plug.plug_hash.value()
+                    ],
+                )
+                .map_err(|_| storage_failure())?;
+        }
         for (ordinal, perk) in item.perks.iter().enumerate() {
             connection
                 .execute(

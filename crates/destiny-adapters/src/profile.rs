@@ -52,7 +52,7 @@
 use destiny_core::{
     AppError, Character, CharacterId, DefinitionVersion, DestinyMembership, ErrorCategory,
     InventorySnapshotInput, ItemHash, ItemInstance, ItemInstanceId, ItemLocation, PerkHash,
-    PerkSummary, SourceMarker, Timestamp,
+    PerkSummary, PlugSummary, SourceMarker, Timestamp,
 };
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
@@ -68,6 +68,9 @@ const PRIVACY_PRIVATE: u64 = 2;
 
 /// The longest decimal identifier the durable profile projection accepts.
 const MAX_IDENTIFIER_DIGITS: usize = 128;
+
+/// Bound all sockets, including empty and disabled entries, before allocation.
+const MAX_SOCKETS_PER_ITEM: usize = 32;
 
 /// Official provider profile locations (`Destiny.DestinyItemLocation`).
 ///
@@ -142,6 +145,12 @@ pub fn decode_profile(
             .ok_or_else(provider_validation)?,
     )?;
 
+    let sockets = component_data(
+        item_components
+            .get("sockets")
+            .ok_or_else(provider_validation)?,
+    )?;
+
     let mut seen = HashSet::with_capacity(raw_items.len());
     let mut items = Vec::with_capacity(raw_items.len());
     for raw in raw_items {
@@ -162,6 +171,7 @@ pub fn decode_profile(
         }
         let power = decode_power(instance)?;
         let item_perks = decode_perks(perks, &raw.instance_id)?;
+        let plugs = decode_plugs(sockets, &raw.instance_id)?;
 
         items.push(ItemInstance {
             instance_id: ItemInstanceId::new(raw.instance_id),
@@ -172,6 +182,7 @@ pub fn decode_profile(
             locked: raw.locked,
             power,
             perks: item_perks,
+            plugs,
         });
     }
 
@@ -483,6 +494,53 @@ fn decode_power(instance: &Map<String, Value>) -> Result<Option<u16>, AppError> 
     }
 }
 
+/// Classification-neutral acquisition: the application publication layer
+/// resolves definitions and calls `ItemInstance::retain_weapon_perk_plugs`.
+fn decode_plugs(
+    sockets: &Map<String, Value>,
+    instance_id: &str,
+) -> Result<Vec<PlugSummary>, AppError> {
+    let Some(entry) = sockets.get(instance_id) else {
+        return Ok(Vec::new());
+    };
+    let entries = entry
+        .as_object()
+        .ok_or_else(provider_validation)?
+        .get("sockets")
+        .and_then(Value::as_array)
+        .ok_or_else(provider_validation)?;
+    if entries.len() > MAX_SOCKETS_PER_ITEM {
+        return Err(provider_validation());
+    }
+    let mut plugs = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let socket = entry.as_object().ok_or_else(provider_validation)?;
+        let enabled = socket
+            .get("isEnabled")
+            .and_then(Value::as_bool)
+            .ok_or_else(provider_validation)?;
+        // Visibility is validated but never controls whether a selected plug is retained.
+        socket
+            .get("isVisible")
+            .and_then(Value::as_bool)
+            .ok_or_else(provider_validation)?;
+        let hash = match socket.get("plugHash") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                u32::try_from(value.as_u64().ok_or_else(provider_validation)?)
+                    .map_err(|_| provider_validation())?,
+            ),
+        };
+        if let Some(hash) = hash.filter(|_| enabled) {
+            plugs.push(PlugSummary {
+                plug_hash: ItemHash::new(i64::from(hash)),
+                enabled,
+            });
+        }
+    }
+    Ok(plugs)
+}
+
 fn decode_perks(
     perks: &Map<String, Value>,
     instance_id: &str,
@@ -585,7 +643,7 @@ mod tests {
     use destiny_core::{
         AppError, Character, CharacterId, DefinitionVersion, DestinyMembership, ErrorCategory,
         InventorySnapshotInput, ItemHash, ItemInstance, ItemInstanceId, ItemLocation, MembershipId,
-        MembershipType, PerkHash, PerkSummary, SourceMarker, Timestamp,
+        MembershipType, PerkHash, PerkSummary, PlugSummary, SourceMarker, Timestamp,
     };
     use serde_json::{Value, json};
 
@@ -673,6 +731,7 @@ mod tests {
                     equipped: false,
                     locked: true,
                     power: Some(1800),
+                    plugs: Vec::new(),
                     perks: Vec::new(),
                 },
                 ItemInstance {
@@ -683,11 +742,13 @@ mod tests {
                     equipped: false,
                     locked: false,
                     power: None,
+                    plugs: Vec::new(),
                     perks: Vec::new(),
                 },
                 ItemInstance {
                     instance_id: instance_id("700000000000000004"),
                     item_hash: ItemHash::new(2001),
+                    plugs: Vec::new(),
                     location: ItemLocation::Character(character_id("900000000000000001")),
                     quantity: 1,
                     equipped: false,
@@ -698,6 +759,7 @@ mod tests {
                 ItemInstance {
                     instance_id: instance_id("700000000000000005"),
                     item_hash: ItemHash::new(2003),
+                    plugs: Vec::new(),
                     location: ItemLocation::Character(character_id("900000000000000002")),
                     quantity: 3,
                     equipped: false,
@@ -713,6 +775,20 @@ mod tests {
                     equipped: true,
                     locked: true,
                     power: Some(1810),
+                    plugs: vec![
+                        PlugSummary {
+                            plug_hash: ItemHash::new(6001),
+                            enabled: true,
+                        },
+                        PlugSummary {
+                            plug_hash: ItemHash::new(6003),
+                            enabled: true,
+                        },
+                        PlugSummary {
+                            plug_hash: ItemHash::new(6001),
+                            enabled: true,
+                        },
+                    ],
                     perks: vec![
                         PerkSummary {
                             perk_hash: PerkHash::new(5001),
@@ -734,6 +810,7 @@ mod tests {
                 ItemInstance {
                     instance_id: instance_id("700000000000000007"),
                     item_hash: ItemHash::new(3002),
+                    plugs: Vec::new(),
                     location: ItemLocation::Character(character_id("900000000000000002")),
                     quantity: 1,
                     equipped: true,
@@ -765,6 +842,110 @@ mod tests {
                 "700000000000000007",
             ]
         );
+    }
+
+    #[test]
+    fn sockets_preserve_enabled_plug_order_and_duplicates_regardless_of_visibility() {
+        let snapshot = decode(FIXTURE).expect("socket fixture");
+        assert_eq!(
+            item(&snapshot, "700000000000000006").plugs,
+            [
+                PlugSummary {
+                    plug_hash: ItemHash::new(6001),
+                    enabled: true
+                },
+                PlugSummary {
+                    plug_hash: ItemHash::new(6003),
+                    enabled: true
+                },
+                PlugSummary {
+                    plug_hash: ItemHash::new(6001),
+                    enabled: true
+                }
+            ]
+        );
+        assert!(item(&snapshot, "700000000000000001").plugs.is_empty());
+    }
+
+    #[test]
+    fn sockets_missing_entry_and_empty_list_decode_as_empty() {
+        for data in [json!({}), json!({"700000000000000006": {"sockets": []}})] {
+            let snapshot = decode_mutated(|value| {
+                value["Response"]["itemComponents"]["sockets"]["data"] = data;
+            })
+            .expect("missing or empty entry");
+            assert!(item(&snapshot, "700000000000000006").plugs.is_empty());
+        }
+    }
+
+    #[test]
+    fn sockets_owner_private_with_data_is_accepted() {
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["sockets"]["privacy"] = json!(2);
+        })
+        .expect("owner private sockets");
+        assert_eq!(snapshot, decode(FIXTURE).unwrap());
+    }
+
+    #[test]
+    fn sockets_component_is_required_and_validated() {
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]
+                .as_object_mut()
+                .unwrap()
+                .remove("sockets");
+        }));
+        for wrapper in [
+            json!({"privacy": 2}),
+            json!({"privacy": 3, "data": {}}),
+            json!({"disabled": true, "data": {}}),
+            json!({"data": null}),
+        ] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["itemComponents"]["sockets"] = wrapper;
+            }));
+        }
+    }
+
+    #[test]
+    fn sockets_cap_is_enforced_before_filtering_empty_or_disabled_plugs() {
+        for socket in [
+            json!({"isEnabled": true, "isVisible": false}),
+            json!({"plugHash": 6001, "isEnabled": false, "isVisible": true}),
+        ] {
+            decode_mutated(|value| {
+                value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000006"]["sockets"] =
+                    json!(vec![socket.clone(); 32]);
+            }).expect("32 sockets are accepted");
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000006"]["sockets"] =
+                    json!(vec![socket; 33]);
+            }));
+        }
+    }
+
+    #[test]
+    fn malformed_sockets_fail_closed() {
+        for socket in [
+            json!({"plugHash": 4294967296u64, "isEnabled": true, "isVisible": true}),
+            json!({"plugHash": -1, "isEnabled": true, "isVisible": true}),
+            json!({"plugHash": "6001", "isEnabled": false, "isVisible": true}),
+            json!({"plugHash": 6001, "isEnabled": null, "isVisible": true}),
+            json!({"plugHash": 6001, "isEnabled": true}),
+            json!({"plugHash": null, "isEnabled": true, "isVisible": 1}),
+            Value::Null,
+        ] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000006"]["sockets"] =
+                    json!([socket]);
+            }));
+        }
+        for entry in [Value::Null, json!({}), json!({"sockets": {}})] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000006"] =
+                    entry;
+            }));
+        }
     }
 
     #[test]
@@ -1349,7 +1530,8 @@ mod tests {
                 },
                 "itemComponents": {
                     "instances": { "data": { "20": { "isEquipped": false }, "100": { "isEquipped": false } } },
-                    "perks": { "data": {} }
+                    "perks": { "data": {} },
+                    "sockets": { "data": {} }
                 }
             }
         });
