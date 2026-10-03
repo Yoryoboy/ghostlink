@@ -42,6 +42,8 @@ fn items(version: &str, name: &str) -> DefinitionReplacementInput {
                 item_type: None,
                 tier: None,
                 element: None,
+                slot: None,
+                class_type: None,
                 tags: vec![],
                 version: DefinitionVersion::new(version),
             }],
@@ -49,6 +51,61 @@ fn items(version: &str, name: &str) -> DefinitionReplacementInput {
         checked_at: Timestamp::new(100),
         source: SourceMarker::Manifest,
     }
+}
+
+#[test]
+fn search_filter_upgrade_forces_same_version_republish_then_skips() {
+    use destiny_app::test_support::QueuedManifestGateway;
+    use destiny_core::domain::{ClassType, DamageType, ItemSlot};
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(4).unwrap();
+    store
+        .publish_manifest(items("v1", "prior"), world("v1", "prior"))
+        .unwrap();
+    assert!(store.current_metadata().unwrap().is_some());
+    store.migrate_to(5).unwrap();
+    assert!(store.current_metadata().unwrap().is_none());
+    let mut gateway = QueuedManifestGateway::new();
+    for _ in 0..2 {
+        gateway.queue(Ok(ManifestAcquisition {
+            version: DefinitionVersion::new("v1"),
+            definitions: vec![ManifestDefinitionCandidate {
+                hash: ItemHash::new(10),
+                bucket_hash: None,
+                name: "prior".into(),
+                item_type: None,
+                tier: None,
+                element: None,
+                damage_type: Some(DamageType::Solar),
+                slot: Some(ItemSlot::Power),
+                class_type: Some(ClassType::Any),
+                tags: vec![],
+                version: DefinitionVersion::new("v1"),
+            }],
+            skipped_count: 0,
+        }));
+    }
+    let mut service = destiny_app::ManifestService::new(gateway, store);
+    assert!(matches!(
+        service.sync(Timestamp::new(200)).unwrap(),
+        destiny_app::ManifestSyncReport::Updated { .. }
+    ));
+    let Resolution::Unique(item) = service
+        .repository()
+        .lookup_definition(ItemHash::new(10))
+        .unwrap()
+    else {
+        panic!("missing item")
+    };
+    assert_eq!(item.element.as_deref(), Some("solar"));
+    assert_eq!(item.slot, Some(ItemSlot::Power));
+    assert_eq!(item.class_type, Some(ClassType::Any));
+    assert!(matches!(
+        service.sync(Timestamp::new(300)).unwrap(),
+        destiny_app::ManifestSyncReport::Unchanged { .. }
+    ));
+    assert_eq!(service.gateway().component_calls(), 1);
+    assert_eq!(service.gateway().world_calls(), 1);
 }
 
 #[test]
@@ -69,6 +126,9 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
                     item_type: None,
                     tier: None,
                     element: None,
+                    damage_type: None,
+                    slot: None,
+                    class_type: None,
                     tags: vec![],
                     version: DefinitionVersion::new("v1"),
                 }],

@@ -447,6 +447,12 @@ fn definition_line(definition: &ItemDefinition) -> String {
     if let Some(element) = &definition.element {
         parts.push(format!("element: {}", sanitize(element)));
     }
+    if let Some(slot) = definition.slot {
+        parts.push(format!("slot: {}", slot.as_str()));
+    }
+    if let Some(class_type) = definition.class_type {
+        parts.push(format!("class: {}", class_type.as_str()));
+    }
     if let Some(bucket) = definition.bucket_hash {
         parts.push(format!("bucket: {}", bucket.value()));
     }
@@ -474,6 +480,15 @@ fn instance_line(hit: &InventorySearchHit) -> String {
     ];
     if let Some(power) = instance.power {
         parts.push(format!("power: {power}"));
+    }
+    if let Some(element) = &hit.definition.element {
+        parts.push(format!("element: {}", sanitize(element)));
+    }
+    if let Some(slot) = hit.definition.slot {
+        parts.push(format!("slot: {}", slot.as_str()));
+    }
+    if let Some(class_type) = hit.definition.class_type {
+        parts.push(format!("class: {}", class_type.as_str()));
     }
     format!("- {}", parts.join("; "))
 }
@@ -529,7 +544,7 @@ fn character_json(character: &Character) -> Value {
 }
 
 fn definition_json(definition: &ItemDefinition) -> Value {
-    json!({
+    let mut value = json!({
         "bucket_hash": definition.bucket_hash.map(|bucket| bucket.value()),
         "element": definition.element.as_deref(),
         "hash": definition.hash.value(),
@@ -537,7 +552,14 @@ fn definition_json(definition: &ItemDefinition) -> Value {
         "name": definition.name.as_str(),
         "tags": &definition.tags,
         "tier": definition.tier.as_deref(),
-    })
+    });
+    if let Some(slot) = definition.slot {
+        value["slot"] = json!(slot.as_str());
+    }
+    if let Some(class_type) = definition.class_type {
+        value["class_type"] = json!(class_type.as_str());
+    }
+    value
 }
 
 fn instance_json(instance: &ItemInstance) -> Value {
@@ -964,6 +986,8 @@ mod tests {
             item_type: Some("Rocket Launcher".to_string()),
             tier: Some("Exotic".to_string()),
             element: Some("Solar".to_string()),
+            slot: None,
+            class_type: None,
             tags: vec!["exotic".to_string()],
             version: DefinitionVersion::new("manifest-v1"),
         }
@@ -1172,6 +1196,28 @@ mod tests {
     }
 
     #[test]
+    fn search_outputs_definition_attributes_for_candidates_and_hits() {
+        let mut result = search_result();
+        let slot = "power".parse().unwrap();
+        let class_type = "any".parse().unwrap();
+        result.candidates[0].slot = Some(slot);
+        result.candidates[0].class_type = Some(class_type);
+        result.hits[0].definition.slot = Some(slot);
+        result.hits[0].definition.class_type = Some(class_type);
+        let human = render_search(OutputMode::Human, &result);
+        assert_eq!(human.matches("element: Solar").count(), 2);
+        assert_eq!(human.matches("slot: power").count(), 2);
+        assert_eq!(human.matches("class: any").count(), 2);
+        let json: serde_json::Value =
+            serde_json::from_str(&render_search(OutputMode::Json, &result)).unwrap();
+        for definition in [&json["candidates"][0], &json["hits"][0]["definition"]] {
+            assert_eq!(definition["slot"], "power");
+            assert_eq!(definition["class_type"], "any");
+            assert_eq!(definition["element"], "Solar");
+        }
+    }
+
+    #[test]
     fn search_renders_labeled_candidates_and_hits() {
         let expected = concat!(
             "candidates: 1\n",
@@ -1179,7 +1225,7 @@ mod tests {
             "element: Solar; bucket: 953998645; tags: exotic\n",
             "hits: 1\n",
             "- instance: inst-1; hash: 1; name: Gjallarhorn; location: vault; quantity: 1; ",
-            "equipped: false; locked: true; power: 1350\n",
+            "equipped: false; locked: true; power: 1350; element: Solar\n",
             "revision: 3\n",
             "checked_at: 100\n",
             "freshness: fresh",

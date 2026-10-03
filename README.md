@@ -99,6 +99,36 @@ Add the global `--json` flag to select machine output:
 cargo run -p destiny-cli -- --json search-inventory --text gjallar --item-hash 1001
 ```
 
+### Inventory filters
+
+Filter Manifest candidates and owned hits by definition attributes and power:
+
+```sh
+ghostlink search-inventory --type "Hand Cannon" --element solar --min-power 400
+ghostlink search-inventory --slot helmet --class hunter
+ghostlink --json search-inventory --element arc --slot energy
+```
+
+Names are case-insensitive:
+
+| Flag | Accepted values |
+| --- | --- |
+| `--element <NAME>` | kinetic, arc, solar, void, stasis, strand |
+| `--slot <NAME>` | kinetic, energy, power, helmet, gauntlets, chest, legs, classitem, other, unknown |
+| `--class <NAME>` | titan, hunter, warlock, any, unknown |
+| `--min-power <N>` | 0–65535; instances without power never match |
+
+`--text`, `--type`, `--tag`, and the new definition filters also constrain owned
+hits. An unfiltered search returns definition candidates only. Text and JSON
+output include element, slot, and class where available.
+
+MCP `search_inventory` accepts `element`, `slot`, `class_type`, and `min_power`
+at the top level. Its optional `instances` object also accepts `min_power`;
+if both minimums are supplied, the higher one applies.
+
+**After upgrading, run `ghostlink sync-manifest` once** to populate the new
+attributes, even if the live Manifest version has not changed.
+
 ### Manifest definitions
 
 Item names, types and tiers, and the activity, milestone and modifier names
@@ -121,8 +151,8 @@ ghostlink sync-manifest          # or: ghostlink --json sync-manifest
 - Re-running it fetches only the small Manifest index; when the live version
   equals the stored one and all four catalogs are populated it reports
   `unchanged` and downloads nothing. Run it again after a Destiny patch.
-- Opening the database with this version migrates it to schema v3; binaries
-  built before the weekly reset support refuse a v3 database.
+- Opening the database with this version migrates it to schema v5; older
+  binaries that do not support v5 refuse the database.
 - Until a catalog is loaded, `search-inventory` and `inspect-item` fail with
   `definitions not loaded; run ghostlink sync-manifest` (CLI and MCP) instead
   of returning an empty result.

@@ -31,7 +31,7 @@ const EXPECTED_INDEX_NAMES: [&str; 2] = ["items_definition_hash_idx", "items_loc
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 61] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 64] = [
     ("objective_definitions", "hash", "INTEGER"),
     ("objective_definitions", "progress_description", "TEXT"),
     ("objective_definitions", "completion_value", "INTEGER"),
@@ -78,6 +78,9 @@ const EXPECTED_COLUMNS: [(&str, &str, &str); 61] = [
     ("definitions", "tier", "TEXT"),
     ("definitions", "element", "TEXT"),
     ("definitions", "definition_version", "TEXT"),
+    ("definitions", "damage_type", "TEXT"),
+    ("definitions", "slot", "TEXT"),
+    ("definitions", "class_type", "TEXT"),
     ("item_perks", "instance_id", "TEXT"),
     ("item_perks", "ordinal", "INTEGER"),
     ("item_perks", "perk_hash", "INTEGER"),
@@ -346,7 +349,7 @@ fn reject_membership_type(store: &SqliteStore, value: &str) {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 4);
+    assert_eq!(LATEST_SCHEMA_VERSION, 5);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION
@@ -555,7 +558,7 @@ fn v2_down_drops_only_item_perks_then_reapply_up_preserves_v1_rows() {
 
     // The entire v1 -> v2 -> v1 -> v2 cycle stays durable across a reopen.
     let store = SqliteStore::open(temp.path()).expect("reopen after the cycle");
-    assert_eq!(store.schema_version().expect("read schema version"), 4);
+    assert_eq!(store.schema_version().expect("read schema version"), 5);
     assert_eq!(row_count(&store, "items"), 1);
     assert_eq!(row_count(&store, "item_perks"), 0);
 }

@@ -351,6 +351,8 @@ fn definition(hash: i64, name: &str, item_type: Option<&str>, tags: &[&str]) -> 
         item_type: item_type.map(str::to_owned),
         tier: None,
         element: None,
+        slot: None,
+        class_type: None,
         tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
         version: DefinitionVersion::new(DEFINITION_VERSION),
     }
@@ -426,6 +428,9 @@ fn definition_query(
         text: text.map(term),
         item_type: item_type.map(term),
         tags: tags.iter().map(|tag| term(tag)).collect(),
+        element: None,
+        slot: None,
+        class_type: None,
         limit,
     }
 }
@@ -440,6 +445,8 @@ fn instance_query(
         item_hashes,
         perk_hash: perk_hash.map(PerkHash::new),
         character_id: character.map(CharacterId::new),
+        definitions: None,
+        min_power: None,
         limit,
     }
 }
@@ -854,7 +861,7 @@ fn definition_search_matches_name_type_and_tags_with_bounded_candidates() {
         NOW,
     );
     assert_eq!(candidate_hashes(&by_name), [1001, 1003]);
-    assert!(by_name.hits.is_empty());
+    assert_eq!(hit_instances(&by_name), [INSTANCE_VAULT, INSTANCE_OTHER]);
 
     let by_type = search(
         &mut service,
@@ -1046,6 +1053,45 @@ fn instance_search_filters_exactly_and_pairs_each_hit_with_its_definition() {
         NOW,
     );
     assert!(absent.hits.is_empty());
+}
+
+#[test]
+fn type_filter_constrains_owned_hits_through_service_cli_and_reopen() {
+    let journey = Journey::new();
+    let mut service = journey.service();
+    seed(&journey, &mut service);
+    let filtered = request(definition_query(None, Some("sword"), &[], 1), None);
+    let result = search(&mut service, &filtered, NOW);
+    assert_eq!(candidate_hashes(&result), [2001]);
+    assert_eq!(hit_instances(&result), [INSTANCE_CHAR_ONE]);
+    let output = cli_json(
+        &mut service,
+        &["--json", "search-inventory", "--type", "Sword"],
+    );
+    let hits = output["hits"].as_array().unwrap();
+    assert_eq!(hits.len(), 2);
+    assert!(
+        hits.iter()
+            .all(|hit| hit["definition"]["item_type"] == "Sword")
+    );
+    let mut power_query = instance_query(ItemHashFilter::Any, None, None, MAX_SEARCH_LIMIT);
+    power_query.min_power = Some(u16::MAX);
+    assert!(
+        search(
+            &mut service,
+            &request(
+                definition_query(None, None, &[], MAX_SEARCH_LIMIT),
+                Some(power_query)
+            ),
+            NOW
+        )
+        .hits
+        .is_empty()
+    );
+    drop(service);
+    let mut reopened = journey.service();
+    assert_eq!(search(&mut reopened, &filtered, NOW), result);
+    assert_eq!(journey.request_count(), 2);
 }
 
 /// Scenario 4: exact inspection reports the Manifest definition and the concrete
@@ -1425,10 +1471,10 @@ fn cli_search_inventory_reports_bounded_candidates_and_paired_hits() {
     assert!(human.stdout.starts_with("candidates: 2\n"));
     assert!(human.stdout.contains("hash: 1001; name: Gjallarhorn"));
     assert!(human.stdout.contains("hash: 1003; name: Gjallarswift"));
-    assert!(human.stdout.contains("hits: 0\n"));
+    assert!(human.stdout.contains("hits: 2\n"));
     assert_no_secrets(&human.stdout);
 
-    // Two "sword" definitions stay explicit candidates with no instance hit.
+    // Two "sword" definitions stay explicit candidates with matching owned hits.
     let ambiguous = cli(
         &mut service,
         &["--json", "search-inventory", "--text", "sword"],
@@ -1444,7 +1490,7 @@ fn cli_search_inventory_reports_bounded_candidates_and_paired_hits() {
         .map(|candidate| candidate["hash"].as_i64().expect("hash"))
         .collect();
     assert_eq!(hashes, [2001, 2003]);
-    assert!(value["hits"].as_array().expect("hits").is_empty());
+    assert_eq!(value["hits"].as_array().expect("hits").len(), 2);
 
     // The validated shared limit bounds the candidate list.
     let bounded = cli(

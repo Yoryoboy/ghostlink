@@ -318,9 +318,8 @@ impl WeeklyResetOutput {
 
 /// Bounded `search_inventory` arguments.
 ///
-/// The definition query always runs; the instance query is optional and absent
-/// unless `instances` is present. `text`, `item_type`, `tags`, `limit`, and the
-/// nested instance fields all use the shared read-contract bounds.
+/// The definition query always runs. Any definition filter, minimum power,
+/// or explicit `instances` query also searches owned items using those filters.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchInventoryArgs {
@@ -342,12 +341,28 @@ pub struct SearchInventoryArgs {
     )]
     pub tags: Vec<String>,
 
+    /// Damage type (case-insensitive): kinetic, arc, solar, void, stasis, strand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub element: Option<String>,
+
+    /// Slot (case-insensitive): kinetic, energy, power, helmet, gauntlets, chest, legs, classitem, other, unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
+
+    /// Class (case-insensitive): titan, hunter, warlock, any, unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class_type: Option<String>,
+
+    /// Minimum owned instance power (0..65535); items without power do not match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_power: Option<u16>,
+
     /// Maximum number of definition matches; defaults to the shared maximum.
     #[serde(default = "default_search_limit")]
     #[schemars(range(min = 1, max = MAX_SEARCH_LIMIT))]
     pub limit: usize,
 
-    /// Optional concrete-instance query. Absent means no instance search runs.
+    /// Optional concrete-instance restrictions, combined with definition filters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instances: Option<InstanceQueryArgs>,
 }
@@ -370,6 +385,11 @@ pub struct InstanceQueryArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
     pub character_id: Option<String>,
+
+    /// Minimum instance power (0..65535); items without power do not match.
+    /// When both power filters are supplied, the higher minimum applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_power: Option<u16>,
 
     /// Maximum number of instance matches; defaults to the shared maximum.
     #[serde(default = "default_search_limit")]
@@ -467,6 +487,10 @@ pub struct DefinitionView {
     pub item_type: Option<String>,
     pub tier: Option<String>,
     pub element: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class_type: Option<String>,
     pub tags: Vec<String>,
     pub definition_version: String,
 }
@@ -1036,6 +1060,50 @@ mod tests {
             }
             Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
         }
+    }
+
+    #[test]
+    fn search_filter_schema_documents_names_and_rejects_unknown_fields() {
+        let schema = serde_json::to_value(schemars::schema_for!(SearchInventoryArgs)).unwrap();
+        for (field, names) in [
+            (
+                "element",
+                vec!["kinetic", "arc", "solar", "void", "stasis", "strand"],
+            ),
+            (
+                "slot",
+                vec![
+                    "kinetic",
+                    "energy",
+                    "power",
+                    "helmet",
+                    "gauntlets",
+                    "chest",
+                    "legs",
+                    "classitem",
+                    "other",
+                    "unknown",
+                ],
+            ),
+            (
+                "class_type",
+                vec!["titan", "hunter", "warlock", "any", "unknown"],
+            ),
+        ] {
+            let description = schema["properties"][field]["description"].as_str().unwrap();
+            for name in names {
+                assert!(description.contains(name), "{field}: {name}");
+            }
+        }
+        assert!(schema["properties"].get("min_power").is_some());
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(
+            serde_json::from_value::<SearchInventoryArgs>(json!({"min_power": 65536})).is_err()
+        );
+        assert!(
+            serde_json::from_value::<SearchInventoryArgs>(json!({"instances": {"unknown": 1}}))
+                .is_err()
+        );
     }
 
     #[test]

@@ -66,15 +66,15 @@ use crate::sync::ProfileSyncService;
 ///
 /// - `definitions` is always run. Its candidates are the bounded definition-level
 ///   matches in [`ItemHash`] order.
-/// - `instances` is optional. When present, its matches are paired with the exact
-///   definition each instance references and returned as hits in
-///   [`ItemInstanceId`] order; when absent, no instance search is issued and
-///   `hits` is empty.
+/// - `instances` is optional. Definition filters create an instance query when
+///   absent, using the definition query's limit. When present, hash, perk,
+///   character, power and limit constraints are preserved. Active request-level
+///   definition criteria supply the instance query's definition criteria, without
+///   intersecting a truncated candidate hash list. Hits pair each instance with
+///   its exact definition in [`ItemInstanceId`] order.
+/// - With neither definition filters nor an instance query, `hits` is empty.
 ///
-/// A caller that wants the concrete instances of a definition search passes the
-/// matched hashes back through `InstanceSearchQuery::item_hashes`, which is the
-/// documented composition of the two core queries. The service validates both
-/// queries before it refreshes anything.
+/// The service validates both queries before it refreshes anything.
 ///
 /// [`ItemInstanceId`]: destiny_core::ItemInstanceId
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -175,8 +175,22 @@ where
             .repository()
             .search_definitions(&request.definitions)?;
 
+        let instance_query = if request.definitions.has_filters() {
+            let mut query = request.instances.clone().unwrap_or(InstanceSearchQuery {
+                item_hashes: destiny_core::ItemHashFilter::Any,
+                perk_hash: None,
+                character_id: None,
+                definitions: None,
+                min_power: None,
+                limit: request.definitions.limit,
+            });
+            query.definitions = Some(Box::new(request.definitions.clone()));
+            Some(query)
+        } else {
+            request.instances.clone()
+        };
         let mut hits = Vec::new();
-        if let Some(instance_query) = &request.instances {
+        if let Some(instance_query) = &instance_query {
             let instances = self.sync.repository().search_instances(instance_query)?;
             hits.reserve(instances.len());
             for instance in instances {
@@ -587,6 +601,8 @@ mod tests {
             item_type: item_type.map(str::to_string),
             tier: None,
             element: None,
+            slot: None,
+            class_type: None,
             tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
             version: DefinitionVersion::new(DEFINITION_VERSION),
         }
@@ -682,6 +698,9 @@ mod tests {
             text: text.map(term),
             item_type: item_type.map(term),
             tags: tags.into_iter().map(term).collect(),
+            element: None,
+            slot: None,
+            class_type: None,
             limit,
         }
     }
@@ -696,6 +715,8 @@ mod tests {
             item_hashes,
             perk_hash,
             character_id,
+            definitions: None,
+            min_power: None,
             limit,
         }
     }
@@ -729,6 +750,9 @@ mod tests {
                 text: Some(SearchTerm::new("no such item").unwrap()),
                 item_type: None,
                 tags: Vec::new(),
+                element: None,
+                slot: None,
+                class_type: None,
                 limit: 5,
             },
             None,
@@ -762,6 +786,9 @@ mod tests {
                 text: None,
                 item_type: None,
                 tags: Vec::new(),
+                element: None,
+                slot: None,
+                class_type: None,
                 limit: 5,
             },
             None,
@@ -1176,6 +1203,52 @@ mod tests {
     }
 
     #[test]
+    fn definition_filters_constrain_owned_hits_without_an_explicit_instance_query() {
+        let shared = gateway();
+        let mut service = fresh_service(
+            &shared,
+            Vec::new(),
+            vec![
+                instance("a-other", 1, ItemLocation::Vault, Vec::new()),
+                instance("z-match", 2, ItemLocation::Vault, Vec::new()),
+            ],
+        );
+        let request = search_request(
+            definition_query(None, Some("HAND CANNON"), Vec::new(), 1),
+            None,
+        );
+        let result = service.search_inventory(&request, TTL, NOW).unwrap();
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].instance.instance_id.as_str(), "z-match");
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+    }
+
+    #[test]
+    fn definition_filters_constrain_explicit_instance_query_before_limit() {
+        let shared = gateway();
+        let mut service = fresh_service(
+            &shared,
+            Vec::new(),
+            vec![
+                instance("a-other", 1, ItemLocation::Vault, vec![perk(10)]),
+                instance("z-match", 2, ItemLocation::Vault, vec![perk(10)]),
+            ],
+        );
+        let request = search_request(
+            definition_query(None, Some("hand cannon"), Vec::new(), 1),
+            Some(instance_query(
+                ItemHashFilter::Any,
+                Some(PerkHash::new(10)),
+                None,
+                1,
+            )),
+        );
+        let result = service.search_inventory(&request, TTL, NOW).unwrap();
+        assert_eq!(result.hits.len(), 1);
+        assert_eq!(result.hits[0].instance.instance_id.as_str(), "z-match");
+    }
+
+    #[test]
     fn definition_only_search_skips_instance_search() {
         let shared = gateway();
         let mut service = fresh_service(&shared, Vec::new(), Vec::new());
@@ -1183,7 +1256,7 @@ mod tests {
         let result = service
             .search_inventory(
                 &search_request(
-                    definition_query(Some("vex"), None, Vec::new(), MAX_SEARCH_LIMIT),
+                    definition_query(None, None, Vec::new(), MAX_SEARCH_LIMIT),
                     None,
                 ),
                 TTL,
@@ -1191,7 +1264,7 @@ mod tests {
             )
             .expect("definition-only search succeeds");
 
-        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates.len(), 3);
         assert!(result.hits.is_empty());
         assert_eq!(
             service.repository().recorded_calls(),

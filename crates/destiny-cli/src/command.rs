@@ -222,11 +222,9 @@ impl CallbackMode {
 
 /// Arguments for `search-inventory`.
 ///
-/// Definition filters (`--text`, `--type`, `--tag`) select Manifest
-/// definitions. Instance filters (`--item-hash`, `--perk-hash`, `--character`)
-/// select concrete instances; when none is present no instance search is
-/// issued, so a definition-only search never reports a concrete instance and
-/// never silently chooses one.
+/// Definition filters select Manifest candidates and constrain owned hits.
+/// An unfiltered search returns candidates only; any filter also searches
+/// concrete instances without silently choosing one.
 #[derive(Debug, Args)]
 pub struct SearchInventoryArgs {
     /// Case-insensitive substring of the definition name.
@@ -240,6 +238,22 @@ pub struct SearchInventoryArgs {
     /// Definition tag that must be present; repeat for several tags.
     #[arg(long = "tag", value_name = "TAG")]
     pub tag: Vec<String>,
+
+    /// Damage type: kinetic, arc, solar, void, stasis, strand (case-insensitive).
+    #[arg(long, value_name = "NAME", value_parser = parse_element)]
+    pub element: Option<String>,
+
+    /// Slot: kinetic, energy, power, helmet, gauntlets, chest, legs, classitem, other, unknown.
+    #[arg(long, value_name = "NAME", value_parser = parse_slot)]
+    pub slot: Option<String>,
+
+    /// Class: titan, hunter, warlock, any, unknown (case-insensitive).
+    #[arg(long = "class", value_name = "NAME", value_parser = parse_class)]
+    pub class_type: Option<String>,
+
+    /// Minimum instance power; items without power do not match.
+    #[arg(long, value_name = "N")]
+    pub min_power: Option<u16>,
 
     /// Restrict instance matches to one definition hash; repeat for several.
     #[arg(long = "item-hash", value_name = "HASH")]
@@ -270,25 +284,45 @@ impl SearchInventoryArgs {
                 .map(|value| SearchTerm::new(value.as_str()))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|_| CliError::invalid_request())?,
+            element: self
+                .element
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| CliError::invalid_request())?,
+            slot: self
+                .slot
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| CliError::invalid_request())?,
+            class_type: self
+                .class_type
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(|_| CliError::invalid_request())?,
             limit: self.limit,
         };
         definitions
             .validate()
             .map_err(|_| CliError::invalid_request())?;
 
-        let instances = self.instance_query()?;
+        let instances = self.instance_query(&definitions)?;
         Ok(SearchInventoryRequest {
             definitions,
             instances,
         })
     }
 
-    /// Builds the optional instance query, or `None` when no instance filter
-    /// was supplied.
-    fn instance_query(&self) -> Result<Option<InstanceSearchQuery>, CliError> {
+    /// Builds an owned search when any definition or instance filter is supplied.
+    fn instance_query(
+        &self,
+        definitions: &DefinitionSearchQuery,
+    ) -> Result<Option<InstanceSearchQuery>, CliError> {
         let no_instance_filter =
             self.item_hash.is_empty() && self.perk_hash.is_none() && self.character.is_none();
-        if no_instance_filter {
+        if no_instance_filter && !definitions.has_filters() && self.min_power.is_none() {
             return Ok(None);
         }
 
@@ -308,11 +342,45 @@ impl SearchInventoryArgs {
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
             character_id,
+            definitions: definitions
+                .has_filters()
+                .then(|| Box::new(definitions.clone())),
+            min_power: self.min_power,
             limit: self.limit,
         };
         query.validate().map_err(|_| CliError::invalid_request())?;
         Ok(Some(query))
     }
+}
+
+// Infer the core enum types from the shared query rather than duplicating
+// their parsing rules in the command adapter.
+fn validate_filter(value: &str, filter: &str) -> Result<String, String> {
+    let mut query = DefinitionSearchQuery {
+        text: None,
+        item_type: None,
+        tags: Vec::new(),
+        element: None,
+        slot: None,
+        class_type: None,
+        limit: MAX_SEARCH_LIMIT,
+    };
+    match filter {
+        "element" => query.element = Some(value.parse().map_err(|_| "accepted values: kinetic, arc, solar, void, stasis, strand")?),
+        "slot" => query.slot = Some(value.parse().map_err(|_| "accepted values: kinetic, energy, power, helmet, gauntlets, chest, legs, classitem, other, unknown")?),
+        _ => query.class_type = Some(value.parse().map_err(|_| "accepted values: titan, hunter, warlock, any, unknown")?),
+    }
+    Ok(value.to_owned())
+}
+
+fn parse_element(value: &str) -> Result<String, String> {
+    validate_filter(value, "element")
+}
+fn parse_slot(value: &str) -> Result<String, String> {
+    validate_filter(value, "slot")
+}
+fn parse_class(value: &str) -> Result<String, String> {
+    validate_filter(value, "class")
 }
 
 /// Weekly accepts opaque IDs and uniquely matched character classes.
@@ -913,6 +981,63 @@ mod tests {
     }
 
     #[test]
+    fn search_attribute_filters_build_owned_queries() {
+        let request = search_request(
+            parse([
+                "search-inventory",
+                "--element",
+                "SoLaR",
+                "--slot",
+                "Energy",
+                "--class",
+                "Hunter",
+                "--min-power",
+                "2000",
+            ])
+            .into_read_request()
+            .expect("valid filters"),
+        );
+        assert_eq!(
+            request.definitions.element.map(|v| v.as_str()),
+            Some("solar")
+        );
+        assert_eq!(request.definitions.slot.map(|v| v.as_str()), Some("energy"));
+        assert_eq!(
+            request.definitions.class_type.map(|v| v.as_str()),
+            Some("hunter")
+        );
+        let instances = request.instances.expect("owned query");
+        assert_eq!(instances.min_power, Some(2000));
+        assert_eq!(instances.definitions.as_deref(), Some(&request.definitions));
+        for args in [
+            vec!["--type", "Hand Cannon"],
+            vec!["--text", "ace"],
+            vec!["--tag", "exotic"],
+            vec!["--min-power", "2000"],
+        ] {
+            let mut argv = vec!["search-inventory"];
+            argv.extend(args);
+            assert!(
+                search_request(parse(argv).into_read_request().unwrap())
+                    .instances
+                    .is_some()
+            );
+        }
+        for (flag, accepted) in [
+            ("--element", "strand"),
+            ("--slot", "classitem"),
+            ("--class", "warlock"),
+        ] {
+            let error = Cli::try_parse_from(["ghostlink", "search-inventory", flag, "invalid"])
+                .unwrap_err();
+            assert!(error.to_string().contains(accepted), "{error}");
+        }
+        assert!(
+            Cli::try_parse_from(["ghostlink", "search-inventory", "--min-power", "65536"]).is_err()
+        );
+    }
+
+    #[test]
     fn definition_filters_are_normalized_into_the_shared_queries() {
         let request = search_request(
             parse([
@@ -951,7 +1076,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["exotic", "solar"]
         );
-        assert_eq!(request.instances, None);
+        assert_eq!(
+            request.instances.unwrap().definitions.as_deref(),
+            Some(&request.definitions)
+        );
     }
 
     #[test]
@@ -1146,6 +1274,8 @@ mod tests {
                 item_type: None,
                 tier: None,
                 element: None,
+                slot: None,
+                class_type: None,
                 tags: Vec::new(),
                 version: destiny_app::DefinitionVersion::new("manifest-v1"),
             },

@@ -219,6 +219,8 @@ fn manifest_replacement() -> DefinitionReplacementInput {
                 item_type: None,
                 tier: None,
                 element: None,
+                slot: None,
+                class_type: None,
                 tags: vec!["tag".into()],
                 version: DefinitionVersion::new("manifest-v1"),
             }],

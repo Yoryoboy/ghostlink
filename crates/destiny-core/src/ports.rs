@@ -532,6 +532,9 @@ pub struct ManifestDefinitionCandidate {
     pub item_type: Option<String>,
     pub tier: Option<String>,
     pub element: Option<String>,
+    pub damage_type: Option<crate::domain::DamageType>,
+    pub slot: Option<crate::domain::ItemSlot>,
+    pub class_type: Option<crate::domain::ClassType>,
     pub tags: Vec<String>,
     pub version: DefinitionVersion,
 }

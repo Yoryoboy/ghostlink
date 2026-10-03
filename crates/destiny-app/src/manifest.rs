@@ -265,7 +265,12 @@ fn normalize_with_count(
             name,
             item_type: normalize_optional_presentation(candidate.item_type.as_deref())?,
             tier: normalize_optional_presentation(candidate.tier.as_deref())?,
-            element: normalize_optional_presentation(candidate.element.as_deref())?,
+            element: match candidate.damage_type {
+                Some(damage) => Some(damage.as_str().to_owned()),
+                None => normalize_optional_presentation(candidate.element.as_deref())?,
+            },
+            slot: candidate.slot,
+            class_type: candidate.class_type,
             tags: normalize_tags(&candidate.tags)?,
             version: version.clone(),
         });
@@ -393,6 +398,9 @@ mod tests {
             item_type: None,
             tier: None,
             element: None,
+            damage_type: None,
+            slot: None,
+            class_type: None,
             tags: Vec::new(),
             version: DefinitionVersion::new(VERSION),
         }
@@ -428,6 +436,9 @@ mod tests {
                     item_type: Some("  WEAPON ".into()),
                     tier: Some(" Legendary ".into()),
                     element: Some("  SOLAR ".into()),
+                    damage_type: None,
+                    slot: None,
+                    class_type: None,
                     tags: vec!["Tag-B".into(), "  tag-a ".into(), "TAG-A".into()],
                     version: DefinitionVersion::new(VERSION),
                 },
@@ -445,6 +456,9 @@ mod tests {
                     item_type: Some("WEAPON".into()),
                     tier: Some("Legendary".into()),
                     element: Some("SOLAR".into()),
+                    damage_type: None,
+                    slot: None,
+                    class_type: None,
                     tags: vec!["tag-a".into(), "tag-b".into()],
                     version: DefinitionVersion::new(VERSION),
                 },
@@ -585,6 +599,9 @@ mod tests {
             item_type,
             tier,
             element,
+            damage_type: _,
+            slot: _,
+            class_type: _,
             tags,
             version,
         } = candidate(1, "Alpha");
@@ -609,6 +626,8 @@ mod tests {
             element,
             tags,
             version,
+            slot: _,
+            class_type: _,
         } = published.definitions.into_iter().next().unwrap();
 
         assert_eq!(hash, ItemHash::new(1));
@@ -732,6 +751,8 @@ mod tests {
                 item_type: None,
                 tier: None,
                 element: None,
+                slot: None,
+                class_type: None,
                 tags: Vec::new(),
                 version: DefinitionVersion::new(version),
             }

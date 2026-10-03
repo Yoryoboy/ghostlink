@@ -18,11 +18,11 @@
 //! no SQLite `lower()` or precomputed normalized value is involved, so there is no
 //! derived structure that could become corrupt or diverge.
 //!
-//! Instance matching is the corresponding [`destiny_core::instance_matches`] rule
-//! pushed into parameterized SQL: an exact [`ItemHash`] candidate set, an exact
-//! [`PerkHash`] membership test, and an exact character location. Both directions
-//! order their matches before the validated limit truncates them, so the outcome
-//! is total and stable.
+//! Instance search preselects exact hash, perk and character constraints in
+//! parameterized SQL, then applies the shared Rust instance/definition predicate
+//! to each reconstructed row. Active definition criteria resolve the exact
+//! definition; missing definitions do not match. Power and definition matching
+//! happen before truncation in deterministic instance-identifier order.
 //!
 //! # Bounds, determinism, and sanitization
 //!
@@ -31,7 +31,7 @@
 //! sanitized [`destiny_core::ErrorCategory::ProviderValidation`] category, without
 //! echoing the offending value. Only the bounded result set is ever materialized:
 //! the definition scan stops as soon as the validated limit is reached, and the
-//! instance query returns at most `limit` rows. Caller text and identifiers are
+//! instance scan likewise stops after `limit` matching rows. Caller text and identifiers are
 //! only ever bound as query parameters, and the number of placeholders is bounded
 //! by the contract itself (at most [`destiny_core::MAX_HASH_FILTERS`] hashes),
 //! never by interpolating a value into SQL text. Every storage failure maps to the
@@ -50,6 +50,7 @@
 //! behind this same `SearchRepository` contract without changing any answer.
 
 use super::{SqliteStore, storage_failure};
+use destiny_core::query::instance_matches_with_definition;
 use destiny_core::{
     AppError, DefinitionRepository, DefinitionSearchQuery, InstanceSearchQuery, ItemDefinition,
     ItemHash, ItemHashFilter, ItemInstance, ItemInstanceId, ItemLocation, PerkHash, PerkSummary,
@@ -156,10 +157,8 @@ impl SearchRepository for SqliteStore {
             sql.push_str(" AND location_kind = 'character' AND location_character_id = ?");
             parameters.push(Value::Text(character_id.as_str().to_owned()));
         }
-        sql.push_str(" ORDER BY instance_id LIMIT ?");
-        parameters.push(Value::Integer(
-            i64::try_from(query.limit).map_err(|_| storage_failure())?,
-        ));
+        // Never truncate SQL candidates before shared definition/power matching.
+        sql.push_str(" ORDER BY instance_id");
 
         let mut instances = Vec::new();
         {
@@ -173,7 +172,26 @@ impl SearchRepository for SqliteStore {
 
             for row in rows {
                 let raw: RawInstance = row.map_err(|_| storage_failure())?;
-                instances.push(read_instance(self.connection(), raw)?);
+                let instance = read_instance(self.connection(), raw)?;
+                let definition = if query
+                    .definitions
+                    .as_ref()
+                    .is_some_and(|criteria| criteria.has_filters())
+                {
+                    match self.lookup_definition(instance.item_hash)? {
+                        Resolution::Unique(definition) => Some(definition),
+                        Resolution::Missing => None,
+                        Resolution::Ambiguous(_) => return Err(storage_failure()),
+                    }
+                } else {
+                    None
+                };
+                if instance_matches_with_definition(query, &instance, definition.as_ref()) {
+                    instances.push(instance);
+                    if instances.len() == query.limit {
+                        break;
+                    }
+                }
             }
         }
         Ok(instances)
@@ -371,6 +389,8 @@ mod tests {
             item_type: item_type.map(str::to_owned),
             tier: Some("Legendary".to_owned()),
             element: None,
+            slot: None,
+            class_type: None,
             tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
             version: DefinitionVersion::new(MANIFEST_VERSION),
         }
@@ -457,6 +477,9 @@ mod tests {
             text: text.map(term),
             item_type: item_type.map(term),
             tags: tags.iter().map(|tag| term(tag)).collect(),
+            element: None,
+            slot: None,
+            class_type: None,
             limit,
         }
     }
@@ -471,6 +494,8 @@ mod tests {
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),
             character_id: character.map(CharacterId::new),
+            definitions: None,
+            min_power: None,
             limit,
         }
     }
@@ -633,6 +658,108 @@ mod tests {
                     .expect("search")
             ),
             ["instance-1", "instance-2"]
+        );
+    }
+
+    #[test]
+    fn sqlite_instance_definition_and_power_filters_match_fake_before_limit() {
+        use destiny_core::domain::{ClassType, DamageType, ItemSlot};
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let mut matching = definition(
+            7,
+            "İrem   Cannon",
+            Some("Hand   Cannon"),
+            &["Exotic", "Solar"],
+        );
+        matching.element = Some("solar".into());
+        matching.slot = Some(ItemSlot::Energy);
+        matching.class_type = Some(ClassType::Hunter);
+        let definitions = vec![definition(8, "Ghost", Some("Ghost Shell"), &[]), matching];
+        seed_definitions(&mut store, &definitions);
+        let mut items: Vec<_> = (0..120)
+            .map(|index| instance(&format!("a-{index:03}"), 8, ItemLocation::Vault, &[]))
+            .collect();
+        // Orphans fail definition criteria even when their power matches.
+        let mut orphan = instance("b-orphan", 99, ItemLocation::Vault, &[]);
+        orphan.power = Some(1800);
+        items.push(orphan);
+        for (id, power) in [
+            ("c-low", Some(1799)),
+            ("d-missing", None),
+            ("y-match", Some(1800)),
+            ("z-match", Some(1801)),
+        ] {
+            let mut item = instance(id, 7, ItemLocation::Vault, &[10]);
+            item.power = power;
+            items.push(item);
+        }
+        let committed = seed_instances(&mut store, items);
+        let fake = InMemorySearchRepository::with_projection(definitions, &committed);
+        let mut criteria = vec![
+            definition_query(Some("i\u{307}rem cannon"), None, &[], 1),
+            definition_query(None, Some(" HAND CANNON "), &[], 1),
+            definition_query(None, Some("hand"), &[], 1),
+            definition_query(None, None, &["EXOTIC", "solar"], 1),
+            definition_query(None, None, &["exotic", "absent"], 1),
+        ];
+        for (element, slot, class_type) in [
+            (Some(DamageType::Solar), None, None),
+            (Some(DamageType::Void), None, None),
+            (None, Some(ItemSlot::Energy), None),
+            (None, Some(ItemSlot::Power), None),
+            (None, None, Some(ClassType::Hunter)),
+            (None, None, Some(ClassType::Titan)),
+        ] {
+            let mut filter = definition_query(None, None, &[], 1);
+            filter.element = element;
+            filter.slot = slot;
+            filter.class_type = class_type;
+            criteria.push(filter);
+        }
+        let mut queries = Vec::new();
+        for filter in criteria {
+            let mut query = instance_query(ItemHashFilter::Any, None, None, 2);
+            query.definitions = Some(Box::new(filter));
+            queries.push(query.clone());
+            query.min_power = Some(1800);
+            queries.push(query);
+        }
+        let mut power_only = instance_query(ItemHashFilter::Any, None, None, 2);
+        power_only.min_power = Some(1800);
+        queries.push(power_only);
+        let mut combined = instance_query(
+            ItemHashFilter::AnyOf(vec![ItemHash::new(7)]),
+            Some(10),
+            None,
+            1,
+        );
+        combined.definitions = Some(Box::new(definition_query(
+            None,
+            Some("hand cannon"),
+            &[],
+            1,
+        )));
+        combined.min_power = Some(1800);
+        queries.push(combined);
+        for query in queries {
+            let expected = fake.search_instances(&query).unwrap();
+            assert_eq!(
+                store.search_instances(&query).unwrap(),
+                expected,
+                "{query:?}"
+            );
+        }
+        let mut query = instance_query(ItemHashFilter::Any, None, None, 2);
+        query.definitions = Some(Box::new(definition_query(
+            None,
+            Some("hand cannon"),
+            &[],
+            1,
+        )));
+        query.min_power = Some(1800);
+        assert_eq!(
+            names(&store.search_instances(&query).unwrap()),
+            ["y-match", "z-match"]
         );
     }
 

@@ -36,6 +36,7 @@
 //! [`ErrorCategory::LocalStorage`] category.
 
 use super::{SqliteStore, encode_decimal, parse_decimal, storage_failure};
+use destiny_core::domain::{ClassType, DamageType, ItemSlot};
 use destiny_core::{
     AppError, BucketHash, Dataset, DefinitionReplacementInput, DefinitionRepository,
     DefinitionVersion, ErrorCategory, ItemDefinition, ItemHash, ManifestDefinitions, Resolution,
@@ -226,12 +227,17 @@ fn replace_catalog(
         .execute("DELETE FROM definitions", [])
         .map_err(|_| storage_failure())?;
 
+    let has_attributes = super::migrations::read_user_version(connection)? >= 5;
     let mut insert_definition = connection
-        .prepare_cached(
+        .prepare_cached(if has_attributes {
+            "INSERT INTO definitions \
+             (hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+        } else {
             "INSERT INTO definitions \
              (hash, bucket_hash, name, item_type, tier, element, definition_version) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+        })
         .map_err(|_| storage_failure())?;
     let mut insert_tag = connection
         .prepare_cached(
@@ -239,18 +245,38 @@ fn replace_catalog(
         )
         .map_err(|_| storage_failure())?;
     for definition in definitions {
+        let mut values = vec![
+            rusqlite::types::Value::from(definition.hash.value()),
+            definition.bucket_hash.map(BucketHash::value).into(),
+            definition.name.clone().into(),
+            definition.item_type.clone().into(),
+            definition.tier.clone().into(),
+            definition.element.clone().into(),
+            definition.version.as_str().to_owned().into(),
+        ];
+        if has_attributes {
+            values.extend([
+                definition
+                    .element
+                    .as_deref()
+                    .and_then(|value| value.parse::<DamageType>().ok())
+                    .map(|value| value.as_str().to_owned())
+                    .into(),
+                definition
+                    .slot
+                    .map(|value| value.as_str().to_owned())
+                    .into(),
+                definition
+                    .class_type
+                    .map(|value| value.as_str().to_owned())
+                    .into(),
+            ]);
+        } else if definition.slot.is_some() || definition.class_type.is_some() {
+            return Err(storage_failure());
+        }
         insert_definition
-            .execute(params![
-                definition.hash.value(),
-                definition.bucket_hash.map(BucketHash::value),
-                definition.name,
-                definition.item_type,
-                definition.tier,
-                definition.element,
-                definition.version.as_str(),
-            ])
+            .execute(rusqlite::params_from_iter(values))
             .map_err(|_| storage_failure())?;
-
         for (ordinal, tag) in definition.tags.iter().enumerate() {
             let ordinal = i64::try_from(ordinal).map_err(|_| storage_failure())?;
             insert_tag
@@ -342,8 +368,11 @@ fn read_definition(
     hash: ItemHash,
 ) -> Result<Option<ItemDefinition>, AppError> {
     let row = connection.query_row(
-        "SELECT bucket_hash, name, item_type, tier, element, definition_version \
-         FROM definitions WHERE hash = ?1",
+        if super::migrations::read_user_version(connection)? >= 5 {
+            "SELECT bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type FROM definitions WHERE hash = ?1"
+        } else {
+            "SELECT bucket_hash, name, item_type, tier, element, definition_version, NULL, NULL, NULL FROM definitions WHERE hash = ?1"
+        },
         [hash.value()],
         |row| {
             Ok((
@@ -353,24 +382,61 @@ fn read_definition(
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
             ))
         },
     );
 
     match row {
-        Ok((bucket_hash, name, item_type, tier, element, version)) => Ok(Some(ItemDefinition {
-            hash,
-            bucket_hash: bucket_hash.map(BucketHash::new),
-            name,
-            item_type,
-            tier,
-            element,
-            tags: read_tags(connection, hash.value())?,
-            version: DefinitionVersion::new(version),
-        })),
+        Ok((bucket_hash, name, item_type, tier, element, version, damage, slot, class_type)) => {
+            Ok(Some(ItemDefinition {
+                hash,
+                bucket_hash: bucket_hash.map(BucketHash::new),
+                name,
+                item_type,
+                tier,
+                element: validate_element(element, damage)?,
+                slot: decode_attribute(slot, ItemSlot::as_str)?,
+                class_type: decode_attribute(class_type, ClassType::as_str)?,
+                tags: read_tags(connection, hash.value())?,
+                version: DefinitionVersion::new(version),
+            }))
+        }
         Err(SqlError::QueryReturnedNoRows) => Ok(None),
         Err(_) => Err(storage_failure()),
     }
+}
+
+/// Stored names must be canonical, not merely parseable user input.
+fn decode_attribute<T: std::str::FromStr + Copy>(
+    raw: Option<String>,
+    canonical: fn(T) -> &'static str,
+) -> Result<Option<T>, AppError> {
+    raw.map(|raw| {
+        let value = raw.parse::<T>().map_err(|_| storage_failure())?;
+        if canonical(value) != raw {
+            return Err(storage_failure());
+        }
+        Ok(value)
+    })
+    .transpose()
+}
+
+fn validate_element(
+    element: Option<String>,
+    raw: Option<String>,
+) -> Result<Option<String>, AppError> {
+    if let Some(damage) = decode_attribute(raw, DamageType::as_str)?
+        && element
+            .as_deref()
+            .and_then(|value| value.parse::<DamageType>().ok())
+            != Some(damage)
+    {
+        return Err(storage_failure());
+    }
+    Ok(element)
 }
 
 /// Reads the tags of one definition in their stored ordinal order.
@@ -397,10 +463,11 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
 
     {
         let mut statement = connection
-            .prepare(
-                "SELECT hash, bucket_hash, name, item_type, tier, element, definition_version \
-                 FROM definitions ORDER BY hash",
-            )
+            .prepare(if super::migrations::read_user_version(connection)? >= 5 {
+                "SELECT hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type FROM definitions ORDER BY hash"
+            } else {
+                "SELECT hash, bucket_hash, name, item_type, tier, element, definition_version, NULL, NULL, NULL FROM definitions ORDER BY hash"
+            })
             .map_err(|_| storage_failure())?;
         let rows = statement
             .query_map([], |row| {
@@ -412,13 +479,26 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, Option<String>>(5)?,
                     row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, Option<String>>(9)?,
                 ))
             })
             .map_err(|_| storage_failure())?;
 
         for row in rows {
-            let (hash, bucket_hash, name, item_type, tier, element, version) =
-                row.map_err(|_| storage_failure())?;
+            let (
+                hash,
+                bucket_hash,
+                name,
+                item_type,
+                tier,
+                element,
+                version,
+                damage,
+                slot,
+                class_type,
+            ) = row.map_err(|_| storage_failure())?;
             positions.insert(hash, definitions.len());
             definitions.push(ItemDefinition {
                 hash: ItemHash::new(hash),
@@ -426,7 +506,9 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
                 name,
                 item_type,
                 tier,
-                element,
+                element: validate_element(element, damage)?,
+                slot: decode_attribute(slot, ItemSlot::as_str)?,
+                class_type: decode_attribute(class_type, ClassType::as_str)?,
                 tags: Vec::new(),
                 version: DefinitionVersion::new(version),
             });
@@ -461,6 +543,56 @@ mod live_publish_tests {
     use super::*;
 
     #[test]
+    fn search_filter_stored_attributes_fail_closed_on_corruption() {
+        use destiny_core::{DefinitionSearchQuery, SearchRepository};
+        for column in ["damage_type", "slot", "class_type"] {
+            for value in ["invalid", "SOLAR", " solar "] {
+                let store = SqliteStore::open_in_memory().unwrap();
+                store.connection().execute("INSERT INTO definitions(hash,name,definition_version) VALUES(1,'Test','v1')", []).unwrap();
+                store
+                    .connection()
+                    .pragma_update(None, "ignore_check_constraints", 1)
+                    .unwrap();
+                store
+                    .connection()
+                    .execute(&format!("UPDATE definitions SET {column}=?1"), [value])
+                    .unwrap();
+                assert_eq!(
+                    store.lookup_definition(ItemHash::new(1)),
+                    Err(storage_failure())
+                );
+                assert_eq!(
+                    store.search_definitions(&DefinitionSearchQuery {
+                        text: None,
+                        item_type: None,
+                        tags: vec![],
+                        element: None,
+                        slot: None,
+                        class_type: None,
+                        limit: 10
+                    }),
+                    Err(storage_failure())
+                );
+                // A catalog comparison must also reject corrupted attributes.
+                upsert_metadata(
+                    store.connection(),
+                    &DefinitionReplacementInput {
+                        definitions: ManifestDefinitions {
+                            version: DefinitionVersion::new("v1"),
+                            definitions: vec![],
+                        },
+                        checked_at: Timestamp::new(1),
+                        source: SourceMarker::Manifest,
+                    },
+                    SyncRevision::new(1),
+                )
+                .unwrap();
+                assert!(read_committed_content(store.connection()).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn publishes_forty_thousand_definitions_with_tags() {
         let mut store = SqliteStore::open_in_memory().unwrap();
         let version = DefinitionVersion::new("large-synthetic-v1");
@@ -472,6 +604,8 @@ mod live_publish_tests {
                 item_type: Some("Weapon".into()),
                 tier: None,
                 element: None,
+                slot: None,
+                class_type: None,
                 tags: vec!["synthetic".into(), "weapon".into()],
                 version: version.clone(),
             })
