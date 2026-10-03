@@ -162,6 +162,7 @@ fn profile(
             equipped: false,
             locked: true,
             power: Some(1810),
+            plugs: Vec::new(),
             perks: Vec::new(),
         }],
     }

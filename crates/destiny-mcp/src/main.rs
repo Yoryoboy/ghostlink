@@ -211,7 +211,7 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     let gateway = SharedGateway::new(profile_gateway);
     let repository = SharedRepository::new(repository);
 
-    let read_sync = ProfileSyncService::new(gateway.clone(), repository.clone());
+    let read_sync = ProfileSyncService::new_with_definitions(gateway.clone(), repository.clone());
     let read_service =
         QueryReadService::new(QueryService::new(read_sync), SystemClock::new(), policy);
 
@@ -229,7 +229,7 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     });
 
     let mutations = MutationService::new(
-        ProfileSyncService::new(gateway, repository),
+        ProfileSyncService::new_with_definitions(gateway, repository),
         SystemPlanIds::new(SystemClock::new()),
     );
     let mutation_service = ComposedMutationService::new(

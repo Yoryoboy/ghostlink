@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 6;
+pub(crate) const LATEST_VERSION: u32 = 7;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 6] = [
+const MIGRATIONS: [Migration; 7] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -83,6 +83,11 @@ const MIGRATIONS: [Migration; 6] = [
         version: 6,
         up: SCHEMA_V6_UP,
         down: SCHEMA_V6_DOWN,
+    },
+    Migration {
+        version: 7,
+        up: SCHEMA_V7_UP,
+        down: SCHEMA_V7_DOWN,
     },
 ];
 
@@ -373,6 +378,23 @@ DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
 "#;
 const SCHEMA_V6_DOWN: &str = r#"
 ALTER TABLE definitions DROP COLUMN plug_category;
+"#;
+
+/// Ordered enabled socket plugs; the ordinal bounds the list at 32 entries.
+const SCHEMA_V7_UP: &str = r#"
+CREATE TABLE item_plugs (
+    instance_id TEXT NOT NULL
+        REFERENCES items(instance_id) ON DELETE CASCADE
+        CHECK (length(instance_id) BETWEEN 1 AND 128),
+    ordinal INTEGER NOT NULL
+        CHECK (typeof(ordinal) = 'integer' AND ordinal BETWEEN 0 AND 31),
+    plug_hash INTEGER NOT NULL
+        CHECK (typeof(plug_hash) = 'integer' AND plug_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (instance_id, ordinal)
+) STRICT;
+"#;
+const SCHEMA_V7_DOWN: &str = r#"
+DROP TABLE IF EXISTS item_plugs;
 "#;
 
 /// Reads the recorded schema version from `PRAGMA user_version`.

@@ -203,6 +203,14 @@ impl InventorySnapshotInput {
         }
 
         for item in &self.items {
+            if item.plugs.len() > 32
+                || item
+                    .plugs
+                    .iter()
+                    .any(|plug| !plug.enabled || u32::try_from(plug.plug_hash.value()).is_err())
+            {
+                return false;
+            }
             if let ItemLocation::Character(character_id) = &item.location
                 && !character_ids.contains(character_id)
             {

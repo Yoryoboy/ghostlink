@@ -14,6 +14,168 @@ use destiny_core::{
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[test]
+fn plugs_round_trip_search_and_revision_identity() {
+    use destiny_core::{PlugSummary, SearchRepository};
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut input = full_input();
+    input.items[0].plugs = [0, 6001, 6001, i64::from(u32::MAX)]
+        .into_iter()
+        .map(|hash| PlugSummary {
+            plug_hash: ItemHash::new(hash),
+            enabled: true,
+        })
+        .collect();
+    let first = store.replace_current(input.clone()).unwrap();
+    assert_eq!(store.load_current().unwrap().unwrap(), first);
+    assert_eq!(
+        store.lookup_instance(&input.items[0].instance_id).unwrap(),
+        Resolution::Unique(first.items[0].clone())
+    );
+    let same = store.replace_current(input.clone()).unwrap();
+    assert_eq!(same.metadata.revision, first.metadata.revision);
+    input.items[0].plugs[1].plug_hash = ItemHash::new(6002);
+    let changed = store.replace_current(input).unwrap();
+    assert_eq!(
+        changed.metadata.revision.value(),
+        first.metadata.revision.value() + 1
+    );
+}
+
+#[test]
+fn sync_filters_plugs_before_sqlite_publication_and_keeps_unknown_without_manifest() {
+    use destiny_app::{ProfileSyncService, test_support::QueuedProfileGateway};
+    use destiny_core::{DestinyMembership, FreshnessPolicy, PlugSummary, ProfileSyncReason};
+    let membership =
+        DestinyMembership::new(MembershipType::new(3), MembershipId::new("123")).unwrap();
+    let mut gateway = QueuedProfileGateway::new();
+    for shader in [61, 64, 61] {
+        let mut input = full_input();
+        input.membership_id = membership.membership_id().clone();
+        input.membership_type = membership.membership_type();
+        input.items[0].plugs = [60, shader, 62]
+            .into_iter()
+            .map(|hash| PlugSummary {
+                plug_hash: ItemHash::new(hash),
+                enabled: true,
+            })
+            .collect();
+        gateway.queue_membership(Ok(membership.clone()));
+        gateway.queue_inventory(Ok(input));
+    }
+    let store = SqliteStore::open_in_memory().unwrap();
+    let mut service = ProfileSyncService::new_with_definitions(gateway, store);
+    let policy = FreshnessPolicy { ttl_seconds: 300 };
+    service
+        .sync(ProfileSyncReason::Forced, policy, Timestamp::new(200))
+        .unwrap();
+    assert_eq!(
+        service.repository().load_current().unwrap().unwrap().items[0]
+            .plugs
+            .len(),
+        3
+    );
+    let definitions = [(60, "frames"), (61, "shader"), (64, "shader")]
+        .into_iter()
+        .map(|(hash, category)| ItemDefinition {
+            hash: ItemHash::new(hash),
+            bucket_hash: None,
+            name: "plug".into(),
+            item_type: None,
+            tier: None,
+            element: None,
+            slot: None,
+            class_type: None,
+            plug_category: Some(category.into()),
+            tags: vec![],
+            version: DefinitionVersion::new("v1"),
+        })
+        .collect();
+    service
+        .repository_mut()
+        .replace_definitions(DefinitionReplacementInput {
+            definitions: ManifestDefinitions {
+                version: DefinitionVersion::new("v1"),
+                definitions,
+            },
+            checked_at: Timestamp::new(200),
+            source: SourceMarker::Manifest,
+        })
+        .unwrap();
+    service
+        .sync(ProfileSyncReason::Forced, policy, Timestamp::new(200))
+        .unwrap();
+    let snapshot = service.repository().load_current().unwrap().unwrap();
+    assert_eq!(
+        snapshot.items[0]
+            .plugs
+            .iter()
+            .map(|plug| plug.plug_hash.value())
+            .collect::<Vec<_>>(),
+        [60, 62]
+    );
+    let cosmetic_only = service
+        .sync(ProfileSyncReason::Forced, policy, Timestamp::new(200))
+        .unwrap();
+    assert_eq!(cosmetic_only.revision(), snapshot.metadata.revision);
+}
+
+#[test]
+fn malformed_plug_ordinals_fail_closed_on_inventory_and_search_reads() {
+    use destiny_core::{PlugSummary, SearchRepository};
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut input = full_input();
+    input.items[0].plugs = vec![PlugSummary {
+        plug_hash: ItemHash::new(60),
+        enabled: true,
+    }];
+    store.replace_current(input.clone()).unwrap();
+    store
+        .connection()
+        .execute("UPDATE item_plugs SET ordinal=1", [])
+        .unwrap();
+    assert_eq!(
+        store.load_current().unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(
+        store
+            .lookup_instance(&input.items[0].instance_id)
+            .unwrap_err()
+            .category(),
+        ErrorCategory::LocalStorage
+    );
+}
+
+#[test]
+fn plug_storage_rejects_invalid_hash_disabled_and_overflow() {
+    use destiny_core::PlugSummary;
+    for plugs in [
+        vec![PlugSummary {
+            plug_hash: ItemHash::new(-1),
+            enabled: true,
+        }],
+        vec![PlugSummary {
+            plug_hash: ItemHash::new(1),
+            enabled: false,
+        }],
+        vec![
+            PlugSummary {
+                plug_hash: ItemHash::new(1),
+                enabled: true
+            };
+            33
+        ],
+    ] {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let seed = store.replace_current(full_input()).unwrap();
+        let mut input = full_input();
+        input.items[0].plugs = plugs;
+        assert!(store.replace_current(input).is_err());
+        assert_eq!(store.load_current().unwrap().unwrap(), seed);
+    }
+}
+
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
 
 /// A private temporary database path plus cleanup of its SQLite sidecars.
@@ -88,6 +250,7 @@ fn full_input() -> InventorySnapshotInput {
                 equipped: false,
                 locked: true,
                 power: Some(u16::MAX),
+                plugs: Vec::new(),
                 perks: vec![
                     PerkSummary {
                         perk_hash: PerkHash::new(0),
@@ -116,6 +279,7 @@ fn full_input() -> InventorySnapshotInput {
                 equipped: true,
                 locked: false,
                 power: None,
+                plugs: Vec::new(),
                 perks: vec![PerkSummary {
                     perk_hash: PerkHash::new(42),
                     active: false,
@@ -130,6 +294,7 @@ fn full_input() -> InventorySnapshotInput {
                 equipped: false,
                 locked: false,
                 power: Some(0),
+                plugs: Vec::new(),
                 perks: Vec::new(),
             },
         ],

@@ -358,7 +358,7 @@ const PROFILE_PATH_PREFIX: &str = "/Platform/Destiny2/";
 const PROFILE_PATH_INFIX: &str = "/Profile/";
 
 /// The exact, ordered profile component query this adapter may request.
-const PROFILE_COMPONENTS_QUERY: &str = "components=102,200,201,205,300,302";
+const PROFILE_COMPONENTS_QUERY: &str = "components=102,200,201,205,300,302,305";
 
 /// Strict upper bound on the current-user membership response body (256 KiB).
 pub const MEMBERSHIP_RESPONSE_LIMIT: usize = 256 * 1024;
@@ -1877,7 +1877,7 @@ mod tests {
 
     const API_KEY_SENTINEL: &str = "sentinel-profile-api-key";
     const BEARER_SENTINEL: &str = "sentinel-profile-bearer-token";
-    const PROFILE_QUERY: &str = "?components=102,200,201,205,300,302";
+    const PROFILE_QUERY: &str = "?components=102,200,201,205,300,302,305";
     const PROFILE_PREFIX: &str =
         "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/";
     const RESPONSE_BODY: &str = "{\"ErrorCode\":1,\"Response\":{}}";
@@ -2233,7 +2233,7 @@ mod tests {
         assert!(is_allowed_profile_url(&url));
         assert_eq!(
             url,
-            "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/?components=102,200,201,205,300,302"
+            "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/?components=102,200,201,205,300,302,305"
         );
     }
 
@@ -2354,7 +2354,7 @@ mod tests {
         assert!(is_allowed_profile_url(&profile_endpoint(&selected())));
 
         let encoded_components =
-            format!("{PROFILE_PREFIX}?components=102%2C200%2C201%2C205%2C300%2C302");
+            format!("{PROFILE_PREFIX}?components=102%2C200%2C201%2C205%2C300%2C302%2C305");
         let negatives = [
             String::new(),
             // Current-memberships endpoint variants.
@@ -2375,29 +2375,30 @@ mod tests {
             // Profile endpoint query and path variants.
             format!("{PROFILE_PREFIX}{PROFILE_QUERY}&extra=1"),
             format!("{PROFILE_PREFIX}?components=102"),
-            format!("{PROFILE_PREFIX}?components=102,200,201,205,300,302,304"),
-            format!("{PROFILE_PREFIX}?components=102,200,201,205,302,300"),
-            format!("{PROFILE_PREFIX}?components=102,102,200,201,205,300,302"),
+            format!("{PROFILE_PREFIX}?components=102,200,201,205,300,302,305,304"),
+            format!("{PROFILE_PREFIX}?components=102,200,201,205,300,302"),
+            format!("{PROFILE_PREFIX}?components=102,200,201,205,302,300,305"),
+            format!("{PROFILE_PREFIX}?components=102,102,200,201,205,300,302,305"),
             format!("{PROFILE_PREFIX}?components=102,200,201,205,300"),
             format!("{PROFILE_PREFIX}?components="),
             encoded_components,
             format!("{PROFILE_PREFIX}{PROFILE_QUERY}#fragment"),
-            format!("{PROFILE_PREFIX}?components=102,200,201,205,300,302&"),
-            format!("{PROFILE_PREFIX}?components=102,200,201,205,300,302 "),
-            "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825?components=102,200,201,205,300,302".to_owned(),
+            format!("{PROFILE_PREFIX}?components=102,200,201,205,300,302,305&"),
+            format!("{PROFILE_PREFIX}?components=102,200,201,205,300,302,305 "),
+            "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825?components=102,200,201,205,300,302,305".to_owned(),
             PROFILE_PREFIX.to_owned(),
-            "https://www.bungie.net/Platform/Destiny2/3/Profile//?components=102,200,201,205,300,302".to_owned(),
-            "https://www.bungie.net/Platform/Destiny2//Profile/4611686018484639825/?components=102,200,201,205,300,302".to_owned(),
-            "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/extra/?components=102,200,201,205,300,302".to_owned(),
+            "https://www.bungie.net/Platform/Destiny2/3/Profile//?components=102,200,201,205,300,302,305".to_owned(),
+            "https://www.bungie.net/Platform/Destiny2//Profile/4611686018484639825/?components=102,200,201,205,300,302,305".to_owned(),
+            "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/extra/?components=102,200,201,205,300,302,305".to_owned(),
             // Non-canonical or reserved membership type and identifier.
-            "https://www.bungie.net/Platform/Destiny2/03/Profile/4611686018484639825/?components=102,200,201,205,300,302".to_owned(),
-            "https://www.bungie.net/Platform/Destiny2/0/Profile/4611686018484639825/?components=102,200,201,205,300,302".to_owned(),
-            "https://www.bungie.net/Platform/Destiny2/254/Profile/4611686018484639825/?components=102,200,201,205,300,302".to_owned(),
-            "https://www.bungie.net/Platform/Destiny2/4294967296/Profile/4611686018484639825/?components=102,200,201,205,300,302".to_owned(),
-            "https://www.bungie.net/Platform/Destiny2/3/Profile/04611686018484639825/?components=102,200,201,205,300,302".to_owned(),
-            "https://www.bungie.net/Platform/Destiny2/3/Profile/46116-860184/?components=102,200,201,205,300,302".to_owned(),
-            "https://www.bungie.net/Platform/Destiny2/3/Profile/46116%2F860184/?components=102,200,201,205,300,302".to_owned(),
-            "https://www.bungie.net/Platform/Destiny2/3/profile/4611686018484639825/?components=102,200,201,205,300,302".to_owned(),
+            "https://www.bungie.net/Platform/Destiny2/03/Profile/4611686018484639825/?components=102,200,201,205,300,302,305".to_owned(),
+            "https://www.bungie.net/Platform/Destiny2/0/Profile/4611686018484639825/?components=102,200,201,205,300,302,305".to_owned(),
+            "https://www.bungie.net/Platform/Destiny2/254/Profile/4611686018484639825/?components=102,200,201,205,300,302,305".to_owned(),
+            "https://www.bungie.net/Platform/Destiny2/4294967296/Profile/4611686018484639825/?components=102,200,201,205,300,302,305".to_owned(),
+            "https://www.bungie.net/Platform/Destiny2/3/Profile/04611686018484639825/?components=102,200,201,205,300,302,305".to_owned(),
+            "https://www.bungie.net/Platform/Destiny2/3/Profile/46116-860184/?components=102,200,201,205,300,302,305".to_owned(),
+            "https://www.bungie.net/Platform/Destiny2/3/Profile/46116%2F860184/?components=102,200,201,205,300,302,305".to_owned(),
+            "https://www.bungie.net/Platform/Destiny2/3/profile/4611686018484639825/?components=102,200,201,205,300,302,305".to_owned(),
         ];
         for url in negatives {
             assert!(!is_allowed_profile_url(&url), "should reject {url}");

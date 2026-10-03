@@ -659,6 +659,7 @@ fn instance(
         equipped: false,
         locked: false,
         power: None,
+        plugs: Vec::new(),
         perks,
     }
 }

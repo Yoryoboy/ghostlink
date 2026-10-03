@@ -61,6 +61,13 @@ pub struct PerkSummary {
     pub visible: bool,
 }
 
+/// One socketed inventory-item definition reference, separate from component-302 perks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlugSummary {
+    pub plug_hash: ItemHash,
+    pub enabled: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemInstance {
     pub instance_id: ItemInstanceId,
@@ -79,6 +86,25 @@ pub struct ItemInstance {
     /// summarized perks carries an empty vector, which is distinct from any
     /// non-empty list.
     pub perks: Vec<PerkSummary>,
+    /// Enabled, non-empty plugs in socket order; duplicate hashes are semantic.
+    /// Acquisition is classification-neutral. Publication drops known non-perk
+    /// definitions using [`is_weapon_perk_plug`], but retains unknown definitions.
+    pub plugs: Vec<PlugSummary>,
+}
+
+impl ItemInstance {
+    /// Application publication filter. `None` means the definition is unknown
+    /// and is retained; a known definition without a category supplies `Some("")`.
+    /// The caller resolves hashes from the available definition catalog.
+    /// Selected plug order and duplicates are preserved.
+    pub fn retain_weapon_perk_plugs<'a>(
+        &mut self,
+        mut category_for: impl FnMut(ItemHash) -> Option<&'a str>,
+    ) {
+        self.plugs.retain(|plug| {
+            plug.enabled && category_for(plug.plug_hash).is_none_or(is_weapon_perk_plug)
+        });
+    }
 }
 
 /// Manifest damage type; independent of an item's inventory slot.
@@ -199,6 +225,52 @@ pub fn is_weapon_perk_plug(category: &str) -> bool {
 
 #[cfg(test)]
 mod plug_tests {
+    #[test]
+    fn publication_seam_retains_enabled_weapon_and_unknown_categories_in_order() {
+        use super::{ItemInstance, ItemLocation, PlugSummary};
+        use crate::{ItemHash, ItemInstanceId};
+        let mut item = ItemInstance {
+            instance_id: ItemInstanceId::new("1"),
+            item_hash: ItemHash::new(1),
+            location: ItemLocation::Vault,
+            quantity: 1,
+            equipped: false,
+            locked: false,
+            power: None,
+            perks: vec![],
+            plugs: [1, 2, 3, 4, 1, 5]
+                .into_iter()
+                .map(|hash| PlugSummary {
+                    plug_hash: ItemHash::new(hash),
+                    enabled: hash != 5,
+                })
+                .collect(),
+        };
+        item.retain_weapon_perk_plugs(|hash| match hash.value() {
+            1 | 5 => Some("frames"),
+            2 => Some("shader"),
+            3 => Some("mods"),
+            _ => None,
+        });
+        assert_eq!(
+            item.plugs,
+            vec![
+                PlugSummary {
+                    plug_hash: ItemHash::new(1),
+                    enabled: true
+                },
+                PlugSummary {
+                    plug_hash: ItemHash::new(4),
+                    enabled: true
+                },
+                PlugSummary {
+                    plug_hash: ItemHash::new(1),
+                    enabled: true
+                },
+            ]
+        );
+    }
+
     #[test]
     fn weapon_perk_categories_are_an_explicit_allowlist() {
         for category in [

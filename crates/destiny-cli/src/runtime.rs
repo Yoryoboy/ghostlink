@@ -296,7 +296,9 @@ fn compose_configured<F: ReadFoundations>(
         config.definition_version().clone(),
     )?;
     let repository = foundations.store(config)?;
-    let service = QueryService::new(ProfileSyncService::new(gateway, repository));
+    let service = QueryService::new(ProfileSyncService::new_with_definitions(
+        gateway, repository,
+    ));
     let freshness = ReadFreshness {
         policy: config.freshness_policy(),
         now,

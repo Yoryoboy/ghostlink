@@ -1543,6 +1543,7 @@ mod tests {
             equipped: false,
             locked: false,
             power: None,
+            plugs: Vec::new(),
             perks: Vec::new(),
         }
     }

@@ -268,6 +268,7 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
         _ => return Err(storage_failure()),
     };
     let perks = read_perks(connection, instance_id.as_str())?;
+    let plugs = super::inventory::read_plugs(connection, instance_id.as_str())?;
 
     Ok(ItemInstance {
         instance_id: instance_id.into(),
@@ -277,6 +278,7 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
         equipped: decode_boolean(equipped)?,
         locked: decode_boolean(locked)?,
         power: decode_optional_u16(power)?,
+        plugs,
         perks,
     })
 }
@@ -422,6 +424,7 @@ mod tests {
             equipped: false,
             locked: false,
             power: None,
+            plugs: Vec::new(),
             perks: perk_hashes
                 .iter()
                 .map(|hash| PerkSummary {

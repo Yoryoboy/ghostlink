@@ -143,6 +143,21 @@
         },
         "privacy": 1
       },
+      "sockets": {
+        "data": {
+          "700000000000000006": {
+            "sockets": [
+              { "plugHash": 6001, "isEnabled": true, "isVisible": true },
+              { "plugHash": 6002, "isEnabled": false, "isVisible": true },
+              { "plugHash": null, "isEnabled": true, "isVisible": false },
+              { "isEnabled": true, "isVisible": false },
+              { "plugHash": 6003, "isEnabled": true, "isVisible": false },
+              { "plugHash": 6001, "isEnabled": true, "isVisible": true }
+            ]
+          }
+        },
+        "privacy": 1
+      },
       "perks": {
         "data": {
           "700000000000000006": {

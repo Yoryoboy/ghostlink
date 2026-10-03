@@ -26,7 +26,7 @@ pub use auth::{
 };
 pub use domain::{
     Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, PerkSummary,
-    SnapshotMetadata, SyncMetadata,
+    PlugSummary, SnapshotMetadata, SyncMetadata,
 };
 pub use error::{AppError, ErrorCategory};
 pub use ids::{

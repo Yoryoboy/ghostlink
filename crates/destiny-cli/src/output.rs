@@ -1003,6 +1003,7 @@ mod tests {
             equipped: false,
             locked: true,
             power: Some(1350),
+            plugs: Vec::new(),
             perks: vec![
                 PerkSummary {
                     perk_hash: PerkHash::new(5001),
