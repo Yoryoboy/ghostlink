@@ -30,7 +30,7 @@ Non-goals: OR/negation filters, pagination cursors, weapon frame filter, armor a
 
 ## Tasks
 - [x] **GSQ-001 — Establish tracker and branch.** Branch `feature/ghostlink-search-query` from `main` at `123d832`.
-- [ ] **GSQ-002 — Specific invalid-argument errors and strict stat operators.** Detail-bearing invalid-argument error (CLI text/JSON, MCP); clap parse failures and `into_request` failures name the argument and reason; `>` and `<` supported in stat conditions.
+- [x] **GSQ-002 — Specific invalid-argument errors and strict stat operators.** Detail-bearing invalid-argument error (CLI text/JSON, MCP); clap parse failures and `into_request` failures name the argument and reason; `>` and `<` supported in stat conditions. Delegated writer, test-first (RED: CLI generic message, MCP generic limit message, `Range>60` rejected). Bounded control-free detail constructor in core; clap errors mapped by kind and argument id without echoing values (auth secrecy test). Checks (writer): fmt, workspace all-features 1,109 passed, clippy both variants, diff check. Parent live check (release): `--limit 0` -> `invalid --limit: must be between 1 and 100`; `--slot banana`, `--stat Range>=abc`, repeated `--perk` explained; JSON message carries detail; `--type "Hand Cannon" --stat "Range>60"` -> 7 hits. Commit: b1f181a.
 - [ ] **GSQ-003 — Repeatable perk and mod terms (AND).** CLI `--perk`/`--mod` repeatable, MCP accepts several, core criteria become bounded lists, resolution per term, `resolved` output per term, include-available handling.
 - [ ] **GSQ-004 — Tier, location and equipped filters.** `--tier`, `--location vault|character`, `--equipped true|false` (CLI and MCP), shared matching, parity tests.
 - [ ] **GSQ-005 — Sort by stat and higher limit.** `--sort <Stat>[:asc]`, cap 1000, collect-sort-truncate in both repositories.
@@ -41,4 +41,4 @@ Non-goals: OR/negation filters, pagination cursors, weapon frame filter, armor a
 QA 2026-10-03 (release build, real DB): composed filters work; gaps found are the six items above. Exploration map: see Engram `odd/ghostlink-search-query/tasks`.
 
 ## Next step
-GSQ-002.
+GSQ-003.
