@@ -41,7 +41,7 @@ unlocked subclass options.
 ## Tasks
 
 - [x] **LO-001 — Loadout name definitions.** Migration v11 `loadout_name_definitions`, `WorldDefinitionRepository::lookup_loadout_name`. RED→GREEN; workspace 1151, clippy clean; live sync-manifest stored 22 names. Commit `7b5049c`.
-- [ ] **LO-002 — Loadouts gateway.** `?components=206` URL/allowlist, bounded decoder, domain types.
+- [x] **LO-002 — Loadouts gateway.** `LoadoutGateway::load_loadouts`, `?components=206` allowlist, bounded decoder (sentinel/unused filtering keeps slot+socket indices). RED→GREEN; workspace 1158, clippy clean; live smoke deferred to LO-004. Commit `4d16b85`.
 - [ ] **LO-003 — Loadouts query.** Join instances/definitions, classify plugs, omit unused slots.
 - [ ] **LO-004 — CLI command.** `loadouts [--character]`, text and JSON.
 - [ ] **LO-005 — MCP tool and docs.** `get_loadouts`, parity tests, README.
@@ -52,4 +52,4 @@ unlocked subclass options.
 
 ## Next step
 
-LO-002.
+LO-003.
