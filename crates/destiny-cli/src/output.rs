@@ -175,143 +175,30 @@ pub fn render_weekly_reset(
 #[path = "weekly_json.rs"]
 mod weekly_json;
 
+#[path = "weekly_human.rs"]
+mod weekly_human;
+
 pub fn render_weekly(
     mode: OutputMode,
     character: &Character,
     weekly: &destiny_app::weekly_personal::WeeklyPersonal,
 ) -> String {
-    use destiny_app::DefinitionResolution;
-    use destiny_app::weekly_personal::PersonalActivity;
-    let label = |hash: u32, definition: &DefinitionResolution| match definition {
-        DefinitionResolution::Resolved { name, .. } => sanitize(name),
-        DefinitionResolution::Unresolved => format!("unresolved #{hash}"),
-    };
     if mode == OutputMode::Json {
         return weekly_json::render_weekly_json(character, weekly);
     }
-    let progress = |activity: &PersonalActivity| {
-        let mut parts = activity
-            .challenges
-            .iter()
-            .map(|c| {
-                format!(
-                    "challenge {} {}/{}",
-                    label(c.objective_hash, &c.definition),
-                    c.progress,
-                    c.completion_value
-                )
-            })
-            .collect::<Vec<_>>();
-        if let Some(phases) = &activity.phases {
-            parts.push(format!("phases {}/{}", phases.complete, phases.total));
-        }
-        parts.join("; ")
-    };
-    let mut lines = vec![format!(
-        "Weekly ({}, manifest {})",
-        sanitize(character.class.as_deref().unwrap_or("unknown")),
-        sanitize(weekly.definition_version.as_str())
-    )];
-    for (heading, groups) in [
-        (
-            "Grandmaster alert",
-            &weekly
-                .vanguard_alerts
-                .grandmaster
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>(),
-        ),
-        ("Featured raids", &weekly.featured_raids),
-        ("Featured dungeons", &weekly.featured_dungeons),
-        ("Crucible alert", &weekly.vanguard_alerts.crucible),
-        ("Quickplay alert", &weekly.vanguard_alerts.quickplay),
-    ] {
-        if groups.is_empty() {
-            continue;
-        }
-        lines.push(format!(
-            "{heading}: {}",
-            groups
-                .iter()
-                .map(|group| {
-                    format!(
-                        "{} ({})",
-                        sanitize(&group.root_name),
-                        sanitize(&group.activity_type_name)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-        for group in groups {
-            let mut batches: Vec<Vec<&destiny_app::PersonalActivity>> = Vec::new();
-            for activity in &group.activities {
-                if let Some(batch) = batches.iter_mut().find(|b| {
-                    b[0].challenges == activity.challenges
-                        && b[0].rewards == activity.rewards
-                        && b[0].phases == activity.phases
-                        && b[0].challenge_objectives == activity.challenge_objectives
-                }) {
-                    batch.push(activity);
-                } else {
-                    batches.push(vec![activity]);
-                }
-            }
-            for batch in batches {
-                let activity = batch[0];
-                let display = if batch.len() > 1 {
-                    let suffixes = batch
-                        .iter()
-                        .map(|a| {
-                            let full = label(a.hash, &a.definition);
-                            full.strip_prefix(&sanitize(&group.root_name))
-                                .unwrap_or(&full)
-                                .trim_start_matches(": ")
-                                .to_owned()
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("{} ({suffixes})", sanitize(&group.root_name))
-                } else {
-                    label(activity.hash, &activity.definition)
-                };
-                let rewards = activity
-                    .rewards
-                    .iter()
-                    .map(|r| label(r.hash, &r.definition))
-                    .collect::<Vec<_>>();
-                let mut detail = progress(activity);
-                if !rewards.is_empty() {
-                    if !detail.is_empty() {
-                        detail.push_str(" — ");
-                    }
-                    detail.push_str(&format!("reward {}", rewards.join(", ")));
-                }
-                if !detail.is_empty() {
-                    lines.push(format!("  {} — {detail}", display));
-                }
-            }
-        }
+    weekly_human::render(character, weekly)
+}
+
+pub fn render_weekly_level(
+    mode: OutputMode,
+    character: &Character,
+    weekly: &destiny_app::weekly_personal::WeeklyPersonal,
+    level: crate::command::WeeklyLevel,
+) -> String {
+    if mode == OutputMode::Json {
+        return weekly_json::render_weekly_json(character, weekly);
     }
-    let rotators = [
-        weekly.weekly_rotators.expedition.as_ref(),
-        weekly.weekly_rotators.override_activity.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    .map(|group| sanitize(&group.root_name))
-    .collect::<Vec<_>>();
-    if !rotators.is_empty() {
-        lines.push(rotators.join(" / "));
-    }
-    if weekly.unclassified_unresolved > 0 {
-        lines.push(format!(
-            "note: {} activities could not be classified (missing definitions; run ghostlink sync-manifest)",
-            weekly.unclassified_unresolved
-        ));
-    }
-    lines.join("\n")
+    weekly_human::render_level(character, weekly, level)
 }
 
 /// Renders one character listing in the selected mode.
@@ -704,6 +591,14 @@ const fn source_text(source: SourceMarker) -> &'static str {
 }
 
 #[cfg(test)]
+#[path = "weekly_human_tests.rs"]
+mod weekly_human_tests;
+
+#[cfg(test)]
+#[path = "weekly_levels_tests.rs"]
+mod weekly_levels_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         OutputMode, render_characters, render_error, render_inspection, render_login_authorized,
@@ -788,10 +683,11 @@ mod tests {
             activity_type_name: "Raid".into(),
             activities: vec![activity.clone()],
             reward_names: Vec::new(),
+            pools: Vec::new(),
         };
         let mut weekly = WeeklyPersonal {
             definition_version: destiny_app::DefinitionVersion::new("v1"),
-            unclassified_unresolved: 0,
+            unclassified: Vec::new(),
             vanguard_alerts: VanguardAlerts {
                 grandmaster: Some(group.clone()),
                 crucible: vec![group.clone()],
@@ -815,7 +711,6 @@ mod tests {
             public_activities: Vec::new(),
             milestones: Vec::new(),
         };
-        let human = super::render_weekly(OutputMode::Human, &full_character(), &weekly);
         let projected: serde_json::Value = serde_json::from_str(&super::render_weekly(
             OutputMode::Json,
             &full_character(),
@@ -825,10 +720,6 @@ mod tests {
         assert!(projected.get("newest").is_none());
         assert!(projected.get("portal_focus").is_none());
         assert!(projected.get("vanguard_alerts").is_some());
-        assert_eq!(
-            human,
-            "Weekly (Warlock, manifest v1)\nGrandmaster alert: Raid (Raid)\n  Raid: Standard — challenge Activities 0/1; phases 0/4 — reward unresolved #99\nFeatured raids: Raid (Raid)\n  Raid: Standard — challenge Activities 0/1; phases 0/4 — reward unresolved #99\nFeatured dungeons: Raid (Raid)\n  Raid: Standard — challenge Activities 0/1; phases 0/4 — reward unresolved #99\nCrucible alert: Raid (Raid)\n  Raid: Standard — challenge Activities 0/1; phases 0/4 — reward unresolved #99\nQuickplay alert: Raid (Raid)\n  Raid: Standard — challenge Activities 0/1; phases 0/4 — reward unresolved #99\nExpedition: Cosmodrome / Override: Europa"
-        );
         let value: serde_json::Value = serde_json::from_str(&super::render_weekly(
             OutputMode::Json,
             &full_character(),
@@ -842,30 +733,12 @@ mod tests {
             serde_json::json!({
                 "kind":"weekly", "character":super::character_json(&full_character()), "definition_version":"v1",
                 "featured_raids":groups, "featured_dungeons":groups,
-                "vanguard_alerts":{"grandmaster":groups[0],"crucible":groups,"quickplay":groups},
+                "vanguard_alerts":{"grandmaster":groups[0],"crucible":groups,"quickplay":[{"root":"Raid","reward_names":[],"activity_type":{"hash":30,"name":"Raid","resolved":true},"variants":[item],"pools":[]}] },
                 "expedition":{"root":"Expedition: Cosmodrome","reward_names":[],"activity_type":{"hash":30,"name":"Raid","resolved":true},"variants":[item]},
                 "override":{"root":"Override: Europa","reward_names":[],"activity_type":{"hash":30,"name":"Raid","resolved":true},"variants":[item]},
-                "milestones":[], "unclassified_unresolved":0
+                "milestones":[], "unclassified_unresolved":0, "unclassified":[]
             })
         );
-        let mut variant = weekly.vanguard_alerts.quickplay[0].activities[0].clone();
-        variant.hash = 11;
-        variant.definition = resolved("Raid: Customize");
-        weekly.vanguard_alerts.quickplay[0].activities.push(variant);
-        let collapsed = super::render_weekly(OutputMode::Human, &full_character(), &weekly);
-        assert!(collapsed.contains("Raid (Standard, Customize) — challenge Activities 0/1"));
-        assert!(!collapsed.contains("Raid: Customize —"));
-        weekly.vanguard_alerts.quickplay[0].activities[1].challenges[0].progress = 1;
-        let distinct = super::render_weekly(OutputMode::Human, &full_character(), &weekly);
-        assert!(distinct.contains("Raid: Customize — challenge Activities 1/1"));
-        // Same progress but different rewards must not collapse either.
-        weekly.vanguard_alerts.quickplay[0].activities[1].challenges[0].progress = 0;
-        weekly.vanguard_alerts.quickplay[0].activities[1]
-            .rewards
-            .clear();
-        let different_rewards = super::render_weekly(OutputMode::Human, &full_character(), &weekly);
-        assert!(different_rewards.contains("Raid: Customize — challenge Activities 0/1"));
-        assert!(!different_rewards.contains("Raid (Standard, Customize)"));
         weekly.vanguard_alerts = VanguardAlerts::default();
         weekly.featured_raids.clear();
         weekly.featured_dungeons.clear();
@@ -873,7 +746,7 @@ mod tests {
         weekly.weekly_rotators = WeeklyRotators::default();
         assert_eq!(
             super::render_weekly(OutputMode::Human, &full_character(), &weekly),
-            "Weekly (Warlock, manifest v1)"
+            "Ghost Link — Weekly\nWarlock · Power 1810"
         );
         let value: serde_json::Value = serde_json::from_str(&super::render_weekly(
             OutputMode::Json,
@@ -887,7 +760,7 @@ mod tests {
                 "kind":"weekly", "character":super::character_json(&full_character()), "definition_version":"v1",
                 "featured_raids":[], "featured_dungeons":[],
                 "vanguard_alerts":{"grandmaster":null,"crucible":[],"quickplay":[]}, "expedition":null, "override":null,
-                "milestones":[], "unclassified_unresolved":0
+                "milestones":[], "unclassified_unresolved":0, "unclassified":[]
             })
         );
     }
@@ -923,8 +796,9 @@ mod tests {
                 grandmaster: Some(PersonalGroup {
                     root_name: raw.into(),
                     activity_type_name: raw.into(),
-                    activities: vec![activity],
+                    activities: vec![activity.clone()],
                     reward_names: Vec::new(),
+                    pools: Vec::new(),
                 }),
                 ..VanguardAlerts::default()
             },
@@ -934,7 +808,10 @@ mod tests {
                 hash: 3,
                 definition: DefinitionResolution::Unresolved,
             }],
-            unclassified_unresolved: 2,
+            unclassified: unclassified_activities(
+                std::slice::from_ref(&activity),
+                std::slice::from_ref(&activity),
+            ),
         };
         let value: serde_json::Value = serde_json::from_str(&super::render_weekly(
             OutputMode::Json,
@@ -957,7 +834,9 @@ mod tests {
         );
         assert_eq!(value["unclassified_unresolved"], 2);
         let human = super::render_weekly(OutputMode::Human, &full_character(), &weekly);
-        assert!(human.ends_with("note: 2 activities could not be classified (missing definitions; run ghostlink sync-manifest)"));
+        assert!(human.ends_with(
+            "⚠ 2 activities could not be classified.\n  Run `ghostlink sync-manifest`."
+        ));
         assert!(!human.contains(raw));
     }
 
@@ -996,7 +875,7 @@ mod tests {
         };
         let mut weekly = WeeklyPersonal {
             definition_version: DefinitionVersion::new("v1"),
-            unclassified_unresolved: 0,
+            unclassified: Vec::new(),
             featured_raids: Vec::new(),
             featured_dungeons: Vec::new(),
             vanguard_alerts: VanguardAlerts::default(),
@@ -1020,8 +899,8 @@ mod tests {
         unresolved.activity_type = DefinitionResolution::Unresolved;
         weekly.character_activities.push(unresolved);
         weekly.weekly_rotators = classify_rotators(&weekly.character_activities);
-        weekly.unclassified_unresolved =
-            count_unclassified_unresolved(&weekly.character_activities, &weekly.public_activities);
+        weekly.unclassified =
+            unclassified_activities(&weekly.character_activities, &weekly.public_activities);
         let value: serde_json::Value = serde_json::from_str(&super::render_weekly(
             OutputMode::Json,
             &full_character(),
@@ -1048,7 +927,11 @@ mod tests {
         let human = super::render_weekly(OutputMode::Human, &full_character(), &weekly);
         assert!(human.contains("Expedition: Europa"));
         assert!(!human.contains("Unresolved"));
-        assert!(human.ends_with("note: 1 activities could not be classified (missing definitions; run ghostlink sync-manifest)"));
+        assert!(
+            human.ends_with(
+                "⚠ 1 activity could not be classified.\n  Run `ghostlink sync-manifest`."
+            )
+        );
     }
 
     fn full_character() -> Character {

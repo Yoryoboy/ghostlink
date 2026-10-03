@@ -38,6 +38,24 @@ fn resolved(name: &str, description: &str) -> DefinitionResolution {
 pub struct WeeklyModifier {
     pub hash: u32,
     pub definition: DefinitionResolution,
+    /// Derived, name-based English hint, not an API taxonomy.
+    pub category: crate::weekly_personal::ModifierCategory,
+}
+
+impl WeeklyModifier {
+    pub fn new(hash: u32, definition: DefinitionResolution) -> Self {
+        let category = match &definition {
+            DefinitionResolution::Resolved { name, .. } => {
+                crate::weekly_personal::modifier_category(name)
+            }
+            DefinitionResolution::Unresolved => crate::weekly_personal::ModifierCategory::Other,
+        };
+        Self {
+            hash,
+            definition,
+            category,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,7 +143,7 @@ impl<G: PublicMilestonesGateway, R: WorldDefinitionRepository> WeeklyResetServic
                         .map_or(DefinitionResolution::Unresolved, |d| {
                             resolved(d.name(), d.description())
                         });
-                    modifiers.push(WeeklyModifier { hash, definition });
+                    modifiers.push(WeeklyModifier::new(hash, definition));
                 }
                 activities.push(WeeklyActivity {
                     hash: activity.activity_hash,

@@ -69,6 +69,57 @@ pub struct PersonalGroup {
     pub activities: Vec<PersonalActivity>,
     /// Resolved visible reward names, deduplicated in provider order.
     pub reward_names: Vec<String>,
+    /// Quickplay only; the legacy reward union remains available.
+    pub pools: Vec<QuickplayPool>,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct QuickplayPool {
+    pub objectives: Vec<PersonalChallenge>,
+    pub rewards: Vec<String>,
+    pub variants: Vec<PersonalActivity>,
+}
+impl std::fmt::Debug for QuickplayPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuickplayPool").finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnclassifiedActivity {
+    pub hash: u32,
+    pub name: Option<String>,
+    pub reason: UnclassifiedReason,
+    pub source: UnclassifiedSource,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnclassifiedReason {
+    ActivityDefinitionMissing,
+    ActivityTypeMissing,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnclassifiedSource {
+    PublicMilestones,
+    CharacterActivities,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModifierCategory {
+    Surge,
+    Overcharge,
+    Champions,
+    Other,
+}
+/// Derived, name-based English presentation hint, not an API taxonomy.
+pub fn modifier_category(name: &str) -> ModifierCategory {
+    if name.ends_with("Surge") {
+        ModifierCategory::Surge
+    } else if name.starts_with("Overcharged") {
+        ModifierCategory::Overcharge
+    } else if name.contains("Champion") {
+        ModifierCategory::Champions
+    } else {
+        ModifierCategory::Other
+    }
 }
 
 impl std::fmt::Debug for PersonalGroup {
@@ -99,8 +150,8 @@ pub struct PersonalMilestone {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WeeklyPersonal {
     pub definition_version: DefinitionVersion,
-    /// Number of character/public input observations with missing activity or type definitions.
-    pub unclassified_unresolved: usize,
+    /// Character/public observations with missing activity or type definitions.
+    pub unclassified: Vec<UnclassifiedActivity>,
     pub vanguard_alerts: VanguardAlerts,
     pub featured_raids: Vec<PersonalGroup>,
     pub featured_dungeons: Vec<PersonalGroup>,
@@ -131,7 +182,7 @@ pub fn classify_alerts(character: &[PersonalActivity]) -> VanguardAlerts {
                 .iter()
                 .filter(|a| a.has_challenge && name(&a.activity_type) == Some("The Crucible")),
         ),
-        quickplay: groups(
+        quickplay: quickplay_groups(
             character
                 .iter()
                 .filter(|a| a.has_challenge && name(&a.activity_type) == Some("Vanguard Op")),
@@ -144,13 +195,64 @@ pub fn count_unclassified_unresolved(
     character: &[PersonalActivity],
     public: &[PersonalActivity],
 ) -> usize {
+    unclassified_activities(character, public).len()
+}
+
+pub fn unclassified_activities(
+    character: &[PersonalActivity],
+    public: &[PersonalActivity],
+) -> Vec<UnclassifiedActivity> {
     character
         .iter()
-        .chain(public)
-        .filter(|activity| {
-            name(&activity.definition).is_none() || name(&activity.activity_type).is_none()
+        .map(|a| (a, UnclassifiedSource::CharacterActivities))
+        .chain(
+            public
+                .iter()
+                .map(|a| (a, UnclassifiedSource::PublicMilestones)),
+        )
+        .filter_map(|(a, source)| {
+            let display = name(&a.definition);
+            let reason = if display.is_none() {
+                UnclassifiedReason::ActivityDefinitionMissing
+            } else if name(&a.activity_type).is_none() {
+                UnclassifiedReason::ActivityTypeMissing
+            } else {
+                return None;
+            };
+            Some(UnclassifiedActivity {
+                hash: a.hash,
+                name: display.map(str::to_owned),
+                reason,
+                source,
+            })
         })
-        .count()
+        .collect()
+}
+
+fn quickplay_groups<'a>(
+    activities: impl Iterator<Item = &'a PersonalActivity>,
+) -> Vec<PersonalGroup> {
+    let mut result = groups(activities);
+    for group in &mut result {
+        for activity in &group.activities {
+            let rewards = reward_names(&activity.rewards);
+            let pool = group.pools.iter_mut().find(|pool| {
+                pool.objectives == activity.challenges
+                    && pool.rewards.len() == rewards.len()
+                    && rewards.iter().all(|reward| pool.rewards.contains(reward))
+            });
+            if let Some(pool) = pool {
+                pool.variants.push(activity.clone());
+            } else {
+                group.pools.push(QuickplayPool {
+                    objectives: activity.challenges.clone(),
+                    rewards,
+                    variants: vec![activity.clone()],
+                });
+            }
+        }
+    }
+    result
 }
 
 fn name(definition: &DefinitionResolution) -> Option<&str> {
@@ -204,6 +306,7 @@ fn groups<'a>(activities: impl Iterator<Item = &'a PersonalActivity>) -> Vec<Per
                 activity_type_name: kind.into(),
                 activities: Vec::new(),
                 reward_names: Vec::new(),
+                pools: Vec::new(),
             });
             result.last_mut().expect("just inserted")
         };
@@ -316,6 +419,7 @@ pub fn classify_rotators(character: &[PersonalActivity]) -> WeeklyRotators {
                             .into(),
                         activities: vec![activity.clone()],
                         reward_names: Vec::new(),
+                        pools: Vec::new(),
                     });
                 }
             }
@@ -471,10 +575,7 @@ impl<P: PublicMilestonesGateway, G: WeeklyProfileGateway, R: WorldDefinitionRepo
         let newest = classify_reward_exclusions(&character_activities);
         Ok(WeeklyPersonal {
             definition_version: metadata.definition_version,
-            unclassified_unresolved: count_unclassified_unresolved(
-                &character_activities,
-                &public_activities,
-            ),
+            unclassified: unclassified_activities(&character_activities, &public_activities),
             featured_raids: classify_featured_raids(&public_activities, &newest),
             featured_dungeons: classify_featured_dungeons(&character_activities, &newest),
             vanguard_alerts: classify_alerts(&character_activities),
@@ -511,15 +612,13 @@ impl<P: PublicMilestonesGateway, G: WeeklyProfileGateway, R: WorldDefinitionRepo
         };
         let mut loaded_modifiers = Vec::new();
         for hash in modifiers {
-            loaded_modifiers.push(WeeklyModifier {
-                hash: *hash,
-                definition: self
-                    .repository
-                    .lookup_activity_modifier(*hash)?
-                    .map_or(DefinitionResolution::Unresolved, |d| {
-                        resolved(d.name(), d.description())
-                    }),
-            });
+            let definition = self
+                .repository
+                .lookup_activity_modifier(*hash)?
+                .map_or(DefinitionResolution::Unresolved, |d| {
+                    resolved(d.name(), d.description())
+                });
+            loaded_modifiers.push(WeeklyModifier::new(*hash, definition));
         }
         Ok(PersonalActivity {
             hash,
@@ -641,6 +740,99 @@ mod tests {
             count_unclassified_unresolved(&[missing_name, missing_both], &[known, missing_type]),
             3
         );
+    }
+
+    #[test]
+    fn unclassified_reasons_and_sources_preserve_observations() {
+        let mut missing_definition = activity(1, "Missing", "Raid");
+        missing_definition.definition = DefinitionResolution::Unresolved;
+        missing_definition.activity_type = DefinitionResolution::Unresolved;
+        let mut missing_type = activity(2, "Known", "Raid");
+        missing_type.activity_type = DefinitionResolution::Unresolved;
+        let inputs = [missing_definition, missing_type];
+        let result = unclassified_activities(&inputs, &inputs);
+        assert_eq!(result.len(), 4);
+        for (entries, source) in [
+            (&result[..2], UnclassifiedSource::CharacterActivities),
+            (&result[2..], UnclassifiedSource::PublicMilestones),
+        ] {
+            assert_eq!(entries[0].hash, 1);
+            assert_eq!(entries[0].name, None);
+            assert_eq!(
+                entries[0].reason,
+                UnclassifiedReason::ActivityDefinitionMissing
+            );
+            assert_eq!(entries[1].hash, 2);
+            assert_eq!(entries[1].name.as_deref(), Some("Known"));
+            assert_eq!(entries[1].reason, UnclassifiedReason::ActivityTypeMissing);
+            assert!(entries.iter().all(|entry| entry.source == source));
+        }
+    }
+
+    #[test]
+    fn modifier_categories_are_derived_from_live_names() {
+        for (name, expected) in [
+            ("Arc Surge", ModifierCategory::Surge),
+            ("Stasis Surge", ModifierCategory::Surge),
+            ("Overcharged Fusion Rifle", ModifierCategory::Overcharge),
+            ("Champion Foes", ModifierCategory::Champions),
+            ("Match Game: Champions", ModifierCategory::Champions),
+            ("Shielded Foes", ModifierCategory::Other),
+            ("Red Rover", ModifierCategory::Other),
+            ("Precarious Balance", ModifierCategory::Other),
+            ("Surge of Arc", ModifierCategory::Other),
+            ("Not Overcharged", ModifierCategory::Other),
+            ("", ModifierCategory::Other),
+        ] {
+            assert_eq!(modifier_category(name), expected);
+            assert_eq!(
+                WeeklyModifier::new(1, resolved(name, "")).category,
+                expected
+            );
+        }
+        assert_eq!(
+            WeeklyModifier::new(1, DefinitionResolution::Unresolved).category,
+            ModifierCategory::Other
+        );
+    }
+
+    #[test]
+    fn quickplay_pools_merge_only_identical_challenges_and_reward_sets() {
+        let challenge = PersonalChallenge {
+            objective_hash: 50,
+            definition: resolved("Complete activities", ""),
+            progress: 0,
+            completion_value: 3,
+            complete: false,
+        };
+        let mut a = activity(1, "Quickplay: Matchmade", "Vanguard Op");
+        a.challenges = vec![challenge];
+        a.rewards = vec![reward("Ops Bonus Drop"), reward("Main Ingredient")];
+        let mut a_variant = a.clone();
+        a_variant.hash = 2;
+        a_variant.definition = resolved("Quickplay: Customize", "");
+        a_variant.rewards = vec![
+            reward("Main Ingredient"),
+            reward("Ops Bonus Drop"),
+            reward("Main Ingredient"),
+        ];
+        let mut b = a.clone();
+        b.hash = 3;
+        b.rewards = vec![reward("The Spiteful Fang")];
+        let mut b_variant = b.clone();
+        b_variant.hash = 4;
+        let inputs = [a, a_variant, b, b_variant];
+        let alerts = classify_alerts(&inputs);
+        let pools = &alerts.quickplay[0].pools;
+        assert_eq!(pools.len(), 2);
+        assert_eq!(pools[0].rewards, ["Ops Bonus Drop", "Main Ingredient"]);
+        assert_eq!(pools[1].rewards, ["The Spiteful Fang"]);
+        assert_eq!(pools[0].objectives, inputs[0].challenges);
+        assert_eq!(pools[0].variants, inputs[..2]);
+        assert_eq!(pools[1].variants, inputs[2..]);
+        let mut changed = inputs.to_vec();
+        changed[1].challenges[0].progress = 1;
+        assert_eq!(classify_alerts(&changed).quickplay[0].pools.len(), 3);
     }
 
     fn reward(name: &str) -> PersonalReward {
@@ -1297,7 +1489,7 @@ mod tests {
             .challenge_objective_hashes = vec![999];
         let result = service.weekly(&character()).unwrap();
         assert!(classify_reward_exclusions(&result.character_activities).is_empty());
-        assert_eq!(result.unclassified_unresolved, 1);
+        assert_eq!(result.unclassified.len(), 1);
         assert_eq!(result.character_activities[1].activity_type_hash, None);
         let activity = &result.character_activities[0];
         assert_eq!(activity.rewards.len(), 1);

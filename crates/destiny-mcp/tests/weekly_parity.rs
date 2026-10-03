@@ -26,10 +26,27 @@ fn weekly_cli_mcp_json_parity_on_the_same_fixture() {
             hash: 1,
             definition: unresolved.clone(),
         }],
-        modifiers: vec![WeeklyModifier {
-            hash: 2,
-            definition: unresolved.clone(),
-        }],
+        modifiers: std::iter::once(WeeklyModifier::new(2, unresolved.clone()))
+            .chain(
+                [
+                    "Arc Surge",
+                    "Overcharged Fusion Rifle",
+                    "Champion Foes",
+                    "Shielded Foes",
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    WeeklyModifier::new(
+                        10 + i as u32,
+                        DefinitionResolution::Resolved {
+                            name: name.into(),
+                            description: String::new(),
+                        },
+                    )
+                }),
+            )
+            .collect(),
         challenge_objectives: vec![PersonalObjective {
             hash: 3,
             definition: unresolved.clone(),
@@ -54,10 +71,23 @@ fn weekly_cli_mcp_json_parity_on_the_same_fixture() {
         activity_type_name: "Raid".into(),
         activities: vec![activity.clone()],
         reward_names: vec![],
+        pools: vec![QuickplayPool {
+            objectives: activity.challenges.clone(),
+            rewards: vec!["Ops Bonus Drop".into(), "Main Ingredient".into()],
+            variants: vec![activity.clone()],
+        }],
     };
+    let mut missing_type = activity.clone();
+    missing_type.hash = 100;
+    missing_type.definition = DefinitionResolution::Resolved {
+        name: "Known activity".into(),
+        description: String::new(),
+    };
+    missing_type.activity_type = DefinitionResolution::Unresolved;
+    let inputs = [activity.clone(), missing_type];
     let weekly = WeeklyPersonal {
         definition_version: DefinitionVersion::new("v1"),
-        unclassified_unresolved: 2,
+        unclassified: weekly_personal::unclassified_activities(&inputs, &inputs),
         vanguard_alerts: VanguardAlerts {
             grandmaster: Some(group.clone()),
             crucible: vec![group.clone()],
@@ -89,6 +119,38 @@ fn weekly_cli_mcp_json_parity_on_the_same_fixture() {
     assert_eq!(
         cli["vanguard_alerts"]["grandmaster"]["variants"][0]["hash"],
         99
+    );
+    assert_eq!(cli["unclassified_unresolved"], 4);
+    assert_eq!(
+        cli["unclassified"],
+        serde_json::json!([
+            {"hash":99,"name":null,"reason":"activity_definition_missing","source":"character_activities"},
+            {"hash":100,"name":"Known activity","reason":"activity_type_missing","source":"character_activities"},
+            {"hash":99,"name":null,"reason":"activity_definition_missing","source":"public_milestones"},
+            {"hash":100,"name":"Known activity","reason":"activity_type_missing","source":"public_milestones"}
+        ])
+    );
+    let pool = &cli["vanguard_alerts"]["quickplay"][0]["pools"][0];
+    assert_eq!(
+        pool["rewards"],
+        serde_json::json!(["Ops Bonus Drop", "Main Ingredient"])
+    );
+    assert_eq!(pool["objectives"][0]["progress"], 1);
+    assert_eq!(pool["variants"][0]["hash"], 99);
+    assert_eq!(pool["variants"][0]["modifiers"][0]["category"], "other");
+    assert_eq!(
+        cli["featured_raids"][0]["variants"][0]["modifiers"][0]["category"],
+        "other"
+    );
+    let categories: Vec<_> = pool["variants"][0]["modifiers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["category"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        categories,
+        ["other", "surge", "overcharge", "champions", "other"]
     );
     assert!(cli.get("newest").is_none());
     assert!(cli.get("portal_focus").is_none());

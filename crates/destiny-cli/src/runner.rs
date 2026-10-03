@@ -281,6 +281,10 @@ where
     };
     let mode = cli.output_mode();
     if let Command::Weekly(arguments) = &cli.command {
+        let level = match arguments.output_level(mode) {
+            Ok(level) => level,
+            Err(error) => return ProcessOutput::failure(mode, error),
+        };
         let result = arguments.character_id().and_then(|selector| {
             crate::runtime::compose_weekly(
                 &mut crate::runtime::ProductionFoundations,
@@ -289,9 +293,9 @@ where
             )
         });
         return match result {
-            Ok((character, weekly)) => {
-                ProcessOutput::success(crate::output::render_weekly(mode, &character, &weekly))
-            }
+            Ok((character, weekly)) => ProcessOutput::success(crate::output::render_weekly_level(
+                mode, &character, &weekly, level,
+            )),
             Err(error) => ProcessOutput::failure(mode, error),
         };
     }
@@ -976,6 +980,21 @@ mod tests {
             );
         }
         assert_eq!(weekly.0, 0);
+        for flag in ["--details", "--debug"] {
+            let output = super::run_binary_with_public(
+                &mut read,
+                &mut login,
+                &mut Public,
+                &mut weekly,
+                &mut |_| panic!("weekly must not present login"),
+                argv(["weekly", flag, "--json"]),
+            );
+            assert_eq!(output.exit_code, 2);
+            assert_eq!(
+                output.stderr,
+                "{\"error\":{\"code\":\"invalid_request\",\"message\":\"the request arguments are invalid\"}}\n"
+            );
+        }
         let output = super::run_binary_with_public(
             &mut read,
             &mut login,

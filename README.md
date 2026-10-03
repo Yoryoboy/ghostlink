@@ -148,6 +148,8 @@ are shown verbatim. Per-character weekly content and progress is covered by
 ```sh
 ghostlink weekly                       # character with the highest light
 ghostlink weekly --character hunter    # or titan, warlock, or an exact id
+ghostlink weekly --details             # plus modifiers grouped by derived category
+ghostlink weekly --debug               # plus hashes, raw entries, manifest, unclassified
 ghostlink --json weekly
 ```
 
@@ -170,6 +172,29 @@ Omitted on purpose because the API is ambiguous or contradicts the game:
 Featured Reprise/Encore (Pantheon), Weekly Reclaim, and lifetime completion
 flags. Activities whose definitions are missing are counted, never guessed
 (`unclassified_unresolved`).
+
+The human output reads as a dashboard: a `<Class> · Power <light>` header,
+then GRANDMASTER, FEATURED RAIDS, FEATURED DUNGEONS, VANGUARD, CRUCIBLE and
+SEASONAL, each shown only when it has content. Objectives use Bungie's text
+(control characters replaced) with `○`/`✓` and progress; outside `--debug`,
+rewards and modifiers are deduplicated by exact name; Quickplay shows one line
+per distinct reward pool. Outside `--debug`, unclassified activities end the
+output as a warning.
+
+Output levels (`--details` and `--debug` are mutually exclusive, weekly only,
+and rejected with `--json`):
+
+- default: what is featured and what to do; no modifiers, and hashes only for
+  unresolved entries (`unresolved #<hash>`).
+- `--details`: adds modifiers grouped as Surge, Overcharge, Champions and
+  Other modifiers. The groups are derived from modifier names, not from the
+  API; unnamed modifiers are hidden behind a count line.
+- `--debug`: adds the Manifest version, hashes, every entry of the classified
+  activities without deduplication, and an UNCLASSIFIED section listing each
+  unclassified activity with its reason and source.
+
+`--json` stays the complete contract, including the derived modifier
+`category`, Quickplay `pools`, and the `unclassified` list.
 
 ### Output contract
 

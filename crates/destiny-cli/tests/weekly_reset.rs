@@ -25,17 +25,14 @@ fn reset() -> WeeklyReset {
                             description: "Ignored".into(),
                         },
                         modifiers: vec![
-                            WeeklyModifier {
-                                hash: 4,
-                                definition: D::Resolved {
+                            WeeklyModifier::new(
+                                4,
+                                D::Resolved {
                                     name: "A".into(),
                                     description: "{var:42}".into(),
                                 },
-                            },
-                            WeeklyModifier {
-                                hash: 5,
-                                definition: D::Unresolved,
-                            },
+                            ),
+                            WeeklyModifier::new(5, D::Unresolved),
                         ],
                     },
                     WeeklyActivity {

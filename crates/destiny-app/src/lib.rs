@@ -69,9 +69,10 @@ pub use queries::{QueryOperations, QueryService, SearchInventoryRequest};
 pub use session::{ConfiguredCredentialSource, RefreshingCredentialSource};
 pub use sync::ProfileSyncService;
 pub use weekly_personal::{
-    PersonalActivity, PersonalChallenge, PersonalGroup, PersonalMilestone, PersonalObjective,
-    PersonalReward, PhaseProgress, VanguardAlerts, WeeklyCharacter, WeeklyPersonal,
-    WeeklyPersonalService, WeeklyRotators,
+    ModifierCategory, PersonalActivity, PersonalChallenge, PersonalGroup, PersonalMilestone,
+    PersonalObjective, PersonalReward, PhaseProgress, QuickplayPool, UnclassifiedActivity,
+    UnclassifiedReason, UnclassifiedSource, VanguardAlerts, WeeklyCharacter, WeeklyPersonal,
+    WeeklyPersonalService, WeeklyRotators, modifier_category,
 };
 pub use weekly_reset::{
     DefinitionResolution, WeeklyActivity, WeeklyMilestone, WeeklyModifier, WeeklyReset,
