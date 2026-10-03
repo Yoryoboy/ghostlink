@@ -535,8 +535,75 @@ fn parse_failure(mode: OutputMode, error: &clap::Error) -> ProcessOutput {
             stderr: String::new(),
             exit_code: SUCCESS_EXIT_CODE,
         },
-        _ => ProcessOutput::failure(mode, CliError::invalid_request()),
+        _ => ProcessOutput::failure(mode, clap_argument_failure(error)),
     }
+}
+
+fn clap_argument_failure(error: &clap::Error) -> CliError {
+    use clap::error::{ContextKind, ErrorKind};
+    // Only emit known schema names, never raw arguments, values, or clap's
+    // rendered diagnostic (which can contain an authorization callback URI).
+    let context = error.get(ContextKind::InvalidArg).map(ToString::to_string);
+    let argument = context.as_deref().and_then(|context| {
+        [
+            "--limit",
+            "--slot",
+            "--element",
+            "--class",
+            "--stat",
+            "--perk",
+            "--mod",
+            "--archetype",
+            "--text",
+            "--type",
+            "--tag",
+            "--character",
+            "--item-hash",
+            "--perk-hash",
+            "--min-power",
+            "--json",
+            "--mode",
+            "--callback",
+            "--details",
+            "--debug",
+            "--include-available",
+        ]
+        .into_iter()
+        .find(|flag| context.split_whitespace().next() == Some(*flag))
+    });
+    if let Some(argument) = argument {
+        let reason = match error.kind() {
+            ErrorKind::ArgumentConflict => {
+                "cannot be used more than once or with conflicting arguments"
+            }
+            ErrorKind::ValueValidation | ErrorKind::InvalidValue => match argument {
+                "--slot" => {
+                    "expected one of kinetic, energy, power, helmet, gauntlets, chest, legs, classitem, other, unknown"
+                }
+                "--element" => "expected one of kinetic, arc, solar, void, stasis, strand",
+                "--class" => "expected one of titan, hunter, warlock, any, unknown",
+                "--limit" | "--perk-hash" | "--min-power" => {
+                    "expected a non-negative integer in the supported range"
+                }
+                "--item-hash" => "expected a signed 64-bit integer",
+                "--mode" => "expected one of auto, browser, headless",
+                "--callback" => "expected one of paste, handler",
+                _ => "expected a valid value",
+            },
+            ErrorKind::TooFewValues | ErrorKind::WrongNumberOfValues => "a value is required",
+            _ => "argument is not valid here",
+        };
+        return CliError::invalid_argument(argument, reason);
+    }
+    let reason = match error.kind() {
+        ErrorKind::UnknownArgument => "unrecognized argument; use --help for accepted arguments",
+        ErrorKind::InvalidSubcommand => "unrecognized subcommand; use --help for accepted commands",
+        ErrorKind::MissingRequiredArgument => {
+            "required argument is missing; use --help for required arguments"
+        }
+        _ => "invalid argument syntax; use --help for accepted arguments",
+    };
+    CliError::invalid_argument("arguments", reason)
 }
 
 #[cfg(test)]
@@ -1007,7 +1074,9 @@ mod tests {
             assert_eq!(output.exit_code, 2);
             assert_eq!(
                 output.stderr,
-                "{\"error\":{\"code\":\"invalid_request\",\"message\":\"the request arguments are invalid\"}}\n"
+                format!(
+                    "{{\"error\":{{\"code\":\"invalid_request\",\"message\":\"invalid {flag}: cannot be used with --json\"}}}}\n"
+                )
             );
         }
         let output = super::run_binary_with_public(
@@ -1029,6 +1098,81 @@ mod tests {
     }
 
     #[test]
+    fn search_invalid_arguments_have_specific_text_and_json_messages() {
+        for (arguments, expected) in [
+            (
+                vec!["--limit", "0"],
+                "invalid --limit: must be between 1 and 100",
+            ),
+            (
+                vec!["--limit", "101"],
+                "invalid --limit: must be between 1 and 100",
+            ),
+            (
+                vec!["--slot", "banana"],
+                "invalid --slot: expected one of kinetic, energy, power, helmet, gauntlets, chest, legs, classitem, other, unknown",
+            ),
+            (
+                vec!["--stat", "Range>=abc"],
+                "invalid --stat: expected Name>=N, Name<=N, Name>N, Name<N or Name=N (N must be a signed 32-bit integer)",
+            ),
+            (
+                vec!["--perk", "first", "--perk", "second"],
+                "invalid --perk: cannot be used more than once or with conflicting arguments",
+            ),
+        ] {
+            for json in [false, true] {
+                let mut args = vec!["search-inventory"];
+                args.extend(arguments.iter().copied());
+                if json {
+                    args.push("--json");
+                }
+                let mut service = RecordingService::new();
+                let output = run(&mut service, argv(args), freshness());
+                assert_eq!(output.exit_code, 2);
+                if json {
+                    let value: serde_json::Value = serde_json::from_str(&output.stderr).unwrap();
+                    assert_eq!(value["error"]["code"], "invalid_request");
+                    assert_eq!(value["error"]["message"], expected);
+                } else {
+                    assert_eq!(output.stderr, format!("error: {expected}\n"));
+                }
+                assert!(service.recorded().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn clap_details_never_echo_auth_values_or_control_bearing_search_values() {
+        for arguments in [
+            vec!["login", "--mode", "secret\n\u{7}sentinel"],
+            vec!["login", "--callback", "secret-sentinel"],
+            vec!["callback", "secret-sentinel", "extra-secret-sentinel"],
+            vec!["search-inventory", "--slot", "secret\n\u{7}sentinel"],
+            vec![
+                "search-inventory",
+                "--perk",
+                "secret-sentinel",
+                "--perk",
+                "other-secret-sentinel",
+            ],
+        ] {
+            for json in [false, true] {
+                let mut args = arguments.clone();
+                if json {
+                    args.push("--json");
+                }
+                let output = super::parse_process(argv(args)).unwrap_err();
+                assert_eq!(output.exit_code, 2);
+                assert!(!output.stderr.contains("sentinel"));
+                assert!(!output.stderr.contains('\u{7}'));
+                assert_eq!(output.stderr.lines().count(), 1);
+                assert!(output.stderr.chars().count() <= 600);
+            }
+        }
+    }
+
+    #[test]
     fn clap_syntax_errors_are_sanitized_and_never_call_the_service() {
         let mut service = RecordingService::new();
         let output = run(
@@ -1039,7 +1183,10 @@ mod tests {
 
         assert_eq!(output.exit_code, 2);
         assert!(output.stdout.is_empty());
-        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
+        assert_eq!(
+            output.stderr,
+            "error: invalid --limit: expected a non-negative integer in the supported range\n"
+        );
         assert!(service.recorded().is_empty());
     }
 
@@ -1057,7 +1204,7 @@ mod tests {
         assert!(output.stdout.is_empty());
         assert_eq!(
             output.stderr,
-            "{\"error\":{\"code\":\"invalid_request\",\"message\":\"the request arguments are invalid\"}}\n"
+            "{\"error\":{\"code\":\"invalid_request\",\"message\":\"invalid arguments: unrecognized argument; use --help for accepted arguments\"}}\n"
         );
         assert!(!output.stderr.contains(sentinel));
         assert!(service.recorded().is_empty());
@@ -1077,7 +1224,10 @@ mod tests {
 
         assert_eq!(output.exit_code, 2);
         assert!(output.stdout.is_empty());
-        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
+        assert_eq!(
+            output.stderr,
+            "error: invalid --json: argument is not valid here\n"
+        );
         assert!(service.recorded().is_empty());
     }
 
@@ -1105,7 +1255,10 @@ mod tests {
         );
 
         assert_eq!(output.exit_code, 2);
-        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
+        assert_eq!(
+            output.stderr,
+            "error: invalid --limit: must be between 1 and 100\n"
+        );
         assert!(service.recorded().is_empty());
     }
 
@@ -1280,12 +1433,18 @@ mod tests {
         // A clap syntax failure.
         let (output, _) = run_read_boundary(&mut factory, &["inspect-item", "--unknown"]);
         assert_eq!(output.exit_code, 2);
-        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
+        assert_eq!(
+            output.stderr,
+            "error: invalid arguments: unrecognized argument; use --help for accepted arguments\n"
+        );
 
         // A parsed but semantically invalid request.
         let (output, _) = run_read_boundary(&mut factory, &["search-inventory", "--limit", "0"]);
         assert_eq!(output.exit_code, 2);
-        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
+        assert_eq!(
+            output.stderr,
+            "error: invalid --limit: must be between 1 and 100\n"
+        );
 
         // A missing required argument is rejected before any runtime work too.
         let (output, _) = run_read_boundary(&mut factory, &["inspect-item"]);
@@ -1347,7 +1506,10 @@ mod tests {
         // environment variable, keyring, database, clock, or transport.
         let output: ProcessOutput = run_binary(argv(&["inspect-item", "--unknown"]));
         assert_eq!(output.exit_code, 2);
-        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
+        assert_eq!(
+            output.stderr,
+            "error: invalid arguments: unrecognized argument; use --help for accepted arguments\n"
+        );
     }
 
     #[test]
@@ -1492,7 +1654,10 @@ mod tests {
 
         assert_eq!(output.exit_code, 2);
         assert!(output.stdout.is_empty());
-        assert_eq!(output.stderr, "error: the request arguments are invalid\n");
+        assert_eq!(
+            output.stderr,
+            "error: invalid --mode: expected one of auto, browser, headless\n"
+        );
         assert!(presented.is_empty());
         assert!(login.modes().is_empty());
     }

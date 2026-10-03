@@ -37,10 +37,32 @@ fn available_flag_builds_identical_cli_and_mcp_queries() {
 }
 
 #[test]
+fn strict_stat_conditions_build_identical_cli_and_mcp_queries() {
+    use clap::Parser;
+    for condition in ["Range>60", "Range<30"] {
+        let cli = cli_command::Cli::try_parse_from([
+            "ghostlink",
+            "search-inventory",
+            "--stat",
+            condition,
+        ])
+        .unwrap()
+        .into_read_request()
+        .unwrap();
+        let cli_command::ReadRequest::SearchInventory(cli) = cli else {
+            panic!("search request")
+        };
+        let mcp: destiny_mcp::schema::SearchInventoryArgs =
+            serde_json::from_value(serde_json::json!({"stats": [condition]})).unwrap();
+        assert_eq!(cli, mcp.into_request().unwrap());
+    }
+}
+
+#[test]
 fn invalid_stat_conditions_are_rejected_by_both_surfaces() {
     use clap::Parser;
     for conditions in [
-        vec!["Weapons>30".to_owned()],
+        vec!["Weapons>>30".to_owned()],
         vec!["=20".to_owned()],
         vec!["Health=20".to_owned(); 9],
         vec![format!("{}=1", "a".repeat(257))],

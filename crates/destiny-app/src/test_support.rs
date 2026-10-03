@@ -2595,14 +2595,14 @@ mod tests {
         invalid_definitions.limit = 0;
         assert_eq!(
             repository.search_definitions(&invalid_definitions),
-            Err(AppError::new(ErrorCategory::ProviderValidation))
+            Err(invalid_definitions.validate().unwrap_err())
         );
 
         let mut invalid_instances = instance_query(ItemHashFilter::Any, None, None, 10);
         invalid_instances.limit = MAX_SEARCH_LIMIT + 1;
         assert_eq!(
             repository.search_instances(&invalid_instances),
-            Err(AppError::new(ErrorCategory::ProviderValidation))
+            Err(invalid_instances.validate().unwrap_err())
         );
     }
 
@@ -2625,7 +2625,7 @@ mod tests {
         let over_bound = instance_query(ItemHashFilter::AnyOf(over), None, None, 10);
         assert_eq!(
             repository.search_instances(&over_bound),
-            Err(AppError::new(ErrorCategory::ProviderValidation))
+            Err(over_bound.validate().unwrap_err())
         );
 
         // An empty `AnyOf` stays valid and still matches nothing, so the

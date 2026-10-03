@@ -1043,17 +1043,19 @@ mod tests {
         );
         let fake = InMemorySearchRepository::with_definitions(definitions);
 
-        let sanitized = AppError::new(ErrorCategory::ProviderValidation);
         let mut zero_limit = definition_query(Some("gjallar"), None, &[], 10);
         zero_limit.limit = 0;
         assert_eq!(
             store.search_definitions(&zero_limit),
-            Err(sanitized.clone())
+            Err(zero_limit.validate().unwrap_err())
         );
 
         let mut over_limit = instance_query(ItemHashFilter::Any, None, None, 10);
         over_limit.limit = MAX_SEARCH_LIMIT + 1;
-        assert_eq!(store.search_instances(&over_limit), Err(sanitized.clone()));
+        assert_eq!(
+            store.search_instances(&over_limit),
+            Err(over_limit.validate().unwrap_err())
+        );
 
         let mut too_many_tags = definition_query(Some("gjallar"), None, &[], 10);
         too_many_tags.tags = (0..=MAX_TAG_FILTERS)
@@ -1061,17 +1063,20 @@ mod tests {
             .collect();
         assert_eq!(
             store.search_definitions(&too_many_tags),
-            Err(sanitized.clone())
+            Err(too_many_tags.validate().unwrap_err())
         );
 
         // The over-bound hash list is rejected by both implementations with the
         // same sanitized category.
         let over: Vec<ItemHash> = (0..=MAX_HASH_FILTERS as i64).map(ItemHash::new).collect();
         let over_bound = instance_query(ItemHashFilter::AnyOf(over), None, None, 10);
-        assert_eq!(store.search_instances(&over_bound), Err(sanitized));
         assert_eq!(
-            fake.search_instances(&over_bound),
-            Err(AppError::new(ErrorCategory::ProviderValidation))
+            store.search_instances(&over_bound),
+            Err(over_bound.validate().unwrap_err())
+        );
+        assert_eq!(
+            store.search_instances(&over_bound),
+            fake.search_instances(&over_bound)
         );
     }
 

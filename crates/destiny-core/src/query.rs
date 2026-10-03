@@ -178,7 +178,10 @@ impl SearchTerm {
 
 fn validate_search_limit(limit: usize) -> Result<(), AppError> {
     if limit == 0 || limit > MAX_SEARCH_LIMIT {
-        return Err(invalid_query());
+        return Err(AppError::invalid_argument(
+            "limit",
+            format!("must be between 1 and {MAX_SEARCH_LIMIT}"),
+        ));
     }
     Ok(())
 }
@@ -221,7 +224,10 @@ impl DefinitionSearchQuery {
     pub fn validate(&self) -> Result<(), AppError> {
         validate_search_limit(self.limit)?;
         if self.tags.len() > MAX_TAG_FILTERS {
-            return Err(invalid_query());
+            return Err(AppError::invalid_argument(
+                "tag",
+                format!("at most {MAX_TAG_FILTERS} filters are allowed"),
+            ));
         }
         Ok(())
     }
@@ -255,6 +261,8 @@ pub const MAX_STAT_CONDITIONS: usize = 8;
 pub enum StatOp {
     AtLeast,
     AtMost,
+    GreaterThan,
+    LessThan,
     Equals,
 }
 
@@ -270,24 +278,34 @@ impl std::str::FromStr for StatCondition {
     type Err = AppError;
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
-        reject_prohibited_text(input, MAX_SEARCH_TEXT_LENGTH + 32)?;
-        let index = input.find(['<', '>', '=']).ok_or_else(invalid_query)?;
+        let invalid_stat = || {
+            AppError::invalid_argument(
+                "stat",
+                "expected Name>=N, Name<=N, Name>N, Name<N or Name=N (N must be a signed 32-bit integer)",
+            )
+        };
+        reject_prohibited_text(input, MAX_SEARCH_TEXT_LENGTH + 32).map_err(|_| invalid_stat())?;
+        let index = input.find(['<', '>', '=']).ok_or_else(invalid_stat)?;
         let raw_name = input[..index].trim();
         if raw_name.contains('!') {
-            return Err(invalid_query());
+            return Err(invalid_stat());
         }
-        let name = SearchTerm::new(raw_name)?;
+        let name = SearchTerm::new(raw_name).map_err(|_| invalid_stat())?;
         let tail = &input[index..];
         let (op, number) = if let Some(number) = tail.strip_prefix(">=") {
             (StatOp::AtLeast, number)
         } else if let Some(number) = tail.strip_prefix("<=") {
             (StatOp::AtMost, number)
+        } else if let Some(number) = tail.strip_prefix('>') {
+            (StatOp::GreaterThan, number)
+        } else if let Some(number) = tail.strip_prefix('<') {
+            (StatOp::LessThan, number)
         } else if let Some(number) = tail.strip_prefix('=') {
             (StatOp::Equals, number)
         } else {
-            return Err(invalid_query());
+            return Err(invalid_stat());
         };
-        let value = number.trim().parse().map_err(|_| invalid_query())?;
+        let value = number.trim().parse().map_err(|_| invalid_stat())?;
         Ok(Self { name, op, value })
     }
 }
@@ -307,6 +325,8 @@ pub fn instance_matches_stats(
             }) && match condition.op {
                 StatOp::AtLeast => stat.value >= condition.value,
                 StatOp::AtMost => stat.value <= condition.value,
+                StatOp::GreaterThan => stat.value > condition.value,
+                StatOp::LessThan => stat.value < condition.value,
                 StatOp::Equals => stat.value == condition.value,
             }
         })
@@ -346,10 +366,18 @@ impl InstanceSearchQuery {
     pub fn validate(&self) -> Result<(), AppError> {
         validate_search_limit(self.limit)?;
         if self.stats.len() > MAX_STAT_CONDITIONS {
-            return Err(invalid_query());
+            return Err(AppError::invalid_argument(
+                "stat",
+                format!("at most {MAX_STAT_CONDITIONS} conditions are allowed"),
+            ));
         }
         for condition in &self.stats {
-            crate::normalize_stat_name(condition.name.as_str())?;
+            crate::normalize_stat_name(condition.name.as_str()).map_err(|_| {
+                AppError::invalid_argument(
+                    "stat",
+                    "stat name must satisfy the Manifest name length and character bounds",
+                )
+            })?;
         }
         if let Some(definitions) = &self.definitions {
             definitions.validate()?;
@@ -357,7 +385,10 @@ impl InstanceSearchQuery {
         if let ItemHashFilter::AnyOf(hashes) = &self.item_hashes
             && hashes.len() > MAX_HASH_FILTERS
         {
-            return Err(invalid_query());
+            return Err(AppError::invalid_argument(
+                "item-hash",
+                format!("at most {MAX_HASH_FILTERS} hashes are allowed"),
+            ));
         }
         Ok(())
     }
@@ -746,6 +777,29 @@ mod tests {
     use crate::error::{AppError, ErrorCategory};
     use crate::ids::{CharacterId, DefinitionVersion, ItemHash, PerkHash};
 
+    #[test]
+    fn strict_stat_comparisons_exclude_the_boundary_and_missing_stats() {
+        let definitions = vec![crate::StatDefinition::new(1, "Range".into()).unwrap()];
+        for (expression, boundary, matching, rejected) in
+            [("Range>60", 60, 61, 59), ("Range<30", 30, 29, 31)]
+        {
+            let mut query = instance_query(ItemHashFilter::Any, None);
+            query.stats = vec![expression.parse().expect("strict operator is valid")];
+            let mut item = instance("one", 1);
+            assert!(!super::instance_matches_stats(&query, &item, &definitions));
+            for (value, expected) in [(boundary, false), (matching, true), (rejected, false)] {
+                item.stats = vec![crate::domain::StatSummary {
+                    stat_hash: 1,
+                    value,
+                }];
+                assert_eq!(
+                    super::instance_matches_stats(&query, &item, &definitions),
+                    expected
+                );
+            }
+        }
+    }
+
     fn term(value: &str) -> SearchTerm {
         SearchTerm::new(value).expect("valid term")
     }
@@ -1128,30 +1182,27 @@ mod tests {
     #[test]
     fn invalid_limits_and_tag_counts_are_rejected() {
         let mut definition_query = query(Some("ghost"), None, Vec::new());
-        definition_query.limit = 0;
-        assert_eq!(
-            definition_query.validate(),
-            Err(AppError::new(ErrorCategory::ProviderValidation))
-        );
-        definition_query.limit = MAX_SEARCH_LIMIT + 1;
-        assert_eq!(
-            definition_query.validate(),
-            Err(AppError::new(ErrorCategory::ProviderValidation))
-        );
+        for limit in [0, MAX_SEARCH_LIMIT + 1] {
+            definition_query.limit = limit;
+            assert_eq!(
+                definition_query.validate().unwrap_err().to_string(),
+                "invalid limit: must be between 1 and 100"
+            );
+        }
         definition_query.limit = MAX_SEARCH_LIMIT;
         definition_query.tags = (0..=MAX_TAG_FILTERS)
             .map(|i| term(&format!("tag-{i}")))
             .collect();
         assert_eq!(
-            definition_query.validate(),
-            Err(AppError::new(ErrorCategory::ProviderValidation))
+            definition_query.validate().unwrap_err().to_string(),
+            "invalid tag: at most 16 filters are allowed"
         );
 
         let mut instance_query = instance_query(ItemHashFilter::Any, None);
         instance_query.limit = 0;
         assert_eq!(
-            instance_query.validate(),
-            Err(AppError::new(ErrorCategory::ProviderValidation))
+            instance_query.validate().unwrap_err().to_string(),
+            "invalid limit: must be between 1 and 100"
         );
     }
 
@@ -1166,8 +1217,8 @@ mod tests {
         let over: Vec<ItemHash> = (0..=MAX_HASH_FILTERS as i64).map(ItemHash::new).collect();
         let over_bound = instance_query(ItemHashFilter::AnyOf(over), None);
         assert_eq!(
-            over_bound.validate(),
-            Err(AppError::new(ErrorCategory::ProviderValidation))
+            over_bound.validate().unwrap_err().to_string(),
+            "invalid item-hash: at most 64 hashes are allowed"
         );
 
         // The empty list stays valid and remains distinct from `Any`.

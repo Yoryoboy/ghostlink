@@ -70,6 +70,22 @@ impl AppError {
         }
     }
 
+    /// Builds a bounded, single-line validation diagnostic. Callers must supply
+    /// an argument name and a value-free reason, never credentials or payloads.
+    pub fn invalid_argument(argument: &'static str, reason: impl AsRef<str>) -> Self {
+        let message = format!("invalid {argument}: {}", reason.as_ref());
+        Self {
+            category: ErrorCategory::ProviderValidation,
+            detail: Some(
+                message
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(512)
+                    .collect(),
+            ),
+        }
+    }
+
     pub const fn configuration() -> Self {
         Self::new(ErrorCategory::ConfigurationError)
     }
@@ -135,6 +151,16 @@ impl std::error::Error for AppError {}
 #[cfg(test)]
 mod tests {
     use super::{AppError, ErrorCategory};
+
+    #[test]
+    fn argument_details_are_bounded_and_control_free() {
+        let error = AppError::invalid_argument("limit", format!("\n\r\t\u{7}{}", "é".repeat(1024)));
+        assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+        let message = error.to_string();
+        assert!(message.starts_with("invalid limit: "));
+        assert_eq!(message.chars().count(), 512);
+        assert!(!message.chars().any(char::is_control));
+    }
 
     #[test]
     fn configuration_error_is_stable_and_sanitized() {
