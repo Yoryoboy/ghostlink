@@ -227,6 +227,92 @@ where
         })
     }
 
+    /// Returns equipped subclasses after requiring definitions and synchronizing.
+    ///
+    /// No selector returns all characters in committed order. An explicit
+    /// selector uses the shared character selection rules (exact ID first,
+    /// otherwise a case-insensitive, unambiguous class name). Unknown plug
+    /// definitions are omitted: without a category their kind is unknowable.
+    /// Multiple equipped subclass items fail closed as invalid repository state.
+    pub fn character_subclasses(
+        &mut self,
+        character_id: Option<&destiny_core::CharacterId>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::SubclassResult, AppError> {
+        self.require_definitions()?;
+        self.synchronize(policy, now)?;
+        let snapshot = self.committed_snapshot()?;
+        let characters = match character_id {
+            Some(selector) => vec![
+                crate::weekly_selection::select_weekly_character(
+                    &snapshot.characters,
+                    Some(selector),
+                )
+                .map_err(|error| {
+                    AppError::new(match error {
+                        crate::weekly_selection::WeeklySelectionError::InvalidRequest => {
+                            ErrorCategory::ProviderValidation
+                        }
+                        crate::weekly_selection::WeeklySelectionError::AmbiguousMatch => {
+                            ErrorCategory::AmbiguousMatch
+                        }
+                    })
+                })?,
+            ],
+            None => snapshot.characters,
+        };
+        let mut output = Vec::with_capacity(characters.len());
+        let mut enrichment = InstanceEnrichment::default();
+        for character in characters {
+            let mut subclass = None;
+            for instance in snapshot.items.iter().filter(|instance| {
+                instance.equipped
+                    && instance.location
+                        == destiny_core::ItemLocation::Character(character.id.clone())
+            }) {
+                let definition = self.resolve_definition(instance.item_hash)?;
+                if definition.bucket_hash != Some(destiny_core::SUBCLASS_BUCKET_HASH) {
+                    continue;
+                }
+                if subclass.is_some() {
+                    return Err(invalid_repository_state());
+                }
+                let plugs = enrichment.resolve_plugs(
+                    self.repository(),
+                    instance.plugs.iter().map(|plug| plug.plug_hash),
+                )?;
+                let slots = plugs
+                    .into_iter()
+                    .filter_map(|plug| {
+                        let kind =
+                            destiny_core::classify_subclass_plug(plug.plug_category.as_deref()?)?;
+                        Some(destiny_core::SubclassSlot {
+                            kind,
+                            plug_hash: plug.hash,
+                            empty: plug.name.starts_with("Empty ")
+                                && plug.name.ends_with(" Socket"),
+                            name: Some(plug.name),
+                        })
+                    })
+                    .collect();
+                subclass = Some(destiny_core::SubclassConfig {
+                    instance_id: instance.instance_id.clone(),
+                    item_hash: instance.item_hash,
+                    name: definition.name,
+                    element: definition.element,
+                    slots,
+                });
+            }
+            output.push(destiny_core::CharacterSubclass {
+                character_id: character.id,
+                class: character.class,
+                subclass,
+            });
+        }
+        Ok(destiny_core::SubclassResult { characters: output })
+    }
+
     /// Searches definitions, and optionally concrete instances, after syncing.
     ///
     /// Both queries are validated before the refresh so a malformed request
@@ -926,6 +1012,198 @@ mod tests {
         let mut repository = CompositeRepository::with_definitions(standard_definitions());
         repository.commit(snapshot_input(fresh_checked_at(), characters, items));
         service(shared, repository)
+    }
+
+    #[test]
+    fn character_subclasses_resolves_ordered_slots_and_selection() {
+        use destiny_core::{BucketHash, PlugSummary, SubclassPlugKind};
+        let shared = gateway();
+        let mut subclass = definition(10, "Prismatic", None, vec![]);
+        subclass.bucket_hash = Some(BucketHash::new(3284755031));
+        subclass.element = Some("Prismatic".into());
+        let cases = [
+            (20, "Super", "hunter.prism.supers", SubclassPlugKind::Super),
+            (
+                21,
+                "Aspect",
+                "hunter.prism.aspects",
+                SubclassPlugKind::Aspect,
+            ),
+            (
+                22,
+                "Fragment",
+                "shared.fragments",
+                SubclassPlugKind::Fragment,
+            ),
+            (
+                23,
+                "Empty Fragment Socket",
+                "shared.fragments",
+                SubclassPlugKind::Fragment,
+            ),
+            (
+                24,
+                "Grenade",
+                "hunter.prism.prism_grenade",
+                SubclassPlugKind::Grenade,
+            ),
+            (25, "Melee", "hunter.prism.melee", SubclassPlugKind::Melee),
+            (
+                26,
+                "Dodge",
+                "hunter.prism.class_abilities",
+                SubclassPlugKind::ClassAbility,
+            ),
+            (
+                27,
+                "Jump",
+                "hunter.prism.movement",
+                SubclassPlugKind::Movement,
+            ),
+            (
+                28,
+                "Transcendence",
+                "hunter.prism.transcendence",
+                SubclassPlugKind::Transcendence,
+            ),
+        ];
+        let mut definitions = vec![subclass, definition(30, "Shader", None, vec![])];
+        for (hash, name, category, _) in &cases {
+            let mut plug = definition(*hash, name, None, vec![]);
+            plug.plug_category = Some((*category).into());
+            definitions.push(plug);
+        }
+        let id = CharacterId::new("a");
+        let mut hunter = character("a");
+        hunter.class = Some("Hunter".into());
+        let mut equipped = instance("subclass", 10, ItemLocation::Character(id.clone()), vec![]);
+        equipped.equipped = true;
+        equipped.plugs = [20, 21, 99, 22, 30, 23, 24, 25, 26, 27, 28]
+            .into_iter()
+            .map(|hash| PlugSummary {
+                plug_hash: ItemHash::new(hash),
+                enabled: true,
+            })
+            .collect();
+        let mut unequipped = equipped.clone();
+        unequipped.instance_id = "unequipped".into();
+        unequipped.equipped = false;
+        let mut wrong_bucket = equipped.clone();
+        wrong_bucket.instance_id = "other".into();
+        wrong_bucket.item_hash = ItemHash::new(30);
+        let mut repository = CompositeRepository::with_definitions(definitions);
+        repository.commit(snapshot_input(
+            fresh_checked_at(),
+            vec![hunter, character("b")],
+            vec![equipped, unequipped, wrong_bucket],
+        ));
+        let mut service = service(&shared, repository);
+        let result = service.character_subclasses(None, TTL, NOW).unwrap();
+        assert_eq!(result.characters.len(), 2);
+        assert_eq!(result.characters[0].class.as_deref(), Some("Hunter"));
+        assert!(result.characters[1].subclass.is_none());
+        let config = result.characters[0].subclass.as_ref().unwrap();
+        assert_eq!(config.instance_id.as_str(), "subclass");
+        assert_eq!(config.item_hash, ItemHash::new(10));
+        assert_eq!(config.name, "Prismatic");
+        assert_eq!(config.element.as_deref(), Some("Prismatic"));
+        assert_eq!(config.slots.len(), cases.len());
+        for (slot, (hash, name, _, kind)) in config.slots.iter().zip(cases) {
+            assert_eq!(slot.kind, kind);
+            assert_eq!(slot.plug_hash, ItemHash::new(hash));
+            assert_eq!(slot.name.as_deref(), Some(name));
+            assert_eq!(slot.empty, hash == 23);
+        }
+        let selected = service
+            .character_subclasses(Some(&CharacterId::new("hUnTeR")), TTL, NOW)
+            .unwrap();
+        assert_eq!(selected.characters, vec![result.characters[0].clone()]);
+        let selected = service
+            .character_subclasses(Some(&CharacterId::new("b")), TTL, NOW)
+            .unwrap();
+        assert_eq!(selected.characters, vec![result.characters[1].clone()]);
+        assert!(
+            service
+                .character_subclasses(Some(&CharacterId::new("missing")), TTL, NOW)
+                .is_err()
+        );
+        assert_eq!(shared.borrow().membership_calls(), 0);
+    }
+
+    #[test]
+    fn character_subclasses_requires_definitions_and_refreshes_before_reading() {
+        let shared = gateway();
+        let mut service = service(&shared, CompositeRepository::default());
+        assert_eq!(
+            service
+                .character_subclasses(None, TTL, NOW)
+                .unwrap_err()
+                .category(),
+            ErrorCategory::DefinitionsUnavailable
+        );
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        service.repository_mut().definitions = InMemoryDefinitionRepository::new(
+            DefinitionVersion::new(DEFINITION_VERSION),
+            standard_definitions(),
+        );
+        queue_refresh(&shared, snapshot_input(NOW, vec![character("new")], vec![]));
+        let result = service.character_subclasses(None, TTL, NOW).unwrap();
+        assert_eq!(result.characters[0].character_id, CharacterId::new("new"));
+        assert!(result.characters[0].subclass.is_none());
+        assert_eq!(shared.borrow().membership_calls(), 1);
+        assert_eq!(
+            service.repository().recorded_calls().last(),
+            Some(&"load_current")
+        );
+    }
+
+    #[test]
+    fn character_subclasses_rejects_duplicate_equipped_items_and_ambiguous_classes() {
+        let shared = gateway();
+        let mut subclass = definition(10, "Prismatic", None, vec![]);
+        subclass.bucket_hash = Some(destiny_core::SUBCLASS_BUCKET_HASH);
+        let mut repository = CompositeRepository::with_definitions(vec![subclass]);
+        let mut hunter = character("a");
+        hunter.class = Some("Hunter".into());
+        let mut other = character("b");
+        other.class = hunter.class.clone();
+        let mut equipped = instance(
+            "one",
+            10,
+            ItemLocation::Character(hunter.id.clone()),
+            vec![],
+        );
+        equipped.equipped = true;
+        let mut duplicate = equipped.clone();
+        duplicate.instance_id = "two".into();
+        repository.commit(snapshot_input(
+            fresh_checked_at(),
+            vec![hunter, other],
+            vec![equipped, duplicate],
+        ));
+        let mut service = service(&shared, repository);
+        assert_eq!(
+            service
+                .character_subclasses(None, TTL, NOW)
+                .unwrap_err()
+                .category(),
+            ErrorCategory::LocalStorage
+        );
+        assert_eq!(
+            service
+                .character_subclasses(Some(&CharacterId::new("Hunter")), TTL, NOW)
+                .unwrap_err()
+                .category(),
+            ErrorCategory::AmbiguousMatch
+        );
+        assert!(
+            service
+                .character_subclasses(Some(&CharacterId::new("b")), TTL, NOW)
+                .unwrap()
+                .characters[0]
+                .subclass
+                .is_none()
+        );
     }
 
     #[test]
