@@ -174,14 +174,32 @@ where
         let mut request = request.clone();
         let mut resolved = destiny_core::name_matching::ResolvedNames::default();
         if let Some(query) = &mut request.instances {
-            for (kind, term, output) in [
-                ("perk", &mut query.perk_name, &mut resolved.perk),
-                ("mod", &mut query.mod_name, &mut resolved.mods),
-                ("archetype", &mut query.archetype, &mut resolved.archetype),
+            for (kind, terms, output, per_term) in [
+                (
+                    "perk",
+                    &mut query.perk_name,
+                    &mut resolved.perk,
+                    &mut resolved.perk_terms,
+                ),
+                (
+                    "mod",
+                    &mut query.mod_name,
+                    &mut resolved.mods,
+                    &mut resolved.mod_terms,
+                ),
             ] {
-                if let Some(term) = term {
-                    *output = term.resolve(&self.repository().name_catalog(kind)?, kind)?;
+                if let Some(terms) = terms {
+                    let catalog = self.repository().name_catalog(kind)?;
+                    for term in terms {
+                        let names = term.resolve(&catalog, kind)?;
+                        output.extend(names.iter().cloned());
+                        per_term.push(names);
+                    }
                 }
+            }
+            if let Some(term) = &mut query.archetype {
+                resolved.archetype =
+                    term.resolve(&self.repository().name_catalog("archetype")?, "archetype")?;
             }
             if !query.stats.is_empty() {
                 if self.repository().stat_definition_count()? == 0 {
@@ -905,7 +923,7 @@ mod tests {
         repository.commit(snapshot_input(fresh_checked_at(), vec![], vec![item]));
         let mut service = service(&shared, repository);
         let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
-        query.perk_name = Some(SearchTerm::new("rampage").unwrap());
+        query.perk_name = Some(vec![SearchTerm::new("rampage").unwrap()]);
         let request = search_request(definition_query(None, None, vec![], 1), Some(query));
         let result = service.search_inventory(&request, TTL, NOW).unwrap();
         assert_eq!(result.hits[0].perk_names, ["Barrel", "Rampage", "Rampage"]);
@@ -941,7 +959,7 @@ mod tests {
         repository.commit(snapshot_input(fresh_checked_at(), vec![], vec![item]));
         let mut service = service(&shared, repository);
         let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
-        query.mod_name = Some(SearchTerm::new(" harmonic  siphon ").unwrap());
+        query.mod_name = Some(vec![SearchTerm::new(" harmonic  siphon ").unwrap()]);
         query.archetype = Some(SearchTerm::new("specialist").unwrap());
         let request = search_request(definition_query(None, None, vec![], 1), Some(query));
         let result = service.search_inventory(&request, TTL, NOW).unwrap();

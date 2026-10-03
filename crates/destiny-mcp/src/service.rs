@@ -679,8 +679,14 @@ impl SearchInventoryArgs {
             .instances
             .map(InstanceQueryArgs::into_query)
             .transpose()?;
-        let perk_name = optional_term(self.perk_name.as_deref(), "perk_name")?;
-        let mod_name = optional_term(self.mod_name.as_deref(), "mod_name")?;
+        let perk_name = repeated_terms(
+            self.perk_name.as_deref(),
+            &self.perk_names,
+            "perk_name",
+            "perk",
+        )?;
+        let mod_name =
+            repeated_terms(self.mod_name.as_deref(), &self.mod_names, "mod_name", "mod")?;
         let archetype = optional_term(self.archetype.as_deref(), "archetype")?;
         let stats = self
             .stats
@@ -847,12 +853,35 @@ pub fn list_characters_output(result: &CharacterListResult) -> ListCharactersOut
     }
 }
 
+fn repeated_terms(
+    single: Option<&str>,
+    plural: &[String],
+    field: &'static str,
+    kind: &'static str,
+) -> Result<Option<Vec<SearchTerm>>, McpError> {
+    if plural.len() + usize::from(single.is_some()) > destiny_app::MAX_NAME_TERMS {
+        return Err(AppError::invalid_argument(
+            kind,
+            format!("at most {} {kind} names", destiny_app::MAX_NAME_TERMS),
+        )
+        .into());
+    }
+    let terms = single
+        .into_iter()
+        .chain(plural.iter().map(String::as_str))
+        .map(|value| optional_term(Some(value), field).map(|term| term.expect("provided term")))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((!terms.is_empty()).then_some(terms))
+}
+
 /// Projects a shared inventory search into its bounded MCP output.
 pub fn search_inventory_output(result: &InventorySearchResult) -> SearchInventoryOutput {
     SearchInventoryOutput {
         resolved: crate::schema::ResolvedNamesView {
             perk: result.resolved.perk.clone(),
             mods: result.resolved.mods.clone(),
+            perk_terms: result.resolved.perk_terms.clone(),
+            mod_terms: result.resolved.mod_terms.clone(),
             archetype: result.resolved.archetype.clone(),
             stats: result.resolved.stats.clone(),
         },
@@ -1557,6 +1586,8 @@ mod tests {
         SearchInventoryArgs {
             include_available: false,
             text: text.map(str::to_owned),
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
             stats: Vec::new(),
             perk_name: None,
             mod_name: None,
@@ -1580,6 +1611,8 @@ mod tests {
 
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
             include_available: false,
             stats: Vec::new(),
             perk_name: None,
@@ -1788,6 +1821,8 @@ mod tests {
         let args = SearchInventoryArgs {
             include_available: false,
             text: Some("gjallar".into()),
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
             stats: Vec::new(),
             perk_name: None,
             mod_name: None,
@@ -2019,6 +2054,8 @@ mod tests {
             archetype: None,
             stats: Vec::new(),
             include_available: false,
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
         };
         let output = mcp
             .search_inventory(&args.into_request().expect("valid arguments"))
@@ -2065,6 +2102,8 @@ mod tests {
             archetype: None,
             stats: Vec::new(),
             include_available: false,
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
         };
         let request = args.into_request().expect("valid arguments");
 

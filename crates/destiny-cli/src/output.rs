@@ -333,14 +333,22 @@ fn characters_human(result: &CharacterListResult) -> String {
 
 fn search_human(result: &InventorySearchResult) -> String {
     let mut lines = Vec::new();
-    for (kind, names) in [
-        ("perk", &result.resolved.perk),
-        ("mod", &result.resolved.mods),
-        ("archetype", &result.resolved.archetype),
+    for (kind, flat, terms) in [
+        ("perk", &result.resolved.perk, &result.resolved.perk_terms),
+        ("mod", &result.resolved.mods, &result.resolved.mod_terms),
     ] {
-        if !names.is_empty() {
+        if terms.is_empty() && !flat.is_empty() {
+            lines.push(format!("matched {kind}: {}", sanitize(&flat.join(", "))));
+        }
+        for names in terms {
             lines.push(format!("matched {kind}: {}", sanitize(&names.join(", "))));
         }
+    }
+    if !result.resolved.archetype.is_empty() {
+        lines.push(format!(
+            "matched archetype: {}",
+            sanitize(&result.resolved.archetype.join(", "))
+        ));
     }
     for (input, names) in &result.resolved.stats {
         lines.push(format!(
@@ -405,6 +413,14 @@ fn search_json(result: &InventorySearchResult) -> String {
     ] {
         if !names.is_empty() {
             resolved.insert(kind.to_owned(), json!(names));
+        }
+    }
+    for (kind, terms) in [
+        ("perk_terms", &result.resolved.perk_terms),
+        ("mod_terms", &result.resolved.mod_terms),
+    ] {
+        if !terms.is_empty() {
+            resolved.insert(kind.to_owned(), json!(terms));
         }
     }
     if !result.resolved.stats.is_empty() {

@@ -696,7 +696,7 @@ mod tests {
             ("ram", vec![]),
         ] {
             let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
-            query.perk_name = Some(term(name));
+            query.perk_name = Some(vec![term(name)]);
             let actual = store.search_instances(&query).unwrap();
             assert_eq!(actual, fake.search_instances(&query).unwrap());
             assert_eq!(names(&actual), expected);
@@ -752,8 +752,8 @@ mod tests {
             (Some("intrinsic"), Some("harmonic siphon"), vec![]),
         ] {
             let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
-            query.perk_name = perk.map(term);
-            query.mod_name = mod_name.map(term);
+            query.perk_name = perk.map(|name| vec![term(name)]);
+            query.mod_name = mod_name.map(|name| vec![term(name)]);
             let actual = store.search_instances(&query).unwrap();
             assert_eq!(actual, fake.search_instances(&query).unwrap());
             assert_eq!(names(&actual), expected);

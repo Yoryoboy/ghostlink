@@ -1117,8 +1117,12 @@ mod tests {
                 "invalid --stat: expected Name>=N, Name<=N, Name>N, Name<N or Name=N (N must be a signed 32-bit integer)",
             ),
             (
-                vec!["--perk", "first", "--perk", "second"],
-                "invalid --perk: cannot be used more than once or with conflicting arguments",
+                vec![
+                    "--perk", "first", "--perk", "first", "--perk", "first", "--perk", "first",
+                    "--perk", "first", "--perk", "first", "--perk", "first", "--perk", "first",
+                    "--perk", "first",
+                ],
+                "invalid --perk: at most 8 perk names",
             ),
         ] {
             for json in [false, true] {
@@ -1151,9 +1155,9 @@ mod tests {
             vec!["search-inventory", "--slot", "secret\n\u{7}sentinel"],
             vec![
                 "search-inventory",
-                "--perk",
+                "--archetype",
                 "secret-sentinel",
-                "--perk",
+                "--archetype",
                 "other-secret-sentinel",
             ],
         ] {

@@ -132,16 +132,32 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
             expected
         );
         match kind {
-            "perk" => q.perk_name = Some(term),
-            "mod" => q.mod_name = Some(term),
+            "perk" => q.perk_name = Some(vec![term]),
+            "mod" => q.mod_name = Some(vec![term]),
             _ => q.archetype = Some(term),
         }
         let actual = store.search_instances(&q).unwrap();
         assert_eq!(actual, fake.search_instances(&q).unwrap());
         assert_eq!(actual.len(), count);
     }
+    // The two socketed perks are on different items: neither satisfies AND.
+    let mut both = query.clone();
+    both.perk_name = Some(vec![
+        SearchTerm::new("Rampage").unwrap(),
+        SearchTerm::new("Rampage Plus").unwrap(),
+    ]);
+    assert!(store.search_instances(&both).unwrap().is_empty());
+    assert_eq!(
+        store.search_instances(&both).unwrap(),
+        fake.search_instances(&both).unwrap()
+    );
+    both.include_available = true;
+    let hits = store.search_instances(&both).unwrap();
+    assert_eq!(hits, fake.search_instances(&both).unwrap());
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].instance_id.as_str(), "a");
     let mut alternatives = query.clone();
-    alternatives.perk_name = Some(SearchTerm::new("Rampage Plus").unwrap());
+    alternatives.perk_name = Some(vec![SearchTerm::new("Rampage Plus").unwrap()]);
     assert_eq!(store.search_instances(&alternatives).unwrap().len(), 1);
     alternatives.include_available = true;
     assert_eq!(store.search_instances(&alternatives).unwrap().len(), 2);
@@ -150,7 +166,10 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
         fake.search_instances(&alternatives).unwrap()
     );
     alternatives.perk_name = None;
-    alternatives.mod_name = Some(SearchTerm::new("Targeting").unwrap());
+    alternatives.mod_name = Some(vec![
+        SearchTerm::new("Targeting").unwrap(),
+        SearchTerm::new("Harmonic Siphon").unwrap(),
+    ]);
     alternatives.include_available = false;
     assert!(store.search_instances(&alternatives).unwrap().is_empty());
     alternatives.include_available = true;
@@ -191,7 +210,7 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
             limit: 10,
         },
         instances: Some(InstanceSearchQuery {
-            perk_name: Some(SearchTerm::new("ramp").unwrap()),
+            perk_name: Some(vec![SearchTerm::new("ramp").unwrap()]),
             ..query
         }),
     };
@@ -230,6 +249,13 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
         )
         .unwrap();
     assert_eq!(armor.hits[0].available_mods, ["Targeting"]);
+    assert_eq!(
+        armor.resolved.mod_terms,
+        vec![
+            vec!["Targeting".to_owned()],
+            vec!["Harmonic Siphon".to_owned()]
+        ]
+    );
     let armor_cli: serde_json::Value = serde_json::from_str(&destiny_cli::output::render_search(
         destiny_cli::output::OutputMode::Json,
         &armor,
@@ -253,4 +279,57 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
         cli["resolved"]["perk"],
         serde_json::json!(["Rampage", "Rampage Plus"])
     );
+    assert_eq!(
+        cli["resolved"]["perk_terms"],
+        serde_json::json!([["Rampage", "Rampage Plus"]])
+    );
+    let mut repeated = request.clone();
+    repeated.instances.as_mut().unwrap().perk_name = Some(vec![
+        SearchTerm::new("ramp").unwrap(),
+        SearchTerm::new("Rampage").unwrap(),
+    ]);
+    let repeated_result = app
+        .search_inventory(
+            &repeated,
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(1),
+        )
+        .unwrap();
+    assert_eq!(repeated_result.hits.len(), 1);
+    let text = destiny_cli::output::render_search(
+        destiny_cli::output::OutputMode::Human,
+        &repeated_result,
+    );
+    assert!(text.starts_with("matched perk: Rampage, Rampage Plus\nmatched perk: Rampage\n"));
+    let repeated_cli: serde_json::Value =
+        serde_json::from_str(&destiny_cli::output::render_search(
+            destiny_cli::output::OutputMode::Json,
+            &repeated_result,
+        ))
+        .unwrap();
+    let repeated_mcp = serde_json::to_value(destiny_mcp::service::search_inventory_output(
+        &repeated_result,
+    ))
+    .unwrap();
+    assert_eq!(repeated_cli["resolved"], repeated_mcp["resolved"]);
+    assert_eq!(
+        repeated_cli["resolved"]["perk_terms"],
+        serde_json::json!([["Rampage", "Rampage Plus"], ["Rampage"]])
+    );
+    repeated
+        .instances
+        .as_mut()
+        .unwrap()
+        .perk_name
+        .as_mut()
+        .unwrap()[1] = SearchTerm::new("rampge").unwrap();
+    let error = app
+        .search_inventory(
+            &repeated,
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(1),
+        )
+        .unwrap_err();
+    assert_eq!(error.category(), ErrorCategory::UnknownSearchName);
+    assert!(error.to_string().contains("did you mean"));
 }

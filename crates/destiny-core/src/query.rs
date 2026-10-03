@@ -333,6 +333,9 @@ pub fn instance_matches_stats(
     })
 }
 
+/// Maximum independent names per perk/mod filter.
+pub const MAX_NAME_TERMS: usize = 8;
+
 /// A validated instance-level inventory search.
 ///
 /// A concrete instance matches when it satisfies the [`ItemHashFilter`], carries
@@ -347,10 +350,10 @@ pub struct InstanceSearchQuery {
     pub include_available: bool,
     pub item_hashes: ItemHashFilter,
     pub perk_hash: Option<PerkHash>,
-    /// Exact normalized weapon-perk name; validated by `SearchTerm` construction.
-    pub perk_name: Option<SearchTerm>,
-    /// Exact normalized armor-mod name; validated by `SearchTerm` construction.
-    pub mod_name: Option<SearchTerm>,
+    /// Independently resolved weapon-perk terms; all terms must match.
+    pub perk_name: Option<Vec<SearchTerm>>,
+    /// Independently resolved armor-mod terms; all terms must match.
+    pub mod_name: Option<Vec<SearchTerm>>,
     /// Exact normalized armor-archetype name.
     pub archetype: Option<SearchTerm>,
     pub character_id: Option<CharacterId>,
@@ -365,6 +368,17 @@ impl InstanceSearchQuery {
     /// Rejects an out-of-range limit or an over-large definition-hash list.
     pub fn validate(&self) -> Result<(), AppError> {
         validate_search_limit(self.limit)?;
+        for (kind, terms) in [("perk", &self.perk_name), ("mod", &self.mod_name)] {
+            if terms
+                .as_ref()
+                .is_some_and(|terms| terms.len() > MAX_NAME_TERMS)
+            {
+                return Err(AppError::invalid_argument(
+                    kind,
+                    format!("at most {MAX_NAME_TERMS} {kind} names"),
+                ));
+            }
+        }
         if self.stats.len() > MAX_STAT_CONDITIONS {
             return Err(AppError::invalid_argument(
                 "stat",
@@ -496,7 +510,7 @@ pub fn instance_matches_with_definition(
     definition: Option<&ItemDefinition>,
 ) -> bool {
     instance_matches(query, instance)
-        && (query.perk_name.is_none()
+        && (query.perk_name.as_ref().is_none_or(Vec::is_empty)
             || definition.is_some_and(|definition| {
                 definition.hash == instance.item_hash && is_weapon_slot(definition.slot)
             }))
@@ -504,7 +518,7 @@ pub fn instance_matches_with_definition(
             || definition.is_some_and(|definition| {
                 definition.hash == instance.item_hash && is_armor_slot(definition.slot)
             }))
-        && (query.mod_name.is_none()
+        && (query.mod_name.as_ref().is_none_or(Vec::is_empty)
             || definition.is_some_and(|definition| {
                 definition.hash == instance.item_hash && is_armor_slot(definition.slot)
             }))
@@ -521,7 +535,7 @@ pub fn instance_matches_with_definition(
 /// Callers supply only definitions resolved from this instance's stored plugs,
 /// and must also apply `instance_matches_with_definition` for the weapon-slot guard.
 pub fn instance_matches_perk_name(query: &InstanceSearchQuery, plugs: &[ItemDefinition]) -> bool {
-    query.perk_name.as_ref().is_none_or(|term| {
+    query.perk_name.iter().flatten().all(|term| {
         plugs.iter().any(|definition| {
             definition
                 .plug_category
@@ -561,7 +575,7 @@ pub fn instance_matches_plug_names(query: &InstanceSearchQuery, plugs: &[ItemDef
                 .iter()
                 .any(|plug| is_armor_archetype(plug) && term.matches_name(&plug.name))
         })
-        && query.mod_name.as_ref().is_none_or(|term| {
+        && query.mod_name.iter().flatten().all(|term| {
             plugs.iter().any(|definition| {
                 is_named_armor_mod(definition) && term.matches_name(&definition.name)
             })
@@ -872,6 +886,74 @@ mod tests {
     }
 
     #[test]
+    fn repeated_plug_terms_require_each_term_and_available_is_per_term() {
+        use super::{instance_matches_available_names, instance_matches_plug_names};
+        let mut filter = instance_query(ItemHashFilter::Any, None);
+        filter.perk_name = Some(vec![term("rampage"), term("kill clip")]);
+        let mut rampage = definition(10, "Rampage");
+        rampage.plug_category = Some("frames".into());
+        let mut kill_clip = definition(11, "Kill Clip");
+        kill_clip.plug_category = Some("frames".into());
+        assert!(!instance_matches_plug_names(&filter, &[rampage.clone()]));
+        assert!(!instance_matches_plug_names(&filter, &[kill_clip.clone()]));
+        assert!(instance_matches_plug_names(
+            &filter,
+            &[rampage.clone(), kill_clip.clone()]
+        ));
+        assert!(!instance_matches_available_names(
+            &filter,
+            &[rampage.clone()],
+            &[kill_clip.clone()]
+        ));
+        filter.include_available = true;
+        assert!(instance_matches_available_names(
+            &filter,
+            &[rampage],
+            &[kill_clip]
+        ));
+        filter.perk_name = Some(vec![term("rampage"), term("rampage")]);
+        let mut rampage = definition(10, "Rampage");
+        rampage.plug_category = Some("frames".into());
+        assert!(instance_matches_plug_names(&filter, &[rampage]));
+        filter.perk_name = None;
+        filter.mod_name = Some(vec![term("siphon"), term("targeting")]);
+        let mut siphon = definition(20, "Siphon");
+        siphon.plug_category = Some("enhancements.v2_head".into());
+        let mut targeting = definition(21, "Targeting");
+        targeting.plug_category = Some("enhancements.v2_head".into());
+        assert!(!instance_matches_plug_names(&filter, &[siphon.clone()]));
+        assert!(instance_matches_available_names(
+            &filter,
+            &[siphon.clone()],
+            &[targeting.clone()]
+        ));
+        filter.archetype = Some(term("paragon"));
+        let mut paragon = definition(30, "Paragon");
+        paragon.plug_category = Some("armor_archetypes".into());
+        assert!(!instance_matches_available_names(
+            &filter,
+            &[siphon.clone()],
+            &[targeting.clone(), paragon.clone()]
+        ));
+        assert!(instance_matches_available_names(
+            &filter,
+            &[siphon, paragon],
+            &[targeting]
+        ));
+        filter.mod_name = Some(vec![term("siphon"); 9]);
+        assert_eq!(
+            filter.validate().unwrap_err().to_string(),
+            "invalid mod: at most 8 mod names"
+        );
+        filter.mod_name = None;
+        filter.perk_name = Some(vec![term("rampage"); 9]);
+        assert_eq!(
+            filter.validate().unwrap_err().to_string(),
+            "invalid perk: at most 8 perk names"
+        );
+    }
+
+    #[test]
     fn new_definition_filters_require_matching_attributes() {
         use crate::domain::{ClassType, DamageType, ItemSlot};
         let mut item = definition(7, "Solar weapon");
@@ -938,7 +1020,7 @@ mod tests {
         let mut armor = definition(7, "Exotic helmet");
         armor.slot = Some(ItemSlot::Helmet);
         let mut filter = instance_query(ItemHashFilter::Any, None);
-        filter.perk_name = Some(term("intrinsic"));
+        filter.perk_name = Some(vec![term("intrinsic")]);
         assert!(!instance_matches_with_definition(
             &filter,
             &item,
@@ -1022,7 +1104,7 @@ mod tests {
         let (_, mods) = super::inventory_plug_names(&armor, &[empty.clone(), real]);
         assert_eq!(mods, vec!["Harmonic Siphon".to_string()]);
         let mut filter = instance_query(ItemHashFilter::Any, None);
-        filter.mod_name = Some(term("empty mod socket"));
+        filter.mod_name = Some(vec![term("empty mod socket")]);
         assert!(!super::instance_matches_plug_names(&filter, &[empty]));
     }
 
@@ -1035,7 +1117,7 @@ mod tests {
         let mut plug = definition(10, "  Harmonic   SIPHON ");
         plug.plug_category = Some("enhancements.v2_head".into());
         let mut filter = instance_query(ItemHashFilter::Any, None);
-        filter.mod_name = Some(term("harmonic siphon"));
+        filter.mod_name = Some(vec![term("harmonic siphon")]);
         for slot in [
             ItemSlot::Helmet,
             ItemSlot::Gauntlets,
@@ -1107,7 +1189,7 @@ mod tests {
         let mut perk = definition(10, "  RAMPAGE  ");
         perk.plug_category = Some("frames".into());
         let mut filter = instance_query(ItemHashFilter::Any, None);
-        filter.perk_name = Some(term("rampage"));
+        filter.perk_name = Some(vec![term("rampage")]);
         assert!(super::instance_matches_perk_name(&filter, &[perk.clone()]));
         assert_eq!(
             super::weapon_perk_names(&[perk.clone()]),

@@ -266,13 +266,13 @@ pub struct SearchInventoryArgs {
     #[arg(long = "item-hash", value_name = "HASH")]
     pub item_hash: Vec<i64>,
 
-    /// Socketed weapon-perk name: exact first, then substring; typos get suggestions.
+    /// Weapon-perk name: exact first, then substring; repeat to require all (max 8).
     #[arg(long = "perk", value_name = "NAME")]
-    pub perk: Option<String>,
+    pub perk: Vec<String>,
 
-    /// Socketed armor-mod name: exact first, then substring; typos get suggestions.
+    /// Armor-mod name: exact first, then substring; repeat to require all (max 8).
     #[arg(long = "mod", value_name = "NAME")]
-    pub mod_name: Option<String>,
+    pub mod_name: Vec<String>,
 
     /// Socketed armor-archetype name: exact first, then substring; typos get suggestions.
     #[arg(long, value_name = "NAME")]
@@ -340,8 +340,8 @@ impl SearchInventoryArgs {
             && self.stat.is_empty()
             && self.item_hash.is_empty()
             && self.perk_hash.is_none()
-            && self.perk.is_none()
-            && self.mod_name.is_none()
+            && self.perk.is_empty()
+            && self.mod_name.is_empty()
             && self.archetype.is_none()
             && self.character.is_none();
         if no_instance_filter && !definitions.has_filters() && self.min_power.is_none() {
@@ -364,8 +364,8 @@ impl SearchInventoryArgs {
             include_available: self.include_available,
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
-            perk_name: search_term(self.perk.as_deref(), "--perk")?,
-            mod_name: search_term(self.mod_name.as_deref(), "--mod")?,
+            perk_name: search_terms(&self.perk, "--perk")?,
+            mod_name: search_terms(&self.mod_name, "--mod")?,
             archetype: search_term(self.archetype.as_deref(), "--archetype")?,
             stats: self
                 .stat
@@ -383,6 +383,20 @@ impl SearchInventoryArgs {
         query.validate().map_err(CliError::query_validation)?;
         Ok(Some(query))
     }
+}
+
+fn search_terms(
+    values: &[String],
+    argument: &'static str,
+) -> Result<Option<Vec<SearchTerm>>, CliError> {
+    if values.is_empty() {
+        return Ok(None);
+    }
+    values
+        .iter()
+        .map(|value| search_term(Some(value), argument).map(|term| term.expect("provided term")))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 // Infer the core enum types from the shared query rather than duplicating
@@ -585,6 +599,8 @@ impl CliError {
         let message = error.to_string();
         for (name, flag) in [
             ("limit", "--limit"),
+            ("perk", "--perk"),
+            ("mod", "--mod"),
             ("tag", "--tag"),
             ("stat", "--stat"),
             ("item-hash", "--item-hash"),
