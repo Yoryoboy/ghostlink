@@ -38,6 +38,48 @@ fn invalid_perk_names_are_rejected_by_both_surfaces() {
 }
 
 #[test]
+fn mod_only_search_builds_owned_query_and_rejects_invalid_names() {
+    use clap::Parser;
+    let cli = cli_command::Cli::try_parse_from([
+        "ghostlink",
+        "search-inventory",
+        "--mod",
+        "Harmonic Siphon",
+    ])
+    .unwrap()
+    .into_read_request()
+    .unwrap();
+    let cli_command::ReadRequest::SearchInventory(request) = cli else {
+        panic!("search request")
+    };
+    let query = request.instances.unwrap();
+    assert_eq!(
+        query.mod_name.unwrap(),
+        destiny_app::SearchTerm::new("harmonic siphon").unwrap()
+    );
+    for name in [
+        "".to_owned(),
+        "  ".to_owned(),
+        "a".repeat(257),
+        "bad\u{7}".to_owned(),
+    ] {
+        let cli =
+            cli_command::Cli::try_parse_from(["ghostlink", "search-inventory", "--mod", &name])
+                .unwrap();
+        assert!(cli.into_read_request().is_err());
+        let mcp: destiny_mcp::schema::SearchInventoryArgs =
+            serde_json::from_value(serde_json::json!({"mod_name": name})).unwrap();
+        assert!(mcp.into_request().is_err());
+    }
+    assert!(
+        serde_json::from_value::<destiny_mcp::schema::SearchInventoryArgs>(
+            serde_json::json!({"mod": "Harmonic Siphon"})
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn search_cli_mcp_request_parity() {
     use clap::Parser;
     use destiny_mcp::schema::SearchInventoryArgs;
@@ -45,6 +87,22 @@ fn search_cli_mcp_request_parity() {
 
     for (flags, args) in [
         (vec![], json!({})),
+        (
+            vec!["--mod", "  HARMONIC   SIPHON "],
+            json!({"mod_name": "  HARMONIC   SIPHON "}),
+        ),
+        (
+            vec!["--mod", "Harmonic Siphon", "--limit", "1"],
+            json!({"mod_name": "Harmonic Siphon", "limit": 1}),
+        ),
+        (
+            vec!["--mod", "Harmonic Siphon", "--perk", "Rampage"],
+            json!({"mod_name": "Harmonic Siphon", "perk_name": "Rampage"}),
+        ),
+        (
+            vec!["--mod", "Harmonic Siphon", "--character", "123"],
+            json!({"mod_name": "Harmonic Siphon", "instances": {"character_id": "123"}}),
+        ),
         (
             vec!["--perk", "  RAMPAGE "],
             json!({"perk_name": "  RAMPAGE "}),

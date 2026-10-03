@@ -377,6 +377,7 @@ fn search_json(result: &InventorySearchResult) -> String {
                 "definition": definition_json(&hit.definition),
                 "instance": instance_json(&hit.instance),
                 "perk_names": hit.perk_names,
+                "mods": hit.mod_names,
             }))
             .collect::<Vec<_>>(),
         "kind": "inventory_search",
@@ -483,6 +484,16 @@ fn instance_line(hit: &InventorySearchHit) -> String {
         parts.push(format!(
             "perks: {}",
             hit.perk_names
+                .iter()
+                .map(|name| sanitize(name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !hit.mod_names.is_empty() {
+        parts.push(format!(
+            "mods: {}",
+            hit.mod_names
                 .iter()
                 .map(|name| sanitize(name))
                 .collect::<Vec<_>>()
@@ -1224,6 +1235,22 @@ mod tests {
     }
 
     #[test]
+    fn search_outputs_socket_ordered_mod_names() {
+        let mut result = search_result();
+        result.hits[0].definition.slot = Some("helmet".parse().unwrap());
+        result.hits[0].mod_names = vec!["Harmonic Siphon".into(), "Safe\nMod".into()];
+        let human = super::search_human(&result);
+        assert!(human.contains("mods: Harmonic Siphon, Safe?Mod"));
+        assert!(!human.contains("perks:"));
+        let value: serde_json::Value = serde_json::from_str(&super::search_json(&result)).unwrap();
+        assert_eq!(
+            value["hits"][0]["mods"],
+            serde_json::json!(["Harmonic Siphon", "Safe\nMod"])
+        );
+        assert_eq!(value["hits"][0]["perk_names"], serde_json::json!([]));
+    }
+
+    #[test]
     fn search_outputs_definition_attributes_for_candidates_and_hits() {
         let mut result = search_result();
         let slot = "power".parse().unwrap();
@@ -1274,7 +1301,7 @@ mod tests {
     #[test]
     fn search_renders_one_bounded_json_object() {
         let expected = format!(
-            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"perk_names":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON}}}"#
+            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON}}}"#
         );
         assert_eq!(render_search(OutputMode::Json, &search_result()), expected);
     }

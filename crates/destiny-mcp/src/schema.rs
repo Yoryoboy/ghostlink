@@ -319,7 +319,7 @@ impl WeeklyResetOutput {
 /// Bounded `search_inventory` arguments.
 ///
 /// The definition query always runs. Any definition filter, minimum power,
-/// or explicit `instances` query also searches owned items using those filters.
+/// socketed perk/mod name, or explicit `instances` query also searches owned items using those filters.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchInventoryArgs {
@@ -358,6 +358,12 @@ pub struct SearchInventoryArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
     pub perk_name: Option<String>,
+
+    /// Exact case-insensitive socketed armor-mod name (not a substring or weapon perk).
+    /// Supplying this field searches owned instances even without other filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub mod_name: Option<String>,
 
     /// Minimum owned instance power (0..65535); items without power do not match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -539,6 +545,8 @@ pub struct InventorySearchHitView {
     pub instance: InstanceView,
     /// Resolved weapon-perk names in socket order, never plug hashes.
     pub perk_names: Vec<String>,
+    /// Resolved armor-mod names in socket order, never plug hashes.
+    pub mods: Vec<String>,
 }
 
 /// Structured result of `search_inventory`.
