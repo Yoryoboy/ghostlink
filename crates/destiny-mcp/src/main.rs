@@ -926,6 +926,7 @@ mod tests {
                 "get_loadouts",
                 "weekly_reset",
                 "weekly",
+                "get_subclass_options",
                 "move_item"
             ],
             "mutation must be default-enabled in the product composition"

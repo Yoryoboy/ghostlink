@@ -105,6 +105,14 @@ pub trait InventoryReadService {
     ) -> Result<crate::schema::GetArtifactOutput, McpError> {
         Err(McpError::new(ErrorCategory::DefinitionsUnavailable))
     }
+    /// Reads available subclass options with the shared status policy.
+    fn get_subclass_options(
+        &mut self,
+        _character: Option<&CharacterId>,
+        _element: Option<destiny_app::SubclassElement>,
+    ) -> Result<crate::schema::GetSubclassOptionsOutput, McpError> {
+        Err(McpError::new(ErrorCategory::DefinitionsUnavailable))
+    }
     /// Reads equipped subclasses for one selector, or all characters.
     fn get_subclass(
         &mut self,
@@ -160,6 +168,13 @@ impl<A, I, C> ArtifactReadService<A, I, C> {
 impl<A: destiny_app::ArtifactOperations, I: InventoryReadService, C: Clock> InventoryReadService
     for ArtifactReadService<A, I, C>
 {
+    fn get_subclass_options(
+        &mut self,
+        character: Option<&CharacterId>,
+        element: Option<destiny_app::SubclassElement>,
+    ) -> Result<crate::schema::GetSubclassOptionsOutput, McpError> {
+        self.inventory.get_subclass_options(character, element)
+    }
     fn get_artifact(
         &mut self,
         character: Option<&CharacterId>,
@@ -228,6 +243,13 @@ impl<L, I, C> LoadoutsReadService<L, I, C> {
 impl<L: destiny_app::LoadoutOperations, I: InventoryReadService, C: Clock> InventoryReadService
     for LoadoutsReadService<L, I, C>
 {
+    fn get_subclass_options(
+        &mut self,
+        character: Option<&CharacterId>,
+        element: Option<destiny_app::SubclassElement>,
+    ) -> Result<crate::schema::GetSubclassOptionsOutput, McpError> {
+        self.inventory.get_subclass_options(character, element)
+    }
     fn get_loadouts(
         &mut self,
         character: Option<&CharacterId>,
@@ -307,6 +329,13 @@ where
     R: destiny_app::WorldDefinitionRepository,
     I: InventoryReadService,
 {
+    fn get_subclass_options(
+        &mut self,
+        character: Option<&CharacterId>,
+        element: Option<destiny_app::SubclassElement>,
+    ) -> Result<crate::schema::GetSubclassOptionsOutput, McpError> {
+        self.inventory.get_subclass_options(character, element)
+    }
     fn get_subclass(
         &mut self,
         character: Option<&CharacterId>,
@@ -421,6 +450,13 @@ where
             })
             .map_err(McpError::from)?;
         weekly_output(&character, &weekly).map_err(WeeklyReadError::from)
+    }
+    fn get_subclass_options(
+        &mut self,
+        character: Option<&CharacterId>,
+        element: Option<destiny_app::SubclassElement>,
+    ) -> Result<crate::schema::GetSubclassOptionsOutput, McpError> {
+        self.inventory.get_subclass_options(character, element)
     }
     fn get_subclass(
         &mut self,
@@ -593,6 +629,18 @@ where
         + destiny_app::StatDefinitionRepository,
     C: Clock,
 {
+    fn get_subclass_options(
+        &mut self,
+        character: Option<&CharacterId>,
+        element: Option<destiny_app::SubclassElement>,
+    ) -> Result<crate::schema::GetSubclassOptionsOutput, McpError> {
+        let now = self.clock.now().map_err(McpError::from)?;
+        let result = self
+            .queries
+            .subclass_options(character, element, self.policy, now)
+            .map_err(McpError::from)?;
+        Ok(subclass_options_output(&result))
+    }
     fn get_subclass(
         &mut self,
         character: Option<&CharacterId>,
@@ -1124,6 +1172,123 @@ pub fn artifact_output(result: &destiny_app::ArtifactResult) -> crate::schema::G
                             .collect(),
                     }
                 }),
+            })
+            .collect(),
+    }
+}
+
+impl From<crate::schema::SubclassElementView> for destiny_app::SubclassElement {
+    fn from(value: crate::schema::SubclassElementView) -> Self {
+        use crate::schema::SubclassElementView as V;
+        match value {
+            V::Arc => Self::Arc,
+            V::Solar => Self::Solar,
+            V::Void => Self::Void,
+            V::Stasis => Self::Stasis,
+            V::Strand => Self::Strand,
+            V::Prismatic => Self::Prismatic,
+        }
+    }
+}
+
+impl crate::schema::GetSubclassOptionsArgs {
+    pub fn into_request(
+        self,
+    ) -> Result<(Option<CharacterId>, Option<destiny_app::SubclassElement>), McpError> {
+        let character = crate::schema::GetSubclassArgs {
+            character: self.character,
+        }
+        .into_request()?;
+        Ok((character, self.element.map(Into::into)))
+    }
+}
+
+/// Projects every option and raw flag without filtering or reordering.
+pub fn subclass_options_output(
+    result: &destiny_app::SubclassOptionsResult,
+) -> crate::schema::GetSubclassOptionsOutput {
+    use crate::schema::*;
+    GetSubclassOptionsOutput {
+        reference_character_id: result
+            .reference_character_id
+            .as_ref()
+            .map(|id| id.as_str().to_owned()),
+        characters: result
+            .characters
+            .iter()
+            .map(|character| CharacterSubclassOptionsView {
+                character_id: character.character_id.as_str().to_owned(),
+                class: character.class.clone(),
+                status_reliable: character.status_reliable,
+                elements: character
+                    .elements
+                    .iter()
+                    .map(|element| ElementOptionsView {
+                        element: element.element.map(|value| match value {
+                            destiny_app::SubclassElement::Arc => SubclassElementView::Arc,
+                            destiny_app::SubclassElement::Solar => SubclassElementView::Solar,
+                            destiny_app::SubclassElement::Void => SubclassElementView::Void,
+                            destiny_app::SubclassElement::Stasis => SubclassElementView::Stasis,
+                            destiny_app::SubclassElement::Strand => SubclassElementView::Strand,
+                            destiny_app::SubclassElement::Prismatic => {
+                                SubclassElementView::Prismatic
+                            }
+                        }),
+                        groups: element
+                            .groups
+                            .iter()
+                            .map(|group| OptionGroupView {
+                                kind: match group.kind {
+                                    destiny_app::SubclassPlugKind::Super => {
+                                        SubclassPlugKindView::Super
+                                    }
+                                    destiny_app::SubclassPlugKind::Aspect => {
+                                        SubclassPlugKindView::Aspect
+                                    }
+                                    destiny_app::SubclassPlugKind::Fragment => {
+                                        SubclassPlugKindView::Fragment
+                                    }
+                                    destiny_app::SubclassPlugKind::Grenade => {
+                                        SubclassPlugKindView::Grenade
+                                    }
+                                    destiny_app::SubclassPlugKind::Melee => {
+                                        SubclassPlugKindView::Melee
+                                    }
+                                    destiny_app::SubclassPlugKind::ClassAbility => {
+                                        SubclassPlugKindView::ClassAbility
+                                    }
+                                    destiny_app::SubclassPlugKind::Movement => {
+                                        SubclassPlugKindView::Movement
+                                    }
+                                    destiny_app::SubclassPlugKind::Transcendence => {
+                                        SubclassPlugKindView::Transcendence
+                                    }
+                                },
+                                options: group
+                                    .options
+                                    .iter()
+                                    .map(|option| SubclassOptionView {
+                                        plug_hash: option.plug_hash.value(),
+                                        name: option.name.clone(),
+                                        status: match option.status {
+                                            destiny_app::OptionStatus::Unlocked => {
+                                                OptionStatusView::Unlocked
+                                            }
+                                            destiny_app::OptionStatus::Locked => {
+                                                OptionStatusView::Locked
+                                            }
+                                            destiny_app::OptionStatus::Unknown => {
+                                                OptionStatusView::Unknown
+                                            }
+                                        },
+                                        can_insert: option.can_insert,
+                                        enabled: option.enabled,
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
             })
             .collect(),
     }
@@ -2238,6 +2403,24 @@ mod tests {
         hunter.class = Some("Hunter".into());
         let (shared, app) = fresh_components(vec![hunter, character("warlock")], Vec::new());
         let mut mcp = mcp_service(app);
+        let options = mcp.get_subclass_options(None, None).unwrap();
+        assert_eq!(options.characters.len(), 2);
+        let selected_options = mcp
+            .get_subclass_options(
+                Some(&CharacterId::new("hUnTeR")),
+                Some(destiny_app::SubclassElement::Arc),
+            )
+            .unwrap();
+        assert_eq!(
+            selected_options.characters,
+            vec![options.characters[0].clone()]
+        );
+        assert_eq!(
+            mcp.get_subclass_options(Some(&CharacterId::new("missing")), None)
+                .unwrap_err()
+                .code(),
+            "provider_validation"
+        );
         let all = mcp.get_subclass(None).unwrap();
         assert_eq!(all.characters.len(), 2);
         assert!(

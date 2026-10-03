@@ -12,6 +12,10 @@ mod output {
     }
 }
 
+#[allow(dead_code)]
+#[path = "../../destiny-cli/src/subclass_options_output.rs"]
+mod cli_subclass_options_output;
+
 #[path = "../../destiny-cli/src/subclass_output.rs"]
 mod cli_subclass_output;
 
@@ -394,6 +398,168 @@ fn subclass_cli_mcp_selector_parity_and_invalid_arguments() {
         .is_ok()
     );
     assert!(serde_json::from_value::<GetSubclassArgs>(serde_json::json!({"unknown": 1})).is_err());
+}
+
+#[test]
+fn subclass_options_cli_mcp_json_and_filter_parity() {
+    use clap::Parser;
+    use destiny_app::*;
+    use destiny_mcp::schema::GetSubclassOptionsArgs;
+    for selector in [None, Some("123"), Some("hUnTeR")] {
+        for element in [
+            None,
+            Some("arc"),
+            Some("solar"),
+            Some("void"),
+            Some("stasis"),
+            Some("strand"),
+            Some("prismatic"),
+        ] {
+            let mut argv = vec!["ghostlink", "--json", "subclass-options"];
+            if let Some(value) = selector {
+                argv.extend(["--character", value]);
+            }
+            if let Some(value) = element {
+                argv.extend(["--element", value]);
+            }
+            let cli = cli_command::Cli::try_parse_from(argv)
+                .unwrap()
+                .into_read_request()
+                .unwrap();
+            let cli_command::ReadRequest::SubclassOptions {
+                character_id,
+                element: filter,
+                locked,
+            } = cli
+            else {
+                panic!("options request")
+            };
+            let mcp: GetSubclassOptionsArgs = serde_json::from_value(
+                serde_json::json!({"character": selector, "element": element}),
+            )
+            .unwrap();
+            assert_eq!((character_id, filter), mcp.into_request().unwrap());
+            assert!(!locked);
+            let result = SubclassOptionsResult {
+                reference_character_id: Some(CharacterId::new("1")),
+                characters: vec![
+                    CharacterSubclassOptions {
+                        character_id: CharacterId::new("1"),
+                        class: Some("Hunter".into()),
+                        status_reliable: true,
+                        elements: vec![ElementOptions {
+                            element: filter,
+                            groups: [
+                                SubclassPlugKind::Super,
+                                SubclassPlugKind::ClassAbility,
+                                SubclassPlugKind::Movement,
+                                SubclassPlugKind::Melee,
+                                SubclassPlugKind::Grenade,
+                                SubclassPlugKind::Aspect,
+                                SubclassPlugKind::Fragment,
+                                SubclassPlugKind::Transcendence,
+                            ]
+                            .into_iter()
+                            .map(|kind| OptionGroup {
+                                kind,
+                                options: [
+                                    OptionStatus::Unlocked,
+                                    OptionStatus::Locked,
+                                    OptionStatus::Unknown,
+                                ]
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, status)| SubclassOption {
+                                    plug_hash: ItemHash::new(i as i64),
+                                    name: (i != 1).then(|| "Option".into()),
+                                    status,
+                                    can_insert: i == 0,
+                                    enabled: i != 1,
+                                })
+                                .collect(),
+                            })
+                            .collect(),
+                        }],
+                    },
+                    CharacterSubclassOptions {
+                        character_id: CharacterId::new("2"),
+                        class: None,
+                        status_reliable: false,
+                        elements: vec![],
+                    },
+                ],
+            };
+            assert_eq!(
+                destiny_mcp::service::subclass_options_output(&result)
+                    .into_call_tool_result()
+                    .structured_content
+                    .unwrap(),
+                cli_subclass_options_output::subclass_options_json(&result)
+            );
+        }
+    }
+    for value in ["", " ", "bad\u{7}"] {
+        assert!(
+            GetSubclassOptionsArgs {
+                character: Some(value.into()),
+                element: None
+            }
+            .into_request()
+            .is_err()
+        );
+    }
+    assert!(
+        GetSubclassOptionsArgs {
+            character: Some("a".repeat(513)),
+            element: None
+        }
+        .into_request()
+        .is_err()
+    );
+    assert!(
+        GetSubclassOptionsArgs {
+            character: Some("a".repeat(512)),
+            element: None
+        }
+        .into_request()
+        .is_ok()
+    );
+    for args in [
+        serde_json::json!({"locked": true}),
+        serde_json::json!({"element": "kinetic"}),
+        serde_json::json!({"unknown": 1}),
+    ] {
+        assert!(serde_json::from_value::<GetSubclassOptionsArgs>(args).is_err());
+    }
+    let empty = SubclassOptionsResult {
+        reference_character_id: None,
+        characters: vec![],
+    };
+    assert_eq!(
+        destiny_mcp::service::subclass_options_output(&empty)
+            .into_call_tool_result()
+            .structured_content
+            .unwrap(),
+        cli_subclass_options_output::subclass_options_json(&empty)
+    );
+}
+
+#[test]
+fn subclass_options_tool_has_closed_bounded_schema() {
+    let tool = destiny_mcp::schema::tool_specs()
+        .into_iter()
+        .find(|tool| tool.name == "get_subclass_options")
+        .expect("options tool is registered");
+    let schema = tool.schema_as_json_value();
+    assert_eq!(schema["additionalProperties"], false);
+    assert!(
+        schema["properties"]["character"]
+            .to_string()
+            .contains("512")
+    );
+    assert!(schema["properties"].get("locked").is_none());
+    assert!(schema.to_string().contains("prismatic"));
+    assert!(tool.output_schema.is_some());
 }
 
 #[test]

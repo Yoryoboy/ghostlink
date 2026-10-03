@@ -92,6 +92,7 @@ cargo run -p destiny-cli -- list-characters
 cargo run -p destiny-cli -- search-inventory --text gjallar --limit 5
 cargo run -p destiny-cli -- inspect-item 700000000000000001
 cargo run -p destiny-cli -- subclass --character hunter
+cargo run -p destiny-cli -- subclass-options --character hunter --element strand --locked
 ```
 
 Add the global `--json` flag to select machine output:
@@ -99,6 +100,24 @@ Add the global `--json` flag to select machine output:
 ```sh
 cargo run -p destiny-cli -- --json search-inventory --text gjallar --item-hash 1001
 ```
+
+### Available subclass options
+
+`ghostlink subclass-options [--character ID_OR_CLASS] [--element ELEMENT] [--locked]`
+lists supers, abilities, aspects and fragments. Omit `--character` for all
+characters, or select an exact id or unique hunter|titan|warlock class.
+Elements are arc, solar, void, stasis, strand and prismatic.
+`--locked` shows only locked options in text and cannot be combined with `--json`.
+JSON always includes all statuses (`unlocked`, `locked`, `unknown`) and raw
+`can_insert`/`enabled` flags, plus `reference_character_id` and per-character
+`status_reliable`.
+
+Status is reliable only for the most recently played character's **class**;
+other classes report `unknown`, including shared options. With no last-played
+reference, every class is unknown. **Open question:** `can_insert` may not match
+in-game unlocks even for the reference class (Hunter Strand Whirling Maelstrom
+and Threaded Specter need in-game verification). Treat status as provisional.
+Requires login, loaded Manifest definitions and a profile sync.
 
 ### Inventory filters
 
@@ -482,6 +501,7 @@ list_characters   list the signed-in account's characters
 search_inventory  search Manifest definitions and concrete instances
 inspect_item      inspect exactly one concrete instance by instance identifier
 get_subclass      show equipped subclass configurations per character
+get_subclass_options list available subclass options with unlock status
 get_artifact      read live seasonal artifact state and per-character perks
 get_loadouts      show saved in-game loadouts and configured equipment per character
 weekly_reset      show the current public weekly rotation (same data as the CLI)
@@ -522,6 +542,13 @@ It also accepts `tier` (exact stored tier, case-insensitive), `location`
 the CLI rules above. Both `limit` and `instances.limit` default to 100 and
 accept 1–1000. Search output includes `resolved.perk_terms`,
 `resolved.mod_terms` and, when sorting, `resolved.sort`.
+
+`get_subclass_options` accepts optional bounded `character` and `element`
+(arc|solar|void|stasis|strand|prismatic), but no `locked` input. For example:
+`{"character":"hunter","element":"strand"}`. Output matches
+`ghostlink --json subclass-options --character hunter --element strand` exactly.
+The status caveat and open `can_insert` question above apply to this tool too;
+raw `can_insert`/`enabled` flags are included.
 
 `get_subclass` accepts an optional `character` (exact id or unique class),
 with omission selecting all characters. Its structured output matches
