@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 12;
+pub(crate) const LATEST_VERSION: u32 = 13;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 12] = [
+const MIGRATIONS: [Migration; 13] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -114,7 +114,25 @@ const MIGRATIONS: [Migration; 12] = [
         up: SCHEMA_V12_UP,
         down: SCHEMA_V12_DOWN,
     },
+    Migration {
+        version: 13,
+        up: SCHEMA_V13_UP,
+        down: SCHEMA_V13_DOWN,
+    },
 ];
+
+// Legacy characters retain NULL until the next component-200 sync.
+const SCHEMA_V13_UP: &str = r#"
+ALTER TABLE characters ADD COLUMN date_last_played TEXT CHECK (
+    date_last_played IS NULL OR (
+        length(date_last_played) BETWEEN 1 AND 20
+        AND date_last_played NOT GLOB '*[^0-9]*'
+        AND (date_last_played = '0' OR date_last_played GLOB '[1-9]*')
+        AND (length(date_last_played) < 20 OR date_last_played <= '18446744073709551615')
+    )
+);
+"#;
+const SCHEMA_V13_DOWN: &str = "ALTER TABLE characters DROP COLUMN date_last_played;";
 
 const SCHEMA_V12_UP: &str = r#"
 CREATE TABLE subclass_plug_options (

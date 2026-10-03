@@ -700,6 +700,7 @@ fn character(id: &str) -> Character {
         race: None,
         gender: None,
         light: Some(if id == "warlock" { 2000 } else { 1900 }),
+        date_last_played: None,
     }
 }
 

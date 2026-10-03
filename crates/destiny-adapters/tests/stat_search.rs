@@ -188,6 +188,7 @@ fn seeded(stats: Vec<StatDefinition>) -> (SqliteStore, InMemorySearchRepository)
                 race: None,
                 gender: None,
                 light: None,
+                date_last_played: None,
             }],
             items: instances,
         })

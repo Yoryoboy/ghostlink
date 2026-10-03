@@ -558,6 +558,18 @@ fn decode_character(key: &str, value: &Value) -> Result<Character, AppError> {
             GENDER_NAMES.as_slice(),
         )?),
         light: decode_optional_u16(object.get("light"))?,
+        date_last_played: object
+            .get("dateLastPlayed")
+            .filter(|value| !value.is_null())
+            .map(|value| -> Result<Timestamp, AppError> {
+                let raw = value.as_str().ok_or_else(provider_validation)?;
+                let date =
+                    chrono::DateTime::parse_from_rfc3339(raw).map_err(|_| provider_validation())?;
+                Ok(Timestamp::new(
+                    u64::try_from(date.timestamp()).map_err(|_| provider_validation())?,
+                ))
+            })
+            .transpose()?,
     })
 }
 
@@ -928,6 +940,46 @@ mod tests {
         )
     }
 
+    #[test]
+    fn character_last_played_normalizes_dates_and_rejects_invalid_values() {
+        use super::decode_character;
+        let value = serde_json::json!({
+            "characterId": "1", "classType": 1, "raceType": 0, "genderType": 0,
+            "dateLastPlayed": "2024-01-01T01:00:00+01:00"
+        });
+        assert_eq!(
+            decode_character("1", &value).unwrap().date_last_played,
+            Some(Timestamp::new(1704067200))
+        );
+        for invalid in [
+            serde_json::json!(42),
+            serde_json::json!("bad"),
+            serde_json::json!("1960-01-01T00:00:00Z"),
+        ] {
+            let mut value = value.clone();
+            value["dateLastPlayed"] = invalid;
+            assert_eq!(
+                decode_character("1", &value).unwrap_err().category(),
+                ErrorCategory::ProviderValidation
+            );
+        }
+        let mut value = value;
+        value.as_object_mut().unwrap().remove("dateLastPlayed");
+        assert!(
+            decode_character("1", &value)
+                .unwrap()
+                .date_last_played
+                .is_none()
+        );
+        value["dateLastPlayed"] = Value::Null;
+        assert!(
+            decode_character("1", &value)
+                .unwrap()
+                .date_last_played
+                .is_none()
+        );
+    }
+
     fn fixture_value() -> Value {
         serde_json::from_slice(FIXTURE).expect("fixture is JSON")
     }
@@ -1281,6 +1333,7 @@ mod tests {
                     race: Some("Awoken".to_owned()),
                     gender: Some("Male".to_owned()),
                     light: Some(1810),
+                    date_last_played: None,
                 },
                 Character {
                     id: character_id("900000000000000002"),
@@ -1289,6 +1342,7 @@ mod tests {
                     race: Some("Human".to_owned()),
                     gender: Some("Female".to_owned()),
                     light: Some(1795),
+                    date_last_played: None,
                 },
             ],
             items: vec![

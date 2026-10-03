@@ -154,6 +154,7 @@ fn profile(
             race: Some("Awoken".into()),
             gender: Some("Female".into()),
             light: Some(1810),
+            date_last_played: None,
         }],
         items: vec![ItemInstance {
             available_plugs: Vec::new(),

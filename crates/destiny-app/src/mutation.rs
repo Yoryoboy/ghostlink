@@ -1516,6 +1516,7 @@ mod tests {
             race: None,
             gender: None,
             light: None,
+            date_last_played: None,
         }
     }
 

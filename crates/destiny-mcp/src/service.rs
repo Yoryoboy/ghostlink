@@ -1853,6 +1853,7 @@ mod tests {
     fn character(id: &str) -> Character {
         Character {
             id: CharacterId::new(id),
+            date_last_played: None,
             name: Some(format!("name-{id}")),
             class: None,
             race: None,
@@ -2672,6 +2673,7 @@ mod tests {
     fn warlock() -> Character {
         Character {
             id: CharacterId::new("warlock"),
+            date_last_played: None,
             name: Some("Warlock".to_owned()),
             class: None,
             race: None,
@@ -2683,6 +2685,7 @@ mod tests {
     fn hunter() -> Character {
         Character {
             id: CharacterId::new("hunter"),
+            date_last_played: None,
             name: Some("Hunter".to_owned()),
             class: None,
             race: None,

@@ -567,6 +567,7 @@ mod tests {
                 race: None,
                 gender: None,
                 light: Some(1810),
+                date_last_played: None,
             }],
             items,
         }

@@ -766,6 +766,16 @@ mod tests {
     }
 
     impl QueryOperations for RecordingService {
+        fn subclass_options(
+            &mut self,
+            _character_id: Option<&destiny_app::CharacterId>,
+            _element: Option<destiny_app::SubclassElement>,
+            _policy: FreshnessPolicy,
+            _now: Timestamp,
+        ) -> Result<destiny_app::SubclassOptionsResult, AppError> {
+            unreachable!("subclass options are not exposed by this runner yet")
+        }
+
         fn character_subclasses(
             &mut self,
             character_id: Option<&CharacterId>,
@@ -1043,6 +1053,7 @@ mod tests {
                 race: None,
                 gender: None,
                 light: Some(1_810),
+                date_last_played: None,
             }],
             metadata: metadata(FreshnessStatus::Fresh),
         }

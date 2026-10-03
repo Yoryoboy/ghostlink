@@ -372,7 +372,7 @@ fn subclass_options_validate_storage_and_match_in_memory_twin() {
 }
 
 #[test]
-fn migration_v12_preserves_v11_inventory() {
+fn migration_v13_preserves_v11_inventory_and_defaults_last_played() {
     let mut store = SqliteStore::open_in_memory().unwrap();
     store.migrate_to(11).unwrap();
     // Seed using SQL: the v11 schema predates subclass options.
@@ -385,8 +385,10 @@ fn migration_v12_preserves_v11_inventory() {
     store
         .migrate_to(12)
         .expect("upgrade to subclass option schema");
+    store.migrate_to(13).expect("upgrade to last-played schema");
     let snapshot = store.load_current().unwrap().unwrap();
     assert_eq!(snapshot.characters[0].name.as_deref(), Some("Nova"));
+    assert!(snapshot.characters[0].date_last_played.is_none());
     assert_eq!(snapshot.metadata.revision.value(), 1);
 }
 
@@ -446,6 +448,7 @@ fn full_input() -> InventorySnapshotInput {
                 race: Some("Awoken".into()),
                 gender: Some("Female".into()),
                 light: Some(u16::MAX),
+                date_last_played: Some(Timestamp::new(u64::MAX)),
             },
             Character {
                 id: "character-2".into(),
@@ -454,6 +457,7 @@ fn full_input() -> InventorySnapshotInput {
                 race: None,
                 gender: None,
                 light: Some(0),
+                date_last_played: None,
             },
         ],
         items: vec![
@@ -532,6 +536,7 @@ fn expected_characters() -> Vec<Character> {
             race: Some("Awoken".into()),
             gender: Some("Female".into()),
             light: Some(u16::MAX),
+            date_last_played: Some(Timestamp::new(u64::MAX)),
         },
         Character {
             id: "character-2".into(),
@@ -540,6 +545,7 @@ fn expected_characters() -> Vec<Character> {
             race: None,
             gender: None,
             light: Some(0),
+            date_last_played: None,
         },
     ]
 }

@@ -1349,6 +1349,7 @@ mod tests {
             race: Some("Awoken".to_string()),
             gender: Some("Female".to_string()),
             light: Some(1810),
+            date_last_played: None,
         }
     }
 
@@ -1360,6 +1361,7 @@ mod tests {
             race: None,
             gender: None,
             light: None,
+            date_last_played: None,
         }
     }
 

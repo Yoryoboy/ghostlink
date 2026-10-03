@@ -395,7 +395,7 @@ fn read_subclass_options(
 fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> {
     let mut statement = connection
         .prepare(
-            "SELECT character_id, name, class_name, race, gender, light \
+            "SELECT character_id, name, class_name, race, gender, light, date_last_played \
              FROM characters ORDER BY character_id",
         )
         .map_err(|_| storage_failure())?;
@@ -408,13 +408,15 @@ fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> 
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })
         .map_err(|_| storage_failure())?;
 
     let mut characters = Vec::new();
     for row in rows {
-        let (id, name, class, race, gender, light) = row.map_err(|_| storage_failure())?;
+        let (id, name, class, race, gender, light, date_last_played) =
+            row.map_err(|_| storage_failure())?;
         characters.push(Character {
             id: CharacterId::new(id),
             name,
@@ -422,6 +424,11 @@ fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> 
             race,
             gender,
             light: decode_optional_u16(light)?,
+            date_last_played: date_last_played
+                .as_deref()
+                .map(parse_decimal)
+                .transpose()?
+                .map(Timestamp::new),
         });
     }
     Ok(characters)
@@ -759,8 +766,8 @@ fn replace_projection(
     for character in &input.characters {
         connection
             .execute(
-                "INSERT INTO characters (character_id, name, class_name, race, gender, light) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO characters (character_id, name, class_name, race, gender, light, date_last_played) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     character.id.as_str(),
                     character.name,
@@ -768,6 +775,7 @@ fn replace_projection(
                     character.race,
                     character.gender,
                     character.light.map(i64::from),
+                    character.date_last_played.map(|date| encode_decimal(date.seconds())),
                 ],
             )
             .map_err(|_| storage_failure())?;

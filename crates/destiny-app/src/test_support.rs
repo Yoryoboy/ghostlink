@@ -1190,6 +1190,7 @@ mod tests {
                     race: Some("race-1".into()),
                     gender: Some("gender-1".into()),
                     light: Some(100),
+                    date_last_played: None,
                 },
                 Character {
                     id: "character-2".into(),
@@ -1198,6 +1199,7 @@ mod tests {
                     race: Some("race-2".into()),
                     gender: Some("gender-2".into()),
                     light: Some(200),
+                    date_last_played: None,
                 },
             ],
             items: vec![
