@@ -1,0 +1,54 @@
+# Unlocked subclass options (WU-031)
+
+## Objective and scope
+
+Expose which subclass options (supers, aspects, fragments, grenades, melees,
+class abilities, movement) are available per character class and element, and
+whether each is unlocked.
+
+Out of scope: unlocking/purchasing options, non-subclass plug sets (shaders,
+ornaments, mods).
+
+## Live evidence (2026-10-03)
+
+- `profilePlugSets` and `characterPlugSets` arrive with component 305, which
+  the profile sync already requests; the decoder ignores them today.
+- Profile plug sets: 924 sets; items `{ plugItemHash, canInsert, enabled }`.
+  Subclass plugs follow the `<class|shared>.<element>.<kind>` categories.
+- Character plug sets: per-character extras (e.g. `hunter.stasis.totems`,
+  `shared.stasis.grenades`).
+- `canInsert` is coherent for the Hunter (most recently played) but not for
+  Titan/Warlock (equipped Hammer of Sol reports `canInsert: false`).
+
+## Decisions
+
+- Decode plug sets during the existing profile sync; no new provider call.
+- Persist only subclass plugs (`classify_subclass_plug` != None, "Empty ...
+  Socket" placeholders excluded) in a new table (migration v12), with scope
+  (profile or character id), `can_insert`, `enabled`.
+- Status per option: `unlocked` / `locked` from `can_insert` only for the class
+  of the most recently played character (`dateLastPlayed`); other classes get
+  `unknown`. `shared.*` plugs (fragments, grenades) are evaluated the same way
+  as the most recent class.
+- Options are listed for a character's own class plus `shared.*`, grouped by
+  element and kind.
+
+## Constraints and acceptance
+
+- Sync stays bounded; snapshot publication remains atomic.
+- CLI/MCP parity; test-first; live smoke before closing provider-facing tasks.
+
+## Tasks
+
+- [ ] **SO-001 — Decode and persist subclass plug sets.** Sync decoder + domain + migration v12 + repository.
+- [ ] **SO-002 — Options query.** Per-character options grouped by element/kind with status.
+- [ ] **SO-003 — CLI command.** `subclass-options [--character] [--element]`, text and JSON.
+- [ ] **SO-004 — MCP tool and docs.** `get_subclass_options`, parity tests, README.
+
+## Progress
+
+- Branch `feature/subclass-options` stacked on `feature/loadouts`.
+
+## Next step
+
+SO-001.
