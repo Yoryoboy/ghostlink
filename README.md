@@ -119,10 +119,29 @@ Names are case-insensitive:
 | `--slot <NAME>` | kinetic, energy, power, helmet, gauntlets, chest, legs, classitem, other, unknown |
 | `--class <NAME>` | titan, hunter, warlock, any, unknown |
 | `--min-power <N>` | 0–65535 accepted; Edge of Fate power scale is 10–550 (soft cap 440); instances without power never match |
+| `--tier <NAME>` | Exact stored tier, e.g. Exotic; unknown names match nothing |
+| `--location <LOCATION>` | vault, character; combines with `--character` using AND |
+| `--equipped <BOOL>` | true, false; filters owned instances |
+| `--limit <N>` | 1–1000; default 100, bounds definition candidates and instance hits |
+| `--sort <Stat>[:asc\|desc]` | Sort owned hits by stat; descending by default |
 
 `--text`, `--type`, `--tag`, and the new definition filters also constrain owned
 hits. An unfiltered search returns definition candidates only. Text and JSON
-output include element, slot, and class where available.
+output include element, slot, and class where available. Location or equipped
+filters alone also search owned instances.
+
+Repeat `--perk` or `--mod` up to eight times per kind. Every term must match
+(AND); within one term, any resolved name matches. For example:
+
+```sh
+ghostlink search-inventory --perk "Kill Clip" --perk "Ricochet Rounds" --type "Auto Rifle"
+ghostlink search-inventory --type "Hand Cannon" --location vault --sort Range --limit 5
+ghostlink search-inventory --tier Exotic --location character
+ghostlink search-inventory --equipped true
+```
+
+Sorting happens before the limit. Items missing the stat sort last in either
+direction; ties use instance identifier order. Ambiguous stat names are rejected.
 
 MCP `search_inventory` accepts `element`, `slot`, `class_type`, and `min_power`
 at the top level. Its optional `instances` object also accepts `min_power`;
@@ -167,9 +186,9 @@ after the automatic schema-v10 migration; archetype matching remains socketed-on
 
 ### Name matching rules
 
-`--perk`, `--mod`, `--archetype` and names in `--stat` resolve against the
-loaded Manifest catalog **before** searching inventory. Matching ignores case
-and trims/collapses whitespace:
+`--perk`, `--mod`, `--archetype` and names in `--stat` and `--sort` resolve
+against the loaded Manifest catalog **before** searching inventory. Each repeated
+term resolves independently. Matching ignores case and trims/collapses whitespace:
 
 1. An exact name wins, without including longer names.
 2. Otherwise, a substring selects all distinct matching names of that kind
@@ -182,12 +201,17 @@ ghostlink search-inventory --perk ramp    # selects valid weapon-perk names cont
 ghostlink search-inventory --perk rampge  # error: unknown perk name "rampge"; did you mean: Rampage, ...
 ```
 
-Text reports `matched perk: Rampage` (or a comma-separated list). CLI JSON and
-MCP both include `resolved`, with requested `perk`, `mod`, `archetype` arrays
-and a `stats` map from normalized input to matched names, for example
-`{"perk":["Rampage"],"stats":{"cla":["Class"]}}`. Items must carry **any**
-resolved name for each filter; every separate stat condition must still hold.
-Catalogs are kind-specific: shaders never become perk or archetype matches.
+Text reports one `matched perk: Rampage` (or a comma-separated list) per term,
+and similarly `matched mod:`. CLI JSON and MCP both include `resolved`, with
+flat `perk`, `mod`, `archetype` arrays and a `stats` map from normalized input
+to matched names, for example `{"perk":["Rampage"],"stats":{"cla":["Class"]}}`.
+`resolved.perk_terms` and `resolved.mod_terms` preserve each term's resolved
+alternatives as arrays in input order. Items must carry **any** resolved name
+within each term, and **every** term and separate stat condition must hold.
+`--sort` uses the same resolution but requires one distinct display name;
+JSON/MCP add `resolved.sort` with `name` and `order`, and text reports
+`sorted by: Range (desc)`. Catalogs are kind-specific: shaders never become
+perk or archetype matches.
 
 ### Armor archetypes (`--archetype`)
 
@@ -253,9 +277,11 @@ ghostlink --json search-inventory --stat "Class<=35" --stat "Super=0"
 ```
 
 Repeat `--stat "<Name><op><N>"` up to eight times; every condition must hold.
-Operators are `>=` (at least), `<=` (at most), and `=` (equals), with signed
-integer values. Names use the catalog matching rules above. Quote comparisons to protect them from shell redirection. A stat
-filter alone searches owned items; an item missing that stat does not match.
+Operators are `>=` (at least), `<=` (at most), `>` (strictly greater), `<`
+(strictly less), and `=` (equals), with signed integer values. Names use the
+catalog matching rules above. Quote comparisons to protect them from shell
+redirection. A stat filter alone searches owned items; an item missing that
+stat does not match.
 Names come from the Manifest, and an unknown name is an input error. If stat
 definitions are not loaded, run `ghostlink sync-manifest`.
 
@@ -266,6 +292,15 @@ in stable name-then-hash order (unnamed stats are omitted), as `stats: Class
 MCP `search_inventory` accepts the same comparisons in its `stats` array.
 Stats appear after the next profile sync (the next stale inventory read
 refreshes the stored profile projection).
+
+### Inspect one owned item
+
+`ghostlink inspect-item <INSTANCE_ID>` shows named socketed perks and mods,
+the armor archetype, available perks/mods and named stats where present, using
+the same enrichment as search hits. Raw perk component state is separate under
+`perk states:`. CLI JSON exposes `perk_names`, `mod_names`, `mods` (the same
+names as `mod_names`), `archetype`, `available_perks`, `available_mods` and
+`stats` (`{name, value}` entries), alongside the definition and instance state.
 
 ### Weekly reset
 
@@ -348,8 +383,10 @@ and rejected with `--json`):
   is the typed `item_not_found` outcome (exit 32), never an empty success.
 - Failures write exactly one sanitized line to stderr (human) or one sanitized
   `{"error":{"code":"...","message":"..."}}` object (JSON) and never echo a
-  rejected argument, credential, header, raw provider response, or membership
-  ID.
+  rejected argument value, credential, header, raw provider response, or
+  membership ID. Invalid arguments keep code `invalid_request` and exit 2;
+  the message names the argument and reason, for example
+  `invalid --limit: must be between 1 and 1000`, without echoing its value.
 - Validation happens before any service call, so invalid arguments make no
   provider or repository request. Exit codes follow the stable matrix in
   `odd/tasks/destiny-cli-read-journey.md`.
@@ -424,6 +461,23 @@ runtime failure is a sanitized message written to stderr; nothing else is writte
 to stdout. A missing stored credential fails closed with `authorization is
 required`, a legacy raw-material credential with `reauthorization is required`,
 and neither path guesses an expiry or falls back to an environment value.
+
+### Inventory search and inspection
+
+`search_inventory` accepts top-level `perk_names` and `mod_names` arrays in
+addition to the existing singular `perk_name` and `mod_name`. Terms combine
+with AND, including the singular field, with a shared cap of eight terms per
+kind. Each term resolves independently; any resolved name within it matches.
+It also accepts `tier` (exact stored tier, case-insensitive), `location`
+(`"vault"` or `"character"`), `equipped` (boolean), and `sort`
+(`"Stat[:asc|desc]"`, descending by default). Sorting and name resolution follow
+the CLI rules above. Both `limit` and `instances.limit` default to 100 and
+accept 1–1000. Search output includes `resolved.perk_terms`,
+`resolved.mod_terms` and, when sorting, `resolved.sort`.
+
+`inspect_item` returns the same enriched names as CLI inspection:
+`perk_names`, `mod_names`, `mods`, `archetype`, `available_perks`,
+`available_mods` and `stats`, alongside the definition, instance and metadata.
 
 ### Offline stdio integration test
 
