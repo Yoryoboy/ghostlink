@@ -9,6 +9,7 @@
 
 use std::fmt;
 
+use clap::builder::TypedValueParser;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use destiny_app::auth_ux::AuthorizationMode;
@@ -93,6 +94,20 @@ impl Cli {
             Command::InspectItem(arguments) => {
                 arguments.into_request().map(ReadRequest::InspectItem)
             }
+            Command::SubclassOptions(arguments) => {
+                if self.json && arguments.locked {
+                    return Err(CliError::invalid_request());
+                }
+                let character_id = SubclassArgs {
+                    character: arguments.character,
+                }
+                .into_request()?;
+                Ok(ReadRequest::SubclassOptions {
+                    character_id,
+                    element: arguments.element,
+                    locked: arguments.locked,
+                })
+            }
             Command::Subclass(arguments) => arguments.into_request().map(ReadRequest::Subclass),
             // A `login` command line carries no read, and the hidden `callback`
             // handler is not a read either, so both report the stable
@@ -138,6 +153,10 @@ pub enum Command {
     /// Show equipped subclass configurations for one or all characters.
     #[command(name = "subclass")]
     Subclass(SubclassArgs),
+
+    /// Show available subclass options and their unlock status.
+    #[command(name = "subclass-options")]
+    SubclassOptions(SubclassOptionsArgs),
 
     /// Show seasonal artifact points, power, and active perks.
     #[command(name = "artifact")]
@@ -582,6 +601,23 @@ pub struct SubclassArgs {
     pub character: Option<String>,
 }
 
+/// Arguments for `subclass-options`; unlock status may be unknown for other classes.
+#[derive(Debug, Args)]
+pub struct SubclassOptionsArgs {
+    /// Exact ID or hunter|titan|warlock (case-insensitive, unique class).
+    #[arg(long, value_name = "ID_OR_CLASS")]
+    pub character: Option<String>,
+
+    /// Filter by subclass element.
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["arc", "solar", "void", "stasis", "strand", "prismatic"])
+        .map(|value| value.parse::<destiny_app::SubclassElement>().expect("validated subclass element")))]
+    pub element: Option<destiny_app::SubclassElement>,
+
+    /// Show only locked options for characters with reliable status (text only).
+    #[arg(long, conflicts_with = "json")]
+    pub locked: bool,
+}
+
 impl SubclassArgs {
     fn into_request(self) -> Result<Option<CharacterId>, CliError> {
         self.character
@@ -686,6 +722,52 @@ mod subclass_tests {
     }
 
     #[test]
+    fn subclass_options_parses_filters_and_rejects_invalid_combinations() {
+        for args in [
+            vec!["ghostlink", "subclass-options"],
+            vec![
+                "ghostlink",
+                "subclass-options",
+                "--character",
+                "Hunter",
+                "--element",
+                "prismatic",
+                "--locked",
+            ],
+            vec![
+                "ghostlink",
+                "--json",
+                "subclass-options",
+                "--character",
+                "123",
+            ],
+        ] {
+            assert!(
+                Cli::try_parse_from(args)
+                    .unwrap()
+                    .into_read_request()
+                    .is_ok()
+            );
+        }
+        for element in ["arc", "solar", "void", "stasis", "strand", "prismatic"] {
+            assert!(
+                Cli::try_parse_from(["ghostlink", "subclass-options", "--element", element])
+                    .is_ok()
+            );
+        }
+        for args in [
+            vec!["ghostlink", "subclass-options", "--element", "invalid"],
+            vec!["ghostlink", "--json", "subclass-options", "--locked"],
+            vec!["ghostlink", "subclass-options", "--locked", "--json"],
+        ] {
+            assert!(match Cli::try_parse_from(args) {
+                Err(_) => true,
+                Ok(cli) => cli.into_read_request().is_err(),
+            });
+        }
+    }
+
+    #[test]
     fn subclass_parses_optional_character() {
         for (args, expected) in [
             (vec!["ghostlink", "subclass"], None),
@@ -749,6 +831,11 @@ pub enum ReadRequest {
     SearchInventory(SearchInventoryRequest),
     InspectItem(InspectItemRequest),
     Subclass(Option<CharacterId>),
+    SubclassOptions {
+        character_id: Option<CharacterId>,
+        element: Option<destiny_app::SubclassElement>,
+        locked: bool,
+    },
     Artifact {
         character_id: Option<CharacterId>,
     },

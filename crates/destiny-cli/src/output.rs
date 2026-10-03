@@ -189,6 +189,14 @@ pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult)
     }
 }
 
+#[cfg(test)]
+#[path = "subclass_options_output_tests.rs"]
+mod subclass_options_tests;
+
+#[path = "subclass_options_output.rs"]
+mod subclass_options_output;
+pub use subclass_options_output::{render_subclass_options, subclass_options_json};
+
 #[path = "subclass_output.rs"]
 mod subclass_output;
 pub use subclass_output::subclass_json;
