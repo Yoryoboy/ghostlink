@@ -263,6 +263,10 @@ pub struct SearchInventoryArgs {
     #[arg(long = "perk", value_name = "NAME")]
     pub perk: Option<String>,
 
+    /// Exact case-insensitive socketed armor-mod name.
+    #[arg(long = "mod", value_name = "NAME")]
+    pub mod_name: Option<String>,
+
     /// Restrict instance matches to one exact perk hash.
     #[arg(long = "perk-hash", value_name = "HASH")]
     pub perk_hash: Option<u32>,
@@ -327,6 +331,7 @@ impl SearchInventoryArgs {
         let no_instance_filter = self.item_hash.is_empty()
             && self.perk_hash.is_none()
             && self.perk.is_none()
+            && self.mod_name.is_none()
             && self.character.is_none();
         if no_instance_filter && !definitions.has_filters() && self.min_power.is_none() {
             return Ok(None);
@@ -348,6 +353,7 @@ impl SearchInventoryArgs {
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
             perk_name: search_term(self.perk.as_deref())?,
+            mod_name: search_term(self.mod_name.as_deref())?,
             character_id,
             definitions: definitions
                 .has_filters()

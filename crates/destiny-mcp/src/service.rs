@@ -672,8 +672,17 @@ impl SearchInventoryArgs {
             .map(SearchTerm::new)
             .transpose()
             .map_err(McpError::from)?;
+        let mod_name = self
+            .mod_name
+            .as_deref()
+            .map(SearchTerm::new)
+            .transpose()
+            .map_err(McpError::from)?;
         if instances.is_none()
-            && (definitions.has_filters() || self.min_power.is_some() || perk_name.is_some())
+            && (definitions.has_filters()
+                || self.min_power.is_some()
+                || perk_name.is_some()
+                || mod_name.is_some())
         {
             instances = Some(
                 InstanceQueryArgs {
@@ -689,6 +698,7 @@ impl SearchInventoryArgs {
                 .then(|| Box::new(definitions.clone()));
             query.min_power = query.min_power.max(self.min_power);
             query.perk_name = perk_name;
+            query.mod_name = mod_name;
         }
 
         Ok(SearchInventoryRequest {
@@ -722,6 +732,7 @@ impl InstanceQueryArgs {
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
             perk_name: None,
+            mod_name: None,
             character_id: self.character_id.map(CharacterId::new),
             definitions: None,
             min_power: self.min_power,
@@ -809,6 +820,7 @@ pub fn search_inventory_output(result: &InventorySearchResult) -> SearchInventor
                 definition: definition_view(&hit.definition),
                 instance: instance_view(&hit.instance),
                 perk_names: hit.perk_names.clone(),
+                mods: hit.mod_names.clone(),
             })
             .collect(),
         metadata: metadata_view(&result.metadata),
@@ -1416,6 +1428,7 @@ mod tests {
         SearchInventoryArgs {
             text: text.map(str::to_owned),
             perk_name: None,
+            mod_name: None,
             item_type: None,
             tags: tags.into_iter().map(str::to_owned).collect(),
             element: None,
@@ -1436,6 +1449,7 @@ mod tests {
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {
         SearchInventoryArgs {
             perk_name: None,
+            mod_name: None,
             element: None,
             slot: None,
             class_type: None,
@@ -1639,6 +1653,7 @@ mod tests {
         let args = SearchInventoryArgs {
             text: Some("gjallar".into()),
             perk_name: None,
+            mod_name: None,
             item_type: None,
             element: None,
             slot: None,
@@ -1691,6 +1706,30 @@ mod tests {
         for hit in &output.hits {
             assert_eq!(hit.definition.hash, hit.instance.item_hash);
         }
+    }
+
+    #[test]
+    fn search_output_projects_mod_names_in_socket_order() {
+        let (_shared, mut app) = fresh_components(
+            Vec::new(),
+            vec![instance("inst-a", 1, ItemLocation::Vault, vec![])],
+        );
+        let mut result = app
+            .search_inventory(
+                &instance_search_args(None).into_request().unwrap(),
+                TTL,
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(result.hits.len(), 1);
+        result.hits[0].perk_names.clear();
+        result.hits[0].mod_names = vec!["Harmonic Siphon".into(), "Ashes to Assets".into()];
+        let value = serde_json::to_value(search_inventory_output(&result)).unwrap();
+        assert_eq!(
+            value["hits"][0]["mods"],
+            serde_json::json!(["Harmonic Siphon", "Ashes to Assets"])
+        );
+        assert_eq!(value["hits"][0]["perk_names"], serde_json::json!([]));
     }
 
     #[test]
@@ -1836,6 +1875,7 @@ mod tests {
                 limit: MAX_SEARCH_LIMIT,
             }),
             perk_name: None,
+            mod_name: None,
         };
         let output = mcp
             .search_inventory(&args.into_request().expect("valid arguments"))
@@ -1878,6 +1918,7 @@ mod tests {
                 limit: MAX_SEARCH_LIMIT,
             }),
             perk_name: None,
+            mod_name: None,
         };
         let request = args.into_request().expect("valid arguments");
 

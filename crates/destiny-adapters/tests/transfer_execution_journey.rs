@@ -743,6 +743,7 @@ fn instance_query(item_hashes: ItemHashFilter, limit: usize) -> InstanceSearchQu
         item_hashes,
         perk_hash: None,
         perk_name: None,
+        mod_name: None,
         character_id: None,
         definitions: None,
         min_power: None,

@@ -107,6 +107,7 @@ Filter Manifest candidates and owned hits by definition attributes and power:
 ghostlink search-inventory --type "Hand Cannon" --element solar --min-power 400
 ghostlink search-inventory --slot helmet --class hunter
 ghostlink search-inventory --perk Rampage
+ghostlink search-inventory --mod "Harmonic Siphon"
 ghostlink --json search-inventory --element arc --slot energy
 ```
 
@@ -137,6 +138,17 @@ collapsing whitespace: `Rampage` does not match `Rampage Spec`. Unknown plug
 definitions never match. Hits include resolved weapon-perk names in socket
 order in text, JSON (`perk_names`) and MCP output. MCP accepts the same filter
 as `perk_name`.
+
+`--perk` matches only weapons; `--mod NAME` matches only armor (helmet,
+gauntlets, chest, legs and class item). Mod matching uses the same exact,
+case-insensitive, whitespace-normalized rules. Included armor-mod categories
+are `enhancements.v2_*`, `enhancements.universal`, `enhancements.season_*`
+and `enhancements.raid_*` (standard, universal, seasonal and raid mods).
+Masterworks, ghost mods, armor-tier tuning plugs and cosmetics do not count.
+Armor hits show socket-ordered mod names with a `mods:` label in text and a
+`mods` array in JSON and MCP output; weapon perks remain separate. MCP accepts
+`mod_name`. Existing databases pick up armor mods after the next profile sync
+(`ghostlink sync`); no migration is needed.
 
 ### Manifest definitions
 

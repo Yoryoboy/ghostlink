@@ -170,7 +170,7 @@ where
             }
         }
         for item in &mut candidate.items {
-            item.retain_weapon_perk_plugs(|hash| {
+            item.retain_searchable_plugs(|hash| {
                 categories
                     .get(&hash)
                     .and_then(|category| category.as_deref())
@@ -336,6 +336,7 @@ mod tests {
                 (61, Some("shader")),
                 (63, None),
                 (64, Some("shader")),
+                (65, Some("enhancements.v2_head")),
             ]
             .into_iter()
             .map(|(hash, category)| ItemDefinition {
@@ -363,7 +364,7 @@ mod tests {
             let shared = gateway();
             for cosmetic in [61, 64] {
                 let mut candidate = inventory(&resolved, NOW, 1);
-                candidate.items[0].plugs = [60, cosmetic, 62, 63, 60]
+                candidate.items[0].plugs = [60, cosmetic, 65, 62, 63, 60]
                     .into_iter()
                     .map(|hash| PlugSummary {
                         plug_hash: ItemHash::new(hash),
@@ -385,7 +386,7 @@ mod tests {
                     .map(|plug| plug.plug_hash.value())
                     .collect();
                 // Known non-plugs (category None) are dropped, missing definitions kept.
-                assert_eq!(hashes, [60, 62, 60]);
+                assert_eq!(hashes, [60, 65, 62, 60]);
             }
         }
 
