@@ -40,7 +40,7 @@ ornaments, mods).
 
 ## Tasks
 
-- [ ] **SO-001 — Decode and persist subclass plug sets.** Sync decoder + domain + migration v12 + repository.
+- [x] **SO-001 — Decode and persist subclass plug sets.** `PlugSetEntry`/`PlugSetScope`, migration v12 `subclass_plug_options`. RED→GREEN; workspace 1184, clippy clean; live sync stored 304 options (181 can_insert). Commit `f252ac2`.
 - [ ] **SO-002 — Options query.** Per-character options grouped by element/kind with status.
 - [ ] **SO-003 — CLI command.** `subclass-options [--character] [--element]`, text and JSON.
 - [ ] **SO-004 — MCP tool and docs.** `get_subclass_options`, parity tests, README.
@@ -51,4 +51,4 @@ ornaments, mods).
 
 ## Next step
 
-SO-001.
+SO-002 (pending: canInsert semantics check with user).
