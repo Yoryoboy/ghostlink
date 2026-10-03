@@ -951,6 +951,20 @@ pub fn inspect_item_output(
     match resolution {
         Resolution::Missing => Ok(InspectItemOutput::Missing),
         Resolution::Unique(inspection) => Ok(InspectItemOutput::Found(Box::new(FoundInspection {
+            perk_names: inspection.perk_names.clone(),
+            mod_names: inspection.mod_names.clone(),
+            mods: inspection.mod_names.clone(),
+            archetype: inspection.archetype.clone(),
+            available_perks: inspection.available_perks.clone(),
+            available_mods: inspection.available_mods.clone(),
+            stats: inspection
+                .stats
+                .iter()
+                .map(|stat| crate::schema::NamedStatView {
+                    name: stat.name.clone(),
+                    value: stat.value,
+                })
+                .collect(),
             definition: definition_view(&inspection.definition),
             instance: instance_view(&inspection.instance),
             metadata: metadata_view(&inspection.metadata),
@@ -1967,6 +1981,18 @@ mod tests {
         let output = mcp.inspect_item(&request).expect("mcp inspection");
 
         assert_eq!(output, expected);
+        let value = serde_json::to_value(&output).unwrap();
+        for field in [
+            "perk_names",
+            "mod_names",
+            "mods",
+            "available_perks",
+            "available_mods",
+            "stats",
+        ] {
+            assert_eq!(value[field], serde_json::json!([]), "{field}");
+        }
+        assert_eq!(value["archetype"], serde_json::Value::Null);
         match output {
             InspectItemOutput::Found(found) => {
                 assert_eq!(found.definition.hash, 1);

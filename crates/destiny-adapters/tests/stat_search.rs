@@ -62,6 +62,19 @@ fn definitions(
             skipped_count: 0,
         },
     };
+    let mut items = items;
+    for (hash, name, category) in [
+        (60, "Harmonic Siphon", "enhancements.v2_head"),
+        (61, "Heavy Ammo Finder", "enhancements.v2_head"),
+        (62, "Specialist", "armor_archetypes"),
+    ] {
+        let mut plug = items.definitions.definitions[0].clone();
+        plug.hash = ItemHash::new(hash);
+        plug.name = name.into();
+        plug.slot = None;
+        plug.plug_category = Some(category.into());
+        items.definitions.definitions.push(plug);
+    }
     (items, world)
 }
 fn query(conditions: &[&str]) -> InstanceSearchQuery {
@@ -119,7 +132,20 @@ fn seeded(stats: Vec<StatDefinition>) -> (SqliteStore, InMemorySearchRepository)
     ]
     .into_iter()
     .map(|(id, stats)| ItemInstance {
-        available_plugs: Vec::new(),
+        available_plugs: vec![
+            AvailablePlug {
+                socket_index: 0,
+                plug_hash: ItemHash::new(60),
+            },
+            AvailablePlug {
+                socket_index: 0,
+                plug_hash: ItemHash::new(61),
+            },
+            AvailablePlug {
+                socket_index: 0,
+                plug_hash: ItemHash::new(99),
+            },
+        ],
         instance_id: id.into(),
         item_hash: ItemHash::new(1),
         location: if id == "b" {
@@ -132,7 +158,13 @@ fn seeded(stats: Vec<StatDefinition>) -> (SqliteStore, InMemorySearchRepository)
         locked: false,
         power: None,
         perks: vec![],
-        plugs: vec![],
+        plugs: [60, 62, 99]
+            .into_iter()
+            .map(|hash| PlugSummary {
+                plug_hash: ItemHash::new(hash),
+                enabled: true,
+            })
+            .collect(),
         stats,
     })
     .collect::<Vec<_>>();
@@ -309,6 +341,47 @@ fn stat_names_are_validated_before_sync_and_named_hits_are_ordered() {
                 value: 20
             }
         ]
+    );
+    let inspection = app
+        .inspect_item(
+            &InspectItemRequest {
+                instance_id: "b".into(),
+            },
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(1),
+        )
+        .unwrap();
+    let Resolution::Unique(inspected) = &inspection else {
+        panic!("missing inspection")
+    };
+    assert_eq!(inspected.stats, result.hits[0].stats);
+    assert_eq!(inspected.mod_names, ["Harmonic Siphon"]);
+    assert_eq!(inspected.archetype.as_deref(), Some("Specialist"));
+    assert_eq!(inspected.available_mods, ["Heavy Ammo Finder"]);
+    let text =
+        destiny_cli::output::render_inspection(destiny_cli::output::OutputMode::Human, inspected);
+    assert!(text.contains("stats: Class 5, Class 35, Health 20"));
+    let inspect_json: serde_json::Value = serde_json::from_str(
+        &destiny_cli::output::render_inspection(destiny_cli::output::OutputMode::Json, inspected),
+    )
+    .unwrap();
+    let inspect_mcp =
+        serde_json::to_value(destiny_mcp::service::inspect_item_output(&inspection).unwrap())
+            .unwrap();
+    for field in [
+        "perk_names",
+        "mod_names",
+        "mods",
+        "archetype",
+        "available_perks",
+        "available_mods",
+        "stats",
+    ] {
+        assert_eq!(inspect_json[field], inspect_mcp[field], "{field}");
+    }
+    assert_eq!(
+        inspect_json["stats"],
+        serde_json::json!([{"name":"Class","value":5},{"name":"Class","value":35},{"name":"Health","value":20}])
     );
     let cli = destiny_cli::output::render_search(destiny_cli::output::OutputMode::Human, &result);
     assert!(cli.contains("stats: Class 5, Class 35, Health 20"));

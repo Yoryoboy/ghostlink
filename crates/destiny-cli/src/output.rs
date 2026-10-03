@@ -393,7 +393,38 @@ fn inspection_human(inspection: &ItemInspection) -> String {
     if let Some(power) = instance.power {
         lines.push(format!("  power: {power}"));
     }
-    lines.push(format!("  perks: {}", perks_text(&instance.perks)));
+    lines.push(format!("  perk states: {}", perks_text(&instance.perks)));
+    for (label, names) in [
+        ("perks", &inspection.perk_names),
+        ("mods", &inspection.mod_names),
+        ("available perks", &inspection.available_perks),
+        ("available mods", &inspection.available_mods),
+    ] {
+        if !names.is_empty() {
+            lines.push(format!(
+                "  {label}: {}",
+                names
+                    .iter()
+                    .map(|name| sanitize(name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    if let Some(archetype) = &inspection.archetype {
+        lines.push(format!("  archetype: {}", sanitize(archetype)));
+    }
+    if !inspection.stats.is_empty() {
+        lines.push(format!(
+            "  stats: {}",
+            inspection
+                .stats
+                .iter()
+                .map(|stat| format!("{} {}", sanitize(&stat.name), stat.value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     lines.push(metadata_text(&inspection.metadata));
     lines.join("\n")
 }
@@ -465,6 +496,13 @@ fn search_json(result: &InventorySearchResult) -> String {
 
 fn inspection_json(inspection: &ItemInspection) -> String {
     json!({
+        "perk_names": inspection.perk_names,
+        "mod_names": inspection.mod_names,
+        "mods": inspection.mod_names,
+        "archetype": inspection.archetype,
+        "available_perks": inspection.available_perks,
+        "available_mods": inspection.available_mods,
+        "stats": inspection.stats.iter().map(|stat| json!({"name": stat.name, "value": stat.value})).collect::<Vec<_>>(),
         "definition": definition_json(&inspection.definition),
         "instance": instance_json(&inspection.instance),
         "kind": "item_inspection",
@@ -1180,6 +1218,12 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
+            archetype: None,
+            available_perks: Vec::new(),
+            available_mods: Vec::new(),
+            stats: Vec::new(),
             definition: definition(1, "Gjallarhorn"),
             instance: instance("inst-1", 1, ItemLocation::Vault),
             metadata: metadata(FreshnessStatus::Fresh),
@@ -1423,6 +1467,49 @@ mod tests {
     }
 
     #[test]
+    fn inspection_renders_named_enrichment_and_sanitizes_text() {
+        let mut inspected = inspection();
+        inspected.perk_names = vec!["Precision Frame".into(), "Rampage\n".into()];
+        inspected.mod_names = vec!["Harmonic Siphon".into()];
+        inspected.archetype = Some("Specialist".into());
+        inspected.available_perks = vec!["Kill Clip".into()];
+        inspected.available_mods = vec!["Heavy Ammo Finder".into()];
+        inspected.stats = vec![destiny_app::NamedStat {
+            name: "Range".into(),
+            value: 74,
+        }];
+        let human = render_inspection(OutputMode::Human, &inspected);
+        for line in [
+            "  perks: Precision Frame, Rampage?",
+            "  mods: Harmonic Siphon",
+            "  archetype: Specialist",
+            "  available perks: Kill Clip",
+            "  available mods: Heavy Ammo Finder",
+            "  stats: Range 74",
+        ] {
+            assert!(human.lines().any(|actual| actual == line), "{line}");
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&render_inspection(OutputMode::Json, &inspected)).unwrap();
+        assert_eq!(
+            value["perk_names"],
+            serde_json::json!(["Precision Frame", "Rampage\n"])
+        );
+        assert_eq!(value["mod_names"], serde_json::json!(["Harmonic Siphon"]));
+        assert_eq!(value["mods"], value["mod_names"]);
+        assert_eq!(value["archetype"], "Specialist");
+        assert_eq!(value["available_perks"], serde_json::json!(["Kill Clip"]));
+        assert_eq!(
+            value["available_mods"],
+            serde_json::json!(["Heavy Ammo Finder"])
+        );
+        assert_eq!(
+            value["stats"],
+            serde_json::json!([{"name":"Range","value":74}])
+        );
+    }
+
+    #[test]
     fn inspection_renders_definition_instance_and_perks() {
         let expected = concat!(
             "instance: inst-1\n",
@@ -1436,7 +1523,7 @@ mod tests {
             "  equipped: false\n",
             "  locked: true\n",
             "  power: 1350\n",
-            "  perks: active=true visible=true; active=true visible=false; active=false visible=false\n",
+            "  perk states: active=true visible=true; active=true visible=false; active=false visible=false\n",
             "revision: 3\n",
             "checked_at: 100\n",
             "freshness: fresh",
@@ -1450,7 +1537,7 @@ mod tests {
     #[test]
     fn inspection_renders_one_bounded_json_object() {
         let expected = format!(
-            r#"{{"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"kind":"item_inspection","metadata":{METADATA_JSON}}}"#
+            r#"{{"archetype":null,"available_mods":[],"available_perks":[],"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"kind":"item_inspection","metadata":{METADATA_JSON},"mod_names":[],"mods":[],"perk_names":[],"stats":[]}}"#
         );
         assert_eq!(render_inspection(OutputMode::Json, &inspection()), expected);
     }
@@ -1461,7 +1548,7 @@ mod tests {
         inspection.instance.power = None;
         inspection.instance.perks = Vec::new();
         let rendered = render_inspection(OutputMode::Human, &inspection);
-        assert!(rendered.contains("  perks: none"));
+        assert!(rendered.contains("  perk states: none"));
         assert!(!rendered.contains("power:"));
 
         let rendered = render_inspection(OutputMode::Json, &inspection);

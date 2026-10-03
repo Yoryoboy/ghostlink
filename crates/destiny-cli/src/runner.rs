@@ -856,6 +856,12 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
+            archetype: None,
+            available_perks: Vec::new(),
+            available_mods: Vec::new(),
+            stats: Vec::new(),
             definition: definition(1, "Gjallarhorn"),
             instance: instance("inst-1", 1),
             metadata: metadata(FreshnessStatus::Fresh),
