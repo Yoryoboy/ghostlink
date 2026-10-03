@@ -276,6 +276,15 @@ pub trait WorldDefinitionRepository: DefinitionRepository {
     ) -> Result<SyncMetadata, AppError>;
 }
 
+/// Named stat catalog reads. Name queries use `normalize_stat_name`, match exactly,
+/// and return every matching hash in ascending order (including name collisions).
+/// Invalid queries fail with ProviderValidation; corrupt storage fails with LocalStorage.
+pub trait StatDefinitionRepository {
+    fn lookup_stat(&self, hash: u32) -> Result<Option<crate::StatDefinition>, AppError>;
+    fn stat_hashes_by_name(&self, name: &str) -> Result<Vec<u32>, AppError>;
+    fn stat_definition_count(&self) -> Result<usize, AppError>;
+}
+
 /// Reads and atomically replaces the current normalized inventory projection.
 pub trait InventoryRepository {
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError>;
@@ -583,6 +592,7 @@ pub struct ManifestIndex {
     pub modifier_path: String,
     pub objective_path: String,
     pub activity_type_path: String,
+    pub stat_path: String,
 }
 
 impl fmt::Debug for ManifestIndex {

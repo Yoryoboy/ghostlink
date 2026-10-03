@@ -1,11 +1,15 @@
 use super::{SqliteStore, migrations};
 use destiny_app::test_support::InMemoryDefinitionRepository;
-use destiny_core::ports::WorldDefinitionRepository;
+use destiny_core::ports::{DefinitionCatalogRepository, WorldDefinitionRepository};
 use destiny_core::*;
 
 fn world(version: &str, name: &str) -> WorldDefinitionsAcquisition {
     WorldDefinitionsAcquisition {
         version: DefinitionVersion::new(version),
+        stats: WorldDefinitionTable {
+            definitions: vec![StatDefinition::new(6, name.into()).unwrap()],
+            skipped_count: 7,
+        },
         objectives: WorldDefinitionTable {
             definitions: vec![ObjectiveDefinition::new(5, name.into(), 1).unwrap()],
             skipped_count: 5,
@@ -29,6 +33,227 @@ fn world(version: &str, name: &str) -> WorldDefinitionsAcquisition {
             skipped_count: 4,
         },
     }
+}
+
+#[test]
+fn stat_reads_reject_a_version_that_disagrees_with_manifest_metadata() {
+    use destiny_core::ports::StatDefinitionRepository;
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store
+        .publish_manifest(items("v1", "item"), world("v1", "Weapons"))
+        .unwrap();
+    store
+        .connection()
+        .execute("UPDATE stat_definitions SET definition_version = 'v2'", [])
+        .unwrap();
+    assert_eq!(
+        store.lookup_stat(6).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(
+        store.stat_hashes_by_name("Weapons").unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(
+        store.stat_definition_count().unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+}
+
+#[test]
+fn missing_stat_catalog_forces_same_version_download_then_skips() {
+    use destiny_core::ports::StatDefinitionRepository;
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store
+        .publish_manifest(items("v1", "item"), world("v1", "Weapons"))
+        .unwrap();
+    store
+        .connection()
+        .execute("DELETE FROM stat_definitions", [])
+        .unwrap();
+    let mut gateway = destiny_app::test_support::QueuedManifestGateway::new();
+    for _ in 0..2 {
+        gateway.queue(Ok(ManifestAcquisition {
+            version: DefinitionVersion::new("v1"),
+            definitions: vec![ManifestDefinitionCandidate {
+                hash: ItemHash::new(10),
+                bucket_hash: None,
+                name: "item".into(),
+                item_type: None,
+                tier: None,
+                element: None,
+                damage_type: None,
+                slot: None,
+                class_type: None,
+                plug_category: None,
+                tags: vec![],
+                version: DefinitionVersion::new("v1"),
+            }],
+            skipped_count: 0,
+        }));
+    }
+    let mut service = destiny_app::ManifestService::new(gateway, store);
+    assert!(matches!(
+        service.sync(Timestamp::new(200)).unwrap(),
+        destiny_app::ManifestSyncReport::Updated {
+            stat_count: 1,
+            stat_skipped: 7,
+            ..
+        }
+    ));
+    assert_eq!(service.repository().stat_definition_count().unwrap(), 1);
+    assert!(matches!(
+        service.sync(Timestamp::new(300)).unwrap(),
+        destiny_app::ManifestSyncReport::Unchanged { stat_count: 1, .. }
+    ));
+    assert_eq!(service.gateway().world_calls(), 1);
+    assert_eq!(service.gateway().component_calls(), 1);
+}
+
+#[test]
+fn stat_insert_failure_rolls_back_every_catalog_and_metadata() {
+    use destiny_core::ports::StatDefinitionRepository;
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store
+        .publish_manifest(items("v1", "prior"), world("v1", "Weapons"))
+        .unwrap();
+    let metadata = store.current_metadata().unwrap();
+    store.connection().execute_batch("CREATE TRIGGER fail_stat BEFORE INSERT ON stat_definitions BEGIN SELECT RAISE(ABORT, 'failure'); END;").unwrap();
+    assert_eq!(
+        store
+            .publish_manifest(items("v2", "next"), world("v2", "Health"))
+            .unwrap_err()
+            .category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(store.current_metadata().unwrap(), metadata);
+    assert_eq!(store.lookup_stat(6).unwrap().unwrap().name(), "Weapons");
+    assert_eq!(
+        store.lookup_milestone(1).unwrap().unwrap().name(),
+        "Weapons"
+    );
+    assert!(
+        matches!(store.lookup_definition(ItemHash::new(10)).unwrap(), Resolution::Unique(item) if item.name == "prior")
+    );
+}
+
+#[test]
+fn stat_table_constraints_and_validated_reads_reject_corruption() {
+    use destiny_core::ports::StatDefinitionRepository;
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store
+        .publish_manifest(items("v1", "item"), world("v1", "Weapons"))
+        .unwrap();
+    for sql in [
+        "INSERT INTO stat_definitions VALUES (-1, 'Name', 'v1')",
+        "INSERT INTO stat_definitions VALUES (4294967296, 'Name', 'v1')",
+        "INSERT INTO stat_definitions VALUES (1.5, 'Name', 'v1')",
+        "INSERT INTO stat_definitions VALUES (7, '', 'v1')",
+        "INSERT INTO stat_definitions VALUES (7, 'Name', '')",
+    ] {
+        assert!(store.connection().execute(sql, []).is_err());
+    }
+    store
+        .connection()
+        .execute("UPDATE stat_definitions SET name = ' ' WHERE hash = 6", [])
+        .unwrap();
+    assert_eq!(
+        store.lookup_stat(6).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(
+        store.stat_hashes_by_name("Weapons").unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+}
+
+#[test]
+fn named_stat_reads_have_fake_sqlite_parity_and_sorted_collisions() {
+    use destiny_core::ports::StatDefinitionRepository;
+    fn exercise<R: WorldDefinitionRepository + StatDefinitionRepository>(mut repository: R) {
+        assert_eq!(repository.stat_definition_count().unwrap(), 0);
+        let mut catalog = world("v1", "Weapons");
+        catalog.stats.definitions = vec![
+            StatDefinition::new(9, "  WEAPONS  ".into()).unwrap(),
+            StatDefinition::new(2, "Weapons".into()).unwrap(),
+            StatDefinition::new(4, "Health".into()).unwrap(),
+        ];
+        repository
+            .publish_manifest(items("v1", "item"), catalog)
+            .unwrap();
+        assert_eq!(repository.stat_definition_count().unwrap(), 3);
+        assert_eq!(
+            repository.lookup_stat(2).unwrap().unwrap().name(),
+            "Weapons"
+        );
+        assert_eq!(repository.lookup_stat(99).unwrap(), None);
+        assert_eq!(
+            repository.stat_hashes_by_name(" \tweapons\n").unwrap(),
+            vec![2, 9]
+        );
+        assert!(repository.stat_hashes_by_name("weapon").unwrap().is_empty());
+        for name in [" ", "bad\0", &"x".repeat(257)] {
+            assert_eq!(
+                repository.stat_hashes_by_name(name).unwrap_err().category(),
+                ErrorCategory::ProviderValidation
+            );
+        }
+        let metadata = repository.current_metadata().unwrap();
+        let mut bad = world("v2", "Other");
+        bad.stats.definitions.push(bad.stats.definitions[0].clone());
+        assert!(
+            repository
+                .publish_manifest(items("v2", "other"), bad)
+                .is_err()
+        );
+        assert_eq!(repository.current_metadata().unwrap(), metadata);
+        assert_eq!(
+            repository.stat_hashes_by_name("Weapons").unwrap(),
+            vec![2, 9]
+        );
+    }
+    exercise(SqliteStore::open_in_memory().unwrap());
+    exercise(InMemoryDefinitionRepository::default());
+}
+
+#[test]
+fn stat_migration_invalidates_only_manifest_metadata_and_is_reversible() {
+    use destiny_core::ports::StatDefinitionRepository;
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(7).unwrap();
+    store
+        .publish_manifest(items("v1", "prior"), world("v1", "prior"))
+        .unwrap();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO sync_metadata VALUES ('profile_inventory','100','profile','3','v1')",
+            [],
+        )
+        .unwrap();
+    store.migrate_to(8).unwrap();
+    assert!(store.current_metadata().unwrap().is_none());
+    assert_eq!(store.stat_definition_count().unwrap(), 0);
+    assert_eq!(store.definition_count().unwrap(), 1);
+    assert_eq!(
+        store
+            .connection()
+            .query_row(
+                "SELECT revision FROM sync_metadata WHERE dataset = 'profile_inventory'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "3"
+    );
+    store
+        .publish_manifest(items("v1", "prior"), world("v1", "Weapons"))
+        .unwrap();
+    assert_eq!(store.stat_definition_count().unwrap(), 1);
+    store.migrate_to(7).unwrap();
+    assert!(store.current_metadata().unwrap().is_none());
+    store.migrate_to(8).unwrap();
+    assert_eq!(store.stat_definition_count().unwrap(), 0);
 }
 
 fn items(version: &str, name: &str) -> DefinitionReplacementInput {
@@ -62,7 +287,7 @@ fn plug_category_upgrade_forces_same_version_republish_then_skips() {
     store
         .publish_manifest(items("v1", "prior"), world("v1", "prior"))
         .unwrap();
-    store.migrate_to(6).unwrap();
+    store.migrate_to(super::LATEST_SCHEMA_VERSION).unwrap();
     assert!(store.current_metadata().unwrap().is_none());
     let mut gateway = QueuedManifestGateway::new();
     for _ in 0..2 {
@@ -127,7 +352,7 @@ fn search_filter_upgrade_forces_same_version_republish_then_skips() {
         .publish_manifest(items("v1", "prior"), world("v1", "prior"))
         .unwrap();
     assert!(store.current_metadata().unwrap().is_some());
-    store.migrate_to(5).unwrap();
+    store.migrate_to(super::LATEST_SCHEMA_VERSION).unwrap();
     assert!(store.current_metadata().unwrap().is_none());
     let mut gateway = QueuedManifestGateway::new();
     for _ in 0..2 {
@@ -178,7 +403,13 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
     use destiny_app::test_support::QueuedManifestGateway;
     use destiny_core::ports::DefinitionCatalogRepository;
 
-    fn exercise<R: DefinitionCatalogRepository + WorldDefinitionRepository>(repository: R) {
+    fn exercise<
+        R: DefinitionCatalogRepository
+            + WorldDefinitionRepository
+            + destiny_core::ports::StatDefinitionRepository,
+    >(
+        repository: R,
+    ) {
         assert!(repository.world_definition_counts().unwrap().contains(&0));
         let mut gateway = QueuedManifestGateway::new();
         for _ in 0..2 {
@@ -244,7 +475,7 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
     let mut sqlite = SqliteStore::open_in_memory().unwrap();
     sqlite.migrate_to(2).unwrap();
     sqlite.replace_definitions(items("v1", "prior")).unwrap();
-    sqlite.migrate_to(4).unwrap();
+    sqlite.migrate_to(super::LATEST_SCHEMA_VERSION).unwrap();
     let mut fake = InMemoryDefinitionRepository::default();
     fake.replace_definitions(items("v1", "prior")).unwrap();
     exercise(sqlite);

@@ -453,6 +453,38 @@ impl destiny_core::ports::WorldDefinitionRepository for InMemoryDefinitionReposi
     }
 }
 
+impl destiny_core::ports::StatDefinitionRepository for InMemoryDefinitionRepository {
+    fn lookup_stat(&self, hash: u32) -> Result<Option<destiny_core::StatDefinition>, AppError> {
+        Ok(self.world.as_ref().and_then(|world| {
+            world
+                .stats
+                .definitions
+                .iter()
+                .find(|stat| stat.hash() == hash)
+                .cloned()
+        }))
+    }
+    fn stat_hashes_by_name(&self, name: &str) -> Result<Vec<u32>, AppError> {
+        let normalized = destiny_core::normalize_stat_name(name)?;
+        let mut hashes = Vec::new();
+        if let Some(world) = &self.world {
+            for stat in &world.stats.definitions {
+                if destiny_core::normalize_stat_name(stat.name())? == normalized {
+                    hashes.push(stat.hash());
+                }
+            }
+        }
+        hashes.sort_unstable();
+        Ok(hashes)
+    }
+    fn stat_definition_count(&self) -> Result<usize, AppError> {
+        Ok(self
+            .world
+            .as_ref()
+            .map_or(0, |world| world.stats.definitions.len()))
+    }
+}
+
 impl destiny_core::ports::DefinitionCatalogRepository for InMemoryDefinitionRepository {
     fn definition_count(&self) -> Result<usize, AppError> {
         Ok(self.definitions.len())
@@ -835,6 +867,10 @@ pub fn synthetic_world(version: DefinitionVersion) -> destiny_core::WorldDefinit
     use destiny_core::*;
     WorldDefinitionsAcquisition {
         version,
+        stats: WorldDefinitionTable {
+            definitions: vec![StatDefinition::new(5, "Weapons".into()).unwrap()],
+            skipped_count: 7,
+        },
         objectives: WorldDefinitionTable {
             definitions: vec![ObjectiveDefinition::new(5, "Progress".into(), 1).unwrap()],
             skipped_count: 5,
@@ -891,6 +927,7 @@ impl QueuedManifestGateway {
                     modifier_path: "/common/destiny2_content/modifiers.json".into(),
                     objective_path: "/common/destiny2_content/objectives.json".into(),
                     activity_type_path: "/common/destiny2_content/types.json".into(),
+                    stat_path: "/common/destiny2_content/stats.json".into(),
                 }));
                 self.queue_world(Ok(synthetic_world(batch.version.clone())));
                 self.queue_component(Ok(batch));

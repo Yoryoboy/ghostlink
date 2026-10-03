@@ -17,7 +17,8 @@ pub use weekly_profile::*;
 pub mod world_definitions;
 pub use world_definitions::{
     ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, MilestoneDefinition,
-    ObjectiveDefinition, WorldDefinitionTable, WorldDefinitionsAcquisition,
+    ObjectiveDefinition, StatDefinition, WorldDefinitionTable, WorldDefinitionsAcquisition,
+    normalize_stat_name,
 };
 
 pub use auth::{
@@ -46,8 +47,9 @@ pub use ports::{
     CredentialSource, CredentialStore, DefinitionReplacementInput, DefinitionRepository,
     DestinyMembership, InventoryRepository, InventorySnapshotInput, ManifestAcquisition,
     ManifestDefinitionCandidate, ManifestDefinitions, ManifestGateway, PlanIdGenerator,
-    ProfileGateway, PublicTokenExchange, SearchRepository, SecureRandom, StaticCredentialSource,
-    TokenRefresh, TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
+    ProfileGateway, PublicTokenExchange, SearchRepository, SecureRandom, StatDefinitionRepository,
+    StaticCredentialSource, TokenRefresh, TransferGateway, TransferOutcome, TransferRejection,
+    TransferRequest,
 };
 pub use query::{
     CharacterListResult, DefinitionSearchQuery, InspectItemRequest, InstanceSearchQuery,

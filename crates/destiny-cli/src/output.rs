@@ -29,34 +29,42 @@ pub enum OutputMode {
 /// Renders the public version label and counts, never definition payloads.
 pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncReport) -> String {
     use destiny_app::ManifestSyncReport;
-    let (status, version, count, skipped, world_counts, world_skipped) = match report {
-        ManifestSyncReport::Updated {
-            version,
-            record_count,
-            skipped,
-            world_counts,
-            world_skipped,
-        } => (
-            "updated",
-            version,
-            *record_count,
-            Some(*skipped),
-            world_counts,
-            Some(world_skipped),
-        ),
-        ManifestSyncReport::Unchanged {
-            version,
-            record_count,
-            world_counts,
-        } => (
-            "unchanged",
-            version,
-            *record_count,
-            None,
-            world_counts,
-            None,
-        ),
-    };
+    let (status, version, count, skipped, world_counts, world_skipped, stat_count, stat_skipped) =
+        match report {
+            ManifestSyncReport::Updated {
+                version,
+                record_count,
+                skipped,
+                world_counts,
+                world_skipped,
+                stat_count,
+                stat_skipped,
+            } => (
+                "updated",
+                version,
+                *record_count,
+                Some(*skipped),
+                world_counts,
+                Some(world_skipped),
+                *stat_count,
+                Some(*stat_skipped),
+            ),
+            ManifestSyncReport::Unchanged {
+                version,
+                record_count,
+                world_counts,
+                stat_count,
+            } => (
+                "unchanged",
+                version,
+                *record_count,
+                None,
+                world_counts,
+                None,
+                *stat_count,
+                None,
+            ),
+        };
     match mode {
         OutputMode::Human => {
             let mut text = format!(
@@ -81,6 +89,10 @@ pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncRepor
                     text.push_str(&format!("\n{label}_skipped: {}", skipped[index]));
                 }
             }
+            text.push_str(&format!("\nstat_definitions: {stat_count}"));
+            if let Some(skipped) = stat_skipped {
+                text.push_str(&format!("\nstat_definitions_skipped: {skipped}"));
+            }
             text
         }
         OutputMode::Json => {
@@ -102,6 +114,10 @@ pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncRepor
                 if let Some(skipped) = world_skipped {
                     value[format!("{label}_skipped")] = json!(skipped[index]);
                 }
+            }
+            value["stat_definitions"] = json!(stat_count);
+            if let Some(skipped) = stat_skipped {
+                value["stat_definitions_skipped"] = json!(skipped);
             }
             value.to_string()
         }

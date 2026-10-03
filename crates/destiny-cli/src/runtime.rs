@@ -315,7 +315,8 @@ pub trait ManifestFoundations {
     type Transport: destiny_adapters::manifest::ManifestTransport;
     type Clock: Clock;
     type Repository: destiny_app::DefinitionCatalogRepository
-        + destiny_app::WorldDefinitionRepository;
+        + destiny_app::WorldDefinitionRepository
+        + destiny_app::StatDefinitionRepository;
 
     fn config(&mut self) -> Result<ReadRuntimeConfig, AppError>;
     fn clock(&mut self) -> Result<Self::Clock, AppError>;
@@ -701,7 +702,7 @@ mod tests {
             destiny_adapters::manifest::ManifestTransportError,
         > {
             let body = if request.url().contains("/Platform/") {
-                r#"{"ErrorCode":1,"Response":{"version":"v1","jsonWorldComponentContentPaths":{"en":{"DestinyInventoryItemDefinition":"/common/destiny2_content/items.json","DestinyMilestoneDefinition":"/common/destiny2_content/m.json","DestinyActivityDefinition":"/common/destiny2_content/a.json","DestinyActivityModifierDefinition":"/common/destiny2_content/mod.json","DestinyObjectiveDefinition":"/common/destiny2_content/obj.json","DestinyActivityTypeDefinition":"/common/destiny2_content/type.json"}}}}"#
+                r#"{"ErrorCode":1,"Response":{"version":"v1","jsonWorldComponentContentPaths":{"en":{"DestinyInventoryItemDefinition":"/common/destiny2_content/items.json","DestinyMilestoneDefinition":"/common/destiny2_content/m.json","DestinyActivityDefinition":"/common/destiny2_content/a.json","DestinyActivityModifierDefinition":"/common/destiny2_content/mod.json","DestinyObjectiveDefinition":"/common/destiny2_content/obj.json","DestinyActivityTypeDefinition":"/common/destiny2_content/type.json","DestinyStatDefinition":"/common/destiny2_content/stat.json"}}}}"#
             } else if request.url().ends_with("/obj.json") {
                 r#"{"1":{"hash":1,"progressDescription":"","completionValue":1},"2":{"hash":2,"redacted":true}}"#
             } else {
@@ -1217,16 +1218,16 @@ mod tests {
                 assert!(output.stderr.is_empty());
                 let expected = match (json, unchanged) {
                     (false, false) => {
-                        "manifest: updated\nversion: v1\ndefinitions: 1\nskipped: 1\nmilestones: 1\nmilestones_skipped: 1\nactivities: 1\nactivities_skipped: 1\nactivity_modifiers: 1\nactivity_modifiers_skipped: 1\nobjectives: 1\nobjectives_skipped: 1\nactivity_types: 1\nactivity_types_skipped: 1\n"
+                        "manifest: updated\nversion: v1\ndefinitions: 1\nskipped: 1\nmilestones: 1\nmilestones_skipped: 1\nactivities: 1\nactivities_skipped: 1\nactivity_modifiers: 1\nactivity_modifiers_skipped: 1\nobjectives: 1\nobjectives_skipped: 1\nactivity_types: 1\nactivity_types_skipped: 1\nstat_definitions: 1\nstat_definitions_skipped: 1\n"
                     }
                     (false, true) => {
-                        "manifest: unchanged\nversion: v1\ndefinitions: 1\nmilestones: 1\nactivities: 1\nactivity_modifiers: 1\nobjectives: 1\nactivity_types: 1\n"
+                        "manifest: unchanged\nversion: v1\ndefinitions: 1\nmilestones: 1\nactivities: 1\nactivity_modifiers: 1\nobjectives: 1\nactivity_types: 1\nstat_definitions: 1\n"
                     }
                     (true, false) => {
-                        "{\"activities\":1,\"activities_skipped\":1,\"activity_modifiers\":1,\"activity_modifiers_skipped\":1,\"activity_types\":1,\"activity_types_skipped\":1,\"definitions\":1,\"kind\":\"sync_manifest\",\"milestones\":1,\"milestones_skipped\":1,\"objectives\":1,\"objectives_skipped\":1,\"skipped\":1,\"status\":\"updated\",\"version\":\"v1\"}\n"
+                        "{\"activities\":1,\"activities_skipped\":1,\"activity_modifiers\":1,\"activity_modifiers_skipped\":1,\"activity_types\":1,\"activity_types_skipped\":1,\"definitions\":1,\"kind\":\"sync_manifest\",\"milestones\":1,\"milestones_skipped\":1,\"objectives\":1,\"objectives_skipped\":1,\"skipped\":1,\"stat_definitions\":1,\"stat_definitions_skipped\":1,\"status\":\"updated\",\"version\":\"v1\"}\n"
                     }
                     (true, true) => {
-                        "{\"activities\":1,\"activity_modifiers\":1,\"activity_types\":1,\"definitions\":1,\"kind\":\"sync_manifest\",\"milestones\":1,\"objectives\":1,\"status\":\"unchanged\",\"version\":\"v1\"}\n"
+                        "{\"activities\":1,\"activity_modifiers\":1,\"activity_types\":1,\"definitions\":1,\"kind\":\"sync_manifest\",\"milestones\":1,\"objectives\":1,\"stat_definitions\":1,\"status\":\"unchanged\",\"version\":\"v1\"}\n"
                     }
                 };
                 assert_eq!(output.stdout, expected);

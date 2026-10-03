@@ -338,7 +338,9 @@ fn upsert_metadata(
 /// Canonical decimal values are parsed and range-checked rather than trusted,
 /// and any malformed or unexpected stored value is a sanitized local-storage
 /// failure, never a partially constructed core record.
-fn read_manifest_metadata(connection: &Connection) -> Result<Option<SyncMetadata>, AppError> {
+pub(super) fn read_manifest_metadata(
+    connection: &Connection,
+) -> Result<Option<SyncMetadata>, AppError> {
     let row = connection.query_row(
         "SELECT checked_at, source, revision, definition_version \
          FROM sync_metadata WHERE dataset = ?1",

@@ -73,6 +73,7 @@ pub struct ManifestDownloadPlan {
     pub modifier_path: String,
     pub objective_path: String,
     pub activity_type_path: String,
+    pub stat_path: String,
 }
 
 /// Validates a Bungie Manifest index envelope into a download plan.
@@ -108,6 +109,7 @@ pub fn decode_manifest_index(bytes: &[u8]) -> Result<ManifestDownloadPlan, AppEr
         modifier_path,
         objective_path: decode_component_path(response, "DestinyObjectiveDefinition")?,
         activity_type_path: decode_component_path(response, "DestinyActivityTypeDefinition")?,
+        stat_path: decode_component_path(response, "DestinyStatDefinition")?,
     })
 }
 
@@ -322,6 +324,50 @@ impl WorldKind for destiny_core::MilestoneDefinition {}
 impl WorldKind for destiny_core::ActivityDefinition {}
 impl WorldKind for destiny_core::ActivityModifierDefinition {}
 impl WorldKind for destiny_core::ActivityTypeDefinition {}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StatRecord {
+    hash: u32,
+    #[serde(default)]
+    redacted: bool,
+    #[serde(default)]
+    display_properties: Option<StatDisplay>,
+}
+#[derive(Deserialize)]
+struct StatDisplay {
+    #[serde(default)]
+    name: String,
+}
+impl WorldKind for destiny_core::StatDefinition {
+    fn read_record<'de, M: MapAccess<'de>>(map: &mut M) -> Result<WorldRecord, M::Error> {
+        let stat = map.next_value::<StatRecord>()?;
+        Ok(WorldRecord {
+            hash: stat.hash,
+            redacted: stat.redacted,
+            display_properties: stat.display_properties.map(|display| WorldDisplay {
+                name: display.name,
+                description: String::new(),
+            }),
+            milestone_type: 0,
+            activity_type_hash: 0,
+            activity_light_level: 0,
+            progress_description: String::new(),
+            completion_value: 0,
+        })
+    }
+}
+fn project_stat(
+    record: WorldRecord,
+    display: WorldDisplay,
+) -> Result<destiny_core::StatDefinition, AppError> {
+    destiny_core::StatDefinition::new(record.hash, display.name)
+}
+/// Streams at most 1,000 stat records, retaining only hash and display name.
+pub fn decode_stats(
+    bytes: &[u8],
+) -> Result<destiny_core::WorldDefinitionTable<destiny_core::StatDefinition>, AppError> {
+    decode_world_reader(bytes, MAX_COMPONENT_BYTES, 1000, project_stat)
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ObjectiveRecord {
@@ -1101,6 +1147,7 @@ where
             modifier_path: plan.modifier_path,
             objective_path: plan.objective_path,
             activity_type_path: plan.activity_type_path,
+            stat_path: plan.stat_path,
         })
     }
 
@@ -1115,6 +1162,7 @@ where
             &plan.modifier_path,
             &plan.objective_path,
             &plan.activity_type_path,
+            &plan.stat_path,
         ] {
             if !is_safe_component_path(path) {
                 return Err(provider_validation());
@@ -1132,6 +1180,7 @@ where
                 1000,
                 project_activity_type,
             )?,
+            stats: self.load_world_table(&plan.stat_path, 1000, project_stat)?,
         })
     }
 
@@ -1364,7 +1413,7 @@ mod tests {
             "Response": {
                 "version": version,
                 "jsonWorldComponentContentPaths": {
-                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path }
+                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path }
                 }
             }
         })
@@ -1375,6 +1424,53 @@ mod tests {
     fn assert_validation<T: std::fmt::Debug>(result: Result<T, AppError>) {
         let error = result.expect_err("expected a provider-validation failure");
         assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+    }
+
+    #[test]
+    fn stats_keep_only_names_and_bound_untrusted_records() {
+        let table = super::decode_stats(br#"{"1":{"hash":1,"displayProperties":{"name":"Weapons","description":{}}},"2":{"hash":2,"redacted":true},"3":{"hash":3,"displayProperties":{"name":" "}}}"#).unwrap();
+        assert_eq!(table.definitions[0].hash(), 1);
+        assert_eq!(table.definitions[0].name(), "Weapons");
+        assert_eq!(table.skipped_count, 2);
+        for bytes in [
+            br#"{}"#.as_slice(),
+            br#"{"1":{"hash":2,"displayProperties":{"name":"Weapons"}}}"#,
+            br#"{"01":{"hash":1,"displayProperties":{"name":"Weapons"}}}"#,
+        ] {
+            assert_validation(super::decode_stats(bytes));
+        }
+        let oversized = json!({"1":{"hash":1,"displayProperties":{"name":"x".repeat(257)}}});
+        assert_validation(super::decode_stats(oversized.to_string().as_bytes()));
+        for bytes in [
+            br#"{"1":{"hash":1,"displayProperties":{"name":"bad\u0000"}}}"#.as_slice(),
+            br#"{"1":{"hash":1,"redacted":true}}"#,
+            br#"{"1":{"hash":1,"displayProperties":{"name":"Weapons"}},"1":{"hash":1,"displayProperties":{"name":"Weapons"}}}"#,
+            br#"{"1":{"hash":1,"displayProperties":{"name":"Weapons"}}} []"#,
+        ] {
+            assert_validation(super::decode_stats(bytes));
+        }
+        assert_eq!(
+            super::decode_stats(build_component(1000).as_bytes())
+                .unwrap()
+                .definitions
+                .len(),
+            1000
+        );
+        assert_validation(super::decode_stats(build_component(1001).as_bytes()));
+        let bytes = br#"{"1":{"hash":1,"displayProperties":{"name":"Weapons"},"ignored":"large"}}"#;
+        assert_validation(super::decode_world_reader(
+            bytes.as_slice(),
+            bytes.len() - 1,
+            1000,
+            super::project_stat,
+        ));
+        assert_eq!(
+            super::decode_world_reader(bytes.as_slice(), bytes.len(), 1000, super::project_stat)
+                .unwrap()
+                .definitions
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -1558,6 +1654,7 @@ mod tests {
             "DestinyActivityModifierDefinition",
             "DestinyObjectiveDefinition",
             "DestinyActivityTypeDefinition",
+            "DestinyStatDefinition",
         ] {
             en.insert(kind.into(), json!(VALID_PATH));
         }
@@ -1567,6 +1664,7 @@ mod tests {
             "DestinyActivityModifierDefinition",
             "DestinyObjectiveDefinition",
             "DestinyActivityTypeDefinition",
+            "DestinyStatDefinition",
         ] {
             let mut missing = value.clone();
             missing["Response"]["jsonWorldComponentContentPaths"]["en"]
@@ -2085,7 +2183,7 @@ mod transport_tests {
             "Response": {
                 "version": "manifest-v1",
                 "jsonWorldComponentContentPaths": {
-                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path }
+                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path }
                 }
             }
         })
@@ -2162,7 +2260,7 @@ mod transport_tests {
     }
 
     #[test]
-    fn gateway_world_components_use_five_urls_without_key() {
+    fn gateway_world_components_use_six_urls_without_key() {
         let mut index: serde_json::Value =
             serde_json::from_str(&index_body(COMPONENT_PATH)).unwrap();
         let paths = [
@@ -2171,6 +2269,7 @@ mod transport_tests {
             "/common/destiny2_content/mod.json",
             "/common/destiny2_content/objectives.json",
             "/common/destiny2_content/types.json",
+            "/common/destiny2_content/stats.json",
         ];
         for (kind, path) in [
             "DestinyMilestoneDefinition",
@@ -2178,6 +2277,7 @@ mod transport_tests {
             "DestinyActivityModifierDefinition",
             "DestinyObjectiveDefinition",
             "DestinyActivityTypeDefinition",
+            "DestinyStatDefinition",
         ]
         .into_iter()
         .zip(paths)
@@ -2191,6 +2291,7 @@ mod transport_tests {
             Ok(json_response(component_body())),
             Ok(json_response(component_body())),
             Ok(json_response(component_body())),
+            Ok(json_response(component_body())),
         ]);
         let mut gateway = BungieManifestGateway::new(key(), transport, clock());
         let index = gateway.fetch_index().unwrap();
@@ -2199,8 +2300,9 @@ mod transport_tests {
         assert_eq!(batch.milestones.definitions.len(), 1);
         assert_eq!(batch.activities.definitions.len(), 1);
         assert_eq!(batch.modifiers.definitions.len(), 1);
+        assert_eq!(batch.stats.definitions.len(), 1);
         let requests = &gateway.transport().requests;
-        assert_eq!(requests.len(), 6);
+        assert_eq!(requests.len(), 7);
         assert!(requests[0].has_api_key);
         for (request, path) in requests[1..].iter().zip(paths) {
             assert_eq!(request.url, format!("{MANIFEST_ORIGIN}{path}"));

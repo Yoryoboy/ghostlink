@@ -35,6 +35,7 @@ pub use config::{
 // through this crate. This block is the smallest additive surface that lets the
 // presentation layer implement that translation and lets its binary composition
 // root load a credential; it adds no behavior and no new abstraction.
+pub use destiny_core::ports::StatDefinitionRepository;
 pub use destiny_core::ports::{
     DefinitionCatalogRepository, ManifestIndex, WorldDefinitionRepository,
 };
@@ -57,7 +58,7 @@ pub use destiny_core::{
 pub use destiny_core::{
     ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, MilestoneDefinition,
     ObjectiveDefinition, PublicMilestone, PublicMilestoneActivity, PublicMilestonesGateway,
-    PublicMilestonesSnapshot, WorldDefinitionTable, WorldDefinitionsAcquisition,
+    PublicMilestonesSnapshot, StatDefinition, WorldDefinitionTable, WorldDefinitionsAcquisition,
 };
 pub use destiny_core::{ManifestAcquisition, ManifestDefinitions, ManifestGateway};
 pub use manifest::{ManifestService, ManifestSyncReport, normalize_manifest};

@@ -20,7 +20,7 @@ Let `search-inventory` (CLI and MCP) filter owned items by instance stats (e.g. 
 
 ## Tasks
 - [x] **GIS-001 — Establish tracker and branch.** Branch `feature/ghostlink-item-stats` from `main` at `ee67ac7`.
-- [ ] **GIS-002 — Manifest stat definitions.** Seventh Manifest component `DestinyStatDefinition`, bounded decode, `stat_definitions` table (schema migration, forced republish), repository port, sync report count.
+- [x] **GIS-002 — Manifest stat definitions.** Seventh Manifest component `DestinyStatDefinition`, bounded decode, `stat_definitions` table (schema migration, forced republish), repository port, sync report count. Delegated writer, test-first (RED: decoder missing; stale stat-version test failed). Seventh Manifest component, bounded decode, reversible STRICT v8 `stat_definitions` with forced same-version republish, atomic publication, normalized-name repository lookups with fake parity, sync report counts (text/JSON). Checks (writer): fmt, workspace all-features 1,077 passed/25 suites, clippy both variants, diff check. Parent live check: `sync-manifest` -> `updated`, 66 stat definitions (13 skipped); names include Weapons, Health, Class, Grenade, Super, Melee. Live finding for GIS-004: names are not unique (`Class` and `Melee` each map to two hashes), so a `--stat` name must match any of its hashes. Commit evidence: see git log.
 - [ ] **GIS-003 — Instance stats.** Request component 304, bounded decode, `ItemInstance.stats`, `item_stats` table (migration), sync and fakes, in one coherent commit.
 - [ ] **GIS-004 — Stat query and surfaces.** `--stat` criterion with shared matching (fake/SQLite parity, before truncation), CLI `--stat` (repeatable), MCP field, named stats in hit output, README.
 - [ ] **GIS-005 — Verification and live validation.** Full checks, live sync size, stat searches, close tracker.
@@ -29,4 +29,4 @@ Let `search-inventory` (CLI and MCP) filter owned items by instance stats (e.g. 
 Exploration (read-only, WU-024 explorer): Manifest index requires six components (`destiny-adapters/src/manifest.rs:98-110`, tests at `:1367`, `:1556-1569`, `:2088`, `:2165`); v4 `objective_definitions`/`activity_type_definitions` are the pattern for a new catalog. Profile query is an exact-string constant (`profile_gateway.rs:361`, tests `:1880`, `:2236`, `:2357`, negatives `:2377-2401`); component order must become `...302,304,305`. Revision identity compares full `ItemInstance` equality (`ports.rs:~135`).
 
 ## Next step
-GIS-002.
+GIS-003.

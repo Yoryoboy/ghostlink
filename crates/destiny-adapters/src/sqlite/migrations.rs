@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 7;
+pub(crate) const LATEST_VERSION: u32 = 8;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 7] = [
+const MIGRATIONS: [Migration; 8] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -88,6 +88,11 @@ const MIGRATIONS: [Migration; 7] = [
         version: 7,
         up: SCHEMA_V7_UP,
         down: SCHEMA_V7_DOWN,
+    },
+    Migration {
+        version: 8,
+        up: SCHEMA_V8_UP,
+        down: SCHEMA_V8_DOWN,
     },
 ];
 
@@ -395,6 +400,20 @@ CREATE TABLE item_plugs (
 "#;
 const SCHEMA_V7_DOWN: &str = r#"
 DROP TABLE IF EXISTS item_plugs;
+"#;
+
+// A same-version Manifest must be republished to populate the new stat catalog.
+const SCHEMA_V8_UP: &str = r#"
+CREATE TABLE stat_definitions (
+    hash INTEGER PRIMARY KEY CHECK (typeof(hash) = 'integer' AND hash BETWEEN 0 AND 4294967295),
+    name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 256),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V8_DOWN: &str = r#"
+DROP TABLE IF EXISTS stat_definitions;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
 "#;
 
 /// Reads the recorded schema version from `PRAGMA user_version`.
