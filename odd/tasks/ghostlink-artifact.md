@@ -31,7 +31,7 @@ state in sqlite.
 ## Tasks
 
 - [x] **ART-001 — Gateway and domain.** `ArtifactGateway::load_artifact`, `is_allowed_artifact_url`, bounded `decode_artifact` (8 chars/16 tiers/32 perks). RED→GREEN; workspace 1132 passed, clippy clean; live shape unverified until smoke. Commit `309ccc5`.
-- [ ] **ART-002 — Artifact query.** App query joining characters and resolving names.
+- [x] **ART-002 — Artifact query.** `ArtifactService::artifact` + `ArtifactOperations`, production `compose_artifact` in CLI runtime. RED→GREEN; workspace 1136 passed, clippy clean. Commit `b1daccf`.
 - [ ] **ART-003 — CLI command.** `artifact` command, text and JSON output.
 - [ ] **ART-004 — MCP tool and docs.** `get_artifact`, parity tests, README.
 
@@ -41,4 +41,4 @@ state in sqlite.
 
 ## Next step
 
-ART-002.
+ART-003.
