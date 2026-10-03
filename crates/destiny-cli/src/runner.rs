@@ -25,7 +25,7 @@ use crate::command::{Cli, CliError, Command, ReadRequest, SUCCESS_EXIT_CODE, ins
 use crate::login::{LoginFactory, LoginOperations};
 use crate::output::{
     OutputMode, render_characters, render_error, render_inspection, render_login_authorized,
-    render_login_instruction, render_search,
+    render_login_instruction, render_search, render_subclasses,
 };
 use crate::runtime::RuntimeFactory;
 
@@ -152,6 +152,10 @@ where
     S: QueryOperations + ?Sized,
 {
     let rendered: Result<String, CliError> = match request {
+        ReadRequest::Subclass(character_id) => service
+            .character_subclasses(character_id.as_ref(), freshness.policy, freshness.now)
+            .map(|result| render_subclasses(mode, &result))
+            .map_err(CliError::from),
         ReadRequest::ListCharacters => service
             .list_characters(freshness.policy, freshness.now)
             .map(|result| render_characters(mode, &result))
@@ -666,6 +670,7 @@ mod tests {
         List,
         Search(SearchInventoryRequest),
         Inspect(InspectItemRequest),
+        Subclass(Option<CharacterId>),
     }
 
     /// The call log of a recording service.
@@ -704,6 +709,18 @@ mod tests {
     }
 
     impl QueryOperations for RecordingService {
+        fn character_subclasses(
+            &mut self,
+            character_id: Option<&CharacterId>,
+            policy: FreshnessPolicy,
+            now: Timestamp,
+        ) -> Result<destiny_app::SubclassResult, AppError> {
+            self.record(Recorded::Subclass(character_id.cloned()), policy, now);
+            Ok(destiny_app::SubclassResult {
+                characters: Vec::new(),
+            })
+        }
+
         fn list_characters(
             &mut self,
             policy: FreshnessPolicy,
@@ -731,6 +748,27 @@ mod tests {
         ) -> Result<Resolution<ItemInspection>, AppError> {
             self.record(Recorded::Inspect(request.clone()), policy, now);
             self.inspect.clone()
+        }
+    }
+
+    #[test]
+    fn subclass_dispatches_selector_and_freshness_once() {
+        for selector in [None, Some("hunter"), Some("123")] {
+            let mut service = RecordingService::new();
+            let mut args = vec!["ghostlink", "--json", "subclass"];
+            if let Some(selector) = selector {
+                args.extend(["--character", selector]);
+            }
+            let output = run(&mut service, args, freshness());
+            assert_eq!(output.exit_code, 0);
+            assert!(output.stderr.is_empty());
+            assert_eq!(
+                service.recorded(),
+                vec![(Recorded::Subclass(selector.map(CharacterId::new)), TTL, NOW)]
+            );
+            let value: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+            assert_eq!(value["kind"], "subclass");
+            assert_eq!(value["characters"], serde_json::json!([]));
         }
     }
 

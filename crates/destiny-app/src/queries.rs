@@ -516,7 +516,7 @@ where
 
 /// The narrow, object-safe read surface a presentation boundary dispatches to.
 ///
-/// It exposes only the three committed reads and keeps the caller-supplied
+/// It exposes only the committed reads and keeps the caller-supplied
 /// [`FreshnessPolicy`] and explicit [`Timestamp`] in every signature. A caller
 /// therefore forwards its own policy and time and never reproduces the
 /// freshness, authorization, or synchronization decision owned by the shared
@@ -525,6 +525,14 @@ where
 /// associated types, or `Self`-typed returns, so `&mut dyn QueryOperations` is
 /// a valid dispatch target.
 pub trait QueryOperations {
+    /// Reads equipped subclasses for one selector, or all characters.
+    fn character_subclasses(
+        &mut self,
+        character_id: Option<&destiny_core::CharacterId>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::SubclassResult, AppError>;
+
     /// Lists the committed characters after synchronizing the projection.
     fn list_characters(
         &mut self,
@@ -557,6 +565,15 @@ where
         + DefinitionRepository
         + destiny_core::StatDefinitionRepository,
 {
+    fn character_subclasses(
+        &mut self,
+        character_id: Option<&destiny_core::CharacterId>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::SubclassResult, AppError> {
+        QueryService::character_subclasses(self, character_id, policy, now)
+    }
+
     fn list_characters(
         &mut self,
         policy: FreshnessPolicy,

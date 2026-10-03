@@ -76,6 +76,7 @@ impl Cli {
             Command::InspectItem(arguments) => {
                 arguments.into_request().map(ReadRequest::InspectItem)
             }
+            Command::Subclass(arguments) => arguments.into_request().map(ReadRequest::Subclass),
             // A `login` command line carries no read, and the hidden `callback`
             // handler is not a read either, so both report the stable
             // unsupported-operation outcome instead of guessing at a read.
@@ -90,7 +91,7 @@ impl Cli {
     }
 }
 
-/// The three read commands and the interactive login command this journey exposes.
+/// The read commands and the interactive login command this journey exposes.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Download and publish the public English Manifest item definitions.
@@ -116,6 +117,10 @@ pub enum Command {
     /// Inspect exactly one concrete item instance.
     #[command(name = "inspect-item")]
     InspectItem(InspectItemArgs),
+
+    /// Show equipped subclass configurations for one or all characters.
+    #[command(name = "subclass")]
+    Subclass(SubclassArgs),
 
     /// Authorize this machine against the provider.
     ///
@@ -525,6 +530,60 @@ impl WeeklyArgs {
     }
 }
 
+/// Arguments for `subclass`; omitted selection includes every character.
+#[derive(Debug, Args)]
+pub struct SubclassArgs {
+    /// Exact ID or hunter|titan|warlock (case-insensitive, unique class).
+    #[arg(long, value_name = "ID_OR_CLASS")]
+    pub character: Option<String>,
+}
+
+impl SubclassArgs {
+    fn into_request(self) -> Result<Option<CharacterId>, CliError> {
+        self.character
+            .map(|value| {
+                validate_identity(&value, "--character")?;
+                Ok(CharacterId::new(value))
+            })
+            .transpose()
+    }
+}
+
+#[cfg(test)]
+mod subclass_tests {
+    use super::*;
+
+    #[test]
+    fn subclass_parses_optional_character() {
+        for (args, expected) in [
+            (vec!["ghostlink", "subclass"], None),
+            (
+                vec!["ghostlink", "--json", "subclass", "--character", "Hunter"],
+                Some("Hunter"),
+            ),
+            (
+                vec!["ghostlink", "subclass", "--character", "123"],
+                Some("123"),
+            ),
+        ] {
+            let request = Cli::try_parse_from(args)
+                .unwrap()
+                .into_read_request()
+                .unwrap();
+            assert_eq!(
+                request,
+                ReadRequest::Subclass(expected.map(CharacterId::new))
+            );
+        }
+        assert!(
+            Cli::try_parse_from(["ghostlink", "subclass", "--character", " "])
+                .unwrap()
+                .into_read_request()
+                .is_err()
+        );
+    }
+}
+
 /// Arguments for `inspect-item`.
 #[derive(Debug, Args)]
 pub struct InspectItemArgs {
@@ -557,6 +616,7 @@ pub enum ReadRequest {
     ListCharacters,
     SearchInventory(SearchInventoryRequest),
     InspectItem(InspectItemRequest),
+    Subclass(Option<CharacterId>),
 }
 
 /// A stable machine code and process exit status for one failure outcome.
