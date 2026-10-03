@@ -33,7 +33,7 @@ state in sqlite.
 - [x] **ART-001 — Gateway and domain.** `ArtifactGateway::load_artifact`, `is_allowed_artifact_url`, bounded `decode_artifact` (8 chars/16 tiers/32 perks). RED→GREEN; workspace 1132 passed, clippy clean; live shape unverified until smoke. Commit `309ccc5`.
 - [x] **ART-002 — Artifact query.** `ArtifactService::artifact` + `ArtifactOperations`, production `compose_artifact` in CLI runtime. RED→GREEN; workspace 1136 passed, clippy clean. Commit `b1daccf`.
 - [x] **ART-003 — CLI command.** `ghostlink artifact [--character] [--tiers]`, JSON projection in `artifact_output.rs`. RED→GREEN; workspace 1142 passed, clippy clean. Live smoke OK: real 104/202 decoded (3 characters, 5 tiers, perk names resolved). Commit `eba34a6`.
-- [ ] **ART-004 — MCP tool and docs.** `get_artifact`, parity tests, README.
+- [x] **ART-004 — MCP tool and docs.** `get_artifact` live via shared gateway, exact CLI/MCP JSON parity, README. RED→GREEN; workspace 1145 passed, stdio 11 passed, clippy clean. Commit `a0a27ad`.
 - [ ] **ART-005 — Artifact name.** Live `artifactHash` (2894222926) is not an inventory item; load `DestinyArtifactDefinition` to resolve the name.
 
 ## Progress
@@ -42,4 +42,4 @@ state in sqlite.
 
 ## Next step
 
-ART-004.
+ART-005 (pending user confirmation of 0-point live state).
