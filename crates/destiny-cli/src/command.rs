@@ -69,6 +69,13 @@ impl Cli {
     /// reachable from a caller that asked a read-only entry point to run login.
     pub fn into_read_request(self) -> Result<ReadRequest, CliError> {
         match self.command {
+            Command::Artifact(arguments) => {
+                let character_id = SubclassArgs {
+                    character: arguments.character,
+                }
+                .into_request()?;
+                Ok(ReadRequest::Artifact { character_id })
+            }
             Command::ListCharacters => Ok(ReadRequest::ListCharacters),
             Command::SearchInventory(arguments) => {
                 arguments.into_request().map(ReadRequest::SearchInventory)
@@ -121,6 +128,10 @@ pub enum Command {
     /// Show equipped subclass configurations for one or all characters.
     #[command(name = "subclass")]
     Subclass(SubclassArgs),
+
+    /// Show seasonal artifact points, power, and active perks.
+    #[command(name = "artifact")]
+    Artifact(ArtifactArgs),
 
     /// Authorize this machine against the provider.
     ///
@@ -530,6 +541,14 @@ impl WeeklyArgs {
     }
 }
 
+/// Arguments for `artifact`; omitted selection includes every character.
+#[derive(Debug, Args)]
+pub struct ArtifactArgs {
+    /// Exact ID or hunter|titan|warlock (case-insensitive, unique class).
+    #[arg(long, value_name = "ID_OR_CLASS")]
+    pub character: Option<String>,
+}
+
 /// Arguments for `subclass`; omitted selection includes every character.
 #[derive(Debug, Args)]
 pub struct SubclassArgs {
@@ -552,6 +571,48 @@ impl SubclassArgs {
 #[cfg(test)]
 mod subclass_tests {
     use super::*;
+
+    #[test]
+    fn artifact_parses_optional_character_and_rejects_tiers() {
+        for (args, expected) in [
+            (vec!["ghostlink", "artifact"], None),
+            (
+                vec!["ghostlink", "artifact", "--character", "Hunter"],
+                Some("Hunter"),
+            ),
+            (
+                vec!["ghostlink", "--json", "artifact", "--character", "123"],
+                Some("123"),
+            ),
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(args)
+                    .unwrap()
+                    .into_read_request()
+                    .unwrap(),
+                ReadRequest::Artifact {
+                    character_id: expected.map(CharacterId::new)
+                }
+            );
+        }
+        for value in [" ", "id\nvalue"] {
+            assert_eq!(
+                Cli::try_parse_from(["ghostlink", "artifact", "--character", value])
+                    .unwrap()
+                    .into_read_request()
+                    .unwrap_err()
+                    .code(),
+                "invalid_request"
+            );
+        }
+        for args in [
+            vec!["ghostlink", "artifact", "--tiers"],
+            vec!["ghostlink", "--json", "artifact", "--tiers"],
+            vec!["ghostlink", "artifact", "--tiers", "--json"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
 
     #[test]
     fn subclass_parses_optional_character() {
@@ -617,6 +678,7 @@ pub enum ReadRequest {
     SearchInventory(SearchInventoryRequest),
     InspectItem(InspectItemRequest),
     Subclass(Option<CharacterId>),
+    Artifact { character_id: Option<CharacterId> },
 }
 
 /// A stable machine code and process exit status for one failure outcome.

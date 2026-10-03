@@ -851,6 +851,8 @@ pub struct CharacterListResult {
 
 /// Manifest bucket for equipped subclass items.
 pub const SUBCLASS_BUCKET_HASH: crate::BucketHash = crate::BucketHash::new(3284755031);
+/// Equipped seasonal artifact inventory bucket.
+pub const ARTIFACT_BUCKET_HASH: crate::BucketHash = crate::BucketHash::new(1506418338);
 
 /// Equipped subclass configurations in canonical character order.
 #[derive(Clone, Debug, Eq, PartialEq)]

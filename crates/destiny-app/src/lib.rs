@@ -1,5 +1,11 @@
 //! Application-facing configuration, services, and sanitized diagnostics.
 
+pub mod artifact;
+pub use artifact::{
+    ArtifactOperations, ArtifactPoints, ArtifactResult, ArtifactService, ArtifactSlot,
+    CharacterArtifact, EquippedArtifact,
+};
+pub use destiny_core::{ArtifactGateway, ArtifactSnapshot};
 pub mod auth;
 pub mod auth_ux;
 mod config;

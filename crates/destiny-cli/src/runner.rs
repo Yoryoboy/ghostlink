@@ -152,6 +152,10 @@ where
     S: QueryOperations + ?Sized,
 {
     let rendered: Result<String, CliError> = match request {
+        // Artifact is a sibling live service, composed separately at the binary boundary.
+        ReadRequest::Artifact { .. } => {
+            Err(CliError::from_category(ErrorCategory::UnsupportedOperation))
+        }
         ReadRequest::Subclass(character_id) => service
             .character_subclasses(character_id.as_ref(), freshness.policy, freshness.now)
             .map(|result| render_subclasses(mode, &result))
@@ -174,6 +178,19 @@ where
     match rendered {
         Ok(body) => ProcessOutput::success(body),
         Err(error) => ProcessOutput::failure(mode, error),
+    }
+}
+
+/// Dispatches a live artifact read through its sibling service contract.
+pub fn dispatch_artifact<S: destiny_app::ArtifactOperations + ?Sized>(
+    service: &mut S,
+    selector: Option<&destiny_app::CharacterId>,
+    mode: OutputMode,
+    freshness: ReadFreshness,
+) -> ProcessOutput {
+    match service.artifact(selector, freshness.policy, freshness.now) {
+        Ok(result) => ProcessOutput::success(crate::output::render_artifact(mode, &result)),
+        Err(error) => ProcessOutput::failure(mode, CliError::from(error)),
     }
 }
 
@@ -324,6 +341,15 @@ where
         Ok(request) => request,
         Err(error) => return ProcessOutput::failure(mode, error),
     };
+    if let ReadRequest::Artifact { character_id } = request {
+        return match crate::runtime::compose_artifact(
+            &mut crate::runtime::ProductionFoundations,
+            character_id.as_ref(),
+        ) {
+            Ok(result) => ProcessOutput::success(crate::output::render_artifact(mode, &result)),
+            Err(error) => ProcessOutput::failure(mode, error),
+        };
+    }
     match read_factory.build() {
         Ok(mut runtime) => {
             let freshness = runtime.freshness();
@@ -671,6 +697,7 @@ mod tests {
         Search(SearchInventoryRequest),
         Inspect(InspectItemRequest),
         Subclass(Option<CharacterId>),
+        Artifact(Option<CharacterId>),
     }
 
     /// The call log of a recording service.
@@ -748,6 +775,49 @@ mod tests {
         ) -> Result<Resolution<ItemInspection>, AppError> {
             self.record(Recorded::Inspect(request.clone()), policy, now);
             self.inspect.clone()
+        }
+    }
+
+    impl destiny_app::ArtifactOperations for RecordingService {
+        fn artifact(
+            &mut self,
+            selector: Option<&CharacterId>,
+            policy: FreshnessPolicy,
+            now: Timestamp,
+        ) -> Result<destiny_app::ArtifactResult, AppError> {
+            self.record(Recorded::Artifact(selector.cloned()), policy, now);
+            Ok(destiny_app::ArtifactResult {
+                points: None,
+                characters: vec![],
+            })
+        }
+    }
+
+    #[test]
+    fn artifact_dispatches_selector_and_freshness_once() {
+        for selector in [None, Some("hunter"), Some("123")] {
+            let mut service = RecordingService::new();
+            let mut args = vec!["ghostlink", "--json", "artifact"];
+            if let Some(selector) = selector {
+                args.extend(["--character", selector]);
+            }
+            let cli = parse_process(args).unwrap();
+            let mode = cli.output_mode();
+            let ReadRequest::Artifact { character_id } = cli.into_read_request().unwrap() else {
+                panic!("expected artifact")
+            };
+            let output =
+                super::dispatch_artifact(&mut service, character_id.as_ref(), mode, freshness());
+            assert_eq!(output.exit_code, 0);
+            assert!(output.stderr.is_empty());
+            assert_eq!(
+                service.recorded(),
+                vec![(Recorded::Artifact(selector.map(CharacterId::new)), TTL, NOW)]
+            );
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&output.stdout).unwrap(),
+                serde_json::json!({"kind":"artifact", "points":null, "characters":[]})
+            );
         }
     }
 

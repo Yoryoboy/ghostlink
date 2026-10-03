@@ -955,6 +955,208 @@ mod tests {
         }
     }
 
+    struct ArtifactFake {
+        profile: SharedGateway,
+        artifact: destiny_core::ArtifactSnapshot,
+    }
+    impl ProfileGateway for ArtifactFake {
+        fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
+            self.profile.resolve_membership()
+        }
+        fn load_inventory(
+            &mut self,
+            membership: &DestinyMembership,
+        ) -> Result<InventorySnapshotInput, AppError> {
+            self.profile.load_inventory(membership)
+        }
+    }
+    impl destiny_core::ArtifactGateway for ArtifactFake {
+        fn load_artifact(
+            &mut self,
+            requested: &DestinyMembership,
+        ) -> Result<destiny_core::ArtifactSnapshot, AppError> {
+            assert_eq!(requested, &membership());
+            Ok(self.artifact.clone())
+        }
+    }
+    fn artifact_service(
+        profile_present: bool,
+        stale: bool,
+    ) -> crate::ArtifactService<ArtifactFake, CompositeRepository> {
+        artifact_service_with(profile_present, stale, |_, _| {})
+    }
+    fn artifact_service_with(
+        profile_present: bool,
+        stale: bool,
+        configure: impl FnOnce(&mut ArtifactFake, &mut CompositeRepository),
+    ) -> crate::ArtifactService<ArtifactFake, CompositeRepository> {
+        use destiny_core::{ArtifactProfileState, ArtifactSnapshot};
+        let shared = gateway();
+        let mut hunter = character("1");
+        hunter.class = Some("Hunter".into());
+        let mut titan = character("2");
+        titan.class = Some("Titan".into());
+        let mut repository = CompositeRepository::with_definitions(vec![
+            definition(10, "Artifact", None, vec![]),
+            definition(20, "First", None, vec![]),
+            definition(21, "Second", None, vec![]),
+        ]);
+        let input = snapshot_input(NOW, vec![hunter, titan], vec![]);
+        if stale {
+            queue_refresh(&shared, input);
+        } else {
+            repository.commit(input);
+        }
+        let artifact = ArtifactSnapshot {
+            profile: profile_present.then_some(ArtifactProfileState {
+                points: 12,
+                points_cap: 12,
+                progress_to_next_level: 34,
+                next_level_at: 100,
+            }),
+        };
+        let mut fake = ArtifactFake {
+            profile: SharedGateway(shared),
+            artifact,
+        };
+        configure(&mut fake, &mut repository);
+        crate::ArtifactService::new(ProfileSyncService::new_with_definitions(fake, repository))
+    }
+    #[test]
+    fn artifact_equipped_snapshot_survives_missing_live_points() {
+        let mut service = artifact_service_with(false, false, |_, repository| {
+            let mut artifact = definition(30, "Tablet of Ruin", Some("Artifact"), vec![]);
+            artifact.bucket_hash = Some(destiny_core::ARTIFACT_BUCKET_HASH);
+            let mut definitions = vec![artifact];
+            for hash in 40..48 {
+                let name = if hash == 47 {
+                    "Empty Artifact Mod".into()
+                } else {
+                    format!("Perk {}", hash - 39)
+                };
+                let mut perk = definition(hash, &name, None, vec![]);
+                perk.plug_category = Some("artifact_perks".into());
+                definitions.push(perk);
+            }
+            let mut shader = definition(48, "Shader", None, vec![]);
+            shader.plug_category = Some("shader".into());
+            definitions.push(shader);
+            repository.definitions = CompositeRepository::with_definitions(definitions).definitions;
+            let mut item = instance(
+                "tablet",
+                30,
+                ItemLocation::Character(CharacterId::new("1")),
+                vec![],
+            );
+            item.equipped = true;
+            item.plugs = (40..=48)
+                .map(|hash| destiny_core::PlugSummary {
+                    plug_hash: ItemHash::new(hash),
+                    enabled: true,
+                })
+                .collect();
+            let mut unequipped = item.clone();
+            unequipped.instance_id = ItemInstanceId::new("unequipped");
+            unequipped.equipped = false;
+            let mut vault = item.clone();
+            vault.instance_id = ItemInstanceId::new("vault");
+            vault.location = ItemLocation::Vault;
+            repository.commit(snapshot_input(
+                NOW,
+                vec![character("1"), character("2")],
+                vec![item, unequipped, vault],
+            ));
+        });
+        let result = service.artifact(None, TTL, NOW).unwrap();
+        assert!(result.points.is_none());
+        let equipped = result.characters[0]
+            .equipped
+            .as_ref()
+            .expect("snapshot artifact");
+        assert_eq!(equipped.instance_id, ItemInstanceId::new("tablet"));
+        assert_eq!(equipped.item_hash, ItemHash::new(30));
+        assert_eq!(equipped.name.as_deref(), Some("Tablet of Ruin"));
+        assert_eq!(
+            equipped
+                .slots
+                .iter()
+                .map(|slot| slot.plug_hash.value())
+                .collect::<Vec<_>>(),
+            (40..48).collect::<Vec<_>>()
+        );
+        assert!(equipped.slots[..7].iter().all(|slot| !slot.empty));
+        assert!(equipped.slots[7].empty);
+        assert_eq!(
+            equipped.slots[7].name.as_deref(),
+            Some("Empty Artifact Mod")
+        );
+        assert!(result.characters[1].equipped.is_none());
+    }
+
+    #[test]
+    fn artifact_projects_points_and_synced_characters() {
+        use crate::ArtifactOperations;
+        let result =
+            ArtifactOperations::artifact(&mut artifact_service(true, true), None, TTL, NOW)
+                .unwrap();
+        assert_eq!(
+            result.points,
+            Some(crate::ArtifactPoints {
+                points: 12,
+                points_cap: 12,
+                progress_to_next_level: 34,
+                next_level_at: 100
+            })
+        );
+        assert_eq!(result.characters.len(), 2);
+        assert!(result.characters.iter().all(|c| c.equipped.is_none()));
+    }
+    #[test]
+    fn artifact_selects_id_or_case_insensitive_class_and_allows_missing_profile() {
+        for selector in ["1", "hUnTeR"] {
+            let result = artifact_service(false, false)
+                .artifact(Some(&CharacterId::new(selector)), TTL, NOW)
+                .unwrap();
+            assert!(result.points.is_none());
+            assert_eq!(result.characters.len(), 1);
+            assert_eq!(result.characters[0].character_id, CharacterId::new("1"));
+            assert!(result.characters[0].equipped.is_none());
+        }
+        let result = artifact_service(true, false)
+            .artifact(Some(&CharacterId::new("Titan")), TTL, NOW)
+            .unwrap();
+        assert!(result.characters[0].equipped.is_none());
+        assert_eq!(
+            artifact_service(true, false)
+                .artifact(Some(&CharacterId::new("missing")), TTL, NOW)
+                .unwrap_err()
+                .category(),
+            ErrorCategory::ProviderValidation
+        );
+    }
+
+    #[test]
+    fn artifact_gates_definitions_and_propagates_sync_failure() {
+        let mut service = artifact_service_with(true, true, |_, repository| {
+            repository.definitions = InMemoryDefinitionRepository::default();
+        });
+        assert_eq!(
+            service.artifact(None, TTL, NOW).unwrap_err().category(),
+            ErrorCategory::DefinitionsUnavailable
+        );
+        let mut service = artifact_service_with(true, false, |fake, repository| {
+            repository.inventory = InMemoryInventoryRepository::new();
+            fake.profile
+                .0
+                .borrow_mut()
+                .queue_membership(Err(AppError::new(ErrorCategory::ProviderUnavailable)));
+        });
+        assert_eq!(
+            service.artifact(None, TTL, NOW).unwrap_err().category(),
+            ErrorCategory::ProviderUnavailable
+        );
+    }
+
     fn fresh_checked_at() -> Timestamp {
         Timestamp::new(NOW.seconds() - 100)
     }

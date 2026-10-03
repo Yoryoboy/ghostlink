@@ -475,7 +475,7 @@ pub fn profile_endpoint(membership: &DestinyMembership) -> String {
 }
 
 /// Accepts only current-memberships, the exact inventory profile query, or the
-/// exact character weekly query (202/204). No other endpoint is permitted.
+/// exact weekly (202/204) or artifact (104) query. No other endpoint is permitted.
 ///
 /// This predicate is the pre-flight gate: the transport evaluates it before it
 /// reads or attaches any credential, so a rejected URL never receives a secret.
@@ -483,6 +483,7 @@ pub fn is_allowed_profile_url(url: &str) -> bool {
     url == MEMBERSHIP_ENDPOINT
         || is_allowed_profile_get(url)
         || crate::weekly_profile::is_allowed_weekly_url(url)
+        || crate::artifact::is_allowed_artifact_url(url)
 }
 
 /// Accepts exactly `{origin}/Platform/Destiny2/{type}/Profile/{id}/?components=…`.
@@ -1162,6 +1163,26 @@ where
             self.definition_version.clone(),
             observed_at,
         )
+    }
+}
+
+impl<T, C, S> destiny_core::ArtifactGateway for BungieProfileGateway<T, C, S>
+where
+    T: ProfileTransport,
+    C: Clock,
+    S: CredentialSource,
+{
+    fn load_artifact(
+        &mut self,
+        membership: &DestinyMembership,
+    ) -> Result<destiny_core::ArtifactSnapshot, AppError> {
+        let url = crate::artifact::artifact_endpoint(membership)?;
+        let (bytes, _) = self.read_with_live_credential(
+            &url,
+            crate::artifact::ARTIFACT_RESPONSE_LIMIT,
+            ReadRetryScope::RateLimitAndTransient,
+        )?;
+        crate::artifact::decode_artifact(&bytes)
     }
 }
 
@@ -2736,6 +2757,42 @@ mod tests {
         assert_eq!(recorded[0].url, MEMBERSHIP_ENDPOINT);
         assert_eq!(recorded[1].url, profile_endpoint(&selected()));
         assert!(recorded[1].url.ends_with(PROFILE_QUERY));
+    }
+
+    #[test]
+    fn artifact_gateway_reuses_auth_retry_and_exact_profile_endpoint() {
+        use destiny_core::ArtifactGateway;
+        let fixture = br#"{"ErrorCode":1,"Response":{"profileProgression":{"data":{"seasonalArtifact":{"pointProgression":{"level":12,"levelCap":12,"progressToNextLevel":34,"nextLevelAt":100}}}}}}"#;
+        let (mut gateway, delay) = step_gateway(
+            vec![
+                Ok(json_response_bytes(503, b"{}")),
+                Ok(json_response_bytes(200, fixture)),
+            ],
+            [Timestamp::new(GATEWAY_NOW), Timestamp::new(GATEWAY_NOW)],
+            GATEWAY_EXPIRES_AT,
+        );
+        let snapshot = gateway
+            .load_artifact(&selected())
+            .expect("artifact snapshot");
+        assert_eq!(snapshot.profile.expect("profile artifact").points, 12);
+        assert_eq!(delay.waits().len(), 1);
+        let expected = crate::artifact::artifact_endpoint(&selected()).expect("artifact endpoint");
+        let recorded = gateway.transport().recorded();
+        assert_eq!(recorded.len(), 2);
+        for request in recorded {
+            assert_eq!(request.url, expected);
+            assert_eq!(request.api_key.as_deref(), Some(API_KEY_SENTINEL));
+            assert_eq!(request.bearer.as_deref(), Some(BEARER_SENTINEL));
+        }
+    }
+
+    #[test]
+    fn artifact_gateway_refuses_expired_credentials_before_transport() {
+        use destiny_core::ArtifactGateway;
+        let mut gateway = gateway(vec![], GATEWAY_NOW, GATEWAY_NOW);
+        let error = gateway.load_artifact(&selected()).expect_err("expired");
+        assert_eq!(error.category(), ErrorCategory::ProviderAuthentication);
+        assert!(gateway.transport().recorded().is_empty());
     }
 
     #[test]

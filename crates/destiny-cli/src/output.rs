@@ -18,6 +18,10 @@ use crate::command::{CallbackMode, CliError};
 use crate::login::LoginInstruction;
 
 #[cfg(test)]
+#[path = "artifact_output_tests.rs"]
+mod artifact_tests;
+
+#[cfg(test)]
 mod subclass_tests {
     use super::*;
     use destiny_app::{
@@ -176,6 +180,59 @@ pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult)
 #[path = "subclass_output.rs"]
 mod subclass_output;
 pub use subclass_output::subclass_json;
+
+#[path = "artifact_output.rs"]
+mod artifact_output;
+pub use artifact_output::artifact_json;
+
+/// Renders live artifact points and equipped artifact sockets.
+pub fn render_artifact(mode: OutputMode, result: &destiny_app::ArtifactResult) -> String {
+    if mode == OutputMode::Json {
+        return artifact_json(result).to_string();
+    }
+    let label = |name: Option<&str>, hash: destiny_app::ItemHash| {
+        name.map(sanitize)
+            .unwrap_or_else(|| format!("#{}", hash.value()))
+    };
+    let mut lines = vec![match &result.points {
+        Some(points) => {
+            let mut text = format!("Artifact points: {}/{}", points.points, points.points_cap);
+            if points.points < points.points_cap {
+                text.push_str(&format!(
+                    " ({}/{} to next point)",
+                    points.progress_to_next_level, points.next_level_at
+                ));
+            }
+            text
+        }
+        None => "Artifact points: unavailable".into(),
+    }];
+    for character in &result.characters {
+        let class = sanitize(character.class.as_deref().unwrap_or("Unknown"));
+        if let Some(equipped) = &character.equipped {
+            lines.push(format!(
+                "{class}: {}",
+                label(equipped.name.as_deref(), equipped.item_hash)
+            ));
+            let perks = equipped
+                .slots
+                .iter()
+                .map(|slot| {
+                    if slot.empty {
+                        "(empty)".into()
+                    } else {
+                        label(slot.name.as_deref(), slot.plug_hash)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!("  Perks: {perks}"));
+        } else {
+            lines.push(format!("{class}: no artifact equipped"));
+        }
+    }
+    lines.join("\n")
+}
 
 /// Renders the public version label and counts, never definition payloads.
 pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncReport) -> String {

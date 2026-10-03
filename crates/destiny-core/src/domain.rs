@@ -105,7 +105,7 @@ pub struct ItemInstance {
     pub perks: Vec<PerkSummary>,
     /// Enabled, non-empty plugs in socket order; duplicate hashes are semantic.
     /// Acquisition is classification-neutral. Publication keeps weapon perks,
-    /// armor mods, armor archetypes, subclass plugs and unknown definitions using
+    /// armor mods, armor archetypes, subclass plugs, artifact perks and unknown definitions using
     /// [`classify_plug`].
     pub plugs: Vec<PlugSummary>,
     /// Unique stats in ascending hash order; order is not semantic.
@@ -275,6 +275,7 @@ pub enum PlugKind {
     ArmorMod,
     ArmorArchetype,
     Subclass(SubclassPlugKind),
+    ArtifactPerk,
     Other,
 }
 
@@ -282,6 +283,8 @@ pub enum PlugKind {
 pub fn classify_plug(category: &str) -> PlugKind {
     if let Some(kind) = classify_subclass_plug(category) {
         PlugKind::Subclass(kind)
+    } else if category == "artifact_perks" {
+        PlugKind::ArtifactPerk
     } else if category == "armor_archetypes" {
         PlugKind::ArmorArchetype
     } else if category.contains("masterworks") {
@@ -327,6 +330,65 @@ pub fn is_weapon_perk_plug(category: &str) -> bool {
 
 #[cfg(test)]
 mod plug_tests {
+    #[test]
+    fn artifact_perks_are_retained_without_becoming_searchable_mods() {
+        use super::{
+            AvailablePlug, ItemInstance, ItemLocation, PlugKind, PlugSummary, classify_plug,
+        };
+        use crate::{ItemHash, ItemInstanceId};
+        assert_ne!(classify_plug("artifact_perks"), PlugKind::Other);
+        assert_ne!(classify_plug("artifact_perks"), PlugKind::ArmorMod);
+        assert_ne!(classify_plug("artifact_perks"), PlugKind::WeaponPerk);
+        for category in [
+            "Artifact_perks",
+            "artifact_perks.extra",
+            "artifact_perks_extra",
+        ] {
+            assert_eq!(classify_plug(category), PlugKind::Other);
+        }
+        assert_eq!(
+            classify_plug("enhancements.season_artifact"),
+            PlugKind::ArmorMod
+        );
+        let mut item = ItemInstance {
+            instance_id: ItemInstanceId::new("artifact"),
+            item_hash: ItemHash::new(1),
+            location: ItemLocation::Vault,
+            quantity: 1,
+            equipped: true,
+            locked: false,
+            power: None,
+            perks: vec![],
+            stats: vec![],
+            available_plugs: vec![AvailablePlug {
+                socket_index: 0,
+                plug_hash: ItemHash::new(1),
+            }],
+            plugs: [1, 2, 1, 3]
+                .into_iter()
+                .map(|hash| PlugSummary {
+                    plug_hash: ItemHash::new(hash),
+                    enabled: hash != 3,
+                })
+                .collect(),
+        };
+        item.retain_searchable_plugs(|hash| {
+            Some(if hash.value() == 2 {
+                "shader"
+            } else {
+                "artifact_perks"
+            })
+        });
+        assert_eq!(
+            item.plugs
+                .iter()
+                .map(|plug| plug.plug_hash.value())
+                .collect::<Vec<_>>(),
+            vec![1, 1]
+        );
+        assert!(item.available_plugs.is_empty());
+    }
+
     #[test]
     fn subclass_category_classification_table() {
         use super::{PlugKind, SubclassPlugKind, classify_plug, classify_subclass_plug};

@@ -1,5 +1,7 @@
 //! Provider- and transport-free domain contracts.
 
+pub mod artifact;
+pub use artifact::*;
 pub mod auth;
 pub mod domain;
 pub mod error;
@@ -54,12 +56,12 @@ pub use ports::{
     TransferRequest,
 };
 pub use query::{
-    CharacterListResult, CharacterSubclass, DefinitionSearchQuery, InspectItemRequest,
-    InstanceSearchQuery, InventorySearchHit, InventorySearchResult, ItemHashFilter, ItemInspection,
-    LocationFilter, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH,
-    MAX_STAT_CONDITIONS, MAX_TAG_FILTERS, NamedStat, QueryMetadata, SUBCLASS_BUCKET_HASH,
-    SearchTerm, StatCondition, StatOp, SubclassConfig, SubclassResult, SubclassSlot,
-    definition_matches, instance_matches, normalize_search_text,
+    ARTIFACT_BUCKET_HASH, CharacterListResult, CharacterSubclass, DefinitionSearchQuery,
+    InspectItemRequest, InstanceSearchQuery, InventorySearchHit, InventorySearchResult,
+    ItemHashFilter, ItemInspection, LocationFilter, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT,
+    MAX_SEARCH_TEXT_LENGTH, MAX_STAT_CONDITIONS, MAX_TAG_FILTERS, NamedStat, QueryMetadata,
+    SUBCLASS_BUCKET_HASH, SearchTerm, StatCondition, StatOp, SubclassConfig, SubclassResult,
+    SubclassSlot, definition_matches, instance_matches, normalize_search_text,
 };
 pub use redact::{REDACTED, Redacted, opaque, redact_optional};
 pub use state::{

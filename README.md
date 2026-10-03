@@ -308,6 +308,22 @@ The subclass contains `instance_id`, `item_hash`, `name`, `element` and ordered
 `aspect`, `fragment`, `grenade`, `melee`, `class_ability`, `movement` and
 `transcendence`. Empty sockets remain explicit; unlocked options are not included.
 
+### Seasonal artifact state
+
+`ghostlink artifact [--character <id|class>]` shows live artifact points
+from profile `pointProgression` and each character's equipped artifact and perks
+from the freshness-synchronized inventory. Text shows points/cap and, below the
+cap, progress toward the next point. Empty perk sockets appear as `(empty)`.
+Requires login and `ghostlink sync-manifest`; live points are not persisted in
+SQLite. Character selection follows the subclass rules above.
+
+`ghostlink --json artifact` returns `kind: "artifact"`, nullable `points`
+(`points`, `points_cap`, `progress_to_next_level`, `next_level_at`) and `characters`.
+Each character has `character_id`, `class` and nullable `equipped` with
+`instance_id`, `item_hash`, nullable `name` and ordered `slots`. Each slot has
+`plug_hash`, nullable `name` and `empty`. Missing progression or equipped artifact
+stays null. Legacy artifact tiers and power-bonus fields are not reported.
+
 ### Inspect one owned item
 
 `ghostlink inspect-item <INSTANCE_ID>` shows named socketed perks and mods,
@@ -452,6 +468,7 @@ list_characters   list the signed-in account's characters
 search_inventory  search Manifest definitions and concrete instances
 inspect_item      inspect exactly one concrete instance by instance identifier
 get_subclass      show equipped subclass configurations per character
+get_artifact      read live seasonal artifact state and per-character perks
 weekly_reset      show the current public weekly rotation (same data as the CLI)
 weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
@@ -494,6 +511,11 @@ accept 1–1000. Search output includes `resolved.perk_terms`,
 `get_subclass` accepts an optional `character` (exact id or unique class),
 with omission selecting all characters. Its structured output matches
 `ghostlink --json subclass` exactly, including socket order and empty slots.
+For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
+
+`get_artifact` accepts an optional `character` (exact id or unique class),
+with omission selecting all characters. Its structured output matches
+`ghostlink --json artifact` exactly, including points and equipped artifact sockets.
 For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
 
 `inspect_item` returns the same enriched names as CLI inspection:

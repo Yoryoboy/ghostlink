@@ -173,7 +173,33 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         read_service,
         |t| destiny_adapters::format_reset_timestamp(t, false),
     );
+    let read_service = destiny_mcp::service::ArtifactReadService::new(
+        FixtureArtifact,
+        read_service,
+        FakeClock::fixed(NOW),
+        TTL,
+    );
     ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
+}
+
+struct FixtureArtifact;
+impl destiny_app::ArtifactOperations for FixtureArtifact {
+    fn artifact(
+        &mut self,
+        selector: Option<&destiny_app::CharacterId>,
+        policy: FreshnessPolicy,
+        now: destiny_app::Timestamp,
+    ) -> Result<destiny_app::ArtifactResult, AppError> {
+        assert_eq!(policy, TTL);
+        assert_eq!(now, NOW);
+        if selector.is_some_and(|id| id.as_str() == "missing") {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(destiny_app::ArtifactResult {
+            points: None,
+            characters: vec![],
+        })
+    }
 }
 
 struct PersonalGateway;

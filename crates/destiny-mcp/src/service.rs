@@ -91,6 +91,13 @@ pub struct ListCharactersRequest;
 /// without touching `rmcp`. Requests are already validated and bounded; outputs
 /// are the bounded MCP projections defined in [`crate::schema`].
 pub trait InventoryReadService {
+    /// Reads live artifact state when composed with an artifact service.
+    fn get_artifact(
+        &mut self,
+        _character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetArtifactOutput, McpError> {
+        Err(McpError::new(ErrorCategory::DefinitionsUnavailable))
+    }
     /// Reads equipped subclasses for one selector, or all characters.
     fn get_subclass(
         &mut self,
@@ -122,6 +129,74 @@ pub trait InventoryReadService {
     /// Inspects exactly one concrete instance.
     fn inspect_item(&mut self, request: &InspectItemRequest)
     -> Result<InspectItemOutput, McpError>;
+}
+
+/// Adds the live artifact sibling service without changing inventory policy.
+pub struct ArtifactReadService<A, I, C> {
+    artifact: A,
+    inventory: I,
+    clock: C,
+    policy: FreshnessPolicy,
+}
+
+impl<A, I, C> ArtifactReadService<A, I, C> {
+    pub fn new(artifact: A, inventory: I, clock: C, policy: FreshnessPolicy) -> Self {
+        Self {
+            artifact,
+            inventory,
+            clock,
+            policy,
+        }
+    }
+}
+
+impl<A: destiny_app::ArtifactOperations, I: InventoryReadService, C: Clock> InventoryReadService
+    for ArtifactReadService<A, I, C>
+{
+    fn get_artifact(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetArtifactOutput, McpError> {
+        let now = self.clock.now().map_err(McpError::from)?;
+        let result = self
+            .artifact
+            .artifact(character, self.policy, now)
+            .map_err(McpError::from)?;
+        Ok(artifact_output(&result))
+    }
+    fn get_subclass(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetSubclassOutput, McpError> {
+        self.inventory.get_subclass(character)
+    }
+    fn weekly(
+        &mut self,
+        args: &crate::schema::WeeklyArgs,
+    ) -> Result<crate::schema::WeeklyOutput, WeeklyReadError> {
+        self.inventory.weekly(args)
+    }
+    fn weekly_reset(&mut self) -> Result<crate::schema::WeeklyResetOutput, McpError> {
+        self.inventory.weekly_reset()
+    }
+    fn list_characters(
+        &mut self,
+        request: &ListCharactersRequest,
+    ) -> Result<ListCharactersOutput, McpError> {
+        self.inventory.list_characters(request)
+    }
+    fn search_inventory(
+        &mut self,
+        request: &SearchInventoryRequest,
+    ) -> Result<SearchInventoryOutput, McpError> {
+        self.inventory.search_inventory(request)
+    }
+    fn inspect_item(
+        &mut self,
+        request: &InspectItemRequest,
+    ) -> Result<InspectItemOutput, McpError> {
+        self.inventory.inspect_item(request)
+    }
 }
 
 /// Adds a credential-free weekly service to an independent account read seam.
@@ -837,6 +912,52 @@ impl InstanceQueryArgs {
         };
         query.validate().map_err(McpError::from)?;
         Ok(query)
+    }
+}
+
+impl crate::schema::GetArtifactArgs {
+    pub fn into_request(self) -> Result<Option<CharacterId>, McpError> {
+        if let Some(character) = &self.character {
+            validate_identifier(character, "character")?;
+        }
+        Ok(self.character.map(CharacterId::new))
+    }
+}
+
+/// Full CLI-compatible artifact envelope, retaining equipped socket order.
+pub fn artifact_output(result: &destiny_app::ArtifactResult) -> crate::schema::GetArtifactOutput {
+    use crate::schema::{ArtifactPointsView, CharacterArtifactView, GetArtifactOutput};
+    GetArtifactOutput {
+        points: result.points.as_ref().map(|points| ArtifactPointsView {
+            points: points.points,
+            points_cap: points.points_cap,
+            progress_to_next_level: points.progress_to_next_level,
+            next_level_at: points.next_level_at,
+        }),
+        characters: result
+            .characters
+            .iter()
+            .map(|character| CharacterArtifactView {
+                character_id: character.character_id.as_str().to_owned(),
+                class: character.class.clone(),
+                equipped: character.equipped.as_ref().map(|equipped| {
+                    crate::schema::EquippedArtifactView {
+                        instance_id: equipped.instance_id.as_str().to_owned(),
+                        item_hash: equipped.item_hash.value(),
+                        name: equipped.name.clone(),
+                        slots: equipped
+                            .slots
+                            .iter()
+                            .map(|slot| crate::schema::ArtifactSlotView {
+                                plug_hash: slot.plug_hash.value(),
+                                name: slot.name.clone(),
+                                empty: slot.empty,
+                            })
+                            .collect(),
+                    }
+                }),
+            })
+            .collect(),
     }
 }
 
