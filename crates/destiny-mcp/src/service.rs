@@ -640,17 +640,47 @@ impl SearchInventoryArgs {
                 .map(|value| SearchTerm::new(value))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(McpError::from)?,
-            element: None,
-            slot: None,
-            class_type: None,
+            element: self
+                .element
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(McpError::from)?,
+            slot: self
+                .slot
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(McpError::from)?,
+            class_type: self
+                .class_type
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(McpError::from)?,
             limit: self.limit,
         };
         definitions.validate().map_err(McpError::from)?;
 
-        let instances = self
+        let mut instances = self
             .instances
             .map(InstanceQueryArgs::into_query)
             .transpose()?;
+        if instances.is_none() && (definitions.has_filters() || self.min_power.is_some()) {
+            instances = Some(
+                InstanceQueryArgs {
+                    limit: self.limit,
+                    ..Default::default()
+                }
+                .into_query()?,
+            );
+        }
+        if let Some(query) = &mut instances {
+            query.definitions = definitions
+                .has_filters()
+                .then(|| Box::new(definitions.clone()));
+            query.min_power = query.min_power.max(self.min_power);
+        }
 
         Ok(SearchInventoryRequest {
             definitions,
@@ -684,7 +714,7 @@ impl InstanceQueryArgs {
             perk_hash: self.perk_hash.map(PerkHash::new),
             character_id: self.character_id.map(CharacterId::new),
             definitions: None,
-            min_power: None,
+            min_power: self.min_power,
             limit: self.limit,
         };
         query.validate().map_err(McpError::from)?;
@@ -947,6 +977,8 @@ fn definition_view(definition: &ItemDefinition) -> DefinitionView {
         item_type: definition.item_type.clone(),
         tier: definition.tier.clone(),
         element: definition.element.clone(),
+        slot: definition.slot.map(|v| v.as_str().to_owned()),
+        class_type: definition.class_type.map(|v| v.as_str().to_owned()),
         tags: definition.tags.clone(),
         definition_version: definition.version.as_str().to_owned(),
     }
@@ -1312,6 +1344,56 @@ mod tests {
         (Rc::clone(&shared), app_service(&shared, repository))
     }
 
+    #[test]
+    fn search_attribute_filters_match_cli_contract() {
+        let args: SearchInventoryArgs = serde_json::from_value(serde_json::json!({
+            "element": "SoLaR", "slot": "Energy", "class_type": "Hunter", "min_power": 2000
+        }))
+        .expect("new arguments");
+        let request = args.into_request().expect("valid filters");
+        assert_eq!(
+            request.definitions.element.map(|v| v.as_str()),
+            Some("solar")
+        );
+        assert_eq!(request.definitions.slot.map(|v| v.as_str()), Some("energy"));
+        assert_eq!(
+            request.definitions.class_type.map(|v| v.as_str()),
+            Some("hunter")
+        );
+        let instances = request.instances.expect("owned query");
+        assert_eq!(instances.min_power, Some(2000));
+        assert_eq!(instances.definitions.as_deref(), Some(&request.definitions));
+        for field in ["element", "slot", "class_type"] {
+            let args: SearchInventoryArgs =
+                serde_json::from_value(serde_json::json!({field: "invalid"})).unwrap();
+            assert!(args.into_request().is_err());
+        }
+        let args: SearchInventoryArgs =
+            serde_json::from_value(serde_json::json!({"instances": {"min_power": 2001}})).unwrap();
+        assert_eq!(
+            args.into_request().unwrap().instances.unwrap().min_power,
+            Some(2001)
+        );
+        for (outer, inner, expected) in [(2000, 2001, 2001), (2002, 2001, 2002)] {
+            let args: SearchInventoryArgs = serde_json::from_value(
+                serde_json::json!({"min_power": outer, "instances": {"min_power": inner}}),
+            )
+            .unwrap();
+            assert_eq!(
+                args.into_request().unwrap().instances.unwrap().min_power,
+                Some(expected)
+            );
+        }
+        let mut item = definition(1, "Solar item", None, Vec::new());
+        item.element = Some("solar".into());
+        item.slot = Some("energy".parse().unwrap());
+        item.class_type = Some("any".parse().unwrap());
+        let view = super::definition_view(&item);
+        assert_eq!(view.element.as_deref(), Some("solar"));
+        assert_eq!(view.slot.as_deref(), Some("energy"));
+        assert_eq!(view.class_type.as_deref(), Some("any"));
+    }
+
     fn search_args(
         text: Option<&str>,
         tags: Vec<&str>,
@@ -1322,11 +1404,16 @@ mod tests {
             text: text.map(str::to_owned),
             item_type: None,
             tags: tags.into_iter().map(str::to_owned).collect(),
+            element: None,
+            slot: None,
+            class_type: None,
+            min_power: None,
             limit,
             instances: item_hashes.map(|hashes| InstanceQueryArgs {
                 item_hashes: Some(hashes),
                 perk_hash: None,
                 character_id: None,
+                min_power: None,
                 limit,
             }),
         }
@@ -1334,6 +1421,10 @@ mod tests {
 
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            element: None,
+            slot: None,
+            class_type: None,
+            min_power: None,
             text: None,
             item_type: None,
             tags: Vec::new(),
@@ -1342,6 +1433,7 @@ mod tests {
                 item_hashes: None,
                 perk_hash: None,
                 character_id: character_id.map(str::to_owned),
+                min_power: None,
                 limit: MAX_SEARCH_LIMIT,
             }),
         }
@@ -1532,12 +1624,17 @@ mod tests {
         let args = SearchInventoryArgs {
             text: Some("gjallar".into()),
             item_type: None,
+            element: None,
+            slot: None,
+            class_type: None,
+            min_power: None,
             tags: Vec::new(),
             limit: MAX_SEARCH_LIMIT,
             instances: Some(InstanceQueryArgs {
                 item_hashes: Some(vec![1, 2]),
                 perk_hash: None,
                 character_id: None,
+                min_power: None,
                 limit: MAX_SEARCH_LIMIT,
             }),
         };
@@ -1709,12 +1806,17 @@ mod tests {
         let args = SearchInventoryArgs {
             text: None,
             item_type: None,
+            element: None,
+            slot: None,
+            class_type: None,
+            min_power: None,
             tags: Vec::new(),
             limit: MAX_SEARCH_LIMIT,
             instances: Some(InstanceQueryArgs {
                 item_hashes: None,
                 perk_hash: None,
                 character_id: None,
+                min_power: None,
                 limit: MAX_SEARCH_LIMIT,
             }),
         };
@@ -1745,12 +1847,17 @@ mod tests {
         let args = SearchInventoryArgs {
             text: None,
             item_type: None,
+            element: None,
+            slot: None,
+            class_type: None,
+            min_power: None,
             tags: Vec::new(),
             limit: MAX_SEARCH_LIMIT,
             instances: Some(InstanceQueryArgs {
                 item_hashes: None,
                 perk_hash: None,
                 character_id: None,
+                min_power: None,
                 limit: MAX_SEARCH_LIMIT,
             }),
         };
