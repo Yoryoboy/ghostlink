@@ -48,6 +48,7 @@ const SCENARIO_ENV: &str = "DESTINY_FIXTURE_SCENARIO";
 const LIST_CHARACTERS_TOOL: &str = "list_characters";
 const SEARCH_INVENTORY_TOOL: &str = "search_inventory";
 const INSPECT_ITEM_TOOL: &str = "inspect_item";
+const GET_SUBCLASS_TOOL: &str = "get_subclass";
 const MOVE_ITEM_TOOL: &str = "move_item";
 const WEEKLY_RESET_TOOL: &str = "weekly_reset";
 
@@ -402,6 +403,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             LIST_CHARACTERS_TOOL,
             SEARCH_INVENTORY_TOOL,
             INSPECT_ITEM_TOOL,
+            GET_SUBCLASS_TOOL,
             WEEKLY_RESET_TOOL,
             "weekly",
             MOVE_ITEM_TOOL
@@ -435,6 +437,17 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
         .call_tool(INSPECT_ITEM_TOOL, json!({ "instance_id": "inst-a" }))
         .await;
     assert_eq!(structured(&inspect)["status"], "found");
+
+    let subclass = session.call_tool(GET_SUBCLASS_TOOL, json!({})).await;
+    assert_eq!(subclass["result"]["isError"], false);
+    assert_eq!(structured(&subclass)["kind"], "subclass");
+    assert!(
+        structured(&subclass)["characters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|character| character["subclass"].is_null())
+    );
 
     // --- one move_item request completes the whole journey -----------------------
     let moved = session

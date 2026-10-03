@@ -17,6 +17,98 @@ use destiny_app::{
 use crate::command::{CallbackMode, CliError};
 use crate::login::LoginInstruction;
 
+#[cfg(test)]
+mod subclass_tests {
+    use super::*;
+    use destiny_app::{
+        CharacterId, CharacterSubclass, ItemHash, ItemInstanceId, SubclassConfig, SubclassPlugKind,
+        SubclassResult, SubclassSlot,
+    };
+
+    fn fixture() -> SubclassResult {
+        use SubclassPlugKind::*;
+        SubclassResult {
+            characters: vec![
+                CharacterSubclass {
+                    character_id: CharacterId::new("1"),
+                    class: Some("Hunter".into()),
+                    subclass: Some(SubclassConfig {
+                        instance_id: ItemInstanceId::new("2"),
+                        item_hash: ItemHash::new(3),
+                        name: "Prismatic".into(),
+                        element: Some("prismatic".into()),
+                        slots: [
+                            Fragment,
+                            Super,
+                            ClassAbility,
+                            Movement,
+                            Melee,
+                            Grenade,
+                            Aspect,
+                            Fragment,
+                            Transcendence,
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, kind)| SubclassSlot {
+                            kind,
+                            plug_hash: ItemHash::new(i as i64),
+                            name: Some(format!("Plug {i}")),
+                            empty: i == 7,
+                        })
+                        .collect(),
+                    }),
+                },
+                CharacterSubclass {
+                    character_id: CharacterId::new("4"),
+                    class: Some("Titan".into()),
+                    subclass: None,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn subclass_text_groups_in_display_order_preserving_socket_order() {
+        assert_eq!(
+            render_subclasses(OutputMode::Human, &fixture()),
+            "Hunter: Prismatic\n  Super: Plug 1\n  Class ability: Plug 2\n  Movement: Plug 3\n  Melee: Plug 4\n  Grenade: Plug 5\n  Aspects: Plug 6\n  Fragments: Plug 0, (empty)\n  Transcendence: Plug 8\nTitan: no subclass equipped"
+        );
+    }
+
+    #[test]
+    fn subclass_json_preserves_result_fields_and_slot_order() {
+        let value: Value =
+            serde_json::from_str(&render_subclasses(OutputMode::Json, &fixture())).unwrap();
+        assert_eq!(
+            value,
+            json!({"kind": "subclass", "characters": [
+                {"character_id": "1", "class": "Hunter", "subclass": {
+                    "instance_id": "2", "item_hash": 3, "name": "Prismatic", "element": "prismatic",
+                    "slots": (["fragment", "super", "class_ability", "movement", "melee", "grenade", "aspect", "fragment", "transcendence"].iter().enumerate().map(|(i, kind)| json!({"kind": kind, "plug_hash": i, "name": format!("Plug {i}"), "empty": i == 7})).collect::<Vec<_>>())
+                }},
+                {"character_id": "4", "class": "Titan", "subclass": null}
+            ]})
+        );
+    }
+
+    #[test]
+    fn subclass_output_handles_unknown_class_and_missing_name() {
+        let mut result = fixture();
+        result.characters[0].class = None;
+        let config = result.characters[0].subclass.as_mut().unwrap();
+        config.name = "Prismatic\nInjected".into();
+        config.slots[0].name = None;
+        let text = render_subclasses(OutputMode::Human, &result);
+        assert!(text.starts_with("Unknown: Prismatic?Injected\n"));
+        assert!(text.contains("Fragments: unknown, (empty)"));
+        assert_eq!(
+            render_subclasses(OutputMode::Human, &SubclassResult { characters: vec![] }),
+            "no characters"
+        );
+    }
+}
+
 /// The output mode selected by the global `--json` flag.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutputMode {
@@ -25,6 +117,65 @@ pub enum OutputMode {
     /// Exactly one bounded JSON object for programs.
     Json,
 }
+
+/// Renders equipped subclasses without reordering slots in the machine result.
+pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult) -> String {
+    use destiny_app::SubclassPlugKind::*;
+    match mode {
+        OutputMode::Json => subclass_json(result).to_string(),
+        OutputMode::Human => {
+            let mut lines = Vec::new();
+            for character in &result.characters {
+                lines.push(format!(
+                    "{}: {}",
+                    sanitize(character.class.as_deref().unwrap_or("Unknown")),
+                    character
+                        .subclass
+                        .as_ref()
+                        .map(|config| sanitize(&config.name))
+                        .unwrap_or_else(|| "no subclass equipped".into())
+                ));
+                if let Some(config) = &character.subclass {
+                    for (kind, label) in [
+                        (Super, "Super"),
+                        (ClassAbility, "Class ability"),
+                        (Movement, "Movement"),
+                        (Melee, "Melee"),
+                        (Grenade, "Grenade"),
+                        (Aspect, "Aspects"),
+                        (Fragment, "Fragments"),
+                        (Transcendence, "Transcendence"),
+                    ] {
+                        let names: Vec<_> = config
+                            .slots
+                            .iter()
+                            .filter(|slot| slot.kind == kind)
+                            .map(|slot| {
+                                if slot.empty {
+                                    "(empty)".into()
+                                } else {
+                                    sanitize(slot.name.as_deref().unwrap_or("unknown"))
+                                }
+                            })
+                            .collect();
+                        if !names.is_empty() {
+                            lines.push(format!("  {label}: {}", names.join(", ")));
+                        }
+                    }
+                }
+            }
+            if lines.is_empty() {
+                "no characters".into()
+            } else {
+                lines.join("\n")
+            }
+        }
+    }
+}
+
+#[path = "subclass_output.rs"]
+mod subclass_output;
+pub use subclass_output::subclass_json;
 
 /// Renders the public version label and counts, never definition payloads.
 pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncReport) -> String {

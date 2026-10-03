@@ -227,6 +227,7 @@ fn dispatch_locked(
         LIST_CHARACTERS_TOOL => dispatch_list_characters(guard.as_mut(), arguments),
         SEARCH_INVENTORY_TOOL => dispatch_search_inventory(guard.as_mut(), arguments),
         INSPECT_ITEM_TOOL => dispatch_inspect_item(guard.as_mut(), arguments),
+        crate::schema::GET_SUBCLASS_TOOL => dispatch_get_subclass(guard.as_mut(), arguments),
         crate::schema::WEEKLY_TOOL => {
             let args: crate::schema::WeeklyArgs = deserialize(arguments)?;
             if args.character.as_ref().is_some_and(|s| {
@@ -272,6 +273,20 @@ fn dispatch_search_inventory(
     };
     Ok(service
         .search_inventory(&request)
+        .map_or_else(tool_error, |output| output.into_call_tool_result()))
+}
+
+fn dispatch_get_subclass(
+    service: &mut (dyn InventoryReadService + Send),
+    arguments: JsonObject,
+) -> Result<CallToolResult, ErrorData> {
+    let arguments: crate::schema::GetSubclassArgs = deserialize(arguments)?;
+    let character = match arguments.into_request() {
+        Ok(character) => character,
+        Err(error) => return Ok(error.into_call_tool_result()),
+    };
+    Ok(service
+        .get_subclass(character.as_ref())
         .map_or_else(tool_error, |output| output.into_call_tool_result()))
 }
 
@@ -417,6 +432,22 @@ mod tests {
     }
 
     impl InventoryReadService for RecordingService {
+        fn get_subclass(
+            &mut self,
+            character: Option<&destiny_app::CharacterId>,
+        ) -> Result<crate::schema::GetSubclassOutput, McpError> {
+            assert_eq!(character.map(|id| id.as_str()), Some("hunter"));
+            self.enter("get_subclass");
+            let result = match self.failure {
+                Some(category) => Err(McpError::new(category)),
+                None => Ok(crate::schema::GetSubclassOutput {
+                    characters: Vec::new(),
+                }),
+            };
+            self.leave();
+            result
+        }
+
         fn list_characters(
             &mut self,
             _request: &ListCharactersRequest,
@@ -605,6 +636,7 @@ mod tests {
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",
+                "get_subclass",
                 "weekly_reset",
                 "weekly"
             ]
@@ -665,6 +697,7 @@ mod tests {
         assert!(server.get_tool(LIST_CHARACTERS_TOOL).is_some());
         assert!(server.get_tool(SEARCH_INVENTORY_TOOL).is_some());
         assert!(server.get_tool("inspect_item").is_some());
+        assert!(server.get_tool("get_subclass").is_some());
         assert!(server.get_tool("delete_everything").is_none());
     }
 
@@ -687,6 +720,8 @@ mod tests {
             (LIST_CHARACTERS_TOOL, json!({"unknown": true})),
             (SEARCH_INVENTORY_TOOL, json!({"unknown": true})),
             (SEARCH_INVENTORY_TOOL, json!({"limit": "not-a-number"})),
+            ("get_subclass", json!({"character": 1})),
+            ("get_subclass", json!({"unknown": true})),
             ("inspect_item", json!({"instance_id": 1})),
             ("inspect_item", json!({"instance_id": "inst", "unknown": 1})),
         ] {
@@ -702,6 +737,35 @@ mod tests {
 
         // A malformed request never reaches the shared service.
         assert!(handle.recorded().is_empty());
+    }
+
+    #[test]
+    fn subclass_dispatch_validates_and_forwards_selector_and_errors() {
+        let (server, handle) = server(RecordingService::new());
+        for value in ["".to_owned(), "a".repeat(513), "bad\u{7}".to_owned()] {
+            let result = server
+                .dispatch("get_subclass", args(json!({"character": value})))
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(structured(&result)["code"], "provider_validation");
+        }
+        assert!(handle.recorded().is_empty());
+        let result = server
+            .dispatch("get_subclass", args(json!({"character": "hunter"})))
+            .unwrap();
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(
+            structured(&result),
+            json!({"kind": "subclass", "characters": []})
+        );
+        assert_eq!(handle.recorded(), ["get_subclass"]);
+        let (server, _) = self::server(RecordingService::with_failure(
+            ErrorCategory::DefinitionsUnavailable,
+        ));
+        let result = server
+            .dispatch("get_subclass", args(json!({"character": "hunter"})))
+            .unwrap();
+        assert_eq!(structured(&result)["code"], "definitions_unavailable");
     }
 
     #[test]
@@ -826,6 +890,7 @@ mod tests {
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",
+                "get_subclass",
                 "weekly_reset",
                 "weekly"
             ]
@@ -858,6 +923,7 @@ mod tests {
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",
+                "get_subclass",
                 "weekly_reset",
                 "weekly",
                 MOVE_ITEM_TOOL

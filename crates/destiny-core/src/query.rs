@@ -849,6 +849,43 @@ pub struct CharacterListResult {
     pub metadata: QueryMetadata,
 }
 
+/// Manifest bucket for equipped subclass items.
+pub const SUBCLASS_BUCKET_HASH: crate::BucketHash = crate::BucketHash::new(3284755031);
+
+/// Equipped subclass configurations in canonical character order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubclassResult {
+    pub characters: Vec<CharacterSubclass>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CharacterSubclass {
+    pub character_id: crate::CharacterId,
+    pub class: Option<String>,
+    pub subclass: Option<SubclassConfig>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubclassConfig {
+    pub instance_id: crate::ItemInstanceId,
+    pub item_hash: ItemHash,
+    pub name: String,
+    /// Normalized element display value from the item definition, when available.
+    pub element: Option<String>,
+    pub slots: Vec<SubclassSlot>,
+}
+
+/// A classified selected plug, in stored socket (ordinal) order.
+/// Unknown definitions and non-subclass categories are omitted because their
+/// subclass kind cannot be derived. Resolved slots currently always have a name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubclassSlot {
+    pub kind: crate::SubclassPlugKind,
+    pub plug_hash: ItemHash,
+    pub name: Option<String>,
+    pub empty: bool,
+}
+
 /// One concrete instance paired with the definition it references.
 ///
 /// The pairing is explicit and sanitized: `definition` is the normalized
