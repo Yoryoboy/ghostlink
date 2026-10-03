@@ -353,19 +353,19 @@ pub struct SearchInventoryArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class_type: Option<String>,
 
-    /// Exact case-insensitive socketed weapon-perk name (not a substring or armor mod).
+    /// Socketed weapon-perk name: exact first, then substring; typos get suggestions.
     /// Supplying this field searches owned instances even without other filters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
     pub perk_name: Option<String>,
 
-    /// Exact case-insensitive socketed armor-mod name (not a substring or weapon perk).
+    /// Socketed armor-mod name: exact first, then substring; typos get suggestions.
     /// Supplying this field searches owned instances even without other filters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
     pub mod_name: Option<String>,
 
-    /// Exact normalized socketed armor-archetype name; searches owned armor.
+    /// Socketed armor-archetype name: exact first, then substring; searches owned armor.
     /// Use `archetype`, not `archetype_name`; unknown fields are rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
@@ -574,9 +574,22 @@ pub struct NamedStatView {
 /// Structured result of `search_inventory`.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct SearchInventoryOutput {
+    pub resolved: ResolvedNamesView,
     pub candidates: Vec<DefinitionView>,
     pub hits: Vec<InventorySearchHitView>,
     pub metadata: QueryMetadataView,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ResolvedNamesView {
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub perk: Vec<String>,
+    #[serde(rename = "mod", skip_serializing_if = "Vec::is_empty", default)]
+    pub mods: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub archetype: Vec<String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
+    pub stats: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// A found inspection: one exact definition beside one concrete instance.
@@ -753,7 +766,10 @@ impl McpError {
 
 impl From<AppError> for McpError {
     fn from(error: AppError) -> Self {
-        Self::new(error.category())
+        Self {
+            code: error_code(error.category()).to_owned(),
+            message: error.to_string(),
+        }
     }
 }
 
@@ -821,6 +837,8 @@ fn error_code(category: ErrorCategory) -> &'static str {
         ErrorCategory::ProviderValidation => "provider_validation",
         ErrorCategory::DefinitionsUnavailable => "definitions_unavailable",
         ErrorCategory::UnknownStatName => "unknown_stat_name",
+        ErrorCategory::UnknownSearchName => "unknown_search_name",
+        ErrorCategory::AmbiguousSearchName => "ambiguous_search_name",
         ErrorCategory::StaleState => "stale_state",
         ErrorCategory::AmbiguousMatch => "ambiguous_match",
         ErrorCategory::UnsupportedOperation => "unsupported_operation",

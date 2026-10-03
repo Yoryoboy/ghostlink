@@ -160,6 +160,11 @@ fn search_cli_mcp_request_parity() {
 
     for (flags, args) in [
         (vec![], json!({})),
+        (vec!["--perk", "ramp"], json!({"perk_name": "ramp"})),
+        (vec!["--perk", "rampge"], json!({"perk_name": "rampge"})),
+        (vec!["--mod", "siph"], json!({"mod_name": "siph"})),
+        (vec!["--archetype", "spec"], json!({"archetype": "spec"})),
+        (vec!["--stat", "cla>=30"], json!({"stats": ["cla>=30"]})),
         (
             vec!["--archetype", "  SPECIALIST "],
             json!({"archetype": "  SPECIALIST "}),

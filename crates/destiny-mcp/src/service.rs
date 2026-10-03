@@ -840,6 +840,12 @@ pub fn list_characters_output(result: &CharacterListResult) -> ListCharactersOut
 /// Projects a shared inventory search into its bounded MCP output.
 pub fn search_inventory_output(result: &InventorySearchResult) -> SearchInventoryOutput {
     SearchInventoryOutput {
+        resolved: crate::schema::ResolvedNamesView {
+            perk: result.resolved.perk.clone(),
+            mods: result.resolved.mods.clone(),
+            archetype: result.resolved.archetype.clone(),
+            stats: result.resolved.stats.clone(),
+        },
         candidates: result.candidates.iter().map(definition_view).collect(),
         hits: result
             .hits
@@ -1203,6 +1209,16 @@ mod tests {
     }
 
     impl SearchRepository for CompositeRepository {
+        fn name_catalog(
+            &self,
+            kind: &str,
+        ) -> Result<destiny_app::name_matching::NameCatalog, AppError> {
+            if kind == "stat" {
+                Ok(self.definitions.stat_name_catalog())
+            } else {
+                self.search.name_catalog(kind)
+            }
+        }
         fn search_definitions(
             &self,
             query: &DefinitionSearchQuery,

@@ -344,6 +344,10 @@ pub trait InventoryRepository {
 /// [`PerkHash`]: crate::ids::PerkHash
 /// [`ItemInstanceId`]: crate::ids::ItemInstanceId
 pub trait SearchRepository {
+    /// Complete display-name catalog for a filter kind, not truncated search hits.
+    fn name_catalog(&self, _kind: &str) -> Result<crate::name_matching::NameCatalog, AppError> {
+        Err(AppError::new(crate::ErrorCategory::UnsupportedOperation))
+    }
     /// Bounded, deterministic definition matches for one validated search.
     fn search_definitions(
         &self,
@@ -1368,7 +1372,7 @@ fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
 /// The hint is the provider's own `Retry-After` signal when the adapter could
 /// read it. It is non-secret, never rendered, and never escapes: it only shapes
 /// the next bounded wait, always capped by the policy ceiling.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadFailure {
     error: AppError,
     retry_after: RetryAfterHint,
@@ -1389,12 +1393,12 @@ impl ReadFailure {
     }
 
     /// The sanitized category-only failure.
-    pub const fn error(self) -> AppError {
+    pub fn error(self) -> AppError {
         self.error
     }
 
     /// The resolved provider pacing hint, when one was observed.
-    pub const fn retry_after(self) -> RetryAfterHint {
+    pub const fn retry_after(&self) -> RetryAfterHint {
         self.retry_after
     }
 }
@@ -1448,7 +1452,7 @@ impl ReadRetry {
             match operation() {
                 Ok(value) => return Ok(value),
                 Err(failure) => {
-                    let category = failure.error().category();
+                    let category = failure.error.category();
                     let retryable = match scope {
                         ReadRetryScope::RateLimitOnly => category.is_rate_limit(),
                         ReadRetryScope::RateLimitAndTransient => category.is_retryable_read(),
@@ -1992,7 +1996,10 @@ mod tests {
     #[test]
     fn read_failure_terminal_carries_no_pacing_hint() {
         let failure = ReadFailure::terminal(rate_limit());
-        assert_eq!(failure.error().category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(
+            failure.clone().error().category(),
+            ErrorCategory::ProviderRateLimit
+        );
         assert_eq!(failure.retry_after(), RetryAfterHint::Absent);
     }
 

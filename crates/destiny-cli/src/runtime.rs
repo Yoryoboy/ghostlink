@@ -514,7 +514,7 @@ mod tests {
     impl Clock for ScriptedClock {
         fn now(&self) -> Result<Timestamp, AppError> {
             self.log.borrow_mut().push("now");
-            self.now
+            self.now.clone()
         }
     }
 
@@ -606,7 +606,7 @@ mod tests {
 
         fn transport(&mut self) -> Result<UnreachableTransport, AppError> {
             self.record("transport");
-            self.transport
+            self.transport.clone()
         }
 
         fn store(&mut self, _config: &ReadRuntimeConfig) -> Result<SqliteStore, AppError> {
@@ -1465,7 +1465,7 @@ mod tests {
             let error = ComposingRuntimeFactory::new(foundations)
                 .build()
                 .expect_err("the factory must report a sanitized failure");
-            assert_failure_is_sanitized(error, exit_code, code);
+            assert_failure_is_sanitized(error.clone(), exit_code, code);
             assert_eq!(error.code(), code, "case: {name}");
         }
     }

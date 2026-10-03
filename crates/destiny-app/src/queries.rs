@@ -171,19 +171,27 @@ where
         }
 
         self.require_definitions()?;
-        if let Some(query) = &request.instances
-            && !query.stats.is_empty()
-        {
-            if self.repository().stat_definition_count()? == 0 {
-                return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+        let mut request = request.clone();
+        let mut resolved = destiny_core::name_matching::ResolvedNames::default();
+        if let Some(query) = &mut request.instances {
+            for (kind, term, output) in [
+                ("perk", &mut query.perk_name, &mut resolved.perk),
+                ("mod", &mut query.mod_name, &mut resolved.mods),
+                ("archetype", &mut query.archetype, &mut resolved.archetype),
+            ] {
+                if let Some(term) = term {
+                    *output = term.resolve(&self.repository().name_catalog(kind)?, kind)?;
+                }
             }
-            for condition in &query.stats {
-                if self
-                    .repository()
-                    .stat_hashes_by_name(condition.name.as_str())?
-                    .is_empty()
-                {
-                    return Err(AppError::new(ErrorCategory::UnknownStatName));
+            if !query.stats.is_empty() {
+                if self.repository().stat_definition_count()? == 0 {
+                    return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+                }
+                let catalog = self.repository().name_catalog("stat")?;
+                for condition in &mut query.stats {
+                    let input = condition.name.as_str().to_owned();
+                    let names = condition.name.resolve(&catalog, "stat")?;
+                    resolved.stats.insert(input, names);
                 }
             }
         }
@@ -268,6 +276,7 @@ where
         }
 
         Ok(InventorySearchResult {
+            resolved,
             candidates,
             hits,
             metadata,
@@ -561,6 +570,16 @@ mod tests {
     }
 
     impl SearchRepository for CompositeRepository {
+        fn name_catalog(
+            &self,
+            kind: &str,
+        ) -> Result<destiny_core::name_matching::NameCatalog, AppError> {
+            if kind == "stat" {
+                Ok(self.definitions.stat_name_catalog())
+            } else {
+                self.search.name_catalog(kind)
+            }
+        }
         fn search_definitions(
             &self,
             query: &DefinitionSearchQuery,

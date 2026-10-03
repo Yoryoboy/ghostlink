@@ -332,7 +332,24 @@ fn characters_human(result: &CharacterListResult) -> String {
 }
 
 fn search_human(result: &InventorySearchResult) -> String {
-    let mut lines = vec![format!("candidates: {}", result.candidates.len())];
+    let mut lines = Vec::new();
+    for (kind, names) in [
+        ("perk", &result.resolved.perk),
+        ("mod", &result.resolved.mods),
+        ("archetype", &result.resolved.archetype),
+    ] {
+        if !names.is_empty() {
+            lines.push(format!("matched {kind}: {}", sanitize(&names.join(", "))));
+        }
+    }
+    for (input, names) in &result.resolved.stats {
+        lines.push(format!(
+            "matched stat {}: {}",
+            sanitize(input),
+            sanitize(&names.join(", "))
+        ));
+    }
+    lines.push(format!("candidates: {}", result.candidates.len()));
     for candidate in &result.candidates {
         lines.push(format!("- {}", definition_line(candidate)));
     }
@@ -380,7 +397,21 @@ fn characters_json(result: &CharacterListResult) -> String {
 }
 
 fn search_json(result: &InventorySearchResult) -> String {
+    let mut resolved = serde_json::Map::new();
+    for (kind, names) in [
+        ("perk", &result.resolved.perk),
+        ("mod", &result.resolved.mods),
+        ("archetype", &result.resolved.archetype),
+    ] {
+        if !names.is_empty() {
+            resolved.insert(kind.to_owned(), json!(names));
+        }
+    }
+    if !result.resolved.stats.is_empty() {
+        resolved.insert("stats".to_owned(), json!(result.resolved.stats));
+    }
     json!({
+        "resolved": resolved,
         "candidates": result
             .candidates
             .iter()
@@ -1087,6 +1118,7 @@ mod tests {
 
     fn search_result() -> InventorySearchResult {
         InventorySearchResult {
+            resolved: Default::default(),
             candidates: vec![definition(1, "Gjallarhorn")],
             hits: vec![InventorySearchHit {
                 definition: definition(1, "Gjallarhorn"),
@@ -1325,6 +1357,7 @@ mod tests {
         assert_eq!(render_search(OutputMode::Human, &search_result()), expected);
 
         let empty = InventorySearchResult {
+            resolved: Default::default(),
             candidates: Vec::new(),
             hits: Vec::new(),
             metadata: metadata(FreshnessStatus::Stale),
@@ -1338,7 +1371,7 @@ mod tests {
     #[test]
     fn search_renders_one_bounded_json_object() {
         let expected = format!(
-            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"archetype":null,"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON}}}"#
+            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"archetype":null,"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON},"resolved":{{}}}}"#
         );
         assert_eq!(render_search(OutputMode::Json, &search_result()), expected);
     }

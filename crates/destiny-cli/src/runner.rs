@@ -703,7 +703,7 @@ mod tests {
 
         fn build(&mut self) -> Result<ReadRuntime<Self::Service>, CliError> {
             self.builds.set(self.builds.get() + 1);
-            match self.failure {
+            match self.failure.clone() {
                 Some(error) => Err(error),
                 None => Ok(ReadRuntime::new(self.service.clone(), self.freshness)),
             }
@@ -770,6 +770,7 @@ mod tests {
 
     fn search_result() -> InventorySearchResult {
         InventorySearchResult {
+            resolved: Default::default(),
             candidates: vec![definition(1, "Gjallarhorn")],
             hits: vec![InventorySearchHit {
                 definition: definition(1, "Gjallarhorn"),
@@ -877,7 +878,7 @@ mod tests {
         ) -> Result<Box<dyn LoginOperations>, CliError> {
             self.modes.borrow_mut().push(mode);
             self.callbacks.borrow_mut().push(callback);
-            match (self.failure, self.script.clone()) {
+            match (self.failure.clone(), self.script.clone()) {
                 (Some(error), _) => Err(error),
                 (None, Some(script)) => Ok(Box::new(script)),
                 (None, None) => Ok(Box::new(ScriptedLogin::authorized())),

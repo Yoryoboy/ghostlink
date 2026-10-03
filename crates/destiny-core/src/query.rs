@@ -131,7 +131,7 @@ pub fn normalize_search_text(value: &str) -> String {
 /// normalized, so matching never repeats the transformation on the query side.
 /// The term is not secret and may appear in diagnostics.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SearchTerm(String);
+pub struct SearchTerm(String, Vec<String>);
 
 impl SearchTerm {
     /// Validates and normalizes one search term.
@@ -145,12 +145,34 @@ impl SearchTerm {
         if normalized.is_empty() || normalized.chars().count() > MAX_SEARCH_TEXT_LENGTH {
             return Err(invalid_query());
         }
-        Ok(Self(normalized))
+        Ok(Self(normalized, Vec::new()))
     }
 
     /// The normalized term used for matching.
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    pub fn matches_name(&self, name: &str) -> bool {
+        let normalized = normalize_search_text(name);
+        if self.1.is_empty() {
+            normalized == self.0
+        } else {
+            self.1.contains(&normalized)
+        }
+    }
+
+    pub fn resolve(
+        &mut self,
+        catalog: &crate::name_matching::NameCatalog,
+        kind: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let names = catalog.resolve(kind, &self.0)?;
+        self.1 = names
+            .iter()
+            .map(|name| normalize_search_text(name))
+            .collect();
+        Ok(names)
     }
 }
 
@@ -281,7 +303,7 @@ pub fn instance_matches_stats(
         instance.stats.iter().any(|stat| {
             definitions.iter().any(|definition| {
                 definition.hash() == stat.stat_hash
-                    && normalize_search_text(definition.name()) == condition.name.as_str()
+                    && condition.name.matches_name(definition.name())
             }) && match condition.op {
                 StatOp::AtLeast => stat.value >= condition.value,
                 StatOp::AtMost => stat.value <= condition.value,
@@ -473,7 +495,7 @@ pub fn instance_matches_perk_name(query: &InstanceSearchQuery, plugs: &[ItemDefi
                 .plug_category
                 .as_deref()
                 .is_some_and(crate::domain::is_weapon_perk_plug)
-                && normalize_search_text(&definition.name) == term.as_str()
+                && term.matches_name(&definition.name)
         })
     })
 }
@@ -503,19 +525,18 @@ fn is_armor_slot(slot: Option<ItemSlot>) -> bool {
 pub fn instance_matches_plug_names(query: &InstanceSearchQuery, plugs: &[ItemDefinition]) -> bool {
     instance_matches_perk_name(query, plugs)
         && query.archetype.as_ref().is_none_or(|term| {
-            plugs.iter().any(|plug| {
-                is_armor_archetype(plug) && normalize_search_text(&plug.name) == term.as_str()
-            })
+            plugs
+                .iter()
+                .any(|plug| is_armor_archetype(plug) && term.matches_name(&plug.name))
         })
         && query.mod_name.as_ref().is_none_or(|term| {
             plugs.iter().any(|definition| {
-                is_named_armor_mod(definition)
-                    && normalize_search_text(&definition.name) == term.as_str()
+                is_named_armor_mod(definition) && term.matches_name(&definition.name)
             })
         })
 }
 
-fn is_armor_archetype(definition: &ItemDefinition) -> bool {
+pub fn is_armor_archetype(definition: &ItemDefinition) -> bool {
     definition.plug_category.as_deref().is_some_and(|category| {
         crate::domain::classify_plug(category) == crate::domain::PlugKind::ArmorArchetype
     })
@@ -535,7 +556,7 @@ pub fn inventory_archetype(
 /// An armor-mod plug that is not an empty-socket placeholder. The provider
 /// fills unused mod sockets with "Empty Mod Socket" plugs that share the
 /// armor-mod categories, so they are recognized by their display name.
-fn is_named_armor_mod(definition: &ItemDefinition) -> bool {
+pub fn is_named_armor_mod(definition: &ItemDefinition) -> bool {
     definition.plug_category.as_deref().is_some_and(|category| {
         crate::domain::classify_plug(category) == crate::domain::PlugKind::ArmorMod
     }) && !is_empty_socket_placeholder(&definition.name)
@@ -642,6 +663,7 @@ pub struct NamedStat {
 /// instance, and it never reports a definition as an instance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySearchResult {
+    pub resolved: crate::name_matching::ResolvedNames,
     pub candidates: Vec<ItemDefinition>,
     pub hits: Vec<InventorySearchHit>,
     pub metadata: QueryMetadata,

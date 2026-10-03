@@ -73,6 +73,45 @@ type RawInstance = (
 );
 
 impl SearchRepository for SqliteStore {
+    fn name_catalog(
+        &self,
+        kind: &str,
+    ) -> Result<destiny_core::name_matching::NameCatalog, AppError> {
+        let mut names = Vec::new();
+        if kind == "stat" {
+            names = super::world::read_stats(self.connection())?
+                .into_iter()
+                .map(|(stat, _)| stat.name().to_owned())
+                .collect();
+        } else {
+            // Only plug definitions need reconstruction; ordinary item definitions
+            // are never visited during name resolution.
+            let mut statement = self
+                .connection()
+                .prepare(
+                    "SELECT hash FROM definitions WHERE plug_category IS NOT NULL ORDER BY hash",
+                )
+                .map_err(|_| storage_failure())?;
+            let hashes = statement
+                .query_map([], |row| row.get::<_, i64>(0))
+                .map_err(|_| storage_failure())?;
+            for hash in hashes {
+                let definition = match self
+                    .lookup_definition(ItemHash::new(hash.map_err(|_| storage_failure())?))?
+                {
+                    Resolution::Unique(definition) => definition,
+                    _ => return Err(storage_failure()),
+                };
+                if destiny_core::name_matching::is_name_kind(&definition, kind) {
+                    names.push(definition.name);
+                }
+            }
+        }
+        Ok(destiny_core::name_matching::NameCatalog::new(
+            names.iter().map(String::as_str),
+        ))
+    }
+
     fn search_definitions(
         &self,
         query: &DefinitionSearchQuery,
@@ -981,17 +1020,23 @@ mod tests {
         let sanitized = AppError::new(ErrorCategory::ProviderValidation);
         let mut zero_limit = definition_query(Some("gjallar"), None, &[], 10);
         zero_limit.limit = 0;
-        assert_eq!(store.search_definitions(&zero_limit), Err(sanitized));
+        assert_eq!(
+            store.search_definitions(&zero_limit),
+            Err(sanitized.clone())
+        );
 
         let mut over_limit = instance_query(ItemHashFilter::Any, None, None, 10);
         over_limit.limit = MAX_SEARCH_LIMIT + 1;
-        assert_eq!(store.search_instances(&over_limit), Err(sanitized));
+        assert_eq!(store.search_instances(&over_limit), Err(sanitized.clone()));
 
         let mut too_many_tags = definition_query(Some("gjallar"), None, &[], 10);
         too_many_tags.tags = (0..=MAX_TAG_FILTERS)
             .map(|index| term(&format!("tag-{index}")))
             .collect();
-        assert_eq!(store.search_definitions(&too_many_tags), Err(sanitized));
+        assert_eq!(
+            store.search_definitions(&too_many_tags),
+            Err(sanitized.clone())
+        );
 
         // The over-bound hash list is rejected by both implementations with the
         // same sanitized category.
