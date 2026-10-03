@@ -741,6 +741,7 @@ fn definition_query(text: Option<&str>, limit: usize) -> DefinitionSearchQuery {
 
 fn instance_query(item_hashes: ItemHashFilter, limit: usize) -> InstanceSearchQuery {
     InstanceSearchQuery {
+        sort: None,
         location: None,
         equipped: None,
         include_available: false,

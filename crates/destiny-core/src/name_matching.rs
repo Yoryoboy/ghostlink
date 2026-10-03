@@ -119,6 +119,8 @@ fn bounded_distance(left: &str, right: &str) -> usize {
 /// Display names resolved for each requested filter. Empty fields are omitted by surfaces.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ResolvedNames {
+    /// Resolved display name and direction for instance sorting.
+    pub sort: Option<(String, String)>,
     pub perk: Vec<String>,
     pub mods: Vec<String>,
     /// Resolved alternatives for each input term, preserving input order.

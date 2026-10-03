@@ -270,6 +270,10 @@ pub struct SearchInventoryArgs {
     #[arg(long = "stat", value_name = "COND")]
     pub stat: Vec<String>,
 
+    /// Sort owned hits by stat, descending by default; append :asc for ascending.
+    #[arg(long, value_name = "STAT[:asc|desc]")]
+    pub sort: Option<String>,
+
     /// Minimum instance power; items without power do not match.
     #[arg(long, value_name = "N")]
     pub min_power: Option<u16>,
@@ -299,7 +303,7 @@ pub struct SearchInventoryArgs {
     pub character: Option<String>,
 
     /// Maximum number of definition candidates and instance hits.
-    #[arg(long, value_name = "N", default_value_t = MAX_SEARCH_LIMIT)]
+    #[arg(long, value_name = "N", default_value_t = 100)]
     pub limit: usize,
 }
 
@@ -351,6 +355,7 @@ impl SearchInventoryArgs {
     ) -> Result<Option<InstanceSearchQuery>, CliError> {
         let no_instance_filter = !self.include_available
             && self.stat.is_empty()
+            && self.sort.is_none()
             && self.item_hash.is_empty()
             && self.perk_hash.is_none()
             && self.perk.is_empty()
@@ -376,6 +381,12 @@ impl SearchInventoryArgs {
             ItemHashFilter::AnyOf(self.item_hash.iter().copied().map(ItemHash::new).collect())
         };
         let query = InstanceSearchQuery {
+            sort: self
+                .sort
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(CliError::query_validation)?,
             include_available: self.include_available,
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
@@ -635,6 +646,7 @@ impl CliError {
             ("mod", "--mod"),
             ("tag", "--tag"),
             ("stat", "--stat"),
+            ("sort", "--sort"),
             ("item-hash", "--item-hash"),
         ] {
             if let Some(reason) = message.strip_prefix(&format!("invalid {name}: ")) {
@@ -1112,13 +1124,13 @@ mod tests {
     }
 
     #[test]
-    fn search_defaults_to_the_shared_query_bound() {
+    fn search_defaults_to_100_with_a_higher_query_bound() {
         let request = search_request(
             parse(["search-inventory"])
                 .into_read_request()
                 .expect("an unfiltered search is valid"),
         );
-        assert_eq!(request.definitions.limit, MAX_SEARCH_LIMIT);
+        assert_eq!(request.definitions.limit, 100);
         assert_eq!(request.instances, None);
     }
 
@@ -1295,7 +1307,7 @@ mod tests {
 
         let mut cases: Vec<Vec<&str>> = vec![
             vec!["search-inventory", "--limit", "0"],
-            vec!["search-inventory", "--limit", "101"],
+            vec!["search-inventory", "--limit", "1001"],
             vec!["search-inventory", "--text", "   "],
             vec!["search-inventory", "--type", ""],
             vec!["search-inventory", "--tag", "  "],

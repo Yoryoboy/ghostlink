@@ -13,6 +13,59 @@ mod output {
 }
 
 #[test]
+fn sort_and_limit_cli_mcp_parity() {
+    use clap::Parser;
+    for sort in ["Range", "Range:asc", "Range:desc"] {
+        let cli = cli_command::Cli::try_parse_from([
+            "ghostlink",
+            "search-inventory",
+            "--sort",
+            sort,
+            "--limit",
+            "1000",
+        ])
+        .unwrap()
+        .into_read_request()
+        .unwrap();
+        let cli_command::ReadRequest::SearchInventory(cli) = cli else {
+            panic!("search")
+        };
+        let mcp: destiny_mcp::schema::SearchInventoryArgs =
+            serde_json::from_value(serde_json::json!({"sort": sort, "limit": 1000})).unwrap();
+        assert_eq!(cli, mcp.into_request().unwrap());
+    }
+    for flags in [["--sort", "Range:up"], ["--limit", "1001"]] {
+        let cli =
+            cli_command::Cli::try_parse_from(["ghostlink", "search-inventory", flags[0], flags[1]])
+                .unwrap();
+        let error = cli.into_read_request().unwrap_err().to_string();
+        assert!(error.contains(flags[0]));
+        let args = if flags[0] == "--sort" {
+            serde_json::json!({"sort": flags[1]})
+        } else {
+            serde_json::json!({"limit": 1001})
+        };
+        let mcp: destiny_mcp::schema::SearchInventoryArgs = serde_json::from_value(args).unwrap();
+        assert!(mcp.into_request().is_err());
+    }
+    for limit in [1000, 1001] {
+        let mcp: destiny_mcp::schema::SearchInventoryArgs =
+            serde_json::from_value(serde_json::json!({"instances": {"limit": limit}})).unwrap();
+        assert_eq!(mcp.into_request().is_ok(), limit == 1000);
+    }
+    let schema = serde_json::to_value(schemars::schema_for!(
+        destiny_mcp::schema::SearchInventoryArgs
+    ))
+    .unwrap();
+    assert!(schema["properties"]["sort"].is_object());
+    assert_eq!(schema["properties"]["limit"]["maximum"], 1000);
+    assert_eq!(
+        schema["$defs"]["InstanceQueryArgs"]["properties"]["limit"]["maximum"],
+        1000
+    );
+}
+
+#[test]
 fn tier_location_equipped_cli_mcp_parity() {
     use clap::Parser;
     for (flags, args) in [

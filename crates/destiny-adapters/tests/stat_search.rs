@@ -66,6 +66,7 @@ fn definitions(
 }
 fn query(conditions: &[&str]) -> InstanceSearchQuery {
     InstanceSearchQuery {
+        sort: None,
         location: None,
         equipped: None,
         include_available: false,
@@ -163,6 +164,34 @@ fn catalog() -> Vec<StatDefinition> {
         StatDefinition::new(3, "Health".into()).unwrap(),
     ]
 }
+#[test]
+fn stat_sort_precedes_limit_with_sqlite_fake_parity() {
+    let (store, fake) = seeded(catalog());
+    for expression in ["Class", "Class:asc"] {
+        let mut q = query(&[]);
+        q.sort = Some(expression.parse().unwrap());
+        let actual = store.search_instances(&q).unwrap();
+        assert_eq!(actual, fake.search_instances(&q).unwrap());
+        assert_eq!(actual[0].instance_id.as_str(), "b");
+        q.limit = 1000;
+        let actual = store.search_instances(&q).unwrap();
+        assert_eq!(actual, fake.search_instances(&q).unwrap());
+        assert_eq!(
+            actual
+                .iter()
+                .map(|i| i.instance_id.as_str())
+                .collect::<Vec<_>>(),
+            ["b", "a"]
+        );
+    }
+    assert_eq!(
+        store.search_instances(&query(&[])).unwrap()[0]
+            .instance_id
+            .as_str(),
+        "a"
+    );
+}
+
 #[test]
 fn tier_location_equipped_search_has_sqlite_fake_parity() {
     let (store, fake) = seeded(vec![]);
@@ -319,7 +348,33 @@ fn stat_names_are_validated_before_sync_and_named_hits_are_ordered() {
         .unwrap();
     assert!(unfiltered.hits[0].stats.is_empty());
     assert_eq!(unfiltered.hits[1].stats, result.hits[0].stats);
-    request.instances = Some(query(&["secret-sentinel=1"]));
+    let mut sorted_query = query(&[]);
+    sorted_query.sort = Some("cla:asc".parse().unwrap());
+    request.instances = Some(sorted_query);
+    let sorted = app
+        .search_inventory(
+            &request,
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(1),
+        )
+        .unwrap();
+    assert_eq!(sorted.hits[0].instance.instance_id.as_str(), "b");
+    assert_eq!(sorted.resolved.sort, Some(("Class".into(), "asc".into())));
+    let text = destiny_cli::output::render_search(destiny_cli::output::OutputMode::Human, &sorted);
+    assert!(text.contains("sorted by: Class (asc)"));
+    let cli_json: serde_json::Value = serde_json::from_str(&destiny_cli::output::render_search(
+        destiny_cli::output::OutputMode::Json,
+        &sorted,
+    ))
+    .unwrap();
+    let mcp_json =
+        serde_json::to_value(destiny_mcp::service::search_inventory_output(&sorted)).unwrap();
+    assert_eq!(cli_json["resolved"], mcp_json["resolved"]);
+    assert_eq!(
+        cli_json["resolved"]["sort"],
+        serde_json::json!({"name": "Class", "order": "asc"})
+    );
+    request.instances.as_mut().unwrap().sort = Some("secret-sentinel".parse().unwrap());
     let error = app
         .search_inventory(
             &request,

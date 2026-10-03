@@ -405,11 +405,16 @@ pub struct SearchInventoryArgs {
     #[schemars(length(max = destiny_app::MAX_STAT_CONDITIONS), inner(length(min = 1, max = 288)))]
     pub stats: Vec<String>,
 
+    /// Sort owned hits by one resolved stat: Stat[:asc|desc], descending by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 261))]
+    pub sort: Option<String>,
+
     /// Minimum owned instance power (0..65535); items without power do not match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_power: Option<u16>,
 
-    /// Maximum number of definition matches; defaults to the shared maximum.
+    /// Maximum number of definition matches; defaults to 100.
     #[serde(default = "default_search_limit")]
     #[schemars(range(min = 1, max = MAX_SEARCH_LIMIT))]
     pub limit: usize,
@@ -451,7 +456,7 @@ pub struct InstanceQueryArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_power: Option<u16>,
 
-    /// Maximum number of instance matches; defaults to the shared maximum.
+    /// Maximum number of instance matches; defaults to 100.
     #[serde(default = "default_search_limit")]
     #[schemars(range(min = 1, max = MAX_SEARCH_LIMIT))]
     pub limit: usize,
@@ -467,7 +472,7 @@ pub struct InspectItemArgs {
 }
 
 fn default_search_limit() -> usize {
-    MAX_SEARCH_LIMIT
+    100
 }
 
 /// Bounded `move_item` arguments.
@@ -619,6 +624,8 @@ pub struct SearchInventoryOutput {
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct ResolvedNamesView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<ResolvedSortView>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub perk: Vec<String>,
     #[serde(rename = "mod", skip_serializing_if = "Vec::is_empty", default)]
@@ -632,6 +639,12 @@ pub struct ResolvedNamesView {
     pub archetype: Vec<String>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
     pub stats: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ResolvedSortView {
+    pub name: String,
+    pub order: String,
 }
 
 /// A found inspection: one exact definition beside one concrete instance.
@@ -1213,9 +1226,9 @@ mod tests {
     }
 
     #[test]
-    fn omitted_limits_default_to_the_shared_maximum() {
+    fn omitted_limits_default_to_100() {
         let args: SearchInventoryArgs = serde_json::from_value(json!({})).expect("empty args");
-        assert_eq!(args.limit, MAX_SEARCH_LIMIT);
+        assert_eq!(args.limit, 100);
         assert_eq!(args.tags, Vec::<String>::new());
         assert_eq!(args.instances, None);
     }

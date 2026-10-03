@@ -1110,11 +1110,11 @@ mod tests {
             ),
             (
                 vec!["--limit", "0"],
-                "invalid --limit: must be between 1 and 100",
+                "invalid --limit: must be between 1 and 1000",
             ),
             (
-                vec!["--limit", "101"],
-                "invalid --limit: must be between 1 and 100",
+                vec!["--limit", "1001"],
+                "invalid --limit: must be between 1 and 1000",
             ),
             (
                 vec!["--slot", "banana"],
@@ -1269,7 +1269,7 @@ mod tests {
         assert_eq!(output.exit_code, 2);
         assert_eq!(
             output.stderr,
-            "error: invalid --limit: must be between 1 and 100\n"
+            "error: invalid --limit: must be between 1 and 1000\n"
         );
         assert!(service.recorded().is_empty());
     }
@@ -1314,6 +1314,7 @@ mod tests {
                 limit: 5,
             },
             instances: Some(destiny_app::InstanceSearchQuery {
+                sort: None,
                 location: None,
                 equipped: None,
                 include_available: false,
@@ -1459,7 +1460,7 @@ mod tests {
         assert_eq!(output.exit_code, 2);
         assert_eq!(
             output.stderr,
-            "error: invalid --limit: must be between 1 and 100\n"
+            "error: invalid --limit: must be between 1 and 1000\n"
         );
 
         // A missing required argument is rejected before any runtime work too.

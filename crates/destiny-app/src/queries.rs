@@ -201,6 +201,13 @@ where
                 resolved.archetype =
                     term.resolve(&self.repository().name_catalog("archetype")?, "archetype")?;
             }
+            if let Some(sort) = &mut query.sort {
+                if self.repository().stat_definition_count()? == 0 {
+                    return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+                }
+                let name = sort.resolve(&self.repository().name_catalog("stat")?)?;
+                resolved.sort = Some((name, sort.order().to_owned()));
+            }
             if !query.stats.is_empty() {
                 if self.repository().stat_definition_count()? == 0 {
                     return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
@@ -223,6 +230,7 @@ where
 
         let instance_query = if request.definitions.has_filters() {
             let mut query = request.instances.clone().unwrap_or(InstanceSearchQuery {
+                sort: None,
                 location: None,
                 equipped: None,
                 include_available: false,
@@ -864,6 +872,7 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            sort: None,
             location: None,
             equipped: None,
             include_available: false,

@@ -99,6 +99,7 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
         })
         .unwrap();
     let query = InstanceSearchQuery {
+        sort: None,
         location: None,
         equipped: None,
         include_available: false,

@@ -444,6 +444,7 @@ fn instance_query(
     limit: usize,
 ) -> InstanceSearchQuery {
     InstanceSearchQuery {
+        sort: None,
         location: None,
         equipped: None,
         include_available: false,
