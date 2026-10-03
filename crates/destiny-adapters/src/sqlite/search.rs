@@ -260,9 +260,31 @@ impl SearchRepository for SqliteStore {
                         }
                     }
                 }
+                let mut available = Vec::new();
+                if query.include_available
+                    && (query.perk_name.is_some() || query.mod_name.is_some())
+                {
+                    for plug in &instance.available_plugs {
+                        if let std::collections::hash_map::Entry::Vacant(entry) =
+                            plug_definitions.entry(plug.plug_hash)
+                        {
+                            let resolved = match self.lookup_definition(plug.plug_hash)? {
+                                Resolution::Unique(definition) => Some(definition),
+                                Resolution::Missing => None,
+                                Resolution::Ambiguous(_) => return Err(storage_failure()),
+                            };
+                            entry.insert(resolved);
+                        }
+                        if let Some(definition) = &plug_definitions[&plug.plug_hash] {
+                            available.push(definition.clone());
+                        }
+                    }
+                }
                 if destiny_core::query::instance_matches_stats(query, &instance, &stat_definitions)
                     && instance_matches_with_definition(query, &instance, definition.as_ref())
-                    && destiny_core::query::instance_matches_plug_names(query, &plugs)
+                    && destiny_core::query::instance_matches_available_names(
+                        query, &plugs, &available,
+                    )
                 {
                     instances.push(instance);
                     if instances.len() == query.limit {
@@ -348,7 +370,9 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
     let plugs = super::inventory::read_plugs(connection, instance_id.as_str())?;
     let stats = super::inventory::read_stats(connection, instance_id.as_str())?;
 
+    let available_plugs = super::inventory::read_available_plugs(connection, instance_id.as_str())?;
     Ok(ItemInstance {
+        available_plugs,
         instance_id: instance_id.into(),
         item_hash: ItemHash::new(item_hash),
         location,
@@ -496,6 +520,7 @@ mod tests {
         perk_hashes: &[u32],
     ) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
             location,
@@ -575,6 +600,7 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            include_available: false,
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),
             perk_name: None,

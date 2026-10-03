@@ -125,6 +125,7 @@
       "privacy": 1
     },
     "itemComponents": {
+      "reusablePlugs": {"privacy": 2, "data": {}},
       "instances": {
         "data": {
           "700000000000000001": {

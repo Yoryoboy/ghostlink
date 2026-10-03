@@ -13,6 +13,30 @@ mod output {
 }
 
 #[test]
+fn available_flag_builds_identical_cli_and_mcp_queries() {
+    use clap::Parser;
+    for enabled in [false, true] {
+        let mut argv = vec!["ghostlink", "search-inventory", "--perk", "Kill Clip"];
+        if enabled {
+            argv.push("--include-available");
+        }
+        let cli = cli_command::Cli::try_parse_from(argv)
+            .unwrap()
+            .into_read_request()
+            .unwrap();
+        let cli_command::ReadRequest::SearchInventory(cli) = cli else {
+            panic!("search request")
+        };
+        let mcp: destiny_mcp::schema::SearchInventoryArgs = serde_json::from_value(
+            serde_json::json!({"perk_name": "Kill Clip", "include_available": enabled}),
+        )
+        .unwrap();
+        assert_eq!(cli, mcp.into_request().unwrap());
+        assert_eq!(cli.instances.unwrap().include_available, enabled);
+    }
+}
+
+#[test]
 fn invalid_stat_conditions_are_rejected_by_both_surfaces() {
     use clap::Parser;
     for conditions in [

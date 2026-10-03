@@ -1184,6 +1184,7 @@ where
                 let instances = self
                     .repository()
                     .search_instances(&InstanceSearchQuery {
+                        include_available: false,
                         item_hashes: ItemHashFilter::AnyOf(
                             definitions
                                 .iter()
@@ -1540,6 +1541,7 @@ mod tests {
 
     fn instance(instance_id: &str, item_hash: i64, location: ItemLocation) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: item_id(instance_id),
             item_hash: ItemHash::new(item_hash),
             location,

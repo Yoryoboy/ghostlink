@@ -425,6 +425,8 @@ fn search_json(result: &InventorySearchResult) -> String {
                 "instance": instance_json(&hit.instance),
                 "perk_names": hit.perk_names,
                 "mods": hit.mod_names,
+                "available_perks": hit.available_perks,
+                "available_mods": hit.available_mods,
                 "archetype": hit.archetype,
                 "stats": hit.stats.iter().map(|stat| serde_json::json!({"name": stat.name, "value": stat.value})).collect::<Vec<_>>(),
             }))
@@ -538,6 +540,21 @@ fn instance_line(hit: &InventorySearchHit) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
+    }
+    for (label, names) in [
+        ("available perks", &hit.available_perks),
+        ("available mods", &hit.available_mods),
+    ] {
+        if !names.is_empty() {
+            parts.push(format!(
+                "{label}: {}",
+                names
+                    .iter()
+                    .map(|name| sanitize(name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
     }
     if let Some(archetype) = &hit.archetype {
         parts.push(format!("archetype: {}", sanitize(archetype)));
@@ -1080,6 +1097,7 @@ mod tests {
 
     fn instance(identifier: &str, hash: i64, location: ItemLocation) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(identifier),
             item_hash: ItemHash::new(hash),
             location,
@@ -1125,6 +1143,8 @@ mod tests {
                 instance: instance("inst-1", 1, ItemLocation::Vault),
                 perk_names: Vec::new(),
                 mod_names: Vec::new(),
+                available_perks: Vec::new(),
+                available_mods: Vec::new(),
                 archetype: None,
                 stats: Vec::new(),
             }],
@@ -1371,7 +1391,7 @@ mod tests {
     #[test]
     fn search_renders_one_bounded_json_object() {
         let expected = format!(
-            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"archetype":null,"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON},"resolved":{{}}}}"#
+            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"archetype":null,"available_mods":[],"available_perks":[],"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON},"resolved":{{}}}}"#
         );
         assert_eq!(render_search(OutputMode::Json, &search_result()), expected);
     }

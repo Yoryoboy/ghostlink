@@ -323,6 +323,9 @@ impl WeeklyResetOutput {
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchInventoryArgs {
+    /// Match socketed or selectable perks and mods; default is socketed only.
+    #[serde(default)]
+    pub include_available: bool,
     /// Optional case-insensitive definition name substring.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(max = MAX_SEARCH_TEXT_LENGTH))]
@@ -554,6 +557,8 @@ pub struct ListCharactersOutput {
 /// One instance match paired with the exact definition it references.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct InventorySearchHitView {
+    pub available_perks: Vec<String>,
+    pub available_mods: Vec<String>,
     pub definition: DefinitionView,
     pub instance: InstanceView,
     /// Resolved weapon-perk names in socket order, never plug hashes.

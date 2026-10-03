@@ -700,7 +700,8 @@ impl SearchInventoryArgs {
             return Err(invalid_arguments());
         }
         if instances.is_none()
-            && (!stats.is_empty()
+            && (self.include_available
+                || !stats.is_empty()
                 || definitions.has_filters()
                 || self.min_power.is_some()
                 || perk_name.is_some()
@@ -723,6 +724,7 @@ impl SearchInventoryArgs {
             query.perk_name = perk_name;
             query.mod_name = mod_name;
             query.archetype = archetype;
+            query.include_available = self.include_available;
             query.stats = stats;
             query.validate().map_err(McpError::from)?;
         }
@@ -755,6 +757,7 @@ impl InstanceQueryArgs {
         };
 
         let query = InstanceSearchQuery {
+            include_available: false,
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
             perk_name: None,
@@ -851,6 +854,8 @@ pub fn search_inventory_output(result: &InventorySearchResult) -> SearchInventor
             .hits
             .iter()
             .map(|hit| InventorySearchHitView {
+                available_perks: hit.available_perks.clone(),
+                available_mods: hit.available_mods.clone(),
                 definition: definition_view(&hit.definition),
                 instance: instance_view(&hit.instance),
                 perk_names: hit.perk_names.clone(),
@@ -1395,6 +1400,7 @@ mod tests {
         perks: Vec<PerkSummary>,
     ) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(instance_id),
             item_hash: ItemHash::new(item_hash),
             location,
@@ -1492,6 +1498,7 @@ mod tests {
         limit: usize,
     ) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            include_available: false,
             text: text.map(str::to_owned),
             stats: Vec::new(),
             perk_name: None,
@@ -1516,6 +1523,7 @@ mod tests {
 
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            include_available: false,
             stats: Vec::new(),
             perk_name: None,
             mod_name: None,
@@ -1721,6 +1729,7 @@ mod tests {
             instance("inst-b", 2, ItemLocation::Vault, vec![perk(20)]),
         ];
         let args = SearchInventoryArgs {
+            include_available: false,
             text: Some("gjallar".into()),
             stats: Vec::new(),
             perk_name: None,
@@ -1952,6 +1961,7 @@ mod tests {
             mod_name: None,
             archetype: None,
             stats: Vec::new(),
+            include_available: false,
         };
         let output = mcp
             .search_inventory(&args.into_request().expect("valid arguments"))
@@ -1997,6 +2007,7 @@ mod tests {
             mod_name: None,
             archetype: None,
             stats: Vec::new(),
+            include_available: false,
         };
         let request = args.into_request().expect("valid arguments");
 

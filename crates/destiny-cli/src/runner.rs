@@ -741,6 +741,7 @@ mod tests {
 
     fn instance(identifier: &str, hash: i64) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(identifier),
             item_hash: ItemHash::new(hash),
             location: ItemLocation::Vault,
@@ -777,6 +778,8 @@ mod tests {
                 instance: instance("inst-1", 1),
                 perk_names: Vec::new(),
                 mod_names: Vec::new(),
+                available_perks: Vec::new(),
+                available_mods: Vec::new(),
                 archetype: None,
                 stats: Vec::new(),
             }],
@@ -1145,6 +1148,7 @@ mod tests {
                 limit: 5,
             },
             instances: Some(destiny_app::InstanceSearchQuery {
+                include_available: false,
                 item_hashes: destiny_app::ItemHashFilter::AnyOf(vec![ItemHash::new(1)]),
                 perk_hash: None,
                 perk_name: None,

@@ -680,6 +680,7 @@ fn instance(
     perks: Vec<PerkSummary>,
 ) -> ItemInstance {
     ItemInstance {
+        available_plugs: Vec::new(),
         instance_id: ItemInstanceId::new(instance_id),
         item_hash: ItemHash::new(item_hash),
         location,

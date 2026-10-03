@@ -734,8 +734,15 @@ impl SearchRepository for InMemorySearchRepository {
                     .iter()
                     .filter_map(|plug| indexed.get(&plug.plug_hash).copied().flatten().cloned())
                     .collect();
+                let available: Vec<_> = instance
+                    .available_plugs
+                    .iter()
+                    .filter_map(|plug| indexed.get(&plug.plug_hash).copied().flatten().cloned())
+                    .collect();
                 destiny_core::query::instance_matches_with_definition(query, instance, unique)
-                    && destiny_core::query::instance_matches_plug_names(query, &plugs)
+                    && destiny_core::query::instance_matches_available_names(
+                        query, &plugs, &available,
+                    )
                     && destiny_core::query::instance_matches_stats(
                         query,
                         instance,
@@ -1125,6 +1132,7 @@ mod tests {
             source: SourceMarker::Profile,
             characters: Vec::<Character>::new(),
             items: vec![ItemInstance {
+                available_plugs: Vec::new(),
                 instance_id: "instance".into(),
                 item_hash: ItemHash::new(7),
                 location: ItemLocation::Vault,
@@ -1166,6 +1174,7 @@ mod tests {
             ],
             items: vec![
                 ItemInstance {
+                    available_plugs: Vec::new(),
                     instance_id: "instance-1".into(),
                     item_hash: ItemHash::new(7),
                     location: ItemLocation::Vault,
@@ -1189,6 +1198,7 @@ mod tests {
                     ],
                 },
                 ItemInstance {
+                    available_plugs: Vec::new(),
                     instance_id: "instance-2".into(),
                     item_hash: ItemHash::new(8),
                     location: ItemLocation::Other("postmaster".into()),
@@ -1250,6 +1260,7 @@ mod tests {
         perk_hashes: Vec<u32>,
     ) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
             location,
@@ -1297,6 +1308,7 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            include_available: false,
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),
             perk_name: None,

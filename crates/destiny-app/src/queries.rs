@@ -205,6 +205,7 @@ where
 
         let instance_query = if request.definitions.has_filters() {
             let mut query = request.instances.clone().unwrap_or(InstanceSearchQuery {
+                include_available: false,
                 item_hashes: destiny_core::ItemHashFilter::Any,
                 perk_hash: None,
                 perk_name: None,
@@ -246,6 +247,25 @@ where
                         plugs.push(definition.clone());
                     }
                 }
+                let mut available = Vec::new();
+                for plug in &instance.available_plugs {
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        resolved_plugs.entry(plug.plug_hash)
+                    {
+                        let resolved =
+                            match self.sync.repository().lookup_definition(plug.plug_hash)? {
+                                Resolution::Unique(definition) => Some(definition),
+                                Resolution::Missing => None,
+                                Resolution::Ambiguous(_) => return Err(invalid_repository_state()),
+                            };
+                        entry.insert(resolved);
+                    }
+                    if let Some(definition) = &resolved_plugs[&plug.plug_hash] {
+                        available.push(definition.clone());
+                    }
+                }
+                let (available_perks, available_mods) =
+                    destiny_core::query::inventory_available_names(&definition, &plugs, &available);
                 let (perk_names, mod_names) =
                     destiny_core::query::inventory_plug_names(&definition, &plugs);
                 let mut named = Vec::new();
@@ -265,6 +285,8 @@ where
                     .map(|(name, _, value)| destiny_core::NamedStat { name, value })
                     .collect();
                 hits.push(InventorySearchHit {
+                    available_perks,
+                    available_mods,
                     archetype: destiny_core::query::inventory_archetype(&definition, &plugs),
                     stats,
                     definition,
@@ -752,6 +774,7 @@ mod tests {
         perks: Vec<PerkSummary>,
     ) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
             location,
@@ -820,6 +843,7 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            include_available: false,
             item_hashes,
             perk_hash,
             perk_name: None,

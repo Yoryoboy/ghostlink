@@ -227,6 +227,9 @@ impl CallbackMode {
 /// concrete instances without silently choosing one.
 #[derive(Debug, Args)]
 pub struct SearchInventoryArgs {
+    /// Match socketed or selectable perks and mods (default: socketed only).
+    #[arg(long)]
+    pub include_available: bool,
     /// Case-insensitive substring of the definition name.
     #[arg(long, value_name = "TEXT")]
     pub text: Option<String>,
@@ -336,7 +339,8 @@ impl SearchInventoryArgs {
         &self,
         definitions: &DefinitionSearchQuery,
     ) -> Result<Option<InstanceSearchQuery>, CliError> {
-        let no_instance_filter = self.stat.is_empty()
+        let no_instance_filter = !self.include_available
+            && self.stat.is_empty()
             && self.item_hash.is_empty()
             && self.perk_hash.is_none()
             && self.perk.is_none()
@@ -360,6 +364,7 @@ impl SearchInventoryArgs {
             ItemHashFilter::AnyOf(self.item_hash.iter().copied().map(ItemHash::new).collect())
         };
         let query = InstanceSearchQuery {
+            include_available: self.include_available,
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
             perk_name: search_term(self.perk.as_deref())?,
@@ -668,6 +673,20 @@ fn validate_identity(value: &str) -> Result<(), CliError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn include_available_flag_is_accepted() {
+        use clap::Parser;
+        assert!(
+            super::Cli::try_parse_from([
+                "ghostlink",
+                "search-inventory",
+                "--perk",
+                "Kill Clip",
+                "--include-available"
+            ])
+            .is_ok()
+        );
+    }
     use super::{
         CallbackMode, Cli, CliError, Command, ErrorOutcome, ReadRequest, SUCCESS_CODE,
         SUCCESS_EXIT_CODE, category_outcome, inspection_outcome,
@@ -1331,6 +1350,7 @@ mod tests {
                 version: destiny_app::DefinitionVersion::new("manifest-v1"),
             },
             instance: destiny_app::ItemInstance {
+                available_plugs: Vec::new(),
                 instance_id: ItemInstanceId::new("inst-1"),
                 item_hash: destiny_app::ItemHash::new(1),
                 location: ItemLocation::Vault,

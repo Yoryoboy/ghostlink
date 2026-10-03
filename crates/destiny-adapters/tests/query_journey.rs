@@ -443,6 +443,7 @@ fn instance_query(
     limit: usize,
 ) -> InstanceSearchQuery {
     InstanceSearchQuery {
+        include_available: false,
         item_hashes,
         perk_hash: perk_hash.map(PerkHash::new),
         perk_name: None,

@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 9;
+pub(crate) const LATEST_VERSION: u32 = 10;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 9] = [
+const MIGRATIONS: [Migration; 10] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -99,7 +99,24 @@ const MIGRATIONS: [Migration; 9] = [
         up: SCHEMA_V9_UP,
         down: SCHEMA_V9_DOWN,
     },
+    Migration {
+        version: 10,
+        up: SCHEMA_V10_UP,
+        down: SCHEMA_V10_DOWN,
+    },
 ];
+
+const SCHEMA_V10_UP: &str = r#"
+CREATE TABLE item_available_plugs (
+    instance_id TEXT NOT NULL REFERENCES items(instance_id) ON DELETE CASCADE,
+    socket_index INTEGER NOT NULL CHECK (socket_index BETWEEN 0 AND 255),
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 63),
+    plug_hash INTEGER NOT NULL CHECK (plug_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (instance_id, socket_index, ordinal),
+    UNIQUE (instance_id, socket_index, plug_hash)
+) STRICT;
+"#;
+const SCHEMA_V10_DOWN: &str = "DROP TABLE IF EXISTS item_available_plugs;";
 
 const SCHEMA_V9_UP: &str = r#"
 CREATE TABLE item_stats (

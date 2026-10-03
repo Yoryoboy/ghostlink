@@ -324,6 +324,7 @@ pub fn instance_matches_stats(
 /// implementation runs before reading the projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstanceSearchQuery {
+    pub include_available: bool,
     pub item_hashes: ItemHashFilter,
     pub perk_hash: Option<PerkHash>,
     /// Exact normalized weapon-perk name; validated by `SearchTerm` construction.
@@ -536,6 +537,44 @@ pub fn instance_matches_plug_names(query: &InstanceSearchQuery, plugs: &[ItemDef
         })
 }
 
+/// Alternatives affect perk/mod filters only, never archetype matching.
+pub fn instance_matches_available_names(
+    query: &InstanceSearchQuery,
+    socketed: &[ItemDefinition],
+    available: &[ItemDefinition],
+) -> bool {
+    if !query.include_available {
+        return instance_matches_plug_names(query, socketed);
+    }
+    let mut names_query = query.clone();
+    names_query.archetype = None;
+    let combined: Vec<_> = socketed.iter().chain(available.iter()).cloned().collect();
+    instance_matches_plug_names(&names_query, &combined)
+        && query.archetype.as_ref().is_none_or(|term| {
+            socketed
+                .iter()
+                .any(|plug| is_armor_archetype(plug) && term.matches_name(&plug.name))
+        })
+}
+
+/// Alternative names are unique, socket ordered, and omit already selected names.
+pub fn inventory_available_names(
+    definition: &ItemDefinition,
+    socketed: &[ItemDefinition],
+    available: &[ItemDefinition],
+) -> (Vec<String>, Vec<String>) {
+    let (selected_perks, selected_mods) = inventory_plug_names(definition, socketed);
+    let (mut perks, mut mods) = inventory_plug_names(definition, available);
+    for (names, selected) in [(&mut perks, selected_perks), (&mut mods, selected_mods)] {
+        let mut seen: std::collections::HashSet<_> = selected
+            .iter()
+            .map(|name| normalize_search_text(name))
+            .collect();
+        names.retain(|name| seen.insert(normalize_search_text(name)));
+    }
+    (perks, mods)
+}
+
 pub fn is_armor_archetype(definition: &ItemDefinition) -> bool {
     definition.plug_category.as_deref().is_some_and(|category| {
         crate::domain::classify_plug(category) == crate::domain::PlugKind::ArmorArchetype
@@ -635,6 +674,8 @@ pub struct CharacterListResult {
 /// runtime state. Both sides are bounded domain records with no provider payload.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySearchHit {
+    pub available_perks: Vec<String>,
+    pub available_mods: Vec<String>,
     pub definition: ItemDefinition,
     pub instance: ItemInstance,
     /// Resolved weapon-perk names in stored socket order; no plug hashes.
@@ -727,6 +768,7 @@ mod tests {
 
     fn instance(instance_id: &str, item_hash: i64) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
             location: ItemLocation::Vault,
@@ -761,6 +803,7 @@ mod tests {
         perk_hash: Option<PerkHash>,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            include_available: false,
             item_hashes,
             perk_hash,
             perk_name: None,

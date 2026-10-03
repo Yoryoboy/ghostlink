@@ -66,6 +66,7 @@ fn definitions(
 }
 fn query(conditions: &[&str]) -> InstanceSearchQuery {
     InstanceSearchQuery {
+        include_available: false,
         item_hashes: ItemHashFilter::Any,
         perk_hash: None,
         perk_name: None,
@@ -115,6 +116,7 @@ fn seeded(stats: Vec<StatDefinition>) -> (SqliteStore, InMemorySearchRepository)
     ]
     .into_iter()
     .map(|(id, stats)| ItemInstance {
+        available_plugs: Vec::new(),
         instance_id: id.into(),
         item_hash: ItemHash::new(1),
         location: ItemLocation::Vault,

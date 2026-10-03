@@ -216,6 +216,12 @@ pub fn decode_profile(
             .ok_or_else(provider_validation)?,
     )?;
 
+    let reusable = component_data(
+        item_components
+            .get("reusablePlugs")
+            .ok_or_else(provider_validation)?,
+    )?;
+
     let mut seen = HashSet::with_capacity(raw_items.len());
     let mut items = Vec::with_capacity(raw_items.len());
     for raw in raw_items {
@@ -240,6 +246,7 @@ pub fn decode_profile(
         let stats = decode_stats(stats, &raw.instance_id)?;
 
         items.push(ItemInstance {
+            available_plugs: decode_available_plugs(reusable, &raw.instance_id)?,
             instance_id: ItemInstanceId::new(raw.instance_id),
             item_hash: raw.item_hash,
             location: raw.location,
@@ -274,6 +281,60 @@ pub fn decode_profile(
     } else {
         Err(provider_validation())
     }
+}
+
+/// Selectable plugs are bounded before filtering and sorted by numeric socket index.
+fn decode_available_plugs(
+    data: &Map<String, Value>,
+    instance_id: &str,
+) -> Result<Vec<destiny_core::domain::AvailablePlug>, AppError> {
+    let Some(entry) = data.get(instance_id) else {
+        return Ok(Vec::new());
+    };
+    let sockets = entry
+        .get("plugs")
+        .and_then(Value::as_object)
+        .ok_or_else(provider_validation)?;
+    if sockets.len() > 32 {
+        return Err(provider_validation());
+    }
+    let mut ordered = Vec::new();
+    for (key, entries) in sockets {
+        let index = key.parse::<u8>().map_err(|_| provider_validation())?;
+        if key != &index.to_string() {
+            return Err(provider_validation());
+        }
+        let entries = entries.as_array().ok_or_else(provider_validation)?;
+        ordered.push((index, entries));
+    }
+    ordered.sort_by_key(|(index, _)| *index);
+    let mut plugs = Vec::new();
+    for (socket_index, entries) in ordered {
+        // Cosmetic sockets can expose hundreds of alternatives. Validate every
+        // entry, but omit oversized sockets rather than rejecting the profile or
+        // presenting an arbitrary partial selection. The response byte limit
+        // still bounds input; retained alternatives remain capped at 64/socket.
+        let retain_socket = entries.len() <= 64;
+        let mut seen = HashSet::new();
+        for entry in entries {
+            let hash = decode_required_u32(entry.get("plugItemHash"))?;
+            let can_insert = entry
+                .get("canInsert")
+                .and_then(Value::as_bool)
+                .ok_or_else(provider_validation)?;
+            let enabled = entry
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .ok_or_else(provider_validation)?;
+            if retain_socket && can_insert && enabled && seen.insert(hash) {
+                plugs.push(destiny_core::domain::AvailablePlug {
+                    socket_index,
+                    plug_hash: ItemHash::new(i64::from(hash)),
+                });
+            }
+        }
+    }
+    Ok(plugs)
 }
 
 /// Stats are a bounded keyed set, normalized independently of JSON map order.
@@ -801,6 +862,106 @@ mod tests {
     }
 
     #[test]
+    fn reusable_plugs_are_sorted_filtered_deduplicated_and_bounded() {
+        let plug = |hash, can_insert, enabled| json!({"plugItemHash": hash, "canInsert": can_insert, "enabled": enabled});
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["reusablePlugs"] = json!({"privacy": 2, "data": {"700000000000000001": {"plugs": {"10": [plug(12, true, true)], "2": [plug(11, true, true), plug(11, true, true), plug(13, false, true), plug(14, true, false)]}}}});
+        }).unwrap();
+        assert_eq!(
+            snapshot.items[0].available_plugs,
+            vec![
+                destiny_core::AvailablePlug {
+                    socket_index: 2,
+                    plug_hash: ItemHash::new(11)
+                },
+                destiny_core::AvailablePlug {
+                    socket_index: 10,
+                    plug_hash: ItemHash::new(12)
+                }
+            ]
+        );
+        assert!(
+            snapshot.items[1..]
+                .iter()
+                .all(|item| item.available_plugs.is_empty())
+        );
+        for wrapper in [
+            json!({"privacy": 2}),
+            json!({"privacy": 3, "data": {}}),
+            json!({"disabled": true, "data": {}}),
+        ] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["itemComponents"]["reusablePlugs"] = wrapper
+            }));
+        }
+        for entries in [
+            json!({"01": []}),
+            json!({"256": []}),
+            json!({"1": {}}),
+            json!({"1": [plug(-1, true, true)]}),
+            json!({"1": [{"plugItemHash": 1, "canInsert": true}]}),
+        ] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["itemComponents"]["reusablePlugs"]["data"] =
+                    json!({"700000000000000001": {"plugs": entries}})
+            }));
+        }
+        for count in [32, 33] {
+            let sockets: serde_json::Map<String, Value> = (0..count)
+                .map(|index| (index.to_string(), json!(vec![plug(1, false, false); 64])))
+                .collect();
+            let result = decode_mutated(|value| {
+                value["Response"]["itemComponents"]["reusablePlugs"]["data"] =
+                    json!({"700000000000000001": {"plugs": sockets}})
+            });
+            if count == 32 {
+                assert!(result.is_ok());
+            } else {
+                assert_validation(result);
+            }
+        }
+        let mut value = fixture_value();
+        value["Response"]["itemComponents"]["reusablePlugs"]["data"] =
+            json!({"700000000000000001": {"plugs": {"1": []}}});
+        let text = serde_json::to_string(&value)
+            .unwrap()
+            .replace("\"1\":[]", "\"1\":[],\"1\":[]");
+        assert_validation(decode(text.as_bytes()));
+    }
+
+    #[test]
+    fn oversized_reusable_socket_is_skipped_without_losing_bounded_sockets() {
+        let plug = json!({"plugItemHash": 42, "canInsert": true, "enabled": true});
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["reusablePlugs"]["data"] = json!({"700000000000000001": {"plugs": {"1": vec![plug.clone(); 500], "2": [plug]}}});
+        }).expect("oversized alternatives must not reject the profile");
+        assert_eq!(
+            snapshot.items[0].available_plugs,
+            vec![destiny_core::AvailablePlug {
+                socket_index: 2,
+                plug_hash: ItemHash::new(42)
+            }]
+        );
+        assert_validation(decode_mutated(|value| {
+            let mut plugs =
+                vec![json!({"plugItemHash": 42, "canInsert": true, "enabled": true}); 500];
+            plugs[499]["enabled"] = json!("invalid");
+            value["Response"]["itemComponents"]["reusablePlugs"]["data"] =
+                json!({"700000000000000001": {"plugs": {"1": plugs}}});
+        }));
+    }
+
+    #[test]
+    fn reusable_plugs_component_is_required() {
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]
+                .as_object_mut()
+                .unwrap()
+                .remove("reusablePlugs");
+        }));
+    }
+
+    #[test]
     fn stats_private_data_is_sorted_and_missing_instances_are_empty() {
         let snapshot = decode_mutated(|value| {
             value["Response"]["itemComponents"]["stats"] = json!({"privacy": 2, "data": {"700000000000000001": {"stats": {"9": {"statHash": 9, "value": -10}, "1": {"statHash": 1, "value": 20}}}}});
@@ -926,6 +1087,7 @@ mod tests {
             ],
             items: vec![
                 ItemInstance {
+                    available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000001"),
                     item_hash: ItemHash::new(1001),
                     location: ItemLocation::Vault,
@@ -947,6 +1109,7 @@ mod tests {
                     perks: Vec::new(),
                 },
                 ItemInstance {
+                    available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000003"),
                     item_hash: ItemHash::new(1003),
                     location: ItemLocation::other("bungie-profile-location:3"),
@@ -959,6 +1122,7 @@ mod tests {
                     perks: Vec::new(),
                 },
                 ItemInstance {
+                    available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000004"),
                     item_hash: ItemHash::new(2001),
                     stats: Vec::new(),
@@ -971,6 +1135,7 @@ mod tests {
                     perks: Vec::new(),
                 },
                 ItemInstance {
+                    available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000005"),
                     item_hash: ItemHash::new(2003),
                     stats: Vec::new(),
@@ -983,6 +1148,7 @@ mod tests {
                     perks: Vec::new(),
                 },
                 ItemInstance {
+                    available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000006"),
                     item_hash: ItemHash::new(3001),
                     location: ItemLocation::Character(character_id("900000000000000001")),
@@ -1024,6 +1190,7 @@ mod tests {
                     ],
                 },
                 ItemInstance {
+                    available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000007"),
                     item_hash: ItemHash::new(3002),
                     stats: Vec::new(),
@@ -1749,7 +1916,8 @@ mod tests {
                     "instances": { "data": { "20": { "isEquipped": false }, "100": { "isEquipped": false } } },
                     "perks": { "data": {} },
                     "sockets": { "data": {} },
-                    "stats": { "data": {} }
+                    "stats": { "data": {} },
+                    "reusablePlugs": { "data": {} }
                 }
             }
         });

@@ -75,8 +75,18 @@ pub struct StatSummary {
     pub value: i32,
 }
 
+/// One selectable plug, in socket-index then provider plug order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AvailablePlug {
+    pub socket_index: u8,
+    pub plug_hash: ItemHash,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemInstance {
+    /// Selectable weapon perks, armor mods and unknown plugs, stored separately
+    /// from selected sockets. Socket order and per-socket plug order are content.
+    pub available_plugs: Vec<AvailablePlug>,
     pub instance_id: ItemInstanceId,
     pub item_hash: ItemHash,
     pub location: ItemLocation,
@@ -110,6 +120,14 @@ impl ItemInstance {
         &mut self,
         mut category_for: impl FnMut(ItemHash) -> Option<&'a str>,
     ) {
+        self.available_plugs.retain(|plug| {
+            category_for(plug.plug_hash).is_none_or(|category| {
+                matches!(
+                    classify_plug(category),
+                    PlugKind::WeaponPerk | PlugKind::ArmorMod
+                )
+            })
+        });
         self.plugs.retain(|plug| {
             plug.enabled
                 && category_for(plug.plug_hash)
@@ -306,6 +324,7 @@ mod plug_tests {
         use super::{ItemInstance, ItemLocation, PlugSummary};
         use crate::{ItemHash, ItemInstanceId};
         let mut item = ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new("1"),
             item_hash: ItemHash::new(1),
             location: ItemLocation::Vault,

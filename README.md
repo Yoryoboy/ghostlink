@@ -150,6 +150,21 @@ Armor hits show socket-ordered mod names with a `mods:` label in text and a
 `mod_name`. Existing databases pick up armor mods after the next profile sync
 (`ghostlink sync`); no migration is needed.
 
+### Selectable perks and mods
+
+By default, perk and mod filters match only socketed plugs. Opt into socketed
+**or available** alternatives with `--include-available` (MCP: `include_available`).
+
+```sh
+ghostlink search-inventory --perk "Kill Clip" --include-available
+```
+
+Hits show `available perks:` for weapons and `available mods:` for armor;
+JSON and MCP expose `available_perks` and `available_mods`. Names are unique,
+in socket order, and exclude already socketed names. Unknown definitions never
+match or display. Alternatives require a profile refresh (`ghostlink sync`)
+after the automatic schema-v10 migration; archetype matching remains socketed-only.
+
 ### Name matching rules
 
 `--perk`, `--mod`, `--archetype` and names in `--stat` resolve against the

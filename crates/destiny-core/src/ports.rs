@@ -213,6 +213,23 @@ impl InventorySnapshotInput {
             {
                 return false;
             }
+            let mut sockets = std::collections::BTreeMap::new();
+            let mut previous = None;
+            let mut available_hashes = HashSet::new();
+            for plug in &item.available_plugs {
+                if previous.is_some_and(|index| index > plug.socket_index)
+                    || u32::try_from(plug.plug_hash.value()).is_err()
+                    || !available_hashes.insert((plug.socket_index, plug.plug_hash))
+                {
+                    return false;
+                }
+                previous = Some(plug.socket_index);
+                let count = sockets.entry(plug.socket_index).or_insert(0);
+                *count += 1;
+                if *count > 64 || sockets.len() > 32 {
+                    return false;
+                }
+            }
             if item.plugs.len() > 32
                 || item
                     .plugs

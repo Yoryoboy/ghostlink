@@ -321,7 +321,12 @@ fn projection_rows_exist(connection: &Connection) -> Result<bool, AppError> {
     let stats: i64 = connection
         .query_row("SELECT count(*) FROM item_stats", [], |row| row.get(0))
         .map_err(|_| storage_failure())?;
-    Ok(perks > 0 || plugs > 0 || stats > 0)
+    let available: i64 = connection
+        .query_row("SELECT count(*) FROM item_available_plugs", [], |row| {
+            row.get(0)
+        })
+        .map_err(|_| storage_failure())?;
+    Ok(perks > 0 || plugs > 0 || stats > 0 || available > 0)
 }
 
 /// Reconstructs every stored character with its optional fields, checked.
@@ -420,6 +425,7 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
         let plugs = read_plugs(connection, &instance_id)?;
         let stats = read_stats(connection, &instance_id)?;
         items.push(ItemInstance {
+            available_plugs: read_available_plugs(connection, &instance_id)?,
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
             location,
@@ -439,7 +445,9 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
             "SELECT EXISTS(SELECT 1 FROM item_plugs p LEFT JOIN items i \
          ON p.instance_id = i.instance_id WHERE i.instance_id IS NULL) OR \
          EXISTS(SELECT 1 FROM item_stats s LEFT JOIN items i \
-         ON s.instance_id = i.instance_id WHERE i.instance_id IS NULL)",
+         ON s.instance_id = i.instance_id WHERE i.instance_id IS NULL) OR \
+         EXISTS(SELECT 1 FROM item_available_plugs a LEFT JOIN items i \
+         ON a.instance_id = i.instance_id WHERE i.instance_id IS NULL)",
             [],
             |row| row.get(0),
         )
@@ -448,6 +456,47 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
         return Err(storage_failure());
     }
     Ok(items)
+}
+
+/// Checked selectable plugs: socket order, contiguous per-socket ordinals and unique hashes.
+pub(super) fn read_available_plugs(
+    connection: &Connection,
+    instance_id: &str,
+) -> Result<Vec<destiny_core::AvailablePlug>, AppError> {
+    let mut statement = connection.prepare("SELECT socket_index, ordinal, plug_hash FROM item_available_plugs WHERE instance_id=?1 ORDER BY socket_index, ordinal").map_err(|_| storage_failure())?;
+    let rows = statement
+        .query_map([instance_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|_| storage_failure())?;
+    let mut plugs = Vec::new();
+    let mut previous = None;
+    let mut expected = 0;
+    let mut sockets = 0;
+    let mut seen = HashSet::new();
+    for row in rows {
+        let (index, ordinal, hash) = row.map_err(|_| storage_failure())?;
+        let index = u8::try_from(index).map_err(|_| storage_failure())?;
+        if previous != Some(index) {
+            sockets += 1;
+            expected = 0;
+            previous = Some(index);
+        }
+        let hash = u32::try_from(hash).map_err(|_| storage_failure())?;
+        if sockets > 32 || ordinal != expected || ordinal >= 64 || !seen.insert((index, hash)) {
+            return Err(storage_failure());
+        }
+        expected += 1;
+        plugs.push(destiny_core::AvailablePlug {
+            socket_index: index,
+            plug_hash: ItemHash::new(i64::from(hash)),
+        });
+    }
+    Ok(plugs)
 }
 
 /// Shared checked reconstruction of a bounded, hash-sorted stat set.
@@ -687,6 +736,12 @@ fn replace_projection(
             )
             .map_err(|_| storage_failure())?;
 
+        let mut ordinals = std::collections::HashMap::new();
+        for plug in &item.available_plugs {
+            let ordinal = ordinals.entry(plug.socket_index).or_insert(0_i64);
+            connection.execute("INSERT INTO item_available_plugs(instance_id,socket_index,ordinal,plug_hash) VALUES(?1,?2,?3,?4)", params![item.instance_id.as_str(), i64::from(plug.socket_index), *ordinal, plug.plug_hash.value()]).map_err(|_| storage_failure())?;
+            *ordinal += 1;
+        }
         for stat in &item.stats {
             connection
                 .execute(

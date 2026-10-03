@@ -243,6 +243,7 @@ fn full_input() -> InventorySnapshotInput {
         ],
         items: vec![
             ItemInstance {
+                available_plugs: Vec::new(),
                 instance_id: "instance-1".into(),
                 item_hash: ItemHash::new(-42),
                 location: ItemLocation::Vault,
@@ -273,6 +274,7 @@ fn full_input() -> InventorySnapshotInput {
                 ],
             },
             ItemInstance {
+                available_plugs: Vec::new(),
                 instance_id: "instance-2".into(),
                 item_hash: ItemHash::new(7),
                 location: ItemLocation::Character("character-1".into()),
@@ -289,6 +291,7 @@ fn full_input() -> InventorySnapshotInput {
                 }],
             },
             ItemInstance {
+                available_plugs: Vec::new(),
                 instance_id: "instance-3".into(),
                 item_hash: ItemHash::new(8),
                 location: ItemLocation::Other("postmaster".into()),
@@ -332,10 +335,51 @@ fn expected_items() -> Vec<ItemInstance> {
 }
 
 #[test]
+fn available_plugs_corruption_and_failed_writes_fail_closed() {
+    for sql in [
+        "UPDATE item_available_plugs SET ordinal=1",
+        "PRAGMA ignore_check_constraints=ON; UPDATE item_available_plugs SET plug_hash=-1",
+        "PRAGMA ignore_check_constraints=ON; UPDATE item_available_plugs SET socket_index=256",
+        "PRAGMA foreign_keys=OFF; UPDATE item_available_plugs SET instance_id='orphan'",
+    ] {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let mut input = full_input();
+        input.items[0].available_plugs = vec![destiny_core::AvailablePlug {
+            socket_index: 0,
+            plug_hash: ItemHash::new(50),
+        }];
+        let committed = store.replace_current(input.clone()).unwrap();
+        store.connection().execute_batch("CREATE TRIGGER fail_available BEFORE INSERT ON item_available_plugs BEGIN SELECT RAISE(ABORT, 'test'); END;").unwrap();
+        input.items[0].available_plugs[0].plug_hash = ItemHash::new(51);
+        assert!(store.replace_current(input).is_err());
+        assert_eq!(store.load_current().unwrap().unwrap(), committed);
+        store
+            .connection()
+            .execute_batch("DROP TRIGGER fail_available")
+            .unwrap();
+        store.connection().execute_batch(sql).unwrap();
+        assert_eq!(
+            store.load_current().unwrap_err().category(),
+            destiny_core::ErrorCategory::LocalStorage
+        );
+    }
+}
+
+#[test]
 fn stats_round_trip_search_and_revision_identity() {
     use destiny_core::{SearchRepository, StatSummary};
     let mut store = SqliteStore::open_in_memory().unwrap();
     let mut input = full_input();
+    input.items[0].available_plugs = vec![
+        destiny_core::AvailablePlug {
+            socket_index: 2,
+            plug_hash: ItemHash::new(50),
+        },
+        destiny_core::AvailablePlug {
+            socket_index: 2,
+            plug_hash: ItemHash::new(51),
+        },
+    ];
     input.items[0].stats = vec![
         StatSummary {
             stat_hash: 1,
@@ -352,6 +396,7 @@ fn stats_round_trip_search_and_revision_identity() {
     assert_eq!(
         store
             .search_instances(&destiny_core::InstanceSearchQuery {
+                include_available: false,
                 item_hashes: destiny_core::ItemHashFilter::Any,
                 perk_hash: None,
                 perk_name: None,
@@ -375,6 +420,10 @@ fn stats_round_trip_search_and_revision_identity() {
     input.items[0].stats.reverse();
     assert_eq!(store.replace_current(input.clone()).unwrap(), first);
     assert_eq!(fake.replace_current(input.clone()).unwrap(), first);
+    input.items[0].available_plugs.swap(0, 1);
+    let reordered = store.replace_current(input.clone()).unwrap();
+    assert_ne!(reordered.metadata.revision, first.metadata.revision);
+    assert_eq!(fake.replace_current(input.clone()).unwrap(), reordered);
     input.items[0].stats[0].value -= 1;
     let changed = store.replace_current(input.clone()).unwrap();
     assert_ne!(changed.metadata.revision, first.metadata.revision);
@@ -435,7 +484,7 @@ fn stats_migration_constraints_cascade_and_corruption_checks() {
             .prepare("SELECT * FROM item_stats")
             .is_err()
     );
-    store.migrate_to(9).unwrap();
+    store.migrate_to(10).unwrap();
     assert!(
         store
             .load_current()
