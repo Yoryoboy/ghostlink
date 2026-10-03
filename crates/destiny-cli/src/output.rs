@@ -189,6 +189,18 @@ pub fn render_weekly(
     weekly_human::render(character, weekly)
 }
 
+pub fn render_weekly_level(
+    mode: OutputMode,
+    character: &Character,
+    weekly: &destiny_app::weekly_personal::WeeklyPersonal,
+    level: crate::command::WeeklyLevel,
+) -> String {
+    if mode == OutputMode::Json {
+        return weekly_json::render_weekly_json(character, weekly);
+    }
+    weekly_human::render_level(character, weekly, level)
+}
+
 /// Renders one character listing in the selected mode.
 pub fn render_characters(mode: OutputMode, result: &CharacterListResult) -> String {
     match mode {
@@ -581,6 +593,10 @@ const fn source_text(source: SourceMarker) -> &'static str {
 #[cfg(test)]
 #[path = "weekly_human_tests.rs"]
 mod weekly_human_tests;
+
+#[cfg(test)]
+#[path = "weekly_levels_tests.rs"]
+mod weekly_levels_tests;
 
 #[cfg(test)]
 mod tests {

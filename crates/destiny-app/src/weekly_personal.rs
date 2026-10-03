@@ -612,15 +612,13 @@ impl<P: PublicMilestonesGateway, G: WeeklyProfileGateway, R: WorldDefinitionRepo
         };
         let mut loaded_modifiers = Vec::new();
         for hash in modifiers {
-            loaded_modifiers.push(WeeklyModifier {
-                hash: *hash,
-                definition: self
-                    .repository
-                    .lookup_activity_modifier(*hash)?
-                    .map_or(DefinitionResolution::Unresolved, |d| {
-                        resolved(d.name(), d.description())
-                    }),
-            });
+            let definition = self
+                .repository
+                .lookup_activity_modifier(*hash)?
+                .map_or(DefinitionResolution::Unresolved, |d| {
+                    resolved(d.name(), d.description())
+                });
+            loaded_modifiers.push(WeeklyModifier::new(*hash, definition));
         }
         Ok(PersonalActivity {
             hash,
@@ -787,7 +785,15 @@ mod tests {
             ("", ModifierCategory::Other),
         ] {
             assert_eq!(modifier_category(name), expected);
+            assert_eq!(
+                WeeklyModifier::new(1, resolved(name, "")).category,
+                expected
+            );
         }
+        assert_eq!(
+            WeeklyModifier::new(1, DefinitionResolution::Unresolved).category,
+            ModifierCategory::Other
+        );
     }
 
     #[test]

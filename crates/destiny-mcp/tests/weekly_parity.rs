@@ -26,28 +26,27 @@ fn weekly_cli_mcp_json_parity_on_the_same_fixture() {
             hash: 1,
             definition: unresolved.clone(),
         }],
-        modifiers: std::iter::once(WeeklyModifier {
-            hash: 2,
-            definition: unresolved.clone(),
-        })
-        .chain(
-            [
-                "Arc Surge",
-                "Overcharged Fusion Rifle",
-                "Champion Foes",
-                "Shielded Foes",
-            ]
-            .into_iter()
-            .enumerate()
-            .map(|(i, name)| WeeklyModifier {
-                hash: 10 + i as u32,
-                definition: DefinitionResolution::Resolved {
-                    name: name.into(),
-                    description: String::new(),
-                },
-            }),
-        )
-        .collect(),
+        modifiers: std::iter::once(WeeklyModifier::new(2, unresolved.clone()))
+            .chain(
+                [
+                    "Arc Surge",
+                    "Overcharged Fusion Rifle",
+                    "Champion Foes",
+                    "Shielded Foes",
+                ]
+                .into_iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    WeeklyModifier::new(
+                        10 + i as u32,
+                        DefinitionResolution::Resolved {
+                            name: name.into(),
+                            description: String::new(),
+                        },
+                    )
+                }),
+            )
+            .collect(),
         challenge_objectives: vec![PersonalObjective {
             hash: 3,
             definition: unresolved.clone(),

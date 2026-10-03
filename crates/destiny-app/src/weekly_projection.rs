@@ -1,7 +1,5 @@
 //! One provider-neutral weekly presentation contract for CLI and MCP.
-use crate::weekly_personal::{
-    ModifierCategory, UnclassifiedReason, UnclassifiedSource, modifier_category,
-};
+use crate::weekly_personal::{ModifierCategory, UnclassifiedReason, UnclassifiedSource};
 use crate::{
     Character, DefinitionResolution, PersonalActivity, PersonalChallenge, PersonalGroup,
     WeeklyPersonal,
@@ -40,15 +38,14 @@ fn entity_fields<J: WeeklyJson>(
 fn entity<J: WeeklyJson>(hash: u32, definition: &DefinitionResolution) -> J::Value {
     J::object(entity_fields::<J>(hash, definition))
 }
-fn modifier<J: WeeklyJson>(hash: u32, definition: &DefinitionResolution) -> J::Value {
-    // Derived/name-based English hint, not an API taxonomy; unresolved -> Other.
-    let category = match modifier_category(name(definition).unwrap_or("")) {
+fn modifier<J: WeeklyJson>(modifier: &crate::WeeklyModifier) -> J::Value {
+    let category = match modifier.category {
         ModifierCategory::Surge => "surge",
         ModifierCategory::Overcharge => "overcharge",
         ModifierCategory::Champions => "champions",
         ModifierCategory::Other => "other",
     };
-    let mut fields = entity_fields::<J>(hash, definition);
+    let mut fields = entity_fields::<J>(modifier.hash, &modifier.definition);
     fields.push(("category", J::string(category)));
     J::object(fields)
 }
@@ -80,12 +77,7 @@ fn activity<J: WeeklyJson>(a: &PersonalActivity) -> J::Value {
         ),
         (
             "modifiers",
-            J::array(
-                a.modifiers
-                    .iter()
-                    .map(|m| modifier::<J>(m.hash, &m.definition))
-                    .collect(),
-            ),
+            J::array(a.modifiers.iter().map(modifier::<J>).collect()),
         ),
         (
             "challenge_objectives",

@@ -2,7 +2,7 @@ use super::{OutputMode, render_weekly};
 use destiny_app::weekly_personal::*;
 use destiny_app::{Character, CharacterId, DefinitionResolution, DefinitionVersion};
 
-fn resolved(name: &str) -> DefinitionResolution {
+pub(super) fn resolved(name: &str) -> DefinitionResolution {
     DefinitionResolution::Resolved {
         name: name.into(),
         description: String::new(),
@@ -19,7 +19,7 @@ fn objective(name: &str, progress: i64, completion_value: i64) -> PersonalChalle
     }
 }
 
-fn group(
+pub(super) fn group(
     name: &str,
     objectives: Vec<PersonalChallenge>,
     rewards: &[&str],
@@ -60,7 +60,7 @@ fn group(
     }
 }
 
-fn fixture() -> (Character, WeeklyPersonal) {
+pub(super) fn fixture() -> (Character, WeeklyPersonal) {
     let character = Character {
         id: CharacterId::new("hunter"),
         name: None,
@@ -145,10 +145,10 @@ fn fixture() -> (Character, WeeklyPersonal) {
         let mut master = raid.activities[0].clone();
         master.hash = 11;
         master.definition = resolved(&format!("{}: Master", raid.root_name));
-        master.modifiers.push(destiny_app::WeeklyModifier {
-            hash: 1234,
-            definition: resolved("Hidden modifier"),
-        });
+        master.modifiers.push(destiny_app::WeeklyModifier::new(
+            1234,
+            resolved("Hidden modifier"),
+        ));
         raid.activities.push(master);
     }
     (character, weekly)

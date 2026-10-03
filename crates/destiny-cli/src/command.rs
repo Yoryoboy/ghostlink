@@ -318,13 +318,43 @@ impl SearchInventoryArgs {
 /// Weekly accepts opaque IDs and uniquely matched character classes.
 #[derive(Debug, Args)]
 pub struct WeeklyArgs {
+    /// Show modifiers grouped by derived names.
+    #[arg(long, conflicts_with = "debug")]
+    pub details: bool,
+
+    /// Show raw entries, hashes, and Manifest diagnostics.
+    #[arg(long, conflicts_with = "details")]
+    pub debug: bool,
+
     /// Exact ID or hunter|titan|warlock (case-insensitive, unique class).
     /// Defaults to strictly highest light; ties or missing light use deterministic first.
     #[arg(long, value_name = "ID_OR_CLASS")]
     pub character: Option<String>,
 }
 
+/// Human weekly verbosity; JSON retains its independent complete contract.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WeeklyLevel {
+    #[default]
+    Default,
+    Details,
+    Debug,
+}
+
 impl WeeklyArgs {
+    pub fn output_level(&self, mode: OutputMode) -> Result<WeeklyLevel, CliError> {
+        if (self.details || self.debug) && mode == OutputMode::Json {
+            return Err(CliError::invalid_request());
+        }
+        Ok(if self.debug {
+            WeeklyLevel::Debug
+        } else if self.details {
+            WeeklyLevel::Details
+        } else {
+            WeeklyLevel::Default
+        })
+    }
+
     pub fn character_id(&self) -> Result<Option<CharacterId>, CliError> {
         self.character
             .as_deref()
@@ -680,6 +710,43 @@ mod tests {
             ReadRequest::SearchInventory(request) => request,
             other => panic!("expected a search request, found {other:?}"),
         }
+    }
+
+    #[test]
+    fn weekly_output_levels_are_local_and_validated() {
+        for flag in ["--details", "--debug"] {
+            let cli = parse(["weekly", flag]);
+            match cli.command {
+                Command::Weekly(args) => {
+                    assert_eq!(
+                        args.output_level(OutputMode::Human).unwrap(),
+                        if flag == "--details" {
+                            super::WeeklyLevel::Details
+                        } else {
+                            super::WeeklyLevel::Debug
+                        }
+                    );
+                    assert_eq!(
+                        args.output_level(OutputMode::Json).unwrap_err().code(),
+                        "invalid_request"
+                    );
+                }
+                _ => panic!("expected weekly"),
+            }
+            for argv in [
+                vec!["ghostlink", "--json", "weekly", flag],
+                vec!["ghostlink", "weekly", flag, "--json"],
+            ] {
+                let cli = Cli::try_parse_from(argv).unwrap();
+                let mode = cli.output_mode();
+                if let Command::Weekly(args) = cli.command {
+                    assert_eq!(args.output_level(mode).unwrap_err().exit_code(), 2);
+                }
+            }
+            assert!(Cli::try_parse_from(["ghostlink", "weekly-reset", flag]).is_err());
+            assert!(Cli::try_parse_from(["ghostlink", "list-characters", flag]).is_err());
+        }
+        assert!(Cli::try_parse_from(["ghostlink", "weekly", "--details", "--debug"]).is_err());
     }
 
     #[test]
