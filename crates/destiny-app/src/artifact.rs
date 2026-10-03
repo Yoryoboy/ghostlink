@@ -2,8 +2,8 @@
 use crate::ProfileSyncService;
 use destiny_core::{
     AppError, ArtifactGateway, CharacterId, DefinitionRepository, DestinyMembership, ErrorCategory,
-    FreshnessPolicy, InventoryRepository, ItemHash, ProfileGateway, ProfileSyncReason, Resolution,
-    Timestamp,
+    FreshnessPolicy, InventoryRepository, ItemHash, ItemInstanceId, ProfileGateway,
+    ProfileSyncReason, Resolution, Timestamp,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -25,6 +25,21 @@ pub struct CharacterArtifact {
     /// None means the live response omitted this character's artifact state.
     /// Some with empty tiers means state was present but had no visible perks.
     pub state: Option<CharacterArtifactState>,
+    /// Equipped artifact and sockets from the synced inventory, independent of live state.
+    pub equipped: Option<EquippedArtifact>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EquippedArtifact {
+    pub instance_id: ItemInstanceId,
+    pub item_hash: ItemHash,
+    pub name: Option<String>,
+    pub slots: Vec<ArtifactSlot>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArtifactSlot {
+    pub plug_hash: ItemHash,
+    pub name: Option<String>,
+    pub empty: bool,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CharacterArtifactState {
@@ -151,6 +166,50 @@ where
             .transpose()?;
         let mut output = Vec::with_capacity(characters.len());
         for character in characters {
+            let mut equipped = None;
+            for instance in snapshot.items.iter().filter(|instance| {
+                instance.equipped
+                    && instance.location
+                        == destiny_core::ItemLocation::Character(character.id.clone())
+            }) {
+                let definition = match repository.lookup_definition(instance.item_hash)? {
+                    Resolution::Unique(definition) => definition,
+                    Resolution::Missing => continue,
+                    Resolution::Ambiguous(_) => {
+                        return Err(AppError::new(ErrorCategory::LocalStorage));
+                    }
+                };
+                if definition.bucket_hash != Some(destiny_core::ARTIFACT_BUCKET_HASH) {
+                    continue;
+                }
+                if equipped.is_some() {
+                    return Err(AppError::new(ErrorCategory::LocalStorage));
+                }
+                let mut slots = Vec::new();
+                for plug in &instance.plugs {
+                    let definition = match repository.lookup_definition(plug.plug_hash)? {
+                        Resolution::Unique(definition) => definition,
+                        Resolution::Missing => continue,
+                        Resolution::Ambiguous(_) => {
+                            return Err(AppError::new(ErrorCategory::LocalStorage));
+                        }
+                    };
+                    if definition.plug_category.as_deref() != Some("artifact_perks") {
+                        continue;
+                    }
+                    slots.push(ArtifactSlot {
+                        plug_hash: plug.plug_hash,
+                        empty: definition.name.starts_with("Empty "),
+                        name: Some(definition.name),
+                    });
+                }
+                equipped = Some(EquippedArtifact {
+                    instance_id: instance.instance_id.clone(),
+                    item_hash: instance.item_hash,
+                    name: Some(definition.name),
+                    slots,
+                });
+            }
             let state = live
                 .characters
                 .iter()
@@ -190,6 +249,7 @@ where
                 character_id: character.id,
                 class: character.class,
                 state,
+                equipped,
             });
         }
         Ok(ArtifactResult {

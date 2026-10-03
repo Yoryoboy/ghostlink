@@ -528,6 +528,22 @@ pub struct CharacterArtifactView {
     pub character_id: String,
     pub class: Option<String>,
     pub state: Option<CharacterArtifactStateView>,
+    pub equipped: Option<EquippedArtifactView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct EquippedArtifactView {
+    pub instance_id: String,
+    pub item_hash: i64,
+    pub name: Option<String>,
+    pub slots: Vec<ArtifactSlotView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct ArtifactSlotView {
+    pub plug_hash: i64,
+    pub name: Option<String>,
+    pub empty: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]

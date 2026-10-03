@@ -1049,6 +1049,78 @@ mod tests {
         crate::ArtifactService::new(ProfileSyncService::new_with_definitions(fake, repository))
     }
     #[test]
+    fn artifact_equipped_snapshot_survives_missing_live_character_state() {
+        let mut service = artifact_service_with(true, false, |fake, repository| {
+            fake.artifact.characters.clear();
+            let mut artifact = definition(30, "Tablet of Ruin", Some("Artifact"), vec![]);
+            artifact.bucket_hash = Some(destiny_core::ARTIFACT_BUCKET_HASH);
+            let mut definitions = vec![artifact];
+            for hash in 40..48 {
+                let name = if hash == 47 {
+                    "Empty Artifact Mod".into()
+                } else {
+                    format!("Perk {}", hash - 39)
+                };
+                let mut perk = definition(hash, &name, None, vec![]);
+                perk.plug_category = Some("artifact_perks".into());
+                definitions.push(perk);
+            }
+            let mut shader = definition(48, "Shader", None, vec![]);
+            shader.plug_category = Some("shader".into());
+            definitions.push(shader);
+            repository.definitions = CompositeRepository::with_definitions(definitions).definitions;
+            let mut item = instance(
+                "tablet",
+                30,
+                ItemLocation::Character(CharacterId::new("1")),
+                vec![],
+            );
+            item.equipped = true;
+            item.plugs = (40..=48)
+                .map(|hash| destiny_core::PlugSummary {
+                    plug_hash: ItemHash::new(hash),
+                    enabled: true,
+                })
+                .collect();
+            let mut unequipped = item.clone();
+            unequipped.instance_id = ItemInstanceId::new("unequipped");
+            unequipped.equipped = false;
+            let mut vault = item.clone();
+            vault.instance_id = ItemInstanceId::new("vault");
+            vault.location = ItemLocation::Vault;
+            repository.commit(snapshot_input(
+                NOW,
+                vec![character("1"), character("2")],
+                vec![item, unequipped, vault],
+            ));
+        });
+        let result = service.artifact(None, TTL, NOW).unwrap();
+        assert!(result.characters[0].state.is_none());
+        let equipped = result.characters[0]
+            .equipped
+            .as_ref()
+            .expect("snapshot artifact");
+        assert_eq!(equipped.instance_id, ItemInstanceId::new("tablet"));
+        assert_eq!(equipped.item_hash, ItemHash::new(30));
+        assert_eq!(equipped.name.as_deref(), Some("Tablet of Ruin"));
+        assert_eq!(
+            equipped
+                .slots
+                .iter()
+                .map(|slot| slot.plug_hash.value())
+                .collect::<Vec<_>>(),
+            (40..48).collect::<Vec<_>>()
+        );
+        assert!(equipped.slots[..7].iter().all(|slot| !slot.empty));
+        assert!(equipped.slots[7].empty);
+        assert_eq!(
+            equipped.slots[7].name.as_deref(),
+            Some("Empty Artifact Mod")
+        );
+        assert!(result.characters[1].equipped.is_none());
+    }
+
+    #[test]
     fn artifact_resolves_names_and_preserves_active_tier_order() {
         use crate::ArtifactOperations;
         let result =

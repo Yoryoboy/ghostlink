@@ -211,8 +211,30 @@ pub fn render_artifact(
     }];
     for character in &result.characters {
         let class = sanitize(character.class.as_deref().unwrap_or("Unknown"));
+        let equipped_lines = |lines: &mut Vec<String>| {
+            if let Some(equipped) = &character.equipped {
+                lines.push(format!(
+                    "  Equipped: {}",
+                    label(equipped.name.as_deref(), equipped.item_hash)
+                ));
+                let perks = equipped
+                    .slots
+                    .iter()
+                    .map(|slot| {
+                        if slot.empty {
+                            "(empty)".into()
+                        } else {
+                            label(slot.name.as_deref(), slot.plug_hash)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lines.push(format!("  Perks: {perks}"));
+            }
+        };
         let Some(state) = &character.state else {
             lines.push(format!("{class}: no artifact data"));
+            equipped_lines(&mut lines);
             continue;
         };
         lines.push(format!(
@@ -230,6 +252,7 @@ pub fn render_artifact(
                 .join(", ")
         };
         lines.push(format!("  Active: {active}"));
+        equipped_lines(&mut lines);
         if tiers {
             for tier in &state.tiers {
                 let perks = tier

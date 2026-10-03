@@ -953,6 +953,22 @@ pub fn artifact_output(result: &destiny_app::ArtifactResult) -> crate::schema::G
             .map(|character| CharacterArtifactView {
                 character_id: character.character_id.as_str().to_owned(),
                 class: character.class.clone(),
+                equipped: character.equipped.as_ref().map(|equipped| {
+                    crate::schema::EquippedArtifactView {
+                        instance_id: equipped.instance_id.as_str().to_owned(),
+                        item_hash: equipped.item_hash.value(),
+                        name: equipped.name.clone(),
+                        slots: equipped
+                            .slots
+                            .iter()
+                            .map(|slot| crate::schema::ArtifactSlotView {
+                                plug_hash: slot.plug_hash.value(),
+                                name: slot.name.clone(),
+                                empty: slot.empty,
+                            })
+                            .collect(),
+                    }
+                }),
                 state: character
                     .state
                     .as_ref()

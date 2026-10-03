@@ -40,6 +40,23 @@ fn artifact_cli_mcp_json_parity() {
             CharacterArtifact {
                 character_id: CharacterId::new("1"),
                 class: Some("Hunter".into()),
+                equipped: Some(destiny_app::EquippedArtifact {
+                    instance_id: destiny_app::ItemInstanceId::new("tablet"),
+                    item_hash: ItemHash::new(30),
+                    name: Some("Tablet of Ruin".into()),
+                    slots: vec![
+                        destiny_app::ArtifactSlot {
+                            plug_hash: ItemHash::new(40),
+                            name: None,
+                            empty: false,
+                        },
+                        destiny_app::ArtifactSlot {
+                            plug_hash: ItemHash::new(47),
+                            name: Some("Empty Artifact Mod".into()),
+                            empty: true,
+                        },
+                    ],
+                }),
                 state: Some(CharacterArtifactState {
                     points_used: 1,
                     reset_count: 2,
@@ -63,11 +80,13 @@ fn artifact_cli_mcp_json_parity() {
             CharacterArtifact {
                 character_id: CharacterId::new("2"),
                 class: None,
+                equipped: None,
                 state: None,
             },
             CharacterArtifact {
                 character_id: CharacterId::new("3"),
                 class: None,
+                equipped: None,
                 state: Some(CharacterArtifactState {
                     points_used: 0,
                     reset_count: 0,
@@ -77,12 +96,16 @@ fn artifact_cli_mcp_json_parity() {
             },
         ],
     };
-    for _ in 0..2 {
+    for case in 0..3 {
         let cli = cli_artifact_output::artifact_json(&result);
         let mcp = destiny_mcp::service::artifact_output(&result).into_call_tool_result();
         assert_eq!(mcp.structured_content.unwrap(), cli);
         result.artifact = None;
-        result.characters.clear();
+        if case == 0 {
+            result.characters[0].state = None;
+        } else {
+            result.characters.clear();
+        }
     }
 }
 
