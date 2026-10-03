@@ -18,6 +18,10 @@ use crate::command::{CallbackMode, CliError};
 use crate::login::LoginInstruction;
 
 #[cfg(test)]
+#[path = "artifact_output_tests.rs"]
+mod artifact_tests;
+
+#[cfg(test)]
 mod subclass_tests {
     use super::*;
     use destiny_app::{
@@ -176,6 +180,76 @@ pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult)
 #[path = "subclass_output.rs"]
 mod subclass_output;
 pub use subclass_output::subclass_json;
+
+#[path = "artifact_output.rs"]
+mod artifact_output;
+pub use artifact_output::artifact_json;
+
+/// Renders live artifact state; tiers only affect human verbosity.
+pub fn render_artifact(
+    mode: OutputMode,
+    result: &destiny_app::ArtifactResult,
+    tiers: bool,
+) -> String {
+    if mode == OutputMode::Json {
+        return artifact_json(result).to_string();
+    }
+    let label = |name: Option<&str>, hash: destiny_app::ItemHash| {
+        name.map(sanitize)
+            .unwrap_or_else(|| format!("#{}", hash.value()))
+    };
+    let perk_label =
+        |perk: &destiny_app::ArtifactPerkView| label(perk.name.as_deref(), perk.item_hash);
+    let mut lines = vec![match &result.artifact {
+        Some(artifact) => format!(
+            "Artifact: {} — {} points, +{} power",
+            label(artifact.name.as_deref(), artifact.artifact_hash),
+            artifact.points_acquired,
+            artifact.power_bonus
+        ),
+        None => "Artifact: no artifact data".into(),
+    }];
+    for character in &result.characters {
+        let class = sanitize(character.class.as_deref().unwrap_or("Unknown"));
+        let Some(state) = &character.state else {
+            lines.push(format!("{class}: no artifact data"));
+            continue;
+        };
+        lines.push(format!(
+            "{class}: {} points used, {} resets",
+            state.points_used, state.reset_count
+        ));
+        let active = if state.active_perks.is_empty() {
+            "none".into()
+        } else {
+            state
+                .active_perks
+                .iter()
+                .map(perk_label)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        lines.push(format!("  Active: {active}"));
+        if tiers {
+            for tier in &state.tiers {
+                let perks = tier
+                    .perks
+                    .iter()
+                    .map(|perk| {
+                        format!("{}{}", perk_label(perk), if perk.active { "*" } else { "" })
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                lines.push(format!(
+                    "  Tier {} ({}): {perks}",
+                    tier.index,
+                    if tier.unlocked { "unlocked" } else { "locked" }
+                ));
+            }
+        }
+    }
+    lines.join("\n")
+}
 
 /// Renders the public version label and counts, never definition payloads.
 pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncReport) -> String {

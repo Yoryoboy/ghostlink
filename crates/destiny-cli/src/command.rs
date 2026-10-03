@@ -68,7 +68,24 @@ impl Cli {
     /// login composition before it calls this conversion, so that outcome is only
     /// reachable from a caller that asked a read-only entry point to run login.
     pub fn into_read_request(self) -> Result<ReadRequest, CliError> {
+        let mode = self.output_mode();
         match self.command {
+            Command::Artifact(arguments) => {
+                if arguments.tiers && mode == OutputMode::Json {
+                    return Err(CliError::invalid_argument(
+                        "--tiers",
+                        "cannot be used with --json",
+                    ));
+                }
+                let character_id = SubclassArgs {
+                    character: arguments.character,
+                }
+                .into_request()?;
+                Ok(ReadRequest::Artifact {
+                    character_id,
+                    tiers: arguments.tiers,
+                })
+            }
             Command::ListCharacters => Ok(ReadRequest::ListCharacters),
             Command::SearchInventory(arguments) => {
                 arguments.into_request().map(ReadRequest::SearchInventory)
@@ -121,6 +138,10 @@ pub enum Command {
     /// Show equipped subclass configurations for one or all characters.
     #[command(name = "subclass")]
     Subclass(SubclassArgs),
+
+    /// Show seasonal artifact points, power, and active perks.
+    #[command(name = "artifact")]
+    Artifact(ArtifactArgs),
 
     /// Authorize this machine against the provider.
     ///
@@ -530,6 +551,18 @@ impl WeeklyArgs {
     }
 }
 
+/// Arguments for `artifact`; omitted selection includes every character.
+#[derive(Debug, Args)]
+pub struct ArtifactArgs {
+    /// Exact ID or hunter|titan|warlock (case-insensitive, unique class).
+    #[arg(long, value_name = "ID_OR_CLASS")]
+    pub character: Option<String>,
+
+    /// List tiers and mark active perks (text only).
+    #[arg(long)]
+    pub tiers: bool,
+}
+
 /// Arguments for `subclass`; omitted selection includes every character.
 #[derive(Debug, Args)]
 pub struct SubclassArgs {
@@ -552,6 +585,49 @@ impl SubclassArgs {
 #[cfg(test)]
 mod subclass_tests {
     use super::*;
+
+    #[test]
+    fn artifact_parses_optional_character_and_text_only_tiers() {
+        for (args, expected, tiers) in [
+            (vec!["ghostlink", "artifact"], None, false),
+            (
+                vec!["ghostlink", "artifact", "--character", "Hunter", "--tiers"],
+                Some("Hunter"),
+                true,
+            ),
+            (
+                vec!["ghostlink", "--json", "artifact", "--character", "123"],
+                Some("123"),
+                false,
+            ),
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(args)
+                    .unwrap()
+                    .into_read_request()
+                    .unwrap(),
+                ReadRequest::Artifact {
+                    character_id: expected.map(CharacterId::new),
+                    tiers
+                }
+            );
+        }
+        for args in [
+            vec!["ghostlink", "artifact", "--character", " "],
+            vec!["ghostlink", "artifact", "--character", "id\nvalue"],
+            vec!["ghostlink", "--json", "artifact", "--tiers"],
+            vec!["ghostlink", "artifact", "--tiers", "--json"],
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(args)
+                    .unwrap()
+                    .into_read_request()
+                    .unwrap_err()
+                    .code(),
+                "invalid_request"
+            );
+        }
+    }
 
     #[test]
     fn subclass_parses_optional_character() {
@@ -617,6 +693,10 @@ pub enum ReadRequest {
     SearchInventory(SearchInventoryRequest),
     InspectItem(InspectItemRequest),
     Subclass(Option<CharacterId>),
+    Artifact {
+        character_id: Option<CharacterId>,
+        tiers: bool,
+    },
 }
 
 /// A stable machine code and process exit status for one failure outcome.
