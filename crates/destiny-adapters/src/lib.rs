@@ -3,6 +3,7 @@
 pub mod artifact;
 pub mod clock;
 pub mod credential_store;
+pub mod loadout;
 pub mod manifest;
 pub mod oauth;
 pub mod profile;
