@@ -35,7 +35,7 @@
 //! the exact definition beside the concrete instance.
 
 use destiny_app::{
-    Character, CharacterId, CharacterListResult, Clock, Dataset, DefinitionRepository,
+    AppError, Character, CharacterId, CharacterListResult, Clock, Dataset, DefinitionRepository,
     DefinitionSearchQuery, DestinationSelector, ErrorCategory, ExecutionEvidence, FreshnessPolicy,
     FreshnessStatus, InspectItemRequest, InstanceSearchQuery, InventoryRepository,
     InventorySearchResult, ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstance,
@@ -631,39 +631,46 @@ impl SearchInventoryArgs {
     /// never disagree on what is acceptable.
     pub fn into_request(self) -> Result<SearchInventoryRequest, McpError> {
         if !(1..=MAX_SEARCH_LIMIT).contains(&self.limit) {
-            return Err(invalid_arguments());
+            return Err(AppError::invalid_argument(
+                "limit",
+                format!("must be between 1 and {MAX_SEARCH_LIMIT}"),
+            )
+            .into());
         }
         if self.tags.len() > MAX_TAG_FILTERS {
-            return Err(invalid_arguments());
+            return Err(AppError::invalid_argument(
+                "tags",
+                format!("at most {MAX_TAG_FILTERS} filters are allowed"),
+            )
+            .into());
         }
 
         let definitions = DefinitionSearchQuery {
-            text: optional_term(self.text.as_deref())?,
-            item_type: optional_term(self.item_type.as_deref())?,
+            text: optional_term(self.text.as_deref(), "text")?,
+            item_type: optional_term(self.item_type.as_deref(), "item_type")?,
             tags: self
                 .tags
                 .iter()
-                .map(|value| SearchTerm::new(value))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(McpError::from)?,
+                .map(|value| SearchTerm::new(value).map_err(|_| McpError::from(AppError::invalid_argument("tags", "must be non-empty, at most 256 characters, and contain no prohibited control characters"))))
+                .collect::<Result<Vec<_>, _>>()?,
             element: self
                 .element
                 .as_deref()
                 .map(str::parse)
                 .transpose()
-                .map_err(McpError::from)?,
+                .map_err(|_| McpError::from(AppError::invalid_argument("element", "expected one of kinetic, arc, solar, void, stasis, strand")))?,
             slot: self
                 .slot
                 .as_deref()
                 .map(str::parse)
                 .transpose()
-                .map_err(McpError::from)?,
+                .map_err(|_| McpError::from(AppError::invalid_argument("slot", "expected one of kinetic, energy, power, helmet, gauntlets, chest, legs, classitem, other, unknown")))?,
             class_type: self
                 .class_type
                 .as_deref()
                 .map(str::parse)
                 .transpose()
-                .map_err(McpError::from)?,
+                .map_err(|_| McpError::from(AppError::invalid_argument("class_type", "expected one of titan, hunter, warlock, any, unknown")))?,
             limit: self.limit,
         };
         definitions.validate().map_err(McpError::from)?;
@@ -672,24 +679,15 @@ impl SearchInventoryArgs {
             .instances
             .map(InstanceQueryArgs::into_query)
             .transpose()?;
-        let perk_name = self
-            .perk_name
-            .as_deref()
-            .map(SearchTerm::new)
-            .transpose()
-            .map_err(McpError::from)?;
-        let mod_name = self
-            .mod_name
-            .as_deref()
-            .map(SearchTerm::new)
-            .transpose()
-            .map_err(McpError::from)?;
-        let archetype = self
-            .archetype
-            .as_deref()
-            .map(SearchTerm::new)
-            .transpose()
-            .map_err(McpError::from)?;
+        let perk_name = repeated_terms(
+            self.perk_name.as_deref(),
+            &self.perk_names,
+            "perk_name",
+            "perk",
+        )?;
+        let mod_name =
+            repeated_terms(self.mod_name.as_deref(), &self.mod_names, "mod_name", "mod")?;
+        let archetype = optional_term(self.archetype.as_deref(), "archetype")?;
         let stats = self
             .stats
             .iter()
@@ -697,7 +695,14 @@ impl SearchInventoryArgs {
             .collect::<Result<Vec<_>, _>>()
             .map_err(McpError::from)?;
         if stats.len() > destiny_app::MAX_STAT_CONDITIONS {
-            return Err(invalid_arguments());
+            return Err(AppError::invalid_argument(
+                "stats",
+                format!(
+                    "at most {} conditions are allowed",
+                    destiny_app::MAX_STAT_CONDITIONS
+                ),
+            )
+            .into());
         }
         if instances.is_none()
             && (self.include_available
@@ -740,17 +745,25 @@ impl InstanceQueryArgs {
     /// Validates and converts one instance query against the shared bounds.
     fn into_query(self) -> Result<InstanceSearchQuery, McpError> {
         if !(1..=MAX_SEARCH_LIMIT).contains(&self.limit) {
-            return Err(invalid_arguments());
+            return Err(AppError::invalid_argument(
+                "instances.limit",
+                format!("must be between 1 and {MAX_SEARCH_LIMIT}"),
+            )
+            .into());
         }
         if let Some(character_id) = &self.character_id {
-            validate_identifier(character_id)?;
+            validate_identifier(character_id, "instances.character_id")?;
         }
 
         let item_hashes = match self.item_hashes {
             None => ItemHashFilter::Any,
             Some(hashes) => {
                 if hashes.len() > MAX_HASH_FILTERS {
-                    return Err(invalid_arguments());
+                    return Err(AppError::invalid_argument(
+                        "instances.item_hashes",
+                        format!("at most {MAX_HASH_FILTERS} hashes are allowed"),
+                    )
+                    .into());
                 }
                 ItemHashFilter::AnyOf(hashes.into_iter().map(ItemHash::new).collect())
             }
@@ -782,7 +795,7 @@ impl InspectItemArgs {
     /// sanitized [`ErrorCategory::ProviderValidation`] category before the
     /// service is invoked.
     pub fn into_request(self) -> Result<InspectItemRequest, McpError> {
-        validate_identifier(&self.instance_id)?;
+        validate_identifier(&self.instance_id, "instance_id")?;
         Ok(InspectItemRequest {
             instance_id: ItemInstanceId::new(self.instance_id),
         })
@@ -803,7 +816,7 @@ impl MoveItemArgs {
     pub fn into_request(self) -> Result<MoveItemRequest, McpError> {
         let item = match (self.instance_id, self.item_text) {
             (Some(instance_id), None) => {
-                validate_identifier(&instance_id)?;
+                validate_identifier(&instance_id, "instance_id")?;
                 ItemSelector::instance(ItemInstanceId::new(instance_id))
             }
             (None, Some(item_text)) => {
@@ -819,7 +832,7 @@ impl MoveItemArgs {
             // exclusive with any character target.
             (true, None, None) => DestinationSelector::vault(),
             (false, Some(character_id), None) => {
-                validate_identifier(&character_id)?;
+                validate_identifier(&character_id, "character_id")?;
                 DestinationSelector::character(CharacterId::new(character_id))
             }
             (false, None, Some(character_label)) => {
@@ -840,12 +853,35 @@ pub fn list_characters_output(result: &CharacterListResult) -> ListCharactersOut
     }
 }
 
+fn repeated_terms(
+    single: Option<&str>,
+    plural: &[String],
+    field: &'static str,
+    kind: &'static str,
+) -> Result<Option<Vec<SearchTerm>>, McpError> {
+    if plural.len() + usize::from(single.is_some()) > destiny_app::MAX_NAME_TERMS {
+        return Err(AppError::invalid_argument(
+            kind,
+            format!("at most {} {kind} names", destiny_app::MAX_NAME_TERMS),
+        )
+        .into());
+    }
+    let terms = single
+        .into_iter()
+        .chain(plural.iter().map(String::as_str))
+        .map(|value| optional_term(Some(value), field).map(|term| term.expect("provided term")))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((!terms.is_empty()).then_some(terms))
+}
+
 /// Projects a shared inventory search into its bounded MCP output.
 pub fn search_inventory_output(result: &InventorySearchResult) -> SearchInventoryOutput {
     SearchInventoryOutput {
         resolved: crate::schema::ResolvedNamesView {
             perk: result.resolved.perk.clone(),
             mods: result.resolved.mods.clone(),
+            perk_terms: result.resolved.perk_terms.clone(),
+            mod_terms: result.resolved.mod_terms.clone(),
             archetype: result.resolved.archetype.clone(),
             stats: result.resolved.stats.clone(),
         },
@@ -1004,6 +1040,44 @@ fn verification_reason_view(reason: VerificationFailureReason) -> VerificationFa
     }
 }
 
+#[cfg(test)]
+#[test]
+fn invalid_search_limits_explain_the_argument_and_bounds() {
+    for limit in [0, 101] {
+        let error = SearchInventoryArgs {
+            limit,
+            ..Default::default()
+        }
+        .into_request()
+        .unwrap_err();
+        assert_eq!(error.code(), "provider_validation");
+        assert_eq!(error.message(), "invalid limit: must be between 1 and 100");
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn invalid_search_fields_have_value_free_details() {
+    for (field, value) in [
+        ("slot", "secret\n\u{7}sentinel"),
+        ("stats", "Range>=secret-sentinel"),
+        ("perk_name", "secret\u{7}sentinel"),
+    ] {
+        let arguments = if field == "stats" {
+            serde_json::json!({field: [value]})
+        } else {
+            serde_json::json!({field: value})
+        };
+        let args: SearchInventoryArgs = serde_json::from_value(arguments).unwrap();
+        let error = args.into_request().unwrap_err();
+        assert_eq!(error.code(), "provider_validation");
+        assert!(error.message().starts_with("invalid "));
+        assert!(!error.message().contains("sentinel"));
+        assert!(!error.message().chars().any(char::is_control));
+        assert!(error.message().chars().count() <= 512);
+    }
+}
+
 fn invalid_arguments() -> McpError {
     McpError::new(ErrorCategory::ProviderValidation)
 }
@@ -1014,19 +1088,31 @@ fn invalid_arguments() -> McpError {
 /// MCP layer bounds them to `1..=MAX_IDENTIFIER_LENGTH` characters to keep every
 /// request finite. This changes no core identifier type; it only rejects empty
 /// or over-long caller input before any service call.
-fn validate_identifier(value: &str) -> Result<(), McpError> {
+fn validate_identifier(value: &str, argument: &'static str) -> Result<(), McpError> {
     let length = value.chars().count();
-    if length == 0 || length > MAX_IDENTIFIER_LENGTH {
-        return Err(invalid_arguments());
+    if value.trim().is_empty()
+        || length > MAX_IDENTIFIER_LENGTH
+        || value.chars().any(char::is_control)
+    {
+        return Err(AppError::invalid_argument(
+            argument,
+            format!(
+                "must contain 1 to {MAX_IDENTIFIER_LENGTH} characters and no control characters"
+            ),
+        )
+        .into());
     }
     Ok(())
 }
 
-fn optional_term(value: Option<&str>) -> Result<Option<SearchTerm>, McpError> {
+fn optional_term(
+    value: Option<&str>,
+    argument: &'static str,
+) -> Result<Option<SearchTerm>, McpError> {
     value
         .map(SearchTerm::new)
         .transpose()
-        .map_err(McpError::from)
+        .map_err(|_| AppError::invalid_argument(argument, "must be non-empty, at most 256 characters, and contain no prohibited control characters").into())
 }
 
 fn character_view(character: &Character) -> CharacterView {
@@ -1500,6 +1586,8 @@ mod tests {
         SearchInventoryArgs {
             include_available: false,
             text: text.map(str::to_owned),
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
             stats: Vec::new(),
             perk_name: None,
             mod_name: None,
@@ -1523,6 +1611,8 @@ mod tests {
 
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
             include_available: false,
             stats: Vec::new(),
             perk_name: None,
@@ -1731,6 +1821,8 @@ mod tests {
         let args = SearchInventoryArgs {
             include_available: false,
             text: Some("gjallar".into()),
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
             stats: Vec::new(),
             perk_name: None,
             mod_name: None,
@@ -1962,6 +2054,8 @@ mod tests {
             archetype: None,
             stats: Vec::new(),
             include_available: false,
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
         };
         let output = mcp
             .search_inventory(&args.into_request().expect("valid arguments"))
@@ -2008,6 +2102,8 @@ mod tests {
             archetype: None,
             stats: Vec::new(),
             include_available: false,
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
         };
         let request = args.into_request().expect("valid arguments");
 

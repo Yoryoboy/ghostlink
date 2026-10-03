@@ -254,7 +254,7 @@ pub struct SearchInventoryArgs {
     #[arg(long = "class", value_name = "NAME", value_parser = parse_class)]
     pub class_type: Option<String>,
 
-    /// Stat comparison (Name>=N, Name<=N, Name=N); repeat to require all.
+    /// Stat comparison (Name>=N, Name<=N, Name>N, Name<N, Name=N); repeat to require all.
     #[arg(long = "stat", value_name = "COND")]
     pub stat: Vec<String>,
 
@@ -266,13 +266,13 @@ pub struct SearchInventoryArgs {
     #[arg(long = "item-hash", value_name = "HASH")]
     pub item_hash: Vec<i64>,
 
-    /// Socketed weapon-perk name: exact first, then substring; typos get suggestions.
+    /// Weapon-perk name: exact first, then substring; repeat to require all (max 8).
     #[arg(long = "perk", value_name = "NAME")]
-    pub perk: Option<String>,
+    pub perk: Vec<String>,
 
-    /// Socketed armor-mod name: exact first, then substring; typos get suggestions.
+    /// Armor-mod name: exact first, then substring; repeat to require all (max 8).
     #[arg(long = "mod", value_name = "NAME")]
-    pub mod_name: Option<String>,
+    pub mod_name: Vec<String>,
 
     /// Socketed armor-archetype name: exact first, then substring; typos get suggestions.
     #[arg(long, value_name = "NAME")]
@@ -295,37 +295,34 @@ impl SearchInventoryArgs {
     /// Builds the two shared query shapes this command maps onto.
     fn into_request(self) -> Result<SearchInventoryRequest, CliError> {
         let definitions = DefinitionSearchQuery {
-            text: search_term(self.text.as_deref())?,
-            item_type: search_term(self.item_type.as_deref())?,
+            text: search_term(self.text.as_deref(), "--text")?,
+            item_type: search_term(self.item_type.as_deref(), "--type")?,
             tags: self
                 .tag
                 .iter()
-                .map(|value| SearchTerm::new(value.as_str()))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| CliError::invalid_request())?,
+                .map(|value| SearchTerm::new(value).map_err(|_| CliError::invalid_argument("--tag", "must be non-empty, at most 256 characters, and contain no prohibited control characters")))
+                .collect::<Result<Vec<_>, _>>()?,
             element: self
                 .element
                 .as_deref()
                 .map(str::parse)
                 .transpose()
-                .map_err(|_| CliError::invalid_request())?,
+                .map_err(|_| CliError::invalid_argument("--element", "expected one of kinetic, arc, solar, void, stasis, strand"))?,
             slot: self
                 .slot
                 .as_deref()
                 .map(str::parse)
                 .transpose()
-                .map_err(|_| CliError::invalid_request())?,
+                .map_err(|_| CliError::invalid_argument("--slot", "expected one of kinetic, energy, power, helmet, gauntlets, chest, legs, classitem, other, unknown"))?,
             class_type: self
                 .class_type
                 .as_deref()
                 .map(str::parse)
                 .transpose()
-                .map_err(|_| CliError::invalid_request())?,
+                .map_err(|_| CliError::invalid_argument("--class", "expected one of titan, hunter, warlock, any, unknown"))?,
             limit: self.limit,
         };
-        definitions
-            .validate()
-            .map_err(|_| CliError::invalid_request())?;
+        definitions.validate().map_err(CliError::query_validation)?;
 
         let instances = self.instance_query(&definitions)?;
         Ok(SearchInventoryRequest {
@@ -343,8 +340,8 @@ impl SearchInventoryArgs {
             && self.stat.is_empty()
             && self.item_hash.is_empty()
             && self.perk_hash.is_none()
-            && self.perk.is_none()
-            && self.mod_name.is_none()
+            && self.perk.is_empty()
+            && self.mod_name.is_empty()
             && self.archetype.is_none()
             && self.character.is_none();
         if no_instance_filter && !definitions.has_filters() && self.min_power.is_none() {
@@ -353,7 +350,7 @@ impl SearchInventoryArgs {
 
         let character_id = match &self.character {
             Some(value) => {
-                validate_identity(value)?;
+                validate_identity(value, "--character")?;
                 Some(CharacterId::new(value.as_str()))
             }
             None => None,
@@ -367,15 +364,15 @@ impl SearchInventoryArgs {
             include_available: self.include_available,
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
-            perk_name: search_term(self.perk.as_deref())?,
-            mod_name: search_term(self.mod_name.as_deref())?,
-            archetype: search_term(self.archetype.as_deref())?,
+            perk_name: search_terms(&self.perk, "--perk")?,
+            mod_name: search_terms(&self.mod_name, "--mod")?,
+            archetype: search_term(self.archetype.as_deref(), "--archetype")?,
             stats: self
                 .stat
                 .iter()
                 .map(|value| value.parse())
                 .collect::<Result<Vec<_>, _>>()
-                .map_err(|_| CliError::invalid_request())?,
+                .map_err(CliError::query_validation)?,
             character_id,
             definitions: definitions
                 .has_filters()
@@ -383,9 +380,23 @@ impl SearchInventoryArgs {
             min_power: self.min_power,
             limit: self.limit,
         };
-        query.validate().map_err(|_| CliError::invalid_request())?;
+        query.validate().map_err(CliError::query_validation)?;
         Ok(Some(query))
     }
+}
+
+fn search_terms(
+    values: &[String],
+    argument: &'static str,
+) -> Result<Option<Vec<SearchTerm>>, CliError> {
+    if values.is_empty() {
+        return Ok(None);
+    }
+    values
+        .iter()
+        .map(|value| search_term(Some(value), argument).map(|term| term.expect("provided term")))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 // Infer the core enum types from the shared query rather than duplicating
@@ -447,7 +458,10 @@ pub enum WeeklyLevel {
 impl WeeklyArgs {
     pub fn output_level(&self, mode: OutputMode) -> Result<WeeklyLevel, CliError> {
         if (self.details || self.debug) && mode == OutputMode::Json {
-            return Err(CliError::invalid_request());
+            return Err(CliError::invalid_argument(
+                if self.details { "--details" } else { "--debug" },
+                "cannot be used with --json",
+            ));
         }
         Ok(if self.debug {
             WeeklyLevel::Debug
@@ -462,7 +476,7 @@ impl WeeklyArgs {
         self.character
             .as_deref()
             .map(|value| {
-                validate_identity(value)?;
+                validate_identity(value, "--character")?;
                 Ok(CharacterId::new(value))
             })
             .transpose()
@@ -483,7 +497,7 @@ pub struct InspectItemArgs {
 
 impl InspectItemArgs {
     fn into_request(self) -> Result<InspectItemRequest, CliError> {
-        validate_identity(&self.instance_id)?;
+        validate_identity(&self.instance_id, "INSTANCE_ID")?;
         Ok(InspectItemRequest {
             instance_id: ItemInstanceId::new(self.instance_id),
         })
@@ -577,6 +591,27 @@ impl CliError {
         }
     }
 
+    pub fn invalid_argument(argument: &'static str, reason: impl AsRef<str>) -> Self {
+        Self::from_app(AppError::invalid_argument(argument, reason))
+    }
+
+    fn query_validation(error: AppError) -> Self {
+        let message = error.to_string();
+        for (name, flag) in [
+            ("limit", "--limit"),
+            ("perk", "--perk"),
+            ("mod", "--mod"),
+            ("tag", "--tag"),
+            ("stat", "--stat"),
+            ("item-hash", "--item-hash"),
+        ] {
+            if let Some(reason) = message.strip_prefix(&format!("invalid {name}: ")) {
+                return Self::invalid_argument(flag, reason);
+            }
+        }
+        Self::from_app(error)
+    }
+
     /// The explicit not-found outcome of an exact inspection.
     pub const fn item_not_found() -> Self {
         Self {
@@ -652,11 +687,14 @@ pub fn inspection_outcome(
 }
 
 /// Validates and normalizes one optional free-text search term.
-fn search_term(value: Option<&str>) -> Result<Option<SearchTerm>, CliError> {
+fn search_term(
+    value: Option<&str>,
+    argument: &'static str,
+) -> Result<Option<SearchTerm>, CliError> {
     value
         .map(SearchTerm::new)
         .transpose()
-        .map_err(|_| CliError::invalid_request())
+        .map_err(|_| CliError::invalid_argument(argument, "must be non-empty, at most 256 characters, and contain no prohibited control characters"))
 }
 
 /// Rejects an empty, whitespace-only, or control-bearing identifier value.
@@ -664,9 +702,12 @@ fn search_term(value: Option<&str>) -> Result<Option<SearchTerm>, CliError> {
 /// Identity values are opaque and are used verbatim, so this check never trims
 /// or rewrites one. It only refuses a value that could not name anything and a
 /// value that could break the line-oriented human output.
-fn validate_identity(value: &str) -> Result<(), CliError> {
+fn validate_identity(value: &str, argument: &'static str) -> Result<(), CliError> {
     if value.trim().is_empty() || value.chars().any(char::is_control) {
-        return Err(CliError::invalid_request());
+        return Err(CliError::invalid_argument(
+            argument,
+            "must be non-empty and contain no control characters",
+        ));
     }
     Ok(())
 }
@@ -1244,10 +1285,16 @@ mod tests {
             let error = rejected(case.iter().copied());
             assert_eq!(error.code(), "invalid_request", "case: {case:?}");
             assert_eq!(error.exit_code(), 2, "case: {case:?}");
-            assert_eq!(
-                error.to_string(),
-                "the request arguments are invalid",
-                "case: {case:?}"
+            let argument = case
+                .get(1)
+                .filter(|arg| arg.starts_with("--"))
+                .copied()
+                .unwrap_or("INSTANCE_ID");
+            assert!(
+                error
+                    .to_string()
+                    .starts_with(&format!("invalid {argument}: ")),
+                "case: {case:?}: {error}"
             );
         }
     }

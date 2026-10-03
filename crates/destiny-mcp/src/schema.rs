@@ -368,6 +368,16 @@ pub struct SearchInventoryArgs {
     #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
     pub mod_name: Option<String>,
 
+    /// Weapon-perk terms, AND across terms (also combined with perk_name).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = destiny_app::MAX_NAME_TERMS), inner(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH)))]
+    pub perk_names: Vec<String>,
+
+    /// Armor-mod terms, AND across terms (also combined with mod_name).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = destiny_app::MAX_NAME_TERMS), inner(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH)))]
+    pub mod_names: Vec<String>,
+
     /// Socketed armor-archetype name: exact first, then substring; searches owned armor.
     /// Use `archetype`, not `archetype_name`; unknown fields are rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -591,6 +601,11 @@ pub struct ResolvedNamesView {
     pub perk: Vec<String>,
     #[serde(rename = "mod", skip_serializing_if = "Vec::is_empty", default)]
     pub mods: Vec<String>,
+    /// Each term's resolved alternatives, in input order.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub perk_terms: Vec<Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub mod_terms: Vec<Vec<String>>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub archetype: Vec<String>,
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty", default)]
@@ -914,6 +929,13 @@ mod tests {
     fn search_inventory_schema_declares_the_shared_bounds() {
         let schema = schema_json(SEARCH_INVENTORY_TOOL);
         let rendered = serde_json::to_string(&schema).expect("schema serializes");
+        for field in ["perk_names", "mod_names"] {
+            let property = &schema["properties"][field];
+            assert_eq!(property["type"], "array");
+            assert_eq!(property["maxItems"], destiny_app::MAX_NAME_TERMS);
+            assert_eq!(property["items"]["minLength"], 1);
+            assert_eq!(property["items"]["maxLength"], MAX_SEARCH_TEXT_LENGTH);
+        }
 
         assert_eq!(
             schema.get("additionalProperties"),

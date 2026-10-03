@@ -121,6 +121,9 @@ fn bounded_distance(left: &str, right: &str) -> usize {
 pub struct ResolvedNames {
     pub perk: Vec<String>,
     pub mods: Vec<String>,
+    /// Resolved alternatives for each input term, preserving input order.
+    pub perk_terms: Vec<Vec<String>>,
+    pub mod_terms: Vec<Vec<String>>,
     pub archetype: Vec<String>,
     pub stats: BTreeMap<String, Vec<String>>,
 }

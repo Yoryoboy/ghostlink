@@ -37,10 +37,32 @@ fn available_flag_builds_identical_cli_and_mcp_queries() {
 }
 
 #[test]
+fn strict_stat_conditions_build_identical_cli_and_mcp_queries() {
+    use clap::Parser;
+    for condition in ["Range>60", "Range<30"] {
+        let cli = cli_command::Cli::try_parse_from([
+            "ghostlink",
+            "search-inventory",
+            "--stat",
+            condition,
+        ])
+        .unwrap()
+        .into_read_request()
+        .unwrap();
+        let cli_command::ReadRequest::SearchInventory(cli) = cli else {
+            panic!("search request")
+        };
+        let mcp: destiny_mcp::schema::SearchInventoryArgs =
+            serde_json::from_value(serde_json::json!({"stats": [condition]})).unwrap();
+        assert_eq!(cli, mcp.into_request().unwrap());
+    }
+}
+
+#[test]
 fn invalid_stat_conditions_are_rejected_by_both_surfaces() {
     use clap::Parser;
     for conditions in [
-        vec!["Weapons>30".to_owned()],
+        vec!["Weapons>>30".to_owned()],
         vec!["=20".to_owned()],
         vec!["Health=20".to_owned(); 9],
         vec![format!("{}=1", "a".repeat(257))],
@@ -110,7 +132,7 @@ fn mod_only_search_builds_owned_query_and_rejects_invalid_names() {
     let query = request.instances.unwrap();
     assert_eq!(
         query.mod_name.unwrap(),
-        destiny_app::SearchTerm::new("harmonic siphon").unwrap()
+        vec![destiny_app::SearchTerm::new("harmonic siphon").unwrap()]
     );
     for name in [
         "".to_owned(),
@@ -177,6 +199,35 @@ fn archetype_only_search_builds_owned_query_and_rejects_invalid_names() {
 }
 
 #[test]
+fn repeated_name_bounds_apply_to_both_surfaces_and_combined_mcp_fields() {
+    use clap::Parser;
+    for (flag, singular, plural, kind) in [
+        ("--perk", "perk_name", "perk_names", "perk"),
+        ("--mod", "mod_name", "mod_names", "mod"),
+    ] {
+        let mut argv = vec!["ghostlink", "search-inventory"];
+        for _ in 0..9 {
+            argv.extend([flag, "Rampage"]);
+        }
+        let cli = cli_command::Cli::try_parse_from(argv).unwrap();
+        assert!(cli.into_read_request().is_err());
+        for single in [false, true] {
+            let mut args = serde_json::json!({plural: vec!["Rampage"; if single {8} else {9}]});
+            if single {
+                args[singular] = serde_json::json!("Rampage");
+            }
+            let args: destiny_mcp::schema::SearchInventoryArgs =
+                serde_json::from_value(args).unwrap();
+            let error = args.into_request().unwrap_err();
+            assert_eq!(
+                error.message(),
+                format!("invalid {kind}: at most 8 {kind} names")
+            );
+        }
+    }
+}
+
+#[test]
 fn search_cli_mcp_request_parity() {
     use clap::Parser;
     use destiny_mcp::schema::SearchInventoryArgs;
@@ -184,6 +235,34 @@ fn search_cli_mcp_request_parity() {
 
     for (flags, args) in [
         (vec![], json!({})),
+        (
+            vec!["--perk", "Rampage", "--perk", "Rampage"],
+            json!({"perk_name": "Rampage", "perk_names": ["Rampage"]}),
+        ),
+        (
+            vec![
+                "--mod",
+                "Targeting",
+                "--mod",
+                "Siphon",
+                "--include-available",
+            ],
+            json!({"mod_name": "Targeting", "mod_names": ["Siphon"], "include_available": true}),
+        ),
+        (
+            vec![
+                "--perk",
+                "Rampage",
+                "--perk",
+                "Kill Clip",
+                "--include-available",
+            ],
+            json!({"perk_names": ["Rampage", "Kill Clip"], "include_available": true}),
+        ),
+        (
+            vec!["--mod", "Harmonic Siphon", "--mod", "Targeting"],
+            json!({"mod_names": ["Harmonic Siphon", "Targeting"]}),
+        ),
         (vec!["--perk", "ramp"], json!({"perk_name": "ramp"})),
         (vec!["--perk", "rampge"], json!({"perk_name": "rampge"})),
         (vec!["--mod", "siph"], json!({"mod_name": "siph"})),
