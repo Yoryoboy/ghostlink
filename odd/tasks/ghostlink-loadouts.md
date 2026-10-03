@@ -44,7 +44,7 @@ unlocked subclass options.
 - [x] **LO-002 — Loadouts gateway.** `LoadoutGateway::load_loadouts`, `?components=206` allowlist, bounded decoder (sentinel/unused filtering keeps slot+socket indices). RED→GREEN; workspace 1158, clippy clean; live smoke deferred to LO-004. Commit `4d16b85`.
 - [x] **LO-003 — Loadouts query.** `LoadoutService::loadouts` + `LoadoutOperations`, `compose_loadouts`, cosmetic/tracker filter, missing-instance flag. RED→GREEN; workspace 1164, clippy clean. Commit `af3ae33`.
 - [x] **LO-004 — CLI command.** `ghostlink loadouts [--character] [--detail]`, JSON projection in `loadouts_output.rs`. RED→GREEN; workspace 1172, clippy clean; live smoke OK (Hunter 4 loadouts Stasis/Void/PvP/PvE, full subclass+artifact). Commit `5e3fee9`.
-- [ ] **LO-005 — MCP tool and docs.** `get_loadouts`, parity tests, README.
+- [x] **LO-005 — MCP tool and docs.** `get_loadouts`, exact CLI/MCP parity, README, `kill_vfx` cosmetic filter. RED→GREEN; workspace 1177, stdio 11, clippy clean; live CLI smoke confirms flair removed. Commit `b7dca51`.
 
 ## Progress
 
@@ -52,4 +52,4 @@ unlocked subclass options.
 
 ## Next step
 
-LO-005 (also filter combat flair cosmetic plug).
+WU-030 complete. Remaining follow-up: unlocked subclass options (plug sets 105).
