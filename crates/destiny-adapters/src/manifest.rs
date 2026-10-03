@@ -214,6 +214,10 @@ struct InventoryRecord {
     #[serde(default)]
     item_type_display_name: OptionalField<String>,
     #[serde(default)]
+    class_type: OptionalField<u32>,
+    #[serde(default)]
+    default_damage_type: OptionalField<u32>,
+    #[serde(default)]
     redacted: OptionalField<bool>,
 }
 #[derive(Deserialize)]
@@ -602,6 +606,36 @@ fn decode_record(
         item_type: record.item_type_display_name.into_option(),
         tier,
         element: None,
+        damage_type: match record.default_damage_type.into_option() {
+            Some(1) => Some(destiny_core::domain::DamageType::Kinetic),
+            Some(2) => Some(destiny_core::domain::DamageType::Arc),
+            Some(3) => Some(destiny_core::domain::DamageType::Solar),
+            Some(4) => Some(destiny_core::domain::DamageType::Void),
+            Some(6) => Some(destiny_core::domain::DamageType::Stasis),
+            Some(7) => Some(destiny_core::domain::DamageType::Strand),
+            _ => None,
+        },
+        slot: bucket_hash.and_then(|bucket| {
+            use destiny_core::domain::ItemSlot;
+            match bucket.value() {
+                1498876634 => Some(ItemSlot::Kinetic),
+                2465295065 => Some(ItemSlot::Energy),
+                953998645 => Some(ItemSlot::Power),
+                3448274439 => Some(ItemSlot::Helmet),
+                3551918588 => Some(ItemSlot::Gauntlets),
+                14239492 => Some(ItemSlot::Chest),
+                20886954 => Some(ItemSlot::Legs),
+                1585787867 => Some(ItemSlot::ClassItem),
+                _ => None,
+            }
+        }),
+        class_type: match record.class_type.into_option() {
+            Some(0) => Some(destiny_core::domain::ClassType::Titan),
+            Some(1) => Some(destiny_core::domain::ClassType::Hunter),
+            Some(2) => Some(destiny_core::domain::ClassType::Warlock),
+            Some(3) => Some(destiny_core::domain::ClassType::Any),
+            _ => None,
+        },
         tags: Vec::new(),
         version: version.clone(),
     }))

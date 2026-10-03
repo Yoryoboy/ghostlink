@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 4;
+pub(crate) const LATEST_VERSION: u32 = 5;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 4] = [
+const MIGRATIONS: [Migration; 5] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -73,6 +73,11 @@ const MIGRATIONS: [Migration; 4] = [
         version: 4,
         up: SCHEMA_V4_UP,
         down: SCHEMA_V4_DOWN,
+    },
+    Migration {
+        version: 5,
+        up: SCHEMA_V5_UP,
+        down: SCHEMA_V5_DOWN,
     },
 ];
 
@@ -334,6 +339,26 @@ DROP TABLE IF EXISTS objective_definitions;
 DROP TABLE IF EXISTS activity_type_definitions;
 "#;
 
+// Keep the legacy element presentation column; these nullable attributes use
+// stable lowercase names with closed value sets. Existing rows remain NULL.
+// Invalidate only Manifest freshness: otherwise the version-aware publisher
+// would skip downloading the same live version and never populate the fields.
+const SCHEMA_V5_UP: &str = r#"
+ALTER TABLE definitions ADD COLUMN damage_type TEXT
+    CHECK (damage_type IS NULL OR damage_type IN ('kinetic','arc','solar','void','stasis','strand'));
+ALTER TABLE definitions ADD COLUMN slot TEXT
+    CHECK (slot IS NULL OR slot IN ('kinetic','energy','power','helmet','gauntlets','chest','legs','classitem','other','unknown'));
+ALTER TABLE definitions ADD COLUMN class_type TEXT
+    CHECK (class_type IS NULL OR class_type IN ('titan','hunter','warlock','any','unknown'));
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+// Freshness cannot be restored on downgrade; catalog and profile rows survive.
+const SCHEMA_V5_DOWN: &str = r#"
+ALTER TABLE definitions DROP COLUMN class_type;
+ALTER TABLE definitions DROP COLUMN slot;
+ALTER TABLE definitions DROP COLUMN damage_type;
+"#;
+
 /// Reads the recorded schema version from `PRAGMA user_version`.
 ///
 /// SQLite stores that value as a signed 32-bit integer; a negative or otherwise
@@ -410,4 +435,64 @@ pub(crate) fn apply_up_for_test(
     statements: &str,
 ) -> Result<(), AppError> {
     apply_step(connection, version, statements, true)
+}
+
+#[cfg(test)]
+mod filter_migration_tests {
+    use super::*;
+
+    #[test]
+    fn search_filter_v5_up_down_invalidates_only_manifest_freshness() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        migrate_to(&mut connection, 4).unwrap();
+        connection.execute_batch("INSERT INTO definitions(hash,name,definition_version) VALUES(1,'Test','v1'); INSERT INTO sync_metadata VALUES('manifest_definitions','1','manifest','8','v1'),('profile_inventory','1','profile','2','v1');").unwrap();
+        migrate_to(&mut connection, 5).unwrap();
+        assert_eq!(read_user_version(&connection).unwrap(), 5);
+        let attributes: (Option<String>, Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT damage_type, slot, class_type FROM definitions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(attributes, (None, None, None));
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT count(*) FROM sync_metadata WHERE dataset='manifest_definitions'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT revision FROM sync_metadata WHERE dataset='profile_inventory'",
+                    [],
+                    |row| row.get::<_, String>(0)
+                )
+                .unwrap(),
+            "2"
+        );
+        for column in ["damage_type", "slot", "class_type"] {
+            assert!(
+                connection
+                    .execute(&format!("UPDATE definitions SET {column}='invalid'"), [])
+                    .is_err()
+            );
+        }
+        migrate_to(&mut connection, 4).unwrap();
+        assert!(connection.prepare("SELECT slot FROM definitions").is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT name FROM definitions", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "Test"
+        );
+        migrate_to(&mut connection, 5).unwrap();
+        assert_eq!(read_user_version(&connection).unwrap(), 5);
+    }
 }

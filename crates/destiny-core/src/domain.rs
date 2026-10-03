@@ -117,6 +117,20 @@ pub enum ClassType {
     Unknown,
 }
 
+macro_rules! stable_filter_name {
+    ($kind:ty, $($variant:ident => $name:literal),+ $(,)?) => {
+        impl $kind {
+            /// Stable lowercase name used by persisted filter attributes.
+            pub const fn as_str(self) -> &'static str {
+                match self { $(Self::$variant => $name,)+ }
+            }
+        }
+    };
+}
+stable_filter_name!(DamageType, Kinetic => "kinetic", Arc => "arc", Solar => "solar", Void => "void", Stasis => "stasis", Strand => "strand");
+stable_filter_name!(ItemSlot, Kinetic => "kinetic", Energy => "energy", Power => "power", Helmet => "helmet", Gauntlets => "gauntlets", Chest => "chest", Legs => "legs", ClassItem => "classitem", Other => "other", Unknown => "unknown");
+stable_filter_name!(ClassType, Titan => "titan", Hunter => "hunter", Warlock => "warlock", Any => "any", Unknown => "unknown");
+
 macro_rules! parse_filter_name {
     ($kind:ty, $($variant:ident),+ $(,)?) => {
         impl std::str::FromStr for $kind {

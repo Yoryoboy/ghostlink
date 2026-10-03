@@ -22,7 +22,7 @@ Follow-up work units (out of scope here): WU-023 perk names (component 305 socke
 ## Tasks
 - [x] **GSF-001 — Establish tracker and branch.** Branch `feature/ghostlink-search-filters` from `main` at `0363aaa`.
 - [x] **GSF-002 — Core criteria and matching.** Add `element`, `slot`, `class_type` definition criteria and `min_power`; an instance query that carries definition filters; shared matching rule with unit tests and fake parity (including the `--type` regression). Delegated writer, test-first (RED: 21 missing-API errors in core tests). Typed `DamageType`/`ItemSlot`/`ClassType` with case-insensitive parsing; definition criteria boxed in the instance query; fake resolves each instance's definition before truncation. Constructor-only fixes across app/adapters/cli/mcp (new fields `None` until GSF-003). Checks: fmt, workspace all-features 997 passed/23 suites, clippy default and all-features, diff check; known OAuth timeout flake seen once. Commit evidence: see git log.
-- [ ] **GSF-003 — Manifest fields and schema v5.** Parse `classType`, `defaultDamageType` and bucket category from `DestinyInventoryItemDefinition`, map to names, migration v5, SQLite read/write paths and tests.
+- [x] **GSF-003 — Manifest fields and schema v5.** Parse `classType`, `defaultDamageType` and bucket category from `DestinyInventoryItemDefinition`, map to names, migration v5, SQLite read/write paths and tests. Delegated writer (ports.rs surface added by parent), test-first (RED: missing candidate fields, round-trip loss, migration UnsupportedOperation). Decodes `classType`, `defaultDamageType`, bucket->slot; unknown values map to None. Reversible v5 adds nullable constrained lowercase columns and clears Manifest metadata so the next `sync-manifest` republishes even at the same live version (Manifest revision resets; profile data intact). Checks: fmt, workspace all-features 1,002 passed/24 suites, clippy both variants, diff check. Commit evidence: see git log.
 - [ ] **GSF-004 — Query service and SQLite instance search.** Definition filters and power constrain instance hits in `QueryService::search_inventory` and the SQLite instance search; any definition filter builds an instance query.
 - [ ] **GSF-005 — CLI and MCP surfaces.** `--element`, `--slot`, `--class`, `--min-power` flags and matching MCP fields with schema tests; help and README.
 - [ ] **GSF-006 — Verification and live validation.** Full checks, live `sync-manifest` + filtered searches, close tracker.
@@ -31,4 +31,4 @@ Follow-up work units (out of scope here): WU-023 perk names (component 305 socke
 Exploration (read-only): definition and instance queries run independently (`destiny-app/src/queries.rs:158-200`, `destiny-cli/src/command.rs:288-313`, `destiny-mcp/src/service.rs:634-679`); `element` hardcoded `None` in `destiny-adapters/src/manifest.rs:~602`; schema at v4 (`sqlite/migrations.rs:46`).
 
 ## Next step
-GSF-003.
+GSF-004.
