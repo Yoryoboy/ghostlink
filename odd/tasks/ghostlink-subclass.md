@@ -32,7 +32,7 @@ Out of scope: unlocked/available subclass options (plug sets, components
 ## Tasks
 
 - [x] **SUB-001 — Classify and retain subclass plugs.** `SubclassPlugKind`, `classify_subclass_plug`, `PlugKind::Subclass`; RED→GREEN observed; workspace tests 1111 passed, clippy clean. Commit `1a9f2b5`.
-- [ ] **SUB-002 — Subclass query.** App query returning per-character subclass config + repository lookup + in-memory twin.
+- [x] **SUB-002 — Subclass query.** `QueryService::character_subclasses` + `SubclassResult` types, reusing existing snapshot reads (no new repo method). RED (E0599)→GREEN; workspace 1114 passed, clippy clean. Commit `acdb2fc`.
 - [ ] **SUB-003 — CLI command.** `subclass` command with text and JSON output.
 - [ ] **SUB-004 — MCP tool and docs.** MCP tool, CLI/MCP parity test, README.
 
@@ -42,4 +42,4 @@ Out of scope: unlocked/available subclass options (plug sets, components
 
 ## Next step
 
-SUB-002.
+SUB-003 (also wire `QueryOperations`).
