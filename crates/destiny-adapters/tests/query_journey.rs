@@ -1119,6 +1119,7 @@ fn inspect_item_keeps_definition_and_instance_identity_distinct() {
         definition,
         instance,
         metadata,
+        ..
     } = match unique {
         Resolution::Unique(inspection) => inspection,
         other => panic!("expected a unique inspection, got {other:?}"),

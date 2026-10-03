@@ -902,6 +902,13 @@ pub struct InventorySearchResult {
 /// [`InventorySearchResult`] instead and never reaches this type directly.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemInspection {
+    /// Same resolved, socket-ordered enrichment as inventory search hits.
+    pub perk_names: Vec<String>,
+    pub mod_names: Vec<String>,
+    pub archetype: Option<String>,
+    pub available_perks: Vec<String>,
+    pub available_mods: Vec<String>,
+    pub stats: Vec<NamedStat>,
     pub definition: ItemDefinition,
     pub instance: ItemInstance,
     pub metadata: QueryMetadata,

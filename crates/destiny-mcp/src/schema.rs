@@ -650,6 +650,14 @@ pub struct ResolvedSortView {
 /// A found inspection: one exact definition beside one concrete instance.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct FoundInspection {
+    pub perk_names: Vec<String>,
+    pub mod_names: Vec<String>,
+    /// Search-compatible spelling of `mod_names`.
+    pub mods: Vec<String>,
+    pub archetype: Option<String>,
+    pub available_perks: Vec<String>,
+    pub available_mods: Vec<String>,
+    pub stats: Vec<NamedStatView>,
     pub definition: DefinitionView,
     pub instance: InstanceView,
     pub metadata: QueryMetadataView,

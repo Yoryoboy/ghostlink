@@ -60,6 +60,82 @@ use destiny_core::{
 
 use crate::sync::ProfileSyncService;
 
+/// Request-local definition caches shared by search and exact inspection.
+/// Missing plug/stat definitions are cached and omitted, just as in search.
+#[derive(Default)]
+struct InstanceEnrichment {
+    plugs: std::collections::HashMap<ItemHash, Option<ItemDefinition>>,
+    stats: std::collections::HashMap<u32, Option<destiny_core::StatDefinition>>,
+}
+
+impl InstanceEnrichment {
+    fn resolve_plugs(
+        &mut self,
+        repository: &impl DefinitionRepository,
+        hashes: impl Iterator<Item = ItemHash>,
+    ) -> Result<Vec<ItemDefinition>, AppError> {
+        let mut output = Vec::new();
+        for hash in hashes {
+            if let std::collections::hash_map::Entry::Vacant(entry) = self.plugs.entry(hash) {
+                let resolved = match repository.lookup_definition(hash)? {
+                    Resolution::Unique(definition) => Some(definition),
+                    Resolution::Missing => None,
+                    Resolution::Ambiguous(_) => return Err(invalid_repository_state()),
+                };
+                entry.insert(resolved);
+            }
+            if let Some(definition) = &self.plugs[&hash] {
+                output.push(definition.clone());
+            }
+        }
+        Ok(output)
+    }
+
+    fn resolve(
+        &mut self,
+        repository: &(impl DefinitionRepository + destiny_core::StatDefinitionRepository),
+        definition: ItemDefinition,
+        instance: destiny_core::ItemInstance,
+    ) -> Result<InventorySearchHit, AppError> {
+        let plugs =
+            self.resolve_plugs(repository, instance.plugs.iter().map(|plug| plug.plug_hash))?;
+        let available = self.resolve_plugs(
+            repository,
+            instance.available_plugs.iter().map(|plug| plug.plug_hash),
+        )?;
+        let (available_perks, available_mods) =
+            destiny_core::query::inventory_available_names(&definition, &plugs, &available);
+        let (perk_names, mod_names) =
+            destiny_core::query::inventory_plug_names(&definition, &plugs);
+        let mut named = Vec::new();
+        for stat in &instance.stats {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                self.stats.entry(stat.stat_hash)
+            {
+                entry.insert(repository.lookup_stat(stat.stat_hash)?);
+            }
+            if let Some(definition) = &self.stats[&stat.stat_hash] {
+                named.push((definition.name().to_owned(), stat.stat_hash, stat.value));
+            }
+        }
+        named.sort_by(|left, right| (&left.0, left.1).cmp(&(&right.0, right.1)));
+        let stats = named
+            .into_iter()
+            .map(|(name, _, value)| destiny_core::NamedStat { name, value })
+            .collect();
+        Ok(InventorySearchHit {
+            available_perks,
+            available_mods,
+            archetype: destiny_core::query::inventory_archetype(&definition, &plugs),
+            stats,
+            definition,
+            perk_names,
+            mod_names,
+            instance,
+        })
+    }
+}
+
 /// A provider-neutral read request for `search_inventory`.
 ///
 /// It carries the two independent query shapes the core contract already
@@ -254,74 +330,10 @@ where
         if let Some(instance_query) = &instance_query {
             let instances = self.sync.repository().search_instances(instance_query)?;
             hits.reserve(instances.len());
-            let mut resolved_plugs = std::collections::HashMap::new();
-            let mut resolved_stats = std::collections::HashMap::new();
+            let mut enrichment = InstanceEnrichment::default();
             for instance in instances {
                 let definition = self.resolve_definition(instance.item_hash)?;
-                let mut plugs = Vec::new();
-                for plug in &instance.plugs {
-                    if let std::collections::hash_map::Entry::Vacant(entry) =
-                        resolved_plugs.entry(plug.plug_hash)
-                    {
-                        let resolved =
-                            match self.sync.repository().lookup_definition(plug.plug_hash)? {
-                                Resolution::Unique(definition) => Some(definition),
-                                Resolution::Missing => None,
-                                Resolution::Ambiguous(_) => return Err(invalid_repository_state()),
-                            };
-                        entry.insert(resolved);
-                    }
-                    if let Some(definition) = &resolved_plugs[&plug.plug_hash] {
-                        plugs.push(definition.clone());
-                    }
-                }
-                let mut available = Vec::new();
-                for plug in &instance.available_plugs {
-                    if let std::collections::hash_map::Entry::Vacant(entry) =
-                        resolved_plugs.entry(plug.plug_hash)
-                    {
-                        let resolved =
-                            match self.sync.repository().lookup_definition(plug.plug_hash)? {
-                                Resolution::Unique(definition) => Some(definition),
-                                Resolution::Missing => None,
-                                Resolution::Ambiguous(_) => return Err(invalid_repository_state()),
-                            };
-                        entry.insert(resolved);
-                    }
-                    if let Some(definition) = &resolved_plugs[&plug.plug_hash] {
-                        available.push(definition.clone());
-                    }
-                }
-                let (available_perks, available_mods) =
-                    destiny_core::query::inventory_available_names(&definition, &plugs, &available);
-                let (perk_names, mod_names) =
-                    destiny_core::query::inventory_plug_names(&definition, &plugs);
-                let mut named = Vec::new();
-                for stat in &instance.stats {
-                    if let std::collections::hash_map::Entry::Vacant(entry) =
-                        resolved_stats.entry(stat.stat_hash)
-                    {
-                        entry.insert(self.repository().lookup_stat(stat.stat_hash)?);
-                    }
-                    if let Some(definition) = &resolved_stats[&stat.stat_hash] {
-                        named.push((definition.name().to_owned(), stat.stat_hash, stat.value));
-                    }
-                }
-                named.sort_by(|left, right| (&left.0, left.1).cmp(&(&right.0, right.1)));
-                let stats = named
-                    .into_iter()
-                    .map(|(name, _, value)| destiny_core::NamedStat { name, value })
-                    .collect();
-                hits.push(InventorySearchHit {
-                    available_perks,
-                    available_mods,
-                    archetype: destiny_core::query::inventory_archetype(&definition, &plugs),
-                    stats,
-                    definition,
-                    perk_names,
-                    mod_names,
-                    instance,
-                });
+                hits.push(enrichment.resolve(self.repository(), definition, instance)?);
             }
         }
 
@@ -361,9 +373,16 @@ where
             Resolution::Ambiguous(_) => return Err(invalid_repository_state()),
         };
         let definition = self.resolve_definition(instance.item_hash)?;
+        let hit = InstanceEnrichment::default().resolve(self.repository(), definition, instance)?;
         Ok(Resolution::Unique(ItemInspection {
-            definition,
-            instance,
+            perk_names: hit.perk_names,
+            mod_names: hit.mod_names,
+            archetype: hit.archetype,
+            available_perks: hit.available_perks,
+            available_mods: hit.available_mods,
+            stats: hit.stats,
+            definition: hit.definition,
+            instance: hit.instance,
             metadata,
         }))
     }
@@ -924,9 +943,18 @@ mod tests {
             .find(|definition| definition.hash == ItemHash::new(1))
             .unwrap()
             .slot = Some(destiny_core::domain::ItemSlot::Kinetic);
-        definitions.extend([rampage, barrel, cosmetic]);
+        let mut alternative = definition(63, "Kill Clip", None, vec![]);
+        alternative.plug_category = Some("frames".into());
+        definitions.extend([rampage, barrel, cosmetic, alternative]);
         let mut repository = CompositeRepository::with_definitions(definitions);
         let mut item = instance("owned", 1, ItemLocation::Vault, vec![]);
+        item.available_plugs = [60, 63, 99]
+            .into_iter()
+            .map(|hash| destiny_core::AvailablePlug {
+                socket_index: 0,
+                plug_hash: ItemHash::new(hash),
+            })
+            .collect();
         item.plugs = [61, 99, 60, 62, 60]
             .into_iter()
             .map(|hash| destiny_core::PlugSummary {
@@ -941,6 +969,22 @@ mod tests {
         let request = search_request(definition_query(None, None, vec![], 1), Some(query));
         let result = service.search_inventory(&request, TTL, NOW).unwrap();
         assert_eq!(result.hits[0].perk_names, ["Barrel", "Rampage", "Rampage"]);
+        let Resolution::Unique(inspected) = service
+            .inspect_item(
+                &InspectItemRequest {
+                    instance_id: "owned".into(),
+                },
+                TTL,
+                NOW,
+            )
+            .unwrap()
+        else {
+            panic!("missing inspection")
+        };
+        assert_eq!(inspected.perk_names, result.hits[0].perk_names);
+        assert_eq!(inspected.available_perks, result.hits[0].available_perks);
+        assert_eq!(inspected.available_perks, ["Kill Clip"]);
+        assert!(inspected.mod_names.is_empty());
     }
 
     #[test]
@@ -983,6 +1027,21 @@ mod tests {
         );
         assert!(result.hits[0].perk_names.is_empty());
         assert_eq!(result.hits[0].archetype.as_deref(), Some("Specialist"));
+        let Resolution::Unique(inspected) = service
+            .inspect_item(
+                &InspectItemRequest {
+                    instance_id: "owned".into(),
+                },
+                TTL,
+                NOW,
+            )
+            .unwrap()
+        else {
+            panic!("missing inspection")
+        };
+        assert_eq!(inspected.mod_names, result.hits[0].mod_names);
+        assert_eq!(inspected.archetype, result.hits[0].archetype);
+        assert_eq!(inspected.available_mods, result.hits[0].available_mods);
     }
 
     #[test]

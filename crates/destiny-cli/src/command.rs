@@ -1427,6 +1427,12 @@ mod tests {
     #[test]
     fn unique_inspection_is_returned_unchanged() {
         let inspection = ItemInspection {
+            perk_names: Vec::new(),
+            mod_names: Vec::new(),
+            archetype: None,
+            available_perks: Vec::new(),
+            available_mods: Vec::new(),
+            stats: Vec::new(),
             definition: destiny_app::ItemDefinition {
                 hash: destiny_app::ItemHash::new(1),
                 bucket_hash: None,
