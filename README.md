@@ -104,7 +104,7 @@ cargo run -p destiny-cli -- --json search-inventory --text gjallar --item-hash 1
 Filter Manifest candidates and owned hits by definition attributes and power:
 
 ```sh
-ghostlink search-inventory --type "Hand Cannon" --element solar --min-power 2000
+ghostlink search-inventory --type "Hand Cannon" --element solar --min-power 400
 ghostlink search-inventory --slot helmet --class hunter
 ghostlink --json search-inventory --element arc --slot energy
 ```
