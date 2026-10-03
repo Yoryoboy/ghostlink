@@ -28,7 +28,8 @@ pub use auth::{
 };
 pub use domain::{
     AvailablePlug, Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation,
-    PerkSummary, PlugSummary, SnapshotMetadata, StatSummary, SyncMetadata,
+    PerkSummary, PlugSummary, SnapshotMetadata, StatSummary, SubclassPlugKind, SyncMetadata,
+    classify_subclass_plug,
 };
 pub use error::{AppError, ErrorCategory};
 pub use ids::{

@@ -105,7 +105,8 @@ pub struct ItemInstance {
     pub perks: Vec<PerkSummary>,
     /// Enabled, non-empty plugs in socket order; duplicate hashes are semantic.
     /// Acquisition is classification-neutral. Publication keeps weapon perks,
-    /// armor mods, armor archetypes and unknown definitions using [`classify_plug`].
+    /// armor mods, armor archetypes, subclass plugs and unknown definitions using
+    /// [`classify_plug`].
     pub plugs: Vec<PlugSummary>,
     /// Unique stats in ascending hash order; order is not semantic.
     pub stats: Vec<StatSummary>,
@@ -226,18 +227,62 @@ pub struct ItemDefinition {
     pub version: DefinitionVersion,
 }
 
+/// Equipped subclass socket kind, identified only by stable Manifest categories.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SubclassPlugKind {
+    Super,
+    Aspect,
+    Fragment,
+    Grenade,
+    Melee,
+    ClassAbility,
+    Movement,
+    Transcendence,
+}
+
+/// Stable, case-sensitive subclass categories; localized names never participate.
+pub fn classify_subclass_plug(category: &str) -> Option<SubclassPlugKind> {
+    if category == "shared.fragments" {
+        return Some(SubclassPlugKind::Fragment);
+    }
+    let mut parts = category.split('.');
+    let prefix = parts.next()?;
+    let element = parts.next()?;
+    let kind = parts.next()?;
+    if !matches!(prefix, "hunter" | "titan" | "warlock" | "shared")
+        || element.is_empty()
+        || parts.next().is_some()
+    {
+        return None;
+    }
+    match kind {
+        "supers" => Some(SubclassPlugKind::Super),
+        "aspects" | "totems" => Some(SubclassPlugKind::Aspect),
+        "fragments" | "trinkets" => Some(SubclassPlugKind::Fragment),
+        "grenades" | "prism_grenade" => Some(SubclassPlugKind::Grenade),
+        "melee" => Some(SubclassPlugKind::Melee),
+        "class_abilities" => Some(SubclassPlugKind::ClassAbility),
+        "movement" => Some(SubclassPlugKind::Movement),
+        "transcendence" => Some(SubclassPlugKind::Transcendence),
+        _ => None,
+    }
+}
+
 /// Query-time classification of a Manifest plug category; never persisted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PlugKind {
     WeaponPerk,
     ArmorMod,
     ArmorArchetype,
+    Subclass(SubclassPlugKind),
     Other,
 }
 
 /// Stable, case-sensitive categories, independent of localized display names.
 pub fn classify_plug(category: &str) -> PlugKind {
-    if category == "armor_archetypes" {
+    if let Some(kind) = classify_subclass_plug(category) {
+        PlugKind::Subclass(kind)
+    } else if category == "armor_archetypes" {
         PlugKind::ArmorArchetype
     } else if category.contains("masterworks") {
         PlugKind::Other
@@ -282,6 +327,99 @@ pub fn is_weapon_perk_plug(category: &str) -> bool {
 
 #[cfg(test)]
 mod plug_tests {
+    #[test]
+    fn subclass_category_classification_table() {
+        use super::{PlugKind, SubclassPlugKind, classify_plug, classify_subclass_plug};
+        use SubclassPlugKind::*;
+        for (category, expected) in [
+            ("hunter.arc.supers", Super),
+            ("titan.solar.aspects", Aspect),
+            ("warlock.stasis.totems", Aspect),
+            ("shared.void.fragments", Fragment),
+            ("hunter.stasis.trinkets", Fragment),
+            ("shared.fragments", Fragment),
+            ("shared.arc.grenades", Grenade),
+            ("hunter.prism.prism_grenade", Grenade),
+            ("titan.strand.melee", Melee),
+            ("warlock.solar.class_abilities", ClassAbility),
+            ("hunter.void.movement", Movement),
+            ("shared.prism.transcendence", Transcendence),
+        ] {
+            assert_eq!(
+                classify_subclass_plug(category),
+                Some(expected),
+                "{category}"
+            );
+            assert_eq!(
+                classify_plug(category),
+                PlugKind::Subclass(expected),
+                "{category}"
+            );
+        }
+        for category in [
+            "exotic_new_grenade_launcher0_skins",
+            "enhancements.x",
+            "hunter.arc",
+            "weapon.arc.supers",
+            "Hunter.arc.supers",
+            "hunter.fragments",
+            "hunter..supers",
+            "hunter.arc.supers.extra",
+            "shared.fragments.extra",
+            "hunter.arc.unknown",
+            "",
+        ] {
+            assert_eq!(classify_subclass_plug(category), None, "{category}");
+            assert_eq!(classify_plug(category), PlugKind::Other, "{category}");
+        }
+    }
+
+    #[test]
+    fn publication_seam_retains_subclass_plugs_but_not_other_plugs() {
+        use super::{AvailablePlug, ItemInstance, ItemLocation, PlugSummary};
+        use crate::{ItemHash, ItemInstanceId};
+        let mut item = ItemInstance {
+            available_plugs: (1..=4)
+                .map(|hash| AvailablePlug {
+                    socket_index: 0,
+                    plug_hash: ItemHash::new(hash),
+                })
+                .collect(),
+            instance_id: ItemInstanceId::new("1"),
+            item_hash: ItemHash::new(1),
+            location: ItemLocation::Vault,
+            quantity: 1,
+            equipped: true,
+            locked: false,
+            power: None,
+            perks: vec![],
+            stats: vec![],
+            plugs: [1, 2, 3, 1, 4]
+                .into_iter()
+                .map(|hash| PlugSummary {
+                    plug_hash: ItemHash::new(hash),
+                    enabled: hash != 4,
+                })
+                .collect(),
+        };
+        item.retain_searchable_plugs(|hash| match hash.value() {
+            1 => Some("hunter.arc.supers"),
+            2 => Some("shader"),
+            3 => Some("shared.fragments"),
+            4 => Some("hunter.stasis.totems"),
+            _ => None,
+        });
+        assert_eq!(
+            item.plugs
+                .iter()
+                .map(|plug| plug.plug_hash.value())
+                .collect::<Vec<_>>(),
+            vec![1, 3, 1],
+        );
+        // Selectable weapon/mod searches remain unchanged: subclass options are excluded.
+        assert!(item.available_plugs.is_empty());
+    }
+
     #[test]
     fn archetype_category_is_searchable_and_exact() {
         assert_ne!(
