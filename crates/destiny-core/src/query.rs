@@ -426,11 +426,24 @@ pub fn instance_matches_plug_names(query: &InstanceSearchQuery, plugs: &[ItemDef
     instance_matches_perk_name(query, plugs)
         && query.mod_name.as_ref().is_none_or(|term| {
             plugs.iter().any(|definition| {
-                definition.plug_category.as_deref().is_some_and(|category| {
-                    crate::domain::classify_plug(category) == crate::domain::PlugKind::ArmorMod
-                }) && normalize_search_text(&definition.name) == term.as_str()
+                is_named_armor_mod(definition)
+                    && normalize_search_text(&definition.name) == term.as_str()
             })
         })
+}
+
+/// An armor-mod plug that is not an empty-socket placeholder. The provider
+/// fills unused mod sockets with "Empty Mod Socket" plugs that share the
+/// armor-mod categories, so they are recognized by their display name.
+fn is_named_armor_mod(definition: &ItemDefinition) -> bool {
+    definition.plug_category.as_deref().is_some_and(|category| {
+        crate::domain::classify_plug(category) == crate::domain::PlugKind::ArmorMod
+    }) && !is_empty_socket_placeholder(&definition.name)
+}
+
+fn is_empty_socket_placeholder(name: &str) -> bool {
+    let normalized = normalize_search_text(name);
+    normalized.starts_with("empty ") && normalized.ends_with(" socket")
 }
 
 /// Slot-guarded names for inventory hits; unknown slots expose neither kind.
@@ -446,11 +459,7 @@ pub fn inventory_plug_names(
     let mods = if is_armor_slot(definition.slot) {
         plugs
             .iter()
-            .filter(|plug| {
-                plug.plug_category.as_deref().is_some_and(|category| {
-                    crate::domain::classify_plug(category) == crate::domain::PlugKind::ArmorMod
-                })
-            })
+            .filter(|plug| is_named_armor_mod(plug))
             .map(|plug| plug.name.clone())
             .collect()
     } else {
@@ -704,6 +713,22 @@ mod tests {
             Some(&armor)
         ));
         assert!(!instance_matches_with_definition(&filter, &item, None));
+    }
+
+    #[test]
+    fn empty_mod_socket_placeholders_are_not_armor_mods() {
+        use crate::domain::ItemSlot;
+        let mut armor = definition(7, "Helmet");
+        armor.slot = Some(ItemSlot::Helmet);
+        let mut empty = definition(10, "Empty Mod Socket");
+        empty.plug_category = Some("enhancements.v2_head".into());
+        let mut real = definition(11, "Harmonic Siphon");
+        real.plug_category = Some("enhancements.v2_head".into());
+        let (_, mods) = super::inventory_plug_names(&armor, &[empty.clone(), real]);
+        assert_eq!(mods, vec!["Harmonic Siphon".to_string()]);
+        let mut filter = instance_query(ItemHashFilter::Any, None);
+        filter.mod_name = Some(term("empty mod socket"));
+        assert!(!super::instance_matches_plug_names(&filter, &[empty]));
     }
 
     #[test]
