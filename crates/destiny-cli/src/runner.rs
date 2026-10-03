@@ -771,6 +771,7 @@ mod tests {
             hits: vec![InventorySearchHit {
                 definition: definition(1, "Gjallarhorn"),
                 instance: instance("inst-1", 1),
+                perk_names: Vec::new(),
             }],
             metadata: metadata(FreshnessStatus::Fresh),
         }
@@ -1139,6 +1140,7 @@ mod tests {
             instances: Some(destiny_app::InstanceSearchQuery {
                 item_hashes: destiny_app::ItemHashFilter::AnyOf(vec![ItemHash::new(1)]),
                 perk_hash: None,
+                perk_name: None,
                 character_id: None,
                 definitions: Some(Box::new(destiny_app::DefinitionSearchQuery {
                     text: Some(destiny_app::SearchTerm::new("gjallar").unwrap()),

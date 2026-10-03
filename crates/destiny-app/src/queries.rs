@@ -179,6 +179,7 @@ where
             let mut query = request.instances.clone().unwrap_or(InstanceSearchQuery {
                 item_hashes: destiny_core::ItemHashFilter::Any,
                 perk_hash: None,
+                perk_name: None,
                 character_id: None,
                 definitions: None,
                 min_power: None,
@@ -193,10 +194,29 @@ where
         if let Some(instance_query) = &instance_query {
             let instances = self.sync.repository().search_instances(instance_query)?;
             hits.reserve(instances.len());
+            let mut resolved_plugs = std::collections::HashMap::new();
             for instance in instances {
                 let definition = self.resolve_definition(instance.item_hash)?;
+                let mut plugs = Vec::new();
+                for plug in &instance.plugs {
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        resolved_plugs.entry(plug.plug_hash)
+                    {
+                        let resolved =
+                            match self.sync.repository().lookup_definition(plug.plug_hash)? {
+                                Resolution::Unique(definition) => Some(definition),
+                                Resolution::Missing => None,
+                                Resolution::Ambiguous(_) => return Err(invalid_repository_state()),
+                            };
+                        entry.insert(resolved);
+                    }
+                    if let Some(definition) = &resolved_plugs[&plug.plug_hash] {
+                        plugs.push(definition.clone());
+                    }
+                }
                 hits.push(InventorySearchHit {
                     definition,
+                    perk_names: destiny_core::query::weapon_perk_names(&plugs),
                     instance,
                 });
             }
@@ -716,6 +736,7 @@ mod tests {
         InstanceSearchQuery {
             item_hashes,
             perk_hash,
+            perk_name: None,
             character_id,
             definitions: None,
             min_power: None,
@@ -741,6 +762,35 @@ mod tests {
         let mut repository = CompositeRepository::with_definitions(standard_definitions());
         repository.commit(snapshot_input(fresh_checked_at(), characters, items));
         service(shared, repository)
+    }
+
+    #[test]
+    fn perk_search_resolves_names_in_socket_order_and_omits_unknowns() {
+        let shared = gateway();
+        let mut rampage = definition(60, "Rampage", None, vec![]);
+        rampage.plug_category = Some("frames".into());
+        let mut barrel = definition(61, "Barrel", None, vec![]);
+        barrel.plug_category = Some("barrels".into());
+        let mut cosmetic = definition(62, "Shader", None, vec![]);
+        cosmetic.plug_category = Some("shader".into());
+        let mut definitions = standard_definitions();
+        definitions.extend([rampage, barrel, cosmetic]);
+        let mut repository = CompositeRepository::with_definitions(definitions);
+        let mut item = instance("owned", 1, ItemLocation::Vault, vec![]);
+        item.plugs = [61, 99, 60, 62, 60]
+            .into_iter()
+            .map(|hash| destiny_core::PlugSummary {
+                plug_hash: ItemHash::new(hash),
+                enabled: true,
+            })
+            .collect();
+        repository.commit(snapshot_input(fresh_checked_at(), vec![], vec![item]));
+        let mut service = service(&shared, repository);
+        let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
+        query.perk_name = Some(SearchTerm::new("rampage").unwrap());
+        let request = search_request(definition_query(None, None, vec![], 1), Some(query));
+        let result = service.search_inventory(&request, TTL, NOW).unwrap();
+        assert_eq!(result.hits[0].perk_names, ["Barrel", "Rampage", "Rampage"]);
     }
 
     #[test]

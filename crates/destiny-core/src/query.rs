@@ -36,9 +36,9 @@
 //!   an exact normalized value.
 //!
 //! An instance matches a [`PerkHash`] filter only when it carries a
-//! [`PerkSummary`] with that exact hash. No textual perk-name search exists,
-//! because the Manifest projection stores no perk definition catalog; perk
-//! matching is always the exact-hash form.
+//! [`PerkSummary`] with that exact hash. A perk-name filter instead matches any
+//! stored socket plug resolving to a weapon-perk definition, on exact normalized
+//! name equality. Missing definitions and non-weapon categories never match.
 //!
 //! [`PerkSummary`]: crate::domain::PerkSummary
 //!
@@ -237,6 +237,8 @@ pub enum ItemHashFilter {
 pub struct InstanceSearchQuery {
     pub item_hashes: ItemHashFilter,
     pub perk_hash: Option<PerkHash>,
+    /// Exact normalized weapon-perk name; validated by `SearchTerm` construction.
+    pub perk_name: Option<SearchTerm>,
     pub character_id: Option<CharacterId>,
     /// Definition criteria applied before the instance limit; its limit is ignored.
     pub definitions: Option<Box<DefinitionSearchQuery>>,
@@ -371,6 +373,34 @@ pub fn instance_matches_with_definition(
         })
 }
 
+/// True when the socket-ordered resolved definitions satisfy the perk-name filter.
+/// Callers supply only definitions resolved from this instance's stored plugs.
+pub fn instance_matches_perk_name(query: &InstanceSearchQuery, plugs: &[ItemDefinition]) -> bool {
+    query.perk_name.as_ref().is_none_or(|term| {
+        plugs.iter().any(|definition| {
+            definition
+                .plug_category
+                .as_deref()
+                .is_some_and(crate::domain::is_weapon_perk_plug)
+                && normalize_search_text(&definition.name) == term.as_str()
+        })
+    })
+}
+
+/// Resolved weapon-perk names in socket order, omitting unknown/non-weapon plugs.
+pub fn weapon_perk_names(plugs: &[ItemDefinition]) -> Vec<String> {
+    plugs
+        .iter()
+        .filter(|definition| {
+            definition
+                .plug_category
+                .as_deref()
+                .is_some_and(crate::domain::is_weapon_perk_plug)
+        })
+        .map(|definition| definition.name.clone())
+        .collect()
+}
+
 /// The projection metadata and freshness that accompany one query answer.
 ///
 /// It reuses the repository-owned [`SyncMetadata`] and the shared
@@ -405,6 +435,8 @@ pub struct CharacterListResult {
 pub struct InventorySearchHit {
     pub definition: ItemDefinition,
     pub instance: ItemInstance,
+    /// Resolved weapon-perk names in stored socket order; no plug hashes.
+    pub perk_names: Vec<String>,
 }
 
 /// A bounded inventory search answer.
@@ -515,6 +547,7 @@ mod tests {
         InstanceSearchQuery {
             item_hashes,
             perk_hash,
+            perk_name: None,
             character_id: None,
             definitions: None,
             min_power: None,
@@ -594,6 +627,33 @@ mod tests {
         assert!(instance_matches(&filter, &item));
         item.power = Some(1801);
         assert!(instance_matches(&filter, &item));
+    }
+
+    #[test]
+    fn perk_name_is_exact_weapon_only_and_socket_ordered() {
+        use crate::domain::PlugSummary;
+        let mut item = instance("owned", 7);
+        item.plugs = vec![PlugSummary {
+            plug_hash: ItemHash::new(10),
+            enabled: true,
+        }];
+        let mut perk = definition(10, "  RAMPAGE  ");
+        perk.plug_category = Some("frames".into());
+        let mut filter = instance_query(ItemHashFilter::Any, None);
+        filter.perk_name = Some(term("rampage"));
+        assert!(super::instance_matches_perk_name(&filter, &[perk.clone()]));
+        assert_eq!(
+            super::weapon_perk_names(&[perk.clone()]),
+            vec!["  RAMPAGE  "]
+        );
+        perk.name = "Rampage Spec".into();
+        assert!(!super::instance_matches_perk_name(&filter, &[perk.clone()]));
+        perk.name = "Rampage".into();
+        perk.plug_category = Some("shader".into());
+        assert!(!super::instance_matches_perk_name(&filter, &[perk]));
+        assert!(!super::instance_matches_perk_name(&filter, &[]));
+        assert!(SearchTerm::new(" ").is_err());
+        assert!(SearchTerm::new(&"a".repeat(MAX_SEARCH_TEXT_LENGTH + 1)).is_err());
     }
 
     #[test]

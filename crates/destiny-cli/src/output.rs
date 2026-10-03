@@ -376,6 +376,7 @@ fn search_json(result: &InventorySearchResult) -> String {
             .map(|hit| json!({
                 "definition": definition_json(&hit.definition),
                 "instance": instance_json(&hit.instance),
+                "perk_names": hit.perk_names,
             }))
             .collect::<Vec<_>>(),
         "kind": "inventory_search",
@@ -478,6 +479,16 @@ fn instance_line(hit: &InventorySearchHit) -> String {
         format!("equipped: {}", instance.equipped),
         format!("locked: {}", instance.locked),
     ];
+    if !hit.perk_names.is_empty() {
+        parts.push(format!(
+            "perks: {}",
+            hit.perk_names
+                .iter()
+                .map(|name| sanitize(name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     if let Some(power) = instance.power {
         parts.push(format!("power: {power}"));
     }
@@ -1037,6 +1048,7 @@ mod tests {
             hits: vec![InventorySearchHit {
                 definition: definition(1, "Gjallarhorn"),
                 instance: instance("inst-1", 1, ItemLocation::Vault),
+                perk_names: Vec::new(),
             }],
             metadata: metadata(FreshnessStatus::Fresh),
         }
@@ -1198,6 +1210,19 @@ mod tests {
     }
 
     #[test]
+    fn search_outputs_socket_ordered_perk_names_without_hashes() {
+        let mut result = search_result();
+        result.hits[0].perk_names = vec!["Barrel".into(), "Rampage".into()];
+        assert!(super::search_human(&result).contains("perks: Barrel, Rampage"));
+        let value: serde_json::Value = serde_json::from_str(&super::search_json(&result)).unwrap();
+        assert_eq!(
+            value["hits"][0]["perk_names"],
+            serde_json::json!(["Barrel", "Rampage"])
+        );
+        assert!(!super::search_json(&result).contains("plug_hash"));
+    }
+
+    #[test]
     fn search_outputs_definition_attributes_for_candidates_and_hits() {
         let mut result = search_result();
         let slot = "power".parse().unwrap();
@@ -1248,7 +1273,7 @@ mod tests {
     #[test]
     fn search_renders_one_bounded_json_object() {
         let expected = format!(
-            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON}}}],"kind":"inventory_search","metadata":{METADATA_JSON}}}"#
+            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"perk_names":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON}}}"#
         );
         assert_eq!(render_search(OutputMode::Json, &search_result()), expected);
     }

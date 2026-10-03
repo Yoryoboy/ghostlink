@@ -659,7 +659,24 @@ impl SearchRepository for InMemorySearchRepository {
                 } else {
                     None
                 };
+                let plugs: Vec<_> = instance
+                    .plugs
+                    .iter()
+                    .filter_map(|plug| {
+                        let mut matches = self
+                            .definitions
+                            .iter()
+                            .filter(|definition| definition.hash == plug.plug_hash);
+                        let first = matches.next();
+                        if matches.next().is_none() {
+                            first.cloned()
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 destiny_core::query::instance_matches_with_definition(query, instance, unique)
+                    && destiny_core::query::instance_matches_perk_name(query, &plugs)
             })
             .cloned()
             .collect();
@@ -1209,6 +1226,7 @@ mod tests {
         InstanceSearchQuery {
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),
+            perk_name: None,
             character_id: character.map(CharacterId::new),
             definitions: None,
             min_power: None,

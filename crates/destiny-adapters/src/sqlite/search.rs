@@ -161,6 +161,9 @@ impl SearchRepository for SqliteStore {
         sql.push_str(" ORDER BY instance_id");
 
         let mut instances = Vec::new();
+        // Resolve each distinct plug hash at most once across candidate rows.
+        // Rust applies the Unicode-aware exact match before truncation.
+        let mut plug_definitions = std::collections::HashMap::new();
         {
             let mut statement = self
                 .connection()
@@ -186,7 +189,27 @@ impl SearchRepository for SqliteStore {
                 } else {
                     None
                 };
-                if instance_matches_with_definition(query, &instance, definition.as_ref()) {
+                let mut plugs = Vec::new();
+                if query.perk_name.is_some() {
+                    for plug in &instance.plugs {
+                        if let std::collections::hash_map::Entry::Vacant(entry) =
+                            plug_definitions.entry(plug.plug_hash)
+                        {
+                            let resolved = match self.lookup_definition(plug.plug_hash)? {
+                                Resolution::Unique(definition) => Some(definition),
+                                Resolution::Missing => None,
+                                Resolution::Ambiguous(_) => return Err(storage_failure()),
+                            };
+                            entry.insert(resolved);
+                        }
+                        if let Some(definition) = &plug_definitions[&plug.plug_hash] {
+                            plugs.push(definition.clone());
+                        }
+                    }
+                }
+                if instance_matches_with_definition(query, &instance, definition.as_ref())
+                    && destiny_core::query::instance_matches_perk_name(query, &plugs)
+                {
                     instances.push(instance);
                     if instances.len() == query.limit {
                         break;
@@ -497,6 +520,7 @@ mod tests {
         InstanceSearchQuery {
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),
+            perk_name: None,
             character_id: character.map(CharacterId::new),
             definitions: None,
             min_power: None,
@@ -538,6 +562,63 @@ mod tests {
             // A whitespace-only name normalizes to the empty string.
             definition(17, "   ", None, &[]),
         ]
+    }
+
+    #[test]
+    fn perk_name_search_matches_fake_before_limit_and_ignores_unknown_cosmetics() {
+        use destiny_core::PlugSummary;
+        let temp = TempDatabase::new();
+        let mut store = SqliteStore::open(temp.path()).unwrap();
+        let mut rampage = definition(60, "  RAMPAGE ", None, &[]);
+        rampage.plug_category = Some("frames".into());
+        let mut cosmetic = definition(61, "Rampage", None, &[]);
+        cosmetic.plug_category = Some("shader".into());
+        let mut spec = definition(62, "Rampage Spec", None, &[]);
+        spec.plug_category = Some("frames".into());
+        let mut unicode = definition(63, "İREM   Kılıcı", None, &[]);
+        unicode.plug_category = Some("frames".into());
+        let definitions = vec![
+            definition(1, "Weapon", None, &[]),
+            rampage,
+            cosmetic,
+            spec,
+            unicode,
+        ];
+        let items: Vec<_> = [
+            ("a", 61),
+            ("b", 62),
+            ("c", 99),
+            ("d", 60),
+            ("e", 60),
+            ("f", 63),
+        ]
+        .into_iter()
+        .map(|(id, hash)| {
+            let mut item = instance(id, 1, ItemLocation::Vault, &[]);
+            item.plugs = vec![PlugSummary {
+                plug_hash: ItemHash::new(hash),
+                enabled: true,
+            }];
+            item
+        })
+        .collect();
+        seed_definitions(&mut store, &definitions);
+        seed_instances(&mut store, items.clone());
+        let mut fake = InMemorySearchRepository::new();
+        fake.set_definitions(definitions);
+        fake.set_instances(items);
+        for (name, expected) in [
+            ("rampage", vec!["d"]),
+            ("Rampage Spec", vec!["b"]),
+            ("i\u{307}rem kılıcı", vec!["f"]),
+            ("ram", vec![]),
+        ] {
+            let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
+            query.perk_name = Some(term(name));
+            let actual = store.search_instances(&query).unwrap();
+            assert_eq!(actual, fake.search_instances(&query).unwrap());
+            assert_eq!(names(&actual), expected);
+        }
     }
 
     #[test]

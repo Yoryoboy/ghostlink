@@ -353,6 +353,12 @@ pub struct SearchInventoryArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub class_type: Option<String>,
 
+    /// Exact case-insensitive socketed weapon-perk name (not a substring or armor mod).
+    /// Supplying this field searches owned instances even without other filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub perk_name: Option<String>,
+
     /// Minimum owned instance power (0..65535); items without power do not match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_power: Option<u16>,
@@ -531,6 +537,8 @@ pub struct ListCharactersOutput {
 pub struct InventorySearchHitView {
     pub definition: DefinitionView,
     pub instance: InstanceView,
+    /// Resolved weapon-perk names in socket order, never plug hashes.
+    pub perk_names: Vec<String>,
 }
 
 /// Structured result of `search_inventory`.

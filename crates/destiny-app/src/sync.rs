@@ -390,6 +390,27 @@ mod tests {
         }
 
         #[test]
+        fn plug_definition_lookup_failure_propagates_without_publication() {
+            let resolved = membership();
+            let shared = gateway();
+            let mut candidate = inventory(&resolved, NOW, 1);
+            candidate.items[0].plugs.push(destiny_core::PlugSummary {
+                plug_hash: ItemHash::new(60),
+                enabled: true,
+            });
+            shared.borrow_mut().queue_membership(Ok(resolved.clone()));
+            shared.borrow_mut().queue_inventory(Ok(candidate));
+            let mut service = harness(&shared, Some(fresh_seed(&resolved)));
+            let before = committed_snapshot(&service);
+            service.lookup_plug = |_, _| Err(AppError::new(ErrorCategory::LocalStorage));
+            assert_eq!(
+                service.sync(ProfileSyncReason::Forced, TTL, NOW),
+                Err(AppError::new(ErrorCategory::LocalStorage))
+            );
+            assert_eq!(committed_snapshot(&service), before);
+        }
+
+        #[test]
         fn ordinary_without_a_committed_snapshot_refreshes() {
             let resolved = membership();
             let shared = gateway();

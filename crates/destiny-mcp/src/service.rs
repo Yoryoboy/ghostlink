@@ -666,7 +666,15 @@ impl SearchInventoryArgs {
             .instances
             .map(InstanceQueryArgs::into_query)
             .transpose()?;
-        if instances.is_none() && (definitions.has_filters() || self.min_power.is_some()) {
+        let perk_name = self
+            .perk_name
+            .as_deref()
+            .map(SearchTerm::new)
+            .transpose()
+            .map_err(McpError::from)?;
+        if instances.is_none()
+            && (definitions.has_filters() || self.min_power.is_some() || perk_name.is_some())
+        {
             instances = Some(
                 InstanceQueryArgs {
                     limit: self.limit,
@@ -680,6 +688,7 @@ impl SearchInventoryArgs {
                 .has_filters()
                 .then(|| Box::new(definitions.clone()));
             query.min_power = query.min_power.max(self.min_power);
+            query.perk_name = perk_name;
         }
 
         Ok(SearchInventoryRequest {
@@ -712,6 +721,7 @@ impl InstanceQueryArgs {
         let query = InstanceSearchQuery {
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
+            perk_name: None,
             character_id: self.character_id.map(CharacterId::new),
             definitions: None,
             min_power: self.min_power,
@@ -798,6 +808,7 @@ pub fn search_inventory_output(result: &InventorySearchResult) -> SearchInventor
             .map(|hit| InventorySearchHitView {
                 definition: definition_view(&hit.definition),
                 instance: instance_view(&hit.instance),
+                perk_names: hit.perk_names.clone(),
             })
             .collect(),
         metadata: metadata_view(&result.metadata),
@@ -1404,6 +1415,7 @@ mod tests {
     ) -> SearchInventoryArgs {
         SearchInventoryArgs {
             text: text.map(str::to_owned),
+            perk_name: None,
             item_type: None,
             tags: tags.into_iter().map(str::to_owned).collect(),
             element: None,
@@ -1423,6 +1435,7 @@ mod tests {
 
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            perk_name: None,
             element: None,
             slot: None,
             class_type: None,
@@ -1625,6 +1638,7 @@ mod tests {
         ];
         let args = SearchInventoryArgs {
             text: Some("gjallar".into()),
+            perk_name: None,
             item_type: None,
             element: None,
             slot: None,
@@ -1821,6 +1835,7 @@ mod tests {
                 min_power: None,
                 limit: MAX_SEARCH_LIMIT,
             }),
+            perk_name: None,
         };
         let output = mcp
             .search_inventory(&args.into_request().expect("valid arguments"))
@@ -1862,6 +1877,7 @@ mod tests {
                 min_power: None,
                 limit: MAX_SEARCH_LIMIT,
             }),
+            perk_name: None,
         };
         let request = args.into_request().expect("valid arguments");
 
