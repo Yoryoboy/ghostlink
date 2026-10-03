@@ -8,23 +8,20 @@ use destiny_core::{
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArtifactResult {
-    pub artifact: Option<ArtifactSummary>,
+    pub points: Option<ArtifactPoints>,
     pub characters: Vec<CharacterArtifact>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArtifactSummary {
-    pub artifact_hash: ItemHash,
-    pub name: Option<String>,
-    pub points_acquired: u32,
-    pub power_bonus: u32,
+pub struct ArtifactPoints {
+    pub points: u32,
+    pub points_cap: u32,
+    pub progress_to_next_level: u32,
+    pub next_level_at: u32,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CharacterArtifact {
     pub character_id: CharacterId,
     pub class: Option<String>,
-    /// None means the live response omitted this character's artifact state.
-    /// Some with empty tiers means state was present but had no visible perks.
-    pub state: Option<CharacterArtifactState>,
     /// Equipped artifact and sockets from the synced inventory, independent of live state.
     pub equipped: Option<EquippedArtifact>,
 }
@@ -41,39 +38,6 @@ pub struct ArtifactSlot {
     pub name: Option<String>,
     pub empty: bool,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CharacterArtifactState {
-    pub points_used: u32,
-    pub reset_count: u32,
-    pub active_perks: Vec<ArtifactPerkView>,
-    pub tiers: Vec<ArtifactTierView>,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArtifactTierView {
-    /// One-based position in provider tier order.
-    pub index: usize,
-    pub unlocked: bool,
-    pub points_to_unlock: u32,
-    pub perks: Vec<ArtifactPerkView>,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArtifactPerkView {
-    pub item_hash: ItemHash,
-    pub name: Option<String>,
-    pub active: bool,
-}
-
-fn resolve_name(
-    repository: &impl DefinitionRepository,
-    hash: ItemHash,
-) -> Result<Option<String>, AppError> {
-    match repository.lookup_definition(hash)? {
-        Resolution::Unique(definition) => Ok(Some(definition.name)),
-        Resolution::Missing => Ok(None),
-        Resolution::Ambiguous(_) => Err(AppError::new(ErrorCategory::LocalStorage)),
-    }
-}
-
 /// Sibling read contract, like the separately composed weekly service.
 pub trait ArtifactOperations {
     fn artifact(
@@ -151,19 +115,13 @@ where
             snapshot.metadata.membership_id,
         )?;
         let live = self.sync.gateway_mut().load_artifact(&membership)?;
-        live.validate()?;
         let repository = self.sync.repository();
-        let artifact = live
-            .profile
-            .map(|profile| -> Result<_, AppError> {
-                Ok(ArtifactSummary {
-                    artifact_hash: profile.artifact_hash,
-                    name: resolve_name(repository, profile.artifact_hash)?,
-                    points_acquired: profile.points_acquired,
-                    power_bonus: profile.power_bonus,
-                })
-            })
-            .transpose()?;
+        let points = live.profile.map(|profile| ArtifactPoints {
+            points: profile.points,
+            points_cap: profile.points_cap,
+            progress_to_next_level: profile.progress_to_next_level,
+            next_level_at: profile.next_level_at,
+        });
         let mut output = Vec::with_capacity(characters.len());
         for character in characters {
             let mut equipped = None;
@@ -210,50 +168,14 @@ where
                     slots,
                 });
             }
-            let state = live
-                .characters
-                .iter()
-                .find(|state| state.character_id == character.id)
-                .map(|state| -> Result<_, AppError> {
-                    let mut tiers = Vec::with_capacity(state.tiers.len());
-                    let mut active_perks = Vec::new();
-                    for (index, tier) in state.tiers.iter().enumerate() {
-                        let mut perks = Vec::with_capacity(tier.perks.len());
-                        for perk in &tier.perks {
-                            let view = ArtifactPerkView {
-                                item_hash: perk.item_hash,
-                                name: resolve_name(repository, perk.item_hash)?,
-                                active: perk.active,
-                            };
-                            if view.active {
-                                active_perks.push(view.clone());
-                            }
-                            perks.push(view);
-                        }
-                        tiers.push(ArtifactTierView {
-                            index: index + 1,
-                            unlocked: tier.is_unlocked,
-                            points_to_unlock: tier.points_to_unlock,
-                            perks,
-                        });
-                    }
-                    Ok(CharacterArtifactState {
-                        points_used: state.points_used,
-                        reset_count: state.reset_count,
-                        active_perks,
-                        tiers,
-                    })
-                })
-                .transpose()?;
             output.push(CharacterArtifact {
                 character_id: character.id,
                 class: character.class,
-                state,
                 equipped,
             });
         }
         Ok(ArtifactResult {
-            artifact,
+            points,
             characters: output,
         })
     }

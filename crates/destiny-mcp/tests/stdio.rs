@@ -455,7 +455,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
     assert_eq!(artifact["result"]["isError"], false);
     assert_eq!(
         structured(&artifact),
-        &json!({"kind": "artifact", "artifact": null, "characters": []})
+        &json!({"kind": "artifact", "points": null, "characters": []})
     );
     let missing = session
         .call_tool(GET_ARTIFACT_TOOL, json!({"character": "missing"}))

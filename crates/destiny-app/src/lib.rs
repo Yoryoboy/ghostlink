@@ -2,8 +2,8 @@
 
 pub mod artifact;
 pub use artifact::{
-    ArtifactOperations, ArtifactPerkView, ArtifactResult, ArtifactService, ArtifactSlot,
-    ArtifactSummary, ArtifactTierView, CharacterArtifact, CharacterArtifactState, EquippedArtifact,
+    ArtifactOperations, ArtifactPoints, ArtifactResult, ArtifactService, ArtifactSlot,
+    CharacterArtifact, EquippedArtifact,
 };
 pub use destiny_core::{ArtifactGateway, ArtifactSnapshot};
 pub mod auth;

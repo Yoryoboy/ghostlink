@@ -310,19 +310,19 @@ The subclass contains `instance_id`, `item_hash`, `name`, `element` and ordered
 
 ### Seasonal artifact state
 
-`ghostlink artifact [--character <id|class>] [--tiers]` reads the seasonal
-artifact live: name (null when unresolved), points acquired and power bonus,
-plus per-character points used, reset count and active perks. `--tiers` expands
-the human-readable tier list; JSON always includes all tiers and visible perks
-in provider order. Requires login and `ghostlink sync-manifest`; artifact state
-is not persisted in SQLite. Character selection follows the subclass rules above.
+`ghostlink artifact [--character <id|class>]` shows live artifact points
+from profile `pointProgression` and each character's equipped artifact and perks
+from the freshness-synchronized inventory. Text shows points/cap and, below the
+cap, progress toward the next point. Empty perk sockets appear as `(empty)`.
+Requires login and `ghostlink sync-manifest`; live points are not persisted in
+SQLite. Character selection follows the subclass rules above.
 
-`ghostlink --json artifact` returns `kind: "artifact"`, nullable `artifact`
-(`artifact_hash`, `name`, `points_acquired`, `power_bonus`) and `characters`.
-Each character has `character_id`, `class` and nullable `state` with `points_used`,
-`reset_count`, `active_perks` and `tiers`. Tiers contain `index` (one-based),
-`unlocked`, `points_to_unlock` and `perks`; each perk has `item_hash`, nullable
-`name` and `active`. Missing state stays null, distinct from empty tier lists.
+`ghostlink --json artifact` returns `kind: "artifact"`, nullable `points`
+(`points`, `points_cap`, `progress_to_next_level`, `next_level_at`) and `characters`.
+Each character has `character_id`, `class` and nullable `equipped` with
+`instance_id`, `item_hash`, nullable `name` and ordered `slots`. Each slot has
+`plug_hash`, nullable `name` and `empty`. Missing progression or equipped artifact
+stays null. Legacy artifact tiers and power-bonus fields are not reported.
 
 ### Inspect one owned item
 
@@ -515,7 +515,7 @@ For example: `{"character": "hunter"}`. Requires login and loaded Manifest defin
 
 `get_artifact` accepts an optional `character` (exact id or unique class),
 with omission selecting all characters. Its structured output matches
-`ghostlink --json artifact` exactly, including all tiers and null state.
+`ghostlink --json artifact` exactly, including points and equipped artifact sockets.
 For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
 
 `inspect_item` returns the same enriched names as CLI inspection:

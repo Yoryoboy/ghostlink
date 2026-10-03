@@ -196,7 +196,7 @@ impl destiny_app::ArtifactOperations for FixtureArtifact {
             return Err(AppError::new(ErrorCategory::ProviderValidation));
         }
         Ok(destiny_app::ArtifactResult {
-            artifact: None,
+            points: None,
             characters: vec![],
         })
     }

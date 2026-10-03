@@ -924,29 +924,16 @@ impl crate::schema::GetArtifactArgs {
     }
 }
 
-/// Full CLI-compatible artifact envelope, retaining tier and perk order.
+/// Full CLI-compatible artifact envelope, retaining equipped socket order.
 pub fn artifact_output(result: &destiny_app::ArtifactResult) -> crate::schema::GetArtifactOutput {
-    use crate::schema::{
-        ArtifactPerkView, ArtifactSummaryView, ArtifactTierView, CharacterArtifactStateView,
-        CharacterArtifactView, GetArtifactOutput,
-    };
-    fn perk(perk: &destiny_app::ArtifactPerkView) -> ArtifactPerkView {
-        ArtifactPerkView {
-            item_hash: perk.item_hash.value(),
-            name: perk.name.clone(),
-            active: perk.active,
-        }
-    }
+    use crate::schema::{ArtifactPointsView, CharacterArtifactView, GetArtifactOutput};
     GetArtifactOutput {
-        artifact: result
-            .artifact
-            .as_ref()
-            .map(|artifact| ArtifactSummaryView {
-                artifact_hash: artifact.artifact_hash.value(),
-                name: artifact.name.clone(),
-                points_acquired: artifact.points_acquired,
-                power_bonus: artifact.power_bonus,
-            }),
+        points: result.points.as_ref().map(|points| ArtifactPointsView {
+            points: points.points,
+            points_cap: points.points_cap,
+            progress_to_next_level: points.progress_to_next_level,
+            next_level_at: points.next_level_at,
+        }),
         characters: result
             .characters
             .iter()
@@ -969,24 +956,6 @@ pub fn artifact_output(result: &destiny_app::ArtifactResult) -> crate::schema::G
                             .collect(),
                     }
                 }),
-                state: character
-                    .state
-                    .as_ref()
-                    .map(|state| CharacterArtifactStateView {
-                        points_used: state.points_used,
-                        reset_count: state.reset_count,
-                        active_perks: state.active_perks.iter().map(perk).collect(),
-                        tiers: state
-                            .tiers
-                            .iter()
-                            .map(|tier| ArtifactTierView {
-                                index: tier.index,
-                                unlocked: tier.unlocked,
-                                points_to_unlock: tier.points_to_unlock,
-                                perks: tier.perks.iter().map(perk).collect(),
-                            })
-                            .collect(),
-                    }),
             })
             .collect(),
     }

@@ -185,12 +185,8 @@ pub use subclass_output::subclass_json;
 mod artifact_output;
 pub use artifact_output::artifact_json;
 
-/// Renders live artifact state; tiers only affect human verbosity.
-pub fn render_artifact(
-    mode: OutputMode,
-    result: &destiny_app::ArtifactResult,
-    tiers: bool,
-) -> String {
+/// Renders live artifact points and equipped artifact sockets.
+pub fn render_artifact(mode: OutputMode, result: &destiny_app::ArtifactResult) -> String {
     if mode == OutputMode::Json {
         return artifact_json(result).to_string();
     }
@@ -198,77 +194,41 @@ pub fn render_artifact(
         name.map(sanitize)
             .unwrap_or_else(|| format!("#{}", hash.value()))
     };
-    let perk_label =
-        |perk: &destiny_app::ArtifactPerkView| label(perk.name.as_deref(), perk.item_hash);
-    let mut lines = vec![match &result.artifact {
-        Some(artifact) => format!(
-            "Artifact: {} — {} points, +{} power",
-            label(artifact.name.as_deref(), artifact.artifact_hash),
-            artifact.points_acquired,
-            artifact.power_bonus
-        ),
-        None => "Artifact: no artifact data".into(),
+    let mut lines = vec![match &result.points {
+        Some(points) => {
+            let mut text = format!("Artifact points: {}/{}", points.points, points.points_cap);
+            if points.points < points.points_cap {
+                text.push_str(&format!(
+                    " ({}/{} to next point)",
+                    points.progress_to_next_level, points.next_level_at
+                ));
+            }
+            text
+        }
+        None => "Artifact points: unavailable".into(),
     }];
     for character in &result.characters {
         let class = sanitize(character.class.as_deref().unwrap_or("Unknown"));
-        let equipped_lines = |lines: &mut Vec<String>| {
-            if let Some(equipped) = &character.equipped {
-                lines.push(format!(
-                    "  Equipped: {}",
-                    label(equipped.name.as_deref(), equipped.item_hash)
-                ));
-                let perks = equipped
-                    .slots
-                    .iter()
-                    .map(|slot| {
-                        if slot.empty {
-                            "(empty)".into()
-                        } else {
-                            label(slot.name.as_deref(), slot.plug_hash)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                lines.push(format!("  Perks: {perks}"));
-            }
-        };
-        let Some(state) = &character.state else {
-            lines.push(format!("{class}: no artifact data"));
-            equipped_lines(&mut lines);
-            continue;
-        };
-        lines.push(format!(
-            "{class}: {} points used, {} resets",
-            state.points_used, state.reset_count
-        ));
-        let active = if state.active_perks.is_empty() {
-            "none".into()
-        } else {
-            state
-                .active_perks
+        if let Some(equipped) = &character.equipped {
+            lines.push(format!(
+                "{class}: {}",
+                label(equipped.name.as_deref(), equipped.item_hash)
+            ));
+            let perks = equipped
+                .slots
                 .iter()
-                .map(perk_label)
+                .map(|slot| {
+                    if slot.empty {
+                        "(empty)".into()
+                    } else {
+                        label(slot.name.as_deref(), slot.plug_hash)
+                    }
+                })
                 .collect::<Vec<_>>()
-                .join(", ")
-        };
-        lines.push(format!("  Active: {active}"));
-        equipped_lines(&mut lines);
-        if tiers {
-            for tier in &state.tiers {
-                let perks = tier
-                    .perks
-                    .iter()
-                    .map(|perk| {
-                        format!("{}{}", perk_label(perk), if perk.active { "*" } else { "" })
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                lines.push(format!(
-                    "  Tier {} ({}): {perks}",
-                    tier.index,
-                    if tier.unlocked { "unlocked" } else { "locked" }
-                ));
-            }
+                .join(", ");
+            lines.push(format!("  Perks: {perks}"));
+        } else {
+            lines.push(format!("{class}: no artifact equipped"));
         }
     }
     lines.join("\n")

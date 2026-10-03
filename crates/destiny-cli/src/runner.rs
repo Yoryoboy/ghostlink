@@ -185,12 +185,11 @@ where
 pub fn dispatch_artifact<S: destiny_app::ArtifactOperations + ?Sized>(
     service: &mut S,
     selector: Option<&destiny_app::CharacterId>,
-    tiers: bool,
     mode: OutputMode,
     freshness: ReadFreshness,
 ) -> ProcessOutput {
     match service.artifact(selector, freshness.policy, freshness.now) {
-        Ok(result) => ProcessOutput::success(crate::output::render_artifact(mode, &result, tiers)),
+        Ok(result) => ProcessOutput::success(crate::output::render_artifact(mode, &result)),
         Err(error) => ProcessOutput::failure(mode, CliError::from(error)),
     }
 }
@@ -342,18 +341,12 @@ where
         Ok(request) => request,
         Err(error) => return ProcessOutput::failure(mode, error),
     };
-    if let ReadRequest::Artifact {
-        character_id,
-        tiers,
-    } = request
-    {
+    if let ReadRequest::Artifact { character_id } = request {
         return match crate::runtime::compose_artifact(
             &mut crate::runtime::ProductionFoundations,
             character_id.as_ref(),
         ) {
-            Ok(result) => {
-                ProcessOutput::success(crate::output::render_artifact(mode, &result, tiers))
-            }
+            Ok(result) => ProcessOutput::success(crate::output::render_artifact(mode, &result)),
             Err(error) => ProcessOutput::failure(mode, error),
         };
     }
@@ -603,7 +596,6 @@ fn clap_argument_failure(error: &clap::Error) -> CliError {
             "--callback",
             "--details",
             "--debug",
-            "--tiers",
             "--include-available",
         ]
         .into_iter()
@@ -795,7 +787,7 @@ mod tests {
         ) -> Result<destiny_app::ArtifactResult, AppError> {
             self.record(Recorded::Artifact(selector.cloned()), policy, now);
             Ok(destiny_app::ArtifactResult {
-                artifact: None,
+                points: None,
                 characters: vec![],
             })
         }
@@ -811,20 +803,11 @@ mod tests {
             }
             let cli = parse_process(args).unwrap();
             let mode = cli.output_mode();
-            let ReadRequest::Artifact {
-                character_id,
-                tiers,
-            } = cli.into_read_request().unwrap()
-            else {
+            let ReadRequest::Artifact { character_id } = cli.into_read_request().unwrap() else {
                 panic!("expected artifact")
             };
-            let output = super::dispatch_artifact(
-                &mut service,
-                character_id.as_ref(),
-                tiers,
-                mode,
-                freshness(),
-            );
+            let output =
+                super::dispatch_artifact(&mut service, character_id.as_ref(), mode, freshness());
             assert_eq!(output.exit_code, 0);
             assert!(output.stderr.is_empty());
             assert_eq!(
@@ -833,7 +816,7 @@ mod tests {
             );
             assert_eq!(
                 serde_json::from_str::<serde_json::Value>(&output.stdout).unwrap(),
-                serde_json::json!({"kind":"artifact", "artifact":null, "characters":[]})
+                serde_json::json!({"kind":"artifact", "points":null, "characters":[]})
             );
         }
     }

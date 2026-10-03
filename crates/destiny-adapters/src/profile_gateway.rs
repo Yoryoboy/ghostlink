@@ -475,7 +475,7 @@ pub fn profile_endpoint(membership: &DestinyMembership) -> String {
 }
 
 /// Accepts only current-memberships, the exact inventory profile query, or the
-/// exact weekly (202/204) or artifact (104/202) query. No other endpoint is permitted.
+/// exact weekly (202/204) or artifact (104) query. No other endpoint is permitted.
 ///
 /// This predicate is the pre-flight gate: the transport evaluates it before it
 /// reads or attaches any credential, so a rejected URL never receives a secret.
@@ -2762,7 +2762,7 @@ mod tests {
     #[test]
     fn artifact_gateway_reuses_auth_retry_and_exact_profile_endpoint() {
         use destiny_core::ArtifactGateway;
-        let fixture = br#"{"ErrorCode":1,"Response":{"profileProgression":{"data":{"seasonalArtifact":{"artifactHash":1234,"pointsAcquired":12,"powerBonus":9}}}}}"#;
+        let fixture = br#"{"ErrorCode":1,"Response":{"profileProgression":{"data":{"seasonalArtifact":{"pointProgression":{"level":12,"levelCap":12,"progressToNextLevel":34,"nextLevelAt":100}}}}}}"#;
         let (mut gateway, delay) = step_gateway(
             vec![
                 Ok(json_response_bytes(503, b"{}")),
@@ -2774,7 +2774,7 @@ mod tests {
         let snapshot = gateway
             .load_artifact(&selected())
             .expect("artifact snapshot");
-        assert_eq!(snapshot.profile.expect("profile artifact").power_bonus, 9);
+        assert_eq!(snapshot.profile.expect("profile artifact").points, 12);
         assert_eq!(delay.waits().len(), 1);
         let expected = crate::artifact::artifact_endpoint(&selected()).expect("artifact endpoint");
         let recorded = gateway.transport().recorded();

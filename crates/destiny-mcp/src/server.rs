@@ -451,7 +451,7 @@ mod tests {
             let result = match self.failure {
                 Some(category) => Err(McpError::new(category)),
                 None => Ok(crate::schema::GetArtifactOutput {
-                    artifact: None,
+                    points: None,
                     characters: vec![],
                 }),
             };
@@ -788,7 +788,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             structured(&result),
-            json!({"kind": "artifact", "artifact": null, "characters": []})
+            json!({"kind": "artifact", "points": null, "characters": []})
         );
         assert_eq!(handle.recorded(), ["get_artifact"]);
         for category in [

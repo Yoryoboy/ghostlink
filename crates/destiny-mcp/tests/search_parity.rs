@@ -20,21 +20,13 @@ mod cli_artifact_output;
 
 #[test]
 fn artifact_cli_mcp_json_parity() {
-    use destiny_app::{
-        ArtifactPerkView, ArtifactResult, ArtifactSummary, ArtifactTierView, CharacterArtifact,
-        CharacterArtifactState, CharacterId, ItemHash,
-    };
-    let perk = ArtifactPerkView {
-        item_hash: ItemHash::new(7),
-        name: None,
-        active: true,
-    };
+    use destiny_app::{ArtifactPoints, ArtifactResult, CharacterArtifact, CharacterId, ItemHash};
     let mut result = ArtifactResult {
-        artifact: Some(ArtifactSummary {
-            artifact_hash: ItemHash::new(3),
-            name: Some("Artifact".into()),
-            points_acquired: 12,
-            power_bonus: 9,
+        points: Some(ArtifactPoints {
+            points: 12,
+            points_cap: 12,
+            progress_to_next_level: 34,
+            next_level_at: 100,
         }),
         characters: vec![
             CharacterArtifact {
@@ -57,42 +49,11 @@ fn artifact_cli_mcp_json_parity() {
                         },
                     ],
                 }),
-                state: Some(CharacterArtifactState {
-                    points_used: 1,
-                    reset_count: 2,
-                    active_perks: vec![perk.clone()],
-                    tiers: vec![
-                        ArtifactTierView {
-                            index: 1,
-                            unlocked: true,
-                            points_to_unlock: 0,
-                            perks: vec![perk],
-                        },
-                        ArtifactTierView {
-                            index: 2,
-                            unlocked: false,
-                            points_to_unlock: 5,
-                            perks: vec![],
-                        },
-                    ],
-                }),
             },
             CharacterArtifact {
                 character_id: CharacterId::new("2"),
                 class: None,
                 equipped: None,
-                state: None,
-            },
-            CharacterArtifact {
-                character_id: CharacterId::new("3"),
-                class: None,
-                equipped: None,
-                state: Some(CharacterArtifactState {
-                    points_used: 0,
-                    reset_count: 0,
-                    active_perks: vec![],
-                    tiers: vec![],
-                }),
             },
         ],
     };
@@ -100,9 +61,9 @@ fn artifact_cli_mcp_json_parity() {
         let cli = cli_artifact_output::artifact_json(&result);
         let mcp = destiny_mcp::service::artifact_output(&result).into_call_tool_result();
         assert_eq!(mcp.structured_content.unwrap(), cli);
-        result.artifact = None;
+        result.points = None;
         if case == 0 {
-            result.characters[0].state = None;
+            result.characters[0].equipped = None;
         } else {
             result.characters.clear();
         }
@@ -122,14 +83,9 @@ fn artifact_tool_has_closed_bounded_arguments() {
             .unwrap()
             .into_read_request()
             .unwrap();
-        let cli_command::ReadRequest::Artifact {
-            character_id,
-            tiers,
-        } = cli
-        else {
+        let cli_command::ReadRequest::Artifact { character_id } = cli else {
             panic!("artifact request")
         };
-        assert!(!tiers);
         assert_eq!(
             character_id,
             GetArtifactArgs {

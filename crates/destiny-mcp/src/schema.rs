@@ -113,7 +113,7 @@ pub fn tool_specs() -> Vec<Tool> {
         .with_output_schema::<GetSubclassOutput>(),
         Tool::new(
             GET_ARTIFACT_TOOL,
-            "Return the seasonal artifact name, points, power bonus and per-character active perks and tiers. Omit character for all characters, or select an exact id or unique hunter|titan|warlock class. Requires login and loaded Manifest definitions; reads live state.",
+            "Return live artifact points and each character's equipped artifact and perks. Omit character for all characters, or select an exact id or unique hunter|titan|warlock class. Requires login and loaded Manifest definitions; reads live state.",
             JsonObject::new(),
         )
         .with_input_schema::<GetArtifactArgs>()
@@ -511,23 +511,22 @@ pub struct GetArtifactArgs {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename = "artifact")]
 pub struct GetArtifactOutput {
-    pub artifact: Option<ArtifactSummaryView>,
+    pub points: Option<ArtifactPointsView>,
     pub characters: Vec<CharacterArtifactView>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub struct ArtifactSummaryView {
-    pub artifact_hash: i64,
-    pub name: Option<String>,
-    pub points_acquired: u32,
-    pub power_bonus: u32,
+pub struct ArtifactPointsView {
+    pub points: u32,
+    pub points_cap: u32,
+    pub progress_to_next_level: u32,
+    pub next_level_at: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct CharacterArtifactView {
     pub character_id: String,
     pub class: Option<String>,
-    pub state: Option<CharacterArtifactStateView>,
     pub equipped: Option<EquippedArtifactView>,
 }
 
@@ -544,29 +543,6 @@ pub struct ArtifactSlotView {
     pub plug_hash: i64,
     pub name: Option<String>,
     pub empty: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub struct CharacterArtifactStateView {
-    pub points_used: u32,
-    pub reset_count: u32,
-    pub active_perks: Vec<ArtifactPerkView>,
-    pub tiers: Vec<ArtifactTierView>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub struct ArtifactPerkView {
-    pub item_hash: i64,
-    pub name: Option<String>,
-    pub active: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub struct ArtifactTierView {
-    pub index: usize,
-    pub unlocked: bool,
-    pub points_to_unlock: u32,
-    pub perks: Vec<ArtifactPerkView>,
 }
 
 impl GetArtifactOutput {

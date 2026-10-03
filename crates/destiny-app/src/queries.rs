@@ -990,10 +990,7 @@ mod tests {
         stale: bool,
         configure: impl FnOnce(&mut ArtifactFake, &mut CompositeRepository),
     ) -> crate::ArtifactService<ArtifactFake, CompositeRepository> {
-        use destiny_core::{
-            ArtifactCharacterState, ArtifactPerk, ArtifactProfileState, ArtifactSnapshot,
-            ArtifactTier,
-        };
+        use destiny_core::{ArtifactProfileState, ArtifactSnapshot};
         let shared = gateway();
         let mut hunter = character("1");
         hunter.class = Some("Hunter".into());
@@ -1010,36 +1007,13 @@ mod tests {
         } else {
             repository.commit(input);
         }
-        let perk = |hash, active| ArtifactPerk {
-            item_hash: ItemHash::new(hash),
-            active,
-        };
         let artifact = ArtifactSnapshot {
             profile: profile_present.then_some(ArtifactProfileState {
-                artifact_hash: ItemHash::new(10),
-                points_acquired: 12,
-                power_bonus: 7,
+                points: 12,
+                points_cap: 12,
+                progress_to_next_level: 34,
+                next_level_at: 100,
             }),
-            characters: vec![ArtifactCharacterState {
-                character_id: CharacterId::new("1"),
-                artifact_hash: ItemHash::new(10),
-                points_used: 3,
-                reset_count: 2,
-                tiers: vec![
-                    ArtifactTier {
-                        tier_hash: 1,
-                        is_unlocked: true,
-                        points_to_unlock: 0,
-                        perks: vec![perk(21, true), perk(20, false)],
-                    },
-                    ArtifactTier {
-                        tier_hash: 2,
-                        is_unlocked: false,
-                        points_to_unlock: 5,
-                        perks: vec![perk(99, true), perk(20, true)],
-                    },
-                ],
-            }],
         };
         let mut fake = ArtifactFake {
             profile: SharedGateway(shared),
@@ -1049,9 +1023,8 @@ mod tests {
         crate::ArtifactService::new(ProfileSyncService::new_with_definitions(fake, repository))
     }
     #[test]
-    fn artifact_equipped_snapshot_survives_missing_live_character_state() {
-        let mut service = artifact_service_with(true, false, |fake, repository| {
-            fake.artifact.characters.clear();
+    fn artifact_equipped_snapshot_survives_missing_live_points() {
+        let mut service = artifact_service_with(false, false, |_, repository| {
             let mut artifact = definition(30, "Tablet of Ruin", Some("Artifact"), vec![]);
             artifact.bucket_hash = Some(destiny_core::ARTIFACT_BUCKET_HASH);
             let mut definitions = vec![artifact];
@@ -1095,7 +1068,7 @@ mod tests {
             ));
         });
         let result = service.artifact(None, TTL, NOW).unwrap();
-        assert!(result.characters[0].state.is_none());
+        assert!(result.points.is_none());
         let equipped = result.characters[0]
             .equipped
             .as_ref()
@@ -1121,45 +1094,22 @@ mod tests {
     }
 
     #[test]
-    fn artifact_resolves_names_and_preserves_active_tier_order() {
+    fn artifact_projects_points_and_synced_characters() {
         use crate::ArtifactOperations;
         let result =
             ArtifactOperations::artifact(&mut artifact_service(true, true), None, TTL, NOW)
                 .unwrap();
-        let summary = result.artifact.unwrap();
-        assert_eq!(summary.name.as_deref(), Some("Artifact"));
         assert_eq!(
-            (
-                summary.artifact_hash,
-                summary.points_acquired,
-                summary.power_bonus
-            ),
-            (ItemHash::new(10), 12, 7)
+            result.points,
+            Some(crate::ArtifactPoints {
+                points: 12,
+                points_cap: 12,
+                progress_to_next_level: 34,
+                next_level_at: 100
+            })
         );
         assert_eq!(result.characters.len(), 2);
-        assert!(result.characters[1].state.is_none());
-        let state = result.characters[0].state.as_ref().unwrap();
-        assert_eq!((state.points_used, state.reset_count), (3, 2));
-        assert_eq!(
-            state
-                .active_perks
-                .iter()
-                .map(|p| p.item_hash)
-                .collect::<Vec<_>>(),
-            vec![ItemHash::new(21), ItemHash::new(99), ItemHash::new(20)]
-        );
-        assert_eq!(state.active_perks[0].name.as_deref(), Some("Second"));
-        assert_eq!(state.active_perks[1].name, None);
-        assert_eq!(state.active_perks[2].name.as_deref(), Some("First"));
-        assert_eq!(
-            state
-                .tiers
-                .iter()
-                .map(|t| (t.index, t.unlocked, t.points_to_unlock))
-                .collect::<Vec<_>>(),
-            vec![(1, true, 0), (2, false, 5)]
-        );
-        assert!(!state.tiers[0].perks[1].active);
+        assert!(result.characters.iter().all(|c| c.equipped.is_none()));
     }
     #[test]
     fn artifact_selects_id_or_case_insensitive_class_and_allows_missing_profile() {
@@ -1167,15 +1117,15 @@ mod tests {
             let result = artifact_service(false, false)
                 .artifact(Some(&CharacterId::new(selector)), TTL, NOW)
                 .unwrap();
-            assert!(result.artifact.is_none());
+            assert!(result.points.is_none());
             assert_eq!(result.characters.len(), 1);
             assert_eq!(result.characters[0].character_id, CharacterId::new("1"));
-            assert!(result.characters[0].state.is_some());
+            assert!(result.characters[0].equipped.is_none());
         }
         let result = artifact_service(true, false)
             .artifact(Some(&CharacterId::new("Titan")), TTL, NOW)
             .unwrap();
-        assert!(result.characters[0].state.is_none());
+        assert!(result.characters[0].equipped.is_none());
         assert_eq!(
             artifact_service(true, false)
                 .artifact(Some(&CharacterId::new("missing")), TTL, NOW)
@@ -1205,27 +1155,6 @@ mod tests {
             service.artifact(None, TTL, NOW).unwrap_err().category(),
             ErrorCategory::ProviderUnavailable
         );
-    }
-    #[test]
-    fn artifact_revalidates_live_state_and_ignores_unsynced_characters() {
-        let mut service = artifact_service_with(true, false, |fake, _| {
-            fake.artifact
-                .characters
-                .push(fake.artifact.characters[0].clone());
-        });
-        assert_eq!(
-            service.artifact(None, TTL, NOW).unwrap_err().category(),
-            ErrorCategory::ProviderValidation
-        );
-        let mut service = artifact_service_with(true, false, |fake, _| {
-            fake.artifact.profile.as_mut().unwrap().artifact_hash = ItemHash::new(98);
-            let mut extra = fake.artifact.characters[0].clone();
-            extra.character_id = CharacterId::new("3");
-            fake.artifact.characters.push(extra);
-        });
-        let result = service.artifact(None, TTL, NOW).unwrap();
-        assert_eq!(result.artifact.unwrap().name, None);
-        assert_eq!(result.characters.len(), 2);
     }
 
     fn fresh_checked_at() -> Timestamp {
