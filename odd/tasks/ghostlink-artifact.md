@@ -37,7 +37,7 @@ state in sqlite.
 - [x] **ART-003 — CLI command.** `ghostlink artifact [--character] [--tiers]`, JSON projection in `artifact_output.rs`. RED→GREEN; workspace 1142 passed, clippy clean. Live smoke OK: real 104/202 decoded (3 characters, 5 tiers, perk names resolved). Commit `eba34a6`.
 - [x] **ART-004 — MCP tool and docs.** `get_artifact` live via shared gateway, exact CLI/MCP JSON parity, README. RED→GREEN; workspace 1145 passed, stdio 11 passed, clippy clean. Commit `a0a27ad`.
 - [x] **ART-005 — Equipped artifact perks.** Live evidence (2026-10-03): legacy 202 `seasonalArtifact` tiers/`isActive`/`pointsUsed` and 104 `pointsAcquired`/`powerBonus` are frozen at 0 and reference a stale artifact (2894222926). Real state = equipped item in bucket `1506418338` (e.g. Tablet of Ruin) with 8 sockets of `artifact_perks` plugs (305). Retain `artifact_perks` plugs at sync, derive artifact name + slotted perks (empty slots flagged) from the synced snapshot. Done: `PlugKind` for `artifact_perks`, `ARTIFACT_BUCKET_HASH`, `equipped` in result/CLI/MCP. RED→GREEN; workspace 1148, stdio 11, clippy clean; live smoke matches in-game (Tablet of Ruin, 7 perks + empty). Commit `3136b82`.
-- [ ] **ART-006 — Points from pointProgression; drop stale tiers.** Points = 104 `pointProgression.level`/`levelCap`; remove 202 tiers/active/pointsUsed/resetCount, `--tiers` flag and related output; update CLI/MCP parity and README.
+- [x] **ART-006 — Points from pointProgression; drop stale tiers.** Points = 104 `pointProgression.level`/`levelCap`; remove 202 tiers/active/pointsUsed/resetCount, `--tiers` flag and related output; update CLI/MCP parity and README. Done: request `?components=104` only. Workspace 1146, stdio 11, clippy clean; live smoke: 12/12 points + equipped perks match in-game. Commit `43b0ce7`.
 
 ## Progress
 
@@ -45,4 +45,4 @@ state in sqlite.
 
 ## Next step
 
-ART-006.
+WU-029 complete. Next: in-game loadouts (component 206), then unlocked subclass options (plug sets).
