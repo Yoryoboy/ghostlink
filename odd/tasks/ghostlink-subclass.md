@@ -1,0 +1,45 @@
+# Equipped subclass configuration (WU-028)
+
+## Objective and scope
+
+Expose each character's equipped subclass configuration (super, aspects,
+fragments, grenade, melee, class ability, movement, transcendence) through the
+CLI and MCP, using the profile components already requested (205 equipment,
+305 item sockets).
+
+Out of scope: unlocked/available subclass options (plug sets, components
+105/206), seasonal artifact, in-game loadouts. Those are follow-up WUs.
+
+## Decisions
+
+- Subclass item = equipped instance with bucket hash `3284755031`.
+- Subclass plugs are classified by `plugCategoryIdentifier`, never by localized
+  names. Pattern `<hunter|titan|warlock|shared>.<element>.<kind>` with kinds:
+  `supers`, `aspects`/`totems` (Stasis), `fragments`/`trinkets` (Stasis),
+  `grenades`/`prism_grenade`, `melee`, `class_abilities`, `movement`,
+  `transcendence`. Also bare `shared.fragments`.
+- No migration: grouping uses the plug kind; socket order is kept through the
+  existing `item_plugs.ordinal`.
+- "Empty ... Socket" plugs are reported as empty slots, not as options.
+
+## Constraints and acceptance
+
+- Subclass plugs survive sync (`retain_searchable_plugs`) and persist.
+- Existing weapon/armor plug behavior unchanged.
+- CLI and MCP outputs match (parity test).
+- Test-first for classifier, sync retention, query, and output.
+
+## Tasks
+
+- [x] **SUB-001 — Classify and retain subclass plugs.** `SubclassPlugKind`, `classify_subclass_plug`, `PlugKind::Subclass`; RED→GREEN observed; workspace tests 1111 passed, clippy clean. Commit `1a9f2b5`.
+- [ ] **SUB-002 — Subclass query.** App query returning per-character subclass config + repository lookup + in-memory twin.
+- [ ] **SUB-003 — CLI command.** `subclass` command with text and JSON output.
+- [ ] **SUB-004 — MCP tool and docs.** MCP tool, CLI/MCP parity test, README.
+
+## Progress
+
+- Branch `feature/subclass-config` created.
+
+## Next step
+
+SUB-002.
