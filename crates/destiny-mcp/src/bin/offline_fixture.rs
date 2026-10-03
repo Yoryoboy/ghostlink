@@ -614,6 +614,7 @@ fn membership() -> DestinyMembership {
 fn snapshot_input(characters: &[Character], items: &[ItemInstance]) -> InventorySnapshotInput {
     let membership = membership();
     InventorySnapshotInput {
+        plug_set_entries: Vec::new(),
         membership_id: membership.membership_id().clone(),
         membership_type: membership.membership_type(),
         definition_version: DefinitionVersion::new(DEFINITION_VERSION),

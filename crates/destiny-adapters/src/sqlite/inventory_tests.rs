@@ -176,6 +176,220 @@ fn plug_storage_rejects_invalid_hash_disabled_and_overflow() {
     }
 }
 
+fn option(scope: destiny_core::PlugSetScope, hash: i64) -> destiny_core::PlugSetEntry {
+    destiny_core::PlugSetEntry {
+        scope,
+        plug_hash: ItemHash::new(hash),
+        can_insert: true,
+        enabled: false,
+    }
+}
+
+#[test]
+fn subclass_options_roundtrip_revision_and_atomic_replace() {
+    use destiny_core::PlugSetScope;
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut input = full_input();
+    input.characters[0].id = "1".into();
+    input.items.iter_mut().for_each(|item| {
+        if matches!(item.location, ItemLocation::Character(ref id) if id.as_str() == "character-1")
+        {
+            item.location = ItemLocation::Character("1".into());
+        }
+    });
+    input.plug_set_entries = vec![
+        option(PlugSetScope::Character("1".into()), 42),
+        option(PlugSetScope::Profile, 42),
+    ];
+    let first = store.replace_current(input.clone()).unwrap();
+    assert_eq!(store.load_current().unwrap().unwrap(), first);
+    input.plug_set_entries.reverse();
+    assert_eq!(
+        store
+            .replace_current(input.clone())
+            .unwrap()
+            .metadata
+            .revision,
+        first.metadata.revision
+    );
+    input.plug_set_entries[0].enabled = true;
+    let changed = store.replace_current(input.clone()).unwrap();
+    assert_eq!(
+        changed.metadata.revision.value(),
+        first.metadata.revision.value() + 1
+    );
+    store.connection().execute_batch("CREATE TRIGGER reject_options BEFORE INSERT ON subclass_plug_options BEGIN SELECT RAISE(ABORT, 'test'); END;").unwrap();
+    input.plug_set_entries.pop();
+    input.items.clear();
+    input.checked_at = Timestamp::new(300);
+    assert_eq!(
+        store.replace_current(input).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(store.load_current().unwrap().unwrap(), changed);
+    store
+        .connection()
+        .execute_batch("DROP TRIGGER reject_options;")
+        .unwrap();
+    let empty = store.replace_current(full_input()).unwrap();
+    assert!(empty.plug_set_entries.is_empty());
+    assert_eq!(store.load_current().unwrap().unwrap(), empty);
+}
+
+#[test]
+fn sync_publishes_only_named_known_subclass_options() {
+    use destiny_app::{ProfileSyncService, test_support::QueuedProfileGateway};
+    use destiny_core::{DestinyMembership, FreshnessPolicy, PlugSetScope, ProfileSyncReason};
+    let mut input = full_input();
+    input.membership_id = MembershipId::new("123");
+    input.membership_type = MembershipType::new(3);
+    input.plug_set_entries = (60..65)
+        .map(|hash| option(PlugSetScope::Profile, hash))
+        .collect();
+    let membership =
+        DestinyMembership::new(input.membership_type, input.membership_id.clone()).unwrap();
+    let mut gateway = QueuedProfileGateway::new();
+    gateway.queue_membership(Ok(membership));
+    gateway.queue_inventory(Ok(input));
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let definitions = [
+        (60, "hunter.arc.supers", "Arc Staff"),
+        (61, "shader", "Cosmetic"),
+        (62, "hunter.arc.supers", "Empty Super Socket"),
+        (63, "frames", "Other"),
+    ]
+    .into_iter()
+    .map(|(hash, category, name)| ItemDefinition {
+        hash: ItemHash::new(hash),
+        bucket_hash: None,
+        name: name.into(),
+        item_type: None,
+        tier: None,
+        element: None,
+        slot: None,
+        class_type: None,
+        plug_category: Some(category.into()),
+        tags: vec![],
+        version: DefinitionVersion::new("v1"),
+    })
+    .collect();
+    store
+        .replace_definitions(DefinitionReplacementInput {
+            definitions: ManifestDefinitions {
+                version: DefinitionVersion::new("v1"),
+                definitions,
+            },
+            checked_at: Timestamp::new(200),
+            source: SourceMarker::Manifest,
+        })
+        .unwrap();
+    let mut service = ProfileSyncService::new_with_definitions(gateway, store);
+    service
+        .sync(
+            ProfileSyncReason::Forced,
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(200),
+        )
+        .unwrap();
+    assert_eq!(
+        service
+            .repository()
+            .load_current()
+            .unwrap()
+            .unwrap()
+            .plug_set_entries,
+        vec![option(PlugSetScope::Profile, 60)]
+    );
+}
+
+#[test]
+fn subclass_options_validate_storage_and_match_in_memory_twin() {
+    use destiny_app::test_support::InMemoryInventoryRepository;
+    use destiny_core::PlugSetScope;
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut twin = InMemoryInventoryRepository::new();
+    let mut input = full_input();
+    input.plug_set_entries = vec![
+        option(PlugSetScope::Profile, 42),
+        option(PlugSetScope::Profile, 0),
+    ];
+    let seed = store.replace_current(input.clone()).unwrap();
+    assert_eq!(twin.replace_current(input.clone()).unwrap(), seed);
+    input.plug_set_entries.reverse();
+    input.plug_set_entries[0].can_insert = false;
+    input.plug_set_entries[0].enabled = true;
+    assert_eq!(
+        store.replace_current(input.clone()).unwrap(),
+        twin.replace_current(input.clone()).unwrap()
+    );
+    let prior = store.load_current().unwrap().unwrap();
+    for entries in [
+        vec![option(PlugSetScope::Profile, -1)],
+        vec![option(PlugSetScope::Profile, i64::from(u32::MAX) + 1)],
+        vec![option(PlugSetScope::Character("01".into()), 42)],
+        vec![option(PlugSetScope::Character("123".into()), 42)],
+        vec![option(PlugSetScope::Profile, 42); 2],
+    ] {
+        input.plug_set_entries = entries;
+        assert_eq!(
+            store.replace_current(input.clone()).unwrap_err().category(),
+            ErrorCategory::ProviderValidation
+        );
+        assert!(twin.replace_current(input.clone()).is_err());
+        assert_eq!(store.load_current().unwrap().unwrap(), prior);
+    }
+    for sql in [
+        "INSERT INTO subclass_plug_options VALUES ('01', 1, 1, 1)",
+        "INSERT INTO subclass_plug_options VALUES ('profile', -1, 1, 1)",
+        "INSERT INTO subclass_plug_options VALUES ('profile', 1, 2, 1)",
+        "INSERT INTO subclass_plug_options VALUES ('profile', 1, 1, -1)",
+    ] {
+        assert!(store.connection().execute(sql, []).is_err());
+    }
+    store
+        .connection()
+        .execute(
+            "INSERT INTO subclass_plug_options VALUES ('123', 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        store.load_current().unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    let orphaned = SqliteStore::open_in_memory().unwrap();
+    orphaned
+        .connection()
+        .execute(
+            "INSERT INTO subclass_plug_options VALUES ('profile', 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        orphaned.load_current().unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+}
+
+#[test]
+fn migration_v12_preserves_v11_inventory() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(11).unwrap();
+    // Seed using SQL: the v11 schema predates subclass options.
+    store
+        .connection()
+        .execute("INSERT INTO active_profile VALUES (1, '123', '3')", [])
+        .unwrap();
+    store.connection().execute("INSERT INTO sync_metadata (dataset, checked_at, source, revision, definition_version) VALUES ('profile_inventory', '200', 'profile', '1', 'v1')", []).unwrap();
+    store.connection().execute("INSERT INTO characters (character_id, name, class_name, race, gender, light) VALUES ('1', 'Nova', 'Warlock', NULL, NULL, 1800)", []).unwrap();
+    store
+        .migrate_to(12)
+        .expect("upgrade to subclass option schema");
+    let snapshot = store.load_current().unwrap().unwrap();
+    assert_eq!(snapshot.characters[0].name.as_deref(), Some("Nova"));
+    assert_eq!(snapshot.metadata.revision.value(), 1);
+}
+
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
 
 /// A private temporary database path plus cleanup of its SQLite sidecars.
@@ -218,6 +432,7 @@ fn storage_error() -> AppError {
 /// bounds, and an empty list.
 fn full_input() -> InventorySnapshotInput {
     InventorySnapshotInput {
+        plug_set_entries: Vec::new(),
         membership_id: MembershipId::new("membership-1"),
         membership_type: MembershipType::new(u32::MAX),
         definition_version: DefinitionVersion::new("definitions-v1"),
@@ -487,7 +702,7 @@ fn stats_migration_constraints_cascade_and_corruption_checks() {
             .prepare("SELECT * FROM item_stats")
             .is_err()
     );
-    store.migrate_to(10).unwrap();
+    store.migrate_to(super::LATEST_SCHEMA_VERSION).unwrap();
     assert!(
         store
             .load_current()

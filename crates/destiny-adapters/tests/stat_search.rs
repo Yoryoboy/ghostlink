@@ -175,6 +175,7 @@ fn seeded(stats: Vec<StatDefinition>) -> (SqliteStore, InMemorySearchRepository)
     fake.set_instances(instances.clone());
     store
         .replace_current(InventorySnapshotInput {
+            plug_set_entries: Vec::new(),
             membership_id: MembershipId::new("123"),
             membership_type: MembershipType::new(3),
             definition_version: DefinitionVersion::new("v1"),

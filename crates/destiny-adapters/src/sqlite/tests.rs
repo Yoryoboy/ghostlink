@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 17] = [
+const EXPECTED_TABLE_NAMES: [&str; 18] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -27,6 +27,7 @@ const EXPECTED_TABLE_NAMES: [&str; 17] = [
     "milestone_definitions",
     "objective_definitions",
     "stat_definitions",
+    "subclass_plug_options",
     "sync_metadata",
 ];
 
@@ -36,7 +37,11 @@ const EXPECTED_INDEX_NAMES: [&str; 2] = ["items_definition_hash_idx", "items_loc
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 81] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 85] = [
+    ("subclass_plug_options", "scope", "TEXT"),
+    ("subclass_plug_options", "plug_hash", "INTEGER"),
+    ("subclass_plug_options", "can_insert", "INTEGER"),
+    ("subclass_plug_options", "enabled", "INTEGER"),
     ("loadout_name_definitions", "hash", "INTEGER"),
     ("loadout_name_definitions", "name", "TEXT"),
     ("loadout_name_definitions", "definition_version", "TEXT"),
@@ -371,7 +376,7 @@ fn reject_membership_type(store: &SqliteStore, value: &str) {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 11);
+    assert_eq!(LATEST_SCHEMA_VERSION, 12);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION
@@ -580,7 +585,7 @@ fn v2_down_drops_only_item_perks_then_reapply_up_preserves_v1_rows() {
 
     // The entire v1 -> v2 -> v1 -> v2 cycle stays durable across a reopen.
     let store = SqliteStore::open(temp.path()).expect("reopen after the cycle");
-    assert_eq!(store.schema_version().expect("read schema version"), 11);
+    assert_eq!(store.schema_version().expect("read schema version"), 12);
     assert_eq!(row_count(&store, "items"), 1);
     assert_eq!(row_count(&store, "item_perks"), 0);
 }

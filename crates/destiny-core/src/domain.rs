@@ -650,8 +650,25 @@ impl SyncMetadata {
     }
 }
 
+/// Scope of a provider plug-set option; flags are independent per scope.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum PlugSetScope {
+    Profile,
+    Character(CharacterId),
+}
+
+/// One normalized option, deduplicated across plug sets within its scope.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct PlugSetEntry {
+    pub scope: PlugSetScope,
+    pub plug_hash: ItemHash,
+    pub can_insert: bool,
+    pub enabled: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySnapshot {
+    pub plug_set_entries: Vec<PlugSetEntry>,
     pub metadata: SnapshotMetadata,
     pub characters: Vec<Character>,
     pub items: Vec<ItemInstance>,
@@ -708,6 +725,7 @@ mod tests {
     #[test]
     fn snapshot_records_are_normalized_and_provider_neutral() {
         let snapshot = InventorySnapshot {
+            plug_set_entries: Vec::new(),
             metadata: SnapshotMetadata {
                 membership_id: MembershipId::new("membership"),
                 membership_type: MembershipType::new(3),

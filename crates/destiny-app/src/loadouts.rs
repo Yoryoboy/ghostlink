@@ -427,6 +427,7 @@ mod tests {
             })
             .collect();
         let input = InventorySnapshotInput {
+            plug_set_entries: Vec::new(),
             membership_type: MembershipType::new(3),
             membership_id: MembershipId::new("999"),
             checked_at: NOW,

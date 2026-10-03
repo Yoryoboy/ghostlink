@@ -554,6 +554,7 @@ mod tests {
 
     fn snapshot(items: Vec<ItemInstance>) -> InventorySnapshotInput {
         InventorySnapshotInput {
+            plug_set_entries: Vec::new(),
             membership_id: MembershipId::new("membership"),
             membership_type: MembershipType::new(3),
             definition_version: DefinitionVersion::new(MANIFEST_VERSION),

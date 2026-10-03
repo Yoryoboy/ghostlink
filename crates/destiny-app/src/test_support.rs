@@ -528,6 +528,7 @@ impl InMemoryInventoryRepository {
         mut input: InventorySnapshotInput,
         revision: SyncRevision,
     ) -> Self {
+        input.plug_set_entries.sort();
         input
             .characters
             .sort_by(|left, right| left.id.cmp(&right.id));
@@ -545,6 +546,7 @@ impl InMemoryInventoryRepository {
             },
             characters: input.characters.clone(),
             items: input.items.clone(),
+            plug_set_entries: input.plug_set_entries.clone(),
         };
         Self {
             current: Some(snapshot),
@@ -589,6 +591,7 @@ impl InventoryRepository for InMemoryInventoryRepository {
         for item in &mut input.items {
             item.stats.sort_by_key(|stat| stat.stat_hash);
         }
+        input.plug_set_entries.sort();
         let revision = match (self.current.as_ref(), self.previous_input.as_ref()) {
             (Some(current), Some(previous)) if previous.content_eq(&input) => {
                 current.metadata.revision
@@ -614,6 +617,7 @@ impl InventoryRepository for InMemoryInventoryRepository {
             },
             characters: input.characters,
             items: input.items,
+            plug_set_entries: input.plug_set_entries,
         };
         self.current = Some(snapshot.clone());
         self.previous_input = Some(InventorySnapshotInput::with_metadata(&snapshot));
@@ -1147,6 +1151,7 @@ mod tests {
 
     fn input(quantity: u32) -> InventorySnapshotInput {
         InventorySnapshotInput {
+            plug_set_entries: Vec::new(),
             membership_id: MembershipId::new("membership"),
             membership_type: MembershipType::new(1),
             definition_version: DefinitionVersion::new("definitions-v1"),
@@ -1171,6 +1176,7 @@ mod tests {
 
     fn multi_input() -> InventorySnapshotInput {
         InventorySnapshotInput {
+            plug_set_entries: Vec::new(),
             membership_id: MembershipId::new("membership"),
             membership_type: MembershipType::new(1),
             definition_version: DefinitionVersion::new("definitions-v1"),
@@ -2663,6 +2669,7 @@ mod tests {
     #[test]
     fn search_repository_seeds_from_a_committed_snapshot() {
         let snapshot = InventorySnapshot {
+            plug_set_entries: Vec::new(),
             metadata: SnapshotMetadata {
                 membership_id: MembershipId::new("membership"),
                 membership_type: MembershipType::new(1),

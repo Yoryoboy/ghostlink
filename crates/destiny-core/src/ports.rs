@@ -108,6 +108,7 @@ pub trait PlanIdGenerator {
 /// change.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySnapshotInput {
+    pub plug_set_entries: Vec<crate::domain::PlugSetEntry>,
     pub membership_id: MembershipId,
     pub membership_type: MembershipType,
     pub definition_version: DefinitionVersion,
@@ -127,6 +128,7 @@ impl InventorySnapshotInput {
             source: snapshot.metadata.source,
             characters: snapshot.characters.clone(),
             items: snapshot.items.clone(),
+            plug_set_entries: snapshot.plug_set_entries.clone(),
         }
     }
 
@@ -146,6 +148,8 @@ impl InventorySnapshotInput {
     /// identity: a reordered perk list is a content change, while a pure
     /// permutation of the *items* themselves is not. Stat values participate in
     /// identity, but stat order does not: both sides are sorted by stat hash.
+    /// Plug-set entries are unordered, keyed by scope and hash; both flags
+    /// participate in content identity independently.
     ///
     /// [`PerkSummary`]: crate::domain::PerkSummary
     pub fn content_eq(&self, other: &Self) -> bool {
@@ -173,7 +177,11 @@ impl InventorySnapshotInput {
         }
         left_items.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
         right_items.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
-        left_items == right_items
+        let mut left_options = self.plug_set_entries.clone();
+        let mut right_options = other.plug_set_entries.clone();
+        left_options.sort();
+        right_options.sort();
+        left_items == right_items && left_options == right_options
     }
 
     /// Reports whether the character and item collections form a complete,
@@ -192,11 +200,36 @@ impl InventorySnapshotInput {
     /// order are structurally valid, and they are left to revision identity and
     /// the durable repository's own storage constraints. Stats have unique hashes
     /// and at most 64 entries per item; incoming order need not be canonical.
+    /// Plug-set entries must have unique scoped u32 hashes, and character scopes
+    /// must be canonical decimal identifiers referencing this projection.
     pub fn is_structurally_valid(&self) -> bool {
         let mut character_ids = HashSet::with_capacity(self.characters.len());
         for character in &self.characters {
             if !character_ids.insert(character.id.clone()) {
                 return false;
+            }
+        }
+
+        let mut option_keys = HashSet::new();
+        if self.plug_set_entries.len() > 4096 * 512 {
+            return false;
+        }
+        for entry in &self.plug_set_entries {
+            if u32::try_from(entry.plug_hash.value()).is_err()
+                || !option_keys.insert((&entry.scope, entry.plug_hash))
+            {
+                return false;
+            }
+            if let crate::domain::PlugSetScope::Character(id) = &entry.scope {
+                let text = id.as_str();
+                if !character_ids.contains(id)
+                    || text.is_empty()
+                    || text.len() > 128
+                    || !text.bytes().all(|byte| byte.is_ascii_digit())
+                    || (text.len() > 1 && text.starts_with('0'))
+                {
+                    return false;
+                }
             }
         }
 
