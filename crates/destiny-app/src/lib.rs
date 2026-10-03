@@ -1,5 +1,11 @@
 //! Application-facing configuration, services, and sanitized diagnostics.
 
+pub mod loadouts;
+pub use destiny_core::{LoadoutGateway, LoadoutSnapshot};
+pub use loadouts::{
+    CharacterLoadoutsView, LoadoutItemView, LoadoutOperations, LoadoutPlugView, LoadoutService,
+    LoadoutView, LoadoutsResult,
+};
 pub mod artifact;
 pub use artifact::{
     ArtifactOperations, ArtifactPoints, ArtifactResult, ArtifactService, ArtifactSlot,

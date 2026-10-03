@@ -376,6 +376,15 @@ impl<G: destiny_app::ArtifactGateway> destiny_app::ArtifactGateway for SharedGat
     }
 }
 
+impl<G: destiny_app::LoadoutGateway> destiny_app::LoadoutGateway for SharedGateway<G> {
+    fn load_loadouts(
+        &mut self,
+        membership: &DestinyMembership,
+    ) -> Result<destiny_app::LoadoutSnapshot, AppError> {
+        self.lock()?.load_loadouts(membership)
+    }
+}
+
 impl<G: ProfileGateway> ProfileGateway for SharedGateway<G> {
     fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
         self.lock()?.resolve_membership()

@@ -430,6 +430,22 @@ pub fn compose_artifact<F: ReadFoundations>(
         .map_err(CliError::from)
 }
 
+/// Composes the live loadout query over the authenticated, synchronized projection.
+pub fn compose_loadouts<F>(
+    foundations: &mut F,
+    selector: Option<&destiny_app::CharacterId>,
+) -> Result<destiny_app::LoadoutsResult, CliError>
+where
+    F: ReadFoundations,
+    F::Repository: destiny_app::WorldDefinitionRepository,
+{
+    let config = foundations.config()?;
+    let runtime = compose_configured(foundations, &config)?;
+    destiny_app::LoadoutService::new(runtime.service.into_sync())
+        .loadouts(selector, runtime.freshness.policy, runtime.freshness.now)
+        .map_err(CliError::from)
+}
+
 /// Reuses authenticated read composition, including its configured refresh source.
 /// Definitions gate precedes even membership/inventory requests.
 pub fn compose_weekly<F, T>(
