@@ -179,6 +179,30 @@ ghostlink sync-manifest          # or: ghostlink --json sync-manifest
   `definitions not loaded; run ghostlink sync-manifest` (CLI and MCP) instead
   of returning an empty result.
 
+### Filter owned items by stats (`--stat`)
+
+```sh
+ghostlink search-inventory --slot helmet --stat "Weapons>=30"
+ghostlink search-inventory --slot helmet --class hunter --stat "Weapons>=30" --stat "Health>=20"
+ghostlink --json search-inventory --stat "Class<=35" --stat "Super=0"
+```
+
+Repeat `--stat "<Name><op><N>"` up to eight times; every condition must hold.
+Operators are `>=` (at least), `<=` (at most), and `=` (equals), with signed
+integer values. Names match exactly, case-insensitively, with whitespace
+normalized. Quote comparisons to protect them from shell redirection. A stat
+filter alone searches owned items; an item missing that stat does not match.
+Names come from the Manifest, and an unknown name is an input error. If stat
+definitions are not loaded, run `ghostlink sync-manifest`.
+
+Stat names are **not unique**: Class and Melee can each refer to multiple
+hashes. Any matching hash may satisfy each condition. Hits show named stats
+in stable name-then-hash order (unnamed stats are omitted), as `stats: Class
+35, Health 20, ...` in text and a `stats` array of `{name, value}` in JSON.
+MCP `search_inventory` accepts the same comparisons in its `stats` array.
+Stats appear after the next profile sync (the next stale inventory read
+refreshes the stored profile projection).
+
 ### Weekly reset
 
 ```sh

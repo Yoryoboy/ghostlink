@@ -445,6 +445,18 @@ impl SearchRepository for SharedRepository {
     }
 }
 
+impl destiny_app::StatDefinitionRepository for SharedRepository {
+    fn lookup_stat(&self, hash: u32) -> Result<Option<destiny_app::StatDefinition>, AppError> {
+        self.lock()?.lookup_stat(hash)
+    }
+    fn stat_hashes_by_name(&self, name: &str) -> Result<Vec<u32>, AppError> {
+        self.lock()?.stat_hashes_by_name(name)
+    }
+    fn stat_definition_count(&self) -> Result<usize, AppError> {
+        self.lock()?.stat_definition_count()
+    }
+}
+
 impl DefinitionRepository for SharedRepository {
     fn current_definition_version(&self) -> Result<DefinitionVersion, AppError> {
         self.lock()?.current_definition_version()

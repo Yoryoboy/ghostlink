@@ -447,6 +447,7 @@ fn instance_query(
         perk_hash: perk_hash.map(PerkHash::new),
         perk_name: None,
         mod_name: None,
+        stats: Vec::new(),
         character_id: character.map(CharacterId::new),
         definitions: None,
         min_power: None,

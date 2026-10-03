@@ -160,6 +160,14 @@ impl SearchRepository for SqliteStore {
         // Never truncate SQL candidates before shared definition/power matching.
         sql.push_str(" ORDER BY instance_id");
 
+        let stat_definitions = if query.stats.is_empty() {
+            Vec::new()
+        } else {
+            super::world::read_stats(self.connection())?
+                .into_iter()
+                .map(|(definition, _)| definition)
+                .collect()
+        };
         let mut instances = Vec::new();
         // Resolve each distinct plug hash at most once across candidate rows.
         // Rust applies the Unicode-aware exact match before truncation.
@@ -209,7 +217,8 @@ impl SearchRepository for SqliteStore {
                         }
                     }
                 }
-                if instance_matches_with_definition(query, &instance, definition.as_ref())
+                if destiny_core::query::instance_matches_stats(query, &instance, &stat_definitions)
+                    && instance_matches_with_definition(query, &instance, definition.as_ref())
                     && destiny_core::query::instance_matches_plug_names(query, &plugs)
                 {
                     instances.push(instance);
@@ -527,6 +536,7 @@ mod tests {
             perk_hash: perk_hash.map(PerkHash::new),
             perk_name: None,
             mod_name: None,
+            stats: Vec::new(),
             character_id: character.map(CharacterId::new),
             definitions: None,
             min_power: None,

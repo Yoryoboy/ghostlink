@@ -199,7 +199,10 @@ where
     G: destiny_app::WeeklyProfileGateway,
     R: destiny_app::WorldDefinitionRepository,
     Q: ProfileGateway,
-    S: InventoryRepository + DefinitionRepository + SearchRepository,
+    S: InventoryRepository
+        + DefinitionRepository
+        + SearchRepository
+        + destiny_app::StatDefinitionRepository,
     C: Clock,
 {
     fn weekly(
@@ -409,7 +412,10 @@ impl<G, R, C> QueryReadService<G, R, C> {
 impl<G, R, C> InventoryReadService for QueryReadService<G, R, C>
 where
     G: ProfileGateway,
-    R: InventoryRepository + SearchRepository + DefinitionRepository,
+    R: InventoryRepository
+        + SearchRepository
+        + DefinitionRepository
+        + destiny_app::StatDefinitionRepository,
     C: Clock,
 {
     fn list_characters(
@@ -678,8 +684,18 @@ impl SearchInventoryArgs {
             .map(SearchTerm::new)
             .transpose()
             .map_err(McpError::from)?;
+        let stats = self
+            .stats
+            .iter()
+            .map(|value| value.parse::<destiny_app::StatCondition>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(McpError::from)?;
+        if stats.len() > destiny_app::MAX_STAT_CONDITIONS {
+            return Err(invalid_arguments());
+        }
         if instances.is_none()
-            && (definitions.has_filters()
+            && (!stats.is_empty()
+                || definitions.has_filters()
                 || self.min_power.is_some()
                 || perk_name.is_some()
                 || mod_name.is_some())
@@ -699,6 +715,8 @@ impl SearchInventoryArgs {
             query.min_power = query.min_power.max(self.min_power);
             query.perk_name = perk_name;
             query.mod_name = mod_name;
+            query.stats = stats;
+            query.validate().map_err(McpError::from)?;
         }
 
         Ok(SearchInventoryRequest {
@@ -733,6 +751,7 @@ impl InstanceQueryArgs {
             perk_hash: self.perk_hash.map(PerkHash::new),
             perk_name: None,
             mod_name: None,
+            stats: Vec::new(),
             character_id: self.character_id.map(CharacterId::new),
             definitions: None,
             min_power: self.min_power,
@@ -821,6 +840,14 @@ pub fn search_inventory_output(result: &InventorySearchResult) -> SearchInventor
                 instance: instance_view(&hit.instance),
                 perk_names: hit.perk_names.clone(),
                 mods: hit.mod_names.clone(),
+                stats: hit
+                    .stats
+                    .iter()
+                    .map(|stat| crate::schema::NamedStatView {
+                        name: stat.name.clone(),
+                        value: stat.value,
+                    })
+                    .collect(),
             })
             .collect(),
         metadata: metadata_view(&result.metadata),
@@ -1191,6 +1218,18 @@ mod tests {
         }
     }
 
+    impl destiny_app::StatDefinitionRepository for CompositeRepository {
+        fn lookup_stat(&self, hash: u32) -> Result<Option<destiny_app::StatDefinition>, AppError> {
+            self.definitions.lookup_stat(hash)
+        }
+        fn stat_hashes_by_name(&self, name: &str) -> Result<Vec<u32>, AppError> {
+            self.definitions.stat_hashes_by_name(name)
+        }
+        fn stat_definition_count(&self) -> Result<usize, AppError> {
+            self.definitions.stat_definition_count()
+        }
+    }
+
     impl DefinitionRepository for CompositeRepository {
         fn current_definition_version(&self) -> Result<DefinitionVersion, AppError> {
             self.definitions.current_definition_version()
@@ -1428,6 +1467,7 @@ mod tests {
     ) -> SearchInventoryArgs {
         SearchInventoryArgs {
             text: text.map(str::to_owned),
+            stats: Vec::new(),
             perk_name: None,
             mod_name: None,
             item_type: None,
@@ -1449,6 +1489,7 @@ mod tests {
 
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            stats: Vec::new(),
             perk_name: None,
             mod_name: None,
             element: None,
@@ -1653,6 +1694,7 @@ mod tests {
         ];
         let args = SearchInventoryArgs {
             text: Some("gjallar".into()),
+            stats: Vec::new(),
             perk_name: None,
             mod_name: None,
             item_type: None,
@@ -1877,6 +1919,7 @@ mod tests {
             }),
             perk_name: None,
             mod_name: None,
+            stats: Vec::new(),
         };
         let output = mcp
             .search_inventory(&args.into_request().expect("valid arguments"))
@@ -1920,6 +1963,7 @@ mod tests {
             }),
             perk_name: None,
             mod_name: None,
+            stats: Vec::new(),
         };
         let request = args.into_request().expect("valid arguments");
 

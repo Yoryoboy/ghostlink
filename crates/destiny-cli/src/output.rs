@@ -394,6 +394,7 @@ fn search_json(result: &InventorySearchResult) -> String {
                 "instance": instance_json(&hit.instance),
                 "perk_names": hit.perk_names,
                 "mods": hit.mod_names,
+                "stats": hit.stats.iter().map(|stat| serde_json::json!({"name": stat.name, "value": stat.value})).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>(),
         "kind": "inventory_search",
@@ -512,6 +513,16 @@ fn instance_line(hit: &InventorySearchHit) -> String {
             hit.mod_names
                 .iter()
                 .map(|name| sanitize(name))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !hit.stats.is_empty() {
+        parts.push(format!(
+            "stats: {}",
+            hit.stats
+                .iter()
+                .map(|stat| format!("{} {}", sanitize(&stat.name), stat.value))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -1078,6 +1089,7 @@ mod tests {
                 instance: instance("inst-1", 1, ItemLocation::Vault),
                 perk_names: Vec::new(),
                 mod_names: Vec::new(),
+                stats: Vec::new(),
             }],
             metadata: metadata(FreshnessStatus::Fresh),
         }
@@ -1318,7 +1330,7 @@ mod tests {
     #[test]
     fn search_renders_one_bounded_json_object() {
         let expected = format!(
-            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON}}}"#
+            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON}}}"#
         );
         assert_eq!(render_search(OutputMode::Json, &search_result()), expected);
     }

@@ -614,6 +614,7 @@ impl InventoryRepository for InMemoryInventoryRepository {
 /// tests exercise definition-versus-instance behavior without a database.
 #[derive(Clone, Debug, Default)]
 pub struct InMemorySearchRepository {
+    stat_definitions: Vec<destiny_core::StatDefinition>,
     definitions: Vec<ItemDefinition>,
     instances: Vec<ItemInstance>,
 }
@@ -628,6 +629,7 @@ impl InMemorySearchRepository {
     pub fn with_definitions(definitions: Vec<ItemDefinition>) -> Self {
         Self {
             definitions,
+            stat_definitions: Vec::new(),
             instances: Vec::new(),
         }
     }
@@ -636,8 +638,13 @@ impl InMemorySearchRepository {
     pub fn with_projection(definitions: Vec<ItemDefinition>, snapshot: &InventorySnapshot) -> Self {
         Self {
             definitions,
+            stat_definitions: Vec::new(),
             instances: snapshot.items.clone(),
         }
+    }
+
+    pub fn set_stat_definitions(&mut self, definitions: Vec<destiny_core::StatDefinition>) {
+        self.stat_definitions = definitions;
     }
 
     /// Replaces every visible definition, as a completed Manifest publication would.
@@ -712,6 +719,11 @@ impl SearchRepository for InMemorySearchRepository {
                     .collect();
                 destiny_core::query::instance_matches_with_definition(query, instance, unique)
                     && destiny_core::query::instance_matches_plug_names(query, &plugs)
+                    && destiny_core::query::instance_matches_stats(
+                        query,
+                        instance,
+                        &self.stat_definitions,
+                    )
             })
             .cloned()
             .collect();
@@ -1272,6 +1284,7 @@ mod tests {
             perk_hash: perk_hash.map(PerkHash::new),
             perk_name: None,
             mod_name: None,
+            stats: Vec::new(),
             character_id: character.map(CharacterId::new),
             definitions: None,
             min_power: None,

@@ -4,7 +4,9 @@ use destiny_core::ports::WorldDefinitionRepository;
 use destiny_core::*;
 use rusqlite::{Connection, OptionalExtension, params};
 
-fn read_stats(connection: &Connection) -> Result<Vec<(StatDefinition, String)>, AppError> {
+pub(super) fn read_stats(
+    connection: &Connection,
+) -> Result<Vec<(StatDefinition, String)>, AppError> {
     let mut statement = connection
         .prepare("SELECT hash, name, definition_version FROM stat_definitions ORDER BY hash")
         .map_err(|_| storage_failure())?;

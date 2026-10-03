@@ -17,6 +17,7 @@ pub enum ErrorCategory {
     ProviderUnavailable,
     ProviderValidation,
     DefinitionsUnavailable,
+    UnknownStatName,
     StaleState,
     AmbiguousMatch,
     UnsupportedOperation,
@@ -88,6 +89,9 @@ impl fmt::Display for AppError {
             ErrorCategory::ProviderValidation => "the provider rejected the request",
             ErrorCategory::DefinitionsUnavailable => {
                 "definitions not loaded; run ghostlink sync-manifest"
+            }
+            ErrorCategory::UnknownStatName => {
+                "unknown stat name; use a name from the loaded Manifest stat definitions"
             }
             ErrorCategory::StaleState => "local state is stale",
             ErrorCategory::AmbiguousMatch => "the request matched multiple items",

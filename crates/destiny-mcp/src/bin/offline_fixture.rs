@@ -505,6 +505,18 @@ impl SearchRepository for FixtureRepository {
     }
 }
 
+impl destiny_app::StatDefinitionRepository for FixtureRepository {
+    fn lookup_stat(&self, hash: u32) -> Result<Option<destiny_app::StatDefinition>, AppError> {
+        self.definitions.lookup_stat(hash)
+    }
+    fn stat_hashes_by_name(&self, name: &str) -> Result<Vec<u32>, AppError> {
+        self.definitions.stat_hashes_by_name(name)
+    }
+    fn stat_definition_count(&self) -> Result<usize, AppError> {
+        self.definitions.stat_definition_count()
+    }
+}
+
 impl DefinitionRepository for FixtureRepository {
     fn current_definition_version(&self) -> Result<DefinitionVersion, AppError> {
         self.definitions.current_definition_version()

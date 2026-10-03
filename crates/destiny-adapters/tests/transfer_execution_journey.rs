@@ -744,6 +744,7 @@ fn instance_query(item_hashes: ItemHashFilter, limit: usize) -> InstanceSearchQu
         perk_hash: None,
         perk_name: None,
         mod_name: None,
+        stats: Vec::new(),
         character_id: None,
         definitions: None,
         min_power: None,

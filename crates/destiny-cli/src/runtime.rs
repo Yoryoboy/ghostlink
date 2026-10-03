@@ -64,7 +64,10 @@ pub trait ReadFoundations {
     /// The clock the gateway and the freshness input read.
     type Clock: Clock;
     /// The durable repository behind the sync and query services.
-    type Repository: InventoryRepository + SearchRepository + DefinitionRepository;
+    type Repository: InventoryRepository
+        + SearchRepository
+        + DefinitionRepository
+        + destiny_app::StatDefinitionRepository;
 
     /// Reads and validates the shared read runtime configuration.
     fn config(&mut self) -> Result<ReadRuntimeConfig, AppError>;
