@@ -48,6 +48,9 @@ pub const GET_SUBCLASS_TOOL: &str = "get_subclass";
 /// Stable tool name for live seasonal artifact state.
 pub const GET_ARTIFACT_TOOL: &str = "get_artifact";
 
+/// Stable tool name for saved in-game loadouts.
+pub const GET_LOADOUTS_TOOL: &str = "get_loadouts";
+
 /// Stable tool name for the single semantic mutation.
 pub const MOVE_ITEM_TOOL: &str = "move_item";
 
@@ -118,6 +121,13 @@ pub fn tool_specs() -> Vec<Tool> {
         )
         .with_input_schema::<GetArtifactArgs>()
         .with_output_schema::<GetArtifactOutput>(),
+        Tool::new(
+            GET_LOADOUTS_TOOL,
+            "Return saved in-game loadouts per character with names, weapons, armor, subclass configuration and artifact perks. Omit character for all characters, or select an exact id or unique hunter|titan|warlock class. Requires login and loaded Manifest definitions; run sync-manifest once for loadout names. Reads live state.",
+            JsonObject::new(),
+        )
+        .with_input_schema::<GetLoadoutsArgs>()
+        .with_output_schema::<GetLoadoutsOutput>(),
         Tool::new(
             WEEKLY_RESET_TOOL,
             "Read the current week's public rotation without account credentials. Run `ghostlink sync-manifest` first to load the required definitions.",
@@ -546,6 +556,64 @@ pub struct ArtifactSlotView {
 }
 
 impl GetArtifactOutput {
+    pub fn into_call_tool_result(self) -> CallToolResult {
+        structured_result(self)
+    }
+}
+
+/// Optional bounded character selector for saved in-game loadouts.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetLoadoutsArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub character: Option<String>,
+}
+
+/// Full saved loadouts envelope, matching the CLI JSON projection.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename = "loadouts")]
+pub struct GetLoadoutsOutput {
+    pub characters: Vec<CharacterLoadoutsView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct CharacterLoadoutsView {
+    pub character_id: String,
+    pub class: Option<String>,
+    pub loadouts: Vec<LoadoutView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct LoadoutView {
+    pub slot: u8,
+    pub name: Option<String>,
+    pub name_hash: u32,
+    pub color_hash: u32,
+    pub icon_hash: u32,
+    pub items: Vec<LoadoutItemView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct LoadoutItemView {
+    pub instance_id: String,
+    pub item_hash: Option<i64>,
+    pub name: Option<String>,
+    pub item_type: Option<String>,
+    pub bucket_hash: Option<u32>,
+    pub missing: bool,
+    pub plugs: Vec<LoadoutPlugView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct LoadoutPlugView {
+    pub socket_index: u8,
+    pub plug_hash: i64,
+    pub name: Option<String>,
+    pub subclass_kind: Option<SubclassPlugKindView>,
+    pub empty: bool,
+}
+
+impl GetLoadoutsOutput {
     pub fn into_call_tool_result(self) -> CallToolResult {
         structured_result(self)
     }
@@ -1080,6 +1148,7 @@ mod tests {
                 INSPECT_ITEM_TOOL,
                 super::GET_SUBCLASS_TOOL,
                 super::GET_ARTIFACT_TOOL,
+                super::GET_LOADOUTS_TOOL,
                 super::WEEKLY_RESET_TOOL,
                 super::WEEKLY_TOOL
             ]

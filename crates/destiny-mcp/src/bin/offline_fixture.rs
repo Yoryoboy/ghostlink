@@ -179,7 +179,30 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         FakeClock::fixed(NOW),
         TTL,
     );
+    let read_service = destiny_mcp::service::LoadoutsReadService::new(
+        FixtureLoadouts,
+        read_service,
+        FakeClock::fixed(NOW),
+        TTL,
+    );
     ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
+}
+
+struct FixtureLoadouts;
+impl destiny_app::LoadoutOperations for FixtureLoadouts {
+    fn loadouts(
+        &mut self,
+        selector: Option<&destiny_app::CharacterId>,
+        policy: FreshnessPolicy,
+        now: destiny_app::Timestamp,
+    ) -> Result<destiny_app::LoadoutsResult, AppError> {
+        assert_eq!(policy, TTL);
+        assert_eq!(now, NOW);
+        if selector.is_some_and(|id| id.as_str() == "missing") {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(destiny_app::LoadoutsResult { characters: vec![] })
+    }
 }
 
 struct FixtureArtifact;

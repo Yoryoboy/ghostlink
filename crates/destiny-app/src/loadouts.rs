@@ -243,7 +243,8 @@ fn item_group(definition: Option<&destiny_core::ItemDefinition>) -> u8 {
     }
 }
 
-/// Hide only known cosmetic categories and stat trackers, not unknown plugs.
+/// Hide only known cosmetic categories (including kill_vfx combat flair) and
+/// stat trackers, not unknown plugs.
 /// Category identifiers are case-sensitive; the name fallback covers trackers
 /// whose Manifest category does not identify them explicitly.
 fn is_cosmetic_plug(definition: &destiny_core::ItemDefinition) -> bool {
@@ -251,6 +252,7 @@ fn is_cosmetic_plug(definition: &destiny_core::ItemDefinition) -> bool {
         category.starts_with("shader")
             || category.contains("skins")
             || category.contains("ornament")
+            || category.contains("kill_vfx")
             || category == "v400.plugs.weapons.masterworks.trackers"
     }) || definition.name.ends_with("Tracker")
 }
@@ -619,6 +621,21 @@ mod tests {
                 .len(),
             1
         );
+    }
+    #[test]
+    fn combat_flair_is_omitted_without_hiding_gameplay_plugs() {
+        assert!(is_cosmetic_plug(&definition(
+            1,
+            "Default Combat Flair",
+            None,
+            Some("weapon_tiering_kill_vfx")
+        )));
+        assert!(!is_cosmetic_plug(&definition(
+            2,
+            "Damage perk",
+            None,
+            Some("weapon_tiering")
+        )));
     }
     #[test]
     fn cosmetics_are_narrowly_filtered() {

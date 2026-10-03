@@ -50,6 +50,7 @@ const SEARCH_INVENTORY_TOOL: &str = "search_inventory";
 const INSPECT_ITEM_TOOL: &str = "inspect_item";
 const GET_SUBCLASS_TOOL: &str = "get_subclass";
 const GET_ARTIFACT_TOOL: &str = "get_artifact";
+const GET_LOADOUTS_TOOL: &str = "get_loadouts";
 const MOVE_ITEM_TOOL: &str = "move_item";
 const WEEKLY_RESET_TOOL: &str = "weekly_reset";
 
@@ -406,6 +407,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             INSPECT_ITEM_TOOL,
             GET_SUBCLASS_TOOL,
             GET_ARTIFACT_TOOL,
+            GET_LOADOUTS_TOOL,
             WEEKLY_RESET_TOOL,
             "weekly",
             MOVE_ITEM_TOOL
@@ -466,6 +468,32 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             .call_tool(GET_ARTIFACT_TOOL, json!({"character": value}))
             .await;
         assert_eq!(structured(&invalid)["code"], "provider_validation");
+    }
+
+    let loadouts = session.call_tool(GET_LOADOUTS_TOOL, json!({})).await;
+    assert_eq!(loadouts["result"]["isError"], false);
+    assert_eq!(
+        structured(&loadouts),
+        &json!({"kind": "loadouts", "characters": []})
+    );
+    let missing = session
+        .call_tool(GET_LOADOUTS_TOOL, json!({"character": "missing"}))
+        .await;
+    assert_eq!(structured(&missing)["code"], "provider_validation");
+    for value in [
+        "".to_owned(),
+        " ".to_owned(),
+        "a".repeat(513),
+        "bad\u{7}".to_owned(),
+    ] {
+        let invalid = session
+            .call_tool(GET_LOADOUTS_TOOL, json!({"character": value}))
+            .await;
+        assert_eq!(structured(&invalid)["code"], "provider_validation");
+    }
+    for arguments in [json!({"unknown": true}), json!({"character": 1})] {
+        let invalid = session.call_tool(GET_LOADOUTS_TOOL, arguments).await;
+        assert_eq!(invalid["error"]["code"], -32602);
     }
 
     // --- one move_item request completes the whole journey -----------------------
