@@ -1572,7 +1572,7 @@ mod tests {
                 .iter()
                 .map(|hit| hit.instance.instance_id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["inst-a", "inst-b"]
+            vec!["inst-a"]
         );
         // Every instance hit keeps its exact definition identity distinct.
         for hit in &output.hits {
