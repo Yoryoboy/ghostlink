@@ -238,6 +238,18 @@ pub struct SearchInventoryArgs {
     #[arg(long = "type", value_name = "TYPE")]
     pub item_type: Option<String>,
 
+    /// Exact stored tier, matched case-insensitively; unknown names match nothing.
+    #[arg(long, value_name = "NAME")]
+    pub tier: Option<String>,
+
+    /// Instance location: vault or character (combined with --character using AND).
+    #[arg(long, value_name = "LOCATION")]
+    pub location: Option<String>,
+
+    /// Instance equipped state: true or false.
+    #[arg(long, value_name = "BOOL")]
+    pub equipped: Option<String>,
+
     /// Definition tag that must be present; repeat for several tags.
     #[arg(long = "tag", value_name = "TAG")]
     pub tag: Vec<String>,
@@ -257,6 +269,10 @@ pub struct SearchInventoryArgs {
     /// Stat comparison (Name>=N, Name<=N, Name>N, Name<N, Name=N); repeat to require all.
     #[arg(long = "stat", value_name = "COND")]
     pub stat: Vec<String>,
+
+    /// Sort owned hits by stat, descending by default; append :asc for ascending.
+    #[arg(long, value_name = "STAT[:asc|desc]")]
+    pub sort: Option<String>,
 
     /// Minimum instance power; items without power do not match.
     #[arg(long, value_name = "N")]
@@ -287,7 +303,7 @@ pub struct SearchInventoryArgs {
     pub character: Option<String>,
 
     /// Maximum number of definition candidates and instance hits.
-    #[arg(long, value_name = "N", default_value_t = MAX_SEARCH_LIMIT)]
+    #[arg(long, value_name = "N", default_value_t = 100)]
     pub limit: usize,
 }
 
@@ -297,6 +313,7 @@ impl SearchInventoryArgs {
         let definitions = DefinitionSearchQuery {
             text: search_term(self.text.as_deref(), "--text")?,
             item_type: search_term(self.item_type.as_deref(), "--type")?,
+            tier: search_term(self.tier.as_deref(), "--tier")?,
             tags: self
                 .tag
                 .iter()
@@ -338,12 +355,15 @@ impl SearchInventoryArgs {
     ) -> Result<Option<InstanceSearchQuery>, CliError> {
         let no_instance_filter = !self.include_available
             && self.stat.is_empty()
+            && self.sort.is_none()
             && self.item_hash.is_empty()
             && self.perk_hash.is_none()
             && self.perk.is_empty()
             && self.mod_name.is_empty()
             && self.archetype.is_none()
-            && self.character.is_none();
+            && self.character.is_none()
+            && self.location.is_none()
+            && self.equipped.is_none();
         if no_instance_filter && !definitions.has_filters() && self.min_power.is_none() {
             return Ok(None);
         }
@@ -361,6 +381,12 @@ impl SearchInventoryArgs {
             ItemHashFilter::AnyOf(self.item_hash.iter().copied().map(ItemHash::new).collect())
         };
         let query = InstanceSearchQuery {
+            sort: self
+                .sort
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(CliError::query_validation)?,
             include_available: self.include_available,
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
@@ -374,6 +400,21 @@ impl SearchInventoryArgs {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(CliError::query_validation)?,
             character_id,
+            location: self
+                .location
+                .as_deref()
+                .map(str::parse)
+                .transpose()
+                .map_err(CliError::query_validation)?,
+            equipped: self
+                .equipped
+                .as_deref()
+                .map(|value| {
+                    value.parse::<bool>().map_err(|_| {
+                        CliError::invalid_argument("--equipped", "expected true or false")
+                    })
+                })
+                .transpose()?,
             definitions: definitions
                 .has_filters()
                 .then(|| Box::new(definitions.clone())),
@@ -405,6 +446,7 @@ fn validate_filter(value: &str, filter: &str) -> Result<String, String> {
     let mut query = DefinitionSearchQuery {
         text: None,
         item_type: None,
+        tier: None,
         tags: Vec::new(),
         element: None,
         slot: None,
@@ -598,11 +640,13 @@ impl CliError {
     fn query_validation(error: AppError) -> Self {
         let message = error.to_string();
         for (name, flag) in [
+            ("location", "--location"),
             ("limit", "--limit"),
             ("perk", "--perk"),
             ("mod", "--mod"),
             ("tag", "--tag"),
             ("stat", "--stat"),
+            ("sort", "--sort"),
             ("item-hash", "--item-hash"),
         ] {
             if let Some(reason) = message.strip_prefix(&format!("invalid {name}: ")) {
@@ -1080,13 +1124,13 @@ mod tests {
     }
 
     #[test]
-    fn search_defaults_to_the_shared_query_bound() {
+    fn search_defaults_to_100_with_a_higher_query_bound() {
         let request = search_request(
             parse(["search-inventory"])
                 .into_read_request()
                 .expect("an unfiltered search is valid"),
         );
-        assert_eq!(request.definitions.limit, MAX_SEARCH_LIMIT);
+        assert_eq!(request.definitions.limit, 100);
         assert_eq!(request.instances, None);
     }
 
@@ -1263,7 +1307,7 @@ mod tests {
 
         let mut cases: Vec<Vec<&str>> = vec![
             vec!["search-inventory", "--limit", "0"],
-            vec!["search-inventory", "--limit", "101"],
+            vec!["search-inventory", "--limit", "1001"],
             vec!["search-inventory", "--text", "   "],
             vec!["search-inventory", "--type", ""],
             vec!["search-inventory", "--tag", "  "],

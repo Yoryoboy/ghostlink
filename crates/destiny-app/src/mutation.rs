@@ -1163,6 +1163,7 @@ where
                 let definitions = self
                     .repository()
                     .search_definitions(&DefinitionSearchQuery {
+                        tier: None,
                         text: Some(term.clone()),
                         item_type: None,
                         tags: Vec::new(),
@@ -1184,6 +1185,9 @@ where
                 let instances = self
                     .repository()
                     .search_instances(&InstanceSearchQuery {
+                        sort: None,
+                        location: None,
+                        equipped: None,
                         include_available: false,
                         item_hashes: ItemHashFilter::AnyOf(
                             definitions

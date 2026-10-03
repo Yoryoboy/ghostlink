@@ -1101,12 +1101,20 @@ mod tests {
     fn search_invalid_arguments_have_specific_text_and_json_messages() {
         for (arguments, expected) in [
             (
-                vec!["--limit", "0"],
-                "invalid --limit: must be between 1 and 100",
+                vec!["--location", "orbit"],
+                "invalid --location: expected one of vault, character",
             ),
             (
-                vec!["--limit", "101"],
-                "invalid --limit: must be between 1 and 100",
+                vec!["--equipped", "yes"],
+                "invalid --equipped: expected true or false",
+            ),
+            (
+                vec!["--limit", "0"],
+                "invalid --limit: must be between 1 and 1000",
+            ),
+            (
+                vec!["--limit", "1001"],
+                "invalid --limit: must be between 1 and 1000",
             ),
             (
                 vec!["--slot", "banana"],
@@ -1261,7 +1269,7 @@ mod tests {
         assert_eq!(output.exit_code, 2);
         assert_eq!(
             output.stderr,
-            "error: invalid --limit: must be between 1 and 100\n"
+            "error: invalid --limit: must be between 1 and 1000\n"
         );
         assert!(service.recorded().is_empty());
     }
@@ -1296,6 +1304,7 @@ mod tests {
     fn search_dispatches_the_exact_validated_request_once() {
         let expected = SearchInventoryRequest {
             definitions: destiny_app::DefinitionSearchQuery {
+                tier: None,
                 text: Some(destiny_app::SearchTerm::new("gjallar").unwrap()),
                 item_type: None,
                 tags: Vec::new(),
@@ -1305,6 +1314,9 @@ mod tests {
                 limit: 5,
             },
             instances: Some(destiny_app::InstanceSearchQuery {
+                sort: None,
+                location: None,
+                equipped: None,
                 include_available: false,
                 item_hashes: destiny_app::ItemHashFilter::AnyOf(vec![ItemHash::new(1)]),
                 perk_hash: None,
@@ -1314,6 +1326,7 @@ mod tests {
                 stats: Vec::new(),
                 character_id: None,
                 definitions: Some(Box::new(destiny_app::DefinitionSearchQuery {
+                    tier: None,
                     text: Some(destiny_app::SearchTerm::new("gjallar").unwrap()),
                     item_type: None,
                     tags: Vec::new(),
@@ -1447,7 +1460,7 @@ mod tests {
         assert_eq!(output.exit_code, 2);
         assert_eq!(
             output.stderr,
-            "error: invalid --limit: must be between 1 and 100\n"
+            "error: invalid --limit: must be between 1 and 1000\n"
         );
 
         // A missing required argument is rejected before any runtime work too.

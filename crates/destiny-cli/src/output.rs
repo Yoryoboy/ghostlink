@@ -350,6 +350,13 @@ fn search_human(result: &InventorySearchResult) -> String {
             sanitize(&result.resolved.archetype.join(", "))
         ));
     }
+    if let Some((name, order)) = &result.resolved.sort {
+        lines.push(format!(
+            "sorted by: {} ({})",
+            sanitize(name),
+            sanitize(order)
+        ));
+    }
     for (input, names) in &result.resolved.stats {
         lines.push(format!(
             "matched stat {}: {}",
@@ -406,6 +413,9 @@ fn characters_json(result: &CharacterListResult) -> String {
 
 fn search_json(result: &InventorySearchResult) -> String {
     let mut resolved = serde_json::Map::new();
+    if let Some((name, order)) = &result.resolved.sort {
+        resolved.insert("sort".to_owned(), json!({"name": name, "order": order}));
+    }
     for (kind, names) in [
         ("perk", &result.resolved.perk),
         ("mod", &result.resolved.mods),

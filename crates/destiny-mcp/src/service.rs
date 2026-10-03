@@ -648,6 +648,7 @@ impl SearchInventoryArgs {
         let definitions = DefinitionSearchQuery {
             text: optional_term(self.text.as_deref(), "text")?,
             item_type: optional_term(self.item_type.as_deref(), "item_type")?,
+            tier: optional_term(self.tier.as_deref(), "tier")?,
             tags: self
                 .tags
                 .iter()
@@ -675,6 +676,12 @@ impl SearchInventoryArgs {
         };
         definitions.validate().map_err(McpError::from)?;
 
+        let location = self
+            .location
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(McpError::from)?;
         let mut instances = self
             .instances
             .map(InstanceQueryArgs::into_query)
@@ -688,6 +695,12 @@ impl SearchInventoryArgs {
         let mod_name =
             repeated_terms(self.mod_name.as_deref(), &self.mod_names, "mod_name", "mod")?;
         let archetype = optional_term(self.archetype.as_deref(), "archetype")?;
+        let sort = self
+            .sort
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(McpError::from)?;
         let stats = self
             .stats
             .iter()
@@ -707,8 +720,11 @@ impl SearchInventoryArgs {
         if instances.is_none()
             && (self.include_available
                 || !stats.is_empty()
+                || sort.is_some()
                 || definitions.has_filters()
                 || self.min_power.is_some()
+                || location.is_some()
+                || self.equipped.is_some()
                 || perk_name.is_some()
                 || mod_name.is_some()
                 || archetype.is_some())
@@ -731,6 +747,9 @@ impl SearchInventoryArgs {
             query.archetype = archetype;
             query.include_available = self.include_available;
             query.stats = stats;
+            query.sort = sort;
+            query.location = location;
+            query.equipped = self.equipped;
             query.validate().map_err(McpError::from)?;
         }
 
@@ -770,6 +789,7 @@ impl InstanceQueryArgs {
         };
 
         let query = InstanceSearchQuery {
+            sort: None,
             include_available: false,
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
@@ -778,6 +798,8 @@ impl InstanceQueryArgs {
             archetype: None,
             stats: Vec::new(),
             character_id: self.character_id.map(CharacterId::new),
+            location: None,
+            equipped: None,
             definitions: None,
             min_power: self.min_power,
             limit: self.limit,
@@ -884,6 +906,12 @@ pub fn search_inventory_output(result: &InventorySearchResult) -> SearchInventor
             mod_terms: result.resolved.mod_terms.clone(),
             archetype: result.resolved.archetype.clone(),
             stats: result.resolved.stats.clone(),
+            sort: result.resolved.sort.as_ref().map(|(name, order)| {
+                crate::schema::ResolvedSortView {
+                    name: name.clone(),
+                    order: order.clone(),
+                }
+            }),
         },
         candidates: result.candidates.iter().map(definition_view).collect(),
         hits: result
@@ -1043,7 +1071,7 @@ fn verification_reason_view(reason: VerificationFailureReason) -> VerificationFa
 #[cfg(test)]
 #[test]
 fn invalid_search_limits_explain_the_argument_and_bounds() {
-    for limit in [0, 101] {
+    for limit in [0, 1001] {
         let error = SearchInventoryArgs {
             limit,
             ..Default::default()
@@ -1051,7 +1079,7 @@ fn invalid_search_limits_explain_the_argument_and_bounds() {
         .into_request()
         .unwrap_err();
         assert_eq!(error.code(), "provider_validation");
-        assert_eq!(error.message(), "invalid limit: must be between 1 and 100");
+        assert_eq!(error.message(), "invalid limit: must be between 1 and 1000");
     }
 }
 
@@ -1584,7 +1612,11 @@ mod tests {
         limit: usize,
     ) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            tier: None,
+            location: None,
+            equipped: None,
             include_available: false,
+            sort: None,
             text: text.map(str::to_owned),
             perk_names: Vec::new(),
             mod_names: Vec::new(),
@@ -1611,6 +1643,10 @@ mod tests {
 
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            sort: None,
+            tier: None,
+            location: None,
+            equipped: None,
             perk_names: Vec::new(),
             mod_names: Vec::new(),
             include_available: false,
@@ -1819,7 +1855,11 @@ mod tests {
             instance("inst-b", 2, ItemLocation::Vault, vec![perk(20)]),
         ];
         let args = SearchInventoryArgs {
+            tier: None,
+            location: None,
+            equipped: None,
             include_available: false,
+            sort: None,
             text: Some("gjallar".into()),
             perk_names: Vec::new(),
             mod_names: Vec::new(),
@@ -2056,6 +2096,10 @@ mod tests {
             include_available: false,
             perk_names: Vec::new(),
             mod_names: Vec::new(),
+            tier: None,
+            location: None,
+            equipped: None,
+            sort: None,
         };
         let output = mcp
             .search_inventory(&args.into_request().expect("valid arguments"))
@@ -2104,6 +2148,10 @@ mod tests {
             include_available: false,
             perk_names: Vec::new(),
             mod_names: Vec::new(),
+            tier: None,
+            location: None,
+            equipped: None,
+            sort: None,
         };
         let request = args.into_request().expect("valid arguments");
 

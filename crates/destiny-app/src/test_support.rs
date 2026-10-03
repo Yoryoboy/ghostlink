@@ -751,7 +751,14 @@ impl SearchRepository for InMemorySearchRepository {
             })
             .cloned()
             .collect();
-        matches.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+        matches.sort_by(|left, right| {
+            destiny_core::query::compare_instances(
+                query.sort.as_ref(),
+                left,
+                right,
+                &self.stat_definitions,
+            )
+        });
         matches.truncate(query.limit);
         Ok(matches)
     }
@@ -1288,6 +1295,7 @@ mod tests {
         limit: usize,
     ) -> DefinitionSearchQuery {
         DefinitionSearchQuery {
+            tier: None,
             text: text.map(|value| SearchTerm::new(value).unwrap()),
             item_type: item_type.map(|value| SearchTerm::new(value).unwrap()),
             tags: tags
@@ -1308,6 +1316,9 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            sort: None,
+            location: None,
+            equipped: None,
             include_available: false,
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),

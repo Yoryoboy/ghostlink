@@ -199,7 +199,7 @@ impl SearchRepository for SqliteStore {
         // Never truncate SQL candidates before shared definition/power matching.
         sql.push_str(" ORDER BY instance_id");
 
-        let stat_definitions = if query.stats.is_empty() {
+        let stat_definitions = if query.stats.is_empty() && query.sort.is_none() {
             Vec::new()
         } else {
             super::world::read_stats(self.connection())?
@@ -287,11 +287,22 @@ impl SearchRepository for SqliteStore {
                     )
                 {
                     instances.push(instance);
-                    if instances.len() == query.limit {
+                    if query.sort.is_none() && instances.len() == query.limit {
                         break;
                     }
                 }
             }
+        }
+        if query.sort.is_some() {
+            instances.sort_by(|left, right| {
+                destiny_core::query::compare_instances(
+                    query.sort.as_ref(),
+                    left,
+                    right,
+                    &stat_definitions,
+                )
+            });
+            instances.truncate(query.limit);
         }
         Ok(instances)
     }
@@ -583,6 +594,7 @@ mod tests {
         limit: usize,
     ) -> DefinitionSearchQuery {
         DefinitionSearchQuery {
+            tier: None,
             text: text.map(term),
             item_type: item_type.map(term),
             tags: tags.iter().map(|tag| term(tag)).collect(),
@@ -600,6 +612,9 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            sort: None,
+            location: None,
+            equipped: None,
             include_available: false,
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),

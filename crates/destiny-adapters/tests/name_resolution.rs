@@ -99,6 +99,9 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
         })
         .unwrap();
     let query = InstanceSearchQuery {
+        sort: None,
+        location: None,
+        equipped: None,
         include_available: false,
         item_hashes: ItemHashFilter::Any,
         perk_hash: None,
@@ -201,6 +204,7 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
     let mut app = QueryService::new(ProfileSyncService::new(QueuedProfileGateway::new(), store));
     let request = SearchInventoryRequest {
         definitions: DefinitionSearchQuery {
+            tier: None,
             text: None,
             item_type: None,
             tags: vec![],

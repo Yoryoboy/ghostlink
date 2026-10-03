@@ -201,6 +201,13 @@ where
                 resolved.archetype =
                     term.resolve(&self.repository().name_catalog("archetype")?, "archetype")?;
             }
+            if let Some(sort) = &mut query.sort {
+                if self.repository().stat_definition_count()? == 0 {
+                    return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+                }
+                let name = sort.resolve(&self.repository().name_catalog("stat")?)?;
+                resolved.sort = Some((name, sort.order().to_owned()));
+            }
             if !query.stats.is_empty() {
                 if self.repository().stat_definition_count()? == 0 {
                     return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
@@ -223,6 +230,9 @@ where
 
         let instance_query = if request.definitions.has_filters() {
             let mut query = request.instances.clone().unwrap_or(InstanceSearchQuery {
+                sort: None,
+                location: None,
+                equipped: None,
                 include_available: false,
                 item_hashes: destiny_core::ItemHashFilter::Any,
                 perk_hash: None,
@@ -844,6 +854,7 @@ mod tests {
     ) -> DefinitionSearchQuery {
         let term = |value: &str| SearchTerm::new(value).expect("valid term");
         DefinitionSearchQuery {
+            tier: None,
             text: text.map(term),
             item_type: item_type.map(term),
             tags: tags.into_iter().map(term).collect(),
@@ -861,6 +872,9 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            sort: None,
+            location: None,
+            equipped: None,
             include_available: false,
             item_hashes,
             perk_hash,
@@ -977,6 +991,7 @@ mod tests {
         let mut empty = service(&shared, CompositeRepository::default());
         let request = search_request(
             DefinitionSearchQuery {
+                tier: None,
                 text: Some(SearchTerm::new("no such item").unwrap()),
                 item_type: None,
                 tags: Vec::new(),
@@ -1013,6 +1028,7 @@ mod tests {
         let mut service = service(&shared, repository);
         let request = search_request(
             DefinitionSearchQuery {
+                tier: None,
                 text: None,
                 item_type: None,
                 tags: Vec::new(),

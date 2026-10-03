@@ -426,6 +426,7 @@ fn definition_query(
     limit: usize,
 ) -> DefinitionSearchQuery {
     DefinitionSearchQuery {
+        tier: None,
         text: text.map(term),
         item_type: item_type.map(term),
         tags: tags.iter().map(|tag| term(tag)).collect(),
@@ -443,6 +444,9 @@ fn instance_query(
     limit: usize,
 ) -> InstanceSearchQuery {
     InstanceSearchQuery {
+        sort: None,
+        location: None,
+        equipped: None,
         include_available: false,
         item_hashes,
         perk_hash: perk_hash.map(PerkHash::new),

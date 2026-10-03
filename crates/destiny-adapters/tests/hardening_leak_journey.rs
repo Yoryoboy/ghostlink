@@ -467,6 +467,7 @@ fn cli(service: &mut Service, arguments: &[&str], now: Timestamp) -> ProcessOutp
 fn control_search() -> SearchInventoryRequest {
     SearchInventoryRequest {
         definitions: DefinitionSearchQuery {
+            tier: None,
             text: Some(SearchTerm::new(CONTROL_TERM).expect("valid search term")),
             item_type: None,
             tags: Vec::new(),

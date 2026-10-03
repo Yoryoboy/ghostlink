@@ -54,10 +54,10 @@ pub use ports::{
 };
 pub use query::{
     CharacterListResult, DefinitionSearchQuery, InspectItemRequest, InstanceSearchQuery,
-    InventorySearchHit, InventorySearchResult, ItemHashFilter, ItemInspection, MAX_HASH_FILTERS,
-    MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH, MAX_STAT_CONDITIONS, MAX_TAG_FILTERS, NamedStat,
-    QueryMetadata, SearchTerm, StatCondition, StatOp, definition_matches, instance_matches,
-    normalize_search_text,
+    InventorySearchHit, InventorySearchResult, ItemHashFilter, ItemInspection, LocationFilter,
+    MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH, MAX_STAT_CONDITIONS,
+    MAX_TAG_FILTERS, NamedStat, QueryMetadata, SearchTerm, StatCondition, StatOp,
+    definition_matches, instance_matches, normalize_search_text,
 };
 pub use redact::{REDACTED, Redacted, opaque, redact_optional};
 pub use state::{

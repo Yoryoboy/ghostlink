@@ -54,7 +54,9 @@
 //! the offending value.
 //!
 //! Definition matches are ordered by [`ItemHash`] ascending and instance
-//! matches by [`ItemInstanceId`] ascending; the limit truncates the ordered
+//! matches by [`ItemInstanceId`] ascending unless a stat sort is requested.
+//! Stat sorting puts missing values last and breaks ties by instance ID;
+//! the limit truncates the ordered
 //! list. A valid projection carries unique definition hashes and unique
 //! instance identifiers, so both orders are total, and an invalid projection
 //! with duplicate keys is outside this contract.
@@ -71,7 +73,7 @@ use crate::state::FreshnessStatus;
 pub const MAX_SEARCH_TEXT_LENGTH: usize = 256;
 
 /// Maximum number of matches any single search may return.
-pub const MAX_SEARCH_LIMIT: usize = 100;
+pub const MAX_SEARCH_LIMIT: usize = 1000;
 
 /// Maximum number of tag filters one definition search may carry.
 pub const MAX_TAG_FILTERS: usize = 16;
@@ -202,6 +204,8 @@ fn validate_search_limit(limit: usize) -> Result<(), AppError> {
 pub struct DefinitionSearchQuery {
     pub text: Option<SearchTerm>,
     pub item_type: Option<SearchTerm>,
+    /// Exact normalized stored tier; unknown names match nothing.
+    pub tier: Option<SearchTerm>,
     pub tags: Vec<SearchTerm>,
     pub element: Option<DamageType>,
     pub slot: Option<ItemSlot>,
@@ -214,6 +218,7 @@ impl DefinitionSearchQuery {
     pub fn has_filters(&self) -> bool {
         self.text.is_some()
             || self.item_type.is_some()
+            || self.tier.is_some()
             || !self.tags.is_empty()
             || self.element.is_some()
             || self.slot.is_some()
@@ -333,6 +338,107 @@ pub fn instance_matches_stats(
     })
 }
 
+/// Stat ordering for instance hits. Descending by default; missing values last.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatSort {
+    pub name: SearchTerm,
+    pub ascending: bool,
+}
+
+impl std::str::FromStr for StatSort {
+    type Err = AppError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let invalid = || AppError::invalid_argument("sort", "expected Stat, Stat:asc or Stat:desc");
+        let (name, ascending) = match input.rsplit_once(':') {
+            Some((name, "asc")) => (name, true),
+            Some((name, "desc")) => (name, false),
+            Some(_) => return Err(invalid()),
+            None => (input, false),
+        };
+        Ok(Self {
+            name: SearchTerm::new(name).map_err(|_| invalid())?,
+            ascending,
+        })
+    }
+}
+
+impl StatSort {
+    pub fn order(&self) -> &'static str {
+        if self.ascending { "asc" } else { "desc" }
+    }
+
+    /// Reject multiple display names; identical-name hashes use their maximum value.
+    pub fn resolve(
+        &mut self,
+        catalog: &crate::name_matching::NameCatalog,
+    ) -> Result<String, AppError> {
+        let names = self.name.resolve(catalog, "stat")?;
+        if names.len() != 1 {
+            return Err(AppError::name_resolution(
+                ErrorCategory::AmbiguousSearchName,
+                format!(
+                    "sort stat matches several names; be more specific: {}",
+                    names.join(", ")
+                ),
+            ));
+        }
+        Ok(names[0].clone())
+    }
+}
+
+/// Shared total ordering: stat value, missing last in either direction, then ID.
+pub fn compare_instances(
+    sort: Option<&StatSort>,
+    left: &ItemInstance,
+    right: &ItemInstance,
+    definitions: &[crate::StatDefinition],
+) -> std::cmp::Ordering {
+    let by_id = || left.instance_id.cmp(&right.instance_id);
+    let Some(sort) = sort else { return by_id() };
+    let value = |item: &ItemInstance| {
+        item.stats
+            .iter()
+            .filter(|stat| {
+                definitions.iter().any(|definition| {
+                    definition.hash() == stat.stat_hash && sort.name.matches_name(definition.name())
+                })
+            })
+            .map(|stat| stat.value)
+            .max()
+    };
+    let ordering = match (value(left), value(right)) {
+        (Some(a), Some(b)) if sort.ascending => a.cmp(&b),
+        (Some(a), Some(b)) => b.cmp(&a),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    };
+    ordering.then_with(by_id)
+}
+
+/// Instance location class. Unknown provider locations match neither class.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocationFilter {
+    Vault,
+    Character,
+}
+
+impl std::str::FromStr for LocationFilter {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "vault" => Ok(Self::Vault),
+            "character" => Ok(Self::Character),
+            _ => Err(AppError::invalid_argument(
+                "location",
+                "expected one of vault, character",
+            )),
+        }
+    }
+}
+
 /// Maximum independent names per perk/mod filter.
 pub const MAX_NAME_TERMS: usize = 8;
 
@@ -347,6 +453,7 @@ pub const MAX_NAME_TERMS: usize = 8;
 /// implementation runs before reading the projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstanceSearchQuery {
+    pub sort: Option<StatSort>,
     pub include_available: bool,
     pub item_hashes: ItemHashFilter,
     pub perk_hash: Option<PerkHash>,
@@ -357,6 +464,8 @@ pub struct InstanceSearchQuery {
     /// Exact normalized armor-archetype name.
     pub archetype: Option<SearchTerm>,
     pub character_id: Option<CharacterId>,
+    pub location: Option<LocationFilter>,
+    pub equipped: Option<bool>,
     /// Definition criteria applied before the instance limit; its limit is ignored.
     pub definitions: Option<Box<DefinitionSearchQuery>>,
     pub min_power: Option<u16>,
@@ -384,6 +493,11 @@ impl InstanceSearchQuery {
                 "stat",
                 format!("at most {MAX_STAT_CONDITIONS} conditions are allowed"),
             ));
+        }
+        if let Some(sort) = &self.sort {
+            crate::normalize_stat_name(sort.name.as_str()).map_err(|_| {
+                AppError::invalid_argument("sort", "stat name must satisfy Manifest name bounds")
+            })?;
         }
         for condition in &self.stats {
             crate::normalize_stat_name(condition.name.as_str()).map_err(|_| {
@@ -442,6 +556,15 @@ pub fn definition_matches(query: &DefinitionSearchQuery, definition: &ItemDefini
         }
     }
 
+    if let Some(tier) = &query.tier
+        && !definition
+            .tier
+            .as_deref()
+            .is_some_and(|candidate| tier.matches_name(candidate))
+    {
+        return false;
+    }
+
     if !query.tags.is_empty() {
         let stored: Vec<String> = definition
             .tags
@@ -484,6 +607,20 @@ pub fn instance_matches(query: &InstanceSearchQuery, instance: &ItemInstance) ->
             .perks
             .iter()
             .any(|perk| perk.perk_hash == perk_hash)
+    {
+        return false;
+    }
+
+    if query
+        .equipped
+        .is_some_and(|equipped| instance.equipped != equipped)
+        || query.location.is_some_and(|location| {
+            !matches!(
+                (location, &instance.location),
+                (LocationFilter::Vault, ItemLocation::Vault)
+                    | (LocationFilter::Character, ItemLocation::Character(_))
+            )
+        })
     {
         return false;
     }
@@ -742,7 +879,8 @@ pub struct NamedStat {
 /// A bounded inventory search answer.
 ///
 /// `candidates` are the definition-level matches in [`ItemHash`] order, and
-/// `hits` are the concrete instance matches in [`ItemInstanceId`] order. Both
+/// `hits` are the concrete instance matches in requested stat order, or
+/// [`ItemInstanceId`] order without sorting. Both
 /// lists are independently truncated to the requested limit, so a caller always
 /// sees a bounded, deterministic answer. An empty list is the explicit
 /// "no match" outcome: a search never silently selects a single concrete
@@ -790,6 +928,74 @@ mod tests {
     use crate::domain::{ItemDefinition, ItemInstance, ItemLocation, PerkSummary};
     use crate::error::{AppError, ErrorCategory};
     use crate::ids::{CharacterId, DefinitionVersion, ItemHash, PerkHash};
+
+    #[test]
+    fn stat_sort_missing_last_ties_and_resolution() {
+        let definitions = vec![crate::StatDefinition::new(1, "Range".into()).unwrap()];
+        let mut a = instance("a", 1);
+        let mut b = instance("b", 1);
+        let missing = instance("0", 1);
+        a.stats = vec![crate::domain::StatSummary {
+            stat_hash: 1,
+            value: 20,
+        }];
+        b.stats = vec![crate::domain::StatSummary {
+            stat_hash: 1,
+            value: 30,
+        }];
+        for (expression, expected) in [
+            ("Range", vec!["b", "a", "0"]),
+            ("Range:asc", vec!["a", "b", "0"]),
+        ] {
+            let sort: super::StatSort = expression.parse().unwrap();
+            let mut items = [missing.clone(), a.clone(), b.clone()];
+            items.sort_by(|a, b| super::compare_instances(Some(&sort), a, b, &definitions));
+            assert_eq!(
+                items
+                    .iter()
+                    .map(|i| i.instance_id.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+            b.stats = a.stats.clone();
+            assert!(super::compare_instances(Some(&sort), &a, &b, &definitions).is_lt());
+            b.stats[0].value = 30;
+        }
+        let catalog = crate::name_matching::NameCatalog::new(["Range", "Range Bonus"]);
+        let mut sort: super::StatSort = "rang".parse().unwrap();
+        assert_eq!(
+            sort.resolve(&catalog).unwrap_err().category(),
+            ErrorCategory::AmbiguousSearchName
+        );
+        let mut sort: super::StatSort = "Rnage".parse().unwrap();
+        assert!(
+            sort.resolve(&catalog)
+                .unwrap_err()
+                .to_string()
+                .contains("Range")
+        );
+        assert!("Range:up".parse::<super::StatSort>().is_err());
+        let mut exact: super::StatSort = " RANGE ".parse().unwrap();
+        assert_eq!(exact.resolve(&catalog).unwrap(), "Range");
+        let mut partial: super::StatSort = "bonus:asc".parse().unwrap();
+        assert_eq!(partial.resolve(&catalog).unwrap(), "Range Bonus");
+        let mut duplicates = definitions.clone();
+        duplicates.push(crate::StatDefinition::new(2, "Range".into()).unwrap());
+        a.stats.push(crate::domain::StatSummary {
+            stat_hash: 2,
+            value: 40,
+        });
+        assert!(super::compare_instances(Some(&exact), &a, &b, &duplicates).is_lt());
+        exact.ascending = true;
+        assert!(super::compare_instances(Some(&exact), &a, &b, &duplicates).is_gt());
+        assert!(super::compare_instances(None, &a, &b, &duplicates).is_lt());
+        assert!(query(None, None, vec![]).validate().is_ok());
+        let mut q = query(None, None, vec![]);
+        q.limit = 1000;
+        assert!(q.validate().is_ok());
+        q.limit = 1001;
+        assert!(q.validate().unwrap_err().to_string().contains("1 and 1000"));
+    }
 
     #[test]
     fn strict_stat_comparisons_exclude_the_boundary_and_missing_stats() {
@@ -858,6 +1064,7 @@ mod tests {
         DefinitionSearchQuery {
             text: text.map(term),
             item_type: item_type.map(term),
+            tier: None,
             tags: tags.into_iter().map(term).collect(),
             element: None,
             slot: None,
@@ -871,6 +1078,7 @@ mod tests {
         perk_hash: Option<PerkHash>,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            sort: None,
             include_available: false,
             item_hashes,
             perk_hash,
@@ -879,10 +1087,58 @@ mod tests {
             archetype: None,
             stats: Vec::new(),
             character_id: None,
+            location: None,
+            equipped: None,
             definitions: None,
             min_power: None,
             limit: MAX_SEARCH_LIMIT,
         }
+    }
+
+    #[test]
+    fn tier_location_and_equipped_filters_match_exactly() {
+        let mut definitions = query(None, None, vec![]);
+        definitions.tier = Some(term("EXOTIC"));
+        assert!(definitions.has_filters());
+        let mut item = definition(1, "Weapon");
+        assert!(!definition_matches(&definitions, &item));
+        item.tier = Some("Exotic".into());
+        assert!(definition_matches(&definitions, &item));
+        item.tier = Some("Exotic Extra".into());
+        assert!(!definition_matches(&definitions, &item));
+        item.tier = Some("Exotic".into());
+        let mut filter = instance_query(ItemHashFilter::Any, None);
+        filter.definitions = Some(Box::new(definitions));
+        filter.location = Some(super::LocationFilter::Vault);
+        filter.equipped = Some(false);
+        let mut owned = instance("a", 1);
+        assert!(super::instance_matches_with_definition(
+            &filter,
+            &owned,
+            Some(&item)
+        ));
+        assert!(!super::instance_matches_with_definition(
+            &filter, &owned, None
+        ));
+        owned.equipped = true;
+        assert!(!instance_matches(&filter, &owned));
+        filter.equipped = Some(true);
+        assert!(instance_matches(&filter, &owned));
+        filter.character_id = Some(CharacterId::new("123"));
+        assert!(!instance_matches(&filter, &owned));
+        owned.location = ItemLocation::Character(CharacterId::new("123"));
+        assert!(!instance_matches(&filter, &owned));
+        filter.location = Some(super::LocationFilter::Character);
+        assert!(instance_matches(&filter, &owned));
+        owned.location = ItemLocation::other("unknown");
+        assert!(!instance_matches(&filter, &owned));
+        assert_eq!(
+            "orbit"
+                .parse::<super::LocationFilter>()
+                .unwrap_err()
+                .to_string(),
+            "invalid location: expected one of vault, character"
+        );
     }
 
     #[test]
@@ -1268,7 +1524,7 @@ mod tests {
             definition_query.limit = limit;
             assert_eq!(
                 definition_query.validate().unwrap_err().to_string(),
-                "invalid limit: must be between 1 and 100"
+                "invalid limit: must be between 1 and 1000"
             );
         }
         definition_query.limit = MAX_SEARCH_LIMIT;
@@ -1284,7 +1540,7 @@ mod tests {
         instance_query.limit = 0;
         assert_eq!(
             instance_query.validate().unwrap_err().to_string(),
-            "invalid limit: must be between 1 and 100"
+            "invalid limit: must be between 1 and 1000"
         );
     }
 
