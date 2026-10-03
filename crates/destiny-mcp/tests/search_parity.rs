@@ -12,6 +12,122 @@ mod output {
     }
 }
 
+#[path = "../../destiny-cli/src/subclass_output.rs"]
+mod cli_subclass_output;
+
+#[test]
+fn subclass_cli_mcp_json_parity() {
+    use destiny_app::{
+        CharacterId, CharacterSubclass, ItemHash, ItemInstanceId, SubclassConfig,
+        SubclassPlugKind::*, SubclassResult, SubclassSlot,
+    };
+    let mut result = SubclassResult {
+        characters: vec![
+            CharacterSubclass {
+                character_id: CharacterId::new("1"),
+                class: Some("Hunter".into()),
+                subclass: Some(SubclassConfig {
+                    instance_id: ItemInstanceId::new("2"),
+                    item_hash: ItemHash::new(3),
+                    name: "Prismatic".into(),
+                    element: Some("Prismatic".into()),
+                    slots: [
+                        Fragment,
+                        Super,
+                        Aspect,
+                        Grenade,
+                        Melee,
+                        ClassAbility,
+                        Movement,
+                        Transcendence,
+                        Fragment,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, kind)| SubclassSlot {
+                        kind,
+                        plug_hash: ItemHash::new(i as i64),
+                        name: (i != 0).then(|| format!("Plug {i}")),
+                        empty: i == 8,
+                    })
+                    .collect(),
+                }),
+            },
+            CharacterSubclass {
+                character_id: CharacterId::new("4"),
+                class: None,
+                subclass: None,
+            },
+        ],
+    };
+    for _ in 0..2 {
+        let cli = cli_subclass_output::subclass_json(&result);
+        let mcp = destiny_mcp::service::subclass_output(&result).into_call_tool_result();
+        assert_eq!(mcp.structured_content.unwrap(), cli);
+        result.characters.clear();
+    }
+}
+
+#[test]
+fn subclass_cli_mcp_selector_parity_and_invalid_arguments() {
+    use clap::Parser;
+    use destiny_mcp::schema::GetSubclassArgs;
+    for selector in [None, Some("123"), Some("hUnTeR")] {
+        let mut argv = vec!["ghostlink", "subclass"];
+        if let Some(value) = selector {
+            argv.extend(["--character", value]);
+        }
+        let cli = cli_command::Cli::try_parse_from(argv)
+            .unwrap()
+            .into_read_request()
+            .unwrap();
+        let cli_command::ReadRequest::Subclass(character) = cli else {
+            panic!("subclass request")
+        };
+        let mcp: GetSubclassArgs =
+            serde_json::from_value(serde_json::json!({"character": selector})).unwrap();
+        assert_eq!(character, mcp.into_request().unwrap());
+    }
+    for value in [
+        "".to_owned(),
+        " ".to_owned(),
+        "a".repeat(513),
+        "bad\u{7}".to_owned(),
+    ] {
+        assert!(
+            GetSubclassArgs {
+                character: Some(value)
+            }
+            .into_request()
+            .is_err()
+        );
+    }
+    assert!(
+        GetSubclassArgs {
+            character: Some("a".repeat(512))
+        }
+        .into_request()
+        .is_ok()
+    );
+    assert!(serde_json::from_value::<GetSubclassArgs>(serde_json::json!({"unknown": 1})).is_err());
+}
+
+#[test]
+fn subclass_tool_has_closed_bounded_schema() {
+    let tool = destiny_mcp::schema::tool_specs()
+        .into_iter()
+        .find(|tool| tool.name == "get_subclass")
+        .expect("subclass tool is registered");
+    let schema = tool.schema_as_json_value();
+    assert_eq!(schema["additionalProperties"], false);
+    assert!(
+        schema["properties"]["character"]
+            .to_string()
+            .contains("512")
+    );
+    assert!(tool.output_schema.is_some());
+}
+
 #[test]
 fn sort_and_limit_cli_mcp_parity() {
     use clap::Parser;

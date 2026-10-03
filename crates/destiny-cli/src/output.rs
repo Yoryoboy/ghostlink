@@ -173,25 +173,9 @@ pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult)
     }
 }
 
-/// Stable snake_case projection of the shared subclass result.
-/// The envelope follows the other CLI read outputs; slots retain socket order.
-pub fn subclass_json(result: &destiny_app::SubclassResult) -> Value {
-    use destiny_app::SubclassPlugKind::*;
-    json!({"kind": "subclass", "characters": result.characters.iter().map(|character| json!({
-        "character_id": character.character_id.as_str(), "class": character.class,
-        "subclass": character.subclass.as_ref().map(|config| json!({
-            "instance_id": config.instance_id.as_str(), "item_hash": config.item_hash.value(),
-            "name": config.name, "element": config.element,
-            "slots": config.slots.iter().map(|slot| json!({
-                "kind": match slot.kind {
-                    Super => "super", Aspect => "aspect", Fragment => "fragment", Grenade => "grenade",
-                    Melee => "melee", ClassAbility => "class_ability", Movement => "movement", Transcendence => "transcendence",
-                },
-                "plug_hash": slot.plug_hash.value(), "name": slot.name, "empty": slot.empty,
-            })).collect::<Vec<_>>()
-        }))
-    })).collect::<Vec<_>>()})
-}
+#[path = "subclass_output.rs"]
+mod subclass_output;
+pub use subclass_output::subclass_json;
 
 /// Renders the public version label and counts, never definition payloads.
 pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncReport) -> String {

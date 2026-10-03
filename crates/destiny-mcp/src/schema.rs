@@ -42,6 +42,9 @@ pub const SEARCH_INVENTORY_TOOL: &str = "search_inventory";
 /// Stable tool name for the exact instance inspection read.
 pub const INSPECT_ITEM_TOOL: &str = "inspect_item";
 
+/// Stable tool name for equipped subclass configuration.
+pub const GET_SUBCLASS_TOOL: &str = "get_subclass";
+
 /// Stable tool name for the single semantic mutation.
 pub const MOVE_ITEM_TOOL: &str = "move_item";
 
@@ -98,6 +101,13 @@ pub fn tool_specs() -> Vec<Tool> {
         )
         .with_input_schema::<InspectItemArgs>()
         .with_output_schema::<InspectItemOutput>(),
+        Tool::new(
+            GET_SUBCLASS_TOOL,
+            "Return the equipped subclass super, abilities, aspects and fragments per character. Omit character for all characters, or select an exact id or unique hunter|titan|warlock class. Requires loaded Manifest definitions.",
+            JsonObject::new(),
+        )
+        .with_input_schema::<GetSubclassArgs>()
+        .with_output_schema::<GetSubclassOutput>(),
         Tool::new(
             WEEKLY_RESET_TOOL,
             "Read the current week's public rotation without account credentials. Run `ghostlink sync-manifest` first to load the required definitions.",
@@ -469,6 +479,65 @@ pub struct InspectItemArgs {
     /// Concrete instance identifier; never a definition hash or display name.
     #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
     pub instance_id: String,
+}
+
+/// Optional character selector; omitted returns all characters.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetSubclassArgs {
+    /// Exact character id or unique hunter|titan|warlock class (case-insensitive).
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub character: Option<String>,
+}
+
+/// Equipped subclass configuration, matching the CLI JSON envelope.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename = "subclass")]
+pub struct GetSubclassOutput {
+    pub characters: Vec<CharacterSubclassView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct CharacterSubclassView {
+    pub character_id: String,
+    pub class: Option<String>,
+    pub subclass: Option<SubclassConfigView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct SubclassConfigView {
+    pub instance_id: String,
+    pub item_hash: i64,
+    pub name: String,
+    pub element: Option<String>,
+    pub slots: Vec<SubclassSlotView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct SubclassSlotView {
+    pub kind: SubclassPlugKindView,
+    pub plug_hash: i64,
+    pub name: Option<String>,
+    pub empty: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubclassPlugKindView {
+    Super,
+    Aspect,
+    Fragment,
+    Grenade,
+    Melee,
+    ClassAbility,
+    Movement,
+    Transcendence,
+}
+
+impl GetSubclassOutput {
+    pub fn into_call_tool_result(self) -> CallToolResult {
+        structured_result(self)
+    }
 }
 
 fn default_search_limit() -> usize {
@@ -939,7 +1008,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_specs_expose_only_the_four_semantic_reads_in_stable_order() {
+    fn tool_specs_expose_semantic_reads_in_stable_order() {
         let tools = tool_specs();
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
         assert_eq!(
@@ -948,6 +1017,7 @@ mod tests {
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 INSPECT_ITEM_TOOL,
+                super::GET_SUBCLASS_TOOL,
                 super::WEEKLY_RESET_TOOL,
                 super::WEEKLY_TOOL
             ]

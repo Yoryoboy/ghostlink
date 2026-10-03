@@ -91,6 +91,7 @@ services:
 cargo run -p destiny-cli -- list-characters
 cargo run -p destiny-cli -- search-inventory --text gjallar --limit 5
 cargo run -p destiny-cli -- inspect-item 700000000000000001
+cargo run -p destiny-cli -- subclass --character hunter
 ```
 
 Add the global `--json` flag to select machine output:
@@ -264,7 +265,7 @@ ghostlink sync-manifest          # or: ghostlink --json sync-manifest
 - Opening the database with this version migrates it to schema v7; older
   binaries that do not support v7 refuse the database. Run `sync-manifest`
   once after upgrading to populate plug categories for perk-name searches.
-- Until a catalog is loaded, `search-inventory` and `inspect-item` fail with
+- Until a catalog is loaded, `search-inventory`, `inspect-item` and `subclass` fail with
   `definitions not loaded; run ghostlink sync-manifest` (CLI and MCP) instead
   of returning an empty result.
 
@@ -292,6 +293,20 @@ in stable name-then-hash order (unnamed stats are omitted), as `stats: Class
 MCP `search_inventory` accepts the same comparisons in its `stats` array.
 Stats appear after the next profile sync (the next stale inventory read
 refreshes the stored profile projection).
+
+### Equipped subclass configuration
+
+`ghostlink subclass [--character <id|class>]` shows the equipped subclass super,
+abilities, aspects and fragments. Omit `--character` for all characters, or use
+an exact character id or unique `hunter`, `titan` or `warlock` class
+(case-insensitive). Requires login and `ghostlink sync-manifest`.
+
+`ghostlink --json subclass` returns `kind: "subclass"` and a `characters` array.
+Each entry has `character_id`, `class` and `subclass` (null if none is equipped).
+The subclass contains `instance_id`, `item_hash`, `name`, `element` and ordered
+`slots`, with `kind`, `plug_hash`, `name` and `empty`. Slot kinds are `super`,
+`aspect`, `fragment`, `grenade`, `melee`, `class_ability`, `movement` and
+`transcendence`. Empty sockets remain explicit; unlocked options are not included.
 
 ### Inspect one owned item
 
@@ -436,6 +451,7 @@ mutation over the Model Context Protocol stdio transport:
 list_characters   list the signed-in account's characters
 search_inventory  search Manifest definitions and concrete instances
 inspect_item      inspect exactly one concrete instance by instance identifier
+get_subclass      show equipped subclass configurations per character
 weekly_reset      show the current public weekly rotation (same data as the CLI)
 weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
@@ -474,6 +490,11 @@ It also accepts `tier` (exact stored tier, case-insensitive), `location`
 the CLI rules above. Both `limit` and `instances.limit` default to 100 and
 accept 1–1000. Search output includes `resolved.perk_terms`,
 `resolved.mod_terms` and, when sorting, `resolved.sort`.
+
+`get_subclass` accepts an optional `character` (exact id or unique class),
+with omission selecting all characters. Its structured output matches
+`ghostlink --json subclass` exactly, including socket order and empty slots.
+For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
 
 `inspect_item` returns the same enriched names as CLI inspection:
 `perk_names`, `mod_names`, `mods`, `archetype`, `available_perks`,

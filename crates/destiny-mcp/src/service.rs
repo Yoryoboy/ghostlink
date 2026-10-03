@@ -91,6 +91,11 @@ pub struct ListCharactersRequest;
 /// without touching `rmcp`. Requests are already validated and bounded; outputs
 /// are the bounded MCP projections defined in [`crate::schema`].
 pub trait InventoryReadService {
+    /// Reads equipped subclasses for one selector, or all characters.
+    fn get_subclass(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetSubclassOutput, McpError>;
     fn weekly(
         &mut self,
         _args: &crate::schema::WeeklyArgs,
@@ -146,6 +151,13 @@ where
     R: destiny_app::WorldDefinitionRepository,
     I: InventoryReadService,
 {
+    fn get_subclass(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetSubclassOutput, McpError> {
+        self.inventory.get_subclass(character)
+    }
+
     fn weekly(
         &mut self,
         args: &crate::schema::WeeklyArgs,
@@ -254,6 +266,13 @@ where
             .map_err(McpError::from)?;
         weekly_output(&character, &weekly).map_err(WeeklyReadError::from)
     }
+    fn get_subclass(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetSubclassOutput, McpError> {
+        self.inventory.get_subclass(character)
+    }
+
     fn list_characters(
         &mut self,
         r: &ListCharactersRequest,
@@ -418,6 +437,18 @@ where
         + destiny_app::StatDefinitionRepository,
     C: Clock,
 {
+    fn get_subclass(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetSubclassOutput, McpError> {
+        let now = self.clock.now().map_err(McpError::from)?;
+        let result = self
+            .queries
+            .character_subclasses(character, self.policy, now)
+            .map_err(McpError::from)?;
+        Ok(subclass_output(&result))
+    }
+
     fn list_characters(
         &mut self,
         _request: &ListCharactersRequest,
@@ -806,6 +837,78 @@ impl InstanceQueryArgs {
         };
         query.validate().map_err(McpError::from)?;
         Ok(query)
+    }
+}
+
+impl crate::schema::GetSubclassArgs {
+    /// Bounds the optional selector before invoking the shared query.
+    pub fn into_request(self) -> Result<Option<CharacterId>, McpError> {
+        if let Some(character) = &self.character {
+            validate_identifier(character, "character")?;
+        }
+        Ok(self.character.map(CharacterId::new))
+    }
+}
+
+/// Projects equipped subclasses without reordering slots or omitting empty slots.
+pub fn subclass_output(result: &destiny_app::SubclassResult) -> crate::schema::GetSubclassOutput {
+    use crate::schema::{
+        CharacterSubclassView, GetSubclassOutput, SubclassConfigView, SubclassPlugKindView,
+        SubclassSlotView,
+    };
+    GetSubclassOutput {
+        characters: result
+            .characters
+            .iter()
+            .map(|character| CharacterSubclassView {
+                character_id: character.character_id.as_str().to_owned(),
+                class: character.class.clone(),
+                subclass: character
+                    .subclass
+                    .as_ref()
+                    .map(|config| SubclassConfigView {
+                        instance_id: config.instance_id.as_str().to_owned(),
+                        item_hash: config.item_hash.value(),
+                        name: config.name.clone(),
+                        element: config.element.clone(),
+                        slots: config
+                            .slots
+                            .iter()
+                            .map(|slot| SubclassSlotView {
+                                kind: match slot.kind {
+                                    destiny_app::SubclassPlugKind::Super => {
+                                        SubclassPlugKindView::Super
+                                    }
+                                    destiny_app::SubclassPlugKind::Aspect => {
+                                        SubclassPlugKindView::Aspect
+                                    }
+                                    destiny_app::SubclassPlugKind::Fragment => {
+                                        SubclassPlugKindView::Fragment
+                                    }
+                                    destiny_app::SubclassPlugKind::Grenade => {
+                                        SubclassPlugKindView::Grenade
+                                    }
+                                    destiny_app::SubclassPlugKind::Melee => {
+                                        SubclassPlugKindView::Melee
+                                    }
+                                    destiny_app::SubclassPlugKind::ClassAbility => {
+                                        SubclassPlugKindView::ClassAbility
+                                    }
+                                    destiny_app::SubclassPlugKind::Movement => {
+                                        SubclassPlugKindView::Movement
+                                    }
+                                    destiny_app::SubclassPlugKind::Transcendence => {
+                                        SubclassPlugKindView::Transcendence
+                                    }
+                                },
+                                plug_hash: slot.plug_hash.value(),
+                                name: slot.name.clone(),
+                                empty: slot.empty,
+                            })
+                            .collect(),
+                    }),
+            })
+            .collect(),
     }
 }
 
@@ -1836,6 +1939,31 @@ mod tests {
             .into_request()
             .expect("boundary character identifier is valid");
         assert!(search.instances.is_some());
+    }
+
+    #[test]
+    fn subclass_read_delegates_selection_and_preserves_shared_failures() {
+        let mut hunter = character("hunter-id");
+        hunter.class = Some("Hunter".into());
+        let (shared, app) = fresh_components(vec![hunter, character("warlock")], Vec::new());
+        let mut mcp = mcp_service(app);
+        let all = mcp.get_subclass(None).unwrap();
+        assert_eq!(all.characters.len(), 2);
+        assert!(
+            all.characters
+                .iter()
+                .all(|character| character.subclass.is_none())
+        );
+        let selected = mcp.get_subclass(Some(&CharacterId::new("hUnTeR"))).unwrap();
+        assert_eq!(selected.characters, vec![all.characters[0].clone()]);
+        assert_eq!(
+            mcp.get_subclass(Some(&CharacterId::new("missing")))
+                .unwrap_err()
+                .code(),
+            "provider_validation"
+        );
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
     }
 
     #[test]

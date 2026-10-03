@@ -836,6 +836,7 @@ mod tests {
                 "list_characters",
                 "search_inventory",
                 "inspect_item",
+                "get_subclass",
                 "weekly_reset",
                 "weekly",
                 "move_item"
