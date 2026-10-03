@@ -143,6 +143,17 @@
         },
         "privacy": 1
       },
+      "stats": {
+        "privacy": 2,
+        "data": {
+          "700000000000000001": {
+            "stats": {
+              "9": { "statHash": 9, "value": 20 },
+              "1": { "statHash": 1, "value": 10 }
+            }
+          }
+        }
+      },
       "sockets": {
         "data": {
           "700000000000000006": {

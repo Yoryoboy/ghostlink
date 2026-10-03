@@ -52,11 +52,70 @@
 use destiny_core::{
     AppError, Character, CharacterId, DefinitionVersion, DestinyMembership, ErrorCategory,
     InventorySnapshotInput, ItemHash, ItemInstance, ItemInstanceId, ItemLocation, PerkHash,
-    PerkSummary, PlugSummary, SourceMarker, Timestamp,
+    PerkSummary, PlugSummary, SourceMarker, StatSummary, Timestamp,
 };
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashSet};
+
+/// Unlike `Value`, this reader rejects repeated object keys before they can be
+/// overwritten (including repeated stat hashes).
+struct UniqueValue(Value);
+
+impl<'de> serde::Deserialize<'de> for UniqueValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = UniqueValue;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("JSON without duplicate keys")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut access: M,
+            ) -> Result<Self::Value, M::Error> {
+                let mut map = Map::new();
+                while let Some((key, UniqueValue(value))) =
+                    access.next_entry::<String, UniqueValue>()?
+                {
+                    if map.insert(key, value).is_some() {
+                        return Err(serde::de::Error::custom("duplicate key"));
+                    }
+                }
+                Ok(UniqueValue(Value::Object(map)))
+            }
+            fn visit_seq<S: serde::de::SeqAccess<'de>>(
+                self,
+                mut access: S,
+            ) -> Result<Self::Value, S::Error> {
+                let mut values = Vec::new();
+                while let Some(UniqueValue(value)) = access.next_element()? {
+                    values.push(value);
+                }
+                Ok(UniqueValue(Value::Array(values)))
+            }
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(UniqueValue(Value::Bool(value)))
+            }
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(UniqueValue(Value::from(value)))
+            }
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(UniqueValue(Value::from(value)))
+            }
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                Ok(UniqueValue(Value::from(value)))
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(UniqueValue(Value::from(value)))
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(UniqueValue(Value::Null))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
 
 /// The only success code Bungie returns for a fulfilled request.
 const SUCCESS_ERROR_CODE: u64 = 1;
@@ -100,7 +159,7 @@ pub fn decode_profile(
     definition_version: DefinitionVersion,
     checked_at: Timestamp,
 ) -> Result<InventorySnapshotInput, AppError> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|_| provider_validation())?;
+    let UniqueValue(value) = serde_json::from_slice(bytes).map_err(|_| provider_validation())?;
     let root = value.as_object().ok_or_else(provider_validation)?;
 
     if root.get("ErrorCode").and_then(Value::as_u64) != Some(SUCCESS_ERROR_CODE) {
@@ -151,6 +210,12 @@ pub fn decode_profile(
             .ok_or_else(provider_validation)?,
     )?;
 
+    let stats = component_data(
+        item_components
+            .get("stats")
+            .ok_or_else(provider_validation)?,
+    )?;
+
     let mut seen = HashSet::with_capacity(raw_items.len());
     let mut items = Vec::with_capacity(raw_items.len());
     for raw in raw_items {
@@ -172,6 +237,7 @@ pub fn decode_profile(
         let power = decode_power(instance)?;
         let item_perks = decode_perks(perks, &raw.instance_id)?;
         let plugs = decode_plugs(sockets, &raw.instance_id)?;
+        let stats = decode_stats(stats, &raw.instance_id)?;
 
         items.push(ItemInstance {
             instance_id: ItemInstanceId::new(raw.instance_id),
@@ -183,6 +249,7 @@ pub fn decode_profile(
             power,
             perks: item_perks,
             plugs,
+            stats,
         });
     }
 
@@ -207,6 +274,45 @@ pub fn decode_profile(
     } else {
         Err(provider_validation())
     }
+}
+
+/// Stats are a bounded keyed set, normalized independently of JSON map order.
+fn decode_stats(
+    data: &Map<String, Value>,
+    instance_id: &str,
+) -> Result<Vec<StatSummary>, AppError> {
+    let Some(entry) = data.get(instance_id) else {
+        return Ok(Vec::new());
+    };
+    let map = entry
+        .get("stats")
+        .and_then(Value::as_object)
+        .ok_or_else(provider_validation)?;
+    if map.len() > 64 {
+        return Err(provider_validation());
+    }
+    let mut stats = Vec::with_capacity(map.len());
+    let mut seen = HashSet::new();
+    for (key, entry) in map {
+        let hash = key.parse::<u32>().map_err(|_| provider_validation())?;
+        if key != &hash.to_string()
+            || !seen.insert(hash)
+            || entry.get("statHash").and_then(Value::as_u64) != Some(u64::from(hash))
+        {
+            return Err(provider_validation());
+        }
+        let value = entry
+            .get("value")
+            .and_then(Value::as_i64)
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or_else(provider_validation)?;
+        stats.push(StatSummary {
+            stat_hash: hash,
+            value,
+        });
+    }
+    stats.sort_by_key(|stat| stat.stat_hash);
+    Ok(stats)
 }
 
 /// One retained item before its instance and perk components are resolved.
@@ -695,6 +801,102 @@ mod tests {
     }
 
     #[test]
+    fn stats_private_data_is_sorted_and_missing_instances_are_empty() {
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["stats"] = json!({"privacy": 2, "data": {"700000000000000001": {"stats": {"9": {"statHash": 9, "value": -10}, "1": {"statHash": 1, "value": 20}}}}});
+        }).unwrap();
+        assert_eq!(
+            snapshot.items[0].stats,
+            vec![
+                destiny_core::StatSummary {
+                    stat_hash: 1,
+                    value: 20
+                },
+                destiny_core::StatSummary {
+                    stat_hash: 9,
+                    value: -10
+                }
+            ]
+        );
+        assert!(snapshot.items[1..].iter().all(|item| item.stats.is_empty()));
+        for wrapper in [
+            json!({"privacy": 2}),
+            json!({"privacy": 3, "data": {}}),
+            json!({"disabled": true, "data": {}}),
+        ] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["itemComponents"]["stats"] = wrapper
+            }));
+        }
+        let stats: serde_json::Map<String, Value> = (0..64)
+            .map(|hash| (hash.to_string(), json!({"statHash": hash, "value": 1})))
+            .collect();
+        assert_eq!(
+            decode_mutated(|value| {
+                value["Response"]["itemComponents"]["stats"] =
+                    json!({"data": {"700000000000000001": {"stats": stats}}});
+            })
+            .unwrap()
+            .items[0]
+                .stats
+                .len(),
+            64
+        );
+        let stats: serde_json::Map<String, Value> = (0..65)
+            .map(|hash| (hash.to_string(), json!({"statHash": hash, "value": 1})))
+            .collect();
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["stats"] =
+                json!({"data": {"700000000000000001": {"stats": stats}}})
+        }));
+    }
+
+    #[test]
+    fn duplicate_stat_keys_fail_closed() {
+        let value = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["stats"] = json!({"data": {"700000000000000001": {"stats": {"1": {"statHash": 1, "value": 10}}}}});
+        });
+        assert!(value.is_ok());
+        let mut value = fixture_value();
+        value["Response"]["itemComponents"]["stats"] =
+            json!({"data": {"700000000000000001": {"stats": {"1": {"statHash": 1, "value": 10}}}}});
+        let text = serde_json::to_string(&value).unwrap().replace(
+            "\"1\":{\"statHash\":1,\"value\":10}",
+            "\"1\":{\"statHash\":1,\"value\":10},\"1\":{\"statHash\":1,\"value\":20}",
+        );
+        assert_validation(decode(text.as_bytes()));
+    }
+
+    #[test]
+    fn stats_component_is_required_and_bounded() {
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]
+                .as_object_mut()
+                .unwrap()
+                .remove("stats");
+        }));
+        for entry in [
+            json!({"stats": {"1": {"statHash": 2, "value": 10}}}),
+            json!({"stats": {"4294967296": {"statHash": 4294967296_u64, "value": 10}}}),
+            json!({"stats": {"1": {"statHash": 1, "value": 2147483648_i64}}}),
+            json!({"stats": {"1": {"statHash": 1, "value": 1.5}}}),
+            json!({"stats": {"1": {"statHash": 1, "value": -2147483649_i64}}}),
+            json!({"stats": {"-1": {"statHash": -1, "value": 10}}}),
+            json!({"stats": {"01": {"statHash": 1, "value": 10}}}),
+            json!({"stats": {"1": {"statHash": 1, "value": "10"}}}),
+            json!({"stats": {"1": {"statHash": 1}}}),
+            json!({}),
+            json!({"stats": []}),
+            Value::Null,
+        ] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["itemComponents"]["stats"] =
+                    json!({"privacy": 2, "data": {"700000000000000001": entry}});
+            }));
+        }
+    }
+
+    #[test]
     fn complete_fixture_normalizes_the_full_snapshot() {
         let snapshot = decode(FIXTURE).expect("complete fixture");
 
@@ -731,6 +933,16 @@ mod tests {
                     equipped: false,
                     locked: true,
                     power: Some(1800),
+                    stats: vec![
+                        destiny_core::StatSummary {
+                            stat_hash: 1,
+                            value: 10,
+                        },
+                        destiny_core::StatSummary {
+                            stat_hash: 9,
+                            value: 20,
+                        },
+                    ],
                     plugs: Vec::new(),
                     perks: Vec::new(),
                 },
@@ -742,12 +954,14 @@ mod tests {
                     equipped: false,
                     locked: false,
                     power: None,
+                    stats: Vec::new(),
                     plugs: Vec::new(),
                     perks: Vec::new(),
                 },
                 ItemInstance {
                     instance_id: instance_id("700000000000000004"),
                     item_hash: ItemHash::new(2001),
+                    stats: Vec::new(),
                     plugs: Vec::new(),
                     location: ItemLocation::Character(character_id("900000000000000001")),
                     quantity: 1,
@@ -759,6 +973,7 @@ mod tests {
                 ItemInstance {
                     instance_id: instance_id("700000000000000005"),
                     item_hash: ItemHash::new(2003),
+                    stats: Vec::new(),
                     plugs: Vec::new(),
                     location: ItemLocation::Character(character_id("900000000000000002")),
                     quantity: 3,
@@ -775,6 +990,7 @@ mod tests {
                     equipped: true,
                     locked: true,
                     power: Some(1810),
+                    stats: Vec::new(),
                     plugs: vec![
                         PlugSummary {
                             plug_hash: ItemHash::new(6001),
@@ -810,6 +1026,7 @@ mod tests {
                 ItemInstance {
                     instance_id: instance_id("700000000000000007"),
                     item_hash: ItemHash::new(3002),
+                    stats: Vec::new(),
                     plugs: Vec::new(),
                     location: ItemLocation::Character(character_id("900000000000000002")),
                     quantity: 1,
@@ -1531,7 +1748,8 @@ mod tests {
                 "itemComponents": {
                     "instances": { "data": { "20": { "isEquipped": false }, "100": { "isEquipped": false } } },
                     "perks": { "data": {} },
-                    "sockets": { "data": {} }
+                    "sockets": { "data": {} },
+                    "stats": { "data": {} }
                 }
             }
         });

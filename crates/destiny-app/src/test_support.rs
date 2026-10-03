@@ -565,6 +565,9 @@ impl InventoryRepository for InMemoryInventoryRepository {
         input
             .items
             .sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+        for item in &mut input.items {
+            item.stats.sort_by_key(|stat| stat.stat_hash);
+        }
         let revision = match (self.current.as_ref(), self.previous_input.as_ref()) {
             (Some(current), Some(previous)) if previous.content_eq(&input) => {
                 current.metadata.revision
@@ -1100,6 +1103,7 @@ mod tests {
                 equipped: false,
                 locked: false,
                 power: None,
+                stats: Vec::new(),
                 plugs: Vec::new(),
                 perks: Vec::new(),
             }],
@@ -1140,6 +1144,7 @@ mod tests {
                     equipped: false,
                     locked: false,
                     power: Some(100),
+                    stats: Vec::new(),
                     plugs: Vec::new(),
                     perks: vec![
                         PerkSummary {
@@ -1162,6 +1167,7 @@ mod tests {
                     equipped: true,
                     locked: true,
                     power: Some(200),
+                    stats: Vec::new(),
                     plugs: Vec::new(),
                     perks: Vec::new(),
                 },
@@ -1222,6 +1228,7 @@ mod tests {
             equipped: false,
             locked: false,
             power: None,
+            stats: Vec::new(),
             plugs: Vec::new(),
             perks: perk_hashes
                 .into_iter()

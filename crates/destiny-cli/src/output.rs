@@ -1041,6 +1041,7 @@ mod tests {
             equipped: false,
             locked: true,
             power: Some(1350),
+            stats: Vec::new(),
             plugs: Vec::new(),
             perks: vec![
                 PerkSummary {

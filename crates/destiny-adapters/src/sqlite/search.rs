@@ -294,6 +294,7 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
     };
     let perks = read_perks(connection, instance_id.as_str())?;
     let plugs = super::inventory::read_plugs(connection, instance_id.as_str())?;
+    let stats = super::inventory::read_stats(connection, instance_id.as_str())?;
 
     Ok(ItemInstance {
         instance_id: instance_id.into(),
@@ -304,6 +305,7 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
         locked: decode_boolean(locked)?,
         power: decode_optional_u16(power)?,
         plugs,
+        stats,
         perks,
     })
 }
@@ -449,6 +451,7 @@ mod tests {
             equipped: false,
             locked: false,
             power: None,
+            stats: Vec::new(),
             plugs: Vec::new(),
             perks: perk_hashes
                 .iter()

@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 8;
+pub(crate) const LATEST_VERSION: u32 = 9;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 8] = [
+const MIGRATIONS: [Migration; 9] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -94,7 +94,22 @@ const MIGRATIONS: [Migration; 8] = [
         up: SCHEMA_V8_UP,
         down: SCHEMA_V8_DOWN,
     },
+    Migration {
+        version: 9,
+        up: SCHEMA_V9_UP,
+        down: SCHEMA_V9_DOWN,
+    },
 ];
+
+const SCHEMA_V9_UP: &str = r#"
+CREATE TABLE item_stats (
+    instance_id TEXT NOT NULL REFERENCES items(instance_id) ON DELETE CASCADE,
+    stat_hash INTEGER NOT NULL CHECK (stat_hash BETWEEN 0 AND 4294967295),
+    value INTEGER NOT NULL CHECK (value BETWEEN -2147483648 AND 2147483647),
+    PRIMARY KEY (instance_id, stat_hash)
+) STRICT;
+"#;
+const SCHEMA_V9_DOWN: &str = "DROP TABLE IF EXISTS item_stats;";
 
 /// Version-1 schema: normalized sync metadata, definitions, one active profile,
 /// characters, and item instances.

@@ -144,7 +144,8 @@ impl InventorySnapshotInput {
     /// An [`ItemInstance`]'s `perks` vector is compared in its stored order, so
     /// every [`PerkSummary`] field and the exact perk order participate in
     /// identity: a reordered perk list is a content change, while a pure
-    /// permutation of the *items* themselves is not.
+    /// permutation of the *items* themselves is not. Stat values participate in
+    /// identity, but stat order does not: both sides are sorted by stat hash.
     ///
     /// [`PerkSummary`]: crate::domain::PerkSummary
     pub fn content_eq(&self, other: &Self) -> bool {
@@ -165,8 +166,11 @@ impl InventorySnapshotInput {
             return false;
         }
 
-        let mut left_items: Vec<&ItemInstance> = self.items.iter().collect();
-        let mut right_items: Vec<&ItemInstance> = other.items.iter().collect();
+        let mut left_items = self.items.clone();
+        let mut right_items = other.items.clone();
+        for item in left_items.iter_mut().chain(right_items.iter_mut()) {
+            item.stats.sort_by_key(|stat| stat.stat_hash);
+        }
         left_items.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
         right_items.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
         left_items == right_items
@@ -186,7 +190,8 @@ impl InventorySnapshotInput {
     /// its fields is already a valid typed value, so structural validity imposes
     /// no additional restriction on it: duplicated perk hashes and any perk
     /// order are structurally valid, and they are left to revision identity and
-    /// the durable repository's own storage constraints.
+    /// the durable repository's own storage constraints. Stats have unique hashes
+    /// and at most 64 entries per item; incoming order need not be canonical.
     pub fn is_structurally_valid(&self) -> bool {
         let mut character_ids = HashSet::with_capacity(self.characters.len());
         for character in &self.characters {
@@ -203,6 +208,11 @@ impl InventorySnapshotInput {
         }
 
         for item in &self.items {
+            let mut hashes = HashSet::new();
+            if item.stats.len() > 64 || item.stats.iter().any(|stat| !hashes.insert(stat.stat_hash))
+            {
+                return false;
+            }
             if item.plugs.len() > 32
                 || item
                     .plugs

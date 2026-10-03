@@ -250,6 +250,7 @@ fn full_input() -> InventorySnapshotInput {
                 equipped: false,
                 locked: true,
                 power: Some(u16::MAX),
+                stats: Vec::new(),
                 plugs: Vec::new(),
                 perks: vec![
                     PerkSummary {
@@ -279,6 +280,7 @@ fn full_input() -> InventorySnapshotInput {
                 equipped: true,
                 locked: false,
                 power: None,
+                stats: Vec::new(),
                 plugs: Vec::new(),
                 perks: vec![PerkSummary {
                     perk_hash: PerkHash::new(42),
@@ -294,6 +296,7 @@ fn full_input() -> InventorySnapshotInput {
                 equipped: false,
                 locked: false,
                 power: Some(0),
+                stats: Vec::new(),
                 plugs: Vec::new(),
                 perks: Vec::new(),
             },
@@ -326,6 +329,152 @@ fn expected_characters() -> Vec<Character> {
 /// The canonical items `full_input` round-trips to, ordered by identifier.
 fn expected_items() -> Vec<ItemInstance> {
     full_input().items
+}
+
+#[test]
+fn stats_round_trip_search_and_revision_identity() {
+    use destiny_core::{SearchRepository, StatSummary};
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut input = full_input();
+    input.items[0].stats = vec![
+        StatSummary {
+            stat_hash: 1,
+            value: i32::MIN,
+        },
+        StatSummary {
+            stat_hash: u32::MAX,
+            value: i32::MAX,
+        },
+    ];
+    let first = store.replace_current(input.clone()).unwrap();
+    let snapshot = store.load_current().unwrap().unwrap();
+    assert_eq!(snapshot.items, input.items);
+    assert_eq!(
+        store
+            .search_instances(&destiny_core::InstanceSearchQuery {
+                item_hashes: destiny_core::ItemHashFilter::Any,
+                perk_hash: None,
+                perk_name: None,
+                mod_name: None,
+                character_id: None,
+                definitions: None,
+                min_power: None,
+                limit: 10
+            })
+            .unwrap(),
+        input.items
+    );
+    let mut fake = destiny_app::test_support::InMemoryInventoryRepository::default();
+    assert_eq!(fake.replace_current(input.clone()).unwrap(), first);
+    assert_eq!(
+        store.lookup_instance(&input.items[0].instance_id).unwrap(),
+        destiny_core::Resolution::Unique(input.items[0].clone())
+    );
+    input.items[0].stats.reverse();
+    assert_eq!(store.replace_current(input.clone()).unwrap(), first);
+    assert_eq!(fake.replace_current(input.clone()).unwrap(), first);
+    input.items[0].stats[0].value -= 1;
+    let changed = store.replace_current(input.clone()).unwrap();
+    assert_ne!(changed.metadata.revision, first.metadata.revision);
+    assert_eq!(fake.replace_current(input.clone()).unwrap(), changed);
+    let duplicate = input.items[0].stats[0].clone();
+    input.items[0].stats.push(duplicate);
+    assert!(store.replace_current(input.clone()).is_err());
+    assert!(fake.replace_current(input).is_err());
+    assert_eq!(store.load_current().unwrap().unwrap(), changed);
+    store.connection().execute_batch("CREATE TRIGGER fail_stats BEFORE INSERT ON item_stats BEGIN SELECT RAISE(ABORT, 'test'); END;").unwrap();
+    let mut replacement = InventorySnapshotInput::with_metadata(&changed);
+    replacement.items[0].stats[0].value += 1;
+    assert!(store.replace_current(replacement).is_err());
+    assert_eq!(store.load_current().unwrap().unwrap(), changed);
+    store
+        .connection()
+        .execute_batch("DROP TRIGGER fail_stats; PRAGMA ignore_check_constraints = ON;")
+        .unwrap();
+    store
+        .connection()
+        .execute(
+            "UPDATE item_stats SET value = 2147483648 WHERE stat_hash = 1",
+            [],
+        )
+        .unwrap();
+    assert!(store.load_current().is_err());
+    assert!(store.lookup_instance(&"instance-1".into()).is_err());
+}
+
+#[test]
+fn stats_migration_constraints_cascade_and_corruption_checks() {
+    use destiny_core::SearchRepository;
+    let mut store = seeded_store();
+    for sql in [
+        "INSERT INTO item_stats VALUES ('instance-1', -1, 0)",
+        "INSERT INTO item_stats VALUES ('instance-1', 4294967296, 0)",
+        "INSERT INTO item_stats VALUES ('instance-1', 1, 2147483648)",
+        "INSERT INTO item_stats VALUES ('instance-1', 1, -2147483649)",
+        "INSERT INTO item_stats VALUES ('instance-1', 1, 1.5)",
+        "INSERT INTO item_stats VALUES ('missing', 1, 0)",
+    ] {
+        assert!(store.connection().execute(sql, []).is_err());
+    }
+    store
+        .connection()
+        .execute("INSERT INTO item_stats VALUES ('instance-1', 1, 0)", [])
+        .unwrap();
+    assert!(
+        store
+            .connection()
+            .execute("INSERT INTO item_stats VALUES ('instance-1', 1, 10)", [])
+            .is_err()
+    );
+    store.migrate_to(8).unwrap();
+    assert!(
+        store
+            .connection()
+            .prepare("SELECT * FROM item_stats")
+            .is_err()
+    );
+    store.migrate_to(9).unwrap();
+    assert!(
+        store
+            .load_current()
+            .unwrap()
+            .unwrap()
+            .items
+            .iter()
+            .all(|item| item.stats.is_empty())
+    );
+    for hash in 0..65 {
+        store
+            .connection()
+            .execute(
+                "INSERT INTO item_stats VALUES ('instance-1', ?1, 0)",
+                [hash],
+            )
+            .unwrap();
+    }
+    assert!(store.load_current().is_err());
+    assert!(store.lookup_instance(&"instance-1".into()).is_err());
+    store
+        .connection()
+        .execute("DELETE FROM items WHERE instance_id = 'instance-1'", [])
+        .unwrap();
+    assert_eq!(
+        store
+            .connection()
+            .query_row("SELECT count(*) FROM item_stats", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    store
+        .connection()
+        .pragma_update(None, "foreign_keys", false)
+        .unwrap();
+    store
+        .connection()
+        .execute("INSERT INTO item_stats VALUES ('missing', 1, 0)", [])
+        .unwrap();
+    assert!(store.load_current().is_err());
 }
 
 fn seeded_store() -> SqliteStore {

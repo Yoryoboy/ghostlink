@@ -746,6 +746,7 @@ mod tests {
             equipped: false,
             locked: false,
             power: Some(1_350),
+            stats: Vec::new(),
             plugs: Vec::new(),
             perks: Vec::new(),
         }
