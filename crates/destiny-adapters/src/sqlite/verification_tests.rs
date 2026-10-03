@@ -155,6 +155,7 @@ fn profile(
             light: Some(1810),
         }],
         items: vec![ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(instance_id),
             item_hash: ItemHash::new(-42),
             location: ItemLocation::Character(CharacterId::new(character_id)),

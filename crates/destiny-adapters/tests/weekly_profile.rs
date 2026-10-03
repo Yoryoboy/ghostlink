@@ -140,7 +140,7 @@ fn weekly_exact_allowlist_does_not_change_inventory_query() {
     assert!(weekly_profile_endpoint(&membership, &CharacterId::new("../secret")).is_err());
     assert_eq!(
         profile_endpoint(&membership),
-        "https://www.bungie.net/Platform/Destiny2/3/Profile/456/?components=102,200,201,205,300,302,304,305"
+        "https://www.bungie.net/Platform/Destiny2/3/Profile/456/?components=102,200,201,205,300,302,304,305,310"
     );
 }
 

@@ -1385,11 +1385,11 @@ mod tests {
     fn gateway_errors_propagate_unchanged() {
         let error = AppError::new(ErrorCategory::ProviderUnavailable);
         let mut public_failure = service();
-        public_failure.public_gateway.result = Err(error);
+        public_failure.public_gateway.result = Err(error.clone());
         assert_eq!(public_failure.weekly(&character()).unwrap_err(), error);
         assert_eq!(public_failure.profile_gateway.calls, 0);
         let mut profile_failure = service();
-        profile_failure.profile_gateway.result = Err(error);
+        profile_failure.profile_gateway.result = Err(error.clone());
         assert_eq!(profile_failure.weekly(&character()).unwrap_err(), error);
     }
     #[test]
@@ -1526,7 +1526,10 @@ mod tests {
     fn storage_failure_propagates_before_provider_calls() {
         let mut service = service();
         let error = AppError::new(ErrorCategory::LocalStorage);
-        service.repository.inner = service.repository.inner.with_metadata_failure(error);
+        service.repository.inner = service
+            .repository
+            .inner
+            .with_metadata_failure(error.clone());
         assert_eq!(service.weekly(&character()).unwrap_err(), error);
         assert_eq!(service.public_gateway.calls, 0);
         assert_eq!(service.profile_gateway.calls, 0);

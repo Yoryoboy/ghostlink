@@ -18,6 +18,8 @@ pub enum ErrorCategory {
     ProviderValidation,
     DefinitionsUnavailable,
     UnknownStatName,
+    UnknownSearchName,
+    AmbiguousSearchName,
     StaleState,
     AmbiguousMatch,
     UnsupportedOperation,
@@ -54,27 +56,41 @@ impl ErrorCategory {
 }
 
 /// An application failure whose presentation is intentionally sanitized.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppError {
     category: ErrorCategory,
+    detail: Option<String>,
 }
 
 impl AppError {
     pub const fn new(category: ErrorCategory) -> Self {
-        Self { category }
+        Self {
+            category,
+            detail: None,
+        }
     }
 
     pub const fn configuration() -> Self {
         Self::new(ErrorCategory::ConfigurationError)
     }
 
-    pub const fn category(self) -> ErrorCategory {
+    pub const fn category(&self) -> ErrorCategory {
         self.category
+    }
+
+    pub(crate) fn name_resolution(category: ErrorCategory, message: String) -> Self {
+        Self {
+            category,
+            detail: Some(message),
+        }
     }
 }
 
 impl fmt::Display for AppError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(detail) = &self.detail {
+            return formatter.write_str(detail);
+        }
         let message = match self.category {
             ErrorCategory::AuthorizationRequired => "authorization is required",
             ErrorCategory::ReauthorizationRequired => "reauthorization is required",
@@ -92,6 +108,10 @@ impl fmt::Display for AppError {
             }
             ErrorCategory::UnknownStatName => {
                 "unknown stat name; use a name from the loaded Manifest stat definitions"
+            }
+            ErrorCategory::UnknownSearchName => "unknown search name",
+            ErrorCategory::AmbiguousSearchName => {
+                "name matches too many catalog entries; be more specific"
             }
             ErrorCategory::StaleState => "local state is stale",
             ErrorCategory::AmbiguousMatch => "the request matched multiple items",

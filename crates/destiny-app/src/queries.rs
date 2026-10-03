@@ -171,19 +171,27 @@ where
         }
 
         self.require_definitions()?;
-        if let Some(query) = &request.instances
-            && !query.stats.is_empty()
-        {
-            if self.repository().stat_definition_count()? == 0 {
-                return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+        let mut request = request.clone();
+        let mut resolved = destiny_core::name_matching::ResolvedNames::default();
+        if let Some(query) = &mut request.instances {
+            for (kind, term, output) in [
+                ("perk", &mut query.perk_name, &mut resolved.perk),
+                ("mod", &mut query.mod_name, &mut resolved.mods),
+                ("archetype", &mut query.archetype, &mut resolved.archetype),
+            ] {
+                if let Some(term) = term {
+                    *output = term.resolve(&self.repository().name_catalog(kind)?, kind)?;
+                }
             }
-            for condition in &query.stats {
-                if self
-                    .repository()
-                    .stat_hashes_by_name(condition.name.as_str())?
-                    .is_empty()
-                {
-                    return Err(AppError::new(ErrorCategory::UnknownStatName));
+            if !query.stats.is_empty() {
+                if self.repository().stat_definition_count()? == 0 {
+                    return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+                }
+                let catalog = self.repository().name_catalog("stat")?;
+                for condition in &mut query.stats {
+                    let input = condition.name.as_str().to_owned();
+                    let names = condition.name.resolve(&catalog, "stat")?;
+                    resolved.stats.insert(input, names);
                 }
             }
         }
@@ -197,10 +205,12 @@ where
 
         let instance_query = if request.definitions.has_filters() {
             let mut query = request.instances.clone().unwrap_or(InstanceSearchQuery {
+                include_available: false,
                 item_hashes: destiny_core::ItemHashFilter::Any,
                 perk_hash: None,
                 perk_name: None,
                 mod_name: None,
+                archetype: None,
                 stats: Vec::new(),
                 character_id: None,
                 definitions: None,
@@ -237,6 +247,25 @@ where
                         plugs.push(definition.clone());
                     }
                 }
+                let mut available = Vec::new();
+                for plug in &instance.available_plugs {
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        resolved_plugs.entry(plug.plug_hash)
+                    {
+                        let resolved =
+                            match self.sync.repository().lookup_definition(plug.plug_hash)? {
+                                Resolution::Unique(definition) => Some(definition),
+                                Resolution::Missing => None,
+                                Resolution::Ambiguous(_) => return Err(invalid_repository_state()),
+                            };
+                        entry.insert(resolved);
+                    }
+                    if let Some(definition) = &resolved_plugs[&plug.plug_hash] {
+                        available.push(definition.clone());
+                    }
+                }
+                let (available_perks, available_mods) =
+                    destiny_core::query::inventory_available_names(&definition, &plugs, &available);
                 let (perk_names, mod_names) =
                     destiny_core::query::inventory_plug_names(&definition, &plugs);
                 let mut named = Vec::new();
@@ -256,6 +285,9 @@ where
                     .map(|(name, _, value)| destiny_core::NamedStat { name, value })
                     .collect();
                 hits.push(InventorySearchHit {
+                    available_perks,
+                    available_mods,
+                    archetype: destiny_core::query::inventory_archetype(&definition, &plugs),
                     stats,
                     definition,
                     perk_names,
@@ -266,6 +298,7 @@ where
         }
 
         Ok(InventorySearchResult {
+            resolved,
             candidates,
             hits,
             metadata,
@@ -559,6 +592,16 @@ mod tests {
     }
 
     impl SearchRepository for CompositeRepository {
+        fn name_catalog(
+            &self,
+            kind: &str,
+        ) -> Result<destiny_core::name_matching::NameCatalog, AppError> {
+            if kind == "stat" {
+                Ok(self.definitions.stat_name_catalog())
+            } else {
+                self.search.name_catalog(kind)
+            }
+        }
         fn search_definitions(
             &self,
             query: &DefinitionSearchQuery,
@@ -731,6 +774,7 @@ mod tests {
         perks: Vec<PerkSummary>,
     ) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
             location,
@@ -799,10 +843,12 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            include_available: false,
             item_hashes,
             perk_hash,
             perk_name: None,
             mod_name: None,
+            archetype: None,
             stats: Vec::new(),
             character_id,
             definitions: None,
@@ -878,10 +924,14 @@ mod tests {
             .find(|definition| definition.hash == ItemHash::new(1))
             .unwrap()
             .slot = Some(destiny_core::domain::ItemSlot::Helmet);
-        definitions.extend([armor_mod, intrinsic]);
+        let mut archetype = definition(62, "Specialist", None, vec![]);
+        archetype.plug_category = Some("armor_archetypes".into());
+        let mut second = definition(63, "Paragon", None, vec![]);
+        second.plug_category = Some("armor_archetypes".into());
+        definitions.extend([armor_mod, intrinsic, archetype, second]);
         let mut repository = CompositeRepository::with_definitions(definitions);
         let mut item = instance("owned", 1, ItemLocation::Vault, vec![]);
-        item.plugs = [61, 60, 99, 60]
+        item.plugs = [61, 60, 99, 62, 63, 60]
             .into_iter()
             .map(|hash| destiny_core::PlugSummary {
                 plug_hash: ItemHash::new(hash),
@@ -892,6 +942,7 @@ mod tests {
         let mut service = service(&shared, repository);
         let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
         query.mod_name = Some(SearchTerm::new(" harmonic  siphon ").unwrap());
+        query.archetype = Some(SearchTerm::new("specialist").unwrap());
         let request = search_request(definition_query(None, None, vec![], 1), Some(query));
         let result = service.search_inventory(&request, TTL, NOW).unwrap();
         assert_eq!(
@@ -899,6 +950,7 @@ mod tests {
             ["Harmonic Siphon", "Harmonic Siphon"]
         );
         assert!(result.hits[0].perk_names.is_empty());
+        assert_eq!(result.hits[0].archetype.as_deref(), Some("Specialist"));
     }
 
     #[test]

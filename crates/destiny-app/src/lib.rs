@@ -35,6 +35,7 @@ pub use config::{
 // through this crate. This block is the smallest additive surface that lets the
 // presentation layer implement that translation and lets its binary composition
 // root load a credential; it adds no behavior and no new abstraction.
+pub use destiny_core::name_matching;
 pub use destiny_core::ports::StatDefinitionRepository;
 pub use destiny_core::ports::{
     DefinitionCatalogRepository, ManifestIndex, WorldDefinitionRepository,

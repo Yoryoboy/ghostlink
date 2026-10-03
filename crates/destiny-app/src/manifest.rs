@@ -945,9 +945,9 @@ mod tests {
                         activity_type_path: "unused".into(),
                         stat_path: "unused".into(),
                     }));
-                    gateway.queue_component(Err(error));
+                    gateway.queue_component(Err(error.clone()));
                 } else {
-                    gateway.queue_index(Err(error));
+                    gateway.queue_index(Err(error.clone()));
                 }
                 let mut service = ManifestService::new(gateway, repository);
                 assert_eq!(service.sync(CHECKED_AT), Err(error));

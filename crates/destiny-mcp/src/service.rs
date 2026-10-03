@@ -684,6 +684,12 @@ impl SearchInventoryArgs {
             .map(SearchTerm::new)
             .transpose()
             .map_err(McpError::from)?;
+        let archetype = self
+            .archetype
+            .as_deref()
+            .map(SearchTerm::new)
+            .transpose()
+            .map_err(McpError::from)?;
         let stats = self
             .stats
             .iter()
@@ -694,11 +700,13 @@ impl SearchInventoryArgs {
             return Err(invalid_arguments());
         }
         if instances.is_none()
-            && (!stats.is_empty()
+            && (self.include_available
+                || !stats.is_empty()
                 || definitions.has_filters()
                 || self.min_power.is_some()
                 || perk_name.is_some()
-                || mod_name.is_some())
+                || mod_name.is_some()
+                || archetype.is_some())
         {
             instances = Some(
                 InstanceQueryArgs {
@@ -715,6 +723,8 @@ impl SearchInventoryArgs {
             query.min_power = query.min_power.max(self.min_power);
             query.perk_name = perk_name;
             query.mod_name = mod_name;
+            query.archetype = archetype;
+            query.include_available = self.include_available;
             query.stats = stats;
             query.validate().map_err(McpError::from)?;
         }
@@ -747,10 +757,12 @@ impl InstanceQueryArgs {
         };
 
         let query = InstanceSearchQuery {
+            include_available: false,
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             stats: Vec::new(),
             character_id: self.character_id.map(CharacterId::new),
             definitions: None,
@@ -831,15 +843,24 @@ pub fn list_characters_output(result: &CharacterListResult) -> ListCharactersOut
 /// Projects a shared inventory search into its bounded MCP output.
 pub fn search_inventory_output(result: &InventorySearchResult) -> SearchInventoryOutput {
     SearchInventoryOutput {
+        resolved: crate::schema::ResolvedNamesView {
+            perk: result.resolved.perk.clone(),
+            mods: result.resolved.mods.clone(),
+            archetype: result.resolved.archetype.clone(),
+            stats: result.resolved.stats.clone(),
+        },
         candidates: result.candidates.iter().map(definition_view).collect(),
         hits: result
             .hits
             .iter()
             .map(|hit| InventorySearchHitView {
+                available_perks: hit.available_perks.clone(),
+                available_mods: hit.available_mods.clone(),
                 definition: definition_view(&hit.definition),
                 instance: instance_view(&hit.instance),
                 perk_names: hit.perk_names.clone(),
                 mods: hit.mod_names.clone(),
+                archetype: hit.archetype.clone(),
                 stats: hit
                     .stats
                     .iter()
@@ -1193,6 +1214,16 @@ mod tests {
     }
 
     impl SearchRepository for CompositeRepository {
+        fn name_catalog(
+            &self,
+            kind: &str,
+        ) -> Result<destiny_app::name_matching::NameCatalog, AppError> {
+            if kind == "stat" {
+                Ok(self.definitions.stat_name_catalog())
+            } else {
+                self.search.name_catalog(kind)
+            }
+        }
         fn search_definitions(
             &self,
             query: &DefinitionSearchQuery,
@@ -1369,6 +1400,7 @@ mod tests {
         perks: Vec<PerkSummary>,
     ) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(instance_id),
             item_hash: ItemHash::new(item_hash),
             location,
@@ -1466,10 +1498,12 @@ mod tests {
         limit: usize,
     ) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            include_available: false,
             text: text.map(str::to_owned),
             stats: Vec::new(),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             item_type: None,
             tags: tags.into_iter().map(str::to_owned).collect(),
             element: None,
@@ -1489,9 +1523,11 @@ mod tests {
 
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            include_available: false,
             stats: Vec::new(),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             element: None,
             slot: None,
             class_type: None,
@@ -1693,10 +1729,12 @@ mod tests {
             instance("inst-b", 2, ItemLocation::Vault, vec![perk(20)]),
         ];
         let args = SearchInventoryArgs {
+            include_available: false,
             text: Some("gjallar".into()),
             stats: Vec::new(),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             item_type: None,
             element: None,
             slot: None,
@@ -1767,11 +1805,13 @@ mod tests {
         assert_eq!(result.hits.len(), 1);
         result.hits[0].perk_names.clear();
         result.hits[0].mod_names = vec!["Harmonic Siphon".into(), "Ashes to Assets".into()];
+        result.hits[0].archetype = Some("Specialist".into());
         let value = serde_json::to_value(search_inventory_output(&result)).unwrap();
         assert_eq!(
             value["hits"][0]["mods"],
             serde_json::json!(["Harmonic Siphon", "Ashes to Assets"])
         );
+        assert_eq!(value["hits"][0]["archetype"], "Specialist");
         assert_eq!(value["hits"][0]["perk_names"], serde_json::json!([]));
     }
 
@@ -1919,7 +1959,9 @@ mod tests {
             }),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             stats: Vec::new(),
+            include_available: false,
         };
         let output = mcp
             .search_inventory(&args.into_request().expect("valid arguments"))
@@ -1963,7 +2005,9 @@ mod tests {
             }),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             stats: Vec::new(),
+            include_available: false,
         };
         let request = args.into_request().expect("valid arguments");
 

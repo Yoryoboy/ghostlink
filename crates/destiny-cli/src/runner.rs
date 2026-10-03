@@ -703,7 +703,7 @@ mod tests {
 
         fn build(&mut self) -> Result<ReadRuntime<Self::Service>, CliError> {
             self.builds.set(self.builds.get() + 1);
-            match self.failure {
+            match self.failure.clone() {
                 Some(error) => Err(error),
                 None => Ok(ReadRuntime::new(self.service.clone(), self.freshness)),
             }
@@ -741,6 +741,7 @@ mod tests {
 
     fn instance(identifier: &str, hash: i64) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(identifier),
             item_hash: ItemHash::new(hash),
             location: ItemLocation::Vault,
@@ -770,12 +771,16 @@ mod tests {
 
     fn search_result() -> InventorySearchResult {
         InventorySearchResult {
+            resolved: Default::default(),
             candidates: vec![definition(1, "Gjallarhorn")],
             hits: vec![InventorySearchHit {
                 definition: definition(1, "Gjallarhorn"),
                 instance: instance("inst-1", 1),
                 perk_names: Vec::new(),
                 mod_names: Vec::new(),
+                available_perks: Vec::new(),
+                available_mods: Vec::new(),
+                archetype: None,
                 stats: Vec::new(),
             }],
             metadata: metadata(FreshnessStatus::Fresh),
@@ -876,7 +881,7 @@ mod tests {
         ) -> Result<Box<dyn LoginOperations>, CliError> {
             self.modes.borrow_mut().push(mode);
             self.callbacks.borrow_mut().push(callback);
-            match (self.failure, self.script.clone()) {
+            match (self.failure.clone(), self.script.clone()) {
                 (Some(error), _) => Err(error),
                 (None, Some(script)) => Ok(Box::new(script)),
                 (None, None) => Ok(Box::new(ScriptedLogin::authorized())),
@@ -1143,10 +1148,12 @@ mod tests {
                 limit: 5,
             },
             instances: Some(destiny_app::InstanceSearchQuery {
+                include_available: false,
                 item_hashes: destiny_app::ItemHashFilter::AnyOf(vec![ItemHash::new(1)]),
                 perk_hash: None,
                 perk_name: None,
                 mod_name: None,
+                archetype: None,
                 stats: Vec::new(),
                 character_id: None,
                 definitions: Some(Box::new(destiny_app::DefinitionSearchQuery {

@@ -73,6 +73,45 @@ type RawInstance = (
 );
 
 impl SearchRepository for SqliteStore {
+    fn name_catalog(
+        &self,
+        kind: &str,
+    ) -> Result<destiny_core::name_matching::NameCatalog, AppError> {
+        let mut names = Vec::new();
+        if kind == "stat" {
+            names = super::world::read_stats(self.connection())?
+                .into_iter()
+                .map(|(stat, _)| stat.name().to_owned())
+                .collect();
+        } else {
+            // Only plug definitions need reconstruction; ordinary item definitions
+            // are never visited during name resolution.
+            let mut statement = self
+                .connection()
+                .prepare(
+                    "SELECT hash FROM definitions WHERE plug_category IS NOT NULL ORDER BY hash",
+                )
+                .map_err(|_| storage_failure())?;
+            let hashes = statement
+                .query_map([], |row| row.get::<_, i64>(0))
+                .map_err(|_| storage_failure())?;
+            for hash in hashes {
+                let definition = match self
+                    .lookup_definition(ItemHash::new(hash.map_err(|_| storage_failure())?))?
+                {
+                    Resolution::Unique(definition) => definition,
+                    _ => return Err(storage_failure()),
+                };
+                if destiny_core::name_matching::is_name_kind(&definition, kind) {
+                    names.push(definition.name);
+                }
+            }
+        }
+        Ok(destiny_core::name_matching::NameCatalog::new(
+            names.iter().map(String::as_str),
+        ))
+    }
+
     fn search_definitions(
         &self,
         query: &DefinitionSearchQuery,
@@ -190,6 +229,7 @@ impl SearchRepository for SqliteStore {
                     .is_some_and(|criteria| criteria.has_filters())
                     || query.perk_name.is_some()
                     || query.mod_name.is_some()
+                    || query.archetype.is_some()
                 {
                     match self.lookup_definition(instance.item_hash)? {
                         Resolution::Unique(definition) => Some(definition),
@@ -200,7 +240,10 @@ impl SearchRepository for SqliteStore {
                     None
                 };
                 let mut plugs = Vec::new();
-                if query.perk_name.is_some() || query.mod_name.is_some() {
+                if query.perk_name.is_some()
+                    || query.mod_name.is_some()
+                    || query.archetype.is_some()
+                {
                     for plug in &instance.plugs {
                         if let std::collections::hash_map::Entry::Vacant(entry) =
                             plug_definitions.entry(plug.plug_hash)
@@ -217,9 +260,31 @@ impl SearchRepository for SqliteStore {
                         }
                     }
                 }
+                let mut available = Vec::new();
+                if query.include_available
+                    && (query.perk_name.is_some() || query.mod_name.is_some())
+                {
+                    for plug in &instance.available_plugs {
+                        if let std::collections::hash_map::Entry::Vacant(entry) =
+                            plug_definitions.entry(plug.plug_hash)
+                        {
+                            let resolved = match self.lookup_definition(plug.plug_hash)? {
+                                Resolution::Unique(definition) => Some(definition),
+                                Resolution::Missing => None,
+                                Resolution::Ambiguous(_) => return Err(storage_failure()),
+                            };
+                            entry.insert(resolved);
+                        }
+                        if let Some(definition) = &plug_definitions[&plug.plug_hash] {
+                            available.push(definition.clone());
+                        }
+                    }
+                }
                 if destiny_core::query::instance_matches_stats(query, &instance, &stat_definitions)
                     && instance_matches_with_definition(query, &instance, definition.as_ref())
-                    && destiny_core::query::instance_matches_plug_names(query, &plugs)
+                    && destiny_core::query::instance_matches_available_names(
+                        query, &plugs, &available,
+                    )
                 {
                     instances.push(instance);
                     if instances.len() == query.limit {
@@ -305,7 +370,9 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
     let plugs = super::inventory::read_plugs(connection, instance_id.as_str())?;
     let stats = super::inventory::read_stats(connection, instance_id.as_str())?;
 
+    let available_plugs = super::inventory::read_available_plugs(connection, instance_id.as_str())?;
     Ok(ItemInstance {
+        available_plugs,
         instance_id: instance_id.into(),
         item_hash: ItemHash::new(item_hash),
         location,
@@ -453,6 +520,7 @@ mod tests {
         perk_hashes: &[u32],
     ) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
             location,
@@ -532,10 +600,12 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            include_available: false,
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             stats: Vec::new(),
             character_id: character.map(CharacterId::new),
             definitions: None,
@@ -684,6 +754,51 @@ mod tests {
             let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
             query.perk_name = perk.map(term);
             query.mod_name = mod_name.map(term);
+            let actual = store.search_instances(&query).unwrap();
+            assert_eq!(actual, fake.search_instances(&query).unwrap());
+            assert_eq!(names(&actual), expected);
+        }
+    }
+
+    #[test]
+    fn archetype_search_matches_fake_before_limit_and_excludes_paragon_shader() {
+        use destiny_core::{PlugSummary, domain::ItemSlot};
+        let temp = TempDatabase::new();
+        let mut store = SqliteStore::open(temp.path()).unwrap();
+        let mut armor = definition(1, "Helmet", None, &[]);
+        armor.slot = Some(ItemSlot::Helmet);
+        let mut weapon = definition(2, "Weapon", None, &[]);
+        weapon.slot = Some(ItemSlot::Energy);
+        let mut archetype = definition(60, "Paragon", None, &[]);
+        archetype.plug_category = Some("armor_archetypes".into());
+        let mut shader = definition(61, "Paragon", None, &[]);
+        shader.plug_category = Some("shader".into());
+        let definitions = vec![armor, weapon, archetype, shader];
+        let items = [
+            ("a-shader", 1, 61),
+            ("b-weapon", 2, 60),
+            ("c-unresolved", 99, 60),
+            ("d-unknown-plug", 1, 99),
+            ("e-armor", 1, 60),
+            ("f-armor", 1, 60),
+        ]
+        .into_iter()
+        .map(|(id, hash, plug)| {
+            let mut item = instance(id, hash, ItemLocation::Vault, &[]);
+            item.plugs = vec![PlugSummary {
+                plug_hash: ItemHash::new(plug),
+                enabled: true,
+            }];
+            item
+        })
+        .collect::<Vec<_>>();
+        seed_definitions(&mut store, &definitions);
+        seed_instances(&mut store, items.clone());
+        let mut fake = InMemorySearchRepository::with_definitions(definitions);
+        fake.set_instances(items);
+        for (name, expected) in [("  PARAGON  ", vec!["e-armor"]), ("para", vec![])] {
+            let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
+            query.archetype = Some(term(name));
             let actual = store.search_instances(&query).unwrap();
             assert_eq!(actual, fake.search_instances(&query).unwrap());
             assert_eq!(names(&actual), expected);
@@ -931,17 +1046,23 @@ mod tests {
         let sanitized = AppError::new(ErrorCategory::ProviderValidation);
         let mut zero_limit = definition_query(Some("gjallar"), None, &[], 10);
         zero_limit.limit = 0;
-        assert_eq!(store.search_definitions(&zero_limit), Err(sanitized));
+        assert_eq!(
+            store.search_definitions(&zero_limit),
+            Err(sanitized.clone())
+        );
 
         let mut over_limit = instance_query(ItemHashFilter::Any, None, None, 10);
         over_limit.limit = MAX_SEARCH_LIMIT + 1;
-        assert_eq!(store.search_instances(&over_limit), Err(sanitized));
+        assert_eq!(store.search_instances(&over_limit), Err(sanitized.clone()));
 
         let mut too_many_tags = definition_query(Some("gjallar"), None, &[], 10);
         too_many_tags.tags = (0..=MAX_TAG_FILTERS)
             .map(|index| term(&format!("tag-{index}")))
             .collect();
-        assert_eq!(store.search_definitions(&too_many_tags), Err(sanitized));
+        assert_eq!(
+            store.search_definitions(&too_many_tags),
+            Err(sanitized.clone())
+        );
 
         // The over-bound hash list is rejected by both implementations with the
         // same sanitized category.

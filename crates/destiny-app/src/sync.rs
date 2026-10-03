@@ -156,11 +156,14 @@ where
         // abort without writing; missing or ambiguous definitions are unknown
         // and retained. A known definition without a category is not a perk.
         let mut categories = std::collections::HashMap::new();
-        for plug in candidate.items.iter().flat_map(|item| &item.plugs) {
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                categories.entry(plug.plug_hash)
-            {
-                let category = match (self.lookup_plug)(&self.repository, plug.plug_hash)? {
+        for hash in candidate.items.iter().flat_map(|item| {
+            item.plugs
+                .iter()
+                .map(|plug| plug.plug_hash)
+                .chain(item.available_plugs.iter().map(|plug| plug.plug_hash))
+        }) {
+            if let std::collections::hash_map::Entry::Vacant(entry) = categories.entry(hash) {
+                let category = match (self.lookup_plug)(&self.repository, hash)? {
                     destiny_core::Resolution::Unique(definition) => {
                         Some(definition.plug_category.unwrap_or_default())
                     }
@@ -265,6 +268,7 @@ mod tests {
                 source: SourceMarker::Profile,
                 characters: Vec::new(),
                 items: vec![ItemInstance {
+                    available_plugs: Vec::new(),
                     instance_id: "instance-1".into(),
                     item_hash: ItemHash::new(7),
                     location: ItemLocation::Vault,
@@ -338,6 +342,7 @@ mod tests {
                 (63, None),
                 (64, Some("shader")),
                 (65, Some("enhancements.v2_head")),
+                (66, Some("armor_archetypes")),
             ]
             .into_iter()
             .map(|(hash, category)| ItemDefinition {
@@ -365,7 +370,14 @@ mod tests {
             let shared = gateway();
             for cosmetic in [61, 64] {
                 let mut candidate = inventory(&resolved, NOW, 1);
-                candidate.items[0].plugs = [60, cosmetic, 65, 62, 63, 60]
+                candidate.items[0].available_plugs = [60, cosmetic, 65, 66, 62, 63]
+                    .into_iter()
+                    .map(|hash| destiny_core::AvailablePlug {
+                        socket_index: 2,
+                        plug_hash: ItemHash::new(hash),
+                    })
+                    .collect();
+                candidate.items[0].plugs = [60, cosmetic, 65, 66, 62, 63, 60]
                     .into_iter()
                     .map(|hash| PlugSummary {
                         plug_hash: ItemHash::new(hash),
@@ -387,7 +399,15 @@ mod tests {
                     .map(|plug| plug.plug_hash.value())
                     .collect();
                 // Known non-plugs (category None) are dropped, missing definitions kept.
-                assert_eq!(hashes, [60, 65, 62, 60]);
+                assert_eq!(hashes, [60, 65, 66, 62, 60]);
+                assert_eq!(
+                    snapshot.items[0]
+                        .available_plugs
+                        .iter()
+                        .map(|plug| plug.plug_hash.value())
+                        .collect::<Vec<_>>(),
+                    [60, 65, 62]
+                );
             }
         }
 

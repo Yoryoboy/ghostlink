@@ -740,10 +740,12 @@ fn definition_query(text: Option<&str>, limit: usize) -> DefinitionSearchQuery {
 
 fn instance_query(item_hashes: ItemHashFilter, limit: usize) -> InstanceSearchQuery {
     InstanceSearchQuery {
+        include_available: false,
         item_hashes,
         perk_hash: None,
         perk_name: None,
         mod_name: None,
+        archetype: None,
         stats: Vec::new(),
         character_id: None,
         definitions: None,

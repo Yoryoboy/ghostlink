@@ -75,8 +75,18 @@ pub struct StatSummary {
     pub value: i32,
 }
 
+/// One selectable plug, in socket-index then provider plug order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AvailablePlug {
+    pub socket_index: u8,
+    pub plug_hash: ItemHash,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemInstance {
+    /// Selectable weapon perks, armor mods and unknown plugs, stored separately
+    /// from selected sockets. Socket order and per-socket plug order are content.
+    pub available_plugs: Vec<AvailablePlug>,
     pub instance_id: ItemInstanceId,
     pub item_hash: ItemHash,
     pub location: ItemLocation,
@@ -95,7 +105,7 @@ pub struct ItemInstance {
     pub perks: Vec<PerkSummary>,
     /// Enabled, non-empty plugs in socket order; duplicate hashes are semantic.
     /// Acquisition is classification-neutral. Publication keeps weapon perks,
-    /// armor mods and unknown definitions using [`classify_plug`].
+    /// armor mods, armor archetypes and unknown definitions using [`classify_plug`].
     pub plugs: Vec<PlugSummary>,
     /// Unique stats in ascending hash order; order is not semantic.
     pub stats: Vec<StatSummary>,
@@ -110,6 +120,14 @@ impl ItemInstance {
         &mut self,
         mut category_for: impl FnMut(ItemHash) -> Option<&'a str>,
     ) {
+        self.available_plugs.retain(|plug| {
+            category_for(plug.plug_hash).is_none_or(|category| {
+                matches!(
+                    classify_plug(category),
+                    PlugKind::WeaponPerk | PlugKind::ArmorMod
+                )
+            })
+        });
         self.plugs.retain(|plug| {
             plug.enabled
                 && category_for(plug.plug_hash)
@@ -213,12 +231,15 @@ pub struct ItemDefinition {
 pub enum PlugKind {
     WeaponPerk,
     ArmorMod,
+    ArmorArchetype,
     Other,
 }
 
 /// Stable, case-sensitive categories, independent of localized display names.
 pub fn classify_plug(category: &str) -> PlugKind {
-    if category.contains("masterworks") {
+    if category == "armor_archetypes" {
+        PlugKind::ArmorArchetype
+    } else if category.contains("masterworks") {
         PlugKind::Other
     } else if is_weapon_perk_plug(category) {
         PlugKind::WeaponPerk
@@ -262,6 +283,17 @@ pub fn is_weapon_perk_plug(category: &str) -> bool {
 #[cfg(test)]
 mod plug_tests {
     #[test]
+    fn archetype_category_is_searchable_and_exact() {
+        assert_ne!(
+            super::classify_plug("armor_archetypes"),
+            super::PlugKind::Other
+        );
+        for category in ["shader", "Armor_archetypes", "armor_archetypes.extra"] {
+            assert_eq!(super::classify_plug(category), super::PlugKind::Other);
+        }
+    }
+
+    #[test]
     fn plug_kind_classification_table() {
         use super::{PlugKind, classify_plug};
         for (category, expected) in [
@@ -292,6 +324,7 @@ mod plug_tests {
         use super::{ItemInstance, ItemLocation, PlugSummary};
         use crate::{ItemHash, ItemInstanceId};
         let mut item = ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new("1"),
             item_hash: ItemHash::new(1),
             location: ItemLocation::Vault,

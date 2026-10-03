@@ -104,7 +104,7 @@ cargo run -p destiny-cli -- --json search-inventory --text gjallar --item-hash 1
 Filter Manifest candidates and owned hits by definition attributes and power:
 
 ```sh
-ghostlink search-inventory --type "Hand Cannon" --element solar --min-power 400
+ghostlink search-inventory --type "Hand Cannon" --element solar --min-power 440
 ghostlink search-inventory --slot helmet --class hunter
 ghostlink search-inventory --perk Rampage
 ghostlink search-inventory --mod "Harmonic Siphon"
@@ -118,7 +118,7 @@ Names are case-insensitive:
 | `--element <NAME>` | kinetic, arc, solar, void, stasis, strand |
 | `--slot <NAME>` | kinetic, energy, power, helmet, gauntlets, chest, legs, classitem, other, unknown |
 | `--class <NAME>` | titan, hunter, warlock, any, unknown |
-| `--min-power <N>` | 0–65535; instances without power never match |
+| `--min-power <N>` | 0–65535 accepted; Edge of Fate power scale is 10–550 (soft cap 440); instances without power never match |
 
 `--text`, `--type`, `--tag`, and the new definition filters also constrain owned
 hits. An unfiltered search returns definition candidates only. Text and JSON
@@ -133,15 +133,15 @@ attributes, even if the live Manifest version has not changed.
 
 `--perk NAME` searches owned instances for a socketed weapon perk (traits,
 barrels, magazines, intrinsics and similar weapon-perk categories), not armor
-mods or cosmetics. Matching is exact and case-insensitive after trimming and
-collapsing whitespace: `Rampage` does not match `Rampage Spec`. Unknown plug
+mods or cosmetics. Names use the catalog matching rules below; an exact
+`Rampage` query does not also match longer names. Unknown plug
 definitions never match. Hits include resolved weapon-perk names in socket
 order in text, JSON (`perk_names`) and MCP output. MCP accepts the same filter
 as `perk_name`.
 
 `--perk` matches only weapons; `--mod NAME` matches only armor (helmet,
-gauntlets, chest, legs and class item). Mod matching uses the same exact,
-case-insensitive, whitespace-normalized rules. Included armor-mod categories
+gauntlets, chest, legs and class item). Mod matching uses the same catalog
+rules. Empty-socket placeholders are excluded. Included armor-mod categories
 are `enhancements.v2_*`, `enhancements.universal`, `enhancements.season_*`
 and `enhancements.raid_*` (standard, universal, seasonal and raid mods).
 Masterworks, ghost mods, armor-tier tuning plugs and cosmetics do not count.
@@ -149,6 +149,71 @@ Armor hits show socket-ordered mod names with a `mods:` label in text and a
 `mods` array in JSON and MCP output; weapon perks remain separate. MCP accepts
 `mod_name`. Existing databases pick up armor mods after the next profile sync
 (`ghostlink sync`); no migration is needed.
+
+### Selectable perks and mods
+
+By default, perk and mod filters match only socketed plugs. Opt into socketed
+**or available** alternatives with `--include-available` (MCP: `include_available`).
+
+```sh
+ghostlink search-inventory --perk "Kill Clip" --include-available
+```
+
+Hits show `available perks:` for weapons and `available mods:` for armor;
+JSON and MCP expose `available_perks` and `available_mods`. Names are unique,
+in socket order, and exclude already socketed names. Unknown definitions never
+match or display. Alternatives require a profile refresh (`ghostlink sync`)
+after the automatic schema-v10 migration; archetype matching remains socketed-only.
+
+### Name matching rules
+
+`--perk`, `--mod`, `--archetype` and names in `--stat` resolve against the
+loaded Manifest catalog **before** searching inventory. Matching ignores case
+and trims/collapses whitespace:
+
+1. An exact name wins, without including longer names.
+2. Otherwise, a substring selects all distinct matching names of that kind
+   (at most 10). A broader query fails and asks for a more specific name.
+3. No match is an input error with up to three closest spelling suggestions;
+   suggestions are never silently selected.
+
+```sh
+ghostlink search-inventory --perk ramp    # selects valid weapon-perk names containing ramp
+ghostlink search-inventory --perk rampge  # error: unknown perk name "rampge"; did you mean: Rampage, ...
+```
+
+Text reports `matched perk: Rampage` (or a comma-separated list). CLI JSON and
+MCP both include `resolved`, with requested `perk`, `mod`, `archetype` arrays
+and a `stats` map from normalized input to matched names, for example
+`{"perk":["Rampage"],"stats":{"cla":["Class"]}}`. Items must carry **any**
+resolved name for each filter; every separate stat condition must still hold.
+Catalogs are kind-specific: shaders never become perk or archetype matches.
+
+### Armor archetypes (`--archetype`)
+
+Search owned armor by its socketed archetype:
+
+```sh
+ghostlink search-inventory --archetype Specialist
+ghostlink search-inventory --slot helmet --archetype Specialist --stat "Class>=30"
+```
+
+| Archetype | Primary stat | Secondary stat |
+| --- | --- | --- |
+| Brawler | Melee | Health |
+| Gunner | Weapons | Grenade |
+| Specialist | Class | Weapons |
+| Grenadier | Grenade | Super |
+| Paragon | Super | — |
+| Bulwark | Health | — |
+
+Matching follows the catalog rules above and is armor-only,
+using the Manifest category `armor_archetypes` (a shader named Paragon does
+not match). Armor hits expose `archetype:` in text and `archetype` in JSON
+and MCP output; if multiple archetype plugs exist, the first in socket order
+is displayed. MCP accepts the top-level `archetype` field; its closed schema
+rejects unknown fields such as `archetype_name`. Archetypes appear after the
+next profile sync (`ghostlink sync`); no migration is needed.
 
 ### Manifest definitions
 
@@ -189,8 +254,7 @@ ghostlink --json search-inventory --stat "Class<=35" --stat "Super=0"
 
 Repeat `--stat "<Name><op><N>"` up to eight times; every condition must hold.
 Operators are `>=` (at least), `<=` (at most), and `=` (equals), with signed
-integer values. Names match exactly, case-insensitively, with whitespace
-normalized. Quote comparisons to protect them from shell redirection. A stat
+integer values. Names use the catalog matching rules above. Quote comparisons to protect them from shell redirection. A stat
 filter alone searches owned items; an item missing that stat does not match.
 Names come from the Manifest, and an unknown name is an input error. If stat
 definitions are not loaded, run `ghostlink sync-manifest`.

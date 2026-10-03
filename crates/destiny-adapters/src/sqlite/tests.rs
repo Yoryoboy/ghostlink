@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 15] = [
+const EXPECTED_TABLE_NAMES: [&str; 16] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -18,6 +18,7 @@ const EXPECTED_TABLE_NAMES: [&str; 15] = [
     "characters",
     "definition_tags",
     "definitions",
+    "item_available_plugs",
     "item_perks",
     "item_plugs",
     "item_stats",
@@ -34,7 +35,11 @@ const EXPECTED_INDEX_NAMES: [&str; 2] = ["items_definition_hash_idx", "items_loc
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 74] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 78] = [
+    ("item_available_plugs", "instance_id", "TEXT"),
+    ("item_available_plugs", "socket_index", "INTEGER"),
+    ("item_available_plugs", "ordinal", "INTEGER"),
+    ("item_available_plugs", "plug_hash", "INTEGER"),
     ("stat_definitions", "hash", "INTEGER"),
     ("stat_definitions", "name", "TEXT"),
     ("stat_definitions", "definition_version", "TEXT"),
@@ -362,7 +367,7 @@ fn reject_membership_type(store: &SqliteStore, value: &str) {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 9);
+    assert_eq!(LATEST_SCHEMA_VERSION, 10);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION
@@ -571,7 +576,7 @@ fn v2_down_drops_only_item_perks_then_reapply_up_preserves_v1_rows() {
 
     // The entire v1 -> v2 -> v1 -> v2 cycle stays durable across a reopen.
     let store = SqliteStore::open(temp.path()).expect("reopen after the cycle");
-    assert_eq!(store.schema_version().expect("read schema version"), 9);
+    assert_eq!(store.schema_version().expect("read schema version"), 10);
     assert_eq!(row_count(&store, "items"), 1);
     assert_eq!(row_count(&store, "item_perks"), 0);
 }
@@ -627,6 +632,37 @@ fn item_plugs_schema_cascades_and_rejects_invalid_rows() {
     }
     store.connection().execute("DELETE FROM items", []).unwrap();
     assert_eq!(row_count(&store, "item_plugs"), 0);
+}
+
+#[test]
+fn available_plugs_v10_is_reversible_strict_and_cascading() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(9).unwrap();
+    assert!(!table_names(&store).contains(&"item_available_plugs".to_owned()));
+    store.migrate_to(10).unwrap();
+    seed_v1_projection(&store);
+    store
+        .connection()
+        .execute(
+            "INSERT INTO item_available_plugs VALUES('item-1',2,0,42)",
+            [],
+        )
+        .unwrap();
+    for sql in [
+        "INSERT INTO item_available_plugs VALUES('item-1',2,1,42)",
+        "INSERT INTO item_available_plugs VALUES('item-1',256,0,43)",
+        "INSERT INTO item_available_plugs VALUES('item-1',2,64,43)",
+        "INSERT INTO item_available_plugs VALUES('item-1',2,1,-1)",
+        "INSERT INTO item_available_plugs VALUES('missing',2,0,43)",
+        "INSERT INTO item_available_plugs VALUES('item-1',2,1,1.5)",
+    ] {
+        assert!(store.connection().execute(sql, []).is_err());
+    }
+    store.connection().execute("DELETE FROM items", []).unwrap();
+    assert_eq!(row_count(&store, "item_available_plugs"), 0);
+    store.migrate_to(9).unwrap();
+    assert!(!table_names(&store).contains(&"item_available_plugs".to_owned()));
+    store.migrate_to(10).unwrap();
 }
 
 #[test]

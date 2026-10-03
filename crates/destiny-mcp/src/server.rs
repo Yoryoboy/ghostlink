@@ -441,6 +441,7 @@ mod tests {
             let result = match self.failure {
                 Some(category) => Err(McpError::new(category)),
                 None => Ok(SearchInventoryOutput {
+                    resolved: Default::default(),
                     candidates: Vec::new(),
                     hits: Vec::new(),
                     metadata: metadata(),

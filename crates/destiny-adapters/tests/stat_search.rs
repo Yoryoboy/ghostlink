@@ -66,10 +66,12 @@ fn definitions(
 }
 fn query(conditions: &[&str]) -> InstanceSearchQuery {
     InstanceSearchQuery {
+        include_available: false,
         item_hashes: ItemHashFilter::Any,
         perk_hash: None,
         perk_name: None,
         mod_name: None,
+        archetype: None,
         character_id: None,
         definitions: None,
         min_power: None,
@@ -114,6 +116,7 @@ fn seeded(stats: Vec<StatDefinition>) -> (SqliteStore, InMemorySearchRepository)
     ]
     .into_iter()
     .map(|(id, stats)| ItemInstance {
+        available_plugs: Vec::new(),
         instance_id: id.into(),
         item_hash: ItemHash::new(1),
         location: ItemLocation::Vault,
@@ -219,6 +222,21 @@ fn stat_names_are_validated_before_sync_and_named_hits_are_ordered() {
     .unwrap();
     let mcp_json = serde_json::to_value(mcp).unwrap();
     assert_eq!(cli_json["hits"][0]["stats"], mcp_json["hits"][0]["stats"]);
+    assert_eq!(cli_json["resolved"], mcp_json["resolved"]);
+    assert_eq!(
+        cli_json["resolved"]["stats"]["class"],
+        serde_json::json!(["Class"])
+    );
+    request.instances = Some(query(&["cla>=30"]));
+    let partial = app
+        .search_inventory(
+            &request,
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(1),
+        )
+        .unwrap();
+    assert_eq!(partial.hits, result.hits);
+    assert_eq!(partial.resolved.stats["cla"], ["Class"]);
     // Named stats are also shown without a stat criterion.
     request.instances = Some(query(&[]));
     request.instances.as_mut().unwrap().limit = 2;
@@ -240,9 +258,13 @@ fn stat_names_are_validated_before_sync_and_named_hits_are_ordered() {
         )
         .unwrap_err();
     assert_eq!(error.category(), ErrorCategory::UnknownStatName);
-    assert!(!error.to_string().contains("secret-sentinel"));
-    let cli_error = destiny_cli::command::CliError::from(error);
-    let mcp_error = destiny_mcp::schema::McpError::from(error);
+    assert!(
+        error
+            .to_string()
+            .contains("unknown stat name \"secret-sentinel\"; did you mean:")
+    );
+    let cli_error = destiny_cli::command::CliError::from(error.clone());
+    let mcp_error = destiny_mcp::schema::McpError::from(error.clone());
     assert_eq!(cli_error.code(), "unknown_stat_name");
     assert_eq!(cli_error.to_string(), error.to_string());
     let mcp_error = serde_json::to_value(mcp_error).unwrap();

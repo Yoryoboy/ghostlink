@@ -332,7 +332,24 @@ fn characters_human(result: &CharacterListResult) -> String {
 }
 
 fn search_human(result: &InventorySearchResult) -> String {
-    let mut lines = vec![format!("candidates: {}", result.candidates.len())];
+    let mut lines = Vec::new();
+    for (kind, names) in [
+        ("perk", &result.resolved.perk),
+        ("mod", &result.resolved.mods),
+        ("archetype", &result.resolved.archetype),
+    ] {
+        if !names.is_empty() {
+            lines.push(format!("matched {kind}: {}", sanitize(&names.join(", "))));
+        }
+    }
+    for (input, names) in &result.resolved.stats {
+        lines.push(format!(
+            "matched stat {}: {}",
+            sanitize(input),
+            sanitize(&names.join(", "))
+        ));
+    }
+    lines.push(format!("candidates: {}", result.candidates.len()));
     for candidate in &result.candidates {
         lines.push(format!("- {}", definition_line(candidate)));
     }
@@ -380,7 +397,21 @@ fn characters_json(result: &CharacterListResult) -> String {
 }
 
 fn search_json(result: &InventorySearchResult) -> String {
+    let mut resolved = serde_json::Map::new();
+    for (kind, names) in [
+        ("perk", &result.resolved.perk),
+        ("mod", &result.resolved.mods),
+        ("archetype", &result.resolved.archetype),
+    ] {
+        if !names.is_empty() {
+            resolved.insert(kind.to_owned(), json!(names));
+        }
+    }
+    if !result.resolved.stats.is_empty() {
+        resolved.insert("stats".to_owned(), json!(result.resolved.stats));
+    }
     json!({
+        "resolved": resolved,
         "candidates": result
             .candidates
             .iter()
@@ -394,6 +425,9 @@ fn search_json(result: &InventorySearchResult) -> String {
                 "instance": instance_json(&hit.instance),
                 "perk_names": hit.perk_names,
                 "mods": hit.mod_names,
+                "available_perks": hit.available_perks,
+                "available_mods": hit.available_mods,
+                "archetype": hit.archetype,
                 "stats": hit.stats.iter().map(|stat| serde_json::json!({"name": stat.name, "value": stat.value})).collect::<Vec<_>>(),
             }))
             .collect::<Vec<_>>(),
@@ -506,6 +540,24 @@ fn instance_line(hit: &InventorySearchHit) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
+    }
+    for (label, names) in [
+        ("available perks", &hit.available_perks),
+        ("available mods", &hit.available_mods),
+    ] {
+        if !names.is_empty() {
+            parts.push(format!(
+                "{label}: {}",
+                names
+                    .iter()
+                    .map(|name| sanitize(name))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+    if let Some(archetype) = &hit.archetype {
+        parts.push(format!("archetype: {}", sanitize(archetype)));
     }
     if !hit.mod_names.is_empty() {
         parts.push(format!(
@@ -1045,6 +1097,7 @@ mod tests {
 
     fn instance(identifier: &str, hash: i64, location: ItemLocation) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(identifier),
             item_hash: ItemHash::new(hash),
             location,
@@ -1083,12 +1136,16 @@ mod tests {
 
     fn search_result() -> InventorySearchResult {
         InventorySearchResult {
+            resolved: Default::default(),
             candidates: vec![definition(1, "Gjallarhorn")],
             hits: vec![InventorySearchHit {
                 definition: definition(1, "Gjallarhorn"),
                 instance: instance("inst-1", 1, ItemLocation::Vault),
                 perk_names: Vec::new(),
                 mod_names: Vec::new(),
+                available_perks: Vec::new(),
+                available_mods: Vec::new(),
+                archetype: None,
                 stats: Vec::new(),
             }],
             metadata: metadata(FreshnessStatus::Fresh),
@@ -1268,14 +1325,17 @@ mod tests {
         let mut result = search_result();
         result.hits[0].definition.slot = Some("helmet".parse().unwrap());
         result.hits[0].mod_names = vec!["Harmonic Siphon".into(), "Safe\nMod".into()];
+        result.hits[0].archetype = Some("Safe\nArchetype".into());
         let human = super::search_human(&result);
         assert!(human.contains("mods: Harmonic Siphon, Safe?Mod"));
+        assert!(human.contains("archetype: Safe?Archetype"));
         assert!(!human.contains("perks:"));
         let value: serde_json::Value = serde_json::from_str(&super::search_json(&result)).unwrap();
         assert_eq!(
             value["hits"][0]["mods"],
             serde_json::json!(["Harmonic Siphon", "Safe\nMod"])
         );
+        assert_eq!(value["hits"][0]["archetype"], "Safe\nArchetype");
         assert_eq!(value["hits"][0]["perk_names"], serde_json::json!([]));
     }
 
@@ -1317,6 +1377,7 @@ mod tests {
         assert_eq!(render_search(OutputMode::Human, &search_result()), expected);
 
         let empty = InventorySearchResult {
+            resolved: Default::default(),
             candidates: Vec::new(),
             hits: Vec::new(),
             metadata: metadata(FreshnessStatus::Stale),
@@ -1330,7 +1391,7 @@ mod tests {
     #[test]
     fn search_renders_one_bounded_json_object() {
         let expected = format!(
-            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON}}}"#
+            r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"archetype":null,"available_mods":[],"available_perks":[],"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON},"resolved":{{}}}}"#
         );
         assert_eq!(render_search(OutputMode::Json, &search_result()), expected);
     }

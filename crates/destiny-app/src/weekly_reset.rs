@@ -576,7 +576,7 @@ mod tests {
     fn gateway_error_propagates() {
         let mut service = service(vec![]);
         let error = AppError::new(ErrorCategory::ProviderUnavailable);
-        service.gateway.result = Err(error);
+        service.gateway.result = Err(error.clone());
         assert_eq!(service.weekly_reset().unwrap_err(), error);
     }
 

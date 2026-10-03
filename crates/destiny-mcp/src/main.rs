@@ -426,6 +426,12 @@ impl InventoryRepository for SharedRepository {
 }
 
 impl SearchRepository for SharedRepository {
+    fn name_catalog(
+        &self,
+        kind: &str,
+    ) -> Result<destiny_app::name_matching::NameCatalog, AppError> {
+        self.lock()?.name_catalog(kind)
+    }
     fn search_definitions(
         &self,
         query: &DefinitionSearchQuery,

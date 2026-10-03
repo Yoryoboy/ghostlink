@@ -483,6 +483,16 @@ impl InventoryRepository for FixtureRepository {
 }
 
 impl SearchRepository for FixtureRepository {
+    fn name_catalog(
+        &self,
+        kind: &str,
+    ) -> Result<destiny_app::name_matching::NameCatalog, AppError> {
+        if kind == "stat" {
+            Ok(self.definitions.stat_name_catalog())
+        } else {
+            self.search.name_catalog(kind)
+        }
+    }
     fn search_definitions(
         &self,
         query: &DefinitionSearchQuery,
@@ -670,6 +680,7 @@ fn instance(
     perks: Vec<PerkSummary>,
 ) -> ItemInstance {
     ItemInstance {
+        available_plugs: Vec::new(),
         instance_id: ItemInstanceId::new(instance_id),
         item_hash: ItemHash::new(item_hash),
         location,

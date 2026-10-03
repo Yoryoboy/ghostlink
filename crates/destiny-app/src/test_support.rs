@@ -83,7 +83,7 @@ impl BrowserAuthorization for FailingBrowser {
         &mut self,
         _request: destiny_core::ports::AuthorizationRequest,
     ) -> Result<(), AppError> {
-        Err(self.error)
+        Err(self.error.clone())
     }
 }
 
@@ -295,7 +295,7 @@ impl DefinitionRepository for InMemoryDefinitionRepository {
     }
 
     fn current_metadata(&self) -> Result<Option<SyncMetadata>, AppError> {
-        if let Some(error) = self.metadata_failure {
+        if let Some(error) = self.metadata_failure.clone() {
             return Err(error);
         }
         Ok(self.metadata.clone())
@@ -306,7 +306,7 @@ impl DefinitionRepository for InMemoryDefinitionRepository {
         replacement: DefinitionReplacementInput,
     ) -> Result<SyncMetadata, AppError> {
         self.publication_attempts += 1;
-        if let Some(error) = self.publication_failure {
+        if let Some(error) = self.publication_failure.clone() {
             return Err(error);
         }
         if replacement.source != SourceMarker::Manifest {
@@ -450,6 +450,17 @@ impl destiny_core::ports::WorldDefinitionRepository for InMemoryDefinitionReposi
         candidate.world = Some(world);
         *self = candidate;
         Ok(metadata)
+    }
+}
+
+impl InMemoryDefinitionRepository {
+    pub fn stat_name_catalog(&self) -> destiny_core::name_matching::NameCatalog {
+        destiny_core::name_matching::NameCatalog::new(
+            self.world
+                .iter()
+                .flat_map(|world| world.stats.definitions.iter())
+                .map(|stat| stat.name()),
+        )
     }
 }
 
@@ -669,6 +680,25 @@ impl InMemorySearchRepository {
 }
 
 impl SearchRepository for InMemorySearchRepository {
+    fn name_catalog(
+        &self,
+        kind: &str,
+    ) -> Result<destiny_core::name_matching::NameCatalog, AppError> {
+        let names: Vec<_> = if kind == "stat" {
+            self.stat_definitions
+                .iter()
+                .map(|stat| stat.name())
+                .collect()
+        } else {
+            self.definitions
+                .iter()
+                .filter(|definition| destiny_core::name_matching::is_name_kind(definition, kind))
+                .map(|definition| definition.name.as_str())
+                .collect()
+        };
+        Ok(destiny_core::name_matching::NameCatalog::new(names))
+    }
+
     fn search_definitions(
         &self,
         query: &DefinitionSearchQuery,
@@ -687,38 +717,32 @@ impl SearchRepository for InMemorySearchRepository {
 
     fn search_instances(&self, query: &InstanceSearchQuery) -> Result<Vec<ItemInstance>, AppError> {
         query.validate()?;
+        let mut indexed = std::collections::HashMap::new();
+        for definition in &self.definitions {
+            indexed
+                .entry(definition.hash)
+                .and_modify(|value| *value = None)
+                .or_insert(Some(definition));
+        }
         let mut matches: Vec<ItemInstance> = self
             .instances
             .iter()
             .filter(|instance| {
-                let mut definitions = self
-                    .definitions
-                    .iter()
-                    .filter(|definition| definition.hash == instance.item_hash);
-                let definition = definitions.next();
-                let unique = if definitions.next().is_none() {
-                    definition
-                } else {
-                    None
-                };
+                let unique = indexed.get(&instance.item_hash).copied().flatten();
                 let plugs: Vec<_> = instance
                     .plugs
                     .iter()
-                    .filter_map(|plug| {
-                        let mut matches = self
-                            .definitions
-                            .iter()
-                            .filter(|definition| definition.hash == plug.plug_hash);
-                        let first = matches.next();
-                        if matches.next().is_none() {
-                            first.cloned()
-                        } else {
-                            None
-                        }
-                    })
+                    .filter_map(|plug| indexed.get(&plug.plug_hash).copied().flatten().cloned())
+                    .collect();
+                let available: Vec<_> = instance
+                    .available_plugs
+                    .iter()
+                    .filter_map(|plug| indexed.get(&plug.plug_hash).copied().flatten().cloned())
                     .collect();
                 destiny_core::query::instance_matches_with_definition(query, instance, unique)
-                    && destiny_core::query::instance_matches_plug_names(query, &plugs)
+                    && destiny_core::query::instance_matches_available_names(
+                        query, &plugs, &available,
+                    )
                     && destiny_core::query::instance_matches_stats(
                         query,
                         instance,
@@ -1044,15 +1068,15 @@ pub struct FailingCredentialStore {
 
 impl CredentialStore for FailingCredentialStore {
     fn save(&mut self, _credential: AccessCredential) -> Result<(), AppError> {
-        Err(self.error)
+        Err(self.error.clone())
     }
 
     fn load(&self) -> Result<Option<AccessCredential>, AppError> {
-        Err(self.error)
+        Err(self.error.clone())
     }
 
     fn delete(&mut self) -> Result<(), AppError> {
-        Err(self.error)
+        Err(self.error.clone())
     }
 }
 
@@ -1108,6 +1132,7 @@ mod tests {
             source: SourceMarker::Profile,
             characters: Vec::<Character>::new(),
             items: vec![ItemInstance {
+                available_plugs: Vec::new(),
                 instance_id: "instance".into(),
                 item_hash: ItemHash::new(7),
                 location: ItemLocation::Vault,
@@ -1149,6 +1174,7 @@ mod tests {
             ],
             items: vec![
                 ItemInstance {
+                    available_plugs: Vec::new(),
                     instance_id: "instance-1".into(),
                     item_hash: ItemHash::new(7),
                     location: ItemLocation::Vault,
@@ -1172,6 +1198,7 @@ mod tests {
                     ],
                 },
                 ItemInstance {
+                    available_plugs: Vec::new(),
                     instance_id: "instance-2".into(),
                     item_hash: ItemHash::new(8),
                     location: ItemLocation::Other("postmaster".into()),
@@ -1233,6 +1260,7 @@ mod tests {
         perk_hashes: Vec<u32>,
     ) -> ItemInstance {
         ItemInstance {
+            available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
             location,
@@ -1280,10 +1308,12 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            include_available: false,
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),
             perk_name: None,
             mod_name: None,
+            archetype: None,
             stats: Vec::new(),
             character_id: character.map(CharacterId::new),
             definitions: None,

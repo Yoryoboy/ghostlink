@@ -5,6 +5,7 @@ pub mod domain;
 pub mod error;
 pub mod ids;
 pub mod mutation;
+pub mod name_matching;
 pub mod ports;
 pub mod public_milestones;
 pub mod query;
@@ -26,8 +27,8 @@ pub use auth::{
     AuthorizationState, CallbackResult, ClientSecret, RefreshGrant, RefreshToken,
 };
 pub use domain::{
-    Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, PerkSummary,
-    PlugSummary, SnapshotMetadata, StatSummary, SyncMetadata,
+    AvailablePlug, Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation,
+    PerkSummary, PlugSummary, SnapshotMetadata, StatSummary, SyncMetadata,
 };
 pub use error::{AppError, ErrorCategory};
 pub use ids::{

@@ -227,6 +227,9 @@ impl CallbackMode {
 /// concrete instances without silently choosing one.
 #[derive(Debug, Args)]
 pub struct SearchInventoryArgs {
+    /// Match socketed or selectable perks and mods (default: socketed only).
+    #[arg(long)]
+    pub include_available: bool,
     /// Case-insensitive substring of the definition name.
     #[arg(long, value_name = "TEXT")]
     pub text: Option<String>,
@@ -263,13 +266,17 @@ pub struct SearchInventoryArgs {
     #[arg(long = "item-hash", value_name = "HASH")]
     pub item_hash: Vec<i64>,
 
-    /// Exact case-insensitive socketed weapon-perk name.
+    /// Socketed weapon-perk name: exact first, then substring; typos get suggestions.
     #[arg(long = "perk", value_name = "NAME")]
     pub perk: Option<String>,
 
-    /// Exact case-insensitive socketed armor-mod name.
+    /// Socketed armor-mod name: exact first, then substring; typos get suggestions.
     #[arg(long = "mod", value_name = "NAME")]
     pub mod_name: Option<String>,
+
+    /// Socketed armor-archetype name: exact first, then substring; typos get suggestions.
+    #[arg(long, value_name = "NAME")]
+    pub archetype: Option<String>,
 
     /// Restrict instance matches to one exact perk hash.
     #[arg(long = "perk-hash", value_name = "HASH")]
@@ -332,11 +339,13 @@ impl SearchInventoryArgs {
         &self,
         definitions: &DefinitionSearchQuery,
     ) -> Result<Option<InstanceSearchQuery>, CliError> {
-        let no_instance_filter = self.stat.is_empty()
+        let no_instance_filter = !self.include_available
+            && self.stat.is_empty()
             && self.item_hash.is_empty()
             && self.perk_hash.is_none()
             && self.perk.is_none()
             && self.mod_name.is_none()
+            && self.archetype.is_none()
             && self.character.is_none();
         if no_instance_filter && !definitions.has_filters() && self.min_power.is_none() {
             return Ok(None);
@@ -355,10 +364,12 @@ impl SearchInventoryArgs {
             ItemHashFilter::AnyOf(self.item_hash.iter().copied().map(ItemHash::new).collect())
         };
         let query = InstanceSearchQuery {
+            include_available: self.include_available,
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
             perk_name: search_term(self.perk.as_deref())?,
             mod_name: search_term(self.mod_name.as_deref())?,
+            archetype: search_term(self.archetype.as_deref())?,
             stats: self
                 .stat
                 .iter()
@@ -521,6 +532,8 @@ pub fn category_outcome(category: ErrorCategory) -> ErrorOutcome {
         ErrorCategory::ProviderValidation => ("invalid_request", 2),
         ErrorCategory::DefinitionsUnavailable => ("definitions_unavailable", 33),
         ErrorCategory::UnknownStatName => ("unknown_stat_name", 2),
+        ErrorCategory::UnknownSearchName => ("unknown_search_name", 2),
+        ErrorCategory::AmbiguousSearchName => ("ambiguous_search_name", 2),
         ErrorCategory::StaleState => ("stale_state", 30),
         ErrorCategory::AmbiguousMatch => ("ambiguous_match", 31),
         ErrorCategory::UnsupportedOperation => ("unsupported_operation", 40),
@@ -541,12 +554,12 @@ pub fn category_outcome(category: ErrorCategory) -> ErrorOutcome {
 /// the [`fmt::Display`] message is the single sanitized line written for a
 /// human. Neither ever echoes a rejected value, a provider payload, a
 /// credential, or a header.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CliError {
     kind: FailureKind,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum FailureKind {
     /// CLI or shared request validation rejected the arguments.
     InvalidRequest,
@@ -588,7 +601,7 @@ impl CliError {
         match self.kind {
             FailureKind::InvalidRequest => "invalid_request",
             FailureKind::ItemNotFound => "item_not_found",
-            FailureKind::Application(error) => category_outcome(error.category()).code,
+            FailureKind::Application(ref error) => category_outcome(error.category()).code,
         }
     }
 
@@ -597,7 +610,7 @@ impl CliError {
         match self.kind {
             FailureKind::InvalidRequest => 2,
             FailureKind::ItemNotFound => 32,
-            FailureKind::Application(error) => category_outcome(error.category()).exit_code,
+            FailureKind::Application(ref error) => category_outcome(error.category()).exit_code,
         }
     }
 }
@@ -609,7 +622,7 @@ impl fmt::Display for CliError {
             FailureKind::ItemNotFound => {
                 formatter.write_str("the requested item instance was not found")
             }
-            FailureKind::Application(error) => error.fmt(formatter),
+            FailureKind::Application(ref error) => error.fmt(formatter),
         }
     }
 }
@@ -660,6 +673,20 @@ fn validate_identity(value: &str) -> Result<(), CliError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn include_available_flag_is_accepted() {
+        use clap::Parser;
+        assert!(
+            super::Cli::try_parse_from([
+                "ghostlink",
+                "search-inventory",
+                "--perk",
+                "Kill Clip",
+                "--include-available"
+            ])
+            .is_ok()
+        );
+    }
     use super::{
         CallbackMode, Cli, CliError, Command, ErrorOutcome, ReadRequest, SUCCESS_CODE,
         SUCCESS_EXIT_CODE, category_outcome, inspection_outcome,
@@ -672,7 +699,7 @@ mod tests {
         SearchInventoryRequest, SyncMetadata, Timestamp,
     };
 
-    const ALL_CATEGORIES: [ErrorCategory; 23] = [
+    const ALL_CATEGORIES: [ErrorCategory; 25] = [
         ErrorCategory::AuthorizationRequired,
         ErrorCategory::ReauthorizationRequired,
         ErrorCategory::AlreadyAuthorizing,
@@ -686,6 +713,8 @@ mod tests {
         ErrorCategory::ProviderValidation,
         ErrorCategory::DefinitionsUnavailable,
         ErrorCategory::UnknownStatName,
+        ErrorCategory::UnknownSearchName,
+        ErrorCategory::AmbiguousSearchName,
         ErrorCategory::StaleState,
         ErrorCategory::AmbiguousMatch,
         ErrorCategory::UnsupportedOperation,
@@ -732,6 +761,14 @@ mod tests {
             },
             ErrorCategory::ProviderValidation => ErrorOutcome {
                 code: "invalid_request",
+                exit_code: 2,
+            },
+            ErrorCategory::UnknownSearchName => ErrorOutcome {
+                code: "unknown_search_name",
+                exit_code: 2,
+            },
+            ErrorCategory::AmbiguousSearchName => ErrorOutcome {
+                code: "ambiguous_search_name",
                 exit_code: 2,
             },
             ErrorCategory::UnknownStatName => ErrorOutcome {
@@ -1260,7 +1297,7 @@ mod tests {
     fn the_error_matrix_is_stable_over_every_current_category() {
         assert_eq!(
             ALL_CATEGORIES.len(),
-            23,
+            25,
             "a new ErrorCategory needs a matrix entry and a test expectation"
         );
         for category in ALL_CATEGORIES {
@@ -1313,6 +1350,7 @@ mod tests {
                 version: destiny_app::DefinitionVersion::new("manifest-v1"),
             },
             instance: destiny_app::ItemInstance {
+                available_plugs: Vec::new(),
                 instance_id: ItemInstanceId::new("inst-1"),
                 item_hash: destiny_app::ItemHash::new(1),
                 location: ItemLocation::Vault,
