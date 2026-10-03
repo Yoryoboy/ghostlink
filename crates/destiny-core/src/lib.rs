@@ -1,5 +1,7 @@
 //! Provider- and transport-free domain contracts.
 
+pub mod artifact;
+pub use artifact::*;
 pub mod auth;
 pub mod domain;
 pub mod error;
