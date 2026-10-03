@@ -180,6 +180,8 @@ impl SearchRepository for SqliteStore {
                     .definitions
                     .as_ref()
                     .is_some_and(|criteria| criteria.has_filters())
+                    || query.perk_name.is_some()
+                    || query.mod_name.is_some()
                 {
                     match self.lookup_definition(instance.item_hash)? {
                         Resolution::Unique(definition) => Some(definition),
@@ -190,7 +192,7 @@ impl SearchRepository for SqliteStore {
                     None
                 };
                 let mut plugs = Vec::new();
-                if query.perk_name.is_some() {
+                if query.perk_name.is_some() || query.mod_name.is_some() {
                     for plug in &instance.plugs {
                         if let std::collections::hash_map::Entry::Vacant(entry) =
                             plug_definitions.entry(plug.plug_hash)
@@ -208,7 +210,7 @@ impl SearchRepository for SqliteStore {
                     }
                 }
                 if instance_matches_with_definition(query, &instance, definition.as_ref())
-                    && destiny_core::query::instance_matches_perk_name(query, &plugs)
+                    && destiny_core::query::instance_matches_plug_names(query, &plugs)
                 {
                     instances.push(instance);
                     if instances.len() == query.limit {
@@ -521,6 +523,7 @@ mod tests {
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),
             perk_name: None,
+            mod_name: None,
             character_id: character.map(CharacterId::new),
             definitions: None,
             min_power: None,
@@ -577,13 +580,9 @@ mod tests {
         spec.plug_category = Some("frames".into());
         let mut unicode = definition(63, "İREM   Kılıcı", None, &[]);
         unicode.plug_category = Some("frames".into());
-        let definitions = vec![
-            definition(1, "Weapon", None, &[]),
-            rampage,
-            cosmetic,
-            spec,
-            unicode,
-        ];
+        let mut weapon = definition(1, "Weapon", None, &[]);
+        weapon.slot = Some(destiny_core::domain::ItemSlot::Energy);
+        let definitions = vec![weapon, rampage, cosmetic, spec, unicode];
         let items: Vec<_> = [
             ("a", 61),
             ("b", 62),
@@ -615,6 +614,63 @@ mod tests {
         ] {
             let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
             query.perk_name = Some(term(name));
+            let actual = store.search_instances(&query).unwrap();
+            assert_eq!(actual, fake.search_instances(&query).unwrap());
+            assert_eq!(names(&actual), expected);
+        }
+    }
+
+    #[test]
+    fn armor_mod_and_intrinsic_search_match_fake_with_slot_guards_before_limit() {
+        use destiny_core::PlugSummary;
+        use destiny_core::domain::ItemSlot;
+        let temp = TempDatabase::new();
+        let mut store = SqliteStore::open(temp.path()).unwrap();
+        let mut armor = definition(1, "Exotic helmet", None, &[]);
+        armor.slot = Some(ItemSlot::Helmet);
+        let mut weapon = definition(2, "Weapon", None, &[]);
+        weapon.slot = Some(ItemSlot::Kinetic);
+        let mut mod_plug = definition(60, " Harmonic   SIPHON ", None, &[]);
+        mod_plug.plug_category = Some("enhancements.v2_head".into());
+        let mut intrinsic = definition(61, "Intrinsic", None, &[]);
+        intrinsic.plug_category = Some("intrinsics".into());
+        let mut ghost = definition(62, "Harmonic Siphon", None, &[]);
+        ghost.plug_category = Some("enhancements.ghosts_activity".into());
+        let definitions = vec![armor, weapon, mod_plug, intrinsic, ghost];
+        let items = [
+            ("a-weapon-mod", 2, 60),
+            ("b-unresolved-mod", 99, 60),
+            ("c-ghost", 1, 62),
+            ("d-unknown-plug", 1, 99),
+            ("e-armor-mod", 1, 60),
+            ("f-armor-mod", 1, 60),
+            ("g-armor-intrinsic", 1, 61),
+            ("h-unknown-intrinsic", 99, 61),
+            ("i-weapon-intrinsic", 2, 61),
+        ]
+        .into_iter()
+        .map(|(id, hash, plug)| {
+            let mut item = instance(id, hash, ItemLocation::Vault, &[]);
+            item.plugs = vec![PlugSummary {
+                plug_hash: ItemHash::new(plug),
+                enabled: true,
+            }];
+            item
+        })
+        .collect::<Vec<_>>();
+        seed_definitions(&mut store, &definitions);
+        seed_instances(&mut store, items.clone());
+        let mut fake = InMemorySearchRepository::with_definitions(definitions);
+        fake.set_instances(items);
+        for (perk, mod_name, expected) in [
+            (None, Some("harmonic siphon"), vec!["e-armor-mod"]),
+            (None, Some("harmonic"), vec![]),
+            (Some("intrinsic"), None, vec!["i-weapon-intrinsic"]),
+            (Some("intrinsic"), Some("harmonic siphon"), vec![]),
+        ] {
+            let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
+            query.perk_name = perk.map(term);
+            query.mod_name = mod_name.map(term);
             let actual = store.search_instances(&query).unwrap();
             assert_eq!(actual, fake.search_instances(&query).unwrap());
             assert_eq!(names(&actual), expected);

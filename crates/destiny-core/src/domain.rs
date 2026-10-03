@@ -87,8 +87,8 @@ pub struct ItemInstance {
     /// non-empty list.
     pub perks: Vec<PerkSummary>,
     /// Enabled, non-empty plugs in socket order; duplicate hashes are semantic.
-    /// Acquisition is classification-neutral. Publication drops known non-perk
-    /// definitions using [`is_weapon_perk_plug`], but retains unknown definitions.
+    /// Acquisition is classification-neutral. Publication keeps weapon perks,
+    /// armor mods and unknown definitions using [`classify_plug`].
     pub plugs: Vec<PlugSummary>,
 }
 
@@ -97,12 +97,14 @@ impl ItemInstance {
     /// and is retained; a known definition without a category supplies `Some("")`.
     /// The caller resolves hashes from the available definition catalog.
     /// Selected plug order and duplicates are preserved.
-    pub fn retain_weapon_perk_plugs<'a>(
+    pub fn retain_searchable_plugs<'a>(
         &mut self,
         mut category_for: impl FnMut(ItemHash) -> Option<&'a str>,
     ) {
         self.plugs.retain(|plug| {
-            plug.enabled && category_for(plug.plug_hash).is_none_or(is_weapon_perk_plug)
+            plug.enabled
+                && category_for(plug.plug_hash)
+                    .is_none_or(|category| classify_plug(category) != PlugKind::Other)
         });
     }
 }
@@ -197,6 +199,31 @@ pub struct ItemDefinition {
     pub version: DefinitionVersion,
 }
 
+/// Query-time classification of a Manifest plug category; never persisted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlugKind {
+    WeaponPerk,
+    ArmorMod,
+    Other,
+}
+
+/// Stable, case-sensitive categories, independent of localized display names.
+pub fn classify_plug(category: &str) -> PlugKind {
+    if category.contains("masterworks") {
+        PlugKind::Other
+    } else if is_weapon_perk_plug(category) {
+        PlugKind::WeaponPerk
+    } else if category == "enhancements.universal"
+        || category.starts_with("enhancements.v2_")
+        || category.starts_with("enhancements.season_")
+        || category.starts_with("enhancements.raid_")
+    {
+        PlugKind::ArmorMod
+    } else {
+        PlugKind::Other
+    }
+}
+
 /// Classify weapon perk plugs by an exact, case-sensitive category allowlist.
 /// Frames include trait columns as well as weapon frames. Cosmetic, catalyst,
 /// masterwork, tracker, enhancement and mod categories (and unknown identifiers)
@@ -226,6 +253,32 @@ pub fn is_weapon_perk_plug(category: &str) -> bool {
 #[cfg(test)]
 mod plug_tests {
     #[test]
+    fn plug_kind_classification_table() {
+        use super::{PlugKind, classify_plug};
+        for (category, expected) in [
+            ("intrinsics", PlugKind::WeaponPerk),
+            ("frames", PlugKind::WeaponPerk),
+            ("enhancements.v2_head", PlugKind::ArmorMod),
+            ("enhancements.v2_arms", PlugKind::ArmorMod),
+            ("enhancements.universal", PlugKind::ArmorMod),
+            ("enhancements.season_artifact", PlugKind::ArmorMod),
+            ("enhancements.raid_leviathan", PlugKind::ArmorMod),
+            ("enhancements.ghosts_activity", PlugKind::Other),
+            ("enhancements.v2_head.masterworks", PlugKind::Other),
+            (
+                "core.gear_systems.armor_tiering.plugs.tuning.mods",
+                PlugKind::Other,
+            ),
+            ("shader", PlugKind::Other),
+            ("enhancements.universal_extra", PlugKind::Other),
+            ("mods", PlugKind::Other),
+            ("", PlugKind::Other),
+        ] {
+            assert_eq!(classify_plug(category), expected, "{category}");
+        }
+    }
+
+    #[test]
     fn publication_seam_retains_enabled_weapon_and_unknown_categories_in_order() {
         use super::{ItemInstance, ItemLocation, PlugSummary};
         use crate::{ItemHash, ItemInstanceId};
@@ -238,7 +291,7 @@ mod plug_tests {
             locked: false,
             power: None,
             perks: vec![],
-            plugs: [1, 2, 3, 4, 1, 5]
+            plugs: [1, 2, 3, 4, 1, 5, 6]
                 .into_iter()
                 .map(|hash| PlugSummary {
                     plug_hash: ItemHash::new(hash),
@@ -246,10 +299,11 @@ mod plug_tests {
                 })
                 .collect(),
         };
-        item.retain_weapon_perk_plugs(|hash| match hash.value() {
+        item.retain_searchable_plugs(|hash| match hash.value() {
             1 | 5 => Some("frames"),
             2 => Some("shader"),
             3 => Some("mods"),
+            6 => Some("enhancements.universal"),
             _ => None,
         });
         assert_eq!(
@@ -265,6 +319,10 @@ mod plug_tests {
                 },
                 PlugSummary {
                     plug_hash: ItemHash::new(1),
+                    enabled: true
+                },
+                PlugSummary {
+                    plug_hash: ItemHash::new(6),
                     enabled: true
                 },
             ]

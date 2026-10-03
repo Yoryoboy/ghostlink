@@ -38,7 +38,9 @@
 //! An instance matches a [`PerkHash`] filter only when it carries a
 //! [`PerkSummary`] with that exact hash. A perk-name filter instead matches any
 //! stored socket plug resolving to a weapon-perk definition, on exact normalized
-//! name equality. Missing definitions and non-weapon categories never match.
+//! name equality, and requires a weapon slot. A mod-name filter similarly
+//! requires an armor slot and an armor-mod plug. Unresolved item or plug
+//! definitions never satisfy these name filters.
 //!
 //! [`PerkSummary`]: crate::domain::PerkSummary
 //!
@@ -239,6 +241,8 @@ pub struct InstanceSearchQuery {
     pub perk_hash: Option<PerkHash>,
     /// Exact normalized weapon-perk name; validated by `SearchTerm` construction.
     pub perk_name: Option<SearchTerm>,
+    /// Exact normalized armor-mod name; validated by `SearchTerm` construction.
+    pub mod_name: Option<SearchTerm>,
     pub character_id: Option<CharacterId>,
     /// Definition criteria applied before the instance limit; its limit is ignored.
     pub definitions: Option<Box<DefinitionSearchQuery>>,
@@ -356,14 +360,22 @@ pub fn instance_matches(query: &InstanceSearchQuery, instance: &ItemInstance) ->
 }
 
 /// Matches instance criteria and, when requested, its resolved definition.
-/// Missing or incorrectly paired definitions fail every active definition filter.
-/// An empty definition query imposes no resolution requirement.
+/// Missing or incorrectly paired definitions fail every active definition filter
+/// and plug-name slot guard. An empty definition query alone needs no resolution.
 pub fn instance_matches_with_definition(
     query: &InstanceSearchQuery,
     instance: &ItemInstance,
     definition: Option<&ItemDefinition>,
 ) -> bool {
     instance_matches(query, instance)
+        && (query.perk_name.is_none()
+            || definition.is_some_and(|definition| {
+                definition.hash == instance.item_hash && is_weapon_slot(definition.slot)
+            }))
+        && (query.mod_name.is_none()
+            || definition.is_some_and(|definition| {
+                definition.hash == instance.item_hash && is_armor_slot(definition.slot)
+            }))
         && query.definitions.as_ref().is_none_or(|criteria| {
             !criteria.has_filters()
                 || definition.is_some_and(|definition| {
@@ -374,7 +386,8 @@ pub fn instance_matches_with_definition(
 }
 
 /// True when the socket-ordered resolved definitions satisfy the perk-name filter.
-/// Callers supply only definitions resolved from this instance's stored plugs.
+/// Callers supply only definitions resolved from this instance's stored plugs,
+/// and must also apply `instance_matches_with_definition` for the weapon-slot guard.
 pub fn instance_matches_perk_name(query: &InstanceSearchQuery, plugs: &[ItemDefinition]) -> bool {
     query.perk_name.as_ref().is_none_or(|term| {
         plugs.iter().any(|definition| {
@@ -385,6 +398,65 @@ pub fn instance_matches_perk_name(query: &InstanceSearchQuery, plugs: &[ItemDefi
                 && normalize_search_text(&definition.name) == term.as_str()
         })
     })
+}
+
+fn is_weapon_slot(slot: Option<ItemSlot>) -> bool {
+    matches!(
+        slot,
+        Some(ItemSlot::Kinetic | ItemSlot::Energy | ItemSlot::Power)
+    )
+}
+
+fn is_armor_slot(slot: Option<ItemSlot>) -> bool {
+    matches!(
+        slot,
+        Some(
+            ItemSlot::Helmet
+                | ItemSlot::Gauntlets
+                | ItemSlot::Chest
+                | ItemSlot::Legs
+                | ItemSlot::ClassItem
+        )
+    )
+}
+
+/// Shared exact name matching for resolved plugs, paired with the slot guards
+/// in `instance_matches_with_definition`. Missing plug definitions never match.
+pub fn instance_matches_plug_names(query: &InstanceSearchQuery, plugs: &[ItemDefinition]) -> bool {
+    instance_matches_perk_name(query, plugs)
+        && query.mod_name.as_ref().is_none_or(|term| {
+            plugs.iter().any(|definition| {
+                definition.plug_category.as_deref().is_some_and(|category| {
+                    crate::domain::classify_plug(category) == crate::domain::PlugKind::ArmorMod
+                }) && normalize_search_text(&definition.name) == term.as_str()
+            })
+        })
+}
+
+/// Slot-guarded names for inventory hits; unknown slots expose neither kind.
+pub fn inventory_plug_names(
+    definition: &ItemDefinition,
+    plugs: &[ItemDefinition],
+) -> (Vec<String>, Vec<String>) {
+    let perks = if is_weapon_slot(definition.slot) {
+        weapon_perk_names(plugs)
+    } else {
+        Vec::new()
+    };
+    let mods = if is_armor_slot(definition.slot) {
+        plugs
+            .iter()
+            .filter(|plug| {
+                plug.plug_category.as_deref().is_some_and(|category| {
+                    crate::domain::classify_plug(category) == crate::domain::PlugKind::ArmorMod
+                })
+            })
+            .map(|plug| plug.name.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (perks, mods)
 }
 
 /// Resolved weapon-perk names in socket order, omitting unknown/non-weapon plugs.
@@ -437,6 +509,8 @@ pub struct InventorySearchHit {
     pub instance: ItemInstance,
     /// Resolved weapon-perk names in stored socket order; no plug hashes.
     pub perk_names: Vec<String>,
+    /// Resolved armor-mod names for armor only, in stored socket order.
+    pub mod_names: Vec<String>,
 }
 
 /// A bounded inventory search answer.
@@ -548,6 +622,7 @@ mod tests {
             item_hashes,
             perk_hash,
             perk_name: None,
+            mod_name: None,
             character_id: None,
             definitions: None,
             min_power: None,
@@ -616,6 +691,78 @@ mod tests {
     }
 
     #[test]
+    fn perk_name_rejects_exotic_armor_intrinsics_and_unknown_items() {
+        use crate::domain::ItemSlot;
+        let item = instance("armor", 7);
+        let mut armor = definition(7, "Exotic helmet");
+        armor.slot = Some(ItemSlot::Helmet);
+        let mut filter = instance_query(ItemHashFilter::Any, None);
+        filter.perk_name = Some(term("intrinsic"));
+        assert!(!instance_matches_with_definition(
+            &filter,
+            &item,
+            Some(&armor)
+        ));
+        assert!(!instance_matches_with_definition(&filter, &item, None));
+    }
+
+    #[test]
+    fn mod_name_requires_armor_and_exact_normalized_armor_mod() {
+        use crate::domain::ItemSlot;
+        let item = instance("owned", 7);
+        let mut armor = definition(7, "Helmet");
+        armor.slot = Some(ItemSlot::Helmet);
+        let mut plug = definition(10, "  Harmonic   SIPHON ");
+        plug.plug_category = Some("enhancements.v2_head".into());
+        let mut filter = instance_query(ItemHashFilter::Any, None);
+        filter.mod_name = Some(term("harmonic siphon"));
+        for slot in [
+            ItemSlot::Helmet,
+            ItemSlot::Gauntlets,
+            ItemSlot::Chest,
+            ItemSlot::Legs,
+            ItemSlot::ClassItem,
+        ] {
+            armor.slot = Some(slot);
+            assert!(instance_matches_with_definition(
+                &filter,
+                &item,
+                Some(&armor)
+            ));
+        }
+        for slot in [
+            ItemSlot::Kinetic,
+            ItemSlot::Energy,
+            ItemSlot::Power,
+            ItemSlot::Other,
+            ItemSlot::Unknown,
+        ] {
+            armor.slot = Some(slot);
+            assert!(!instance_matches_with_definition(
+                &filter,
+                &item,
+                Some(&armor)
+            ));
+        }
+        assert!(!instance_matches_with_definition(&filter, &item, None));
+        assert!(super::instance_matches_plug_names(&filter, &[plug.clone()]));
+        plug.name = "Harmonic Siphon Extra".into();
+        assert!(!super::instance_matches_plug_names(
+            &filter,
+            &[plug.clone()]
+        ));
+        plug.name = "Harmonic Siphon".into();
+        for category in ["intrinsics", "enhancements.ghosts_activity", "shader"] {
+            plug.plug_category = Some(category.into());
+            assert!(!super::instance_matches_plug_names(
+                &filter,
+                &[plug.clone()]
+            ));
+        }
+        assert!(!super::instance_matches_plug_names(&filter, &[]));
+    }
+
+    #[test]
     fn minimum_power_is_inclusive_and_missing_power_fails() {
         let mut item = instance("owned", 7);
         let mut filter = instance_query(ItemHashFilter::Any, None);
@@ -654,6 +801,34 @@ mod tests {
         assert!(!super::instance_matches_perk_name(&filter, &[]));
         assert!(SearchTerm::new(" ").is_err());
         assert!(SearchTerm::new(&"a".repeat(MAX_SEARCH_TEXT_LENGTH + 1)).is_err());
+    }
+
+    #[test]
+    fn hit_names_are_slot_guarded_and_socket_ordered() {
+        use crate::domain::ItemSlot;
+        let mut item = definition(7, "Item");
+        let mut perk = definition(10, "Intrinsic");
+        perk.plug_category = Some("intrinsics".into());
+        let mut armor_mod = definition(11, "Harmonic Siphon");
+        armor_mod.plug_category = Some("enhancements.v2_head".into());
+        let plugs = vec![armor_mod.clone(), perk, armor_mod];
+        for slot in [ItemSlot::Kinetic, ItemSlot::Energy, ItemSlot::Power] {
+            item.slot = Some(slot);
+            assert_eq!(
+                super::inventory_plug_names(&item, &plugs),
+                (vec!["Intrinsic".into()], vec![])
+            );
+        }
+        item.slot = Some(ItemSlot::Helmet);
+        assert_eq!(
+            super::inventory_plug_names(&item, &plugs),
+            (
+                vec![],
+                vec!["Harmonic Siphon".into(), "Harmonic Siphon".into()]
+            )
+        );
+        item.slot = None;
+        assert_eq!(super::inventory_plug_names(&item, &plugs), (vec![], vec![]));
     }
 
     #[test]

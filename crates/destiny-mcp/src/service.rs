@@ -722,6 +722,7 @@ impl InstanceQueryArgs {
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
             perk_name: None,
+            mod_name: None,
             character_id: self.character_id.map(CharacterId::new),
             definitions: None,
             min_power: self.min_power,

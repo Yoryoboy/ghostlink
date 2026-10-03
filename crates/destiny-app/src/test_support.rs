@@ -676,7 +676,7 @@ impl SearchRepository for InMemorySearchRepository {
                     })
                     .collect();
                 destiny_core::query::instance_matches_with_definition(query, instance, unique)
-                    && destiny_core::query::instance_matches_perk_name(query, &plugs)
+                    && destiny_core::query::instance_matches_plug_names(query, &plugs)
             })
             .cloned()
             .collect();
@@ -1227,6 +1227,7 @@ mod tests {
             item_hashes,
             perk_hash: perk_hash.map(PerkHash::new),
             perk_name: None,
+            mod_name: None,
             character_id: character.map(CharacterId::new),
             definitions: None,
             min_power: None,

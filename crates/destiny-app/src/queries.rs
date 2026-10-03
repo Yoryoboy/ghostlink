@@ -180,6 +180,7 @@ where
                 item_hashes: destiny_core::ItemHashFilter::Any,
                 perk_hash: None,
                 perk_name: None,
+                mod_name: None,
                 character_id: None,
                 definitions: None,
                 min_power: None,
@@ -214,9 +215,12 @@ where
                         plugs.push(definition.clone());
                     }
                 }
+                let (perk_names, mod_names) =
+                    destiny_core::query::inventory_plug_names(&definition, &plugs);
                 hits.push(InventorySearchHit {
                     definition,
-                    perk_names: destiny_core::query::weapon_perk_names(&plugs),
+                    perk_names,
+                    mod_names,
                     instance,
                 });
             }
@@ -737,6 +741,7 @@ mod tests {
             item_hashes,
             perk_hash,
             perk_name: None,
+            mod_name: None,
             character_id,
             definitions: None,
             min_power: None,
@@ -774,6 +779,11 @@ mod tests {
         let mut cosmetic = definition(62, "Shader", None, vec![]);
         cosmetic.plug_category = Some("shader".into());
         let mut definitions = standard_definitions();
+        definitions
+            .iter_mut()
+            .find(|definition| definition.hash == ItemHash::new(1))
+            .unwrap()
+            .slot = Some(destiny_core::domain::ItemSlot::Kinetic);
         definitions.extend([rampage, barrel, cosmetic]);
         let mut repository = CompositeRepository::with_definitions(definitions);
         let mut item = instance("owned", 1, ItemLocation::Vault, vec![]);
@@ -791,6 +801,42 @@ mod tests {
         let request = search_request(definition_query(None, None, vec![], 1), Some(query));
         let result = service.search_inventory(&request, TTL, NOW).unwrap();
         assert_eq!(result.hits[0].perk_names, ["Barrel", "Rampage", "Rampage"]);
+    }
+
+    #[test]
+    fn armor_search_exposes_mod_names_but_not_exotic_intrinsics() {
+        let shared = gateway();
+        let mut armor_mod = definition(60, "Harmonic Siphon", None, vec![]);
+        armor_mod.plug_category = Some("enhancements.v2_head".into());
+        let mut intrinsic = definition(61, "Exotic intrinsic", None, vec![]);
+        intrinsic.plug_category = Some("intrinsics".into());
+        let mut definitions = standard_definitions();
+        definitions
+            .iter_mut()
+            .find(|definition| definition.hash == ItemHash::new(1))
+            .unwrap()
+            .slot = Some(destiny_core::domain::ItemSlot::Helmet);
+        definitions.extend([armor_mod, intrinsic]);
+        let mut repository = CompositeRepository::with_definitions(definitions);
+        let mut item = instance("owned", 1, ItemLocation::Vault, vec![]);
+        item.plugs = [61, 60, 99, 60]
+            .into_iter()
+            .map(|hash| destiny_core::PlugSummary {
+                plug_hash: ItemHash::new(hash),
+                enabled: true,
+            })
+            .collect();
+        repository.commit(snapshot_input(fresh_checked_at(), vec![], vec![item]));
+        let mut service = service(&shared, repository);
+        let mut query = instance_query(ItemHashFilter::Any, None, None, 1);
+        query.mod_name = Some(SearchTerm::new(" harmonic  siphon ").unwrap());
+        let request = search_request(definition_query(None, None, vec![], 1), Some(query));
+        let result = service.search_inventory(&request, TTL, NOW).unwrap();
+        assert_eq!(
+            result.hits[0].mod_names,
+            ["Harmonic Siphon", "Harmonic Siphon"]
+        );
+        assert!(result.hits[0].perk_names.is_empty());
     }
 
     #[test]

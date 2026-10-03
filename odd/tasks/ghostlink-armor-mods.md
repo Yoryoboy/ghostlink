@@ -21,7 +21,7 @@ Out of scope (next work unit, WU-025): item stats (profile component 304, `Desti
 
 ## Tasks
 - [x] **GAM-001 — Establish tracker and branch.** Branch `feature/ghostlink-armor-mods` from `main` at `ed81435`.
-- [ ] **GAM-002 — Plug kinds and slot-guarded matching.** Core `PlugKind` classification, sync retains armor mods, `--perk` weapon-slot guard (R3), `mod_name` criterion with fake/SQLite parity.
+- [x] **GAM-002 — Plug kinds and slot-guarded matching.** Core `PlugKind` classification, sync retains armor mods, `--perk` weapon-slot guard (R3), `mod_name` criterion with fake/SQLite parity. Delegated writer, test-first (RED: R3 armor regression assertion failed; classification/mod APIs missing). Query-time `PlugKind` classification; sync retains weapon perks, armor mods and unknown plugs; shared slot-guarded matchers (`perk_name` weapons only, `mod_name` armor only, unresolved item definition fails); hit output scoped by slot (perk names for weapons, mod names for armor); SQLite resolves the item definition whenever perk/mod filters are set and filters before truncation. No migration. Checks (writer): fmt, workspace all-features 1,064 passed/25 suites, clippy both variants, diff check. Commit evidence: see git log.
 - [ ] **GAM-003 — Mod surfaces.** CLI `--mod`, MCP `mod_name`, mod names in hit output, README.
 - [ ] **GAM-004 — Post-refresh freshness.** Regression test and fix for `stale` on the first read after a refresh.
 - [ ] **GAM-005 — Verification and live validation.** Full checks, live sync and `--mod`/`--perk` searches, close tracker.
@@ -30,4 +30,4 @@ Out of scope (next work unit, WU-025): item stats (profile component 304, `Desti
 Exploration (read-only): weapon-perk allowlist `destiny-core/src/domain.rs:204-207` (`intrinsics` also matches exotic armor intrinsics); sync filtering `destiny-app/src/sync.rs:~155-180`; perk matching `destiny-core/src/query.rs:378-391`, SQLite `sqlite/search.rs:175-212` (instance definition resolved only when definition filters are set). Freshness: CLI composition reads `now` once (`destiny-cli/src/runtime.rs:~363`) while the gateway stamps `checked_at` later (`profile_gateway.rs:1132,1159`); `FreshnessInput::status` (`destiny-core/src/state.rs:76`) returns `Stale` when `checked_at > now`, evaluated in `destiny-app/src/queries.rs:~392`.
 
 ## Next step
-GAM-002.
+GAM-003.

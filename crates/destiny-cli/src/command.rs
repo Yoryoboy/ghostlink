@@ -348,6 +348,7 @@ impl SearchInventoryArgs {
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
             perk_name: search_term(self.perk.as_deref())?,
+            mod_name: None,
             character_id,
             definitions: definitions
                 .has_filters()

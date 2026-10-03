@@ -1049,6 +1049,7 @@ mod tests {
                 definition: definition(1, "Gjallarhorn"),
                 instance: instance("inst-1", 1, ItemLocation::Vault),
                 perk_names: Vec::new(),
+                mod_names: Vec::new(),
             }],
             metadata: metadata(FreshnessStatus::Fresh),
         }
