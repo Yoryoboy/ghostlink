@@ -391,6 +391,7 @@ mod tests {
             element: None,
             slot: None,
             class_type: None,
+            plug_category: None,
             tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
             version: DefinitionVersion::new(MANIFEST_VERSION),
         }

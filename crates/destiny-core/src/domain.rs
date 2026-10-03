@@ -165,8 +165,82 @@ pub struct ItemDefinition {
     pub element: Option<String>,
     pub slot: Option<ItemSlot>,
     pub class_type: Option<ClassType>,
+    /// Stable plug category identifier; absent for non-plug definitions.
+    pub plug_category: Option<String>,
     pub tags: Vec<String>,
     pub version: DefinitionVersion,
+}
+
+/// Classify weapon perk plugs by an exact, case-sensitive category allowlist.
+/// Frames include trait columns as well as weapon frames. Cosmetic, catalyst,
+/// masterwork, tracker, enhancement and mod categories (and unknown identifiers)
+/// are deliberately excluded; localized names never participate in this rule.
+pub fn is_weapon_perk_plug(category: &str) -> bool {
+    matches!(
+        category,
+        "intrinsics"
+            | "frames"
+            | "barrels"
+            | "magazines"
+            | "magazines_gl"
+            | "arrows"
+            | "blades"
+            | "guards"
+            | "batteries"
+            | "grips"
+            | "scopes"
+            | "stocks"
+            | "tubes"
+            | "hafts"
+            | "bowstrings"
+            | "origins"
+    )
+}
+
+#[cfg(test)]
+mod plug_tests {
+    #[test]
+    fn weapon_perk_categories_are_an_explicit_allowlist() {
+        for category in [
+            "intrinsics",
+            "frames",
+            "barrels",
+            "magazines",
+            "magazines_gl",
+            "arrows",
+            "blades",
+            "guards",
+            "batteries",
+            "grips",
+            "scopes",
+            "stocks",
+            "tubes",
+            "hafts",
+            "bowstrings",
+            "origins",
+        ] {
+            assert!(super::is_weapon_perk_plug(category), "{category}");
+        }
+        for category in [
+            "",
+            "unknown",
+            "catalysts",
+            "masterworks",
+            "tracker",
+            "shader",
+            "skins",
+            "ornament",
+            "memento",
+            "mods",
+            "v400.weapon.mod_damage",
+            "enhancements",
+            "armor",
+            "Frames",
+            "frames.shader",
+        ] {
+            assert!(!super::is_weapon_perk_plug(category), "{category}");
+        }
+    }
 }
 
 /// Snapshot identity, provenance markers, and committed freshness.

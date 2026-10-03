@@ -1101,6 +1101,7 @@ mod tests {
             element: None,
             slot: None,
             class_type: None,
+            plug_category: None,
             tags: Vec::new(),
             version: DefinitionVersion::new(version),
         }
@@ -1650,6 +1651,7 @@ mod tests {
             element: None,
             slot: None,
             class_type: None,
+            plug_category: None,
             tags: Vec::new(),
             version: DefinitionVersion::new("definitions-v1"),
         };

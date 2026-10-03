@@ -112,6 +112,7 @@ fn definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
         element: Some("Void".into()),
         slot: None,
         class_type: None,
+        plug_category: None,
         tags: vec!["weapon".into()],
         version: DefinitionVersion::new(version),
     }

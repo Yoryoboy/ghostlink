@@ -603,6 +603,7 @@ mod tests {
             element: None,
             slot: None,
             class_type: None,
+            plug_category: None,
             tags: tags.iter().map(|tag| (*tag).to_string()).collect(),
             version: DefinitionVersion::new(DEFINITION_VERSION),
         }

@@ -353,6 +353,7 @@ fn definition(hash: i64, name: &str, item_type: Option<&str>, tags: &[&str]) -> 
         element: None,
         slot: None,
         class_type: None,
+        plug_category: None,
         tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
         version: DefinitionVersion::new(DEFINITION_VERSION),
     }

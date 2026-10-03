@@ -988,6 +988,7 @@ mod tests {
             element: Some("Solar".to_string()),
             slot: None,
             class_type: None,
+            plug_category: None,
             tags: vec!["exotic".to_string()],
             version: DefinitionVersion::new("manifest-v1"),
         }

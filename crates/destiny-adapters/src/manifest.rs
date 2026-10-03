@@ -212,6 +212,8 @@ struct InventoryRecord {
     #[serde(default)]
     inventory: OptionalField<InventoryFields>,
     #[serde(default)]
+    plug: Option<PlugFields>,
+    #[serde(default)]
     item_type_display_name: OptionalField<String>,
     #[serde(default)]
     class_type: OptionalField<u32>,
@@ -231,6 +233,13 @@ struct InventoryFields {
     bucket_type_hash: OptionalField<u32>,
     #[serde(default)]
     tier_type_name: OptionalField<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlugFields {
+    #[serde(default)]
+    plug_category_identifier: Option<String>,
 }
 
 struct InventorySeed<'a>(&'a DefinitionVersion);
@@ -589,6 +598,13 @@ fn decode_record(
     if name.chars().count() > 256 {
         return Err(provider_validation());
     }
+    let plug_category = record.plug.and_then(|plug| plug.plug_category_identifier);
+    if plug_category
+        .as_ref()
+        .is_some_and(|category| category.chars().count() > 256)
+    {
+        return Err(provider_validation());
+    }
     let inventory = record.inventory.into_option();
     let (bucket_hash, tier) = inventory.map_or((None, None), |inventory| {
         (
@@ -603,6 +619,7 @@ fn decode_record(
         hash: ItemHash::new(i64::from(key_value)),
         bucket_hash,
         name,
+        plug_category,
         item_type: record.item_type_display_name.into_option(),
         tier,
         element: None,
@@ -1314,6 +1331,23 @@ fn read_bounded_body(
 #[cfg(test)]
 mod tests {
     use super::{decode_inventory_items, decode_manifest_index};
+
+    #[test]
+    fn plug_category_decode_is_optional_and_bounded() {
+        for category in [None, Some("frames"), Some("intrinsics"), Some("origins")] {
+            let mut record = serde_json::json!({"hash":1,"displayProperties":{"name":"Test"}});
+            if let Some(category) = category {
+                record["plug"] = serde_json::json!({"plugCategoryIdentifier": category});
+            }
+            let bytes = serde_json::json!({"1":record}).to_string();
+            let batch = decode_inventory_items(version(), bytes.as_bytes()).unwrap();
+            assert_eq!(batch.definitions[0].plug_category.as_deref(), category);
+        }
+        for category in [serde_json::json!(42), serde_json::json!("x".repeat(257))] {
+            let bytes = serde_json::json!({"1":{"hash":1,"displayProperties":{"name":"Test"},"plug":{"plugCategoryIdentifier":category}}}).to_string();
+            assert_validation(decode_inventory_items(version(), bytes.as_bytes()));
+        }
+    }
     use destiny_core::{AppError, BucketHash, DefinitionVersion, ErrorCategory};
     use serde_json::json;
 
@@ -2672,6 +2706,7 @@ mod transport_tests {
                 element: None,
                 slot: None,
                 class_type: None,
+                plug_category: None,
                 tags: Vec::new(),
                 version: prior_version,
             }],

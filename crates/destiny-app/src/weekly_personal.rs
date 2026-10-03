@@ -1258,6 +1258,7 @@ mod tests {
                 element: None,
                 slot: None,
                 class_type: None,
+                plug_category: None,
                 tags: vec![],
                 version: version.clone(),
             })

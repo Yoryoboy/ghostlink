@@ -227,9 +227,15 @@ fn replace_catalog(
         .execute("DELETE FROM definitions", [])
         .map_err(|_| storage_failure())?;
 
-    let has_attributes = super::migrations::read_user_version(connection)? >= 5;
+    let schema = super::migrations::read_user_version(connection)?;
+    let has_attributes = schema >= 5;
+    let has_plug_category = schema >= 6;
     let mut insert_definition = connection
-        .prepare_cached(if has_attributes {
+        .prepare_cached(if has_plug_category {
+            "INSERT INTO definitions \
+             (hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, plug_category) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
+        } else if has_attributes {
             "INSERT INTO definitions \
              (hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
@@ -272,6 +278,12 @@ fn replace_catalog(
                     .into(),
             ]);
         } else if definition.slot.is_some() || definition.class_type.is_some() {
+            return Err(storage_failure());
+        }
+        let plug_category = validate_plug_category(definition.plug_category.clone())?;
+        if has_plug_category {
+            values.push(plug_category.into());
+        } else if plug_category.is_some() {
             return Err(storage_failure());
         }
         insert_definition
@@ -368,10 +380,12 @@ fn read_definition(
     hash: ItemHash,
 ) -> Result<Option<ItemDefinition>, AppError> {
     let row = connection.query_row(
-        if super::migrations::read_user_version(connection)? >= 5 {
-            "SELECT bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type FROM definitions WHERE hash = ?1"
+        if super::migrations::read_user_version(connection)? >= 6 {
+            "SELECT bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, plug_category FROM definitions WHERE hash = ?1"
+        } else if super::migrations::read_user_version(connection)? >= 5 {
+            "SELECT bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, NULL FROM definitions WHERE hash = ?1"
         } else {
-            "SELECT bucket_hash, name, item_type, tier, element, definition_version, NULL, NULL, NULL FROM definitions WHERE hash = ?1"
+            "SELECT bucket_hash, name, item_type, tier, element, definition_version, NULL, NULL, NULL, NULL FROM definitions WHERE hash = ?1"
         },
         [hash.value()],
         |row| {
@@ -385,28 +399,48 @@ fn read_definition(
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<String>>(8)?,
+                row.get::<_, Option<String>>(9)?,
             ))
         },
     );
 
     match row {
-        Ok((bucket_hash, name, item_type, tier, element, version, damage, slot, class_type)) => {
-            Ok(Some(ItemDefinition {
-                hash,
-                bucket_hash: bucket_hash.map(BucketHash::new),
-                name,
-                item_type,
-                tier,
-                element: validate_element(element, damage)?,
-                slot: decode_attribute(slot, ItemSlot::as_str)?,
-                class_type: decode_attribute(class_type, ClassType::as_str)?,
-                tags: read_tags(connection, hash.value())?,
-                version: DefinitionVersion::new(version),
-            }))
-        }
+        Ok((
+            bucket_hash,
+            name,
+            item_type,
+            tier,
+            element,
+            version,
+            damage,
+            slot,
+            class_type,
+            plug_category,
+        )) => Ok(Some(ItemDefinition {
+            hash,
+            bucket_hash: bucket_hash.map(BucketHash::new),
+            name,
+            item_type,
+            tier,
+            element: validate_element(element, damage)?,
+            slot: decode_attribute(slot, ItemSlot::as_str)?,
+            class_type: decode_attribute(class_type, ClassType::as_str)?,
+            plug_category: validate_plug_category(plug_category)?,
+            tags: read_tags(connection, hash.value())?,
+            version: DefinitionVersion::new(version),
+        })),
         Err(SqlError::QueryReturnedNoRows) => Ok(None),
         Err(_) => Err(storage_failure()),
     }
+}
+
+fn validate_plug_category(raw: Option<String>) -> Result<Option<String>, AppError> {
+    if raw.as_ref().is_some_and(|value| {
+        value.is_empty() || value.chars().count() > 256 || value.contains('\0')
+    }) {
+        return Err(storage_failure());
+    }
+    Ok(raw)
 }
 
 /// Stored names must be canonical, not merely parseable user input.
@@ -463,10 +497,12 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
 
     {
         let mut statement = connection
-            .prepare(if super::migrations::read_user_version(connection)? >= 5 {
-                "SELECT hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type FROM definitions ORDER BY hash"
+            .prepare(if super::migrations::read_user_version(connection)? >= 6 {
+                "SELECT hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, plug_category FROM definitions ORDER BY hash"
+            } else if super::migrations::read_user_version(connection)? >= 5 {
+                "SELECT hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, NULL FROM definitions ORDER BY hash"
             } else {
-                "SELECT hash, bucket_hash, name, item_type, tier, element, definition_version, NULL, NULL, NULL FROM definitions ORDER BY hash"
+                "SELECT hash, bucket_hash, name, item_type, tier, element, definition_version, NULL, NULL, NULL, NULL FROM definitions ORDER BY hash"
             })
             .map_err(|_| storage_failure())?;
         let rows = statement
@@ -482,6 +518,7 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
                 ))
             })
             .map_err(|_| storage_failure())?;
@@ -498,6 +535,7 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
                 damage,
                 slot,
                 class_type,
+                plug_category,
             ) = row.map_err(|_| storage_failure())?;
             positions.insert(hash, definitions.len());
             definitions.push(ItemDefinition {
@@ -509,6 +547,7 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
                 element: validate_element(element, damage)?,
                 slot: decode_attribute(slot, ItemSlot::as_str)?,
                 class_type: decode_attribute(class_type, ClassType::as_str)?,
+                plug_category: validate_plug_category(plug_category)?,
                 tags: Vec::new(),
                 version: DefinitionVersion::new(version),
             });
@@ -606,6 +645,7 @@ mod live_publish_tests {
                 element: None,
                 slot: None,
                 class_type: None,
+                plug_category: None,
                 tags: vec!["synthetic".into(), "weapon".into()],
                 version: version.clone(),
             })
