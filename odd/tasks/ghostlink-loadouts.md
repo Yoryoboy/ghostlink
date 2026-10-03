@@ -40,7 +40,7 @@ unlocked subclass options.
 
 ## Tasks
 
-- [ ] **LO-001 — Loadout name definitions.** Manifest component + storage + lookup.
+- [x] **LO-001 — Loadout name definitions.** Migration v11 `loadout_name_definitions`, `WorldDefinitionRepository::lookup_loadout_name`. RED→GREEN; workspace 1151, clippy clean; live sync-manifest stored 22 names. Commit `7b5049c`.
 - [ ] **LO-002 — Loadouts gateway.** `?components=206` URL/allowlist, bounded decoder, domain types.
 - [ ] **LO-003 — Loadouts query.** Join instances/definitions, classify plugs, omit unused slots.
 - [ ] **LO-004 — CLI command.** `loadouts [--character]`, text and JSON.
@@ -52,4 +52,4 @@ unlocked subclass options.
 
 ## Next step
 
-LO-001.
+LO-002.
