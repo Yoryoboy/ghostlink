@@ -44,7 +44,8 @@
 //! Every answer carries a [`QueryMetadata`] derived from the committed
 //! post-sync profile snapshot the repository reports: the profile revision,
 //! `checked_at`, and `source` under [`Dataset::ProfileInventory`], together with
-//! the current [`FreshnessStatus`] evaluated at the caller-supplied `now`. The
+//! the current [`FreshnessStatus`] evaluated at the caller-supplied `now`, advanced
+//! to at least the committed `checked_at` when synchronization refreshed. The
 //! profile revision is never conflated with the Manifest definition revision.
 //! No raw provider payload, credential, membership identifier, or unbounded
 //! upstream record is retained, returned, or rendered.
@@ -385,7 +386,9 @@ fn invalid_repository_state() -> AppError {
 ///
 /// The profile revision, `checked_at`, `source`, and `definition_version` come
 /// from the repository-reported snapshot after synchronization; the freshness
-/// status is the current evaluation at the caller-supplied `now`. The profile
+/// status is evaluated at the caller-supplied `now`, advanced to at least the
+/// refreshed `checked_at` only when acquisition occurred. A skipped read keeps
+/// the original time and the core's future-timestamp guard. The profile
 /// projection and the Manifest definition projection stay distinct.
 fn query_metadata(
     outcome: &ProfileSyncOutcome,
@@ -393,6 +396,10 @@ fn query_metadata(
     now: Timestamp,
 ) -> QueryMetadata {
     let metadata = outcome.metadata();
+    let now = match outcome {
+        ProfileSyncOutcome::Refreshed { .. } => now.max(metadata.checked_at),
+        ProfileSyncOutcome::SkippedFresh { .. } => now,
+    };
     let freshness = FreshnessInput {
         dataset: Dataset::ProfileInventory,
         checked_at: Some(metadata.checked_at),
@@ -948,6 +955,99 @@ mod tests {
         assert_eq!(result.metadata.sync.checked_at, fresh_checked_at());
         assert_eq!(shared.borrow().membership_calls(), 0);
         assert_eq!(shared.borrow().inventory_calls(), 0);
+    }
+
+    #[test]
+    fn refreshed_reads_are_fresh_when_gateway_checked_at_is_after_query_now() {
+        // The injected query time is read before acquisition; the fake gateway
+        // publishes a snapshot stamped one second later, as the live gateway can.
+        let checked_at = Timestamp::new(NOW.seconds() + 1);
+        for path in ["list", "search", "inspect"] {
+            let shared = gateway();
+            queue_refresh(
+                &shared,
+                snapshot_input(
+                    checked_at,
+                    vec![character("hunter")],
+                    vec![instance("inst-a", 1, ItemLocation::Vault, Vec::new())],
+                ),
+            );
+            let mut service = service(
+                &shared,
+                CompositeRepository::with_definitions(standard_definitions()),
+            );
+            let metadata = match path {
+                "list" => service.list_characters(TTL, NOW).expect("list").metadata,
+                "search" => {
+                    service
+                        .search_inventory(
+                            &search_request(
+                                definition_query(None, None, Vec::new(), MAX_SEARCH_LIMIT),
+                                None,
+                            ),
+                            TTL,
+                            NOW,
+                        )
+                        .expect("search")
+                        .metadata
+                }
+                "inspect" => match service
+                    .inspect_item(
+                        &InspectItemRequest {
+                            instance_id: ItemInstanceId::new("inst-a"),
+                        },
+                        TTL,
+                        NOW,
+                    )
+                    .expect("inspect")
+                {
+                    Resolution::Unique(inspection) => inspection.metadata,
+                    other => panic!("expected inspection, got {other:?}"),
+                },
+                _ => unreachable!(),
+            };
+            assert_eq!(shared.borrow().inventory_calls(), 1, "{path}");
+            assert_eq!(metadata.sync.checked_at, checked_at, "{path}");
+            assert_eq!(metadata.freshness, FreshnessStatus::Fresh, "{path}");
+        }
+    }
+
+    #[test]
+    fn post_sync_freshness_preserves_time_and_source_guards() {
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            Timestamp::new(NOW.seconds() + 1),
+            Vec::new(),
+            Vec::new(),
+        ));
+        let metadata = repository
+            .load_current()
+            .expect("read")
+            .expect("snapshot")
+            .metadata;
+        let skipped = destiny_core::ProfileSyncOutcome::SkippedFresh {
+            metadata: metadata.clone(),
+        };
+        assert_eq!(
+            super::query_metadata(&skipped, TTL, NOW).freshness,
+            FreshnessStatus::Stale,
+            "no refresh must not advance the caller's time",
+        );
+        let mut old = metadata.clone();
+        old.checked_at = stale_checked_at();
+        let refreshed = destiny_core::ProfileSyncOutcome::Refreshed { metadata: old };
+        assert_eq!(
+            super::query_metadata(&refreshed, TTL, NOW).freshness,
+            FreshnessStatus::Stale,
+            "an old refreshed timestamp must still expire",
+        );
+        let mut invalid = metadata;
+        invalid.source = SourceMarker::Manifest;
+        let refreshed = destiny_core::ProfileSyncOutcome::Refreshed { metadata: invalid };
+        assert_eq!(
+            super::query_metadata(&refreshed, TTL, NOW).freshness,
+            FreshnessStatus::InvalidSource,
+        );
     }
 
     #[test]
