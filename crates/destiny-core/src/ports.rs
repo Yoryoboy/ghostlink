@@ -295,6 +295,8 @@ pub trait WorldDefinitionRepository: DefinitionRepository {
         &self,
         hash: u32,
     ) -> Result<Option<crate::ActivityTypeDefinition>, AppError>;
+    fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError>;
+    /// Required weekly catalogs only; loadout names are optional for readiness.
     fn world_definition_counts(&self) -> Result<[usize; 5], AppError>;
     fn publish_manifest(
         &mut self,
@@ -624,6 +626,7 @@ pub struct ManifestIndex {
     pub objective_path: String,
     pub activity_type_path: String,
     pub stat_path: String,
+    pub loadout_name_path: String,
 }
 
 impl fmt::Debug for ManifestIndex {

@@ -430,6 +430,22 @@ pub fn compose_artifact<F: ReadFoundations>(
         .map_err(CliError::from)
 }
 
+/// Composes the live loadout query over the authenticated, synchronized projection.
+pub fn compose_loadouts<F>(
+    foundations: &mut F,
+    selector: Option<&destiny_app::CharacterId>,
+) -> Result<destiny_app::LoadoutsResult, CliError>
+where
+    F: ReadFoundations,
+    F::Repository: destiny_app::WorldDefinitionRepository,
+{
+    let config = foundations.config()?;
+    let runtime = compose_configured(foundations, &config)?;
+    destiny_app::LoadoutService::new(runtime.service.into_sync())
+        .loadouts(selector, runtime.freshness.policy, runtime.freshness.now)
+        .map_err(CliError::from)
+}
+
 /// Reuses authenticated read composition, including its configured refresh source.
 /// Definitions gate precedes even membership/inventory requests.
 pub fn compose_weekly<F, T>(
@@ -718,7 +734,9 @@ mod tests {
             destiny_adapters::manifest::ManifestTransportError,
         > {
             let body = if request.url().contains("/Platform/") {
-                r#"{"ErrorCode":1,"Response":{"version":"v1","jsonWorldComponentContentPaths":{"en":{"DestinyInventoryItemDefinition":"/common/destiny2_content/items.json","DestinyMilestoneDefinition":"/common/destiny2_content/m.json","DestinyActivityDefinition":"/common/destiny2_content/a.json","DestinyActivityModifierDefinition":"/common/destiny2_content/mod.json","DestinyObjectiveDefinition":"/common/destiny2_content/obj.json","DestinyActivityTypeDefinition":"/common/destiny2_content/type.json","DestinyStatDefinition":"/common/destiny2_content/stat.json"}}}}"#
+                r#"{"ErrorCode":1,"Response":{"version":"v1","jsonWorldComponentContentPaths":{"en":{"DestinyInventoryItemDefinition":"/common/destiny2_content/items.json","DestinyMilestoneDefinition":"/common/destiny2_content/m.json","DestinyActivityDefinition":"/common/destiny2_content/a.json","DestinyActivityModifierDefinition":"/common/destiny2_content/mod.json","DestinyObjectiveDefinition":"/common/destiny2_content/obj.json","DestinyActivityTypeDefinition":"/common/destiny2_content/type.json","DestinyStatDefinition":"/common/destiny2_content/stat.json","DestinyLoadoutNameDefinition":"/common/destiny2_content/loadout-names.json"}}}}"#
+            } else if request.url().ends_with("/loadout-names.json") {
+                r#"{"1":{"hash":1,"name":"PvE"}}"#
             } else if request.url().ends_with("/obj.json") {
                 r#"{"1":{"hash":1,"progressDescription":"","completionValue":1},"2":{"hash":2,"redacted":true}}"#
             } else {

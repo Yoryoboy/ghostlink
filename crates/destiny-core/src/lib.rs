@@ -1,5 +1,7 @@
 //! Provider- and transport-free domain contracts.
 
+pub mod loadout;
+pub use loadout::*;
 pub mod artifact;
 pub use artifact::*;
 pub mod auth;
@@ -19,9 +21,9 @@ pub mod weekly_profile;
 pub use weekly_profile::*;
 pub mod world_definitions;
 pub use world_definitions::{
-    ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, MilestoneDefinition,
-    ObjectiveDefinition, StatDefinition, WorldDefinitionTable, WorldDefinitionsAcquisition,
-    normalize_stat_name,
+    ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, LoadoutNameDefinition,
+    MilestoneDefinition, ObjectiveDefinition, StatDefinition, WorldDefinitionTable,
+    WorldDefinitionsAcquisition, normalize_stat_name,
 };
 
 pub use auth::{

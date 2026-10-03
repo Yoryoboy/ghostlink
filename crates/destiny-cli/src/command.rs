@@ -69,6 +69,16 @@ impl Cli {
     /// reachable from a caller that asked a read-only entry point to run login.
     pub fn into_read_request(self) -> Result<ReadRequest, CliError> {
         match self.command {
+            Command::Loadouts(arguments) => {
+                let character_id = SubclassArgs {
+                    character: arguments.character,
+                }
+                .into_request()?;
+                Ok(ReadRequest::Loadouts {
+                    character_id,
+                    detail: arguments.detail,
+                })
+            }
             Command::Artifact(arguments) => {
                 let character_id = SubclassArgs {
                     character: arguments.character,
@@ -132,6 +142,10 @@ pub enum Command {
     /// Show seasonal artifact points, power, and active perks.
     #[command(name = "artifact")]
     Artifact(ArtifactArgs),
+
+    /// Show saved in-game loadouts for one or all characters.
+    #[command(name = "loadouts")]
+    Loadouts(LoadoutsArgs),
 
     /// Authorize this machine against the provider.
     ///
@@ -541,6 +555,17 @@ impl WeeklyArgs {
     }
 }
 
+/// Arguments for `loadouts`; JSON always includes the full result.
+#[derive(Debug, Args)]
+pub struct LoadoutsArgs {
+    /// Exact ID or hunter|titan|warlock (case-insensitive, unique class).
+    #[arg(long, value_name = "ID_OR_CLASS")]
+    pub character: Option<String>,
+    /// Additionally list each item and its configured plugs (ignored for JSON).
+    #[arg(long)]
+    pub detail: bool,
+}
+
 /// Arguments for `artifact`; omitted selection includes every character.
 #[derive(Debug, Args)]
 pub struct ArtifactArgs {
@@ -571,6 +596,52 @@ impl SubclassArgs {
 #[cfg(test)]
 mod subclass_tests {
     use super::*;
+
+    #[test]
+    fn loadouts_parses_selection_detail_and_json() {
+        for (args, selector, detail) in [
+            (vec!["ghostlink", "loadouts"], None, false),
+            (
+                vec!["ghostlink", "loadouts", "--character", "Hunter", "--detail"],
+                Some("Hunter"),
+                true,
+            ),
+            (
+                vec![
+                    "ghostlink",
+                    "--json",
+                    "loadouts",
+                    "--character",
+                    "123",
+                    "--detail",
+                ],
+                Some("123"),
+                true,
+            ),
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(args)
+                    .unwrap()
+                    .into_read_request()
+                    .unwrap(),
+                ReadRequest::Loadouts {
+                    character_id: selector.map(CharacterId::new),
+                    detail
+                }
+            );
+        }
+        for value in [" ", "id\nvalue"] {
+            assert_eq!(
+                Cli::try_parse_from(["ghostlink", "loadouts", "--character", value])
+                    .unwrap()
+                    .into_read_request()
+                    .unwrap_err()
+                    .code(),
+                "invalid_request"
+            );
+        }
+        assert!(Cli::try_parse_from(["ghostlink", "loadouts", "--tiers"]).is_err());
+    }
 
     #[test]
     fn artifact_parses_optional_character_and_rejects_tiers() {
@@ -678,7 +749,13 @@ pub enum ReadRequest {
     SearchInventory(SearchInventoryRequest),
     InspectItem(InspectItemRequest),
     Subclass(Option<CharacterId>),
-    Artifact { character_id: Option<CharacterId> },
+    Artifact {
+        character_id: Option<CharacterId>,
+    },
+    Loadouts {
+        character_id: Option<CharacterId>,
+        detail: bool,
+    },
 }
 
 /// A stable machine code and process exit status for one failure outcome.

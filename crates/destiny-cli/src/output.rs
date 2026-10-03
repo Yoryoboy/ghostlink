@@ -22,6 +22,10 @@ use crate::login::LoginInstruction;
 mod artifact_tests;
 
 #[cfg(test)]
+#[path = "loadouts_output_tests.rs"]
+mod loadouts_tests;
+
+#[cfg(test)]
 mod subclass_tests {
     use super::*;
     use destiny_app::{
@@ -122,9 +126,26 @@ pub enum OutputMode {
     Json,
 }
 
+const SUBCLASS_LABELS: &[(destiny_app::SubclassPlugKind, &str)] = {
+    use destiny_app::SubclassPlugKind::*;
+    &[
+        (Super, "Super"),
+        (ClassAbility, "Class ability"),
+        (Movement, "Movement"),
+        (Melee, "Melee"),
+        (Grenade, "Grenade"),
+        (Aspect, "Aspects"),
+        (Fragment, "Fragments"),
+        (Transcendence, "Transcendence"),
+    ]
+};
+
+#[path = "loadouts_output.rs"]
+mod loadouts_output;
+pub use loadouts_output::{loadouts_json, render_loadouts};
+
 /// Renders equipped subclasses without reordering slots in the machine result.
 pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult) -> String {
-    use destiny_app::SubclassPlugKind::*;
     match mode {
         OutputMode::Json => subclass_json(result).to_string(),
         OutputMode::Human => {
@@ -140,16 +161,7 @@ pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult)
                         .unwrap_or_else(|| "no subclass equipped".into())
                 ));
                 if let Some(config) = &character.subclass {
-                    for (kind, label) in [
-                        (Super, "Super"),
-                        (ClassAbility, "Class ability"),
-                        (Movement, "Movement"),
-                        (Melee, "Melee"),
-                        (Grenade, "Grenade"),
-                        (Aspect, "Aspects"),
-                        (Fragment, "Fragments"),
-                        (Transcendence, "Transcendence"),
-                    ] {
+                    for &(kind, label) in SUBCLASS_LABELS {
                         let names: Vec<_> = config
                             .slots
                             .iter()

@@ -152,8 +152,8 @@ where
     S: QueryOperations + ?Sized,
 {
     let rendered: Result<String, CliError> = match request {
-        // Artifact is a sibling live service, composed separately at the binary boundary.
-        ReadRequest::Artifact { .. } => {
+        // Live sibling services are composed separately at the binary boundary.
+        ReadRequest::Artifact { .. } | ReadRequest::Loadouts { .. } => {
             Err(CliError::from_category(ErrorCategory::UnsupportedOperation))
         }
         ReadRequest::Subclass(character_id) => service
@@ -178,6 +178,20 @@ where
     match rendered {
         Ok(body) => ProcessOutput::success(body),
         Err(error) => ProcessOutput::failure(mode, error),
+    }
+}
+
+/// Dispatches a live loadouts read through its sibling service contract.
+pub fn dispatch_loadouts<S: destiny_app::LoadoutOperations + ?Sized>(
+    service: &mut S,
+    selector: Option<&destiny_app::CharacterId>,
+    detail: bool,
+    mode: OutputMode,
+    freshness: ReadFreshness,
+) -> ProcessOutput {
+    match service.loadouts(selector, freshness.policy, freshness.now) {
+        Ok(result) => ProcessOutput::success(crate::output::render_loadouts(mode, &result, detail)),
+        Err(error) => ProcessOutput::failure(mode, CliError::from(error)),
     }
 }
 
@@ -341,6 +355,21 @@ where
         Ok(request) => request,
         Err(error) => return ProcessOutput::failure(mode, error),
     };
+    if let ReadRequest::Loadouts {
+        character_id,
+        detail,
+    } = request
+    {
+        return match crate::runtime::compose_loadouts(
+            &mut crate::runtime::ProductionFoundations,
+            character_id.as_ref(),
+        ) {
+            Ok(result) => {
+                ProcessOutput::success(crate::output::render_loadouts(mode, &result, detail))
+            }
+            Err(error) => ProcessOutput::failure(mode, error),
+        };
+    }
     if let ReadRequest::Artifact { character_id } = request {
         return match crate::runtime::compose_artifact(
             &mut crate::runtime::ProductionFoundations,
@@ -698,6 +727,7 @@ mod tests {
         Inspect(InspectItemRequest),
         Subclass(Option<CharacterId>),
         Artifact(Option<CharacterId>),
+        Loadouts(Option<CharacterId>),
     }
 
     /// The call log of a recording service.
@@ -791,6 +821,80 @@ mod tests {
                 characters: vec![],
             })
         }
+    }
+
+    impl destiny_app::LoadoutOperations for RecordingService {
+        fn loadouts(
+            &mut self,
+            selector: Option<&CharacterId>,
+            policy: FreshnessPolicy,
+            now: Timestamp,
+        ) -> Result<destiny_app::LoadoutsResult, AppError> {
+            self.record(Recorded::Loadouts(selector.cloned()), policy, now);
+            Ok(destiny_app::LoadoutsResult { characters: vec![] })
+        }
+    }
+
+    #[test]
+    fn loadouts_dispatches_selector_and_freshness_once() {
+        for selector in [None, Some("hunter"), Some("123")] {
+            for detail in [false, true] {
+                let mut service = RecordingService::new();
+                let mut args = vec!["ghostlink", "--json", "loadouts"];
+                if let Some(selector) = selector {
+                    args.extend(["--character", selector]);
+                }
+                if detail {
+                    args.push("--detail");
+                }
+                let cli = parse_process(args).unwrap();
+                let mode = cli.output_mode();
+                let ReadRequest::Loadouts {
+                    character_id,
+                    detail,
+                } = cli.into_read_request().unwrap()
+                else {
+                    panic!("expected loadouts")
+                };
+                let output = super::dispatch_loadouts(
+                    &mut service,
+                    character_id.as_ref(),
+                    detail,
+                    mode,
+                    freshness(),
+                );
+                assert_eq!(output.exit_code, 0);
+                assert!(output.stderr.is_empty());
+                assert_eq!(
+                    service.recorded(),
+                    vec![(Recorded::Loadouts(selector.map(CharacterId::new)), TTL, NOW)]
+                );
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&output.stdout).unwrap(),
+                    serde_json::json!({"kind":"loadouts", "characters":[]})
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn loadouts_dispatch_maps_service_errors() {
+        struct Failed;
+        impl destiny_app::LoadoutOperations for Failed {
+            fn loadouts(
+                &mut self,
+                _: Option<&CharacterId>,
+                _: FreshnessPolicy,
+                _: Timestamp,
+            ) -> Result<destiny_app::LoadoutsResult, AppError> {
+                Err(AppError::new(ErrorCategory::DefinitionsUnavailable))
+            }
+        }
+        let output =
+            super::dispatch_loadouts(&mut Failed, None, false, OutputMode::Json, freshness());
+        assert_ne!(output.exit_code, 0);
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.contains("definitions_unavailable"));
     }
 
     #[test]

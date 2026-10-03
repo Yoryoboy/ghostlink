@@ -1,0 +1,55 @@
+# In-game loadouts (WU-030)
+
+## Objective and scope
+
+Expose each character's saved in-game loadouts: loadout name, and per item the
+item name/type plus the configured plugs (weapon perks, armor mods, subclass
+super/aspects/fragments/abilities, artifact perks).
+
+Out of scope: applying/equipping loadouts (mutation), loadout icon/color art,
+unlocked subclass options.
+
+## Live evidence (2026-10-03, component 206)
+
+- `characterLoadouts.data[cid].loadouts[]`: 6 slots per character, each
+  `{ nameHash, colorHash, iconHash, items[] }`.
+- Unused slot: every `itemInstanceId` is `"0"`.
+- A used loadout holds 10 items: 3 weapons, 5 armor, subclass, artifact.
+  Each item is `{ itemInstanceId, plugItemHashes[] }`; `plugItemHashes` is
+  indexed by socket; `2166136261` means "not set" and is skipped.
+- Item instances resolve against the synced inventory snapshot; plug hashes
+  resolve against item definitions. Loadout names need
+  `DestinyLoadoutNameDefinition` (not loaded today).
+
+## Decisions
+
+- Live-only read via a dedicated gateway call
+  `GET /Destiny2/{t}/Profile/{id}/?components=206` with its own allowlist
+  predicate (same pattern as the artifact gateway).
+- Load `DestinyLoadoutNameDefinition` into the manifest store for names.
+  Color/icon kept as raw hashes only.
+- Item names/types come from the synced snapshot + definitions; an instance
+  missing from the snapshot is reported with `name: null` (not an error).
+- Subclass plugs are grouped with the existing `SubclassPlugKind` classifier.
+- Unused slots are omitted.
+
+## Constraints and acceptance
+
+- Bounded strict decoding; CLI/MCP parity; test-first; live smoke test before
+  closing each task that touches provider data.
+
+## Tasks
+
+- [x] **LO-001 — Loadout name definitions.** Migration v11 `loadout_name_definitions`, `WorldDefinitionRepository::lookup_loadout_name`. RED→GREEN; workspace 1151, clippy clean; live sync-manifest stored 22 names. Commit `7b5049c`.
+- [x] **LO-002 — Loadouts gateway.** `LoadoutGateway::load_loadouts`, `?components=206` allowlist, bounded decoder (sentinel/unused filtering keeps slot+socket indices). RED→GREEN; workspace 1158, clippy clean; live smoke deferred to LO-004. Commit `4d16b85`.
+- [x] **LO-003 — Loadouts query.** `LoadoutService::loadouts` + `LoadoutOperations`, `compose_loadouts`, cosmetic/tracker filter, missing-instance flag. RED→GREEN; workspace 1164, clippy clean. Commit `af3ae33`.
+- [x] **LO-004 — CLI command.** `ghostlink loadouts [--character] [--detail]`, JSON projection in `loadouts_output.rs`. RED→GREEN; workspace 1172, clippy clean; live smoke OK (Hunter 4 loadouts Stasis/Void/PvP/PvE, full subclass+artifact). Commit `5e3fee9`.
+- [x] **LO-005 — MCP tool and docs.** `get_loadouts`, exact CLI/MCP parity, README, `kill_vfx` cosmetic filter. RED→GREEN; workspace 1177, stdio 11, clippy clean; live CLI smoke confirms flair removed. Commit `b7dca51`.
+
+## Progress
+
+- Branch `feature/loadouts` stacked on `feature/artifact`.
+
+## Next step
+
+WU-030 complete. Remaining follow-up: unlocked subclass options (plug sets 105).

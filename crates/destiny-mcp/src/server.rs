@@ -228,6 +228,16 @@ fn dispatch_locked(
         SEARCH_INVENTORY_TOOL => dispatch_search_inventory(guard.as_mut(), arguments),
         INSPECT_ITEM_TOOL => dispatch_inspect_item(guard.as_mut(), arguments),
         crate::schema::GET_SUBCLASS_TOOL => dispatch_get_subclass(guard.as_mut(), arguments),
+        crate::schema::GET_LOADOUTS_TOOL => {
+            let arguments: crate::schema::GetLoadoutsArgs = deserialize(arguments)?;
+            let character = match arguments.into_request() {
+                Ok(character) => character,
+                Err(error) => return Ok(error.into_call_tool_result()),
+            };
+            Ok(guard
+                .get_loadouts(character.as_ref())
+                .map_or_else(tool_error, |output| output.into_call_tool_result()))
+        }
         crate::schema::GET_ARTIFACT_TOOL => {
             let arguments: crate::schema::GetArtifactArgs = deserialize(arguments)?;
             let character = match arguments.into_request() {
@@ -442,6 +452,19 @@ mod tests {
     }
 
     impl InventoryReadService for RecordingService {
+        fn get_loadouts(
+            &mut self,
+            character: Option<&destiny_app::CharacterId>,
+        ) -> Result<crate::schema::GetLoadoutsOutput, McpError> {
+            assert_eq!(character.map(|id| id.as_str()), Some("hunter"));
+            self.enter("get_loadouts");
+            let result = match self.failure {
+                Some(category) => Err(McpError::new(category)),
+                None => Ok(crate::schema::GetLoadoutsOutput { characters: vec![] }),
+            };
+            self.leave();
+            result
+        }
         fn get_artifact(
             &mut self,
             character: Option<&destiny_app::CharacterId>,
@@ -664,6 +687,7 @@ mod tests {
                 "inspect_item",
                 "get_subclass",
                 "get_artifact",
+                "get_loadouts",
                 "weekly_reset",
                 "weekly"
             ]
@@ -751,6 +775,8 @@ mod tests {
             ("get_subclass", json!({"unknown": true})),
             ("get_artifact", json!({"character": 1})),
             ("get_artifact", json!({"unknown": true})),
+            ("get_loadouts", json!({"character": 1})),
+            ("get_loadouts", json!({"unknown": true})),
             ("inspect_item", json!({"instance_id": 1})),
             ("inspect_item", json!({"instance_id": "inst", "unknown": 1})),
         ] {
@@ -766,6 +792,43 @@ mod tests {
 
         // A malformed request never reaches the shared service.
         assert!(handle.recorded().is_empty());
+    }
+
+    #[test]
+    fn loadouts_dispatch_validates_before_service_and_preserves_errors() {
+        let (server, handle) = server(RecordingService::new());
+        for value in [
+            "".to_owned(),
+            " ".to_owned(),
+            "a".repeat(513),
+            "bad\u{7}".to_owned(),
+        ] {
+            let result = server
+                .dispatch("get_loadouts", args(json!({"character": value})))
+                .unwrap();
+            assert_eq!(structured(&result)["code"], "provider_validation");
+        }
+        assert!(handle.recorded().is_empty());
+        let result = server
+            .dispatch("get_loadouts", args(json!({"character": "hunter"})))
+            .unwrap();
+        assert_eq!(
+            structured(&result),
+            json!({"kind": "loadouts", "characters": []})
+        );
+        assert_eq!(handle.recorded(), ["get_loadouts"]);
+        for category in [
+            ErrorCategory::DefinitionsUnavailable,
+            ErrorCategory::AuthorizationRequired,
+            ErrorCategory::AmbiguousMatch,
+        ] {
+            let (server, _) = self::server(RecordingService::with_failure(category));
+            let result = server
+                .dispatch("get_loadouts", args(json!({"character": "hunter"})))
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(structured(&result)["code"], McpError::new(category).code());
+        }
     }
 
     #[test]
@@ -958,6 +1021,7 @@ mod tests {
                 "inspect_item",
                 "get_subclass",
                 "get_artifact",
+                "get_loadouts",
                 "weekly_reset",
                 "weekly"
             ]
@@ -992,6 +1056,7 @@ mod tests {
                 "inspect_item",
                 "get_subclass",
                 "get_artifact",
+                "get_loadouts",
                 "weekly_reset",
                 "weekly",
                 MOVE_ITEM_TOOL

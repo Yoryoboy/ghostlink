@@ -324,6 +324,20 @@ Each character has `character_id`, `class` and nullable `equipped` with
 `plug_hash`, nullable `name` and `empty`. Missing progression or equipped artifact
 stays null. Legacy artifact tiers and power-bonus fields are not reported.
 
+### Saved in-game loadouts
+
+`ghostlink loadouts [--character <id|class>] [--detail]` shows saved loadout
+names, weapons, armor, subclass configuration and artifact perks per character.
+Omit `--character` for all characters; selection follows the subclass rules above.
+The compact view summarizes equipment; `--detail` adds each item's perks and mods.
+Requires login and Manifest definitions. Run `ghostlink sync-manifest` once after
+upgrading to populate loadout names.
+
+`ghostlink --json loadouts` returns the full `kind: "loadouts"` envelope regardless
+of `--detail`. Unused slots are omitted; saved slot and socket indices retain gaps.
+Missing inventory instances are explicit (`missing: true`, nullable item fields).
+Cosmetics and stat trackers are omitted; unknown plugs remain visible.
+
 ### Inspect one owned item
 
 `ghostlink inspect-item <INSTANCE_ID>` shows named socketed perks and mods,
@@ -469,6 +483,7 @@ search_inventory  search Manifest definitions and concrete instances
 inspect_item      inspect exactly one concrete instance by instance identifier
 get_subclass      show equipped subclass configurations per character
 get_artifact      read live seasonal artifact state and per-character perks
+get_loadouts      show saved in-game loadouts and configured equipment per character
 weekly_reset      show the current public weekly rotation (same data as the CLI)
 weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
@@ -517,6 +532,13 @@ For example: `{"character": "hunter"}`. Requires login and loaded Manifest defin
 with omission selecting all characters. Its structured output matches
 `ghostlink --json artifact` exactly, including points and equipped artifact sockets.
 For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
+
+`get_loadouts` accepts an optional bounded `character` (exact id or unique class),
+with omission selecting all characters. Its structured output matches
+`ghostlink --json loadouts` exactly, including names, equipment, subclass
+configuration, artifact perks and retained slot/socket indices. For example:
+`{"character": "hunter"}`. Requires login and loaded Manifest definitions;
+run `ghostlink sync-manifest` once after upgrading for loadout names.
 
 `inspect_item` returns the same enriched names as CLI inspection:
 `perk_names`, `mod_names`, `mods`, `archetype`, `available_perks`,

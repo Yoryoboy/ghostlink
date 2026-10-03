@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 10;
+pub(crate) const LATEST_VERSION: u32 = 11;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 10] = [
+const MIGRATIONS: [Migration; 11] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -104,7 +104,26 @@ const MIGRATIONS: [Migration; 10] = [
         up: SCHEMA_V10_UP,
         down: SCHEMA_V10_DOWN,
     },
+    Migration {
+        version: 11,
+        up: SCHEMA_V11_UP,
+        down: SCHEMA_V11_DOWN,
+    },
 ];
+
+// Republish even an unchanged Manifest version to populate loadout names.
+const SCHEMA_V11_UP: &str = r#"
+CREATE TABLE loadout_name_definitions (
+    hash INTEGER PRIMARY KEY CHECK (typeof(hash) = 'integer' AND hash BETWEEN 0 AND 4294967295),
+    name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 256),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V11_DOWN: &str = r#"
+DROP TABLE IF EXISTS loadout_name_definitions;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
 
 const SCHEMA_V10_UP: &str = r#"
 CREATE TABLE item_available_plugs (

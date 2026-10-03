@@ -91,6 +91,13 @@ pub struct ListCharactersRequest;
 /// without touching `rmcp`. Requests are already validated and bounded; outputs
 /// are the bounded MCP projections defined in [`crate::schema`].
 pub trait InventoryReadService {
+    /// Reads saved in-game loadouts when composed with a loadout service.
+    fn get_loadouts(
+        &mut self,
+        _character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetLoadoutsOutput, McpError> {
+        Err(McpError::new(ErrorCategory::DefinitionsUnavailable))
+    }
     /// Reads live artifact state when composed with an artifact service.
     fn get_artifact(
         &mut self,
@@ -163,6 +170,80 @@ impl<A: destiny_app::ArtifactOperations, I: InventoryReadService, C: Clock> Inve
             .artifact(character, self.policy, now)
             .map_err(McpError::from)?;
         Ok(artifact_output(&result))
+    }
+    fn get_subclass(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetSubclassOutput, McpError> {
+        self.inventory.get_subclass(character)
+    }
+    fn weekly(
+        &mut self,
+        args: &crate::schema::WeeklyArgs,
+    ) -> Result<crate::schema::WeeklyOutput, WeeklyReadError> {
+        self.inventory.weekly(args)
+    }
+    fn weekly_reset(&mut self) -> Result<crate::schema::WeeklyResetOutput, McpError> {
+        self.inventory.weekly_reset()
+    }
+    fn list_characters(
+        &mut self,
+        request: &ListCharactersRequest,
+    ) -> Result<ListCharactersOutput, McpError> {
+        self.inventory.list_characters(request)
+    }
+    fn search_inventory(
+        &mut self,
+        request: &SearchInventoryRequest,
+    ) -> Result<SearchInventoryOutput, McpError> {
+        self.inventory.search_inventory(request)
+    }
+    fn inspect_item(
+        &mut self,
+        request: &InspectItemRequest,
+    ) -> Result<InspectItemOutput, McpError> {
+        self.inventory.inspect_item(request)
+    }
+}
+
+/// Adds live saved loadouts without changing sibling inventory or artifact policy.
+pub struct LoadoutsReadService<L, I, C> {
+    loadouts: L,
+    inventory: I,
+    clock: C,
+    policy: FreshnessPolicy,
+}
+
+impl<L, I, C> LoadoutsReadService<L, I, C> {
+    pub fn new(loadouts: L, inventory: I, clock: C, policy: FreshnessPolicy) -> Self {
+        Self {
+            loadouts,
+            inventory,
+            clock,
+            policy,
+        }
+    }
+}
+
+impl<L: destiny_app::LoadoutOperations, I: InventoryReadService, C: Clock> InventoryReadService
+    for LoadoutsReadService<L, I, C>
+{
+    fn get_loadouts(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetLoadoutsOutput, McpError> {
+        let now = self.clock.now().map_err(McpError::from)?;
+        let result = self
+            .loadouts
+            .loadouts(character, self.policy, now)
+            .map_err(McpError::from)?;
+        Ok(loadouts_output(&result))
+    }
+    fn get_artifact(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetArtifactOutput, McpError> {
+        self.inventory.get_artifact(character)
     }
     fn get_subclass(
         &mut self,
@@ -912,6 +993,93 @@ impl InstanceQueryArgs {
         };
         query.validate().map_err(McpError::from)?;
         Ok(query)
+    }
+}
+
+impl crate::schema::GetLoadoutsArgs {
+    /// Bounds the selector before invoking the shared loadout operations.
+    pub fn into_request(self) -> Result<Option<CharacterId>, McpError> {
+        if let Some(character) = &self.character {
+            validate_identifier(character, "character")?;
+        }
+        Ok(self.character.map(CharacterId::new))
+    }
+}
+
+/// Full CLI-compatible loadouts envelope, retaining saved slot and socket gaps.
+pub fn loadouts_output(result: &destiny_app::LoadoutsResult) -> crate::schema::GetLoadoutsOutput {
+    use crate::schema::{
+        CharacterLoadoutsView, GetLoadoutsOutput, LoadoutItemView, LoadoutPlugView, LoadoutView,
+        SubclassPlugKindView,
+    };
+    GetLoadoutsOutput {
+        characters: result
+            .characters
+            .iter()
+            .map(|character| CharacterLoadoutsView {
+                character_id: character.character_id.as_str().to_owned(),
+                class: character.class.clone(),
+                loadouts: character
+                    .loadouts
+                    .iter()
+                    .map(|loadout| LoadoutView {
+                        slot: loadout.slot,
+                        name: loadout.name.clone(),
+                        name_hash: loadout.name_hash,
+                        color_hash: loadout.color_hash,
+                        icon_hash: loadout.icon_hash,
+                        items: loadout
+                            .items
+                            .iter()
+                            .map(|item| LoadoutItemView {
+                                instance_id: item.instance_id.as_str().to_owned(),
+                                item_hash: item.item_hash.map(|hash| hash.value()),
+                                name: item.name.clone(),
+                                item_type: item.item_type.clone(),
+                                bucket_hash: item.bucket_hash,
+                                missing: item.missing,
+                                plugs: item
+                                    .plugs
+                                    .iter()
+                                    .map(|plug| LoadoutPlugView {
+                                        socket_index: plug.socket_index,
+                                        plug_hash: plug.plug_hash.value(),
+                                        name: plug.name.clone(),
+                                        empty: plug.empty,
+                                        subclass_kind: plug.subclass_kind.map(|kind| match kind {
+                                            destiny_app::SubclassPlugKind::Super => {
+                                                SubclassPlugKindView::Super
+                                            }
+                                            destiny_app::SubclassPlugKind::Aspect => {
+                                                SubclassPlugKindView::Aspect
+                                            }
+                                            destiny_app::SubclassPlugKind::Fragment => {
+                                                SubclassPlugKindView::Fragment
+                                            }
+                                            destiny_app::SubclassPlugKind::Grenade => {
+                                                SubclassPlugKindView::Grenade
+                                            }
+                                            destiny_app::SubclassPlugKind::Melee => {
+                                                SubclassPlugKindView::Melee
+                                            }
+                                            destiny_app::SubclassPlugKind::ClassAbility => {
+                                                SubclassPlugKindView::ClassAbility
+                                            }
+                                            destiny_app::SubclassPlugKind::Movement => {
+                                                SubclassPlugKindView::Movement
+                                            }
+                                            destiny_app::SubclassPlugKind::Transcendence => {
+                                                SubclassPlugKindView::Transcendence
+                                            }
+                                        }),
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect(),
     }
 }
 

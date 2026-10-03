@@ -50,6 +50,32 @@ definition!(ActivityDefinition, activity_type_hash: u32, light_level: i32);
 definition!(ActivityModifierDefinition);
 definition!(ActivityTypeDefinition);
 
+/// Minimal named loadout identity; provider text is omitted from Debug.
+#[derive(Clone, Eq, PartialEq)]
+pub struct LoadoutNameDefinition {
+    hash: u32,
+    name: String,
+}
+impl std::fmt::Debug for LoadoutNameDefinition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoadoutNameDefinition")
+            .field("hash", &self.hash)
+            .finish_non_exhaustive()
+    }
+}
+impl LoadoutNameDefinition {
+    pub fn new(hash: u32, name: String) -> Result<Self, AppError> {
+        validate_text(&name, "")?;
+        Ok(Self { hash, name })
+    }
+    pub const fn hash(&self) -> u32 {
+        self.hash
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
 /// Minimal named stat identity; no other provider fields are retained.
 #[derive(Clone, Eq, PartialEq)]
 pub struct StatDefinition {
@@ -139,7 +165,7 @@ pub struct WorldDefinitionTable<T> {
     pub skipped_count: usize,
 }
 
-/// The six non-item components acquired against one exact index version.
+/// The seven non-item components acquired against one exact index version.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorldDefinitionsAcquisition {
     pub version: DefinitionVersion,
@@ -149,6 +175,7 @@ pub struct WorldDefinitionsAcquisition {
     pub objectives: WorldDefinitionTable<ObjectiveDefinition>,
     pub activity_types: WorldDefinitionTable<ActivityTypeDefinition>,
     pub stats: WorldDefinitionTable<StatDefinition>,
+    pub loadout_names: WorldDefinitionTable<LoadoutNameDefinition>,
 }
 
 impl WorldDefinitionsAcquisition {
@@ -159,11 +186,21 @@ impl WorldDefinitionsAcquisition {
                 && count <= cap
                 && hashes.collect::<std::collections::HashSet<_>>().len() == count
         }
-        if !valid(
-            self.stats.definitions.iter().map(StatDefinition::hash),
-            self.stats.definitions.len(),
-            1000,
-        ) || &self.version != version
+        if (!self.loadout_names.definitions.is_empty()
+            && !valid(
+                self.loadout_names
+                    .definitions
+                    .iter()
+                    .map(LoadoutNameDefinition::hash),
+                self.loadout_names.definitions.len(),
+                1000,
+            ))
+            || !valid(
+                self.stats.definitions.iter().map(StatDefinition::hash),
+                self.stats.definitions.len(),
+                1000,
+            )
+            || &self.version != version
             || !valid(
                 self.milestones
                     .definitions
@@ -254,6 +291,10 @@ impl WorldDefinitionsAcquisition {
         self.activity_types.skipped_count = 0;
         self.stats.definitions.sort_by_key(StatDefinition::hash);
         self.stats.skipped_count = 0;
+        self.loadout_names
+            .definitions
+            .sort_by_key(LoadoutNameDefinition::hash);
+        self.loadout_names.skipped_count = 0;
     }
 }
 
@@ -279,6 +320,10 @@ mod tests {
         assert!(definitions[1].contains("activity_type_hash: 4"));
         assert!(definitions[1].contains("light_level: 2000"));
         let acquisition = WorldDefinitionsAcquisition {
+            loadout_names: WorldDefinitionTable {
+                definitions: vec![LoadoutNameDefinition::new(9, name.into()).unwrap()],
+                skipped_count: 0,
+            },
             version: DefinitionVersion::new("v1"),
             stats: WorldDefinitionTable {
                 definitions: vec![StatDefinition::new(8, name.into()).unwrap()],

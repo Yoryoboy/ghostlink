@@ -422,6 +422,16 @@ impl destiny_core::ports::WorldDefinitionRepository for InMemoryDefinitionReposi
                 .cloned()
         }))
     }
+    fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
+        Ok(self.world.as_ref().and_then(|world| {
+            world
+                .loadout_names
+                .definitions
+                .iter()
+                .find(|definition| definition.hash() == hash)
+                .map(|definition| definition.name().to_owned())
+        }))
+    }
     fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
         Ok(self
             .world
@@ -913,6 +923,10 @@ pub fn synthetic_world(version: DefinitionVersion) -> destiny_core::WorldDefinit
     use destiny_core::*;
     WorldDefinitionsAcquisition {
         version,
+        loadout_names: WorldDefinitionTable {
+            definitions: vec![],
+            skipped_count: 0,
+        },
         stats: WorldDefinitionTable {
             definitions: vec![StatDefinition::new(5, "Weapons".into()).unwrap()],
             skipped_count: 7,
@@ -974,6 +988,7 @@ impl QueuedManifestGateway {
                     objective_path: "/common/destiny2_content/objectives.json".into(),
                     activity_type_path: "/common/destiny2_content/types.json".into(),
                     stat_path: "/common/destiny2_content/stats.json".into(),
+                    loadout_name_path: "/common/destiny2_content/loadout-names.json".into(),
                 }));
                 self.queue_world(Ok(synthetic_world(batch.version.clone())));
                 self.queue_component(Ok(batch));

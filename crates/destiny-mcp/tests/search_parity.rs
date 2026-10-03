@@ -18,6 +18,169 @@ mod cli_subclass_output;
 #[path = "../../destiny-cli/src/artifact_output.rs"]
 mod cli_artifact_output;
 
+// The parity tests exercise only JSON, not the human renderer's helpers.
+use output::OutputMode;
+fn sanitize(value: &str) -> String {
+    value.to_owned()
+}
+const SUBCLASS_LABELS: &[(destiny_app::SubclassPlugKind, &str)] = &[];
+#[allow(dead_code)]
+#[path = "../../destiny-cli/src/loadouts_output.rs"]
+mod cli_loadouts_output;
+
+#[test]
+fn loadouts_cli_mcp_json_parity() {
+    use destiny_app::{
+        CharacterId, CharacterLoadoutsView, ItemHash, ItemInstanceId, LoadoutItemView,
+        LoadoutPlugView, LoadoutView, LoadoutsResult, SubclassPlugKind::*,
+    };
+    let mut result = LoadoutsResult {
+        characters: vec![
+            CharacterLoadoutsView {
+                character_id: CharacterId::new("1"),
+                class: Some("Hunter".into()),
+                loadouts: vec![LoadoutView {
+                    slot: 3,
+                    name: Some("PvE".into()),
+                    name_hash: 7,
+                    color_hash: 8,
+                    icon_hash: 9,
+                    items: vec![
+                        LoadoutItemView {
+                            instance_id: ItemInstanceId::new("weapon"),
+                            item_hash: Some(ItemHash::new(42)),
+                            name: Some("Weapon".into()),
+                            item_type: Some("Type".into()),
+                            bucket_hash: Some(1498876634),
+                            missing: false,
+                            plugs: [
+                                Super,
+                                ClassAbility,
+                                Movement,
+                                Melee,
+                                Grenade,
+                                Aspect,
+                                Fragment,
+                                Transcendence,
+                            ]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, kind)| LoadoutPlugView {
+                                socket_index: (i * 2) as u8,
+                                plug_hash: ItemHash::new(i as i64),
+                                name: Some(format!("Plug {i}")),
+                                subclass_kind: Some(kind),
+                                empty: i == 0,
+                            })
+                            .collect(),
+                        },
+                        LoadoutItemView {
+                            instance_id: ItemInstanceId::new("missing"),
+                            item_hash: None,
+                            name: None,
+                            item_type: None,
+                            bucket_hash: None,
+                            missing: true,
+                            plugs: vec![LoadoutPlugView {
+                                socket_index: 9,
+                                plug_hash: ItemHash::new(999),
+                                name: None,
+                                subclass_kind: None,
+                                empty: false,
+                            }],
+                        },
+                    ],
+                }],
+            },
+            CharacterLoadoutsView {
+                character_id: CharacterId::new("2"),
+                class: None,
+                loadouts: vec![],
+            },
+        ],
+    };
+    for case in 0..4 {
+        let cli = cli_loadouts_output::loadouts_json(&result);
+        let mcp = destiny_mcp::service::loadouts_output(&result).into_call_tool_result();
+        assert_eq!(mcp.structured_content.unwrap(), cli);
+        match case {
+            0 => result.characters[0].loadouts[0].name = None,
+            1 => result.characters[0].loadouts.clear(),
+            _ => result.characters.clear(),
+        }
+    }
+}
+
+#[test]
+fn loadouts_cli_mcp_selector_parity_and_invalid_arguments() {
+    use clap::Parser;
+    use destiny_mcp::schema::GetLoadoutsArgs;
+    for selector in [None, Some("123"), Some("hUnTeR")] {
+        let mut argv = vec!["ghostlink", "--json", "loadouts"];
+        if let Some(value) = selector {
+            argv.extend(["--character", value]);
+        }
+        let cli = cli_command::Cli::try_parse_from(argv)
+            .unwrap()
+            .into_read_request()
+            .unwrap();
+        let cli_command::ReadRequest::Loadouts { character_id, .. } = cli else {
+            panic!("loadouts request")
+        };
+        assert_eq!(
+            character_id,
+            GetLoadoutsArgs {
+                character: selector.map(str::to_owned)
+            }
+            .into_request()
+            .unwrap()
+        );
+    }
+    for value in [
+        "".to_owned(),
+        " ".to_owned(),
+        "a".repeat(513),
+        "bad\u{7}".to_owned(),
+    ] {
+        assert!(
+            GetLoadoutsArgs {
+                character: Some(value)
+            }
+            .into_request()
+            .is_err()
+        );
+    }
+    assert!(
+        GetLoadoutsArgs {
+            character: Some("a".repeat(512))
+        }
+        .into_request()
+        .is_ok()
+    );
+    for value in [
+        serde_json::json!({"unknown": 1}),
+        serde_json::json!({"character": 1}),
+    ] {
+        assert!(serde_json::from_value::<GetLoadoutsArgs>(value).is_err());
+    }
+}
+
+#[test]
+fn loadouts_tool_is_registered_with_closed_bounded_arguments() {
+    let tool = destiny_mcp::schema::tool_specs()
+        .into_iter()
+        .find(|tool| tool.name == "get_loadouts")
+        .expect("loadouts tool registered");
+    let schema = tool.schema_as_json_value();
+    assert_eq!(schema["additionalProperties"], false);
+    assert!(
+        schema["properties"]["character"]
+            .to_string()
+            .contains("512")
+    );
+    assert!(tool.output_schema.is_some());
+}
+
 #[test]
 fn artifact_cli_mcp_json_parity() {
     use destiny_app::{ArtifactPoints, ArtifactResult, CharacterArtifact, CharacterId, ItemHash};

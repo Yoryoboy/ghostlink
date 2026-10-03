@@ -475,7 +475,7 @@ pub fn profile_endpoint(membership: &DestinyMembership) -> String {
 }
 
 /// Accepts only current-memberships, the exact inventory profile query, or the
-/// exact weekly (202/204) or artifact (104) query. No other endpoint is permitted.
+/// exact weekly (202/204), artifact (104), or loadouts (206) query. No other endpoint is permitted.
 ///
 /// This predicate is the pre-flight gate: the transport evaluates it before it
 /// reads or attaches any credential, so a rejected URL never receives a secret.
@@ -484,6 +484,7 @@ pub fn is_allowed_profile_url(url: &str) -> bool {
         || is_allowed_profile_get(url)
         || crate::weekly_profile::is_allowed_weekly_url(url)
         || crate::artifact::is_allowed_artifact_url(url)
+        || crate::loadout::is_allowed_loadout_url(url)
 }
 
 /// Accepts exactly `{origin}/Platform/Destiny2/{type}/Profile/{id}/?components=…`.
@@ -1163,6 +1164,26 @@ where
             self.definition_version.clone(),
             observed_at,
         )
+    }
+}
+
+impl<T, C, S> destiny_core::LoadoutGateway for BungieProfileGateway<T, C, S>
+where
+    T: ProfileTransport,
+    C: Clock,
+    S: CredentialSource,
+{
+    fn load_loadouts(
+        &mut self,
+        membership: &DestinyMembership,
+    ) -> Result<destiny_core::LoadoutSnapshot, AppError> {
+        let url = crate::loadout::loadout_endpoint(membership)?;
+        let (bytes, _) = self.read_with_live_credential(
+            &url,
+            crate::loadout::LOADOUT_RESPONSE_LIMIT,
+            ReadRetryScope::RateLimitAndTransient,
+        )?;
+        crate::loadout::decode_loadouts(&bytes)
     }
 }
 
@@ -2757,6 +2778,42 @@ mod tests {
         assert_eq!(recorded[0].url, MEMBERSHIP_ENDPOINT);
         assert_eq!(recorded[1].url, profile_endpoint(&selected()));
         assert!(recorded[1].url.ends_with(PROFILE_QUERY));
+    }
+
+    #[test]
+    fn loadout_gateway_reuses_auth_retry_and_exact_profile_endpoint() {
+        use destiny_core::LoadoutGateway;
+        let fixture = br#"{"ErrorCode":1,"Response":{"characterLoadouts":{"data":{"1":{"loadouts":[{"nameHash":1,"colorHash":2,"iconHash":3,"items":[{"itemInstanceId":"123","plugItemHashes":[10]}]}]}}}}}"#;
+        let (mut gateway, delay) = step_gateway(
+            vec![
+                Ok(json_response_bytes(503, b"{}")),
+                Ok(json_response_bytes(200, fixture)),
+            ],
+            [Timestamp::new(GATEWAY_NOW), Timestamp::new(GATEWAY_NOW)],
+            GATEWAY_EXPIRES_AT,
+        );
+        let snapshot = gateway
+            .load_loadouts(&selected())
+            .expect("loadout snapshot");
+        assert_eq!(snapshot.characters[0].loadouts.len(), 1);
+        assert_eq!(delay.waits().len(), 1);
+        let expected = crate::loadout::loadout_endpoint(&selected()).expect("loadout endpoint");
+        let recorded = gateway.transport().recorded();
+        assert_eq!(recorded.len(), 2);
+        for request in recorded {
+            assert_eq!(request.url, expected);
+            assert_eq!(request.api_key.as_deref(), Some(API_KEY_SENTINEL));
+            assert_eq!(request.bearer.as_deref(), Some(BEARER_SENTINEL));
+        }
+    }
+
+    #[test]
+    fn loadout_gateway_refuses_expired_credentials_before_transport() {
+        use destiny_core::LoadoutGateway;
+        let mut gateway = gateway(vec![], GATEWAY_NOW, GATEWAY_NOW);
+        let error = gateway.load_loadouts(&selected()).expect_err("expired");
+        assert_eq!(error.category(), ErrorCategory::ProviderAuthentication);
+        assert!(gateway.transport().recorded().is_empty());
     }
 
     #[test]

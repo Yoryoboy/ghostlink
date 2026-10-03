@@ -231,6 +231,9 @@ mod tests {
     }
 
     impl WorldDefinitionRepository for RepositoryDouble {
+        fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
+            self.inner.lookup_loadout_name(hash)
+        }
         fn lookup_objective(
             &self,
             hash: u32,
@@ -377,6 +380,10 @@ mod tests {
                     source: SourceMarker::Manifest,
                 },
                 WorldDefinitionsAcquisition {
+                    loadout_names: WorldDefinitionTable {
+                        definitions: vec![],
+                        skipped_count: 0,
+                    },
                     stats: crate::test_support::synthetic_world(version.clone()).stats,
                     objectives: crate::test_support::synthetic_world(version.clone()).objectives,
                     activity_types: crate::test_support::synthetic_world(version.clone())

@@ -238,6 +238,16 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         policy,
     );
 
+    let read_service = destiny_mcp::service::LoadoutsReadService::new(
+        destiny_app::LoadoutService::new(ProfileSyncService::new_with_definitions(
+            gateway.clone(),
+            repository.clone(),
+        )),
+        read_service,
+        SystemClock::new(),
+        policy,
+    );
+
     let mutations = MutationService::new(
         ProfileSyncService::new_with_definitions(gateway, repository),
         SystemPlanIds::new(SystemClock::new()),
@@ -376,6 +386,15 @@ impl<G: destiny_app::ArtifactGateway> destiny_app::ArtifactGateway for SharedGat
     }
 }
 
+impl<G: destiny_app::LoadoutGateway> destiny_app::LoadoutGateway for SharedGateway<G> {
+    fn load_loadouts(
+        &mut self,
+        membership: &DestinyMembership,
+    ) -> Result<destiny_app::LoadoutSnapshot, AppError> {
+        self.lock()?.load_loadouts(membership)
+    }
+}
+
 impl<G: ProfileGateway> ProfileGateway for SharedGateway<G> {
     fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
         self.lock()?.resolve_membership()
@@ -479,6 +498,52 @@ impl destiny_app::StatDefinitionRepository for SharedRepository {
     }
     fn stat_definition_count(&self) -> Result<usize, AppError> {
         self.lock()?.stat_definition_count()
+    }
+}
+
+impl destiny_app::WorldDefinitionRepository for SharedRepository {
+    fn lookup_milestone(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_app::MilestoneDefinition>, AppError> {
+        self.lock()?.lookup_milestone(hash)
+    }
+    fn lookup_activity(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_app::ActivityDefinition>, AppError> {
+        self.lock()?.lookup_activity(hash)
+    }
+    fn lookup_activity_modifier(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_app::ActivityModifierDefinition>, AppError> {
+        self.lock()?.lookup_activity_modifier(hash)
+    }
+    fn lookup_objective(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_app::ObjectiveDefinition>, AppError> {
+        self.lock()?.lookup_objective(hash)
+    }
+    fn lookup_activity_type(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_app::ActivityTypeDefinition>, AppError> {
+        self.lock()?.lookup_activity_type(hash)
+    }
+    fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
+        self.lock()?.lookup_loadout_name(hash)
+    }
+    fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
+        self.lock()?.world_definition_counts()
+    }
+    fn publish_manifest(
+        &mut self,
+        items: DefinitionReplacementInput,
+        world: destiny_app::WorldDefinitionsAcquisition,
+    ) -> Result<SyncMetadata, AppError> {
+        self.lock()?.publish_manifest(items, world)
     }
 }
 
@@ -857,6 +922,7 @@ mod tests {
                 "inspect_item",
                 "get_subclass",
                 "get_artifact",
+                "get_loadouts",
                 "weekly_reset",
                 "weekly",
                 "move_item"
