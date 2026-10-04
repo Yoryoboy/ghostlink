@@ -3,6 +3,7 @@
 pub mod artifact;
 pub mod clock;
 pub mod credential_store;
+pub mod equip;
 pub mod loadout;
 pub mod manifest;
 pub mod oauth;
@@ -17,6 +18,11 @@ pub mod weekly_profile;
 
 pub use clock::SystemClock;
 pub use credential_store::{CREDENTIAL_SERVICE, CREDENTIAL_USER, NativeCredentialStore};
+pub use equip::{
+    BungieEquipGateway, EQUIP_ENDPOINT, EQUIP_RESPONSE_LIMIT, EquipApiKey, EquipBearerToken,
+    EquipHttpRequest, EquipHttpResponse, EquipTransport, EquipTransportError, HttpEquipTransport,
+    is_allowed_equip_url,
+};
 pub use oauth::{
     CommandLauncher, DesktopBrowserAuthorization, HeadlessAuthorizationInstruction,
     HeadlessBrowserAuthorization, LoopbackCallbackReceiver, SshTarget, SystemCommandLauncher,

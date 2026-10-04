@@ -1,6 +1,7 @@
 //! Strict, credential-safe Bungie one-item transfer adapter.
 //!
-//! This module owns the only network-facing item-mutation path: one blocking
+//! This module owns the transfer network-facing mutation path (equip has its
+//! own exact allowlist in `equip`): one blocking
 //! HTTPS `application/json` POST to the documented `TransferItem` action
 //! endpoint, mapped from the provider-neutral [`TransferRequest`] and classified
 //! into the committed [`TransferOutcome`] contract.
@@ -149,8 +150,20 @@ impl TransferApiKey {
 
     /// Exposes the secret to the trusted production transport only.
     fn expose(&self) -> &str {
+        #[cfg(test)]
+        CREDENTIAL_ACCESSES.with(|count| count.set(count.get() + 1));
         &self.0
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(crate) static CREDENTIAL_ACCESSES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn record_request_credentials(request: &TransferHttpRequest<'_>) {
+    request.headers().expect("credentials available");
 }
 
 impl fmt::Debug for TransferApiKey {
@@ -181,6 +194,8 @@ impl TransferBearerToken {
 
     /// Exposes the secret to the trusted production transport only.
     fn expose(&self) -> &str {
+        #[cfg(test)]
+        CREDENTIAL_ACCESSES.with(|count| count.set(count.get() + 1));
         &self.0
     }
 }
@@ -267,21 +282,16 @@ impl<'a> TransferHttpRequest<'a> {
 
 impl fmt::Debug for TransferHttpRequest<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Only the JSON field names are rendered: the body values are provider
-        // identifiers and must never reach a diagnostic.
-        let field_names: Vec<String> = serde_json::from_str::<Value>(&self.body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .as_object()
-                    .map(|object| object.keys().cloned().collect())
-            })
-            .unwrap_or_default();
+        let endpoint = match self.url {
+            TRANSFER_ENDPOINT => "TransferItem",
+            crate::equip::EQUIP_ENDPOINT => "EquipItem",
+            _ => "<unallowlisted>",
+        };
         formatter
             .debug_struct("TransferHttpRequest")
             .field("method", &"POST")
-            .field("url", &self.url)
-            .field("field_names", &field_names)
+            .field("endpoint", &endpoint)
+            .field("body", &destiny_core::redact::REDACTED)
             .field(
                 "api_key",
                 &destiny_core::redact::redact_optional(self.api_key),
@@ -335,6 +345,14 @@ impl TransferHttpResponse {
 
     pub fn content_type(&self) -> Option<&str> {
         self.content_type.as_deref()
+    }
+
+    /// Shared bounded JSON read policy for single-action mutation envelopes.
+    pub(crate) fn json_body(&mut self, content_length: Option<u64>) -> Option<Vec<u8>> {
+        if !self.content_type().is_some_and(is_json_content_type) {
+            return None;
+        }
+        read_bounded_body(&mut self.body, content_length)
     }
 }
 
@@ -395,6 +413,7 @@ pub struct HttpTransferTransport {
 impl HttpTransferTransport {
     /// Builds a hardened client for the fixed transfer endpoint.
     pub fn new() -> Result<Self, AppError> {
+        // Hyper's canceled-request retry is pre-write, not an application post-dispatch retry.
         let client = reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
@@ -434,6 +453,17 @@ impl TransferTransport for HttpTransferTransport {
     ) -> Result<TransferHttpResponse, TransferTransportError> {
         // The allowlist runs first so a rejected URL can never receive a secret.
         ensure_allowlisted(request.url())?;
+        self.post_allowlisted(request)
+    }
+}
+
+impl HttpTransferTransport {
+    /// Shared wire machinery. Callers must enforce their action's exact allowlist
+    /// before entering this trusted boundary (which reads credential values).
+    pub(crate) fn post_allowlisted(
+        &mut self,
+        request: &TransferHttpRequest<'_>,
+    ) -> Result<TransferHttpResponse, TransferTransportError> {
         let headers = request
             .headers()
             .ok_or(TransferTransportError::Configuration)?;
@@ -534,7 +564,7 @@ impl<T, C, S> fmt::Debug for BungieTransferGateway<T, C, S> {
 ///
 /// The comparison is inclusive so a credential that expires exactly now is
 /// treated as expired, and it runs before any request is constructed.
-fn ensure_unexpired(now: Timestamp, expires_at: Timestamp) -> Result<(), AppError> {
+pub(crate) fn ensure_unexpired(now: Timestamp, expires_at: Timestamp) -> Result<(), AppError> {
     if now >= expires_at {
         return Err(AppError::new(ErrorCategory::ProviderAuthentication));
     }
@@ -627,7 +657,7 @@ fn build_body(request: &TransferRequest) -> Result<String, AppError> {
 /// Only ASCII digits are accepted; signs, whitespace, separators, and any
 /// non-ASCII digit are rejected. Leading zeros are non-canonical, so `"0"` is
 /// the only accepted identifier that starts with a zero.
-fn is_canonical_identifier(value: &str) -> bool {
+pub(crate) fn is_canonical_identifier(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_IDENTIFIER_DIGITS
         && value.bytes().all(|byte| byte.is_ascii_digit())
@@ -658,10 +688,7 @@ fn classify_response(response: &mut TransferHttpResponse) -> Result<TransferOutc
         }
         _ => return Ok(TransferOutcome::Uncertain),
     }
-    if !response.content_type().is_some_and(is_json_content_type) {
-        return Ok(TransferOutcome::Uncertain);
-    }
-    let Some(body) = read_bounded_body(&mut response.body, content_length) else {
+    let Some(body) = response.json_body(content_length) else {
         return Ok(TransferOutcome::Uncertain);
     };
     Ok(classify_envelope(&body))
@@ -1275,8 +1302,9 @@ mod tests {
         let rendered = format!("{request:?}");
         assert!(rendered.contains("TransferHttpRequest"));
         assert!(rendered.contains("POST"));
-        assert!(rendered.contains(TRANSFER_ENDPOINT));
-        assert!(rendered.contains("itemId"));
+        assert!(rendered.contains("TransferItem"));
+        assert!(!rendered.contains(TRANSFER_ENDPOINT));
+        assert!(!rendered.contains("itemId"));
         assert!(rendered.contains("<redacted>"));
         assert!(!rendered.contains(API_KEY_SENTINEL));
         assert!(!rendered.contains(BEARER_SENTINEL));
@@ -1303,6 +1331,29 @@ mod tests {
 
         let transport = HttpTransferTransport::new().expect("hardened transport");
         assert!(!format!("{transport:?}").contains(API_KEY_SENTINEL));
+    }
+
+    #[test]
+    fn transfer_request_debug_never_prints_untrusted_url_or_body() {
+        let key = api_key();
+        let token = bearer();
+        let request = TransferHttpRequest::new(
+            "https://www.bungie.net/Platform/Destiny2/Actions/Items/TransferItem/?access_token=URL_CANARY",
+            r#"{"FIELD_CANARY":"VALUE_CANARY"}"#.into(),
+            Some(&key),
+            Some(&token),
+        );
+        let rendered = format!("{request:?}");
+        for canary in [
+            "URL_CANARY",
+            "FIELD_CANARY",
+            "VALUE_CANARY",
+            API_KEY_SENTINEL,
+            BEARER_SENTINEL,
+        ] {
+            assert!(!rendered.contains(canary), "Debug leaked {canary}");
+        }
+        assert!(rendered.contains("<unallowlisted>"));
     }
 
     #[test]
