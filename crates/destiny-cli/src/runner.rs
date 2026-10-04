@@ -356,6 +356,15 @@ where
     if let Command::WeeklyReset = &cli.command {
         return run_weekly_reset(weekly_factory, mode);
     }
+    if let Command::Sync = &cli.command {
+        return match read_factory.build() {
+            Ok(mut runtime) => {
+                let freshness = runtime.freshness();
+                run_profile_sync(runtime.service_mut(), mode, freshness)
+            }
+            Err(error) => ProcessOutput::failure(mode, error),
+        };
+    }
     if let Command::SyncManifest = &cli.command {
         return run_manifest(manifest_factory, mode);
     }
@@ -426,6 +435,18 @@ pub fn equip_process_output(
             stderr: format!("{body}\n"),
             exit_code,
         }
+    }
+}
+
+/// Runs explicit acquisition; success is rendered only after publication.
+pub fn run_profile_sync<S: crate::runtime::ProfileSyncOperations + ?Sized>(
+    service: &mut S,
+    mode: OutputMode,
+    freshness: ReadFreshness,
+) -> ProcessOutput {
+    match service.run_profile_sync(freshness.policy, freshness.now) {
+        Ok(report) => ProcessOutput::success(crate::output::render_profile_sync(mode, &report)),
+        Err(error) => ProcessOutput::failure(mode, CliError::from(error)),
     }
 }
 
@@ -764,6 +785,7 @@ mod tests {
     #[allow(clippy::large_enum_variant)]
     enum Recorded {
         List,
+        Sync,
         Search(SearchInventoryRequest),
         Inspect(InspectItemRequest),
         Subclass(Option<CharacterId>),
@@ -783,6 +805,7 @@ mod tests {
     #[derive(Clone, Debug)]
     struct RecordingService {
         calls: RecordedCalls,
+        sync_failure: Option<ErrorCategory>,
         list: Result<CharacterListResult, AppError>,
         search: Result<InventorySearchResult, AppError>,
         inspect: Result<Resolution<ItemInspection>, AppError>,
@@ -792,6 +815,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 calls: Rc::new(RefCell::new(Vec::new())),
+                sync_failure: None,
                 list: Ok(character_list()),
                 search: Ok(search_result()),
                 inspect: Ok(Resolution::Unique(inspection())),
@@ -804,6 +828,23 @@ mod tests {
 
         fn record(&self, read: Recorded, policy: FreshnessPolicy, now: Timestamp) {
             self.calls.borrow_mut().push((read, policy, now));
+        }
+    }
+
+    impl crate::runtime::ProfileSyncOperations for RecordingService {
+        fn run_profile_sync(
+            &mut self,
+            policy: FreshnessPolicy,
+            now: Timestamp,
+        ) -> Result<crate::runtime::ProfileSyncReport, AppError> {
+            self.record(Recorded::Sync, policy, now);
+            if let Some(category) = self.sync_failure {
+                return Err(AppError::new(category));
+            }
+            Ok(crate::runtime::ProfileSyncReport {
+                metadata: metadata(FreshnessStatus::Fresh).sync,
+                previous_revision: Some(SyncRevision::new(3)),
+            })
         }
     }
 
@@ -1317,6 +1358,80 @@ mod tests {
             "a read command must not compose a login"
         );
         (output, login)
+    }
+
+    #[test]
+    fn sync_routing_builds_once_and_dispatches_only_sync() {
+        struct Public;
+        impl crate::runtime::ManifestFactory for Public {
+            fn sync(&mut self) -> Result<destiny_app::ManifestSyncReport, CliError> {
+                panic!("no public sync")
+            }
+        }
+        impl crate::runtime::WeeklyResetFactory for Public {
+            fn weekly_reset(&mut self) -> Result<destiny_app::weekly_reset::WeeklyReset, CliError> {
+                panic!("no public read")
+            }
+        }
+        for failure in [
+            None,
+            Some(ErrorCategory::ProviderRateLimit),
+            Some(ErrorCategory::ProviderUnavailable),
+            Some(ErrorCategory::LocalStorage),
+        ] {
+            let mut service = RecordingService::new();
+            service.sync_failure = failure;
+            let mut read = FakeFactory::new(service.clone());
+            read.freshness = ReadFreshness {
+                policy: FreshnessPolicy { ttl_seconds: 777 },
+                now: Timestamp::new(123),
+            };
+            let mut login = FakeLoginFactory::default();
+            let output = super::run_binary_with_public(
+                &mut read,
+                &mut login,
+                &mut Public,
+                &mut Public,
+                &mut |_| panic!("no login instruction"),
+                argv(["sync", "--json"]),
+            );
+            assert_eq!(read.build_count(), 1);
+            assert_eq!(
+                service.recorded(),
+                vec![(Recorded::Sync, read.freshness.policy, read.freshness.now)]
+            );
+            assert!(login.modes().is_empty());
+            match failure {
+                None => {
+                    assert_eq!(output.exit_code, 0);
+                    assert!(output.stderr.is_empty());
+                    assert!(output.stdout.contains("\"publication\":\"committed\""));
+                }
+                Some(category) => {
+                    assert_eq!(
+                        output.exit_code,
+                        CliError::from_category(category).exit_code()
+                    );
+                    assert!(output.stdout.is_empty());
+                    assert!(
+                        output
+                            .stderr
+                            .contains(CliError::from_category(category).code())
+                    );
+                }
+            }
+        }
+        let mut read = FakeFactory::new(RecordingService::new());
+        read.failure = Some(CliError::from_category(
+            ErrorCategory::AuthorizationRequired,
+        ));
+        let (output, _) = run_read_boundary(&mut read, ["--json", "sync"]);
+        assert_eq!(output.exit_code, 10);
+        assert_eq!(read.build_count(), 1);
+        assert!(read.service.recorded().is_empty());
+        let (output, _) = run_read_boundary(&mut read, ["sync", "extra"]);
+        assert_eq!(output.exit_code, 2);
+        assert_eq!(read.build_count(), 1);
     }
 
     #[test]

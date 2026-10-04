@@ -254,6 +254,72 @@ pub fn render_artifact(mode: OutputMode, result: &destiny_app::ArtifactResult) -
     lines.join("\n")
 }
 
+/// Bounded publication receipt: no credentials, identities, or provider payloads.
+pub fn render_profile_sync(mode: OutputMode, report: &crate::runtime::ProfileSyncReport) -> String {
+    let revision = report.metadata.revision.value();
+    let checked_at = report.metadata.checked_at.seconds();
+    let previous = report.previous_revision.map(|value| value.value());
+    match mode {
+        OutputMode::Json => format!(
+            "{{\"kind\":\"profile_sync\",\"fetched\":true,\"publication\":\"committed\",\"revision\":{revision},\"previous_revision\":{},\"revision_unchanged\":{},\"checked_at\":{checked_at}}}",
+            previous.map_or_else(|| "null".into(), |value| value.to_string()),
+            previous.map_or_else(|| "null".into(), |value| (value == revision).to_string()),
+        ),
+        OutputMode::Human => {
+            let comparison = match previous {
+                None => "initial publication",
+                Some(value) if value == revision => "revision unchanged",
+                Some(_) => "revision differs",
+            };
+            format!(
+                "Profile fetched; publication committed.\nRevision: {revision} ({comparison})\nChecked at: {checked_at}"
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+mod profile_sync_tests {
+    use super::*;
+
+    #[test]
+    fn publication_shapes_are_exact_bounded_and_redacted() {
+        for (previous, comparison, label) in [
+            (None, "null", "initial publication"),
+            (Some(3), "true", "revision unchanged"),
+            (Some(2), "false", "revision differs"),
+        ] {
+            let report = crate::runtime::ProfileSyncReport {
+                metadata: destiny_app::SyncMetadata {
+                    dataset: destiny_app::Dataset::ProfileInventory,
+                    revision: destiny_app::SyncRevision::new(3),
+                    checked_at: destiny_app::Timestamp::new(100),
+                    source: destiny_app::SourceMarker::Profile,
+                    definition_version: destiny_app::DefinitionVersion::new(
+                        "sentinel-secret\nprovider-payload",
+                    ),
+                },
+                previous_revision: previous.map(destiny_app::SyncRevision::new),
+            };
+            let json = render_profile_sync(OutputMode::Json, &report);
+            assert_eq!(
+                json,
+                format!(
+                    "{{\"kind\":\"profile_sync\",\"fetched\":true,\"publication\":\"committed\",\"revision\":3,\"previous_revision\":{},\"revision_unchanged\":{comparison},\"checked_at\":100}}",
+                    previous.map_or_else(|| "null".into(), |value| value.to_string())
+                )
+            );
+            let human = render_profile_sync(OutputMode::Human, &report);
+            assert!(human.contains(label));
+            for rendered in [json, human] {
+                assert!(!rendered.contains("sentinel"));
+                assert!(!rendered.contains("game state"));
+                assert!(rendered.len() < 256);
+            }
+        }
+    }
+}
+
 /// Renders the public version label and counts, never definition payloads.
 pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncReport) -> String {
     use destiny_app::ManifestSyncReport;

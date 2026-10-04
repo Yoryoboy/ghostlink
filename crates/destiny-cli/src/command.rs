@@ -113,6 +113,7 @@ impl Cli {
             // handler is not a read either, so both report the stable
             // unsupported-operation outcome instead of guessing at a read.
             Command::Equip(_)
+            | Command::Sync
             | Command::SyncManifest
             | Command::WeeklyReset
             | Command::Weekly(_)
@@ -130,6 +131,10 @@ pub enum Command {
     /// Equip one item, transferring first when needed, then refresh and verify.
     #[command(name = "equip")]
     Equip(EquipArgs),
+
+    /// Force profile acquisition and publish the local inventory projection.
+    #[command(name = "sync")]
+    Sync,
 
     /// Download and publish the public English Manifest item definitions.
     #[command(name = "sync-manifest")]
@@ -1348,6 +1353,29 @@ mod tests {
                 .kind(),
             clap::error::ErrorKind::DisplayHelp
         );
+    }
+
+    #[test]
+    fn sync_parses_global_json_and_rejects_extra_arguments() {
+        for args in [vec!["sync"], vec!["--json", "sync"], vec!["sync", "--json"]] {
+            let cli = parse(args.clone());
+            assert!(matches!(cli.command, Command::Sync));
+            assert_eq!(
+                cli.output_mode() == OutputMode::Json,
+                args.contains(&"--json")
+            );
+            assert_eq!(
+                cli.into_read_request().unwrap_err().code(),
+                "unsupported_operation"
+            );
+        }
+        for args in [
+            vec!["ghostlink", "sync", "extra"],
+            vec!["ghostlink", "sync", "--force"],
+            vec!["ghostlink", "sync", "--character", "123"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
     }
 
     #[test]
