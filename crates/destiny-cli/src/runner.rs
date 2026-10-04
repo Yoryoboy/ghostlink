@@ -328,6 +328,12 @@ where
         Err(output) => return output,
     };
     let mode = cli.output_mode();
+    if let Command::Equip(arguments) = &cli.command {
+        return match crate::runtime::compose_equip(arguments) {
+            Ok(output) => equip_process_output(mode, &output),
+            Err(error) => ProcessOutput::failure(mode, error),
+        };
+    }
     if let Command::Weekly(arguments) = &cli.command {
         let level = match arguments.output_level(mode) {
             Ok(level) => level,
@@ -398,6 +404,28 @@ where
             dispatch(runtime.service_mut(), request, mode, freshness)
         }
         Err(error) => ProcessOutput::failure(mode, error),
+    }
+}
+
+/// Render one mutation outcome; typed refusals and partial progress are failures.
+/// Like existing CLI errors, their sole object is written to stderr.
+pub fn equip_process_output(
+    mode: OutputMode,
+    output: &crate::equip_output::EquipOutput,
+) -> ProcessOutput {
+    let body = match mode {
+        OutputMode::Human => output.render_text(),
+        OutputMode::Json => output.json().to_string(),
+    };
+    let exit_code = output.exit_code();
+    if exit_code == SUCCESS_EXIT_CODE {
+        ProcessOutput::success(body)
+    } else {
+        ProcessOutput {
+            stdout: String::new(),
+            stderr: format!("{body}\n"),
+            exit_code,
+        }
     }
 }
 
