@@ -79,6 +79,10 @@ pub use destiny_core::{
     SubclassConfig, SubclassElement, SubclassOption, SubclassOptionsResult, SubclassPlugKind,
     SubclassResult, SubclassSlot,
 };
+pub use destiny_core::{
+    EquipGateway, EquipItemRequest, EquipOutcome, EquipPlan, EquipPreflight, EquipRejection,
+    EquipRequest,
+};
 pub use destiny_core::{MAX_STAT_CONDITIONS, NamedStat, StatCondition, StatOp};
 pub use destiny_core::{ManifestAcquisition, ManifestDefinitions, ManifestGateway};
 pub use manifest::{ManifestService, ManifestSyncReport, normalize_manifest};
