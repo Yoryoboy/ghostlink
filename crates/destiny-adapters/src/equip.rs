@@ -126,7 +126,7 @@ fn build_body(request: &EquipItemRequest) -> Result<String, AppError> {
 fn classify_response(response: &mut EquipHttpResponse) -> Result<EquipOutcome, AppError> {
     match response.status() {
         200 => {}
-        401 | 403 => return Err(AppError::new(ErrorCategory::ProviderAuthentication)),
+        401 | 403 => return Ok(EquipOutcome::AuthenticationRefused),
         429 => return Ok(EquipOutcome::Transient),
         500..=599 => return Ok(EquipOutcome::Uncertain),
         400..=499 => return Ok(EquipOutcome::Rejected(EquipRejection::InvalidRequest)),
@@ -403,10 +403,9 @@ mod tests {
             let mut gateway = gateway(Ok(response(status, json!({"ErrorCode":1}))));
             let result = gateway.equip(&request());
             match status {
-                401 | 403 => assert_eq!(
-                    result.unwrap_err().category(),
-                    ErrorCategory::ProviderAuthentication
-                ),
+                // Received refusals preserve dispatch; expired credentials
+                // remain ProviderAuthentication errors before dispatch.
+                401 | 403 => assert_eq!(result.unwrap(), EquipOutcome::AuthenticationRefused),
                 429 => assert_eq!(result.unwrap(), EquipOutcome::Transient),
                 400 | 404 => assert_eq!(
                     result.unwrap(),

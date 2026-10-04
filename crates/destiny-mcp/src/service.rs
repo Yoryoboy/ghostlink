@@ -721,6 +721,12 @@ pub struct MoveItemRequest {
 /// bounded MCP projections defined in [`crate::schema`]; a failure is a stable
 /// sanitized [`McpError`].
 pub trait MutationToolService {
+    fn equip_item(
+        &mut self,
+        _request: &crate::schema::EquipItemArgs,
+    ) -> Result<destiny_output::equip::EquipOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
     /// Plans, executes, refreshes, and verifies exactly one semantic move.
     fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError>;
 }
@@ -761,6 +767,11 @@ impl<G, R, P, C, T> ComposedMutationService<G, R, P, C, T> {
             policy,
             lifetime,
         }
+    }
+
+    /// Adds the exact equip port; both mutations share the same planner and lock.
+    pub fn with_equip<E>(self, equip: E) -> EquipMutationService<G, R, P, C, T, E> {
+        EquipMutationService { inner: self, equip }
     }
 
     /// Borrows the composed mutation service.
@@ -855,6 +866,160 @@ where
             .map_err(|failure| mutation_failure(failure.error()))?;
 
         Ok(move_item_output(&plan, &outcome))
+    }
+}
+
+/// Equip composition over the same mutation service used for moves.
+pub struct EquipMutationService<G, R, P, C, T, E> {
+    inner: ComposedMutationService<G, R, P, C, T>,
+    equip: E,
+}
+impl<G, R, P, C, T, E> MutationToolService for EquipMutationService<G, R, P, C, T, E>
+where
+    G: ProfileGateway,
+    R: InventoryRepository + SearchRepository + DefinitionRepository,
+    P: PlanIdGenerator,
+    C: Clock,
+    T: TransferGateway,
+    E: destiny_app::EquipGateway,
+{
+    fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+        self.inner.move_item(request)
+    }
+    fn equip_item(
+        &mut self,
+        args: &crate::schema::EquipItemArgs,
+    ) -> Result<destiny_output::equip::EquipOutput, McpError> {
+        use destiny_output::equip::{EquipCharacter, EquipItem, EquipOutput, location_view};
+        args.validate()?;
+        let preflight_now = self.inner.clock.now().map_err(McpError::from)?;
+        self.inner.committed_membership(preflight_now)?;
+        let mutations = &mut self.inner.mutations;
+        let snapshot = mutations
+            .repository()
+            .load_current()
+            .map_err(McpError::from)?
+            .ok_or_else(|| McpError::new(ErrorCategory::LocalStorage))?;
+        let exact: Vec<_> = snapshot
+            .characters
+            .iter()
+            .filter(|c| c.id.as_str() == args.character)
+            .collect();
+        let matches = if exact.is_empty() {
+            snapshot
+                .characters
+                .iter()
+                .filter(|c| {
+                    c.class
+                        .as_deref()
+                        .is_some_and(|s| s.eq_ignore_ascii_case(&args.character))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            exact
+        };
+        let character = match matches.as_slice() {
+            [] => return Ok(EquipOutput::refused(MutationError::MissingDestination)),
+            [c] => *c,
+            _ => return Ok(EquipOutput::refused(MutationError::AmbiguousDestination)),
+        };
+        let character_view = EquipCharacter {
+            character_id: character.id.as_str().into(),
+            label: location_view(
+                &ItemLocation::Character(character.id.clone()),
+                &snapshot.characters,
+            )
+            .label,
+        };
+        let instance = mutations
+            .repository()
+            .lookup_instance(&ItemInstanceId::new(&args.item))
+            .map_err(McpError::from)?;
+        let item = match instance {
+            Resolution::Unique(_) | Resolution::Ambiguous(_) => {
+                ItemSelector::instance(ItemInstanceId::new(&args.item))
+            }
+            Resolution::Missing if args.item.bytes().all(|b| b.is_ascii_digit()) => {
+                ItemSelector::instance(ItemInstanceId::new(&args.item))
+            }
+            Resolution::Missing => ItemSelector::semantic(&args.item).map_err(McpError::from)?,
+        };
+        let request = destiny_app::EquipRequest {
+            membership: snapshot.metadata.membership_id,
+            item,
+            destination: DestinationSelector::character(character.id.clone()),
+            intent: MoveIntentAuthorization::Explicit,
+        };
+        let plan = match mutations.plan_equip(
+            &request,
+            self.inner.lifetime,
+            self.inner.policy,
+            preflight_now,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => {
+                let mut output = EquipOutput::refused(error);
+                output.character = Some(character_view);
+                return Ok(output);
+            }
+        };
+        let item_view = match mutations
+            .repository()
+            .lookup_instance(&plan.mutation_plan().item)
+            .map_err(McpError::from)?
+        {
+            Resolution::Unique(instance) => match mutations
+                .repository()
+                .lookup_definition(instance.item_hash)
+                .map_err(McpError::from)?
+            {
+                Resolution::Unique(definition) => {
+                    let slot = definition
+                        .slot
+                        .or_else(|| {
+                            definition
+                                .bucket_hash
+                                .and_then(destiny_app::ItemSlot::from_equipment_bucket)
+                        })
+                        .map(|s| {
+                            let value = s.as_str();
+                            format!("{}{}", value[..1].to_ascii_uppercase(), &value[1..])
+                        });
+                    Some(EquipItem {
+                        name: definition.name,
+                        instance_id: instance.instance_id.as_str().into(),
+                        slot,
+                    })
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        let post_action_now = self.inner.clock.now().map_err(McpError::from)?;
+        let mut output = match mutations.execute_equip_verified(
+            (&mut self.inner.transfer, &mut self.equip),
+            &request,
+            &plan,
+            self.inner.policy,
+            preflight_now,
+            post_action_now,
+        ) {
+            Ok(outcome) => {
+                let observed = match mutations
+                    .repository()
+                    .lookup_instance(&plan.mutation_plan().item)
+                {
+                    Ok(Resolution::Unique(i)) => Some(i),
+                    _ => None,
+                };
+                EquipOutput::from_outcome(&outcome, &snapshot.characters, observed.as_ref())
+            }
+            Err(failure) => EquipOutput::refused(failure.error())
+                .with_evidence(failure.evidence(), &snapshot.characters),
+        };
+        output.item = item_view;
+        output.character = Some(character_view);
+        Ok(output)
     }
 }
 
@@ -1617,6 +1782,7 @@ fn step_views(evidence: &ExecutionEvidence) -> Vec<StepEvidenceView> {
 
 fn step_outcome_view(outcome: StepOutcome) -> StepOutcomeView {
     match outcome {
+        StepOutcome::AuthenticationRefused => StepOutcomeView::AuthenticationRefused,
         StepOutcome::Unattempted => StepOutcomeView::Unattempted,
         StepOutcome::Completed => StepOutcomeView::Completed,
         StepOutcome::Rejected(rejection) => StepOutcomeView::Rejected {

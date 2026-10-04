@@ -6,6 +6,7 @@ members = [
     "crates/destiny-adapters",
     "crates/destiny-cli",
     "crates/destiny-mcp",
+    "crates/destiny-output",
 ]
 
 [workspace.package]
@@ -24,6 +25,7 @@ url = "2.5"
 rmcp = { version = "=3.4.0", features = ["server", "transport-io"] }
 apple-native-keyring-store = "1.0.2"
 dbus-secret-service-keyring-store = "1.0.1"
+destiny-output = { path = "crates/destiny-output" }
 destiny-app = { path = "crates/destiny-app" }
 destiny-adapters = { path = "crates/destiny-adapters" }
 destiny-core = { path = "crates/destiny-core" }

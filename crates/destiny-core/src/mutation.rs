@@ -809,6 +809,9 @@ pub enum StepOutcome {
     Rejected(TransferRejection),
     /// The equip provider deterministically refused this step.
     EquipRejected(crate::EquipRejection),
+    /// Authentication was refused in a received response after dispatch.
+    /// Records an attempt, never application; category is ProviderAuthentication.
+    AuthenticationRefused,
     /// The provider failed transiently for this step; nothing was applied.
     Transient,
     /// Whether an already-issued step applied could not be determined.
@@ -821,6 +824,7 @@ impl StepOutcome {
     /// Maps one sanitized equip result without changing transfer evidence.
     pub const fn from_equip(outcome: crate::EquipOutcome) -> Self {
         match outcome {
+            crate::EquipOutcome::AuthenticationRefused => Self::AuthenticationRefused,
             crate::EquipOutcome::Equipped => Self::Completed,
             crate::EquipOutcome::Rejected(reason) => Self::EquipRejected(reason),
             crate::EquipOutcome::Transient => Self::Transient,
@@ -831,6 +835,7 @@ impl StepOutcome {
     /// Maps one sanitized provider result to the step outcome it implies.
     pub const fn from_transfer(outcome: TransferOutcome) -> Self {
         match outcome {
+            TransferOutcome::AuthenticationRefused => Self::AuthenticationRefused,
             TransferOutcome::Transferred => Self::Completed,
             TransferOutcome::Rejected(rejection) => Self::Rejected(rejection),
             TransferOutcome::Transient => Self::Transient,
@@ -845,6 +850,7 @@ impl StepOutcome {
             Self::Completed
             | Self::Rejected(_)
             | Self::EquipRejected(_)
+            | Self::AuthenticationRefused
             | Self::Transient
             | Self::Uncertain => true,
         }
@@ -856,6 +862,7 @@ impl StepOutcome {
             Self::Completed => true,
             Self::Rejected(_)
             | Self::EquipRejected(_)
+            | Self::AuthenticationRefused
             | Self::Transient
             | Self::Uncertain
             | Self::Unattempted => false,
@@ -878,6 +885,7 @@ impl StepOutcome {
             Self::Completed
             | Self::Rejected(_)
             | Self::EquipRejected(_)
+            | Self::AuthenticationRefused
             | Self::Transient
             | Self::Unattempted => false,
         }

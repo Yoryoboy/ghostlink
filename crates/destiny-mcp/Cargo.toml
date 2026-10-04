@@ -17,6 +17,7 @@ offline-fixtures = ["destiny-app/test-support"]
 clap.workspace = true
 destiny-adapters.workspace = true
 destiny-app.workspace = true
+destiny-output.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
@@ -31,6 +32,7 @@ tokio = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+destiny-cli = { path = "../destiny-cli" }
 destiny-app = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = [
     "io-util",

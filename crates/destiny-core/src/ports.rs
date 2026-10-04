@@ -850,7 +850,7 @@ impl TransferRejection {
 
 /// The sanitized provider result of one transfer step.
 ///
-/// The four variants are the only terminal shapes a transfer adapter may report
+/// These variants are the only terminal shapes a transfer adapter may report
 /// for one request: the step applied, the provider deterministically refused it,
 /// the provider failed transiently, or the effect of an already-issued request
 /// could not be determined. The last shape is what makes an honest partial
@@ -861,6 +861,9 @@ pub enum TransferOutcome {
     Transferred,
     /// The provider deterministically refused this step; it changed nothing.
     Rejected(TransferRejection),
+    /// Received authentication refusal after dispatch. Category is
+    /// `ProviderAuthentication`; the call was attempted but nothing applied.
+    AuthenticationRefused,
     /// The provider failed transiently for this step; nothing was applied.
     Transient,
     /// Whether an already-issued step applied could not be determined.
@@ -872,7 +875,9 @@ impl TransferOutcome {
     pub const fn applied(self) -> bool {
         match self {
             Self::Transferred => true,
-            Self::Rejected(_) | Self::Transient | Self::Uncertain => false,
+            Self::Rejected(_) | Self::AuthenticationRefused | Self::Transient | Self::Uncertain => {
+                false
+            }
         }
     }
 
@@ -880,7 +885,9 @@ impl TransferOutcome {
     pub const fn rejection(self) -> Option<TransferRejection> {
         match self {
             Self::Rejected(rejection) => Some(rejection),
-            Self::Transferred | Self::Transient | Self::Uncertain => None,
+            Self::Transferred | Self::AuthenticationRefused | Self::Transient | Self::Uncertain => {
+                None
+            }
         }
     }
 }
@@ -896,8 +903,10 @@ impl TransferOutcome {
 /// The result contract keeps uncertainty honest:
 ///
 /// - `Ok(TransferOutcome)` classifies a provider response that was observed.
-/// - `Err(AppError)` is reserved for a failure in which no provider mutation can
-///   have occurred, such as missing or rejected credentials, missing runtime
+/// - A received auth refusal is `AuthenticationRefused`, preserving both the
+///   authentication category and the dispatched-call evidence (not a mutation).
+/// - `Err(AppError)` is reserved for a failure before dispatch,
+///   such as missing or expired credentials, missing runtime
 ///   configuration, or a rate-limit or availability failure that happened before
 ///   the request was dispatched.
 /// - A failure after dispatch whose effect cannot be established, including a
@@ -979,6 +988,9 @@ impl EquipRejection {
 pub enum EquipOutcome {
     Equipped,
     Rejected(EquipRejection),
+    /// Received authentication refusal after dispatch, not an applied mutation.
+    /// The category remains `ProviderAuthentication`; pre-dispatch auth is Err.
+    AuthenticationRefused,
     /// A deterministic transient refusal: nothing applied.
     Transient,
     /// Dispatch occurred but whether it applied is unknown. Never blindly retry.
@@ -998,8 +1010,9 @@ impl EquipOutcome {
 }
 
 /// Issues one equip request with no retry, sequencing, or verification.
-/// `Err` is reserved for failures in which no mutation can have occurred;
-/// post-dispatch ambiguity must be `Ok(EquipOutcome::Uncertain)`.
+/// `Err` is reserved for pre-dispatch failures. Received auth refusals are
+/// `Ok(EquipOutcome::AuthenticationRefused)`; post-dispatch ambiguity must be
+/// `Ok(EquipOutcome::Uncertain)`.
 pub trait EquipGateway {
     fn equip(&mut self, request: &EquipItemRequest) -> Result<EquipOutcome, AppError>;
 }

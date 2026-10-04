@@ -15,6 +15,7 @@ path = "src/main.rs"
 clap.workspace = true
 destiny-adapters = { path = "../destiny-adapters" }
 destiny-app.workspace = true
+destiny-output.workspace = true
 serde_json.workspace = true
 
 # Terminal echo suppression for the interactive paste login. Echo is a device

@@ -2,6 +2,27 @@
 
 This plan turns the verified MVP architecture into dependency-correct, independently reviewable work units. It preserves runnable vertical progress: every adapter is thin, every provider detail enters through a port, and each slice leaves the repository in a useful state. The plan is implementation guidance, not scaffolding; no source code is added by DMA-004.
 
+## Current scope update: single-item equip
+
+`ghostlink equip <ITEM> --character <CHARACTER> [--json]` and default-enabled MCP
+`equip_item` now share `plan_equip` / `execute_equip_verified`. Both require explicit
+selectors, refuse ambiguity and unsafe class/exotic/equipped-elsewhere cases,
+transfer automatically if needed, force fresh preflight, refresh after attempted
+actions, and verify target location **and equipped state**. One call authorizes
+intent; there is no separate approval artifact. `move_item` remains MCP-only.
+
+`destiny-output` is the neutral shared equip JSON renderer; CLI text and exit
+codes remain CLI-owned. Production MCP composes the exact EquipItem-only adapter
+on the same credential session and serialized mutation seam as transfers.
+Orbit/social/offline restrictions are enforced by Bungie, not an activity
+pre-check. Partial progress has no rollback; uncertain outcomes must not be
+blindly retried. Offline parity and child-process fixtures are evidence of the
+pipeline, not live-provider success; authorized live smoke remains separate.
+
+Build planning/apply, multi-item execution, and plug/mod/perk mutations remain
+deferred. The original work-unit exclusions below describe those earlier slices,
+not a reversal of this current scope update.
+
 ## Planning assumptions and principles
 
 - Bungie remains the remote source of truth; SQLite is a rebuildable cache, projection, and search index.
@@ -22,7 +43,8 @@ crates/
   destiny-core/       domain IDs, records, errors, ports, policies, test doubles
   destiny-app/        authorization, sync, query, planning, execution services
   destiny-adapters/   Bungie HTTP/OAuth, Manifest, SQLite, credential store, clock/IDs
-  destiny-cli/        command parsing, terminal UX, confirmation, sanitized output
+  destiny-output/     transport-neutral equip JSON projection
+  destiny-cli/        command parsing, terminal UX, process exit policy
   destiny-mcp/        MCP stdio server, tool schemas, sanitized result mapping
 ```
 
@@ -274,7 +296,7 @@ Each slice should target roughly one reviewer session and monitor authored addit
 
 ## Explicit non-goals and post-MVP boundary
 
-This MVP does not implement World State/weekly rotation, equip/build engines, multi-item build plans, dismantling, locking, Postmaster, duplicate ranking, web UI, hosted/confidential backend, general-purpose Bungie proxying, or broad inventory actions. Post-MVP begins with World State, then advanced inventory actions, build matching/planning, cross-intelligence, and Vault intelligence as described by the product vision. Those capabilities may reuse the ports and projections but must not enlarge the MVP mutation contract.
+The current scope includes single-item equip and weekly read capabilities. Build engines, multi-item build plans/apply, plug/mod/perk mutations, dismantling, locking, Postmaster, duplicate ranking, web UI, hosted/confidential backend, general-purpose Bungie proxying, and broad inventory actions remain deferred. Later capabilities may reuse the ports and projections but must not bypass fresh preflight, bounded intent, or post-action verification.
 
 ## Architecture traceability
 

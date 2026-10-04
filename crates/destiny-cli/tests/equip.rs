@@ -4,7 +4,7 @@ use destiny_cli::equip_output::*;
 use destiny_cli::{Cli, parse_process};
 
 fn report(status: EquipStatus) -> EquipOutput {
-    EquipOutput {
+    EquipOutput::from_shared(destiny_output::equip::EquipOutput {
         status,
         item: Some(EquipItem {
             name: "Ace of Spades".into(),
@@ -19,8 +19,7 @@ fn report(status: EquipStatus) -> EquipOutput {
         reason: None,
         profile_refresh: ProfileRefresh::Refreshed,
         observed: None,
-        refusal_exit_code: None,
-    }
+    })
 }
 
 fn equip_action() -> StepAction {

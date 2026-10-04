@@ -18,7 +18,14 @@
 //!
 //! One profile gateway and one durable store are shared by both compositions
 //! through `Arc<Mutex<..>>`, so the read path and the mutation path observe the
-//! same SQLite connection and the same provider transport. The mutation path is:
+//! same SQLite connection and the same provider transport. `ReadToolServer`
+//! additionally holds one outer operation guard for every read and mutation
+//! request. All local inventory publication in this composition runs beneath
+//! that guard, so no competing refresh can publish between fresh preflight and
+//! the final ordered dispatch (or post-action verification). Individual adapter
+//! locks remain short-lived and refresh does not reacquire the operation guard.
+//! This is a process-local guarantee, not protection against external game
+//! changes or another process writing the database. The mutation path is:
 //!
 //! `stdio -> rmcp server -> Box<dyn MutationToolService + Send> -> ComposedMutationService -> MutationService -> ProfileSyncService -> BungieProfileGateway / SqliteStore`,
 //!
@@ -122,13 +129,19 @@ fn compose_server<S: CredentialStore + Send + 'static>(
     let transfer = BungieTransferGateway::new(
         HttpTransferTransport::new()?,
         SystemClock::new(),
-        transfer_source,
+        transfer_source.clone(),
         TransferApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let equip = destiny_adapters::BungieEquipGateway::new(
+        destiny_adapters::HttpEquipTransport::new()?,
+        SystemClock::new(),
+        transfer_source,
+        destiny_adapters::EquipApiKey::new(config.api_key().expose_secret())?,
     )?;
     let repository = SqliteStore::open(config.database_path())?;
     Ok(assemble_server(
         profile_gateway,
-        transfer,
+        (transfer, equip),
         repository,
         policy,
         weekly_service(config)?,
@@ -201,7 +214,10 @@ where
 /// safest accepted window.
 fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     profile_gateway: BungieProfileGateway<HttpProfileTransport, SystemClock, C>,
-    transfer: BungieTransferGateway<HttpTransferTransport, SystemClock, C>,
+    ports: (
+        BungieTransferGateway<HttpTransferTransport, SystemClock, C>,
+        destiny_adapters::BungieEquipGateway<destiny_adapters::HttpEquipTransport, SystemClock, C>,
+    ),
     repository: SqliteStore,
     policy: FreshnessPolicy,
     weekly: PublicWeeklyService,
@@ -254,12 +270,16 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     );
     let mutation_service = ComposedMutationService::new(
         mutations,
-        transfer,
+        ports.0,
         SystemClock::new(),
         policy,
         PlanLifetime::MAX,
-    );
+    )
+    .with_equip(ports.1);
 
+    // Every publishing read decorator and both mutations enter the same outer
+    // operation boundary. Do not expose a second unguarded dispatch path for
+    // these shared repositories: revision comparison alone is not exclusion.
     ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
 }
 
@@ -891,15 +911,22 @@ mod tests {
         let transfer = BungieTransferGateway::new(
             HttpTransferTransport::new().expect("transfer transport"),
             SystemClock::new(),
-            destiny_app::StaticCredentialSource::new(credential),
+            destiny_app::StaticCredentialSource::new(credential.clone()),
             TransferApiKey::new(API_KEY_SENTINEL).expect("valid transfer API key"),
         )
         .expect("transfer gateway");
         let store = SqliteStore::open_in_memory().expect("in-memory store");
 
+        let equip = destiny_adapters::BungieEquipGateway::new(
+            destiny_adapters::HttpEquipTransport::new().unwrap(),
+            SystemClock::new(),
+            destiny_app::StaticCredentialSource::new(credential),
+            destiny_adapters::EquipApiKey::new(API_KEY_SENTINEL).unwrap(),
+        )
+        .unwrap();
         let server = assemble_server(
             profile_gateway,
-            transfer,
+            (transfer, equip),
             store,
             FreshnessPolicy { ttl_seconds: 900 },
             destiny_app::weekly_reset::WeeklyResetService::new(
@@ -927,7 +954,8 @@ mod tests {
                 "weekly_reset",
                 "weekly",
                 "get_subclass_options",
-                "move_item"
+                "move_item",
+                "equip_item"
             ],
             "mutation must be default-enabled in the product composition"
         );

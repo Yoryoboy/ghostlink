@@ -15,8 +15,9 @@
 //!   `Box<dyn MutationToolService + Send>` behind `std::sync::Mutex`, so both
 //!   synchronous services can be shared by the [`rmcp::ServerHandler`] without
 //!   introducing a second service contract. A lock is only ever held for one
-//!   synchronous dispatch, never across an `.await`. The two seams serialize
-//!   independently, so a mutation never blocks a concurrent read.
+//!   synchronous dispatch, never across an `.await`. One outer operation guard
+//!   serializes both seams: local refresh publication cannot overtake mutation
+//!   preflight, ordered dispatch, or post-action verification.
 //! - Dispatch is offloaded with [`tokio::task::spawn_blocking`]: the read
 //!   service performs blocking provider and storage work, and the RMCP server
 //!   loop is async. Keeping the blocking work off the async worker is what makes
@@ -59,16 +60,20 @@ const READ_ONLY_INSTRUCTIONS: &str =
 /// The text must not claim the server is read-only: composing the seam adds the
 /// single intent-authorized `move_item` mutation, so the advertised capability
 /// has to match the discovery set.
-const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item` mutation.";
+const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item` and `equip_item` mutations.";
 
 /// The tools-only RMCP server over one shared read service and an optional
 /// mutation seam.
 ///
-/// Each service is shared behind its own mutex so the same `Send` service can
-/// answer concurrent `tools/call` requests one at a time, independent of the
-/// other seam. The server is `Send + Sync + 'static`, as
+/// Each service is shared behind its own mutex. An outer operation guard spans
+/// the entire call on either seam, including all snapshot publication paths.
+/// Lock ordering is operation -> service -> individual gateway/repository calls.
+/// Sync and post-action refresh never reenter the operation guard. This protects
+/// only this server's local publication, not external game state or other processes.
+/// The server is `Send + Sync + 'static`, as
 /// [`rmcp::ServerHandler`] requires.
 pub struct ReadToolServer {
+    operation: Arc<Mutex<()>>,
     service: SharedReadService,
     mutation: Option<SharedMutationService>,
 }
@@ -82,6 +87,7 @@ impl ReadToolServer {
     /// built.
     pub fn new(service: Box<dyn InventoryReadService + Send>) -> Self {
         Self {
+            operation: Arc::new(Mutex::new(())),
             service: Arc::new(Mutex::new(service)),
             mutation: None,
         }
@@ -98,6 +104,7 @@ impl ReadToolServer {
         mutation: Box<dyn MutationToolService + Send>,
     ) -> Self {
         Self {
+            operation: Arc::new(Mutex::new(())),
             service: Arc::new(Mutex::new(service)),
             mutation: Some(Arc::new(Mutex::new(mutation))),
         }
@@ -112,6 +119,7 @@ impl ReadToolServer {
         let mut tools = crate::schema::tool_specs();
         if self.mutation.is_some() {
             tools.push(move_item_tool());
+            tools.push(crate::schema::equip_item_tool());
         }
         ListToolsResult {
             tools,
@@ -128,15 +136,18 @@ impl ReadToolServer {
     /// the mutation seam only when one was composed; otherwise it stays an
     /// unknown tool.
     pub fn dispatch(&self, name: &str, arguments: JsonObject) -> Result<CallToolResult, ErrorData> {
-        match self.mutation_for(name) {
-            Some(mutation) => dispatch_mutation_locked(mutation, arguments),
-            None => dispatch_locked(&self.service, name, arguments),
-        }
+        dispatch_operation(
+            &self.operation,
+            &self.service,
+            self.mutation_for(name),
+            name,
+            arguments,
+        )
     }
 
     /// The mutation seam to use for one tool name, if it is composed.
     fn mutation_for(&self, name: &str) -> Option<&SharedMutationService> {
-        if name == MOVE_ITEM_TOOL {
+        if name == MOVE_ITEM_TOOL || name == crate::schema::EQUIP_ITEM_TOOL {
             self.mutation.as_ref()
         } else {
             None
@@ -198,21 +209,31 @@ impl ServerHandler for ReadToolServer {
         // Clone the selected shared handle so the blocking dispatch owns
         // everything it needs; the synchronous service runs off the async
         // worker thread. A read-only server keeps the mutation name unknown.
-        let result = match self.mutation_for(&name) {
-            Some(mutation) => {
-                let mutation = Arc::clone(mutation);
-                tokio::task::spawn_blocking(move || dispatch_mutation_locked(&mutation, arguments))
-                    .await
-                    .map_err(|_| internal_error())?
-            }
-            None => {
-                let service = Arc::clone(&self.service);
-                tokio::task::spawn_blocking(move || dispatch_locked(&service, &name, arguments))
-                    .await
-                    .map_err(|_| internal_error())?
-            }
-        };
+        let operation = Arc::clone(&self.operation);
+        let service = Arc::clone(&self.service);
+        let mutation = self.mutation_for(&name).map(Arc::clone);
+        let result = tokio::task::spawn_blocking(move || {
+            dispatch_operation(&operation, &service, mutation.as_ref(), &name, arguments)
+        })
+        .await
+        .map_err(|_| internal_error())?;
         result.map(CallToolResponse::from)
+    }
+}
+
+/// Single operation boundary for both direct dispatch and the async handler.
+/// Acquire before any service work, release only after verification/no-op/error.
+fn dispatch_operation(
+    operation: &Mutex<()>,
+    service: &SharedReadService,
+    mutation: Option<&SharedMutationService>,
+    name: &str,
+    arguments: JsonObject,
+) -> Result<CallToolResult, ErrorData> {
+    let _operation = operation.lock().map_err(|_| internal_error())?;
+    match mutation {
+        Some(mutation) => dispatch_mutation_locked(mutation, name, arguments),
+        None => dispatch_locked(service, name, arguments),
     }
 }
 
@@ -342,8 +363,26 @@ fn dispatch_inspect_item(
 /// error; the lock is held only for this one synchronous call.
 fn dispatch_mutation_locked(
     mutation: &Mutex<Box<dyn MutationToolService + Send>>,
+    name: &str,
     arguments: JsonObject,
 ) -> Result<CallToolResult, ErrorData> {
+    if name == crate::schema::EQUIP_ITEM_TOOL {
+        let args: crate::schema::EquipItemArgs = deserialize(arguments)?;
+        if let Err(error) = args.validate() {
+            return Ok(error.into_call_tool_result());
+        }
+        let mut guard = mutation.lock().map_err(|_| internal_error())?;
+        return Ok(guard.equip_item(&args).map_or_else(tool_error, |output| {
+            let is_error = !matches!(
+                output.status,
+                destiny_output::equip::EquipStatus::VerifiedSuccess
+                    | destiny_output::equip::EquipStatus::VerifiedNoop
+            );
+            let mut result = CallToolResult::structured(output.json());
+            result.is_error = Some(is_error);
+            result
+        }));
+    }
     let arguments: MoveItemArgs = deserialize(arguments)?;
     let request = match arguments.into_request() {
         Ok(request) => request,
@@ -700,6 +739,55 @@ mod tests {
             .structured_content
             .clone()
             .expect("a structured tool result")
+    }
+
+    #[test]
+    fn rc002_dispatch_holds_the_actual_operation_guard_until_service_returns() {
+        use std::sync::{TryLockError, mpsc};
+        const BOUND: Duration = Duration::from_secs(5);
+        struct PausedMutation {
+            entered: mpsc::Sender<()>,
+            release: mpsc::Receiver<()>,
+        }
+        impl MutationToolService for PausedMutation {
+            fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+                self.entered.send(()).unwrap();
+                self.release.recv_timeout(BOUND).unwrap();
+                Ok(move_success_output())
+            }
+        }
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let server = Arc::new(ReadToolServer::with_mutation(
+            Box::new(RecordingService::new()),
+            Box::new(PausedMutation {
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        ));
+        let worker_server = server.clone();
+        let worker = std::thread::spawn(move || {
+            let result = worker_server.dispatch(MOVE_ITEM_TOOL, args(exact_move_arguments()));
+            done_tx.send(()).unwrap();
+            result
+        });
+        entered_rx.recv_timeout(BOUND).unwrap();
+        // Directly inspect the production exclusion primitive, so an absence
+        // timeout in the real-stack interleaving test is not scheduling proof.
+        assert!(matches!(
+            server.operation.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+        release_tx.send(()).unwrap();
+        done_rx.recv_timeout(BOUND).unwrap();
+        assert!(worker.join().unwrap().is_ok());
+        assert!(server.operation.try_lock().is_ok());
+        assert!(
+            server
+                .dispatch(LIST_CHARACTERS_TOOL, Default::default())
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1116,6 +1204,13 @@ mod tests {
             .expect_err("move_item is unknown without a mutation seam");
         assert_eq!(error.code.0, -32601);
         assert_eq!(error.message, "unknown tool");
+        let error = server
+            .dispatch(
+                crate::schema::EQUIP_ITEM_TOOL,
+                args(json!({"item":"123","character":"warlock"})),
+            )
+            .expect_err("equip is unknown without mutation seam");
+        assert_eq!(error.code.0, -32601);
         assert!(read.recorded().is_empty());
     }
 
@@ -1136,7 +1231,8 @@ mod tests {
                 "weekly_reset",
                 "weekly",
                 "get_subclass_options",
-                MOVE_ITEM_TOOL
+                MOVE_ITEM_TOOL,
+                crate::schema::EQUIP_ITEM_TOOL
             ]
         );
         let tool = server
