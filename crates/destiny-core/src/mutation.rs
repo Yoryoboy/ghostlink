@@ -297,23 +297,48 @@ impl MoveRequest {
     }
 }
 
-/// One ordered transfer step in a move plan.
-///
-/// The step carries a 1-based `ordinal` so the order is explicit, and the
-/// source and destination locations for that step. Steps are derived
-/// deterministically by [`plan_steps`]; the plan's concrete item is shared across
-/// every step and therefore not repeated here.
+/// The provider-neutral action performed by one mutation step.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MoveStep {
-    pub ordinal: u8,
-    pub from: ItemLocation,
-    pub to: ItemLocation,
+pub enum StepAction {
+    /// Transfer the plan's concrete item between two locations.
+    Transfer {
+        from: ItemLocation,
+        to: ItemLocation,
+    },
 }
 
-impl MoveStep {
-    /// Builds one ordered step.
-    pub fn new(ordinal: u8, from: ItemLocation, to: ItemLocation) -> Self {
-        Self { ordinal, from, to }
+/// One ordered action in a mutation plan.
+///
+/// The 1-based `ordinal` makes the order explicit. Move steps are derived
+/// deterministically by [`plan_steps`]; the plan's concrete item is shared across
+/// every step and therefore not repeated here.
+#[derive(Clone, Eq, PartialEq)]
+pub struct MutationStep {
+    pub ordinal: u8,
+    pub action: StepAction,
+}
+
+impl MutationStep {
+    /// Builds one ordered transfer step.
+    pub fn transfer(ordinal: u8, from: ItemLocation, to: ItemLocation) -> Self {
+        Self {
+            ordinal,
+            action: StepAction::Transfer { from, to },
+        }
+    }
+}
+
+impl std::fmt::Debug for MutationStep {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Preserve the existing transfer diagnostic shape and identity redaction.
+        match &self.action {
+            StepAction::Transfer { from, to } => formatter
+                .debug_struct("MoveStep")
+                .field("ordinal", &self.ordinal)
+                .field("from", from)
+                .field("to", to)
+                .finish(),
+        }
     }
 }
 
@@ -327,7 +352,7 @@ impl MoveStep {
 pub fn plan_steps(
     source: &ItemLocation,
     destination: &ItemLocation,
-) -> Result<Vec<MoveStep>, MovePlanValidation> {
+) -> Result<Vec<MutationStep>, MovePlanValidation> {
     if !supported_location(source) || !supported_location(destination) {
         return Err(MovePlanValidation::UnsupportedLocation);
     }
@@ -336,11 +361,15 @@ pub fn plan_steps(
     }
     let steps =
         if matches!(source, ItemLocation::Vault) || matches!(destination, ItemLocation::Vault) {
-            vec![MoveStep::new(1, source.clone(), destination.clone())]
+            vec![MutationStep::transfer(
+                1,
+                source.clone(),
+                destination.clone(),
+            )]
         } else {
             vec![
-                MoveStep::new(1, source.clone(), ItemLocation::Vault),
-                MoveStep::new(2, ItemLocation::Vault, destination.clone()),
+                MutationStep::transfer(1, source.clone(), ItemLocation::Vault),
+                MutationStep::transfer(2, ItemLocation::Vault, destination.clone()),
             ]
         };
     debug_assert!(steps.len() <= MAX_MOVE_STEPS);
@@ -384,7 +413,7 @@ pub struct MovePlan {
     pub revision: SyncRevision,
     created_at: Timestamp,
     expires_at: Timestamp,
-    steps: Vec<MoveStep>,
+    steps: Vec<MutationStep>,
     effects: MoveEffects,
 }
 
@@ -456,8 +485,8 @@ impl MovePlan {
         self.expires_at
     }
 
-    /// The ordered transfer steps, bounded by [`MAX_MOVE_STEPS`].
-    pub fn steps(&self) -> &[MoveStep] {
+    /// The ordered mutation steps, bounded by [`MAX_MOVE_STEPS`].
+    pub fn steps(&self) -> &[MutationStep] {
         &self.steps
     }
 
@@ -609,12 +638,12 @@ pub fn evaluate_mutation(plan: &MovePlan, input: &MutationPolicyInput) -> Mutati
 
 /// The bounded, sanitized result recorded for one executed plan step.
 ///
-/// The record keeps the planned [`MoveStep`] next to the outcome observed for it,
+/// The record keeps the planned [`MutationStep`] next to the outcome observed for it,
 /// so evidence proves *which* ordered step ran, not only how many. It carries no
 /// credential, provider payload, or provider message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StepRecord {
-    pub step: MoveStep,
+    pub step: MutationStep,
     pub outcome: StepOutcome,
 }
 
@@ -876,7 +905,7 @@ pub struct ExecutionTicket {
     source: ItemLocation,
     destination: ItemLocation,
     revision: SyncRevision,
-    steps: Vec<MoveStep>,
+    steps: Vec<MutationStep>,
 }
 
 impl ExecutionTicket {
@@ -950,7 +979,7 @@ impl ExecutionTicket {
     }
 
     /// The ordered steps this ticket authorizes, bounded by [`MAX_MOVE_STEPS`].
-    pub fn steps(&self) -> &[MoveStep] {
+    pub fn steps(&self) -> &[MutationStep] {
         &self.steps
     }
 
@@ -1233,8 +1262,9 @@ mod tests {
             let steps = plan_steps(&source, &destination).unwrap();
             assert_eq!(steps.len(), 1, "{source:?} -> {destination:?} is direct");
             assert_eq!(steps[0].ordinal, 1);
-            assert_eq!(steps[0].from, source);
-            assert_eq!(steps[0].to, destination);
+            let StepAction::Transfer { from, to } = &steps[0].action;
+            assert_eq!(from, &source);
+            assert_eq!(to, &destination);
         }
     }
 
@@ -1245,12 +1275,22 @@ mod tests {
         let steps = plan_steps(&source, &destination).unwrap();
 
         assert_eq!(steps.len(), MAX_MOVE_STEPS);
-        assert_eq!(steps[0], MoveStep::new(1, source, ItemLocation::Vault));
-        assert_eq!(steps[1], MoveStep::new(2, ItemLocation::Vault, destination));
+        assert_eq!(
+            steps[0],
+            MutationStep::transfer(1, source, ItemLocation::Vault)
+        );
+        assert_eq!(
+            steps[1],
+            MutationStep::transfer(2, ItemLocation::Vault, destination)
+        );
         assert_eq!(
             steps
                 .iter()
-                .filter(|step| step.from == ItemLocation::Vault || step.to == ItemLocation::Vault)
+                .filter(|step| match &step.action {
+                    StepAction::Transfer { from, to } => {
+                        *from == ItemLocation::Vault || *to == ItemLocation::Vault
+                    }
+                })
                 .count(),
             2
         );
@@ -1309,8 +1349,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mediated.step_count(), MAX_MOVE_STEPS);
-        assert_eq!(mediated.steps()[0].to, ItemLocation::Vault);
-        assert_eq!(mediated.steps()[1].from, ItemLocation::Vault);
+        let StepAction::Transfer { to, .. } = &mediated.steps()[0].action;
+        assert_eq!(to, &ItemLocation::Vault);
+        let StepAction::Transfer { from, .. } = &mediated.steps()[1].action;
+        assert_eq!(from, &ItemLocation::Vault);
         assert!(mediated.effects().is_vault_mediated());
         assert!(mediated.step_count() <= MAX_MOVE_STEPS);
     }
@@ -1680,15 +1722,11 @@ mod tests {
 
         let mediated = ExecutionEvidence::for_plan(&vault_mediated_plan());
         assert_eq!(mediated.steps().len(), MAX_MOVE_STEPS);
-        assert_eq!(
-            mediated.steps()[0].step.from,
-            ItemLocation::Character(CharacterId::new("warlock"))
-        );
-        assert_eq!(mediated.steps()[0].step.to, ItemLocation::Vault);
-        assert_eq!(
-            mediated.steps()[1].step.to,
-            ItemLocation::Character(CharacterId::new("hunter"))
-        );
+        let StepAction::Transfer { from, to } = &mediated.steps()[0].step.action;
+        assert_eq!(from, &ItemLocation::Character(CharacterId::new("warlock")));
+        assert_eq!(to, &ItemLocation::Vault);
+        let StepAction::Transfer { to, .. } = &mediated.steps()[1].step.action;
+        assert_eq!(to, &ItemLocation::Character(CharacterId::new("hunter")));
         assert_eq!(mediated.next_ordinal(), Some(1));
         assert_eq!(mediated.unattempted_count(), MAX_MOVE_STEPS);
     }

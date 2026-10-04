@@ -924,8 +924,9 @@ fn direct_move_is_verified_after_a_post_action_refresh() {
     assert_eq!(plan.revision, SyncRevision::new(1));
     assert_eq!(plan.step_count(), 1);
     assert!(!plan.effects().via_vault);
-    assert_eq!(plan.steps()[0].from, ItemLocation::Vault);
-    assert_eq!(plan.steps()[0].to, warlock_location());
+    let destiny_core::StepAction::Transfer { from, to } = &plan.steps()[0].action;
+    assert_eq!(from, &ItemLocation::Vault);
+    assert_eq!(to, &warlock_location());
 
     // The mandatory fresh preflight forces one refresh even though the read
     // projection was fresh, and the unchanged state keeps the bound revision.
