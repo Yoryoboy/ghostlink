@@ -31,10 +31,10 @@ Out of scope: unlocked/available subclass options (plug sets, components
 
 ## Tasks
 
-- [x] **SUB-001 — Classify and retain subclass plugs.** `SubclassPlugKind`, `classify_subclass_plug`, `PlugKind::Subclass`; RED→GREEN observed; workspace tests 1111 passed, clippy clean. Commit `1a9f2b5`.
-- [x] **SUB-002 — Subclass query.** `QueryService::character_subclasses` + `SubclassResult` types, reusing existing snapshot reads (no new repo method). RED (E0599)→GREEN; workspace 1114 passed, clippy clean. Commit `acdb2fc`.
-- [x] **SUB-003 — CLI command.** `ghostlink subclass [--character <id|class>]`, grouped text + snake_case JSON; `QueryOperations::character_subclasses`. RED→GREEN; workspace 1120 passed, clippy clean; live smoke OK on 3 characters. Commit `7eda8b7`.
-- [x] **SUB-004 — MCP tool and docs.** MCP tool `get_subclass`, exact CLI/MCP JSON parity tests, README. RED→GREEN; workspace 1125 passed, stdio (offline-fixtures) 11 passed, clippy clean. Commit `8572760`.
+- [x] **SUB-001 — Classify and retain subclass plugs.** `SubclassPlugKind`, `classify_subclass_plug`, `PlugKind::Subclass`; RED→GREEN observed; workspace tests 1111 passed, clippy clean. Commit `83bb332`.
+- [x] **SUB-002 — Subclass query.** `QueryService::character_subclasses` + `SubclassResult` types, reusing existing snapshot reads (no new repo method). RED (E0599)→GREEN; workspace 1114 passed, clippy clean. Commit `09ea038`.
+- [x] **SUB-003 — CLI command.** `ghostlink subclass [--character <id|class>]`, grouped text + snake_case JSON; `QueryOperations::character_subclasses`. RED→GREEN; workspace 1120 passed, clippy clean; live smoke OK on 3 characters. Commit `2b68801`.
+- [x] **SUB-004 — MCP tool and docs.** MCP tool `get_subclass`, exact CLI/MCP JSON parity tests, README. RED→GREEN; workspace 1125 passed, stdio (offline-fixtures) 11 passed, clippy clean. Commit `810c0f2`.
 
 ## Progress
 
