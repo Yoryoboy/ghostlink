@@ -188,6 +188,17 @@ pub enum MutationError {
     InvalidPlan,
     /// A refresh succeeded but no committed projection became visible.
     InvalidProjection,
+    InvalidEquipTarget,
+    EquippedOnOtherCharacter,
+    WrongClass,
+    UnknownClass,
+    /// Missing rarity information prevents a safe exotic-limit decision.
+    UnknownRarity,
+    /// An equipped neighbor cannot be classified for the exotic-limit check.
+    UnknownNeighborSlot,
+    NotEquippable,
+    ExoticConflict,
+    EquipNotYetSupported,
 }
 
 impl MutationError {
@@ -210,9 +221,18 @@ impl MutationError {
             | Self::WrongMembership
             | Self::WrongItem
             | Self::WrongDestination => ErrorCategory::StaleState,
-            Self::SameLocation | Self::UnsupportedLocation | Self::UnsupportedSource => {
-                ErrorCategory::UnsupportedOperation
-            }
+            Self::InvalidEquipTarget
+            | Self::EquippedOnOtherCharacter
+            | Self::WrongClass
+            | Self::UnknownClass
+            | Self::UnknownRarity
+            | Self::UnknownNeighborSlot
+            | Self::NotEquippable
+            | Self::ExoticConflict
+            | Self::EquipNotYetSupported
+            | Self::SameLocation
+            | Self::UnsupportedLocation
+            | Self::UnsupportedSource => ErrorCategory::UnsupportedOperation,
             Self::InvalidPlan | Self::InvalidProjection => ErrorCategory::LocalStorage,
         }
     }
@@ -309,6 +329,30 @@ impl fmt::Display for MutationError {
             }
             Self::InvalidPlan => formatter.write_str("the move plan could not be constructed"),
             Self::InvalidProjection => formatter.write_str("local projection state is unavailable"),
+            Self::InvalidEquipTarget => {
+                formatter.write_str("equip requires a character, not the Vault")
+            }
+            Self::EquippedOnOtherCharacter => formatter
+                .write_str("item is equipped on another character; freeing it is out of scope"),
+            Self::WrongClass => {
+                formatter.write_str("item is not equippable by the target character's class")
+            }
+            Self::UnknownClass => {
+                formatter.write_str("item or target class restriction is unknown")
+            }
+            Self::UnknownRarity => formatter
+                .write_str("item rarity is unknown; exotic compatibility cannot be determined"),
+            Self::UnknownNeighborSlot => formatter.write_str(
+                "equipped neighbor slot is unknown; exotic compatibility cannot be determined",
+            ),
+            Self::NotEquippable => {
+                formatter.write_str("item has no supported weapon or armor equipment slot")
+            }
+            Self::ExoticConflict => formatter
+                .write_str("another exotic is equipped in the same category in a different slot"),
+            Self::EquipNotYetSupported => {
+                formatter.write_str("equip execution is not yet supported")
+            }
         }
     }
 }
@@ -618,6 +662,216 @@ where
         &mut self.plan_ids
     }
 
+    /// Plans equip without remote mutation, reusing move selectors and routing.
+    pub fn plan_equip(
+        &mut self,
+        request: &destiny_core::EquipRequest,
+        lifetime: PlanLifetime,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::EquipPlan, MutationError>
+    where
+        R: destiny_core::DefinitionRepository,
+    {
+        let request = request.as_move_request();
+        authorize(&request)?;
+        if request.destination.is_vault() {
+            return Err(MutationError::InvalidEquipTarget);
+        }
+        let outcome = self
+            .sync
+            .sync(ProfileSyncReason::Ordinary, policy, now)
+            .map_err(MutationError::from)?;
+        let snapshot = self.committed_snapshot()?;
+        let item = self.resolve_item(&request)?;
+        let destination = self.resolve_plan_destination(&request, &snapshot.characters)?;
+        self.validate_equip(&item, &destination, &snapshot)?;
+        let ItemLocation::Character(character) = destination else {
+            return Err(MutationError::InvalidEquipTarget);
+        };
+        let expires_at = lifetime.expires_at(now).map_err(MutationError::from)?;
+        let plan_id = self.plan_ids.next_plan_id().map_err(MutationError::from)?;
+        destiny_core::EquipPlan::new(
+            plan_id,
+            request.membership,
+            item.instance_id,
+            item.location,
+            character,
+            item.equipped,
+            outcome.revision(),
+            now,
+            expires_at,
+        )
+        .map_err(|_| MutationError::InvalidPlan)
+    }
+
+    /// Forces fresh state and repeats class, slot and exotic safety checks.
+    /// AlreadySatisfied requires both character location and equipped state.
+    pub fn preflight_equip(
+        &mut self,
+        request: &destiny_core::EquipRequest,
+        plan: &destiny_core::EquipPlan,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::EquipPreflight, MutationError>
+    where
+        R: destiny_core::DefinitionRepository,
+    {
+        let request = request.as_move_request();
+        authorize(&request)?;
+        let mutation = plan.mutation_plan();
+        if mutation.is_expired(now) {
+            return Err(MutationError::Expired);
+        }
+        if request.membership != mutation.membership {
+            return Err(MutationError::WrongMembership);
+        }
+        if request.destination.is_vault() {
+            return Err(MutationError::InvalidEquipTarget);
+        }
+        let (outcome, snapshot, resolved_item, current_source) =
+            self.fresh_preflight(mutation, policy, now)?;
+        let item = self.resolve_item(&request)?;
+        if item.instance_id != mutation.item {
+            return Err(MutationError::WrongItem);
+        }
+        let destination = self.resolve_plan_destination(&request, &snapshot.characters)?;
+        if destination != mutation.destination {
+            return Err(MutationError::WrongDestination);
+        }
+        self.validate_equip(&item, &destination, &snapshot)?;
+        if plan.already_satisfied(&item) {
+            return Ok(destiny_core::EquipPreflight::AlreadySatisfied);
+        }
+        self.evaluate_preflight(
+            &request,
+            mutation,
+            &snapshot,
+            outcome.revision(),
+            resolved_item,
+            current_source,
+            now,
+        )?;
+        if plan.is_already_satisfied() {
+            // A formerly satisfied plan contains no actions; never call it ready
+            // after its equipped-state postcondition stopped holding.
+            return Err(MutationError::StaleRevision);
+        }
+        Ok(destiny_core::EquipPreflight::Ready)
+    }
+
+    fn validate_equip(
+        &self,
+        item: &ItemInstance,
+        destination: &ItemLocation,
+        snapshot: &InventorySnapshot,
+    ) -> Result<(), MutationError>
+    where
+        R: destiny_core::DefinitionRepository,
+    {
+        use destiny_core::domain::ClassType;
+        if !matches!(destination, ItemLocation::Character(_)) {
+            return Err(MutationError::InvalidEquipTarget);
+        }
+        if !matches!(
+            item.location,
+            ItemLocation::Vault | ItemLocation::Character(_)
+        ) {
+            return Err(MutationError::UnsupportedSource);
+        }
+        if item.equipped && item.location != *destination {
+            return Err(MutationError::EquippedOnOtherCharacter);
+        }
+        let definition = self.equip_definition(item.item_hash)?;
+        let slot = definition
+            .slot
+            .filter(|slot| equipment_category(*slot).is_some())
+            .ok_or(MutationError::NotEquippable)?;
+        match definition.class_type {
+            Some(ClassType::Any) => {}
+            Some(ClassType::Unknown) | None => return Err(MutationError::UnknownClass),
+            Some(required) => {
+                let class = snapshot
+                    .characters
+                    .iter()
+                    .find(|character| ItemLocation::Character(character.id.clone()) == *destination)
+                    .and_then(|character| character.class.as_deref())
+                    .and_then(|class| class.parse::<ClassType>().ok())
+                    .filter(|class| {
+                        matches!(
+                            class,
+                            ClassType::Titan | ClassType::Hunter | ClassType::Warlock
+                        )
+                    })
+                    .ok_or(MutationError::UnknownClass)?;
+                if class != required {
+                    return Err(MutationError::WrongClass);
+                }
+            }
+        }
+        let tier = definition
+            .tier
+            .as_deref()
+            .filter(|tier| !tier.trim().is_empty())
+            .ok_or(MutationError::UnknownRarity)?;
+        if tier == "Exotic" {
+            for existing in snapshot.items.iter().filter(|existing| {
+                existing.equipped
+                    && existing.location == *destination
+                    && existing.instance_id != item.instance_id
+            }) {
+                let other = match self
+                    .repository()
+                    .lookup_definition(existing.item_hash)
+                    .map_err(MutationError::from)?
+                {
+                    Resolution::Unique(definition) => definition,
+                    // Without its definition we cannot establish that this
+                    // equipped neighbor is outside the exotic-limit category.
+                    Resolution::Missing => return Err(MutationError::UnknownRarity),
+                    Resolution::Ambiguous(_) => return Err(MutationError::InvalidProjection),
+                };
+                let Some(other_slot) = exotic_neighbor_slot(&other)? else {
+                    continue;
+                };
+                if other_slot == slot || equipment_category(other_slot) != equipment_category(slot)
+                {
+                    // Same-slot replacement and independent categories do not
+                    // require the neighbor's rarity to establish compatibility.
+                    continue;
+                }
+                let other_tier = other
+                    .tier
+                    .as_deref()
+                    .filter(|tier| !tier.trim().is_empty())
+                    .ok_or(MutationError::UnknownRarity)?;
+                if other_tier == "Exotic" {
+                    return Err(MutationError::ExoticConflict);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Exact catalog lookup avoids truncating a definition search for safety.
+    fn equip_definition(
+        &self,
+        hash: destiny_core::ItemHash,
+    ) -> Result<destiny_core::ItemDefinition, MutationError>
+    where
+        R: destiny_core::DefinitionRepository,
+    {
+        match self
+            .repository()
+            .lookup_definition(hash)
+            .map_err(MutationError::from)?
+        {
+            Resolution::Unique(definition) => Ok(definition),
+            Resolution::Missing => Err(MutationError::NotEquippable),
+            Resolution::Ambiguous(_) => Err(MutationError::InvalidProjection),
+        }
+    }
+
     /// DMP-003: authorizes intent, resolves the request, and builds one plan.
     ///
     /// Explicit intent is validated before any side effect, the ordinary
@@ -671,6 +925,9 @@ where
         now: Timestamp,
     ) -> Result<(), MutationError> {
         authorize(request)?;
+        if plan.requires_equipped() {
+            return Err(MutationError::EquipNotYetSupported);
+        }
         let (outcome, snapshot, resolved_item, current_source) =
             self.fresh_preflight(plan, policy, now)?;
         self.evaluate_preflight(
@@ -735,6 +992,9 @@ where
         now: Timestamp,
     ) -> Result<ExecutionAuthorization, MutationError> {
         authorize(request)?;
+        if plan.requires_equipped() {
+            return Err(MutationError::EquipNotYetSupported);
+        }
         // Expiry and membership need no provider read, so they are rejected
         // here, before the forced refresh, and a caller cannot spend a provider
         // call on a plan that could never execute.
@@ -1009,6 +1269,16 @@ where
         // evidence skeleton, so the two must describe the same authorized move.
         // A mismatch can only come from a contract violation, and it fails closed
         // before any provider call.
+        if plan.requires_equipped()
+            || plan
+                .steps()
+                .iter()
+                .any(|step| matches!(step.action, StepAction::Equip { .. }))
+        {
+            // Refuse the whole sequence before even its first transfer. Equip
+            // execution and equipped-state verification belong to EQ-003/004.
+            return Err(MutationError::EquipNotYetSupported);
+        }
         if ticket.plan_id() != &plan.plan_id
             || ticket.item() != &plan.item
             || ticket.steps() != plan.steps()
@@ -1048,6 +1318,7 @@ where
                     let outcome = transfer.transfer(&request).map_err(MutationError::from)?;
                     StepOutcome::from_transfer(outcome)
                 }
+                StepAction::Equip { .. } => return Err(MutationError::EquipNotYetSupported),
             };
             evidence
                 .record(step.ordinal, outcome)
@@ -1298,6 +1569,52 @@ where
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EquipmentCategory {
+    Weapon,
+    Armor,
+}
+
+/// Weapon and armor exotic limits are independent; unsupported slots are not
+/// treated as equipment. Slots come from normalized Manifest bucket hashes.
+fn equipment_category(slot: destiny_core::domain::ItemSlot) -> Option<EquipmentCategory> {
+    use destiny_core::domain::ItemSlot;
+    match slot {
+        ItemSlot::Kinetic | ItemSlot::Energy | ItemSlot::Power => Some(EquipmentCategory::Weapon),
+        ItemSlot::Helmet
+        | ItemSlot::Gauntlets
+        | ItemSlot::Chest
+        | ItemSlot::Legs
+        | ItemSlot::ClassItem => Some(EquipmentCategory::Armor),
+        ItemSlot::Other | ItemSlot::Unknown => None,
+    }
+}
+
+/// Other is explicitly non-equipment. The Manifest normalizer leaves `slot`
+/// absent for every bucket outside these eight weapon/armor hashes; a present
+/// bucket outside that exact set therefore also proves category irrelevance.
+/// Missing/Unknown slot without that proof is not a candidate-equippability
+/// failure: it is an unknown neighbor classification and fails closed.
+fn exotic_neighbor_slot(
+    definition: &destiny_core::ItemDefinition,
+) -> Result<Option<destiny_core::domain::ItemSlot>, MutationError> {
+    use destiny_core::domain::ItemSlot;
+    match definition.slot {
+        Some(ItemSlot::Other) => Ok(None),
+        Some(slot) if equipment_category(slot).is_some() => Ok(Some(slot)),
+        _ => {
+            if definition
+                .bucket_hash
+                .is_some_and(|bucket| ItemSlot::from_equipment_bucket(bucket).is_none())
+            {
+                Ok(None)
+            } else {
+                Err(MutationError::UnknownNeighborSlot)
+            }
+        }
+    }
+}
+
 /// Rejects absent or ambiguous explicit intent before any side effect.
 fn authorize(request: &MoveRequest) -> Result<(), MutationError> {
     match request.authorization() {
@@ -1324,6 +1641,7 @@ fn expected_location(plan: &MovePlan, completed: usize) -> ItemLocation {
         .get(completed - 1)
         .map(|step| match &step.action {
             StepAction::Transfer { to, .. } => to.clone(),
+            StepAction::Equip { character } => ItemLocation::Character(character.clone()),
         })
         .unwrap_or_else(|| plan.destination.clone())
 }
@@ -1369,6 +1687,7 @@ mod tests {
     struct CompositeRepository {
         inventory: InMemoryInventoryRepository,
         search: InMemorySearchRepository,
+        catalog: crate::test_support::InMemoryDefinitionRepository,
         hides_current: bool,
         calls: RefCell<Vec<&'static str>>,
     }
@@ -1377,7 +1696,11 @@ mod tests {
         fn with_definitions(definitions: Vec<ItemDefinition>) -> Self {
             Self {
                 inventory: InMemoryInventoryRepository::new(),
-                search: InMemorySearchRepository::with_definitions(definitions),
+                search: InMemorySearchRepository::with_definitions(definitions.clone()),
+                catalog: crate::test_support::InMemoryDefinitionRepository::new(
+                    DefinitionVersion::new(DEFINITION_VERSION),
+                    definitions,
+                ),
                 hides_current: false,
                 calls: RefCell::new(Vec::new()),
             }
@@ -1439,6 +1762,30 @@ mod tests {
         }
     }
 
+    impl destiny_core::DefinitionRepository for CompositeRepository {
+        fn current_definition_version(&self) -> Result<DefinitionVersion, AppError> {
+            self.catalog.current_definition_version()
+        }
+
+        fn lookup_definition(
+            &self,
+            hash: ItemHash,
+        ) -> Result<Resolution<ItemDefinition>, AppError> {
+            self.catalog.lookup_definition(hash)
+        }
+
+        fn current_metadata(&self) -> Result<Option<destiny_core::SyncMetadata>, AppError> {
+            self.catalog.current_metadata()
+        }
+
+        fn replace_definitions(
+            &mut self,
+            replacement: destiny_core::DefinitionReplacementInput,
+        ) -> Result<destiny_core::SyncMetadata, AppError> {
+            self.catalog.replace_definitions(replacement)
+        }
+    }
+
     impl SearchRepository for CompositeRepository {
         fn search_definitions(
             &self,
@@ -1492,6 +1839,617 @@ mod tests {
     }
 
     type Service = MutationService<SharedGateway, CompositeRepository, DeterministicPlanIds>;
+
+    fn equip_definition(hash: i64, slot: destiny_core::domain::ItemSlot) -> ItemDefinition {
+        let mut value = definition(hash, "Equip candidate");
+        value.slot = Some(slot);
+        value.class_type = Some(destiny_core::domain::ClassType::Any);
+        value.tier = Some("Exotic".into());
+        value
+    }
+
+    fn equip_request() -> destiny_core::EquipRequest {
+        destiny_core::EquipRequest {
+            membership: membership_id(),
+            item: ItemSelector::instance(item_id("candidate")),
+            destination: DestinationSelector::character(CharacterId::new("warlock")),
+            intent: MoveIntentAuthorization::Explicit,
+        }
+    }
+
+    #[test]
+    fn equip_transfer_routes_and_equipped_noop() {
+        use destiny_core::MutationStep;
+        for (source, equipped, count) in [
+            (ItemLocation::Vault, false, 2),
+            (hunter(), false, 3),
+            (warlock(), false, 1),
+            (warlock(), true, 0),
+        ] {
+            let shared = gateway();
+            let mut repo = CompositeRepository::with_definitions(vec![equip_definition(
+                1,
+                destiny_core::domain::ItemSlot::Kinetic,
+            )]);
+            let mut item = instance("candidate", 1, source.clone());
+            item.equipped = equipped;
+            repo.commit(projection(
+                NOW,
+                vec![
+                    warlock_character(),
+                    character("hunter", None, Some("Hunter")),
+                ],
+                vec![item],
+            ));
+            let plan = service(&shared, repo)
+                .plan_equip(&equip_request(), LIFETIME, TTL, NOW)
+                .unwrap();
+            assert_eq!(plan.steps().len(), count);
+            assert_eq!(plan.is_already_satisfied(), equipped);
+            assert_eq!(plan.via_vault(), count == 3);
+            let mut expected = match source {
+                ItemLocation::Vault => {
+                    vec![MutationStep::transfer(1, ItemLocation::Vault, warlock())]
+                }
+                source if source == hunter() => vec![
+                    MutationStep::transfer(1, hunter(), ItemLocation::Vault),
+                    MutationStep::transfer(2, ItemLocation::Vault, warlock()),
+                ],
+                source if source == warlock() => Vec::new(),
+                _ => panic!("unexpected test source"),
+            };
+            if !equipped {
+                expected.push(MutationStep {
+                    ordinal: count as u8,
+                    action: StepAction::Equip {
+                        character: CharacterId::new("warlock"),
+                    },
+                });
+            }
+            assert_eq!(plan.steps(), expected);
+        }
+    }
+
+    #[test]
+    fn equip_refuses_equipped_elsewhere_wrong_class_and_nonequipment() {
+        use destiny_core::domain::{ClassType, ItemSlot};
+        for (equipped, class, slot, expected) in [
+            (
+                true,
+                ClassType::Any,
+                Some(ItemSlot::Helmet),
+                MutationError::EquippedOnOtherCharacter,
+            ),
+            (
+                false,
+                ClassType::Titan,
+                Some(ItemSlot::Helmet),
+                MutationError::WrongClass,
+            ),
+            (
+                false,
+                ClassType::Unknown,
+                Some(ItemSlot::Helmet),
+                MutationError::UnknownClass,
+            ),
+            (false, ClassType::Any, None, MutationError::NotEquippable),
+            (
+                false,
+                ClassType::Any,
+                Some(ItemSlot::Other),
+                MutationError::NotEquippable,
+            ),
+        ] {
+            let shared = gateway();
+            let mut def = equip_definition(1, ItemSlot::Helmet);
+            def.slot = slot;
+            def.class_type = Some(class);
+            let mut repo = CompositeRepository::with_definitions(vec![def]);
+            let mut item = instance("candidate", 1, hunter());
+            item.equipped = equipped;
+            repo.commit(projection(
+                NOW,
+                vec![
+                    character("warlock", None, Some("Warlock")),
+                    character("hunter", None, Some("Hunter")),
+                ],
+                vec![item],
+            ));
+            assert_eq!(
+                service(&shared, repo).plan_equip(&equip_request(), LIFETIME, TTL, NOW),
+                Err(expected)
+            );
+            assert_eq!(shared.borrow().inventory_calls(), 0);
+        }
+    }
+
+    #[test]
+    fn equip_exotic_conflicts_only_across_slots_in_same_category() {
+        use destiny_core::domain::ItemSlot;
+        for (candidate, existing, refused) in [
+            (ItemSlot::Kinetic, ItemSlot::Energy, true),
+            (ItemSlot::Kinetic, ItemSlot::Kinetic, false),
+            (ItemSlot::Helmet, ItemSlot::Legs, true),
+            (ItemSlot::Helmet, ItemSlot::Helmet, false),
+            (ItemSlot::Helmet, ItemSlot::Energy, false),
+        ] {
+            let shared = gateway();
+            let mut repo = CompositeRepository::with_definitions(vec![
+                equip_definition(1, candidate),
+                equip_definition(2, existing),
+            ]);
+            let mut other = instance("other", 2, warlock());
+            other.equipped = true;
+            repo.commit(projection(
+                NOW,
+                vec![warlock_character()],
+                vec![instance("candidate", 1, ItemLocation::Vault), other],
+            ));
+            let result = service(&shared, repo).plan_equip(&equip_request(), LIFETIME, TTL, NOW);
+            if refused {
+                assert_eq!(result, Err(MutationError::ExoticConflict));
+            } else {
+                assert!(result.is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn equip_rejects_missing_ambiguous_and_vault_selectors() {
+        use destiny_core::domain::ItemSlot;
+        for (selector, target, expected) in [
+            (
+                ItemSelector::instance(item_id("missing")),
+                equip_request().destination,
+                MutationError::MissingItem,
+            ),
+            (
+                ItemSelector::semantic("Equip candidate").unwrap(),
+                equip_request().destination,
+                MutationError::AmbiguousItem,
+            ),
+            (
+                equip_request().item,
+                DestinationSelector::Vault,
+                MutationError::InvalidEquipTarget,
+            ),
+        ] {
+            let shared = gateway();
+            let mut repo =
+                CompositeRepository::with_definitions(vec![equip_definition(1, ItemSlot::Kinetic)]);
+            repo.commit(projection(
+                NOW,
+                vec![warlock_character()],
+                vec![
+                    instance("candidate", 1, ItemLocation::Vault),
+                    instance("duplicate", 1, ItemLocation::Vault),
+                ],
+            ));
+            let mut request = equip_request();
+            request.item = selector;
+            request.destination = target;
+            assert_eq!(
+                service(&shared, repo).plan_equip(&request, LIFETIME, TTL, NOW),
+                Err(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn equip_preflight_rechecks_flags_location_and_exotic_conflict() {
+        use destiny_core::domain::ItemSlot;
+        for change in 0..5 {
+            let shared = gateway();
+            let mut repo = CompositeRepository::with_definitions(vec![
+                equip_definition(1, ItemSlot::Kinetic),
+                equip_definition(2, ItemSlot::Energy),
+            ]);
+            let chars = vec![
+                warlock_character(),
+                character("hunter", None, Some("Hunter")),
+            ];
+            repo.commit(projection(
+                NOW,
+                chars.clone(),
+                vec![instance("candidate", 1, ItemLocation::Vault)],
+            ));
+            let mut svc = service(&shared, repo);
+            let plan = svc
+                .plan_equip(&equip_request(), LIFETIME, TTL, NOW)
+                .unwrap();
+            let mut item = instance("candidate", 1, ItemLocation::Vault);
+            let mut items = Vec::new();
+            match change {
+                0 => {
+                    item.location = hunter();
+                    item.equipped = true;
+                }
+                1 => {
+                    item.location = warlock();
+                    item.equipped = true;
+                }
+                2 => {
+                    let mut other = instance("other", 2, warlock());
+                    other.equipped = true;
+                    items.push(other);
+                }
+                3 => item.location = hunter(),
+                _ => {}
+            }
+            items.push(item);
+            shared.borrow_mut().queue_membership(Ok(membership()));
+            shared
+                .borrow_mut()
+                .queue_inventory(Ok(projection(NOW, chars, items)));
+            let result = svc.preflight_equip(&equip_request(), &plan, TTL, NOW);
+            match change {
+                0 => assert_eq!(result, Err(MutationError::EquippedOnOtherCharacter)),
+                1 => assert_eq!(result, Ok(destiny_core::EquipPreflight::AlreadySatisfied)),
+                2 => assert_eq!(result, Err(MutationError::ExoticConflict)),
+                3 => assert_eq!(result, Err(MutationError::StaleRevision)),
+                _ => assert_eq!(result, Ok(destiny_core::EquipPreflight::Ready)),
+            }
+            assert_eq!(shared.borrow().inventory_calls(), 1);
+        }
+    }
+
+    #[test]
+    fn equip_executor_fails_closed_before_any_transfer() {
+        use destiny_core::domain::ItemSlot;
+        for (source, equipped) in [
+            (ItemLocation::Vault, false),
+            (hunter(), false),
+            (warlock(), false),
+            (warlock(), true),
+        ] {
+            let shared = gateway();
+            let mut repo =
+                CompositeRepository::with_definitions(vec![equip_definition(1, ItemSlot::Kinetic)]);
+            let mut item = instance("candidate", 1, source);
+            item.equipped = equipped;
+            let input = projection(
+                NOW,
+                vec![warlock_character(), character("hunter", None, None)],
+                vec![item],
+            );
+            repo.commit(input.clone());
+            let mut svc = service(&shared, repo);
+            let plan = svc
+                .plan_equip(&equip_request(), LIFETIME, TTL, NOW)
+                .unwrap();
+            assert!(!plan.mutation_plan().already_satisfied(&warlock()));
+            assert_eq!(
+                svc.authorize_execution(
+                    &equip_request().as_move_request(),
+                    plan.mutation_plan(),
+                    TTL,
+                    NOW,
+                ),
+                Err(MutationError::EquipNotYetSupported)
+            );
+            assert_eq!(shared.borrow().inventory_calls(), 0);
+            shared.borrow_mut().queue_membership(Ok(membership()));
+            shared.borrow_mut().queue_inventory(Ok(input));
+            let outcome = svc
+                .sync_mut()
+                .sync(destiny_core::ProfileSyncReason::Preflight, TTL, NOW)
+                .unwrap();
+            let ticket =
+                ExecutionTicket::after_fresh_preflight(plan.mutation_plan(), &outcome, NOW)
+                    .unwrap();
+            let mut transfer = QueuedTransferGateway::new();
+            let failure = svc
+                .execute_move(&mut transfer, plan.mutation_plan(), ticket)
+                .unwrap_err();
+            assert_eq!(failure.error(), MutationError::EquipNotYetSupported);
+            assert_eq!(transfer.calls(), 0);
+            assert!(!failure.requires_post_action_refresh());
+        }
+    }
+
+    #[test]
+    fn equip_class_compatibility_uses_stored_restrictions_and_target_class() {
+        use destiny_core::domain::{ClassType, ItemSlot};
+        for (restriction, target_class, expected) in [
+            (Some(ClassType::Warlock), Some("wArLoCk"), None),
+            (
+                Some(ClassType::Warlock),
+                None,
+                Some(MutationError::UnknownClass),
+            ),
+            (None, Some("Warlock"), Some(MutationError::UnknownClass)),
+            (Some(ClassType::Any), None, None),
+        ] {
+            let shared = gateway();
+            let mut def = equip_definition(1, ItemSlot::Helmet);
+            def.class_type = restriction;
+            let mut repo = CompositeRepository::with_definitions(vec![def]);
+            repo.commit(projection(
+                NOW,
+                vec![character("warlock", None, target_class)],
+                vec![instance("candidate", 1, ItemLocation::Vault)],
+            ));
+            let result = service(&shared, repo).plan_equip(&equip_request(), LIFETIME, TTL, NOW);
+            assert_eq!(result.err(), expected);
+        }
+    }
+
+    #[test]
+    fn equip_selectors_and_intent_reuse_move_rules_without_spending_plan_ids() {
+        use destiny_core::domain::ItemSlot;
+        let shared = gateway();
+        let mut repo =
+            CompositeRepository::with_definitions(vec![equip_definition(1, ItemSlot::Kinetic)]);
+        repo.commit(projection(
+            NOW,
+            vec![character("warlock", None, Some("Warlock"))],
+            vec![instance("candidate", 1, ItemLocation::Vault)],
+        ));
+        let mut svc = service(&shared, repo);
+        let mut request = equip_request();
+        for (intent, expected) in [
+            (
+                MoveIntentAuthorization::Absent,
+                MutationError::MissingIntent,
+            ),
+            (
+                MoveIntentAuthorization::Ambiguous,
+                MutationError::AmbiguousIntent,
+            ),
+        ] {
+            request.intent = intent;
+            assert_eq!(svc.plan_equip(&request, LIFETIME, TTL, NOW), Err(expected));
+        }
+        assert!(svc.repository().recorded_calls().is_empty());
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        request.intent = MoveIntentAuthorization::Explicit;
+        request.item = ItemSelector::semantic("Equip candidate").unwrap();
+        request.destination = DestinationSelector::character_label("WARLOCK").unwrap();
+        let plan = svc.plan_equip(&request, LIFETIME, TTL, NOW).unwrap();
+        assert_eq!(plan.mutation_plan().item, item_id("candidate"));
+        assert_eq!(plan.mutation_plan().destination, warlock());
+        assert_eq!(svc.plan_ids().calls(), 1);
+    }
+
+    #[test]
+    fn equip_preflight_invalidates_a_formerly_equipped_noop() {
+        use destiny_core::domain::ItemSlot;
+        let shared = gateway();
+        let mut repo =
+            CompositeRepository::with_definitions(vec![equip_definition(1, ItemSlot::Kinetic)]);
+        let mut item = instance("candidate", 1, warlock());
+        item.equipped = true;
+        repo.commit(projection(
+            NOW,
+            vec![warlock_character()],
+            vec![item.clone()],
+        ));
+        let mut svc = service(&shared, repo);
+        let plan = svc
+            .plan_equip(&equip_request(), LIFETIME, TTL, NOW)
+            .unwrap();
+        assert!(plan.is_already_satisfied());
+        item.equipped = false;
+        shared.borrow_mut().queue_membership(Ok(membership()));
+        shared.borrow_mut().queue_inventory(Ok(projection(
+            NOW,
+            vec![warlock_character()],
+            vec![item],
+        )));
+        assert_eq!(
+            svc.preflight_equip(&equip_request(), &plan, TTL, NOW),
+            Err(MutationError::StaleRevision)
+        );
+    }
+
+    #[test]
+    fn equip_refuses_missing_candidate_rarity() {
+        use destiny_core::domain::ItemSlot;
+        let shared = gateway();
+        let mut def = equip_definition(1, ItemSlot::Kinetic);
+        def.tier = None;
+        let mut repo = CompositeRepository::with_definitions(vec![def]);
+        repo.commit(projection(
+            NOW,
+            vec![warlock_character()],
+            vec![instance("candidate", 1, ItemLocation::Vault)],
+        ));
+        let mut svc = service(&shared, repo);
+        assert_eq!(
+            svc.plan_equip(&equip_request(), LIFETIME, TTL, NOW),
+            Err(MutationError::UnknownRarity)
+        );
+        assert_eq!(svc.plan_ids().calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+    }
+
+    #[test]
+    fn equip_refuses_unknown_neighbor_rarity_only_when_safety_depends_on_it() {
+        use destiny_core::domain::ItemSlot;
+        for (candidate_tier, neighbor_slot, missing_definition, expected) in [
+            (
+                "Exotic",
+                ItemSlot::Energy,
+                false,
+                Some(MutationError::UnknownRarity),
+            ),
+            (
+                "Exotic",
+                ItemSlot::Energy,
+                true,
+                Some(MutationError::UnknownRarity),
+            ),
+            ("Exotic", ItemSlot::Kinetic, false, None),
+            ("Exotic", ItemSlot::Helmet, false, None),
+            ("Legendary", ItemSlot::Energy, false, None),
+        ] {
+            let shared = gateway();
+            let mut candidate = equip_definition(1, ItemSlot::Kinetic);
+            candidate.tier = Some(candidate_tier.into());
+            let mut neighbor = equip_definition(2, neighbor_slot);
+            neighbor.tier = None;
+            let definitions = if missing_definition {
+                vec![candidate]
+            } else {
+                vec![candidate, neighbor]
+            };
+            let mut repo = CompositeRepository::with_definitions(definitions);
+            let mut other = instance("neighbor", 2, warlock());
+            other.equipped = true;
+            repo.commit(projection(
+                NOW,
+                vec![warlock_character()],
+                vec![instance("candidate", 1, ItemLocation::Vault), other],
+            ));
+            let mut svc = service(&shared, repo);
+            let result = svc.plan_equip(&equip_request(), LIFETIME, TTL, NOW);
+            assert_eq!(result.err(), expected);
+            assert_eq!(shared.borrow().inventory_calls(), 0);
+        }
+    }
+
+    #[test]
+    fn equip_preflight_rechecks_changed_rarity_definitions_and_class_restrictions() {
+        use destiny_core::domain::{ClassType, ItemSlot};
+        for change in 0..4 {
+            let shared = gateway();
+            let candidate = equip_definition(1, ItemSlot::Kinetic);
+            let mut neighbor = equip_definition(2, ItemSlot::Energy);
+            neighbor.tier = Some("Legendary".into());
+            let mut repo =
+                CompositeRepository::with_definitions(vec![candidate.clone(), neighbor.clone()]);
+            let mut other = instance("neighbor", 2, warlock());
+            other.equipped = true;
+            let input = projection(
+                NOW,
+                vec![character("warlock", None, Some("Warlock"))],
+                vec![instance("candidate", 1, ItemLocation::Vault), other],
+            );
+            repo.commit(input.clone());
+            let mut svc = service(&shared, repo);
+            let plan = svc
+                .plan_equip(&equip_request(), LIFETIME, TTL, NOW)
+                .unwrap();
+            let mut candidate = candidate;
+            let definitions = match change {
+                0 => {
+                    candidate.tier = None;
+                    vec![candidate, neighbor]
+                }
+                1 => {
+                    neighbor.tier = None;
+                    vec![candidate, neighbor]
+                }
+                2 => vec![candidate],
+                _ => {
+                    candidate.class_type = Some(ClassType::Titan);
+                    vec![candidate, neighbor]
+                }
+            };
+            svc.repository_mut().catalog = crate::test_support::InMemoryDefinitionRepository::new(
+                DefinitionVersion::new(DEFINITION_VERSION),
+                definitions,
+            );
+            shared.borrow_mut().queue_membership(Ok(membership()));
+            shared.borrow_mut().queue_inventory(Ok(input));
+            assert_eq!(
+                svc.preflight_equip(&equip_request(), &plan, TTL, NOW),
+                Err(if change == 3 {
+                    MutationError::WrongClass
+                } else {
+                    MutationError::UnknownRarity
+                })
+            );
+            assert_eq!(shared.borrow().inventory_calls(), 1);
+        }
+    }
+
+    #[test]
+    fn equip_exotic_ignores_realistic_nonequipment_neighbors() {
+        use destiny_core::domain::ItemSlot;
+        for exotic_neighbor in [false, true] {
+            let shared = gateway();
+            let mut weapon = equip_definition(2, ItemSlot::Energy);
+            weapon.tier = Some(
+                if exotic_neighbor {
+                    "Exotic"
+                } else {
+                    "Legendary"
+                }
+                .into(),
+            );
+            let mut definitions = vec![equip_definition(1, ItemSlot::Kinetic), weapon];
+            let mut items = vec![instance("candidate", 1, ItemLocation::Vault)];
+            for (id, hash, name) in [
+                ("weapon", 2, "Weapon"),
+                ("subclass", 3, "Subclass"),
+                ("ghost", 4, "Ghost"),
+                ("emblem", 5, "Emblem"),
+            ] {
+                if hash != 2 {
+                    let mut def = definition(hash, name);
+                    def.slot = Some(ItemSlot::Other);
+                    definitions.push(def);
+                }
+                let mut item = instance(id, hash, warlock());
+                item.equipped = true;
+                items.push(item);
+            }
+            let mut repo = CompositeRepository::with_definitions(definitions);
+            let input = projection(NOW, vec![warlock_character()], items);
+            repo.commit(input.clone());
+            let mut svc = service(&shared, repo);
+            let result = svc.plan_equip(&equip_request(), LIFETIME, TTL, NOW);
+            if exotic_neighbor {
+                assert_eq!(result, Err(MutationError::ExoticConflict));
+            } else {
+                let plan = result.unwrap();
+                shared.borrow_mut().queue_membership(Ok(membership()));
+                shared.borrow_mut().queue_inventory(Ok(input));
+                assert_eq!(
+                    svc.preflight_equip(&equip_request(), &plan, TTL, NOW),
+                    Ok(destiny_core::EquipPreflight::Ready)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn equip_unknown_neighbor_slot_requires_a_nonequipment_bucket() {
+        use destiny_core::domain::ItemSlot;
+        for slot in [None, Some(ItemSlot::Unknown)] {
+            for (bucket, expected) in [
+                (Some(destiny_core::SUBCLASS_BUCKET_HASH), None),
+                (None, Some(MutationError::UnknownNeighborSlot)),
+                (
+                    Some(destiny_core::BucketHash::new(1498876634)),
+                    Some(MutationError::UnknownNeighborSlot),
+                ),
+            ] {
+                let shared = gateway();
+                let mut neighbor = definition(2, "Unknown neighbor");
+                neighbor.slot = slot;
+                neighbor.bucket_hash = bucket;
+                let mut repo = CompositeRepository::with_definitions(vec![
+                    equip_definition(1, ItemSlot::Kinetic),
+                    neighbor,
+                ]);
+                let mut other = instance("neighbor", 2, warlock());
+                other.equipped = true;
+                repo.commit(projection(
+                    NOW,
+                    vec![warlock_character()],
+                    vec![instance("candidate", 1, ItemLocation::Vault), other],
+                ));
+                assert_eq!(
+                    service(&shared, repo)
+                        .plan_equip(&equip_request(), LIFETIME, TTL, NOW)
+                        .err(),
+                    expected
+                );
+            }
+        }
+    }
 
     fn gateway() -> Rc<RefCell<QueuedProfileGateway>> {
         Rc::new(RefCell::new(QueuedProfileGateway::new()))
@@ -1670,7 +2628,9 @@ mod tests {
         );
         assert_eq!(plan.step_count(), 1);
         assert_eq!(plan.steps()[0].ordinal, 1);
-        let StepAction::Transfer { from, to } = &plan.steps()[0].action;
+        let StepAction::Transfer { from, to } = &plan.steps()[0].action else {
+            panic!("expected transfer");
+        };
         assert_eq!(from, &ItemLocation::Vault);
         assert_eq!(to, &warlock());
         assert_eq!(plan.effects().item, item_id("item-1"));
@@ -1864,7 +2824,9 @@ mod tests {
         assert_eq!(plan.source, warlock());
         assert_eq!(plan.destination, ItemLocation::Vault);
         assert_eq!(plan.step_count(), 1);
-        let StepAction::Transfer { from, to } = &plan.steps()[0].action;
+        let StepAction::Transfer { from, to } = &plan.steps()[0].action else {
+            panic!("expected transfer");
+        };
         assert_eq!(from, &warlock());
         assert_eq!(to, &ItemLocation::Vault);
         assert!(!plan.effects().via_vault);
@@ -1966,10 +2928,14 @@ mod tests {
             .expect("plan");
 
         assert_eq!(plan.step_count(), 2);
-        let StepAction::Transfer { from, to } = &plan.steps()[0].action;
+        let StepAction::Transfer { from, to } = &plan.steps()[0].action else {
+            panic!("expected transfer");
+        };
         assert_eq!(from, &warlock());
         assert_eq!(to, &ItemLocation::Vault);
-        let StepAction::Transfer { from, to } = &plan.steps()[1].action;
+        let StepAction::Transfer { from, to } = &plan.steps()[1].action else {
+            panic!("expected transfer");
+        };
         assert_eq!(from, &ItemLocation::Vault);
         assert_eq!(to, &hunter());
         assert!(plan.effects().via_vault);

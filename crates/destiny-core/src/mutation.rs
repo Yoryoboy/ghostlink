@@ -86,6 +86,9 @@ use crate::{
 /// keeps the result finite and reviewable.
 pub const MAX_MOVE_STEPS: usize = 2;
 
+/// Two Vault-mediated transfers followed by one equip action.
+pub const MAX_MUTATION_STEPS: usize = 3;
+
 /// Maximum accepted plan lifetime in seconds.
 ///
 /// A plan is a short-lived safety and state-binding object, never an approval
@@ -305,6 +308,8 @@ pub enum StepAction {
         from: ItemLocation,
         to: ItemLocation,
     },
+    /// Equip the plan's concrete item on one character.
+    Equip { character: CharacterId },
 }
 
 /// One ordered action in a mutation plan.
@@ -337,6 +342,11 @@ impl std::fmt::Debug for MutationStep {
                 .field("ordinal", &self.ordinal)
                 .field("from", from)
                 .field("to", to)
+                .finish(),
+            StepAction::Equip { character } => formatter
+                .debug_struct("EquipStep")
+                .field("ordinal", &self.ordinal)
+                .field("character", character)
                 .finish(),
         }
     }
@@ -415,6 +425,129 @@ pub struct MovePlan {
     expires_at: Timestamp,
     steps: Vec<MutationStep>,
     effects: MoveEffects,
+    requires_equipped: bool,
+}
+
+/// Semantic equip request; selectors and explicit intent use the move rules.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EquipRequest {
+    pub membership: MembershipId,
+    pub item: ItemSelector,
+    pub destination: DestinationSelector,
+    pub intent: MoveIntentAuthorization,
+}
+
+impl EquipRequest {
+    /// Reuses the move pipeline's selector and authorization contracts.
+    pub fn as_move_request(&self) -> MoveRequest {
+        MoveRequest {
+            membership: self.membership.clone(),
+            item: self.item.clone(),
+            destination: self.destination.clone(),
+            intent: self.intent,
+        }
+    }
+}
+
+/// Fresh equip preflight result. Neither variant authorizes remote execution.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EquipPreflight {
+    Ready,
+    AlreadySatisfied,
+}
+
+/// Revision-bound equip intent, with a location AND equipped postcondition.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EquipPlan {
+    plan: MovePlan,
+    already_satisfied: bool,
+}
+
+impl EquipPlan {
+    /// Builds transfers using the move routing rule, then appends Equip.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        plan_id: PlanId,
+        membership: MembershipId,
+        item: ItemInstanceId,
+        source: ItemLocation,
+        character: CharacterId,
+        equipped: bool,
+        revision: SyncRevision,
+        created_at: Timestamp,
+        expires_at: Timestamp,
+    ) -> Result<Self, MovePlanValidation> {
+        if created_at >= expires_at {
+            return Err(MovePlanValidation::InvalidTimestamps);
+        }
+        if expires_at.seconds() - created_at.seconds() > MAX_PLAN_LIFETIME_SECONDS {
+            return Err(MovePlanValidation::LifetimeExceeded);
+        }
+        if !supported_location(&source) {
+            return Err(MovePlanValidation::UnsupportedLocation);
+        }
+        let destination = ItemLocation::Character(character.clone());
+        let already_satisfied = source == destination && equipped;
+        let mut steps = if source == destination {
+            Vec::new()
+        } else {
+            plan_steps(&source, &destination)?
+        };
+        let via_vault = vault_mediated(&steps);
+        if !already_satisfied {
+            steps.push(MutationStep {
+                ordinal: (steps.len() + 1) as u8,
+                action: StepAction::Equip { character },
+            });
+        }
+        debug_assert!(steps.len() <= MAX_MUTATION_STEPS);
+        let effects = MoveEffects {
+            item: item.clone(),
+            source: source.clone(),
+            destination: destination.clone(),
+            via_vault,
+        };
+        Ok(Self {
+            plan: MovePlan {
+                plan_id,
+                membership,
+                item,
+                source,
+                destination,
+                revision,
+                created_at,
+                expires_at,
+                steps,
+                effects,
+                requires_equipped: true,
+            },
+            already_satisfied,
+        })
+    }
+
+    pub fn mutation_plan(&self) -> &MovePlan {
+        &self.plan
+    }
+
+    pub fn steps(&self) -> &[MutationStep] {
+        self.plan.steps()
+    }
+
+    pub fn via_vault(&self) -> bool {
+        self.plan.effects().via_vault
+    }
+
+    /// Whether the planning observation already met both postconditions.
+    pub fn is_already_satisfied(&self) -> bool {
+        self.already_satisfied
+    }
+
+    /// Evaluates both postconditions on a fresh concrete instance.
+    pub fn already_satisfied(&self, item: &crate::domain::ItemInstance) -> bool {
+        item.instance_id == self.plan.item
+            && item.location == self.plan.destination
+            && item.equipped
+    }
 }
 
 /// Compatibility alias retained for callers that used the original name.
@@ -461,7 +594,7 @@ impl MovePlan {
             item: item.clone(),
             source: source.clone(),
             destination: destination.clone(),
-            via_vault: steps.len() > 1,
+            via_vault: vault_mediated(&steps),
         };
         Ok(Self {
             plan_id,
@@ -474,6 +607,7 @@ impl MovePlan {
             expires_at,
             steps,
             effects,
+            requires_equipped: false,
         })
     }
 
@@ -485,7 +619,7 @@ impl MovePlan {
         self.expires_at
     }
 
-    /// The ordered mutation steps, bounded by [`MAX_MOVE_STEPS`].
+    /// The ordered mutation steps, bounded by [`MAX_MUTATION_STEPS`].
     pub fn steps(&self) -> &[MutationStep] {
         &self.steps
     }
@@ -513,7 +647,12 @@ impl MovePlan {
     /// step may be issued and no [`ExecutionTicket`] may be spent. This predicate
     /// is a pure read, so it can never itself trigger a provider call.
     pub fn already_satisfied(&self, location: &ItemLocation) -> bool {
-        location == &self.destination
+        !self.requires_equipped && location == &self.destination
+    }
+
+    /// Equip plans require equipped-state verification, not location alone.
+    pub fn requires_equipped(&self) -> bool {
+        self.requires_equipped
     }
 
     /// Re-checks every binding assumption against a preflight snapshot.
@@ -560,6 +699,14 @@ impl MovePlan {
         }
         PlanBinding::Valid
     }
+}
+
+fn vault_mediated(steps: &[MutationStep]) -> bool {
+    steps
+        .iter()
+        .filter(|step| matches!(step.action, StepAction::Transfer { .. }))
+        .count()
+        > 1
 }
 
 fn supported_location(location: &ItemLocation) -> bool {
@@ -717,7 +864,7 @@ impl StepOutcome {
 ///
 /// Evidence is built from exactly one [`MovePlan`], so its step list is the
 /// plan's ordered steps and nothing else, and it is bounded by
-/// [`MAX_MOVE_STEPS`]. [`ExecutionEvidence::record`] advances the record one step
+/// [`MAX_MUTATION_STEPS`]. [`ExecutionEvidence::record`] advances the record one step
 /// at a time, in plan order and only while every attempted step so far applied,
 /// which is how "issue only ordered plan steps" and "stop at the first
 /// non-completing step" are enforced by the record itself rather than by hopeful
@@ -744,7 +891,7 @@ impl ExecutionEvidence {
                 outcome: StepOutcome::Unattempted,
             })
             .collect();
-        debug_assert!(steps.len() <= MAX_MOVE_STEPS);
+        debug_assert!(steps.len() <= MAX_MUTATION_STEPS);
         Self {
             plan_id: plan.plan_id.clone(),
             item: plan.item.clone(),
@@ -978,7 +1125,7 @@ impl ExecutionTicket {
         self.revision
     }
 
-    /// The ordered steps this ticket authorizes, bounded by [`MAX_MOVE_STEPS`].
+    /// The ordered steps this ticket authorizes, bounded by [`MAX_MUTATION_STEPS`].
     pub fn steps(&self) -> &[MutationStep] {
         &self.steps
     }
@@ -1262,7 +1409,9 @@ mod tests {
             let steps = plan_steps(&source, &destination).unwrap();
             assert_eq!(steps.len(), 1, "{source:?} -> {destination:?} is direct");
             assert_eq!(steps[0].ordinal, 1);
-            let StepAction::Transfer { from, to } = &steps[0].action;
+            let StepAction::Transfer { from, to } = &steps[0].action else {
+                panic!("expected transfer");
+            };
             assert_eq!(from, &source);
             assert_eq!(to, &destination);
         }
@@ -1290,6 +1439,7 @@ mod tests {
                     StepAction::Transfer { from, to } => {
                         *from == ItemLocation::Vault || *to == ItemLocation::Vault
                     }
+                    StepAction::Equip { .. } => false,
                 })
                 .count(),
             2
@@ -1349,9 +1499,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mediated.step_count(), MAX_MOVE_STEPS);
-        let StepAction::Transfer { to, .. } = &mediated.steps()[0].action;
+        let StepAction::Transfer { to, .. } = &mediated.steps()[0].action else {
+            panic!("expected transfer");
+        };
         assert_eq!(to, &ItemLocation::Vault);
-        let StepAction::Transfer { from, .. } = &mediated.steps()[1].action;
+        let StepAction::Transfer { from, .. } = &mediated.steps()[1].action else {
+            panic!("expected transfer");
+        };
         assert_eq!(from, &ItemLocation::Vault);
         assert!(mediated.effects().is_vault_mediated());
         assert!(mediated.step_count() <= MAX_MOVE_STEPS);
@@ -1722,10 +1876,14 @@ mod tests {
 
         let mediated = ExecutionEvidence::for_plan(&vault_mediated_plan());
         assert_eq!(mediated.steps().len(), MAX_MOVE_STEPS);
-        let StepAction::Transfer { from, to } = &mediated.steps()[0].step.action;
+        let StepAction::Transfer { from, to } = &mediated.steps()[0].step.action else {
+            panic!("expected transfer");
+        };
         assert_eq!(from, &ItemLocation::Character(CharacterId::new("warlock")));
         assert_eq!(to, &ItemLocation::Vault);
-        let StepAction::Transfer { to, .. } = &mediated.steps()[1].step.action;
+        let StepAction::Transfer { to, .. } = &mediated.steps()[1].step.action else {
+            panic!("expected transfer");
+        };
         assert_eq!(to, &ItemLocation::Character(CharacterId::new("hunter")));
         assert_eq!(mediated.next_ordinal(), Some(1));
         assert_eq!(mediated.unattempted_count(), MAX_MOVE_STEPS);

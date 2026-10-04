@@ -789,20 +789,7 @@ fn decode_record(
             Some(7) => Some(destiny_core::domain::DamageType::Strand),
             _ => None,
         },
-        slot: bucket_hash.and_then(|bucket| {
-            use destiny_core::domain::ItemSlot;
-            match bucket.value() {
-                1498876634 => Some(ItemSlot::Kinetic),
-                2465295065 => Some(ItemSlot::Energy),
-                953998645 => Some(ItemSlot::Power),
-                3448274439 => Some(ItemSlot::Helmet),
-                3551918588 => Some(ItemSlot::Gauntlets),
-                14239492 => Some(ItemSlot::Chest),
-                20886954 => Some(ItemSlot::Legs),
-                1585787867 => Some(ItemSlot::ClassItem),
-                _ => None,
-            }
-        }),
+        slot: bucket_hash.and_then(destiny_core::domain::ItemSlot::from_equipment_bucket),
         class_type: match record.class_type.into_option() {
             Some(0) => Some(destiny_core::domain::ClassType::Titan),
             Some(1) => Some(destiny_core::domain::ClassType::Hunter),

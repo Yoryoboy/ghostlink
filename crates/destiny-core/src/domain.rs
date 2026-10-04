@@ -165,6 +165,24 @@ pub enum ItemSlot {
     Unknown,
 }
 
+impl ItemSlot {
+    /// Maps the eight weapon/armor inventory buckets to their equipment slots.
+    /// Other buckets are outside the equipment contract and return `None`.
+    pub fn from_equipment_bucket(bucket: BucketHash) -> Option<Self> {
+        match bucket.value() {
+            1498876634 => Some(Self::Kinetic),
+            2465295065 => Some(Self::Energy),
+            953998645 => Some(Self::Power),
+            3448274439 => Some(Self::Helmet),
+            3551918588 => Some(Self::Gauntlets),
+            14239492 => Some(Self::Chest),
+            20886954 => Some(Self::Legs),
+            1585787867 => Some(Self::ClassItem),
+            _ => None,
+        }
+    }
+}
+
 /// Class restriction, with unrestricted and unknown kept distinct.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClassType {
@@ -722,6 +740,30 @@ pub struct InventorySnapshot {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn equipment_bucket_mapping_covers_all_slots_and_excludes_subclass() {
+        use super::{BucketHash, ItemSlot};
+        for (hash, slot) in [
+            (1498876634, ItemSlot::Kinetic),
+            (2465295065, ItemSlot::Energy),
+            (953998645, ItemSlot::Power),
+            (3448274439, ItemSlot::Helmet),
+            (3551918588, ItemSlot::Gauntlets),
+            (14239492, ItemSlot::Chest),
+            (20886954, ItemSlot::Legs),
+            (1585787867, ItemSlot::ClassItem),
+        ] {
+            assert_eq!(
+                ItemSlot::from_equipment_bucket(BucketHash::new(hash)),
+                Some(slot)
+            );
+        }
+        assert_eq!(
+            ItemSlot::from_equipment_bucket(crate::SUBCLASS_BUCKET_HASH),
+            None
+        );
+    }
+
     #[test]
     fn subclass_element_parser_and_categories() {
         use super::{SubclassElement as E, SubclassPlugKind as K, parse_subclass_category};

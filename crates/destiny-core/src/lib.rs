@@ -42,12 +42,12 @@ pub use ids::{
     MembershipId, MembershipType, PerkHash, PlanId, SyncRevision,
 };
 pub use mutation::{
-    DestinationSelector, ExecutionEvidence, ExecutionTicket, IntentAuthorizationOutcome,
-    ItemSelector, MAX_MOVE_STEPS, MAX_PLAN_LIFETIME_SECONDS, MoveEffects, MoveIntent,
-    MoveIntentAuthorization, MovePlan, MovePlanValidation, MoveRequest, MutationPolicyInput,
-    MutationPolicyOutcome, MutationStep, PlanBinding, PlanLifetime, PlanLifetimeValidation,
-    StepAction, StepOutcome, StepRecord, character_destination, destination_matches,
-    evaluate_mutation, plan_steps, resolve_destination,
+    DestinationSelector, EquipPlan, EquipPreflight, EquipRequest, ExecutionEvidence,
+    ExecutionTicket, IntentAuthorizationOutcome, ItemSelector, MAX_MOVE_STEPS, MAX_MUTATION_STEPS,
+    MAX_PLAN_LIFETIME_SECONDS, MoveEffects, MoveIntent, MoveIntentAuthorization, MovePlan,
+    MovePlanValidation, MoveRequest, MutationPolicyInput, MutationPolicyOutcome, MutationStep,
+    PlanBinding, PlanLifetime, PlanLifetimeValidation, StepAction, StepOutcome, StepRecord,
+    character_destination, destination_matches, evaluate_mutation, plan_steps, resolve_destination,
 };
 pub use ports::{
     AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,
