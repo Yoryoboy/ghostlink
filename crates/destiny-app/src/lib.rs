@@ -34,8 +34,8 @@ pub mod test_support;
 
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
 pub use config::{
-    LoginCallbackUri, LoginRuntimeConfig, MAX_READ_FRESHNESS_TTL_SECONDS, ReadApiKey,
-    ReadRuntimeConfig, RefreshClientConfig,
+    ClientAuthMode, LoginCallbackUri, LoginRuntimeConfig, MAX_READ_FRESHNESS_TTL_SECONDS,
+    ReadApiKey, ReadRuntimeConfig, RefreshClientConfig,
 };
 // Additive provider-neutral re-exports for presentation crates.
 //

@@ -5,7 +5,8 @@ Ghostlink reads its configuration itself; see [the README](../README.md) for a q
 Configuration is a Bungie public-client API key, public OAuth client ID,
 custom-scheme callback URI (`ghostlink://oauth/callback`), and a separately
 configured registered callback URI. The two callback values must match exactly,
-including case. An optional `BUNGIE_CLIENT_SECRET` selects confidential mode.
+including case. Optional `BUNGIE_CLIENT_SECRET` and
+`GHOSTLINK_TOKEN_BROKER_URL` select the OAuth mode described below.
 
 The shared read composition roots (the CLI and the MCP server) additionally read
 the database path, Manifest definition version, and a positive freshness TTL:
@@ -47,21 +48,38 @@ $EDITOR ~/.config/ghostlink/config.env
 
 Do not commit credentials. Startup diagnostics are typed and sanitized.
 
-## Confidential and public mode
+## OAuth modes
 
-Without `BUNGIE_CLIENT_SECRET`, Ghostlink uses public mode and requires browser
-reauthorization when the access token expires. For persistent sessions, edit
-your app in the Bungie Developer Portal, change its OAuth client type to
-Confidential, and save the change. Put the issued `BUNGIE_CLIENT_SECRET` only in
-the `0600` per-user configuration file above, never in shell exports or agent
-sessions. Keep `BUNGIE_PUBLIC_CLIENT_ID` unchanged: when a secret is configured,
-that client ID is required for reads as well as login. A present but empty or
-invalid secret fails configuration validation; remove the key to use public mode.
+Selection is identical for login, CLI reads, and MCP, in this order:
 
-Confidential mode enables refresh tokens lasting approximately 90 days, stored
-alongside the access credential in the OS keyring rather than in the config
-file. Login and automatic-refresh wiring follow in the persistent-session
-implementation; configuring the secret alone does not yet enable refresh.
+| Configuration | Mode | Token exchange and refresh |
+| --- | --- | --- |
+| `BUNGIE_CLIENT_SECRET` present | Direct confidential (development/self-hosting) | Bungie, with Basic authentication |
+| No secret, `GHOSTLINK_TOKEN_BROKER_URL` present | Broker | Trusted broker, without client authentication |
+| Neither key present | Public | Bungie code exchange only; no refresh |
+
+Broker mode keeps the client secret on the broker, never in Ghostlink. The
+stateless broker handles only authorization-code and refresh grants, not Destiny
+API traffic. Configure its **base URL**, for example
+`GHOSTLINK_TOKEN_BROKER_URL=https://YOUR_BROKER.workers.dev`; Ghostlink posts to
+`https://YOUR_BROKER.workers.dev/token`. A trailing slash is optional; a path
+prefix is treated as a directory and preserved. The URL must be absolute HTTPS,
+no longer than 2048 bytes, with no userinfo, query, fragment, control characters,
+or surrounding whitespace. Only use a trusted broker: it receives codes and
+refresh tokens. Its registered client and callback must match your login config.
+
+For direct confidential mode, change your Bungie application's OAuth client type
+to Confidential and store the issued secret only in the `0600` per-user file,
+never in shell exports or agent sessions. A secret takes precedence over a
+broker URL. Present but empty or invalid values fail sanitized configuration
+validation, including an invalid broker URL when a secret is present.
+
+Both renewable modes require `BUNGIE_PUBLIC_CLIENT_ID` for reads as well as
+login. Login stores refresh tokens (approximately 90 days) alongside the access
+credential in the OS keyring. CLI and MCP automatically refresh expiring access
+credentials and persist rotated refresh tokens. Login reports renewable status
+when the exchange returns a refresh grant. Public mode remains unchanged and
+requires browser reauthorization when its access token expires.
 
 
 ## Runtime configuration and authorization
@@ -75,7 +93,7 @@ therefore never reads configuration, a credential, a database, a clock, or the
 network.
 
 The read runtime always requires these variables (see `config.example.env`);
-confidential mode additionally requires the client ID paired with the secret:
+confidential and broker modes additionally require the client ID:
 
 | Variable | Meaning |
 | --- | --- |

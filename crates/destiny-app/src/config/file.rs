@@ -289,6 +289,47 @@ mod tests {
     }
 
     #[test]
+    fn broker_uses_file_fallback_and_environment_precedence() {
+        let fixture = Fixture::new(b"BUNGIE_API_KEY=file-key\nDESTINY_DATABASE_PATH=/tmp/synthetic.db\nDESTINY_DEFINITION_VERSION=v1\nDESTINY_FRESHNESS_TTL_SECONDS=900\nBUNGIE_PUBLIC_CLIENT_ID=file-client\nGHOSTLINK_TOKEN_BROKER_URL=https://file.test/\nBUNGIE_CALLBACK_URI=ghostlink://oauth/callback\nBUNGIE_REGISTERED_CALLBACK_URI=ghostlink://oauth/callback\n");
+        for override_url in [None, Some("https://env.test/")] {
+            let lookup = |name: &str| {
+                if name == "GHOSTLINK_TOKEN_BROKER_URL" {
+                    override_url
+                        .map(OsString::from)
+                        .or_else(|| fixture.env(name))
+                } else {
+                    fixture.env(name)
+                }
+            };
+            let read =
+                super::super::read_env_values(|names| exact_source_values(names, lookup)).unwrap();
+            let read = ReadRuntimeConfig::from_values(&read).unwrap();
+            let login = exact_source_values(
+                &[
+                    "BUNGIE_PUBLIC_CLIENT_ID",
+                    "BUNGIE_CALLBACK_URI",
+                    "BUNGIE_REGISTERED_CALLBACK_URI",
+                    "GHOSTLINK_TOKEN_BROKER_URL",
+                ],
+                lookup,
+            )
+            .unwrap();
+            let login = LoginRuntimeConfig::from_values(&login).unwrap();
+            for mode in [
+                login.auth_mode(),
+                read.refresh_client().unwrap().auth_mode(),
+            ] {
+                match mode {
+                    super::super::ClientAuthMode::Broker(base) => {
+                        assert_eq!(base, override_url.unwrap_or("https://file.test/"))
+                    }
+                    _ => panic!("expected broker mode"),
+                }
+            }
+        }
+    }
+
+    #[test]
     fn confidential_secret_uses_file_fallback_and_environment_precedence() {
         let fixture = Fixture::new(b"BUNGIE_API_KEY=file-key\nDESTINY_DATABASE_PATH=/tmp/synthetic.db\nDESTINY_DEFINITION_VERSION=v1\nDESTINY_FRESHNESS_TTL_SECONDS=900\nBUNGIE_PUBLIC_CLIENT_ID=file-client\nBUNGIE_CLIENT_SECRET=file-secret-sentinel\nBUNGIE_CALLBACK_URI=ghostlink://oauth/callback\nBUNGIE_REGISTERED_CALLBACK_URI=ghostlink://oauth/callback\n");
         for override_secret in [None, Some("env-secret-sentinel")] {
@@ -318,7 +359,11 @@ mod tests {
             let expected = override_secret.unwrap_or("file-secret-sentinel").as_bytes();
             assert_eq!(login.client_secret().unwrap().as_bytes(), expected);
             assert_eq!(
-                read.refresh_client().unwrap().client_secret().as_bytes(),
+                read.refresh_client()
+                    .unwrap()
+                    .client_secret()
+                    .unwrap()
+                    .as_bytes(),
                 expected
             );
             assert!(!format!("{login:?} {read:?}").contains("secret-sentinel"));

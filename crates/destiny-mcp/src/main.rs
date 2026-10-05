@@ -104,17 +104,9 @@ fn compose_server<S: CredentialStore + Send + 'static>(
 ) -> Result<ReadToolServer, AppError> {
     let (profile_source, transfer_source) = gateway_credentials(
         store,
-        config.refresh_client().map(|client| {
-            move || {
-                destiny_adapters::BungieTokenExchange::confidential(
-                    client.client_id(),
-                    "ghostlink://oauth/callback",
-                    client.client_secret().clone(),
-                    destiny_adapters::HttpTokenTransport::new()?,
-                    SystemClock::new(),
-                )
-            }
-        }),
+        config
+            .refresh_client()
+            .map(|client| move || configured_refresher(client)),
         SystemClock::new(),
     )?;
     let policy = config.freshness_policy();
@@ -148,6 +140,35 @@ fn compose_server<S: CredentialStore + Send + 'static>(
         personal_public(config)?,
         SqliteStore::open(config.database_path())?,
     ))
+}
+
+fn configured_refresher(
+    client: &destiny_app::RefreshClientConfig,
+) -> Result<
+    destiny_adapters::BungieTokenExchange<destiny_adapters::HttpTokenTransport, SystemClock>,
+    AppError,
+> {
+    match client.auth_mode() {
+        destiny_app::ClientAuthMode::Confidential(secret) => {
+            destiny_adapters::BungieTokenExchange::confidential(
+                client.client_id(),
+                "ghostlink://oauth/callback",
+                secret.clone(),
+                destiny_adapters::HttpTokenTransport::new()?,
+                SystemClock::new(),
+            )
+        }
+        destiny_app::ClientAuthMode::Broker(base) => {
+            destiny_adapters::BungieTokenExchange::brokered(
+                client.client_id(),
+                "ghostlink://oauth/callback",
+                base,
+                destiny_adapters::HttpTokenTransport::brokered(base)?,
+                SystemClock::new(),
+            )
+        }
+        destiny_app::ClientAuthMode::Public => Err(AppError::configuration()),
+    }
 }
 
 type PersonalPublicGateway = destiny_adapters::manifest::BungieManifestGateway<
@@ -712,6 +733,41 @@ mod tests {
         .unwrap();
         assert!(transfer.transfer(&request).is_err());
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn broker_config_selects_shared_refreshing_gateway_credentials() {
+        let mut values = values("/unreachable/destiny.db");
+        values.insert("BUNGIE_PUBLIC_CLIENT_ID".into(), "123".into());
+        values.insert(
+            "GHOSTLINK_TOKEN_BROKER_URL".into(),
+            "https://broker.test".into(),
+        );
+        let config = ReadRuntimeConfig::from_values(&values).unwrap();
+        let mut store = InMemoryCredentialStore::default();
+        store.save(credential()).unwrap();
+        let (profile, transfer) = super::gateway_credentials(
+            store,
+            config
+                .refresh_client()
+                .map(|client| move || super::configured_refresher(client)),
+            FakeClock::fixed(Timestamp::new(100)),
+        )
+        .unwrap();
+        assert!(matches!(
+            profile,
+            destiny_app::ConfiguredCredentialSource::Refreshing(_)
+        ));
+        assert!(matches!(
+            transfer,
+            destiny_app::ConfiguredCredentialSource::Refreshing(_)
+        ));
+        assert_eq!(
+            compose_server(&config, InMemoryCredentialStore::default())
+                .unwrap_err()
+                .category(),
+            ErrorCategory::AuthorizationRequired
+        );
     }
 
     #[test]

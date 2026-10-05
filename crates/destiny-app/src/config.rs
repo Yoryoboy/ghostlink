@@ -13,6 +13,7 @@ mod file;
 const API_KEY: &str = "BUNGIE_API_KEY";
 const CLIENT_ID: &str = "BUNGIE_PUBLIC_CLIENT_ID";
 const CLIENT_SECRET: &str = "BUNGIE_CLIENT_SECRET";
+const TOKEN_BROKER_URL: &str = "GHOSTLINK_TOKEN_BROKER_URL";
 const CALLBACK_URI: &str = "BUNGIE_CALLBACK_URI";
 const REGISTERED_CALLBACK_URI: &str = "BUNGIE_REGISTERED_CALLBACK_URI";
 
@@ -208,8 +209,9 @@ impl LoginCallbackUri {
 /// Validated configuration for the interactive login composition.
 ///
 /// It carries the client identifier, registered custom-scheme callback URI,
-/// and optional confidential-client secret. Without a secret, login remains a
-/// public-client flow. Login never loads the API key needed by the read runtime.
+/// and the selected client mode. A secret selects direct confidential exchange;
+/// otherwise a broker URL selects renewable broker exchange, else public mode.
+/// Login never loads the API key needed by the read runtime.
 ///
 /// Every field is private and reachable only through a trusted accessor.
 /// [`fmt::Debug`] renders no value, and every parse failure is a sanitized
@@ -218,7 +220,7 @@ impl LoginCallbackUri {
 pub struct LoginRuntimeConfig {
     public_client_id: String,
     callback_uri: LoginCallbackUri,
-    client_secret: Option<ClientSecret>,
+    auth_mode: ClientAuthMode,
 }
 
 impl LoginRuntimeConfig {
@@ -234,6 +236,7 @@ impl LoginRuntimeConfig {
             CALLBACK_URI,
             REGISTERED_CALLBACK_URI,
             CLIENT_SECRET,
+            TOKEN_BROKER_URL,
         ])?;
         Self::from_values(&values)
     }
@@ -253,7 +256,7 @@ impl LoginRuntimeConfig {
         Ok(Self {
             public_client_id,
             callback_uri: callback,
-            client_secret: optional_client_secret(values)?,
+            auth_mode: client_auth_mode(values)?,
         })
     }
 
@@ -268,7 +271,12 @@ impl LoginRuntimeConfig {
 
     /// The confidential-client secret, or `None` for public mode.
     pub fn client_secret(&self) -> Option<&ClientSecret> {
-        self.client_secret.as_ref()
+        self.auth_mode.client_secret()
+    }
+
+    /// The explicitly selected public, confidential, or broker mode.
+    pub fn auth_mode(&self) -> &ClientAuthMode {
+        &self.auth_mode
     }
 
     /// The exact validated custom-scheme callback URI to send to the provider.
@@ -297,7 +305,73 @@ fn optional_client_secret(
         .transpose()
 }
 
-/// Loads only the additional client identifier needed by confidential reads.
+/// Validated OAuth client mode. Values never appear in diagnostics.
+#[derive(Clone, Eq, PartialEq)]
+pub enum ClientAuthMode {
+    Public,
+    Confidential(ClientSecret),
+    /// The validated HTTPS broker base URL (not the token path).
+    Broker(String),
+}
+
+impl ClientAuthMode {
+    pub fn client_secret(&self) -> Option<&ClientSecret> {
+        match self {
+            Self::Confidential(secret) => Some(secret),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Debug for ClientAuthMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        destiny_core::redact::opaque(formatter, "ClientAuthMode")
+    }
+}
+
+fn client_auth_mode(values: &HashMap<String, String>) -> Result<ClientAuthMode, AppError> {
+    // Validate every supplied key, even when a secret takes precedence.
+    let broker = values
+        .get(TOKEN_BROKER_URL)
+        .map(|value| {
+            if value.is_empty()
+                || value.len() > 2048
+                || value.trim() != value
+                || value.chars().any(char::is_control)
+            {
+                return Err(AppError::configuration());
+            }
+            let url = Url::parse(value).map_err(|_| AppError::configuration())?;
+            if url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+                || !has_plain_https_authority(value)
+            {
+                return Err(AppError::configuration());
+            }
+            Ok(value.clone())
+        })
+        .transpose()?;
+    Ok(match (optional_client_secret(values)?, broker) {
+        (Some(secret), _) => ClientAuthMode::Confidential(secret),
+        (None, Some(broker)) => ClientAuthMode::Broker(broker),
+        (None, None) => ClientAuthMode::Public,
+    })
+}
+
+/// Checks the raw text, because the URL parser silently drops empty userinfo
+/// and extra authority slashes (`https:////@host`).
+fn has_plain_https_authority(value: &str) -> bool {
+    value.strip_prefix("https://").is_some_and(|rest| {
+        let authority = rest.split('/').next().unwrap_or_default();
+        !authority.is_empty() && !authority.contains('@')
+    })
+}
+
+/// Loads only the additional client identifier needed by renewable reads.
 fn read_env_values<F>(mut load: F) -> Result<HashMap<String, String>, AppError>
 where
     F: FnMut(&[&str]) -> Result<HashMap<String, String>, AppError>,
@@ -308,8 +382,9 @@ where
         READ_DEFINITION_VERSION,
         READ_FRESHNESS_TTL_SECONDS,
         CLIENT_SECRET,
+        TOKEN_BROKER_URL,
     ])?;
-    if values.contains_key(CLIENT_SECRET) {
+    if values.contains_key(CLIENT_SECRET) || values.contains_key(TOKEN_BROKER_URL) {
         values.extend(load(&[CLIENT_ID])?);
     }
     Ok(values)
@@ -400,11 +475,11 @@ impl fmt::Debug for ReadApiKey {
     }
 }
 
-/// Validated confidential refresh client; never renders its values.
+/// Validated renewable refresh client; never renders its values.
 #[derive(Clone, Eq, PartialEq)]
 pub struct RefreshClientConfig {
     client_id: String,
-    client_secret: ClientSecret,
+    auth_mode: ClientAuthMode,
 }
 
 impl RefreshClientConfig {
@@ -413,9 +488,14 @@ impl RefreshClientConfig {
         &self.client_id
     }
 
-    /// The trusted confidential-client secret accessor.
-    pub fn client_secret(&self) -> &ClientSecret {
-        &self.client_secret
+    /// The trusted confidential-client secret accessor, absent in broker mode.
+    pub fn client_secret(&self) -> Option<&ClientSecret> {
+        self.auth_mode.client_secret()
+    }
+
+    /// The selected renewable mode (confidential or broker).
+    pub fn auth_mode(&self) -> &ClientAuthMode {
+        &self.auth_mode
     }
 }
 
@@ -463,24 +543,25 @@ impl ReadRuntimeConfig {
             read_definition_version(&required(values, READ_DEFINITION_VERSION)?)?;
         let freshness_ttl_seconds =
             read_freshness_ttl(&required(values, READ_FRESHNESS_TTL_SECONDS)?)?;
+        let auth_mode = client_auth_mode(values)?;
+        let refresh_client = match auth_mode {
+            ClientAuthMode::Public => None,
+            auth_mode => Some(RefreshClientConfig {
+                client_id: required(values, CLIENT_ID)?,
+                auth_mode,
+            }),
+        };
         Ok(Self {
             api_key,
             database_path,
             definition_version,
             freshness_ttl_seconds,
-            refresh_client: optional_client_secret(values)?
-                .map(|client_secret| -> Result<_, AppError> {
-                    Ok(RefreshClientConfig {
-                        client_id: required(values, CLIENT_ID)?,
-                        client_secret,
-                    })
-                })
-                .transpose()?,
+            refresh_client,
         })
     }
 
-    /// The confidential refresh client, or `None` for public reads.
-    /// A client identifier is required only when a secret is configured.
+    /// The renewable refresh client, or `None` for public reads.
+    /// A client identifier is required for confidential and broker modes.
     pub fn refresh_client(&self) -> Option<&RefreshClientConfig> {
         self.refresh_client.as_ref()
     }
@@ -794,6 +875,105 @@ mod tests {
     }
 
     #[test]
+    fn auth_mode_precedence_and_broker_lookup() {
+        for secret in [false, true] {
+            let mut login = login_values();
+            login.insert(
+                "GHOSTLINK_TOKEN_BROKER_URL".into(),
+                "https://broker.test".into(),
+            );
+            let mut read = read_runtime_values();
+            read.insert("BUNGIE_PUBLIC_CLIENT_ID".into(), "123".into());
+            read.insert(
+                "GHOSTLINK_TOKEN_BROKER_URL".into(),
+                "https://broker.test".into(),
+            );
+            if secret {
+                login.insert("BUNGIE_CLIENT_SECRET".into(), "secret-sentinel".into());
+                read.insert("BUNGIE_CLIENT_SECRET".into(), "secret-sentinel".into());
+            }
+            let login = LoginRuntimeConfig::from_values(&login).unwrap();
+            let loaded = super::read_env_values(|names| {
+                exact_key_values(names, |name| read.get(name).map(OsString::from))
+            })
+            .unwrap();
+            let read = ReadRuntimeConfig::from_values(&loaded).unwrap();
+            for mode in [
+                login.auth_mode(),
+                read.refresh_client().unwrap().auth_mode(),
+            ] {
+                assert!(if secret {
+                    matches!(mode, super::ClientAuthMode::Confidential(_))
+                } else {
+                    matches!(mode, super::ClientAuthMode::Broker(_))
+                });
+                assert!(!format!("{mode:?}").contains("broker.test"));
+            }
+        }
+        assert!(matches!(
+            LoginRuntimeConfig::from_values(&login_values())
+                .unwrap()
+                .auth_mode(),
+            super::ClientAuthMode::Public
+        ));
+        let values =
+            super::exact_source_values(&["GHOSTLINK_TOKEN_BROKER_URL"], |name| match name {
+                "GHOSTLINK_CONFIG_FILE" => {
+                    Some(OsString::from("/nonexistent/ghostlink-test-config.env"))
+                }
+                "GHOSTLINK_TOKEN_BROKER_URL" => Some(OsString::from("https://env.test")),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(values["GHOSTLINK_TOKEN_BROKER_URL"], "https://env.test");
+    }
+
+    #[test]
+    fn broker_config_enables_refresh_and_rejects_unsafe_urls() {
+        let mut read = read_runtime_values();
+        read.insert("BUNGIE_PUBLIC_CLIENT_ID".into(), "123".into());
+        read.insert(
+            "GHOSTLINK_TOKEN_BROKER_URL".into(),
+            "https://broker.test/".into(),
+        );
+        assert!(
+            ReadRuntimeConfig::from_values(&read)
+                .unwrap()
+                .refresh_client()
+                .is_some()
+        );
+        for invalid in [
+            "http://broker.test",
+            "//broker.test",
+            "https://user@broker.test",
+            "https://@broker.test",
+            "https:////@broker.test",
+            "https:///broker.test",
+            "HTTPS://@broker.test",
+            "https://:pass@broker.test",
+            "https://broker.test?query",
+            "https://broker.test#fragment",
+            "https://broker.test\n",
+            "",
+            &format!("https://broker.test/{}", "x".repeat(2048)),
+        ] {
+            read.insert("GHOSTLINK_TOKEN_BROKER_URL".into(), invalid.into());
+            let mut login = login_values();
+            login.insert("GHOSTLINK_TOKEN_BROKER_URL".into(), invalid.into());
+            for error in [
+                ReadRuntimeConfig::from_values(&read).unwrap_err(),
+                LoginRuntimeConfig::from_values(&login).unwrap_err(),
+            ] {
+                assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+                assert_eq!(
+                    error.to_string(),
+                    "required runtime configuration is missing or invalid"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn optional_secret_preserves_public_login_and_reads() {
         assert!(
             LoginRuntimeConfig::from_values(&login_values())
@@ -828,7 +1008,10 @@ mod tests {
         let read = ReadRuntimeConfig::from_values(&read).unwrap();
         let client = read.refresh_client().unwrap();
         assert_eq!(client.client_id(), "client-id-placeholder");
-        assert_eq!(client.client_secret().as_bytes(), sentinel.as_bytes());
+        assert_eq!(
+            client.client_secret().unwrap().as_bytes(),
+            sentinel.as_bytes()
+        );
         let rendered = format!(
             "{login:?} {read:?} {read} {client:?} {:?}",
             login.client_secret()
@@ -899,6 +1082,7 @@ mod tests {
                             | "DESTINY_DEFINITION_VERSION"
                             | "DESTINY_FRESHNESS_TTL_SECONDS"
                             | "BUNGIE_CLIENT_SECRET"
+                            | "GHOSTLINK_TOKEN_BROKER_URL"
                             | "BUNGIE_PUBLIC_CLIENT_ID"
                     ));
                     source.get(name).map(OsString::from)

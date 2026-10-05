@@ -1191,21 +1191,28 @@ struct LoginAdapters {
     clock: SystemClock,
 }
 
-/// Selects confidential exchange only when configuration supplies a secret.
+/// Selects secret > broker > public exchange from validated configuration.
 fn configured_exchange<T: destiny_adapters::token::TokenTransport, C: destiny_app::Clock>(
     config: &LoginRuntimeConfig,
     transport: T,
     clock: C,
 ) -> Result<BungieTokenExchange<T, C>, AppError> {
-    match config.client_secret() {
-        Some(secret) => BungieTokenExchange::confidential(
+    match config.auth_mode() {
+        destiny_app::ClientAuthMode::Confidential(secret) => BungieTokenExchange::confidential(
             config.public_client_id(),
             config.callback_uri().exact(),
             secret.clone(),
             transport,
             clock,
         ),
-        None => BungieTokenExchange::new(
+        destiny_app::ClientAuthMode::Broker(base) => BungieTokenExchange::brokered(
+            config.public_client_id(),
+            config.callback_uri().exact(),
+            base,
+            transport,
+            clock,
+        ),
+        destiny_app::ClientAuthMode::Public => BungieTokenExchange::new(
             config.public_client_id(),
             config.callback_uri().exact(),
             transport,
@@ -1216,7 +1223,11 @@ fn configured_exchange<T: destiny_adapters::token::TokenTransport, C: destiny_ap
 
 /// Builds the shared adapters over the validated configuration.
 fn login_adapters(config: &LoginRuntimeConfig) -> Result<LoginAdapters, CliError> {
-    let transport = HttpTokenTransport::new().map_err(CliError::from)?;
+    let transport = match config.auth_mode() {
+        destiny_app::ClientAuthMode::Broker(base) => HttpTokenTransport::brokered(base),
+        _ => HttpTokenTransport::new(),
+    }
+    .map_err(CliError::from)?;
     let exchange =
         configured_exchange(config, transport, SystemClock::new()).map_err(CliError::from)?;
     let store = NativeCredentialStore::new().map_err(CliError::from)?;
@@ -1350,6 +1361,63 @@ fn composed_handler_login(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn broker_login_exchange_is_renewable_without_authentication() {
+        use destiny_adapters::token::{
+            TokenHttpResponse, TokenRequest, TokenTransport, TokenTransportError,
+        };
+        use destiny_app::{AuthorizationCode, PublicTokenExchange, Timestamp};
+        struct Broker;
+        impl TokenTransport for Broker {
+            fn send(
+                &mut self,
+                request: &TokenRequest,
+            ) -> Result<TokenHttpResponse, TokenTransportError> {
+                assert_eq!(request.url(), "https://broker.test/token");
+                assert!(request.authorization().is_none());
+                assert_eq!(
+                    request
+                        .fields()
+                        .iter()
+                        .map(|(key, _)| *key)
+                        .collect::<Vec<_>>(),
+                    ["grant_type", "code", "redirect_uri"]
+                );
+                Ok(TokenHttpResponse::new(200, None, Some("application/json".into()), Box::new(std::io::Cursor::new(br#"{"access_token":"access","token_type":"Bearer","expires_in":100,"refresh_token":"refresh","refresh_expires_in":900}"#.to_vec()))))
+            }
+        }
+        let config =
+            destiny_app::LoginRuntimeConfig::from_values(&std::collections::HashMap::from([
+                ("BUNGIE_PUBLIC_CLIENT_ID".into(), "123".into()),
+                (
+                    "BUNGIE_CALLBACK_URI".into(),
+                    "ghostlink://oauth/callback".into(),
+                ),
+                (
+                    "BUNGIE_REGISTERED_CALLBACK_URI".into(),
+                    "ghostlink://oauth/callback".into(),
+                ),
+                (
+                    "GHOSTLINK_TOKEN_BROKER_URL".into(),
+                    "https://broker.test".into(),
+                ),
+            ]))
+            .unwrap();
+        let mut exchange = super::configured_exchange(
+            &config,
+            Broker,
+            destiny_app::test_support::FakeClock::fixed(Timestamp::new(100)),
+        )
+        .unwrap();
+        assert!(
+            exchange
+                .exchange(AuthorizationCode::from_bytes("code"))
+                .unwrap()
+                .refresh_grant()
+                .is_some()
+        );
+    }
+
     #[test]
     fn configured_exchange_selects_basic_auth_without_secret_form_fields() {
         use destiny_adapters::token::{

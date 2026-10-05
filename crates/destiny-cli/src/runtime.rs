@@ -124,20 +124,7 @@ impl ReadFoundations for ProductionFoundations {
 
     fn credential_source(&mut self, config: &ReadRuntimeConfig) -> Result<Self::Source, AppError> {
         let store = NativeCredentialStore::new()?;
-        compose_credentials(
-            config,
-            store,
-            |client| {
-                destiny_adapters::BungieTokenExchange::confidential(
-                    client.client_id(),
-                    "ghostlink://oauth/callback",
-                    client.client_secret().clone(),
-                    destiny_adapters::HttpTokenTransport::new()?,
-                    SystemClock::new(),
-                )
-            },
-            SystemClock::new(),
-        )
+        compose_credentials(config, store, configured_refresher, SystemClock::new())
     }
 
     fn clock(&mut self) -> Result<SystemClock, AppError> {
@@ -150,6 +137,35 @@ impl ReadFoundations for ProductionFoundations {
 
     fn store(&mut self, config: &ReadRuntimeConfig) -> Result<SqliteStore, AppError> {
         SqliteStore::open(config.database_path())
+    }
+}
+
+fn configured_refresher(
+    client: &destiny_app::RefreshClientConfig,
+) -> Result<
+    destiny_adapters::BungieTokenExchange<destiny_adapters::HttpTokenTransport, SystemClock>,
+    AppError,
+> {
+    match client.auth_mode() {
+        destiny_app::ClientAuthMode::Confidential(secret) => {
+            destiny_adapters::BungieTokenExchange::confidential(
+                client.client_id(),
+                "ghostlink://oauth/callback",
+                secret.clone(),
+                destiny_adapters::HttpTokenTransport::new()?,
+                SystemClock::new(),
+            )
+        }
+        destiny_app::ClientAuthMode::Broker(base) => {
+            destiny_adapters::BungieTokenExchange::brokered(
+                client.client_id(),
+                "ghostlink://oauth/callback",
+                base,
+                destiny_adapters::HttpTokenTransport::brokered(base)?,
+                SystemClock::new(),
+            )
+        }
+        destiny_app::ClientAuthMode::Public => Err(AppError::configuration()),
     }
 }
 
@@ -1556,6 +1572,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn broker_composition_selects_refreshing_credentials() {
+        let mut values = HashMap::from([
+            ("BUNGIE_API_KEY".into(), API_KEY_SENTINEL.into()),
+            ("DESTINY_DATABASE_PATH".into(), DATABASE_SENTINEL.into()),
+            ("DESTINY_DEFINITION_VERSION".into(), "manifest-v1".into()),
+            ("DESTINY_FRESHNESS_TTL_SECONDS".into(), "900".into()),
+            ("BUNGIE_PUBLIC_CLIENT_ID".into(), "123".into()),
+        ]);
+        values.insert(
+            "GHOSTLINK_TOKEN_BROKER_URL".into(),
+            "https://broker.test".into(),
+        );
+        let config = ReadRuntimeConfig::from_values(&values).unwrap();
+        let source = super::compose_credentials(
+            &config,
+            FakeCredentialStore {
+                result: Ok(Some(credential())),
+            },
+            super::configured_refresher,
+            destiny_app::test_support::FakeClock::fixed(NOW),
+        )
+        .unwrap();
+        assert!(matches!(
+            source,
+            destiny_app::ConfiguredCredentialSource::Refreshing(_)
+        ));
     }
 
     #[test]
