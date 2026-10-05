@@ -22,9 +22,9 @@ pub mod weekly_profile;
 pub use weekly_profile::*;
 pub mod world_definitions;
 pub use world_definitions::{
-    ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, LoadoutNameDefinition,
-    MilestoneDefinition, ObjectiveDefinition, StatDefinition, WorldDefinitionTable,
-    WorldDefinitionsAcquisition, normalize_stat_name,
+    ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, ItemDescription,
+    LoadoutNameDefinition, MilestoneDefinition, ObjectiveDefinition, StatDefinition,
+    WorldDefinitionTable, WorldDefinitionsAcquisition, normalize_stat_name,
 };
 
 pub use auth::{

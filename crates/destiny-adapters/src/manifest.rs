@@ -299,6 +299,8 @@ struct InventoryRecord {
 #[derive(Deserialize)]
 struct DisplayProperties {
     name: String,
+    #[serde(default)]
+    description: OptionalField<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -744,11 +746,12 @@ fn decode_record(
     if record.redacted.into_option() == Some(true) {
         return Ok(None);
     }
-    let name = record
+    let display = record
         .display_properties
         .into_option()
-        .ok_or_else(provider_validation)?
-        .name;
+        .ok_or_else(provider_validation)?;
+    let name = display.name;
+    let description = display.description.into_option();
     if name.trim().is_empty() {
         return Ok(None);
     }
@@ -773,6 +776,7 @@ fn decode_record(
         )
     });
     Ok(Some(ManifestDefinitionCandidate {
+        description,
         hash: ItemHash::new(i64::from(key_value)),
         bucket_hash,
         name,
@@ -1270,6 +1274,7 @@ where
         }
         decode_version(Some(&Value::String(plan.version.as_str().to_owned())))?;
         Ok(destiny_core::WorldDefinitionsAcquisition {
+            item_descriptions: Vec::new(),
             version: plan.version.clone(),
             milestones: self.load_world_table(&plan.milestone_path, 1000, project_milestone)?,
             activities: self.load_world_table(&plan.activity_path, 50000, project_activity)?,
@@ -1485,6 +1490,16 @@ fn read_bounded_body(
 #[cfg(test)]
 mod tests {
     use super::{decode_inventory_items, decode_manifest_index};
+
+    #[test]
+    fn inventory_descriptions_are_decoded_without_affecting_item_names() {
+        let batch = decode_inventory_items(DefinitionVersion::new("v1"), br#"{"1":{"hash":1,"displayProperties":{"name":"Perk","description":"First\nSecond"}},"2":{"hash":2,"displayProperties":{"name":"Other","description":17}}}"#).unwrap();
+        assert_eq!(
+            batch.definitions[0].description.as_deref(),
+            Some("First\nSecond")
+        );
+        assert_eq!(batch.definitions[1].description, None);
+    }
 
     #[test]
     fn plug_category_decode_is_optional_and_bounded() {

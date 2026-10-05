@@ -303,6 +303,9 @@ mod tests {
         }
     }
     impl WorldDefinitionRepository for Repository {
+        fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
+            self.definitions.lookup_item_description(hash)
+        }
         fn lookup_milestone(&self, hash: u32) -> Result<Option<MilestoneDefinition>, AppError> {
             self.definitions.lookup_milestone(hash)
         }

@@ -130,16 +130,17 @@ where
         acquisition: ManifestAcquisition,
         checked_at: Timestamp,
     ) -> Result<PublicationOutcome, AppError> {
-        let (definitions, skipped_count) = normalize_with_count(acquisition)?;
+        let (definitions, skipped_count, descriptions) = normalize_with_count(acquisition)?;
         let version = definitions.version.clone();
         let definition_count = definitions.definitions.len();
-        let metadata = self
-            .repository
-            .replace_definitions(DefinitionReplacementInput {
+        let metadata = self.repository.replace_definitions_with_descriptions(
+            DefinitionReplacementInput {
                 definitions,
                 checked_at,
                 source: SourceMarker::Manifest,
-            })?;
+            },
+            descriptions,
+        )?;
         Ok(PublicationOutcome {
             version,
             definition_count,
@@ -181,8 +182,9 @@ where
         if acquisition.version != version {
             return Err(invalid());
         }
-        let (definitions, skipped) = normalize_with_count(acquisition)?;
-        let world = self.gateway.load_world_components(&index)?;
+        let (definitions, skipped, descriptions) = normalize_with_count(acquisition)?;
+        let mut world = self.gateway.load_world_components(&index)?;
+        world.item_descriptions = descriptions;
         world.validate_for(&version)?;
         let world_counts = world.counts();
         let world_skipped = world.skipped_counts();
@@ -243,12 +245,16 @@ where
 pub fn normalize_manifest(
     acquisition: ManifestAcquisition,
 ) -> Result<ManifestDefinitions, AppError> {
-    normalize_with_count(acquisition).map(|(definitions, _)| definitions)
+    normalize_with_count(acquisition).map(|(definitions, _, _)| definitions)
 }
 
-fn normalize_with_count(
-    acquisition: ManifestAcquisition,
-) -> Result<(ManifestDefinitions, usize), AppError> {
+type NormalizedManifest = (
+    ManifestDefinitions,
+    usize,
+    Vec<destiny_core::ItemDescription>,
+);
+
+fn normalize_with_count(acquisition: ManifestAcquisition) -> Result<NormalizedManifest, AppError> {
     let mut skipped_count = acquisition.skipped_count;
     let version = normalize_version(acquisition.version.as_str())?;
     let candidates = acquisition.definitions;
@@ -258,6 +264,7 @@ fn normalize_with_count(
 
     let mut seen = HashSet::with_capacity(candidates.len());
     let mut definitions = Vec::with_capacity(candidates.len());
+    let mut descriptions = Vec::new();
     for candidate in candidates {
         if normalize_version(candidate.version.as_str())? != version {
             return Err(invalid());
@@ -269,6 +276,13 @@ fn normalize_with_count(
             skipped_count = skipped_count.checked_add(1).ok_or_else(invalid)?;
             continue;
         };
+        // Tooltip failures must not discard otherwise usable item definitions.
+        // Keep the official text verbatim, including leading whitespace and newlines.
+        if let Some(text) = candidate.description
+            && let Ok(description) = destiny_core::ItemDescription::new(candidate.hash, text)
+        {
+            descriptions.push(description);
+        }
         definitions.push(ItemDefinition {
             hash: candidate.hash,
             bucket_hash: candidate.bucket_hash,
@@ -290,12 +304,14 @@ fn normalize_with_count(
         return Err(invalid());
     }
     definitions.sort_by_key(|definition| definition.hash);
+    descriptions.sort_by_key(destiny_core::ItemDescription::hash);
     Ok((
         ManifestDefinitions {
             version,
             definitions,
         },
         skipped_count,
+        descriptions,
     ))
 }
 
@@ -419,8 +435,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn item_only_acquisition_publishes_descriptions_without_changing_item_identity() {
+        use crate::test_support::{InMemoryDefinitionRepository, QueuedManifestGateway};
+        use destiny_core::ports::WorldDefinitionRepository;
+        let mut gateway = QueuedManifestGateway::new();
+        let mut item = candidate(1, "Perk");
+        item.description = Some("First\nSecond".into());
+        gateway.queue(Ok(acquisition(VERSION, vec![item])));
+        let mut service = ManifestService::new(gateway, InMemoryDefinitionRepository::default());
+        service.acquire_and_publish(Timestamp::new(1)).unwrap();
+        assert_eq!(
+            service
+                .repository()
+                .lookup_item_description(ItemHash::new(1))
+                .unwrap(),
+            Some("First\nSecond".into())
+        );
+    }
+
+    #[test]
+    fn descriptions_preserve_multiline_and_drop_blank_or_invalid_text() {
+        let texts = [
+            Some("  First line\n\nSecond\tline  ".to_owned()),
+            Some(" \n\t".into()),
+            None,
+            Some("x".repeat(2049)),
+            Some("bad\0text".into()),
+            Some("é".repeat(2048)),
+        ];
+        let candidates = texts
+            .into_iter()
+            .enumerate()
+            .map(|(index, description)| {
+                let mut item = candidate(index as i64 + 1, "Item");
+                item.description = description;
+                item
+            })
+            .collect();
+        let (_, _, descriptions) = normalize_with_count(acquisition(VERSION, candidates)).unwrap();
+        assert_eq!(descriptions.len(), 2);
+        assert_eq!(descriptions[0].hash(), ItemHash::new(1));
+        assert_eq!(
+            descriptions[0].description(),
+            "  First line\n\nSecond\tline  "
+        );
+        assert_eq!(descriptions[1].description(), "é".repeat(2048));
+        let mut blank = candidate(8, " ");
+        blank.description = Some("Not retained".into());
+        let (_, _, descriptions) =
+            normalize_with_count(acquisition(VERSION, vec![blank, candidate(9, "Kept")])).unwrap();
+        assert!(descriptions.is_empty());
+    }
+
     fn candidate(hash: i64, name: &str) -> ManifestDefinitionCandidate {
         ManifestDefinitionCandidate {
+            description: None,
             hash: ItemHash::new(hash),
             bucket_hash: None,
             name: name.into(),
@@ -460,6 +530,7 @@ mod tests {
             VERSION,
             vec![
                 ManifestDefinitionCandidate {
+                    description: None,
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(11)),
                     name: "  Ri   FLE  ".into(),
@@ -481,6 +552,7 @@ mod tests {
             vec![
                 candidate(1, "Alpha"),
                 ManifestDefinitionCandidate {
+                    description: None,
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(11)),
                     name: "Ri FLE".into(),
@@ -625,6 +697,7 @@ mod tests {
         // non-definition field were added to the candidate or to the normalized
         // record, this test would stop compiling.
         let ManifestDefinitionCandidate {
+            description: _,
             hash,
             bucket_hash,
             name,
