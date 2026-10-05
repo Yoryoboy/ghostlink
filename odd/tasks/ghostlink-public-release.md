@@ -185,9 +185,26 @@ cargo-dist handling of the libdbus runtime dependency.
   configs touched (fakes, worktree-local fixtures). Parent checks: fmt, clippy,
   diff check, full suite in `unshare -rn`: 1378 passed / 0 failed. Live agent
   and native Windows behavior pending PR-011. Commit evidence: `4b5b44c`.
-- [ ] **PR-008 — First-run setup wizard.** `ghostlink setup` and bare `ghostlink`
-  on first run: multi-select of detected agents, install, then login and manifest
-  sync; non-interactive fallback.
+- [x] **PR-008 — First-run setup wizard.** `ghostlink setup` (always) and
+  bare `ghostlink` (TTY and no marker; otherwise help unchanged). Flow: detected
+  agents only, all preselected, `dialoguer` MultiSelect (space/enter); install
+  mode Select (skill + MCP recommended / MCP only / skill only) through the
+  PR-007 engine with per-agent outcomes and OpenCode manual snippet; Confirm
+  login (existing callback-auto flow, manifest sync after login). Esc/Ctrl+C
+  abort cleanly (non-zero, no marker); Unix prompt-scoped SIGINT no-op handler
+  so dialoguer returns Interrupted and restores the cursor. Marker
+  `<data_dir>/ghostlink/setup-complete` written only on reaching the end.
+  Non-TTY or `--json` `setup` -> typed usage error naming the non-interactive
+  equivalents. Dependency `dialoguer 0.12` (MIT, default features off), fetched
+  by the parent after the writer blocked on offline resolution. Parent review
+  fix: the writer had included `config/paths.rs` twice via `#[path]` (+
+  `clippy::duplicate_mod`); now `config::paths` is `pub(crate)` and reused.
+  Delegated writer, test-first (RED: 3 scripted wizard tests on stub; GREEN);
+  routing/negative tests GREEN-only; real dialoguer cancellation covered in
+  isolated PTY tests (Unix). Parent checks: fmt, clippy, diff check, full suite
+  in `unshare -rn`: 1390 passed / 0 failed; non-TTY bare run prints help and
+  writes nothing. Native Windows console cancellation unverified. Commit
+  evidence: `4ece4e5`.
 
 ### Phase 3 — Distribution
 - [ ] **PR-009 — cargo-dist release.** Package metadata, `ghostlink` +
