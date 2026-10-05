@@ -53,4 +53,6 @@ jobs:
           cargo build --locked -p destiny-cli
 
       - name: Test
-        run: cargo test --locked --workspace --all-features
+        # Run every test binary so one failure does not hide platform failures
+        # in later crates.
+        run: cargo test --locked --workspace --all-features --no-fail-fast
