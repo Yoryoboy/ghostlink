@@ -4,13 +4,13 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 #[derive(Clone, Copy)]
-pub(super) enum Platform {
+pub(crate) enum Platform {
     Unix,
     Windows,
 }
 
 impl Platform {
-    pub(super) const fn current() -> Self {
+    pub(crate) const fn current() -> Self {
         if cfg!(windows) {
             Self::Windows
         } else {
@@ -19,7 +19,7 @@ impl Platform {
     }
 }
 
-pub(super) fn database_path<F>(platform: Platform, mut lookup: F) -> Option<PathBuf>
+pub(crate) fn database_path<F>(platform: Platform, mut lookup: F) -> Option<PathBuf>
 where
     F: FnMut(&str) -> Option<OsString>,
 {

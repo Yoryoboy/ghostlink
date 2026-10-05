@@ -331,6 +331,41 @@ where
         Err(output) => return output,
     };
     let mode = cli.output_mode();
+    if matches!(cli.command, Command::Help | Command::Setup) {
+        use crate::setup::MarkerStore;
+        use std::io::IsTerminal;
+        let explicit = matches!(cli.command, Command::Setup);
+        let tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+        // Check usage before even resolving the data path.
+        if explicit && (!tty || mode == OutputMode::Json) {
+            return crate::setup::usage_error(mode);
+        }
+        struct UnresolvedMarker;
+        impl MarkerStore for UnresolvedMarker {
+            fn complete(&self) -> bool {
+                false
+            }
+            fn write(&mut self) -> Result<(), std::io::Error> {
+                Err(std::io::Error::other("unresolved data path"))
+            }
+        }
+        let path = destiny_app::setup::marker_path();
+        let mut marker: Box<dyn MarkerStore> = match path {
+            Some(path) => Box::new(crate::setup::FileMarker(path)),
+            None => Box::new(UnresolvedMarker),
+        };
+        return crate::setup::entry(explicit, tty, mode, marker.as_mut(), &mut |marker| {
+            crate::setup::production(marker, &mut || {
+                run_binary_with_manifest(
+                    read_factory,
+                    login_factory,
+                    manifest_factory,
+                    present,
+                    ["ghostlink", "login", "--callback", "auto"],
+                )
+            })
+        });
+    }
     if let Command::Equip(arguments) = &cli.command {
         if let Err(error) = arguments.validate() {
             return ProcessOutput::failure(mode, error);

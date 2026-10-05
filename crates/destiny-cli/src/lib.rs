@@ -21,6 +21,7 @@ pub mod login;
 pub mod output;
 pub mod runner;
 pub mod runtime;
+pub mod setup;
 
 pub use command::{
     CallbackArgs, CallbackMode, Cli, CliError, Command, ErrorOutcome, InspectItemArgs, LoginArgs,

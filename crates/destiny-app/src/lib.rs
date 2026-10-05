@@ -21,6 +21,7 @@ pub mod manifest;
 pub mod mutation;
 pub mod queries;
 pub mod session;
+pub mod setup;
 pub mod sync;
 pub mod uri_handler;
 pub mod weekly_personal;

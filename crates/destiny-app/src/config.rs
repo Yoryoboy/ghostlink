@@ -11,7 +11,7 @@ use url::Url;
 use crate::defaults::{CompiledDefaults, OFFICIAL};
 
 mod file;
-mod paths;
+pub(crate) mod paths;
 
 const API_KEY: &str = "BUNGIE_API_KEY";
 const CLIENT_ID: &str = "BUNGIE_PUBLIC_CLIENT_ID";

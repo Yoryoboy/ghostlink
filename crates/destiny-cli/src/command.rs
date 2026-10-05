@@ -34,20 +34,51 @@ pub const SUCCESS_EXIT_CODE: i32 = 0;
 /// this developer documentation out of the product's help output.
 #[derive(Debug, Parser)]
 #[command(
+    override_usage = "ghostlink [OPTIONS] <COMMAND>",
     name = "ghostlink",
     version,
     about = "Destiny profile, inventory, verified item equip, and safe interactive login",
     long_about = "Read Destiny profile, inventory, and item data, equip one item with explicit character intent and verification, or authorize this machine against the provider."
 )]
-pub struct Cli {
+struct ParsedCli {
     /// Emit exactly one bounded JSON object instead of human text.
     #[arg(long, global = true)]
     pub json: bool,
 
     /// The read command to run, or the interactive login command.
     #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// Public parsed command; absent subcommands are represented without breaking
+/// the existing command API used by other presentation crates.
+#[derive(Debug)]
+pub struct Cli {
+    pub json: bool,
     pub command: Command,
 }
+impl clap::CommandFactory for Cli {
+    fn command() -> clap::Command {
+        ParsedCli::command()
+    }
+    fn command_for_update() -> clap::Command {
+        ParsedCli::command_for_update()
+    }
+}
+impl clap::FromArgMatches for Cli {
+    fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        let parsed = ParsedCli::from_arg_matches(matches)?;
+        Ok(Self {
+            json: parsed.json,
+            command: parsed.command.unwrap_or(Command::Help),
+        })
+    }
+    fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+        *self = Self::from_arg_matches(matches)?;
+        Ok(())
+    }
+}
+impl Parser for Cli {}
 
 impl Cli {
     /// The output mode selected by the global `--json` flag.
@@ -119,6 +150,8 @@ impl Cli {
             | Command::Weekly(_)
             | Command::Login(_)
             | Command::Agents(_)
+            | Command::Setup
+            | Command::Help
             | Command::Handler(_)
             | Command::Callback(_) => {
                 Err(CliError::from_category(ErrorCategory::UnsupportedOperation))
@@ -161,6 +194,10 @@ pub struct AgentSelection {
 /// The read commands and the interactive login command this journey exposes.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(skip)]
+    Help,
+    /// Interactively connect agents and optionally sign in to Bungie.
+    Setup,
     /// Inspect or explicitly install integrations for supported AI agents.
     Agents(AgentsArgs),
     /// Equip one item, transferring first when needed, then refresh and verify.

@@ -16,6 +16,7 @@ clap.workspace = true
 destiny-adapters = { path = "../destiny-adapters" }
 destiny-app.workspace = true
 destiny-output.workspace = true
+dialoguer = { version = "0.12.0", default-features = false }
 serde_json.workspace = true
 
 # Terminal echo suppression for the interactive paste login. Echo is a device

@@ -4,6 +4,43 @@ The `ghostlink` executable (crate `destiny-cli`). Commands are shown both as
 `ghostlink <command>` and, from a checkout, `cargo run -p destiny-cli -- <command>`.
 See [configuration](configuration.md) for setup and authorization.
 
+## First-run setup
+
+Run `ghostlink` in an interactive terminal for the first-run wizard, or run
+`ghostlink setup` to repeat it at any time. Both stdin and stdout must be TTYs.
+Bare `ghostlink` otherwise prints the normal help, including with `--json` or
+when setup has already completed. Explicit `setup` without both TTYs, or with
+`--json`, returns a typed `invalid_request` error (exit 2), never a prompt.
+
+The wizard offers only detected Claude Code, Codex, OpenCode and Pi agents,
+all preselected. Use space to toggle and enter to confirm. Selecting none skips
+installation; if no agents are detected, the wizard says so and proceeds to
+login. Choose skill and MCP server (recommended), MCP only, or CLI skill only.
+Installation uses the same engine and per-agent outcomes described below,
+including the manual configuration snippet when OpenCode cannot be merged.
+
+Sign-in defaults to yes and runs the existing `ghostlink login --callback auto`
+flow; successful login auto-syncs missing Manifest definitions. A Manifest sync
+failure is non-fatal and includes a `ghostlink sync-manifest` hint. Login may be
+skipped. Esc or Ctrl+C at a wizard prompt cancels with exit 130 and keeps any
+already-completed installations; no completion marker is written on abort.
+
+At the end, the wizard writes `setup-complete` beside the **default** database:
+`$XDG_DATA_HOME/ghostlink/` (absolute XDG path), otherwise
+`~/.local/share/ghostlink/`, or `%LOCALAPPDATA%\\ghostlink\\` on Windows.
+`DESTINY_DATABASE_PATH` does not relocate this marker. Reaching the end writes
+the marker even when login was skipped or installation/login reported errors;
+those errors retain a non-zero exit and can be retried with `ghostlink setup`.
+Failure to write the marker returns a non-zero exit.
+
+For automation, use the explicit non-interactive equivalents:
+
+```sh
+ghostlink agents install --agent claude pi       # both skill and MCP
+# Or add --skill / --mcp to install only one integration.
+ghostlink login                                # callback auto; may use paste
+```
+
 ## AI agent integrations (non-interactive)
 
 ```sh
