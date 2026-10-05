@@ -212,6 +212,8 @@ enum TransferAction {
     /// The provider answers with the success envelope but the scripted state does
     /// not move, modelling affinity or cache lag.
     ReportWithoutApplying,
+    /// Confirmed transfer, but a concurrent action places the item elsewhere.
+    Contradiction,
     /// The provider deterministically refuses with the mapped transfer status.
     Refused(TransferRejection),
     /// A dispatched request returns `5xx`; `lands` declares whether it applied.
@@ -229,6 +231,7 @@ impl TransferAction {
             | Self::AppliedThenPostActionFails
             | Self::AuthenticationRefusedConcurrent => true,
             Self::ReportWithoutApplying
+            | Self::Contradiction
             | Self::Refused(_)
             | Self::SentinelEnvelope
             | Self::AuthenticationRefused(_) => false,
@@ -441,6 +444,12 @@ impl TransferTransport for SharedTransferTransport {
             TransferAction::AuthenticationRefused(status) => Ok(plain_response(status)),
             TransferAction::AuthenticationRefusedConcurrent => Ok(plain_response(403)),
             TransferAction::ReportWithoutApplying => Ok(transfer_json(TRANSFER_SUCCESS.to_owned())),
+            TransferAction::Contradiction => {
+                self.world
+                    .borrow_mut()
+                    .move_to_character(LAST_WORD_INSTANCE, HUNTER_ID);
+                Ok(transfer_json(TRANSFER_SUCCESS.to_owned()))
+            }
             TransferAction::Refused(TransferRejection::InvalidRequest) => Ok(plain_response(400)),
             TransferAction::Refused(rejection) => Ok(transfer_json(refusal_envelope(rejection))),
             TransferAction::ServerError { .. } => Ok(plain_response(500)),
@@ -1361,10 +1370,9 @@ fn uncertain_step_confirmed_by_the_post_action_projection_is_a_success() {
     );
 }
 
-/// Scenario 6: a post-action projection that contradicts the reported progress
-/// is a verification failure, never a false success or a clean failure.
+/// Scenario 6: unchanged provider content cannot verify reported completion.
 #[test]
-fn contradictory_post_action_projection_fails_verification() {
+fn unchanged_post_action_projection_is_pending_provider_refresh() {
     let journey = Journey::new();
     journey.at(NOW);
     let mut service = journey.service();
@@ -1392,12 +1400,10 @@ fn contradictory_post_action_projection_fails_verification() {
         )
         .expect("classified outcome");
     let failure = match outcome {
-        MoveExecutionOutcome::VerificationFailed(failure) => failure,
-        other => panic!("expected a verification failure, got {other:?}"),
+        MoveExecutionOutcome::AppliedPendingProviderRefresh(pending) => pending,
+        other => panic!("expected pending provider refresh, got {other:?}"),
     };
-    assert_eq!(failure.reason(), VerificationFailureReason::Elsewhere);
-    assert_eq!(failure.observed(), Some(&ItemLocation::Vault));
-    assert_eq!(failure.error(), None);
+    assert_eq!(failure.observed(), &ItemLocation::Vault);
     assert_eq!(failure.evidence().completed_count(), 1);
     assert_eq!(
         failure.evidence().steps()[0].outcome,
@@ -1409,6 +1415,60 @@ fn contradictory_post_action_projection_fails_verification() {
         ItemLocation::Vault
     );
     assert_eq!(committed(&service).metadata.revision, SyncRevision::new(1));
+}
+
+#[test]
+fn changed_post_action_revision_with_wrong_location_is_elsewhere() {
+    let journey = Journey::new();
+    let mut service = journey.service();
+    seed(&journey, &mut service);
+    let mut transfer = journey.transfer_adapter();
+    let request = move_request(semantic("The Last Word"), warlock_label());
+    let plan = service
+        .plan_move(&request, PlanLifetime::MAX, TTL, NOW)
+        .unwrap();
+    journey.queue_transfer(TransferAction::Contradiction);
+    let MoveExecutionOutcome::VerificationFailed(failure) = service
+        .execute_move_verified(&mut transfer, &request, &plan, TTL, NOW, NOW)
+        .unwrap()
+    else {
+        panic!("changed revision cannot qualify as stale provider refresh");
+    };
+    assert_eq!(failure.reason(), VerificationFailureReason::Elsewhere);
+    assert_eq!(failure.observed(), Some(&hunter_location()));
+    assert_eq!(failure.error(), None);
+    assert_eq!(failure.evidence().completed_count(), 1);
+    assert_eq!(
+        failure.evidence().steps()[0].outcome,
+        StepOutcome::Completed
+    );
+    let snapshot = committed(&service);
+    assert_eq!(snapshot.metadata.revision, SyncRevision::new(2));
+    assert_eq!(
+        location_of(&snapshot, LAST_WORD_INSTANCE),
+        hunter_location()
+    );
+    assert_eq!(journey.request_count(), 6);
+    let recorded = journey.recorded_transfers();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].url, TRANSFER_ENDPOINT);
+    assert_eq!(
+        body_json(&recorded[0]),
+        json!({
+            "itemReferenceHash":LAST_WORD_HASH,"stackSize":1,"transferToVault":false,
+            "itemId":LAST_WORD_INSTANCE,"characterId":WARLOCK_ID,"membershipType":MEMBERSHIP_TYPE
+        })
+    );
+    drop(service);
+    assert_eq!(
+        journey
+            .service()
+            .repository()
+            .load_current()
+            .unwrap()
+            .unwrap(),
+        snapshot
+    );
 }
 
 /// Scenario 7: a failed post-action refresh is itself a verification failure and

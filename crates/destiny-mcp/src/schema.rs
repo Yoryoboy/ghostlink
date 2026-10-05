@@ -1110,10 +1110,20 @@ pub struct VerificationFailureView {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum MoveItemOutput {
+    AppliedPendingProviderRefresh(PendingProviderRefreshView),
     VerifiedSuccess(MoveSuccessView),
     VerifiedNoOp(MoveSuccessView),
     Incomplete(IncompleteMoveView),
     VerificationFailed(VerificationFailureView),
+}
+
+/// Provider-confirmed effects with a stale, unconfirmed observation.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PendingProviderRefreshView {
+    pub effects: MoveEffectsView,
+    pub observed: LocationView,
+    pub steps: Vec<StepEvidenceView>,
+    pub reason: String,
 }
 
 /// A sanitized, stable MCP tool failure.
@@ -1211,7 +1221,12 @@ impl InspectItemOutput {
 impl MoveItemOutput {
     /// Renders this output as a structured tool result.
     pub fn into_call_tool_result(self) -> CallToolResult {
-        structured_result(self)
+        let pending = matches!(self, Self::AppliedPendingProviderRefresh(_));
+        let mut result = structured_result(self);
+        if pending {
+            result.is_error = Some(true);
+        }
+        result
     }
 }
 

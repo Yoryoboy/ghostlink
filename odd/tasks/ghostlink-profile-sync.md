@@ -33,7 +33,7 @@ Preserve all uncommitted equip work on `feature/equip-item`.
   command 25 / runner 41 / runtime 22 / output 51; app sync 16. OAuth targeted 1
   and both workspace runs pass, historical failure cause unresolved. PS-001
   full isolated-test closure remains pending this preexisting blocker; no edits
-  outside authorized surfaces. No commits or mutation retries.
+  outside authorized surfaces. No mutation retries. Commit `64c8227`.
 - [x] PS-002 Independently verify command and final functional checks.
   Bounded PASS (`muucuzer-l-n0gi`), all results and known isolated-test limitation
   above. No introduced sync defect found; safe for authorized read-only use.
@@ -44,6 +44,11 @@ Preserve all uncommitted equip work on `feature/equip-item`.
   Inspection uses that published projection, not a second provider acquisition.
   No mutation retry. Historical immediate equip verification remains FAIL;
   cause of earlier contradictory profile remains unknown.
+
+Follow-up (user decision 2026-10-05): PS-001 merges as delivered; the
+pre-existing standalone `destiny-cli` test compilation failure (feature-gated
+`destiny_app::test_support` in `src/login.rs` and `tests/equip_pipeline.rs`,
+present on main) is a known limitation to fix in a separate work unit.
 
 ## Evidence
 

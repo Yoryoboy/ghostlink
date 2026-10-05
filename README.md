@@ -533,6 +533,14 @@ or multi-call atomicity. Never blindly retry an uncertain outcome: inspect fresh
 state before deciding on another action. Refusal, incomplete execution and
 verification failure return non-zero CLI exits.
 
+`applied_pending_provider_refresh` (CLI exit 43) means the provider confirmed
+every planned step, but the successful post-action refresh retained the
+pre-dispatch revision/content and did not show the target state. Bungie's
+profile can lag mutations by minutes; this is applied per provider, **not verified
+success**. Do not retry; run `ghostlink sync` later to confirm. A changed profile
+that contradicts the target remains `verification_failed` (42). Uncertain
+steps, refusals and partial execution keep their existing outcomes.
+
 The CLI JSON and MCP `equip_item` structured content use the same renderer:
 `status`, `item`, `character`, `steps`, `reason`, `profile_refresh`, and `observed`.
 A failed refresh never presents a stale observation as fresh. Deterministic
@@ -563,7 +571,9 @@ durable projection are shared with the read path, and one explicit `move_item`
 request is the whole intent authorization. There is no preview tool, confirmation
 token or value, approval ceremony, or second MCP call. The single call plans the
 move, forces a fresh revision-bound preflight, issues only the ordered transfer
-steps, refreshes the projection after the action, and verifies the destination;
+steps, refreshes the projection after the action, and verifies the destination
+or reports `applied_pending_provider_refresh` when provider-confirmed steps
+still have an unchanged pre-action profile (see above);
 membership and credentials are resolved internally and are never accepted or
 emitted through MCP.
 
@@ -572,6 +582,8 @@ emitted through MCP.
 control characters are rejected. One call is the complete intent authorization,
 with no separate token or approval ceremony. It uses the same shared equip
 pipeline and JSON as `ghostlink equip`; see the equip safety limits above.
+Both `equip_item` and `move_item` can return
+`applied_pending_provider_refresh` with `isError=true`, never verified success.
 `move_item` remains MCP-only: there is no CLI move command.
 
 Run it with the shared read configuration present in the environment:
@@ -648,9 +660,9 @@ cargo test -p destiny-mcp --all-features --test stdio
 The fixture binary is never reachable from the product `destiny-mcp` binary and
 requires no credential, network, durable database, or native keyring.
 Equip child-process sessions additionally compare complete CLI/MCP JSON for
-success, no-op, refusal, partial progress, uncertainty and refresh/verification
-failure, with equipped non-equipment neighbors. These are offline observations,
-not a live-provider verification claim.
+success, no-op, refusal, partial progress, uncertainty, pending provider refresh
+and refresh/verification failure, with equipped non-equipment neighbors. These
+are offline observations, not a live-provider verification claim.
 
 ## Baseline checks
 

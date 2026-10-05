@@ -116,6 +116,14 @@ Repeated syncs are idempotent at the projection level: the same Bungie state pro
 6. **Post-action refresh:** fetch the affected profile/components and commit the resulting projection.
 7. **Verification:** require the item to be observed at the requested destination; equip additionally requires `equipped == true`. A failed refresh yields verification failure, not a stale observation or success.
 
+`applied_pending_provider_refresh` is a distinct non-success state: every
+planned step was attempted and provider-confirmed, but a successful post-action
+refresh retained the pre-dispatch revision (unchanged normalized content) and
+the resolved item did not match the target state. Changed-profile contradictions
+remain `verification_failed`; uncertain, refused and partial attempts do not
+qualify. No polling or retries are added: do not retry; run `ghostlink sync`
+later to confirm.
+
 ### MCP mutation contract
 
 MCP move and equip execution are enabled by default and authorized by explicit user intent. The MCP adapter exposes `move_item` and `equip_item`. The tool resolves the item and destination, rejects ambiguity, creates any internal short-lived plan, performs the mandatory fresh preflight, executes the minimum supported remote calls, reports partial failure honestly, refreshes, and verifies before returning.
@@ -152,7 +160,7 @@ The MCP adapter is a server-side stdio process. Its tools include inventory read
 | Equip one item | yes, explicit character required | yes, explicit item and character required | shared equip planner/executor and JSON projection |
 | Raw Bungie request | no | no | never exposed |
 
-Every use case returns either a typed success containing sanitized domain records and freshness, or a typed failure from the shared taxonomy. Adapters may translate wording and exit/status conventions, but cannot reinterpret a successful remote mutation or downgrade `verification_failed` to success.
+Every use case returns either a typed success containing sanitized domain records and freshness, or a typed failure from the shared taxonomy. Adapters may translate wording and exit/status conventions, but cannot reinterpret a successful remote mutation or downgrade `verification_failed` or `applied_pending_provider_refresh` to success. Pending provider refresh remains CLI exit 43 and MCP `isError=true` for both mutation tools.
 
 ## 12. Operational invariants
 

@@ -43,6 +43,8 @@ const SUCCESS: &str = r#"{"ErrorCode":1,"ErrorStatus":"Success","Response":{}}"#
 #[derive(Clone, Copy)]
 enum Reply {
     Applied,
+    ProviderStale,
+    Contradiction,
     Auth(u16),
     AuthConcurrent,
     AuthUnavailableRefresh,
@@ -216,6 +218,9 @@ impl TransferTransport for Http {
         if let Some(status) = world.transfer_auth {
             return Ok(mutation_response(status, format!("{KEY} {TOKEN}")));
         }
+        if matches!(world.reply, Reply::ProviderStale) {
+            return Ok(mutation_response(200, SUCCESS.into()));
+        }
         world.place(
             if body["transferToVault"] == true {
                 None
@@ -260,6 +265,11 @@ impl EquipTransport for Http {
             }
             Reply::AuthUnavailableRefresh => Ok(mutation_response(403, format!("{KEY} {TOKEN}"))),
             Reply::NotDispatched => unreachable!(),
+            Reply::ProviderStale => Ok(mutation_response(200, SUCCESS.into())),
+            Reply::Contradiction => {
+                world.place(Some(OTHER), false);
+                Ok(mutation_response(200, SUCCESS.into()))
+            }
             Reply::Applied => {
                 world.place(Some(TARGET), true);
                 Ok(mutation_response(200, SUCCESS.into()))
@@ -424,6 +434,7 @@ impl Journey {
         let plan = service
             .plan_equip(&request, PlanLifetime::new(120).unwrap(), TTL, NOW)
             .unwrap();
+        let pre_dispatch = service.repository().load_current().unwrap().unwrap();
         let before = self.world.borrow().profiles.len();
         let result = service.execute_equip_verified(
             (&mut transfer, &mut equip),
@@ -446,10 +457,19 @@ impl Journey {
             .iter()
             .find(|item| item.instance_id.as_str() == ITEM)
             .unwrap();
-        assert_eq!(
-            item.location,
-            ItemLocation::Character(CharacterId::new(TARGET))
-        );
+        let expected_location = match self.world.borrow().reply {
+            Reply::ProviderStale => ItemLocation::Vault,
+            Reply::Contradiction => ItemLocation::Character(CharacterId::new(OTHER)),
+            _ => ItemLocation::Character(CharacterId::new(TARGET)),
+        };
+        assert_eq!(item.location, expected_location);
+        match self.world.borrow().reply {
+            Reply::ProviderStale => assert_eq!(snapshot, pre_dispatch),
+            Reply::Contradiction => {
+                assert!(snapshot.metadata.revision > pre_dispatch.metadata.revision);
+            }
+            _ => {}
+        }
         assert_eq!(item.equipped, equipped);
         assert_eq!(
             snapshot
@@ -805,6 +825,45 @@ fn rc003_auth_failed_refresh_preserves_original_attempt_without_observation() {
     );
     assert!(failure.observed().is_none());
     assert_eq!(world.borrow().profiles.len(), 3);
+}
+
+#[test]
+fn confirmed_transfer_and_equip_with_stale_profile_are_pending() {
+    let MoveExecutionOutcome::AppliedPendingProviderRefresh(pending) =
+        Journey::new(Reply::ProviderStale).run(1, false, false)
+    else {
+        panic!("expected pending provider refresh");
+    };
+    assert_eq!(pending.observed(), &ItemLocation::Vault);
+    assert_eq!(pending.evidence().attempted_count(), 2);
+    assert_eq!(pending.evidence().completed_count(), 2);
+    assert_eq!(pending.evidence().unattempted_count(), 0);
+    assert!(
+        pending
+            .evidence()
+            .steps()
+            .iter()
+            .all(|step| step.outcome == StepOutcome::Completed)
+    );
+}
+
+#[test]
+fn confirmed_equip_with_changed_wrong_state_is_elsewhere() {
+    let MoveExecutionOutcome::VerificationFailed(failure) =
+        Journey::new(Reply::Contradiction).run(1, false, false)
+    else {
+        panic!("expected genuine contradiction");
+    };
+    assert_eq!(
+        failure.reason(),
+        destiny_app::VerificationFailureReason::Elsewhere
+    );
+    assert_eq!(
+        failure.observed(),
+        Some(&ItemLocation::Character(CharacterId::new(OTHER)))
+    );
+    assert_eq!(failure.evidence().attempted_count(), 2);
+    assert_eq!(failure.evidence().completed_count(), 2);
 }
 
 #[test]

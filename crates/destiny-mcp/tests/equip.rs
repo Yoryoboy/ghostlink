@@ -18,6 +18,12 @@ fn equip_json_matches_cli_for_every_execution_shape() {
             "verified_success",
         ),
         ("equip-noop", "123", "warlock", "verified_noop"),
+        (
+            "equip-provider-stale",
+            "123",
+            "warlock",
+            "applied_pending_provider_refresh",
+        ),
         ("equip-success", "missing", "warlock", "refused"),
         ("equip-success", "123", "missing", "refused"),
         ("equip-ambiguous", "Ace of Spades", "warlock", "refused"),
