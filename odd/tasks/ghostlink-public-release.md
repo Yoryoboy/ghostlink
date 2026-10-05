@@ -205,6 +205,8 @@ cargo-dist handling of the libdbus runtime dependency.
   in `unshare -rn`: 1390 passed / 0 failed; non-TTY bare run prints help and
   writes nothing. Native Windows console cancellation unverified. Commit
   evidence: `4ece4e5`.
+  User feedback (2026-10-05): closing line is just `Done.` (no agent tip);
+  test-first (RED: completion test failed; GREEN). Commit evidence: `367976d`.
 
 ### Phase 3 — Distribution
 - [ ] **PR-009 — cargo-dist release.** Package metadata, `ghostlink` +
