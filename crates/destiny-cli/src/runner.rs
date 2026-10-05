@@ -386,6 +386,9 @@ where
     if let Command::SyncManifest = &cli.command {
         return run_manifest(manifest_factory, mode);
     }
+    if let Command::Agents(arguments) = &cli.command {
+        return crate::agents::production(&arguments.command, mode);
+    }
     if let Command::Handler(arguments) = &cli.command {
         return crate::handler::run_handler(
             crate::handler::production_registrar().as_mut(),

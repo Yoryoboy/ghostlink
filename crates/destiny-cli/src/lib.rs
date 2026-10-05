@@ -12,6 +12,7 @@
 //! whose production runtime is composed in [`runtime`], and the authorization
 //! service is composed only in [`login`].
 
+pub mod agents;
 pub mod command;
 pub mod equip;
 pub mod equip_output;

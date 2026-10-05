@@ -6,6 +6,7 @@ pub use loadouts::{
     CharacterLoadoutsView, LoadoutItemView, LoadoutOperations, LoadoutPlugView, LoadoutService,
     LoadoutView, LoadoutsResult,
 };
+pub mod agents;
 pub mod artifact;
 pub use artifact::{
     ArtifactOperations, ArtifactPoints, ArtifactResult, ArtifactService, ArtifactSlot,

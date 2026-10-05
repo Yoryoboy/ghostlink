@@ -4,6 +4,46 @@ The `ghostlink` executable (crate `destiny-cli`). Commands are shown both as
 `ghostlink <command>` and, from a checkout, `cargo run -p destiny-cli -- <command>`.
 See [configuration](configuration.md) for setup and authorization.
 
+## AI agent integrations (non-interactive)
+
+```sh
+ghostlink agents status --json
+ghostlink agents install --agent claude codex opencode pi
+ghostlink agents uninstall --agent pi --mcp
+```
+
+Only these four agents are supported. Repeated `--agent` is also accepted;
+install/uninstall require an explicit selection. `--skill` or `--mcp` selects
+one step; neither flag means both. No wizard or confirmation is involved.
+Detection resolves PATH without execution or checks the agent's config directory.
+Status inspects the skill and uses `mcp list` for CLI-managed registrations.
+
+The embedded, version-matched skill installs into each agent's skill directory
+(Pi uses `~/.agents/skills`). Foreign skills and symlinked paths are refused.
+Uninstall requires the `name: ghostlink` marker and preserves unknown files.
+MCP install requires an absolute `destiny-mcp` sibling of this `ghostlink` binary
+(`destiny-mcp.exe` on Windows); there is no PATH fallback. Claude uses user scope.
+CLI registration retries only an explicit `already exists` diagnostic, by
+removing the named Ghostlink registration and adding it again. Commands use
+argv, captured bounded output, and a 15-second timeout, never a shell.
+
+OpenCode merges only `mcp.ghostlink` into strict JSON, preserving other keys.
+Each adapter run backs up the pre-write file to `opencode.json.ghostlink-backup`
+once, then writes via a same-directory temporary file and rename. JSONC,
+invalid JSON, or incompatible object shapes remain untouched and produce
+`manual_step_required` with a snippet. A failed write may leave its temporary
+file for recovery. Uninstall removes only `mcp.ghostlink`.
+
+JSON has `kind: "agents"` and an `agents` array with `agent`, `detected`, `skill`
+and `mcp`; each selected step has `status`, plus `snippet` or a typed `error`
+when applicable. Unselected steps are null. Outcomes are `installed`,
+`already_installed`, `removed`, `not_installed`, `manual_step_required`, `failed`.
+All agents and steps are attempted independently. Exit 51 (`local_storage`)
+means at least one failed step; the complete report is on stderr, otherwise
+stdout and exit 0 (including manual steps). Invalid arguments exit 2.
+Integration bootstrap is operator-facing; it is not required in the embedded
+game-operation skill's command-coverage checklist.
+
 ## Login
 
 `ghostlink login` prints the authorization URL and opens a local browser when

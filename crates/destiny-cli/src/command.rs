@@ -118,6 +118,7 @@ impl Cli {
             | Command::WeeklyReset
             | Command::Weekly(_)
             | Command::Login(_)
+            | Command::Agents(_)
             | Command::Handler(_)
             | Command::Callback(_) => {
                 Err(CliError::from_category(ErrorCategory::UnsupportedOperation))
@@ -126,9 +127,42 @@ impl Cli {
     }
 }
 
+#[derive(Debug, Args)]
+pub struct AgentsArgs {
+    #[command(subcommand)]
+    pub command: AgentsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AgentsCommand {
+    Status,
+    Install(AgentSelection),
+    Uninstall(AgentSelection),
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum AgentName {
+    Claude,
+    Codex,
+    Opencode,
+    Pi,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentSelection {
+    #[arg(long, required = true, num_args = 1..)]
+    pub agent: Vec<AgentName>,
+    #[arg(long)]
+    pub skill: bool,
+    #[arg(long)]
+    pub mcp: bool,
+}
+
 /// The read commands and the interactive login command this journey exposes.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Inspect or explicitly install integrations for supported AI agents.
+    Agents(AgentsArgs),
     /// Equip one item, transferring first when needed, then refresh and verify.
     #[command(name = "equip")]
     Equip(EquipArgs),
