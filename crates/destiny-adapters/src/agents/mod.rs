@@ -62,6 +62,8 @@ fn read(path: &Path) -> Result<Option<String>, IntegrationError> {
     Ok(Some(text))
 }
 fn ours(text: &str) -> bool {
+    // Windows checkouts and editors may store the skill with CRLF endings.
+    let text = text.replace("\r\n", "\n");
     text.strip_prefix("---\n")
         .and_then(|s| s.split_once("\n---"))
         .is_some_and(|(header, _)| header.lines().any(|line| line.trim() == "name: ghostlink"))

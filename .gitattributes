@@ -1,0 +1,2 @@
+# Embedded verbatim with include_str!; keep identical bytes on every platform.
+skills/** text eol=lf

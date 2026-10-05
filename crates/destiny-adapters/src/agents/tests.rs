@@ -59,7 +59,7 @@ fn cli_defaults_and_step_selection_use_only_injected_locations_and_runner() {
     use destiny_cli::command::Command;
     for flag in [None, Some("--skill"), Some("--mcp")] {
         let mut files = fixture();
-        write(&files.home.join("bin/destiny-mcp"), "fake");
+        write(&files.home.join("bin").join("destiny-mcp"), "fake");
         let mut argv = vec!["ghostlink", "agents", "install", "--agent", "pi", "--json"];
         argv.extend(flag);
         let cli = destiny_cli::parse_process(argv).unwrap();
@@ -149,7 +149,7 @@ fn absolute_sibling_resolution_and_missing_binary() {
 fn exact_argv_duplicate_replacement_and_removal() {
     for agent in [Agent::Claude, Agent::Codex, Agent::Pi] {
         let mut files = fixture();
-        let exe = files.home.join("bin/destiny-mcp");
+        let exe = files.home.join("bin").join("destiny-mcp");
         write(&exe, "fake");
         let mut runner = FakeRunner {
             replies: vec![
@@ -197,7 +197,7 @@ fn exact_argv_duplicate_replacement_and_removal() {
 #[test]
 fn opencode_merge_backup_idempotency_and_uninstall() {
     let mut files = fixture();
-    let exe = files.home.join("bin/destiny-mcp");
+    let exe = files.home.join("bin").join("destiny-mcp");
     let path = files.home.join(".config/opencode/opencode.json");
     let backup = path.with_file_name("opencode.json.ghostlink-backup");
     let original = "{\"theme\":\"dark\",\"mcp\":{\"other\":{\"enabled\":false}}}";
@@ -233,7 +233,7 @@ fn opencode_merge_backup_idempotency_and_uninstall() {
 #[test]
 fn opencode_creation_and_manual_outcomes_leave_original_untouched() {
     let mut files = fixture();
-    let exe = files.home.join("bin/destiny-mcp");
+    let exe = files.home.join("bin").join("destiny-mcp");
     let path = files.home.join(".config/opencode/opencode.json");
     let result = files.opencode(Action::Uninstall, None);
     assert_eq!(result, Ok(Outcome::NotInstalled));
@@ -259,7 +259,7 @@ fn opencode_creation_and_manual_outcomes_leave_original_untouched() {
 #[test]
 fn failed_steps_do_not_stop_other_agents_or_skills() {
     let mut files = fixture();
-    write(&files.home.join("bin/destiny-mcp"), "fake");
+    write(&files.home.join("bin").join("destiny-mcp"), "fake");
     let mut runner = FakeRunner {
         replies: vec![reply(false, "failure"), reply(true, "")],
         ..Default::default()
@@ -288,4 +288,24 @@ fn failed_steps_do_not_stop_other_agents_or_skills() {
     assert_eq!(reports[0].mcp, Some(Outcome::Failed(error)));
     assert_eq!(reports[1].mcp, Some(Outcome::Installed));
     assert_eq!(reports[1].skill, Some(Outcome::Installed));
+}
+
+#[test]
+fn ownership_marker_accepts_crlf_skill_files() {
+    // Windows checkouts and editors may store the skill with CRLF endings.
+    assert!(ours("---\r\nname: ghostlink\r\ndescription: x\r\n---\r\nbody\r\n"));
+    assert!(ours(&SKILL.replace('\n', "\r\n")));
+    assert!(!ours("---\r\nname: other\r\n---\r\n"));
+}
+
+#[test]
+fn crlf_copy_of_the_embedded_skill_is_still_ours() {
+    for agent in Agent::ALL {
+        let mut files = fixture();
+        let dir = files.home.join(agent.skill_dir()).join("ghostlink");
+        write(&dir.join("SKILL.md"), &SKILL.replace('\n', "\r\n"));
+        assert_eq!(files.skill(agent, Action::Status), Ok(Outcome::AlreadyInstalled));
+        assert_eq!(files.skill(agent, Action::Install), Ok(Outcome::Installed));
+        assert_eq!(text(&dir.join("SKILL.md")), SKILL);
+    }
 }
