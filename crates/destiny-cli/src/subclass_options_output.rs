@@ -90,7 +90,7 @@ pub fn render_subclass_options(
                         super::push_description(
                             &mut groups,
                             6,
-                            option.name.as_deref(),
+                            super::description_label(names.len() > 1, option.name.as_deref()),
                             option.description.as_deref(),
                         );
                     }

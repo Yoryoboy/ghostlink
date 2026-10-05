@@ -626,6 +626,8 @@ impl DefinitionReplacementInput {
 pub struct ManifestDefinitionCandidate {
     /// Optional untrusted tooltip text; application validation may omit it.
     pub description: Option<String>,
+    /// Ordered, bounded references into the same-version effect catalog.
+    pub perk_hashes: Vec<u32>,
     pub hash: ItemHash,
     pub bucket_hash: Option<BucketHash>,
     pub name: String,
@@ -656,10 +658,28 @@ impl fmt::Debug for ManifestDefinitionCandidate {
 /// service validates and normalizes the batch before any repository mutation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestAcquisition {
+    pub sandbox_perks: Vec<SandboxPerkCandidate>,
     pub version: DefinitionVersion,
     pub definitions: Vec<ManifestDefinitionCandidate>,
     /// Blank-name or redacted records omitted by the gateway.
     pub skipped_count: usize,
+}
+
+/// Untrusted provider-neutral effect text acquired with inventory definitions.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SandboxPerkCandidate {
+    pub hash: u32,
+    pub is_displayable: bool,
+    pub description: String,
+}
+
+impl fmt::Debug for SandboxPerkCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SandboxPerkCandidate")
+            .field("hash", &self.hash)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A small index with an exact version and an adapter-validated component plan.
@@ -677,6 +697,7 @@ pub struct ManifestIndex {
     pub activity_type_path: String,
     pub stat_path: String,
     pub loadout_name_path: String,
+    pub sandbox_perk_path: String,
 }
 
 impl fmt::Debug for ManifestIndex {

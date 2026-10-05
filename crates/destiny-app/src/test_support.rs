@@ -1108,6 +1108,7 @@ impl QueuedManifestGateway {
                     objective_path: "/common/destiny2_content/objectives.json".into(),
                     activity_type_path: "/common/destiny2_content/types.json".into(),
                     stat_path: "/common/destiny2_content/stats.json".into(),
+                    sandbox_perk_path: "/common/destiny2_content/sandbox-perks.json".into(),
                     loadout_name_path: "/common/destiny2_content/loadout-names.json".into(),
                 }));
                 self.queue_world(Ok(synthetic_world(batch.version.clone())));
@@ -1974,6 +1975,7 @@ mod tests {
 
         let mut manifest = QueuedManifestGateway::new();
         let acquisition = ManifestAcquisition {
+            sandbox_perks: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: Vec::new(),
             skipped_count: 0,

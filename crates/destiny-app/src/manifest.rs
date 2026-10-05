@@ -254,9 +254,40 @@ type NormalizedManifest = (
     Vec<destiny_core::ItemDescription>,
 );
 
+fn compose_description(
+    candidate: &destiny_core::ports::ManifestDefinitionCandidate,
+    perks: &std::collections::HashMap<u32, &destiny_core::ports::SandboxPerkCandidate>,
+) -> Option<destiny_core::ItemDescription> {
+    if let Some(text) = &candidate.description
+        && let Ok(description) = destiny_core::ItemDescription::new(candidate.hash, text.clone())
+    {
+        return Some(description);
+    }
+    let mut texts = Vec::new();
+    for hash in &candidate.perk_hashes {
+        if let Some(perk) = perks.get(hash)
+            && perk.is_displayable
+            && !perk.description.trim().is_empty()
+            && !texts.contains(&perk.description.as_str())
+        {
+            texts.push(perk.description.as_str());
+        }
+    }
+    destiny_core::ItemDescription::new(candidate.hash, texts.join("\n\n")).ok()
+}
+
 fn normalize_with_count(acquisition: ManifestAcquisition) -> Result<NormalizedManifest, AppError> {
     let mut skipped_count = acquisition.skipped_count;
     let version = normalize_version(acquisition.version.as_str())?;
+    if acquisition.sandbox_perks.len() > 100_000 {
+        return Err(invalid());
+    }
+    let mut perks = std::collections::HashMap::new();
+    for perk in &acquisition.sandbox_perks {
+        if perks.insert(perk.hash, perk).is_some() {
+            return Err(invalid());
+        }
+    }
     let candidates = acquisition.definitions;
     if candidates.is_empty() || candidates.len() > MAX_DEFINITION_COUNT {
         return Err(invalid());
@@ -278,9 +309,10 @@ fn normalize_with_count(acquisition: ManifestAcquisition) -> Result<NormalizedMa
         };
         // Tooltip failures must not discard otherwise usable item definitions.
         // Keep the official text verbatim, including leading whitespace and newlines.
-        if let Some(text) = candidate.description
-            && let Ok(description) = destiny_core::ItemDescription::new(candidate.hash, text)
-        {
+        if candidate.perk_hashes.len() > 64 {
+            return Err(invalid());
+        }
+        if let Some(description) = compose_description(&candidate, &perks) {
             descriptions.push(description);
         }
         definitions.push(ItemDefinition {
@@ -488,8 +520,51 @@ mod tests {
         assert!(descriptions.is_empty());
     }
 
+    #[test]
+    fn sandbox_description_composition_preserves_order_and_policy() {
+        use destiny_core::ports::SandboxPerkCandidate;
+        let perk = |hash, is_displayable, description: &str| SandboxPerkCandidate {
+            hash,
+            is_displayable,
+            description: description.into(),
+        };
+        let perks = [
+            perk(1, true, "First\nline"),
+            perk(2, false, "Hidden"),
+            perk(3, true, "+10 Weapon ▲"),
+            perk(4, true, "First\nline"),
+            perk(5, true, " "),
+            perk(6, true, &"x".repeat(2040)),
+            perk(7, true, "bad\0text"),
+        ];
+        let lookup = perks.iter().map(|perk| (perk.hash, perk)).collect();
+        let mut item = candidate(1, "Facet");
+        item.perk_hashes = vec![3, 99, 2, 1, 4, 5];
+        assert_eq!(
+            compose_description(&item, &lookup).unwrap().description(),
+            "+10 Weapon ▲\n\nFirst\nline"
+        );
+        item.description = Some(" Own\ntext ".into());
+        assert_eq!(
+            compose_description(&item, &lookup).unwrap().description(),
+            " Own\ntext "
+        );
+        item.description = Some(" \n".into());
+        item.perk_hashes = vec![1, 6];
+        assert!(compose_description(&item, &lookup).is_none());
+        item.perk_hashes = vec![7];
+        assert!(compose_description(&item, &lookup).is_none());
+        item.description = Some("bad\0own".into());
+        item.perk_hashes = vec![1];
+        assert_eq!(
+            compose_description(&item, &lookup).unwrap().description(),
+            "First\nline"
+        );
+    }
+
     fn candidate(hash: i64, name: &str) -> ManifestDefinitionCandidate {
         ManifestDefinitionCandidate {
+            perk_hashes: Vec::new(),
             description: None,
             hash: ItemHash::new(hash),
             bucket_hash: None,
@@ -518,6 +593,7 @@ mod tests {
         definitions: Vec<ManifestDefinitionCandidate>,
     ) -> ManifestAcquisition {
         ManifestAcquisition {
+            sandbox_perks: Vec::new(),
             version: DefinitionVersion::new(version),
             definitions,
             skipped_count: 0,
@@ -533,6 +609,7 @@ mod tests {
                     description: None,
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(11)),
+                    perk_hashes: Vec::new(),
                     name: "  Ri   FLE  ".into(),
                     item_type: Some("  WEAPON ".into()),
                     tier: Some(" Legendary ".into()),
@@ -555,6 +632,7 @@ mod tests {
                     description: None,
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(11)),
+                    perk_hashes: Vec::new(),
                     name: "Ri FLE".into(),
                     item_type: Some("WEAPON".into()),
                     tier: Some("Legendary".into()),
@@ -697,6 +775,7 @@ mod tests {
         // non-definition field were added to the candidate or to the normalized
         // record, this test would stop compiling.
         let ManifestDefinitionCandidate {
+            perk_hashes: _,
             description: _,
             hash,
             bucket_hash,
@@ -929,6 +1008,7 @@ mod tests {
                 objective_path: "unused".into(),
                 activity_type_path: "unused".into(),
                 stat_path: "unused".into(),
+                sandbox_perk_path: "unused".into(),
                 loadout_name_path: "unused".into(),
             }));
             let mut service = ManifestService::new(gateway, repository);
@@ -1018,6 +1098,7 @@ mod tests {
                         objective_path: "unused".into(),
                         activity_type_path: "unused".into(),
                         stat_path: "unused".into(),
+                        sandbox_perk_path: "unused".into(),
                         loadout_name_path: "unused".into(),
                     }));
                     gateway.queue_component(Err(error.clone()));
@@ -1067,6 +1148,7 @@ mod tests {
                     objective_path: "unused".into(),
                     activity_type_path: "unused".into(),
                     stat_path: "unused".into(),
+                    sandbox_perk_path: "unused".into(),
                     loadout_name_path: "unused".into(),
                 }));
                 gateway.queue_component(Ok(acquisition(VERSION, vec![candidate(42, "next")])));
@@ -1151,6 +1233,7 @@ mod tests {
                 objective_path: "unused".into(),
                 activity_type_path: "unused".into(),
                 stat_path: "unused".into(),
+                sandbox_perk_path: "unused".into(),
                 loadout_name_path: "unused".into(),
             }));
             gateway.queue_component(Ok(acquisition(VERSION, vec![candidate(42, "Gamma")])));

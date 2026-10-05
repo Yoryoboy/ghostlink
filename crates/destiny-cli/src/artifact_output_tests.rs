@@ -52,6 +52,15 @@ fn artifact_description_is_optional_and_visible_in_text_and_json() {
     );
     let human = render_artifact(OutputMode::Human, &result);
     assert!(human.contains("    Perk 1:\n      Improve damage.\n      While active."));
+    result.characters[0]
+        .equipped
+        .as_mut()
+        .unwrap()
+        .slots
+        .truncate(1);
+    let single = render_artifact(OutputMode::Human, &result);
+    assert!(single.contains("  Perks: Perk 1\n    Improve damage.\n    While active."));
+    assert!(!single.contains("    Perk 1:"));
     assert!(
         artifact_json(&fixture())["characters"][0]["equipped"]["slots"][0]
             .get("description")

@@ -69,6 +69,12 @@ fn option_descriptions_follow_human_locked_filter_and_json_keeps_all() {
         !render_subclass_options(OutputMode::Human, &result, true)
             .contains("Official option tooltip.")
     );
+    result.characters[0].elements[0].groups[0]
+        .options
+        .truncate(1);
+    let single = render_subclass_options(OutputMode::Human, &result, false);
+    assert!(single.contains("    Aspects: Plug 0\n      Official option tooltip."));
+    assert!(!single.contains("      Plug 0:"));
 }
 
 #[test]

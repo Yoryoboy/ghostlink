@@ -296,9 +296,19 @@ The subclass contains `instance_id`, `item_hash`, `name`, `element` and ordered
 `slots`, with `kind`, `plug_hash`, `name` and `empty`. Slot kinds are `super`,
 `aspect`, `fragment`, `grenade`, `melee`, `class_ability`, `movement` and
 `transcendence`. Slots include optional `description` (official Manifest tooltip),
-omitted when unavailable. Text shows descriptions indented beneath their plug
-names, preserving multiline text. Empty sockets remain explicit; unlocked options
-are not included.
+omitted when unavailable. Text shows descriptions directly beneath single-plug
+rows without repeating the name. Multi-plug rows use one indented named block per
+plug, including aspects and fragments; multiline text is preserved. The same
+layout applies to artifact, loadout, subclass-option and inspection descriptions.
+Empty sockets remain explicit; unlocked options are not included.
+
+Official descriptions prefer the item's own valid tooltip. When absent or invalid,
+sync joins its displayable sandbox perk effects in reference order, deduplicating
+identical text with a blank line between effects. Missing references are ignored;
+blank or invalid composed text is omitted (2048-character cap). Sandbox perks are
+a required Manifest component: acquisition failure leaves the published cache
+unchanged. Run `sync-manifest` after upgrading from schema v13 to backfill the
+catalog even when Bungie's version is unchanged.
 
 ### Seasonal artifact state
 

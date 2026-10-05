@@ -74,7 +74,12 @@ raw `can_insert`/`enabled` flags are included. Each option includes optional
 with omission selecting all characters. Its structured output matches
 `ghostlink --json subclass` exactly, including socket order and empty slots.
 Each slot includes optional `description` (official Manifest tooltip), omitted
-when unavailable.
+when unavailable. Descriptions prefer the item's own valid text, falling back to
+its displayable sandbox perk effects in reference order, deduplicated and joined
+with blank lines. Missing references are ignored; blank, overlong (2048 characters)
+or invalid composed text is omitted. Sandbox acquisition is required and atomic
+with Manifest publication; sync failure preserves the prior cache. Schema v14
+invalidates v13 freshness so `sync-manifest` backfills unchanged upstream versions.
 For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
 
 `get_artifact` accepts an optional `character` (exact id or unique class),

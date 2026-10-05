@@ -33,6 +33,9 @@ fn with_description(mut value: serde_json::Value, description: Option<&str>) -> 
     }
     value
 }
+fn description_label(multiple: bool, name: Option<&str>) -> Option<&str> {
+    multiple.then_some(name.unwrap_or("unknown"))
+}
 fn push_description(_: &mut Vec<String>, _: usize, _: Option<&str>, _: Option<&str>) {}
 const SUBCLASS_LABELS: &[(destiny_app::SubclassPlugKind, &str)] = &[];
 #[allow(dead_code)]

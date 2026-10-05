@@ -129,10 +129,14 @@ fn inspection_descriptions_human_all_roles_and_control_safety() {
         plug.description = Some("Official\u{1b} tooltip.\nSecond line.".into());
     }
     let human = render_inspection(OutputMode::Human, &inspected);
+    assert_eq!(
+        human
+            .matches("    Official? tooltip.\n    Second line.")
+            .count(),
+        5
+    );
     for name in ["Frame", "Mod", "Trait", "Alternative mod", "Specialist"] {
-        assert!(human.contains(&format!(
-            "    {name}:\n      Official? tooltip.\n      Second line."
-        )));
+        assert!(!human.contains(&format!("    {name}:")));
     }
     assert!(!human.contains('\u{1b}'));
 }

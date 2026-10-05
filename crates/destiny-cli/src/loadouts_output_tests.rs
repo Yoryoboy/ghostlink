@@ -23,6 +23,13 @@ fn loadout_descriptions_are_optional_and_follow_detail_visibility() {
     let detail = render_loadouts(OutputMode::Human, &result, true);
     assert!(detail.contains("        Countermass:\n          Official weapon tooltip."));
     assert_eq!(detail.matches("Official fragment tooltip.").count(), 1);
+    let artifact = &mut result.characters[0].loadouts[0].items[3];
+    artifact.plugs[0].description = Some("Artifact effect".into());
+    for detail in [false, true] {
+        let text = render_loadouts(OutputMode::Human, &result, detail);
+        assert!(text.contains("\n        Artifact effect"));
+        assert!(!text.contains("        perk1:"));
+    }
 }
 
 fn fixture() -> LoadoutsResult {

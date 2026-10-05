@@ -142,11 +142,12 @@ pub fn render_loadouts(mode: super::OutputMode, result: &LoadoutsResult, detail:
                     _ => lines.push(format!("      {}", item_name(item))),
                 }
                 if !detail && matches!(item.bucket_hash, Some(3284755031 | 1506418338)) {
+                    let multiple = item.plugs.iter().filter(|plug| !plug.empty).count() > 1;
                     for plug in item.plugs.iter().filter(|plug| !plug.empty) {
                         super::push_description(
                             &mut lines,
                             8,
-                            plug.name.as_deref(),
+                            super::description_label(multiple, plug.name.as_deref()),
                             plug.description.as_deref(),
                         );
                     }
@@ -166,11 +167,12 @@ pub fn render_loadouts(mode: super::OutputMode, result: &LoadoutsResult, detail:
                         format!(": {plugs}")
                     };
                     lines.push(format!("      {}{item_type}{suffix}", item_name(item)));
+                    let multiple = item.plugs.iter().filter(|plug| !plug.empty).count() > 1;
                     for plug in item.plugs.iter().filter(|plug| !plug.empty) {
                         super::push_description(
                             &mut lines,
                             8,
-                            plug.name.as_deref(),
+                            super::description_label(multiple, plug.name.as_deref()),
                             plug.description.as_deref(),
                         );
                     }

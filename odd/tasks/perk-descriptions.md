@@ -48,6 +48,10 @@ This is piece 1 of 3 of the perk-knowledge initiative:
       plug list (CLI JSON/human, MCP, docs). Search stays description-free
       to keep hit lists compact; agents inspect an item for detail.
 - [x] 4. Full workspace verification (fmt, clippy, tests) and close.
+- [x] 5. Sandbox perk fallback: when an item description is empty, compose it
+      from its displayable `DestinySandboxPerkDefinition` descriptions
+      (aspects, fragments, artifact perks, mods). Also remove the duplicated
+      plug name in human `subclass` output.
 
 ## Evidence
 
@@ -68,6 +72,27 @@ This is piece 1 of 3 of the perk-knowledge initiative:
   tests 0 with 1,358 passed, 0 failed across 38 result lines (writer run with
   unmasked exit codes, logs under /tmp/perk-inspect-*.log; parent spot-checked
   the green log).
+
+- Live check (copy of real DB in /tmp/gl-live, real installed DB untouched):
+  v13→v14 migration and `sync-manifest` exit 0; 20,077/20,077 item
+  descriptions stored, byte-identical to raw Manifest, zero drops, max 658
+  chars. `subclass`, `subclass-options`, `artifact`, `loadouts`,
+  `inspect-item` exit 0. Gap found: aspects, fragments, artifact perks and
+  mods (~824 plugs) have empty item descriptions; their effect text lives in
+  `DestinySandboxPerkDefinition` via `perks[].perkHash` → Task 5.
+
+- Task 5 — sandbox perk fallback composed in app normalization (own text
+  wins; fallback keeps `perks[]` order, displayable non-blank only, dedupe,
+  joined with blank line, same validation). Sandbox component is required:
+  its failure fails sync before publication. No v15 (v14 unreleased, already
+  forces backfill). Human renderers no longer repeat single-plug names;
+  multi-plug rows show per-plug blocks. Writer: fmt 0, clippy 0, tests 0
+  (1,362 passed, 0 failed).
+  Live re-check on a fresh copy of the real v13 DB: migration + sync exit 0;
+  20,931 descriptions = 20,077 own (0 mismatches) + 854 composed (0
+  mismatches vs an independent Python oracle over the raw Manifest). Hunter
+  coverage: subclass 14/14, artifact 8/8, subclass-options 48/48,
+  loadouts 245/245 named plugs with descriptions.
 
 ## Follow-ups
 

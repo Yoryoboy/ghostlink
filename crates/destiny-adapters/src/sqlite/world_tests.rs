@@ -70,8 +70,10 @@ fn item_description_upgrade_forces_same_version_republish_then_skips() {
     assert!(store.current_metadata().unwrap().is_none());
     let mut gateway = QueuedManifestGateway::new();
     let acquisition = ManifestAcquisition {
+        sandbox_perks: Vec::new(),
         version: DefinitionVersion::new("v1"),
         definitions: vec![ManifestDefinitionCandidate {
+            perk_hashes: Vec::new(),
             description: Some("Official\nTooltip".into()),
             hash: ItemHash::new(10),
             bucket_hash: None,
@@ -470,8 +472,10 @@ fn missing_stat_catalog_forces_same_version_download_then_skips() {
     let mut gateway = destiny_app::test_support::QueuedManifestGateway::new();
     for _ in 0..2 {
         gateway.queue(Ok(ManifestAcquisition {
+            sandbox_perks: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: vec![ManifestDefinitionCandidate {
+                perk_hashes: Vec::new(),
                 hash: ItemHash::new(10),
                 bucket_hash: None,
                 name: "item".into(),
@@ -689,8 +693,10 @@ fn plug_category_upgrade_forces_same_version_republish_then_skips() {
     let mut gateway = QueuedManifestGateway::new();
     for _ in 0..2 {
         gateway.queue(Ok(ManifestAcquisition {
+            sandbox_perks: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: vec![ManifestDefinitionCandidate {
+                perk_hashes: Vec::new(),
                 hash: ItemHash::new(10),
                 bucket_hash: None,
                 name: "prior".into(),
@@ -755,8 +761,10 @@ fn search_filter_upgrade_forces_same_version_republish_then_skips() {
     let mut gateway = QueuedManifestGateway::new();
     for _ in 0..2 {
         gateway.queue(Ok(ManifestAcquisition {
+            sandbox_perks: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: vec![ManifestDefinitionCandidate {
+                perk_hashes: Vec::new(),
                 hash: ItemHash::new(10),
                 bucket_hash: None,
                 name: "prior".into(),
@@ -813,11 +821,13 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
         let mut gateway = QueuedManifestGateway::new();
         for _ in 0..2 {
             gateway.queue(Ok(ManifestAcquisition {
+                sandbox_perks: Vec::new(),
                 version: DefinitionVersion::new("v1"),
                 definitions: vec![ManifestDefinitionCandidate {
                     hash: ItemHash::new(10),
                     bucket_hash: None,
                     description: None,
+                    perk_hashes: Vec::new(),
                     name: "published".into(),
                     item_type: None,
                     tier: None,

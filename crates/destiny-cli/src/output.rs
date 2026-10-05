@@ -54,6 +54,27 @@ mod subclass_tests {
         );
     }
 
+    #[test]
+    fn subclass_single_slots_omit_repeated_names_and_multi_slots_keep_labels() {
+        let mut result = fixture();
+        let slots = &mut result.characters[0].subclass.as_mut().unwrap().slots;
+        for slot in slots.iter_mut() {
+            slot.description = Some(format!("Effect {}", slot.plug_hash.value()));
+        }
+        slots[7].empty = false;
+        let mut aspect = slots[6].clone();
+        aspect.name = Some("Other aspect".into());
+        aspect.description = Some("Other effect".into());
+        slots.push(aspect);
+        let text = render_subclasses(OutputMode::Human, &result);
+        assert!(text.contains("  Super: Plug 1\n    Effect 1"));
+        assert!(!text.contains("    Plug 1:"));
+        assert!(text.contains("  Aspects: Plug 6, Other aspect\n    Plug 6:\n      Effect 6\n    Other aspect:\n      Other effect"));
+        assert!(text.contains(
+            "  Fragments: Plug 0, Plug 7\n    Plug 0:\n      Effect 0\n    Plug 7:\n      Effect 7"
+        ));
+    }
+
     fn fixture() -> SubclassResult {
         use SubclassPlugKind::*;
         SubclassResult {
@@ -146,6 +167,10 @@ fn with_description(mut value: Value, description: Option<&str>) -> Value {
     value
 }
 
+fn description_label(multiple: bool, name: Option<&str>) -> Option<&str> {
+    multiple.then_some(name.unwrap_or("unknown"))
+}
+
 fn push_description(
     lines: &mut Vec<String>,
     indent: usize,
@@ -153,13 +178,12 @@ fn push_description(
     description: Option<&str>,
 ) {
     if let Some(description) = description {
-        lines.push(format!(
-            "{}{}:",
-            " ".repeat(indent),
-            sanitize(name.unwrap_or("unknown"))
-        ));
+        if let Some(name) = name {
+            lines.push(format!("{}{}:", " ".repeat(indent), sanitize(name)));
+        }
+        let text_indent = indent + if name.is_some() { 2 } else { 0 };
         for line in description.lines() {
-            lines.push(format!("{}{}", " ".repeat(indent + 2), sanitize(line)));
+            lines.push(format!("{}{}", " ".repeat(text_indent), sanitize(line)));
         }
     }
 }
@@ -231,7 +255,7 @@ pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult)
                                 push_description(
                                     &mut lines,
                                     4,
-                                    slot.name.as_deref(),
+                                    description_label(names.len() > 1, slot.name.as_deref()),
                                     slot.description.as_deref(),
                                 );
                             }
@@ -293,6 +317,7 @@ pub fn render_artifact(mode: OutputMode, result: &destiny_app::ArtifactResult) -
                 "{class}: {}",
                 label(equipped.name.as_deref(), equipped.item_hash)
             ));
+            let multiple = equipped.slots.len() > 1;
             let perks = equipped
                 .slots
                 .iter()
@@ -310,7 +335,7 @@ pub fn render_artifact(mode: OutputMode, result: &destiny_app::ArtifactResult) -
                 push_description(
                     &mut lines,
                     4,
-                    slot.name.as_deref(),
+                    description_label(multiple, slot.name.as_deref()),
                     slot.description.as_deref(),
                 );
             }
@@ -792,7 +817,12 @@ fn inspection_human(inspection: &ItemInspection) -> String {
             .iter()
             .filter(|plug| plug.role == role)
         {
-            push_description(&mut lines, 4, Some(&plug.name), plug.description.as_deref());
+            push_description(
+                &mut lines,
+                4,
+                description_label(names.len() > 1, Some(&plug.name)),
+                plug.description.as_deref(),
+            );
         }
     }
     if let Some(archetype) = &inspection.archetype {
@@ -802,7 +832,7 @@ fn inspection_human(inspection: &ItemInspection) -> String {
             .iter()
             .filter(|plug| plug.role == destiny_app::InspectionPlugRole::Archetype)
         {
-            push_description(&mut lines, 4, Some(&plug.name), plug.description.as_deref());
+            push_description(&mut lines, 4, None, plug.description.as_deref());
         }
     }
     if !inspection.stats.is_empty() {
