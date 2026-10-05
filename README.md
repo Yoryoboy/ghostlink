@@ -63,21 +63,71 @@ Add `--json` to any command for machine-readable output.
 
 ### Use it from an AI agent
 
-Register `destiny-mcp` as a stdio MCP server in your client. It reads the same
-configuration file, so no secrets need to be passed through the agent:
+There are two independent ways to connect an agent. Pick one or both.
+
+Either way, sign in once with `ghostlink login`. The CLI and `destiny-mcp`
+share the same configuration file and the same OS keyring entry, so the MCP
+server needs no separate authentication step and no secrets pass through the
+agent.
+
+#### Option A: MCP server
+
+Register `destiny-mcp` as a stdio MCP server. The commands below assume
+`destiny-mcp` is on your `PATH`; otherwise use its absolute path (for example
+`/path/to/target/release/destiny-mcp`).
+
+```sh
+# Claude Code (user scope, available in every project)
+claude mcp add --scope user ghostlink -- destiny-mcp
+
+# Codex
+codex mcp add ghostlink -- destiny-mcp
+
+# Pi (global ~/.pi/agent/mcp.json; add -l for the current project only)
+pi mcp add ghostlink -- destiny-mcp
+```
+
+OpenCode: add the server to `~/.config/opencode/opencode.json` (or run
+`opencode mcp add` and follow the prompts):
 
 ```json
 {
-  "mcpServers": {
-    "ghostlink": { "command": "/path/to/target/release/destiny-mcp" }
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "ghostlink": { "type": "local", "command": ["destiny-mcp"], "enabled": true }
   }
 }
 ```
 
-Agents with shell access can use the CLI instead: copy or symlink
-[`skills/ghostlink`](skills/ghostlink/SKILL.md) into the agent's skills
-directory (for example `~/.claude/skills/` or `~/.agents/skills/`). The skill
-maps intents to commands and sets the safety rules for `equip`.
+Other MCP clients usually accept the common `mcpServers` shape:
+
+```json
+{
+  "mcpServers": {
+    "ghostlink": { "command": "destiny-mcp" }
+  }
+}
+```
+
+#### Option B: CLI skill
+
+Agents with shell access can drive the `ghostlink` CLI through the bundled
+[skill](skills/ghostlink/SKILL.md), which maps intents to commands and sets the
+safety rules for `equip`. Install it with the
+[`skills`](https://github.com/vercel-labs/skills) CLI:
+
+```sh
+npx skills add Yoryoboy/ghostlink --skill ghostlink -g
+```
+
+Or copy or symlink `skills/ghostlink` into the agent's skills directory:
+
+| Agent | Skills directory |
+|---|---|
+| Claude Code | `~/.claude/skills/` |
+| Codex | `~/.codex/skills/` |
+| OpenCode | `~/.config/opencode/skills/` |
+| Pi | `~/.agents/skills/` |
 
 ## Documentation
 
