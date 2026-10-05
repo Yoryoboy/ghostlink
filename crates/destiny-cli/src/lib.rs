@@ -15,6 +15,7 @@
 pub mod command;
 pub mod equip;
 pub mod equip_output;
+pub mod handler;
 pub mod login;
 pub mod output;
 pub mod runner;

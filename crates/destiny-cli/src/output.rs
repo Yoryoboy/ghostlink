@@ -566,7 +566,7 @@ pub fn render_error(mode: OutputMode, error: &CliError) -> String {
 pub fn render_login_instruction(mode: OutputMode, instruction: &LoginInstruction) -> String {
     match mode {
         OutputMode::Human => match instruction.callback_mode {
-            CallbackMode::Paste => format!(
+            CallbackMode::Auto | CallbackMode::Paste => format!(
                 "authorization required\nopen this url in a browser:\n  {}\nafter authorizing, copy the full callback address from the browser and paste it here\npaste the callback url and press enter:\nwaiting for the pasted callback",
                 sanitize(&instruction.authorization_url),
             ),
@@ -811,7 +811,7 @@ fn inspection_json(inspection: &ItemInspection) -> String {
 /// newline, carriage return, or escape must never be able to forge an extra
 /// output line or a metadata footer. JSON output relies on the JSON encoder's
 /// escaping instead.
-fn sanitize(value: &str) -> String {
+pub(crate) fn sanitize(value: &str) -> String {
     value
         .chars()
         .map(|character| {

@@ -118,6 +118,7 @@ impl Cli {
             | Command::WeeklyReset
             | Command::Weekly(_)
             | Command::Login(_)
+            | Command::Handler(_)
             | Command::Callback(_) => {
                 Err(CliError::from_category(ErrorCategory::UnsupportedOperation))
             }
@@ -181,11 +182,14 @@ pub enum Command {
     /// The human owns the Bungie application registration and the browser
     /// authorization. This command prints the authorization URL, opens the
     /// browser when the mode allows it, and then reads the custom-scheme callback
-    /// URI the provider redirected to from the terminal. It never asks for, reads,
-    /// or prints a password, a client secret, or a token value, and it never
-    /// registers an operating-system URI handler.
+    /// URI through the desktop handler or terminal paste. Auto offers handler
+    /// installation only with terminal consent. It never asks for, reads, or
+    /// prints a password, a client secret, or a token value.
     #[command(name = "login")]
     Login(LoginArgs),
+
+    /// Inspect, install, or remove the ghostlink:// desktop handler.
+    Handler(HandlerArgs),
 
     /// Internal custom-scheme callback handler.
     ///
@@ -225,10 +229,9 @@ impl LoginMode {
 
 /// Arguments for `login`.
 ///
-/// The mode only controls whether the authorization URL is also opened in a
-/// browser; the callback is always pasted into the terminal manually, because the
-/// provider redirects to a custom scheme this product deliberately does not
-/// claim from the operating system.
+/// The mode controls whether the authorization URL opens in a local browser.
+/// Auto callback delivery detects the desktop handler and offers installation
+/// with terminal consent; explicit paste and handler bypass that policy.
 #[derive(Debug, Args)]
 pub struct LoginArgs {
     /// Whether to open the authorization URL in the local system browser.
@@ -236,8 +239,26 @@ pub struct LoginArgs {
     pub mode: LoginMode,
 
     /// How the custom-scheme callback reaches this process.
-    #[arg(long, value_enum, default_value = "paste", value_name = "CALLBACK")]
+    #[arg(long, value_enum, default_value = "auto", value_name = "CALLBACK")]
     pub callback: CallbackMode,
+}
+
+/// Arguments for desktop handler management.
+#[derive(Debug, Args)]
+pub struct HandlerArgs {
+    #[command(subcommand)]
+    pub command: HandlerCommand,
+}
+
+/// Explicit desktop handler operations; install itself is consent.
+#[derive(Clone, Copy, Debug, Subcommand)]
+pub enum HandlerCommand {
+    /// Inspect registration and known desktop pitfalls without changing it.
+    Status,
+    /// Install this executable as the ghostlink:// handler.
+    Install,
+    /// Remove this handler and restore the previous association.
+    Uninstall,
 }
 
 /// Arguments for the internal `callback` handler.
@@ -261,8 +282,10 @@ pub struct CallbackArgs {
 /// How the custom-scheme callback reaches the waiting login process.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum CallbackMode {
-    /// Read the callback from the terminal (default; available everywhere).
+    /// Detect the handler and offer installation when interactive (default).
     #[default]
+    Auto,
+    /// Read the callback from the terminal (available everywhere).
     Paste,
     /// Receive the callback from the installed desktop handler over the
     /// per-user Unix-socket rendezvous (Linux only).
@@ -273,6 +296,7 @@ impl CallbackMode {
     /// The stable machine label for this callback strategy.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::Paste => "paste",
             Self::Handler => "handler",
         }
@@ -1436,9 +1460,9 @@ mod tests {
     }
 
     #[test]
-    fn the_login_callback_strategy_parses_and_defaults_to_paste() {
+    fn the_login_callback_strategy_parses_and_defaults_to_auto() {
         match parse(["login"]).command {
-            Command::Login(arguments) => assert_eq!(arguments.callback, CallbackMode::Paste),
+            Command::Login(arguments) => assert_eq!(arguments.callback, CallbackMode::Auto),
             other => panic!("unexpected command: {other:?}"),
         }
         match parse(["login", "--callback", "handler"]).command {

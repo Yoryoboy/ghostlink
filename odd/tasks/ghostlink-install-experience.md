@@ -69,7 +69,7 @@ push, PR or merge.
   locally (see Decisions).
 - [x] GIE-003 App port and auto-resolution policy (test-first).
 - [x] GIE-004 Linux registrar adapter (test-first, injected paths/runner).
-- [ ] GIE-005 CLI: `--callback auto` default, consent prompt, `handler`
+- [x] GIE-005 CLI: `--callback auto` default, consent prompt, `handler`
   subcommand, composition.
 - [ ] GIE-006 README and packaging runbook.
 - [ ] GIE-007 Independent verification and closure.
@@ -82,7 +82,11 @@ push, PR or merge.
 - GIE-004: RED observed (20 failing against a `todo!()` skeleton), GREEN
   `cargo test -p destiny-adapters --lib uri_handler` 20 passed; clippy
   `-p destiny-adapters --all-targets --all-features -D warnings` clean. Tests
-  are `cfg(unix)` because fixtures use Unix absolute paths.
+  are `cfg(unix)` because fixtures use Unix absolute paths. Commit `5298e55`.
+- GIE-005 (gentle-ai-worker): RED on parsing and behavior stubs; GREEN
+  `cargo test -p destiny-cli --all-features` 187 passed (171 unit, 16
+  integration); workspace fmt and clippy clean; `login --help` and
+  `handler --help` render. Parent reviewed the composition root.
 
 - GIE-002: workflow reviewed; not run on GitHub (no push).
 - GIE-003: `cargo test -p destiny-app --lib uri_handler` 12 passed; fmt clean;
