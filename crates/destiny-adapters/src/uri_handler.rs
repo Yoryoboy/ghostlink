@@ -323,11 +323,12 @@ impl<R: HandlerCommandRunner> LinuxUriHandlerRegistrar<R> {
     /// Refreshes the desktop database; the tool is optional on many desktops.
     fn refresh_database(&mut self) -> String {
         let dir = self.paths.applications_dir.display().to_string();
+        let shown = shell_quote(&dir);
         match self.runner.run("update-desktop-database", &[&dir]) {
             Ok(CommandOutput { success: true, .. }) => {
-                format!("ran: update-desktop-database {dir}")
+                format!("ran: update-desktop-database {shown}")
             }
-            _ => format!("skipped: update-desktop-database {dir} (unavailable or failed)"),
+            _ => format!("skipped: update-desktop-database {shown} (unavailable or failed)"),
         }
     }
 
@@ -380,6 +381,12 @@ impl<R: HandlerCommandRunner> UriHandlerRegistrar for LinuxUriHandlerRegistrar<R
     fn install_plan(&mut self) -> Result<HandlerChanges, AppError> {
         let exec = exec_value(&self.executable)?;
         let mut changes = Vec::new();
+        if record_is_loose(&self.paths.record_file)? {
+            changes.push(format!(
+                "restrict {} to mode 0600",
+                self.paths.record_file.display()
+            ));
+        }
         if !exists(&self.paths.record_file)? {
             let previous = previous_for_record(self.default_handler()?);
             changes.push(format!(
@@ -394,7 +401,7 @@ impl<R: HandlerCommandRunner> UriHandlerRegistrar for LinuxUriHandlerRegistrar<R
         ));
         changes.push(format!(
             "run: update-desktop-database {}",
-            self.paths.applications_dir.display()
+            shell_quote(&self.paths.applications_dir.display().to_string())
         ));
         changes.push(format!("run: xdg-mime default {DESKTOP_ID} {SCHEME_MIME}"));
         Ok(HandlerChanges { changes })
@@ -403,6 +410,13 @@ impl<R: HandlerCommandRunner> UriHandlerRegistrar for LinuxUriHandlerRegistrar<R
     fn install(&mut self) -> Result<HandlerChanges, AppError> {
         let entry = self.desktop_entry()?;
         let mut changes = Vec::new();
+        if record_is_loose(&self.paths.record_file)? {
+            restrict_to_owner(&self.paths.record_file)?;
+            changes.push(format!(
+                "restricted {} to mode 0600",
+                self.paths.record_file.display()
+            ));
+        }
         if !exists(&self.paths.record_file)? {
             let previous = previous_for_record(self.default_handler()?);
             write_private_record(&self.paths.record_file, &previous)?;
@@ -490,6 +504,51 @@ fn describe_handler(handler: &str) -> &str {
 
 fn exists(path: &Path) -> Result<bool, AppError> {
     path.try_exists().map_err(|_| local_storage())
+}
+
+/// Whether an existing record is accessible to group or others.
+fn record_is_loose(path: &Path) -> Result<bool, AppError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        match fs::metadata(path) {
+            Ok(meta) => Ok(meta.permissions().mode() & 0o077 != 0),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(_) => Err(local_storage()),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(false)
+    }
+}
+
+fn restrict_to_owner(path: &Path) -> Result<(), AppError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|_| local_storage())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+/// Quotes `value` for a POSIX shell when it holds anything beyond a plain
+/// path alphabet, so a rendered command can be copied safely.
+fn shell_quote(value: &str) -> String {
+    let plain = !value.is_empty()
+        && value.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '+' | ':' | '@' | ',')
+        });
+    if plain {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
 }
 
 /// Reads a bounded UTF-8 file; a missing file is `None`.

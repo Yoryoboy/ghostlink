@@ -488,3 +488,50 @@ fn an_unavailable_portal_is_not_a_warning() {
 
     assert!(status.warnings.is_empty());
 }
+
+#[test]
+fn paths_rendered_as_commands_are_shell_quoted() {
+    let dir = TestDir::new();
+    let mut paths = dir.paths();
+    paths.applications_dir = dir.0.join("my data;id #/applications");
+    let mut registrar = LinuxUriHandlerRegistrar::new(
+        paths.clone(),
+        PathBuf::from(EXE),
+        FakeRunner::with_default(""),
+    );
+
+    let plan = registrar.install_plan().expect("plan");
+
+    let expected = format!(
+        "run: update-desktop-database '{}'",
+        paths.applications_dir.display()
+    );
+    assert!(plan.changes.contains(&expected), "{plan:?}");
+}
+
+#[test]
+fn an_existing_record_is_kept_but_restricted_to_its_owner() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TestDir::new();
+    let record = dir.paths().record_file;
+    write(&record, "google-chrome.desktop\n");
+    std::fs::set_permissions(&record, std::fs::Permissions::from_mode(0o644))
+        .expect("loosen record");
+    let mut registrar = registrar(&dir, FakeRunner::with_default(""));
+
+    let plan = registrar.install_plan().expect("plan");
+    let report = registrar.install().expect("install");
+
+    assert!(plan.changes[0].contains("0600"), "{plan:?}");
+    assert!(report.changes[0].contains("0600"), "{report:?}");
+    let mode = std::fs::metadata(&record)
+        .expect("record metadata")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600);
+    assert_eq!(
+        std::fs::read_to_string(&record).expect("record"),
+        "google-chrome.desktop\n"
+    );
+}
