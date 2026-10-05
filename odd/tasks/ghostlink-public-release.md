@@ -98,10 +98,23 @@ cargo-dist handling of the libdbus runtime dependency.
   (RED: 67 failed / 1 passed on 501 stub; GREEN: 68, then 72 after
   triangulation). Parent re-ran: 72 passed, typecheck clean, diff check. Not
   deployed (owner, PR-011). Commit evidence: `edbcf2b`.
-- [ ] **PR-003 — Broker mode in the token adapter.** Configurable token endpoint
-  (compiled-in broker URL, overridable); broker mode sends no Basic header and no
-  secret; refresh available without a secret; wire CLI login, CLI read runtime
-  and MCP. Direct confidential mode stays for development.
+- [x] **PR-003 — Broker mode in the token adapter.** Optional
+  `GHOSTLINK_TOKEN_BROKER_URL` (https only, no userinfo/query/fragment, no
+  controls, <= 2048 bytes; endpoint `<base>/token`, trailing slash and path
+  prefix handled). Explicit `ClientAuthMode::{Public, Confidential, Broker}`,
+  precedence secret > broker > public, in config and all three roots (CLI login,
+  CLI read runtime, MCP). `BungieTokenExchange::brokered(..)` and
+  `HttpTokenTransport::brokered(base)`: no Authorization header, no client
+  fields, refresh with rotation, 400/401 -> reauthorization, 403 unchanged.
+  Existing public/confidential bytes and outputs unchanged. Compiled-in broker
+  URL moved to PR-004. Delegated writer, test-first (RED: broker config did not
+  enable refresh, then missing-API compile errors; GREEN). Verifier FAIL on one
+  source-traced finding: `https:////@host` bypassed the empty-userinfo check
+  because `url` drops empty userinfo. Parent fix, test-first (RED: both
+  validation tests failed on the new cases; GREEN): require the literal
+  `https://` prefix and a non-empty authority without `@`. Note: request and
+  transport Debug show the broker URL (not secret). Checks: fmt, clippy,
+  1350 passed / 0 failed, diff check. Commit evidence: `94d7435`.
 
 ### Phase 2 — Zero configuration and wizard
 - [ ] **PR-004 — Compiled-in defaults layer.** Precedence env > `config.env` >
