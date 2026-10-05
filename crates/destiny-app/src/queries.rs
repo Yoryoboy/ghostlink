@@ -91,7 +91,7 @@ impl InstanceEnrichment {
         Ok(output)
     }
 
-    /// Project only the plugs admitted by the existing inspection name fields.
+    /// Project socketed intrinsics and plugs admitted by inspection name fields.
     /// Alternatives use the same normalized-name dedupe as inventory search;
     /// repeated equipped sockets are collapsed by hash/role only in this list.
     fn inspect_details(
@@ -105,6 +105,10 @@ impl InstanceEnrichment {
             let Some(Some(plug)) = self.plugs.get(&hash) else {
                 continue;
             };
+            if plug.plug_category.as_deref() == Some("intrinsics") {
+                selected.push((plug, Role::Intrinsic));
+                continue;
+            }
             let (perks, mods) = destiny_core::query::inventory_plug_names(
                 &hit.definition,
                 std::slice::from_ref(plug),
@@ -153,6 +157,8 @@ impl InstanceEnrichment {
                 }
             }
         }
+        // Stable partition: item identity first, preserving all other detail order.
+        selected.sort_by_key(|(_, role)| *role != Role::Intrinsic);
         let mut seen = std::collections::HashSet::new();
         let mut descriptions = std::collections::HashMap::new();
         let mut details = Vec::new();
@@ -2013,6 +2019,122 @@ mod tests {
     }
 
     #[test]
+    fn inspect_armor_intrinsic_with_description() {
+        assert_inspection_intrinsic(destiny_core::domain::ItemSlot::Legs);
+    }
+
+    #[test]
+    fn inspect_weapon_intrinsic_replaces_perk_detail_without_changing_names() {
+        assert_inspection_intrinsic(destiny_core::domain::ItemSlot::Kinetic);
+    }
+
+    fn assert_inspection_intrinsic(slot: destiny_core::domain::ItemSlot) {
+        let shared = gateway();
+        let mut definitions = standard_definitions();
+        definitions
+            .iter_mut()
+            .find(|definition| definition.hash == ItemHash::new(1))
+            .unwrap()
+            .slot = Some(slot);
+        for (hash, name, category) in [
+            (60, "Intrinsic", "intrinsics"),
+            (61, "Barrel", "barrels"),
+            (62, "Not intrinsic", "intrinsics.extra"),
+            (63, "Alternative intrinsic", "intrinsics"),
+            (64, "Second intrinsic", "intrinsics"),
+        ] {
+            let mut plug = definition(hash, name, None, vec![]);
+            plug.plug_category = Some(category.into());
+            definitions.push(plug);
+        }
+        let mut repository = CompositeRepository::with_definitions(definitions.clone());
+        repository.describe(definitions, 60, "Official intrinsic tooltip.\nSecond line.");
+        let mut item = instance("owned", 1, ItemLocation::Vault, vec![]);
+        // Intrinsics need not be the first socket; unknown and repeated plugs are safe.
+        item.plugs = [61, 99, 60, 62, 64, 60]
+            .into_iter()
+            .map(|hash| destiny_core::PlugSummary {
+                plug_hash: ItemHash::new(hash),
+                enabled: true,
+            })
+            .collect();
+        item.available_plugs = vec![destiny_core::AvailablePlug {
+            socket_index: 8,
+            plug_hash: ItemHash::new(63),
+        }];
+        repository.commit(snapshot_input(fresh_checked_at(), vec![], vec![item]));
+        let mut service = service(&shared, repository);
+        let result = service
+            .search_inventory(
+                &search_request(
+                    definition_query(None, None, vec![], 1),
+                    Some(instance_query(ItemHashFilter::Any, None, None, 1)),
+                ),
+                TTL,
+                NOW,
+            )
+            .unwrap();
+        let Resolution::Unique(inspected) = service
+            .inspect_item(
+                &InspectItemRequest {
+                    instance_id: "owned".into(),
+                },
+                TTL,
+                NOW,
+            )
+            .unwrap()
+        else {
+            panic!("missing inspection")
+        };
+        let hit = &result.hits[0];
+        assert_eq!(inspected.perk_names, hit.perk_names);
+        assert_eq!(inspected.mod_names, hit.mod_names);
+        assert_eq!(inspected.archetype, hit.archetype);
+        assert_eq!(inspected.available_perks, hit.available_perks);
+        assert_eq!(inspected.available_mods, hit.available_mods);
+        if slot == destiny_core::domain::ItemSlot::Kinetic {
+            assert_eq!(
+                inspected.perk_names,
+                ["Barrel", "Intrinsic", "Second intrinsic", "Intrinsic"]
+            );
+            assert_eq!(inspected.available_perks, ["Alternative intrinsic"]);
+        } else {
+            assert!(inspected.perk_names.is_empty());
+            assert!(inspected.available_perks.is_empty());
+        }
+        let intrinsic = &inspected.plug_details[0];
+        assert_eq!(intrinsic.hash, ItemHash::new(60));
+        assert_eq!(intrinsic.role.as_str(), "intrinsic");
+        assert_eq!(
+            intrinsic.description.as_deref(),
+            Some("Official intrinsic tooltip.\nSecond line.")
+        );
+        assert_eq!(inspected.plug_details[1].hash, ItemHash::new(64));
+        assert_eq!(inspected.plug_details[1].role.as_str(), "intrinsic");
+        assert_eq!(inspected.plug_details[1].description, None);
+        assert_eq!(
+            inspected
+                .plug_details
+                .iter()
+                .filter(|plug| plug.hash == ItemHash::new(60))
+                .count(),
+            1
+        );
+        assert!(
+            inspected
+                .plug_details
+                .iter()
+                .all(|plug| plug.hash != ItemHash::new(62))
+        );
+        assert!(
+            !inspected
+                .plug_details
+                .iter()
+                .any(|plug| plug.hash == ItemHash::new(63) && plug.role.as_str() == "intrinsic")
+        );
+    }
+
+    #[test]
     fn armor_search_exposes_mod_names_but_not_exotic_intrinsics() {
         let shared = gateway();
         let mut armor_mod = definition(60, "Harmonic Siphon", None, vec![]);
@@ -2086,19 +2208,23 @@ mod tests {
                 .iter()
                 .map(|plug| plug.hash.value())
                 .collect::<Vec<_>>(),
-            [60, 62, 64]
+            [61, 60, 62, 64]
         );
         assert_eq!(
-            inspected.plug_details[1].role,
+            inspected.plug_details[0].role,
+            destiny_core::InspectionPlugRole::Intrinsic
+        );
+        assert_eq!(
+            inspected.plug_details[2].role,
             destiny_core::InspectionPlugRole::Archetype
         );
         assert_eq!(inspected.available_mods, ["Heavy Ammo Finder"]);
         assert_eq!(
-            inspected.plug_details[0].description.as_deref(),
+            inspected.plug_details[1].description.as_deref(),
             Some("Official mod tooltip.")
         );
         assert_eq!(
-            inspected.plug_details[2].role,
+            inspected.plug_details[3].role,
             destiny_core::InspectionPlugRole::AvailableMod
         );
     }

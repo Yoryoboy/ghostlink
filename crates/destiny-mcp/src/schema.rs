@@ -971,6 +971,7 @@ pub struct ResolvedSortView {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InspectionPlugRoleView {
+    Intrinsic,
     Perk,
     Mod,
     AvailablePerk,

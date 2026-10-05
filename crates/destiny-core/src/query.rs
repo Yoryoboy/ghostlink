@@ -997,11 +997,11 @@ pub struct ItemInspection {
     pub definition: ItemDefinition,
     pub instance: ItemInstance,
     pub metadata: QueryMetadata,
-    /// Unique resolved plugs by hash and role, in socket order within each role.
+    /// Unique resolved plugs by hash and role; socketed intrinsics come first.
     pub plug_details: Vec<InspectionPlug>,
 }
 
-/// A resolved plug already exposed by an inspection name field.
+/// A resolved socketed intrinsic or plug exposed by an inspection name field.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InspectionPlug {
     pub hash: ItemHash,
@@ -1013,6 +1013,7 @@ pub struct InspectionPlug {
 /// Inspection-only roles; alternatives exclude names already equipped.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum InspectionPlugRole {
+    Intrinsic,
     Perk,
     Mod,
     AvailablePerk,
@@ -1023,6 +1024,7 @@ pub enum InspectionPlugRole {
 impl InspectionPlugRole {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Intrinsic => "intrinsic",
             Self::Perk => "perk",
             Self::Mod => "mod",
             Self::AvailablePerk => "available_perk",

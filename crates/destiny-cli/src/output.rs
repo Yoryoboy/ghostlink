@@ -780,7 +780,18 @@ fn inspection_human(inspection: &ItemInspection) -> String {
         lines.push(format!("  power: {power}"));
     }
     lines.push(format!("  perk states: {}", perks_text(&instance.perks)));
+    let intrinsic_names: Vec<_> = inspection
+        .plug_details
+        .iter()
+        .filter(|plug| plug.role == destiny_app::InspectionPlugRole::Intrinsic)
+        .map(|plug| plug.name.clone())
+        .collect();
     for (label, names, role) in [
+        (
+            "intrinsic",
+            &intrinsic_names,
+            destiny_app::InspectionPlugRole::Intrinsic,
+        ),
         (
             "perks",
             &inspection.perk_names,
