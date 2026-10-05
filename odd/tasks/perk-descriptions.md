@@ -1,4 +1,4 @@
-# Perk Descriptions — IN PROGRESS
+# Perk Descriptions — COMPLETE
 
 ## Objective
 
@@ -44,9 +44,10 @@ This is piece 1 of 3 of the perk-knowledge initiative:
       atomic publication with the Manifest, lookup by hash.
 - [x] 2. Expose descriptions in subclass, subclass options, artifact and
       loadout plug outputs (CLI JSON/human, MCP, docs).
-- [ ] 3. Expose descriptions in item inspect/search via an additive
-      structured plug list (CLI JSON/human, MCP, docs).
-- [ ] 4. Full workspace verification (fmt, clippy, tests) and close.
+- [x] 3. Expose descriptions in item inspect via an additive structured
+      plug list (CLI JSON/human, MCP, docs). Search stays description-free
+      to keep hit lists compact; agents inspect an item for detail.
+- [x] 4. Full workspace verification (fmt, clippy, tests) and close.
 
 ## Evidence
 
@@ -59,3 +60,16 @@ This is piece 1 of 3 of the perk-knowledge initiative:
   artifact slots and loadout plugs (CLI JSON/human, MCP, docs). Independent
   verifier with unmasked exit codes: fmt 0, clippy `-D warnings` 0, workspace
   tests 0 (1,353 passed, 0 failed, 0 ignored).
+- Task 3 — inspect-only `plug_details: [{hash, name, role, description?}]`,
+  roles `perk`, `mod`, `available_perk`, `available_mod`, `archetype`. No
+  `intrinsic` role: existing inspect fields exclude exotic intrinsics. Writer
+  observed RED (exit 101, six intended failures) then GREEN.
+- Task 4 — final tree (Tasks 1–3): fmt 0, clippy `-D warnings` 0, workspace
+  tests 0 with 1,358 passed, 0 failed across 38 result lines (writer run with
+  unmasked exit codes, logs under /tmp/perk-inspect-*.log; parent spot-checked
+  the green log).
+
+## Follow-ups
+
+- Exotic intrinsic descriptions in inspect (needs inspect to surface intrinsics).
+- Piece 2: Clarity community data sync into a separate table.

@@ -755,11 +755,27 @@ fn inspection_human(inspection: &ItemInspection) -> String {
         lines.push(format!("  power: {power}"));
     }
     lines.push(format!("  perk states: {}", perks_text(&instance.perks)));
-    for (label, names) in [
-        ("perks", &inspection.perk_names),
-        ("mods", &inspection.mod_names),
-        ("available perks", &inspection.available_perks),
-        ("available mods", &inspection.available_mods),
+    for (label, names, role) in [
+        (
+            "perks",
+            &inspection.perk_names,
+            destiny_app::InspectionPlugRole::Perk,
+        ),
+        (
+            "mods",
+            &inspection.mod_names,
+            destiny_app::InspectionPlugRole::Mod,
+        ),
+        (
+            "available perks",
+            &inspection.available_perks,
+            destiny_app::InspectionPlugRole::AvailablePerk,
+        ),
+        (
+            "available mods",
+            &inspection.available_mods,
+            destiny_app::InspectionPlugRole::AvailableMod,
+        ),
     ] {
         if !names.is_empty() {
             lines.push(format!(
@@ -771,9 +787,23 @@ fn inspection_human(inspection: &ItemInspection) -> String {
                     .join(", ")
             ));
         }
+        for plug in inspection
+            .plug_details
+            .iter()
+            .filter(|plug| plug.role == role)
+        {
+            push_description(&mut lines, 4, Some(&plug.name), plug.description.as_deref());
+        }
     }
     if let Some(archetype) = &inspection.archetype {
         lines.push(format!("  archetype: {}", sanitize(archetype)));
+        for plug in inspection
+            .plug_details
+            .iter()
+            .filter(|plug| plug.role == destiny_app::InspectionPlugRole::Archetype)
+        {
+            push_description(&mut lines, 4, Some(&plug.name), plug.description.as_deref());
+        }
     }
     if !inspection.stats.is_empty() {
         lines.push(format!(
@@ -856,7 +886,7 @@ fn search_json(result: &InventorySearchResult) -> String {
 }
 
 fn inspection_json(inspection: &ItemInspection) -> String {
-    json!({
+    let mut value = json!({
         "perk_names": inspection.perk_names,
         "mod_names": inspection.mod_names,
         "mods": inspection.mod_names,
@@ -868,8 +898,14 @@ fn inspection_json(inspection: &ItemInspection) -> String {
         "instance": instance_json(&inspection.instance),
         "kind": "item_inspection",
         "metadata": metadata_json(&inspection.metadata),
-    })
-    .to_string()
+    });
+    if !inspection.plug_details.is_empty() {
+        value["plug_details"] = json!(inspection.plug_details.iter().map(|plug| with_description(
+            json!({"hash": plug.hash.value(), "name": plug.name, "role": plug.role.as_str()}),
+            plug.description.as_deref(),
+        )).collect::<Vec<_>>());
+    }
+    value.to_string()
 }
 
 /// Replaces every control character with `?`.
@@ -1581,6 +1617,7 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            plug_details: Vec::new(),
             perk_names: Vec::new(),
             mod_names: Vec::new(),
             archetype: None,
@@ -1827,6 +1864,48 @@ mod tests {
             r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"archetype":null,"available_mods":[],"available_perks":[],"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON},"resolved":{{}}}}"#
         );
         assert_eq!(render_search(OutputMode::Json, &search_result()), expected);
+    }
+
+    #[test]
+    fn inspection_plug_descriptions_json() {
+        let inspected = described_inspection();
+        let json: serde_json::Value =
+            serde_json::from_str(&render_inspection(OutputMode::Json, &inspected)).unwrap();
+        assert_eq!(
+            json["plug_details"][0]["description"],
+            "Official tooltip.\nSecond line."
+        );
+        assert_eq!(json["plug_details"][0]["hash"], 60);
+        assert_eq!(json["plug_details"][0]["role"], "perk");
+        assert!(json["plug_details"][1].get("description").is_none());
+    }
+
+    fn described_inspection() -> ItemInspection {
+        let mut inspected = inspection();
+        inspected.perk_names = vec!["Rampage".into(), "Barrel".into()];
+        inspected.plug_details = vec![
+            destiny_app::InspectionPlug {
+                hash: ItemHash::new(60),
+                name: "Rampage".into(),
+                role: destiny_app::InspectionPlugRole::Perk,
+                description: Some("Official tooltip.\nSecond line.".into()),
+            },
+            destiny_app::InspectionPlug {
+                hash: ItemHash::new(61),
+                name: "Barrel".into(),
+                role: destiny_app::InspectionPlugRole::Perk,
+                description: None,
+            },
+        ];
+        inspected
+    }
+
+    #[test]
+    fn inspection_plug_descriptions_human() {
+        assert!(
+            render_inspection(OutputMode::Human, &described_inspection())
+                .contains("    Rampage:\n      Official tooltip.\n      Second line.")
+        );
     }
 
     #[test]

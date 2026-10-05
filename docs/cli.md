@@ -343,6 +343,17 @@ the same enrichment as search hits. Raw perk component state is separate under
 `perk states:`. CLI JSON exposes `perk_names`, `mod_names`, `mods` (the same
 names as `mod_names`), `archetype`, `available_perks`, `available_mods` and
 `stats` (`{name, value}` entries), alongside the definition and instance state.
+Inspection also adds `plug_details`: `{hash, name, role, description?}` entries.
+Roles are `perk`, `mod`, `available_perk`, `available_mod` and `archetype`.
+Only plugs already surfaced by the existing name fields are included; exotic
+intrinsics excluded by those fields remain excluded. Repeated equipped plugs
+are deduplicated by hash/role; available names still exclude equipped names and
+are unique by normalized name. Equipped details follow socket order, then the
+first archetype, then available details in socket order. Missing descriptions
+are omitted; an empty `plug_details` list is omitted entirely. Official text
+preserves newlines in JSON and appears indented under the corresponding names
+in human output. Search hits stay compact and do not include descriptions:
+inspect an item for detail.
 
 ### Weekly reset
 

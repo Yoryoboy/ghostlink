@@ -91,6 +91,89 @@ impl InstanceEnrichment {
         Ok(output)
     }
 
+    /// Project only the plugs admitted by the existing inspection name fields.
+    /// Alternatives use the same normalized-name dedupe as inventory search;
+    /// repeated equipped sockets are collapsed by hash/role only in this list.
+    fn inspect_details(
+        &self,
+        repository: &impl destiny_core::ports::WorldDefinitionRepository,
+        hit: &InventorySearchHit,
+    ) -> Result<Vec<destiny_core::InspectionPlug>, AppError> {
+        use destiny_core::{InspectionPlug, InspectionPlugRole as Role};
+        let mut selected = Vec::new();
+        for hash in hit.instance.plugs.iter().map(|plug| plug.plug_hash) {
+            let Some(Some(plug)) = self.plugs.get(&hash) else {
+                continue;
+            };
+            let (perks, mods) = destiny_core::query::inventory_plug_names(
+                &hit.definition,
+                std::slice::from_ref(plug),
+            );
+            if !perks.is_empty() {
+                selected.push((plug, Role::Perk));
+            }
+            if !mods.is_empty() {
+                selected.push((plug, Role::Mod));
+            }
+        }
+        if hit.archetype.is_some()
+            && let Some(plug) = hit
+                .instance
+                .plugs
+                .iter()
+                .filter_map(|plug| self.plugs.get(&plug.plug_hash).and_then(Option::as_ref))
+                .find(|plug| destiny_core::query::is_armor_archetype(plug))
+        {
+            selected.push((plug, Role::Archetype));
+        }
+        let mut available_seen = std::collections::HashSet::new();
+        for hash in hit
+            .instance
+            .available_plugs
+            .iter()
+            .map(|plug| plug.plug_hash)
+        {
+            let Some(Some(plug)) = self.plugs.get(&hash) else {
+                continue;
+            };
+            let (perks, mods) = destiny_core::query::inventory_plug_names(
+                &hit.definition,
+                std::slice::from_ref(plug),
+            );
+            for (names, surfaced, role) in [
+                (perks, &hit.available_perks, Role::AvailablePerk),
+                (mods, &hit.available_mods, Role::AvailableMod),
+            ] {
+                if !names.is_empty()
+                    && surfaced.contains(&plug.name)
+                    && available_seen
+                        .insert((destiny_core::query::normalize_search_text(&plug.name), role))
+                {
+                    selected.push((plug, role));
+                }
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut descriptions = std::collections::HashMap::new();
+        let mut details = Vec::new();
+        for (plug, role) in selected {
+            if !seen.insert((plug.hash, role)) {
+                continue;
+            }
+            if let std::collections::hash_map::Entry::Vacant(entry) = descriptions.entry(plug.hash)
+            {
+                entry.insert(repository.lookup_item_description(plug.hash)?);
+            }
+            details.push(InspectionPlug {
+                hash: plug.hash,
+                name: plug.name.clone(),
+                role,
+                description: descriptions[&plug.hash].clone(),
+            });
+        }
+        Ok(details)
+    }
+
     fn resolve(
         &mut self,
         repository: &(impl DefinitionRepository + destiny_core::StatDefinitionRepository),
@@ -603,7 +686,10 @@ where
         request: &InspectItemRequest,
         policy: FreshnessPolicy,
         now: Timestamp,
-    ) -> Result<Resolution<ItemInspection>, AppError> {
+    ) -> Result<Resolution<ItemInspection>, AppError>
+    where
+        R: destiny_core::ports::WorldDefinitionRepository,
+    {
         self.require_definitions()?;
         let outcome = self.synchronize(policy, now)?;
         let metadata = query_metadata(&outcome, policy, now);
@@ -618,8 +704,11 @@ where
             Resolution::Ambiguous(_) => return Err(invalid_repository_state()),
         };
         let definition = self.resolve_definition(instance.item_hash)?;
-        let hit = InstanceEnrichment::default().resolve(self.repository(), definition, instance)?;
+        let mut enrichment = InstanceEnrichment::default();
+        let hit = enrichment.resolve(self.repository(), definition, instance)?;
+        let plug_details = enrichment.inspect_details(self.repository(), &hit)?;
         Ok(Resolution::Unique(ItemInspection {
+            plug_details,
             perk_names: hit.perk_names,
             mod_names: hit.mod_names,
             archetype: hit.archetype,
@@ -1870,7 +1959,8 @@ mod tests {
         let mut alternative = definition(63, "Kill Clip", None, vec![]);
         alternative.plug_category = Some("frames".into());
         definitions.extend([rampage, barrel, cosmetic, alternative]);
-        let mut repository = CompositeRepository::with_definitions(definitions);
+        let mut repository = CompositeRepository::with_definitions(definitions.clone());
+        repository.describe(definitions, 60, "Official rampage tooltip.\nSecond line.");
         let mut item = instance("owned", 1, ItemLocation::Vault, vec![]);
         item.available_plugs = [60, 63, 99]
             .into_iter()
@@ -1909,6 +1999,17 @@ mod tests {
         assert_eq!(inspected.available_perks, result.hits[0].available_perks);
         assert_eq!(inspected.available_perks, ["Kill Clip"]);
         assert!(inspected.mod_names.is_empty());
+        assert_eq!(inspected.plug_details.len(), 3);
+        assert_eq!(inspected.plug_details[0].hash, ItemHash::new(61));
+        assert_eq!(inspected.plug_details[0].description, None);
+        assert_eq!(
+            inspected.plug_details[1].description.as_deref(),
+            Some("Official rampage tooltip.\nSecond line.")
+        );
+        assert_eq!(
+            inspected.plug_details[2].role,
+            destiny_core::InspectionPlugRole::AvailablePerk
+        );
     }
 
     #[test]
@@ -1928,9 +2029,22 @@ mod tests {
         archetype.plug_category = Some("armor_archetypes".into());
         let mut second = definition(63, "Paragon", None, vec![]);
         second.plug_category = Some("armor_archetypes".into());
-        definitions.extend([armor_mod, intrinsic, archetype, second]);
-        let mut repository = CompositeRepository::with_definitions(definitions);
+        let mut alternative = definition(64, "Heavy Ammo Finder", None, vec![]);
+        alternative.plug_category = Some("enhancements.v2_head".into());
+        let mut empty = definition(65, "Empty Mod Socket", None, vec![]);
+        empty.plug_category = Some("enhancements.v2_head".into());
+        definitions.extend([armor_mod, intrinsic, archetype, second, alternative, empty]);
+        let mut repository = CompositeRepository::with_definitions(definitions.clone());
+        repository.describe(definitions, 60, "Official mod tooltip.");
         let mut item = instance("owned", 1, ItemLocation::Vault, vec![]);
+        item.available_plugs = [60, 64, 64, 65, 99]
+            .into_iter()
+            .enumerate()
+            .map(|(index, hash)| destiny_core::AvailablePlug {
+                socket_index: index as u8,
+                plug_hash: ItemHash::new(hash),
+            })
+            .collect();
         item.plugs = [61, 60, 99, 62, 63, 60]
             .into_iter()
             .map(|hash| destiny_core::PlugSummary {
@@ -1966,6 +2080,27 @@ mod tests {
         assert_eq!(inspected.mod_names, result.hits[0].mod_names);
         assert_eq!(inspected.archetype, result.hits[0].archetype);
         assert_eq!(inspected.available_mods, result.hits[0].available_mods);
+        assert_eq!(
+            inspected
+                .plug_details
+                .iter()
+                .map(|plug| plug.hash.value())
+                .collect::<Vec<_>>(),
+            [60, 62, 64]
+        );
+        assert_eq!(
+            inspected.plug_details[1].role,
+            destiny_core::InspectionPlugRole::Archetype
+        );
+        assert_eq!(inspected.available_mods, ["Heavy Ammo Finder"]);
+        assert_eq!(
+            inspected.plug_details[0].description.as_deref(),
+            Some("Official mod tooltip.")
+        );
+        assert_eq!(
+            inspected.plug_details[2].role,
+            destiny_core::InspectionPlugRole::AvailableMod
+        );
     }
 
     #[test]

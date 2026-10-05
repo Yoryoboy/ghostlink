@@ -1679,6 +1679,26 @@ pub fn inspect_item_output(
     match resolution {
         Resolution::Missing => Ok(InspectItemOutput::Missing),
         Resolution::Unique(inspection) => Ok(InspectItemOutput::Found(Box::new(FoundInspection {
+            plug_details: inspection
+                .plug_details
+                .iter()
+                .map(|plug| {
+                    use crate::schema::InspectionPlugRoleView as View;
+                    use destiny_app::InspectionPlugRole as Role;
+                    crate::schema::InspectionPlugView {
+                        hash: plug.hash.value(),
+                        name: plug.name.clone(),
+                        description: plug.description.clone(),
+                        role: match plug.role {
+                            Role::Perk => View::Perk,
+                            Role::Mod => View::Mod,
+                            Role::AvailablePerk => View::AvailablePerk,
+                            Role::AvailableMod => View::AvailableMod,
+                            Role::Archetype => View::Archetype,
+                        },
+                    }
+                })
+                .collect(),
             perk_names: inspection.perk_names.clone(),
             mod_names: inspection.mod_names.clone(),
             mods: inspection.mod_names.clone(),

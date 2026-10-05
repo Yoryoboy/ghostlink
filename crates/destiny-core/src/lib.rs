@@ -68,6 +68,7 @@ pub use query::{
     SearchTerm, StatCondition, StatOp, SubclassConfig, SubclassOption, SubclassOptionsResult,
     SubclassResult, SubclassSlot, definition_matches, instance_matches, normalize_search_text,
 };
+pub use query::{InspectionPlug, InspectionPlugRole};
 pub use redact::{REDACTED, Redacted, opaque, redact_optional};
 pub use state::{
     Dataset, FreshnessInput, FreshnessPolicy, FreshnessStatus, ProfileSyncOutcome,

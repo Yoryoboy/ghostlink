@@ -997,6 +997,39 @@ pub struct ItemInspection {
     pub definition: ItemDefinition,
     pub instance: ItemInstance,
     pub metadata: QueryMetadata,
+    /// Unique resolved plugs by hash and role, in socket order within each role.
+    pub plug_details: Vec<InspectionPlug>,
+}
+
+/// A resolved plug already exposed by an inspection name field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InspectionPlug {
+    pub hash: ItemHash,
+    pub name: String,
+    pub role: InspectionPlugRole,
+    pub description: Option<String>,
+}
+
+/// Inspection-only roles; alternatives exclude names already equipped.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum InspectionPlugRole {
+    Perk,
+    Mod,
+    AvailablePerk,
+    AvailableMod,
+    Archetype,
+}
+
+impl InspectionPlugRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Perk => "perk",
+            Self::Mod => "mod",
+            Self::AvailablePerk => "available_perk",
+            Self::AvailableMod => "available_mod",
+            Self::Archetype => "archetype",
+        }
+    }
 }
 
 /// A request to inspect exactly one concrete instance.
