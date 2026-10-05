@@ -81,9 +81,9 @@ cargo-dist handling of the libdbus runtime dependency.
 ## Tasks
 
 ### Phase 0
-- [ ] **PR-001 — Establish tracker and branch.** Tracker plus README "Use it from
+- [x] **PR-001 — Establish tracker and branch.** Tracker plus README "Use it from
   an AI agent" rewrite (Option A MCP per-agent commands, Option B CLI skill;
-  one shared login).
+  one shared login). Docs only (no meaningful RED); `git diff --check`. Commit evidence: `e491aa6`.
 
 ### Phase 1 — Token broker
 - [ ] **PR-002 — Broker service.** Stateless Cloudflare Worker: `POST /token`
