@@ -494,11 +494,11 @@ dependencies = [
  "chrono",
  "dbus-secret-service-keyring-store",
  "destiny-app",
- "destiny-cli",
  "destiny-core",
  "destiny-mcp",
  "flate2",
  "getrandom 0.4.3",
+ "ghostlink",
  "keyring-core",
  "reqwest",
  "rusqlite",
@@ -517,19 +517,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "destiny-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "destiny-adapters",
- "destiny-app",
- "destiny-output",
- "dialoguer",
- "libc",
- "serde_json",
-]
-
-[[package]]
 name = "destiny-core"
 version = "0.1.0"
 
@@ -540,8 +527,8 @@ dependencies = [
  "clap",
  "destiny-adapters",
  "destiny-app",
- "destiny-cli",
  "destiny-output",
+ "ghostlink",
  "rmcp",
  "schemars",
  "serde",
@@ -801,6 +788,20 @@ dependencies = [
  "r-efi",
  "rand_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "ghostlink"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "destiny-adapters",
+ "destiny-app",
+ "destiny-mcp",
+ "destiny-output",
+ "dialoguer",
+ "libc",
+ "serde_json",
 ]
 
 [[package]]

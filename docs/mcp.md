@@ -40,7 +40,7 @@ Both `equip_item` and `move_item` can return
 Run it with the shared read configuration present in the environment:
 
 ```sh
-cargo run -p destiny-mcp
+cargo run -p ghostlink --bin destiny-mcp
 ```
 
 The process speaks newline-delimited JSON-RPC on stdout only. Every startup and

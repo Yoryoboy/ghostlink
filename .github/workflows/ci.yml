@@ -66,7 +66,7 @@ jobs:
       - name: Build
         run: |
           cargo build --locked --workspace --all-features
-          cargo build --locked -p destiny-cli
+          cargo build --locked -p ghostlink
 
       - name: Test
         # Run every test binary so one failure does not hide platform failures

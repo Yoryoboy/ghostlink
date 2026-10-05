@@ -1,17 +1,32 @@
 [package]
-name = "destiny-cli"
+name = "ghostlink"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# The crate keeps the internal `destiny-cli` name; the executable installed for
-# people is the product name `ghostlink`. The library target is what the
-# workspace reuses, so the rename is confined to the bin target.
+repository.workspace = true
+homepage.workspace = true
+description.workspace = true
+authors.workspace = true
+default-run = "ghostlink"
+autobins = false
+
+# Preserve Rust imports while shipping both product executables in one release.
+[lib]
+name = "destiny_cli"
+
+[package.metadata.dist]
+dist = true
 [[bin]]
 name = "ghostlink"
 path = "src/main.rs"
 
+[[bin]]
+name = "destiny-mcp"
+path = "src/bin/destiny_mcp.rs"
+
 [dependencies]
+destiny-mcp = { path = "../destiny-mcp" }
 clap.workspace = true
 destiny-adapters = { path = "../destiny-adapters" }
 destiny-app.workspace = true
@@ -26,7 +41,7 @@ serde_json.workspace = true
 libc = "0.2"
 
 # Unit and integration tests use the application fakes. Declaring the feature
-# here keeps `cargo test -p destiny-cli` compiling on its own instead of relying
+# here keeps `cargo test -p ghostlink` compiling on its own instead of relying
 # on workspace feature unification from sibling dev-dependencies.
 [dev-dependencies]
 destiny-app = { workspace = true, features = ["test-support"] }

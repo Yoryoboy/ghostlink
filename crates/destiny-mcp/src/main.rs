@@ -1,6 +1,6 @@
 //! `destiny-mcp` process composition root.
 //!
-//! This binary is the single place in the workspace that names concrete
+//! This process module is the single MCP composition point that names concrete
 //! provider and platform adapters. It is deliberately small: it loads the
 //! redacted shared read runtime configuration, loads the complete stored access
 //! credential, builds the authenticated Bungie profile gateway, the SQLite
@@ -9,12 +9,11 @@
 //!
 //! # Architecture
 //!
-//! The library crate (`destiny_mcp`) holds the RMCP server, the bounded MCP
-//! schemas, and the injectable [`InventoryReadService`] and
-//! [`MutationToolService`] seams, and never names an adapter. This binary is the
-//! composition root that satisfies those seams with concrete adapters, which is
-//! why `destiny-adapters` is a dependency of this crate rather than of the
-//! library contracts.
+//! The presentation modules hold the RMCP server, bounded MCP schemas, and
+//! injectable read and mutation seams without naming adapters. This private
+//! process module satisfies those seams with concrete adapters. The historical
+//! `main.rs` is compiled as a private library module so both development and
+//! distribution binaries call the same entry point.
 //!
 //! One profile gateway and one durable store are shared by both compositions
 //! through `Arc<Mutex<..>>`, so the read path and the mutation path observe the
@@ -41,6 +40,8 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::runtime::serve_stdio;
+use crate::{ComposedMutationService, QueryReadService, ReadToolServer};
 use clap::Parser;
 use destiny_adapters::sqlite::SqliteStore;
 use destiny_adapters::{
@@ -55,8 +56,6 @@ use destiny_app::{
     PlanIdGenerator, PlanLifetime, ProfileGateway, ProfileSyncReason, ProfileSyncService,
     QueryService, ReadRuntimeConfig, Resolution, SearchRepository, SyncMetadata,
 };
-use destiny_mcp::runtime::serve_stdio;
-use destiny_mcp::{ComposedMutationService, QueryReadService, ReadToolServer};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -66,10 +65,12 @@ use destiny_mcp::{ComposedMutationService, QueryReadService, ReadToolServer};
 )]
 struct Cli;
 
+/// Runs the production MCP process, including argument parsing and its runtime.
+/// `--help` and `--version` exit before configuration or adapter access.
 #[tokio::main]
-async fn main() {
+pub async fn run() {
     let _ = Cli::parse();
-    if let Err(error) = run().await {
+    if let Err(error) = serve_runtime().await {
         // Startup and runtime diagnostics go to stderr; stdout belongs to the
         // protocol. `AppError` carries only a sanitized category message.
         eprintln!("{error}");
@@ -79,7 +80,7 @@ async fn main() {
 
 /// Loads configuration, composes the shared read and mutation services, and
 /// serves them over stdio.
-async fn run() -> Result<(), AppError> {
+async fn serve_runtime() -> Result<(), AppError> {
     let config = ReadRuntimeConfig::from_env()?;
     let store = NativeCredentialStore::new()?;
     let server = compose_server(&config, store)?;
@@ -262,7 +263,7 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     let read_service =
         QueryReadService::new(QueryService::new(read_sync), SystemClock::new(), policy);
 
-    let read_service = destiny_mcp::service::PersonalWeeklyReadService::new(
+    let read_service = crate::service::PersonalWeeklyReadService::new(
         destiny_app::WeeklyPersonalService::new(
             personal_public,
             gateway.clone(),
@@ -271,11 +272,11 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         read_service,
     );
 
-    let read_service = destiny_mcp::service::WeeklyReadService::new(weekly, read_service, |t| {
+    let read_service = crate::service::WeeklyReadService::new(weekly, read_service, |t| {
         destiny_adapters::format_reset_timestamp(t, false)
     });
 
-    let read_service = destiny_mcp::service::ArtifactReadService::new(
+    let read_service = crate::service::ArtifactReadService::new(
         destiny_app::ArtifactService::new(ProfileSyncService::new_with_definitions(
             gateway.clone(),
             repository.clone(),
@@ -285,7 +286,7 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         policy,
     );
 
-    let read_service = destiny_mcp::service::LoadoutsReadService::new(
+    let read_service = crate::service::LoadoutsReadService::new(
         destiny_app::LoadoutService::new(ProfileSyncService::new_with_definitions(
             gateway.clone(),
             repository.clone(),
@@ -747,10 +748,10 @@ mod tests {
 
     #[test]
     fn absent_manifest_without_override_returns_typed_tool_error_offline() {
+        use crate::service::InventoryReadService;
         use destiny_adapters::profile_gateway::{
             ProfileHttpRequest, ProfileHttpResponse, ProfileTransport, ProfileTransportError,
         };
-        use destiny_mcp::service::InventoryReadService;
         struct Offline;
         impl ProfileTransport for Offline {
             fn get(
@@ -776,7 +777,7 @@ mod tests {
             config.resolve_definition_version(&version_store)
         });
         let store = destiny_adapters::sqlite::SqliteStore::open_in_memory().unwrap();
-        let mut service = destiny_mcp::QueryReadService::new(
+        let mut service = crate::QueryReadService::new(
             destiny_app::QueryService::new(destiny_app::ProfileSyncService::new_with_definitions(
                 gateway, store,
             )),
@@ -784,7 +785,7 @@ mod tests {
             destiny_app::FreshnessPolicy { ttl_seconds: 900 },
         );
         let error = service
-            .list_characters(&destiny_mcp::service::ListCharactersRequest)
+            .list_characters(&crate::service::ListCharactersRequest)
             .unwrap_err();
         assert_eq!(error.code(), "definitions_unavailable");
         assert_eq!(

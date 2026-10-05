@@ -4,7 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 autobins = false
-default-run = "destiny-mcp"
+repository.workspace = true
+homepage.workspace = true
+description.workspace = true
+authors.workspace = true
+
+# Library and test fixture only; the `ghostlink` package ships the
+# `destiny-mcp` executable.
+[package.metadata.dist]
+dist = false
 
 [features]
 default = []
@@ -32,7 +40,7 @@ tokio = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-destiny-cli = { path = "../destiny-cli" }
+destiny-cli = { package = "ghostlink", path = "../destiny-cli" }
 destiny-app = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true, features = [
     "io-util",
@@ -42,10 +50,6 @@ tokio = { workspace = true, features = [
     "sync",
     "time",
 ] }
-
-[[bin]]
-name = "destiny-mcp"
-path = "src/main.rs"
 
 [[bin]]
 name = "offline-fixture"

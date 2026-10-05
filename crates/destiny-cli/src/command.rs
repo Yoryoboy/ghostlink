@@ -29,8 +29,8 @@ pub const SUCCESS_EXIT_CODE: i32 = 0;
 
 /// The product command surface: the shared read commands and interactive login.
 ///
-/// The crate keeps the internal `destiny-cli` name, so the parsed program name
-/// is the product name `ghostlink`. The explicit `about` and `long_about` keep
+/// The library keeps the internal `destiny_cli` name while the package and
+/// parsed program are named `ghostlink`. The explicit `about` and `long_about` keep
 /// this developer documentation out of the product's help output.
 #[derive(Debug, Parser)]
 #[command(
