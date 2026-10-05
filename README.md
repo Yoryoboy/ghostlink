@@ -74,6 +74,11 @@ configuration file, so no secrets need to be passed through the agent:
 }
 ```
 
+Agents with shell access can use the CLI instead: copy or symlink
+[`skills/ghostlink`](skills/ghostlink/SKILL.md) into the agent's skills
+directory (for example `~/.claude/skills/` or `~/.agents/skills/`). The skill
+maps intents to commands and sets the safety rules for `equip`.
+
 ## Documentation
 
 | Topic | Where |
