@@ -522,6 +522,12 @@ impl destiny_app::StatDefinitionRepository for SharedRepository {
 }
 
 impl destiny_app::WorldDefinitionRepository for SharedRepository {
+    fn lookup_item_description(
+        &self,
+        hash: destiny_app::ItemHash,
+    ) -> Result<Option<String>, destiny_app::AppError> {
+        self.lock()?.lookup_item_description(hash)
+    }
     fn lookup_milestone(
         &self,
         hash: u32,

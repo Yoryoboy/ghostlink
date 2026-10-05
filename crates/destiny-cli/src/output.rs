@@ -33,6 +33,48 @@ mod subclass_tests {
         SubclassResult, SubclassSlot,
     };
 
+    #[test]
+    fn subclass_descriptions_are_additive_and_readable() {
+        let mut result = fixture();
+        let slot = &mut result.characters[0].subclass.as_mut().unwrap().slots[0];
+        slot.description = Some("Official fragment tooltip.\nSecond line.".into());
+        let json = subclass_json(&result);
+        assert_eq!(
+            json["characters"][0]["subclass"]["slots"][0]["description"],
+            "Official fragment tooltip.\nSecond line."
+        );
+        assert!(
+            json["characters"][0]["subclass"]["slots"][1]
+                .get("description")
+                .is_none()
+        );
+        assert!(
+            render_subclasses(OutputMode::Human, &result)
+                .contains("    Plug 0:\n      Official fragment tooltip.\n      Second line.")
+        );
+    }
+
+    #[test]
+    fn subclass_single_slots_omit_repeated_names_and_multi_slots_keep_labels() {
+        let mut result = fixture();
+        let slots = &mut result.characters[0].subclass.as_mut().unwrap().slots;
+        for slot in slots.iter_mut() {
+            slot.description = Some(format!("Effect {}", slot.plug_hash.value()));
+        }
+        slots[7].empty = false;
+        let mut aspect = slots[6].clone();
+        aspect.name = Some("Other aspect".into());
+        aspect.description = Some("Other effect".into());
+        slots.push(aspect);
+        let text = render_subclasses(OutputMode::Human, &result);
+        assert!(text.contains("  Super: Plug 1\n    Effect 1"));
+        assert!(!text.contains("    Plug 1:"));
+        assert!(text.contains("  Aspects: Plug 6, Other aspect\n    Plug 6:\n      Effect 6\n    Other aspect:\n      Other effect"));
+        assert!(text.contains(
+            "  Fragments: Plug 0, Plug 7\n    Plug 0:\n      Effect 0\n    Plug 7:\n      Effect 7"
+        ));
+    }
+
     fn fixture() -> SubclassResult {
         use SubclassPlugKind::*;
         SubclassResult {
@@ -62,6 +104,7 @@ mod subclass_tests {
                             kind,
                             plug_hash: ItemHash::new(i as i64),
                             name: Some(format!("Plug {i}")),
+                            description: None,
                             empty: i == 7,
                         })
                         .collect(),
@@ -114,6 +157,34 @@ mod subclass_tests {
             render_subclasses(OutputMode::Human, &SubclassResult { characters: vec![] }),
             "no characters"
         );
+    }
+}
+
+fn with_description(mut value: Value, description: Option<&str>) -> Value {
+    if let Some(description) = description {
+        value["description"] = json!(description);
+    }
+    value
+}
+
+fn description_label(multiple: bool, name: Option<&str>) -> Option<&str> {
+    multiple.then_some(name.unwrap_or("unknown"))
+}
+
+fn push_description(
+    lines: &mut Vec<String>,
+    indent: usize,
+    name: Option<&str>,
+    description: Option<&str>,
+) {
+    if let Some(description) = description {
+        if let Some(name) = name {
+            lines.push(format!("{}{}:", " ".repeat(indent), sanitize(name)));
+        }
+        let text_indent = indent + if name.is_some() { 2 } else { 0 };
+        for line in description.lines() {
+            lines.push(format!("{}{}", " ".repeat(text_indent), sanitize(line)));
+        }
     }
 }
 
@@ -176,6 +247,18 @@ pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult)
                             .collect();
                         if !names.is_empty() {
                             lines.push(format!("  {label}: {}", names.join(", ")));
+                            for slot in config
+                                .slots
+                                .iter()
+                                .filter(|slot| slot.kind == kind && !slot.empty)
+                            {
+                                push_description(
+                                    &mut lines,
+                                    4,
+                                    description_label(names.len() > 1, slot.name.as_deref()),
+                                    slot.description.as_deref(),
+                                );
+                            }
                         }
                     }
                 }
@@ -234,6 +317,7 @@ pub fn render_artifact(mode: OutputMode, result: &destiny_app::ArtifactResult) -
                 "{class}: {}",
                 label(equipped.name.as_deref(), equipped.item_hash)
             ));
+            let multiple = equipped.slots.len() > 1;
             let perks = equipped
                 .slots
                 .iter()
@@ -247,6 +331,14 @@ pub fn render_artifact(mode: OutputMode, result: &destiny_app::ArtifactResult) -
                 .collect::<Vec<_>>()
                 .join(", ");
             lines.push(format!("  Perks: {perks}"));
+            for slot in equipped.slots.iter().filter(|slot| !slot.empty) {
+                push_description(
+                    &mut lines,
+                    4,
+                    description_label(multiple, slot.name.as_deref()),
+                    slot.description.as_deref(),
+                );
+            }
         } else {
             lines.push(format!("{class}: no artifact equipped"));
         }
@@ -688,11 +780,27 @@ fn inspection_human(inspection: &ItemInspection) -> String {
         lines.push(format!("  power: {power}"));
     }
     lines.push(format!("  perk states: {}", perks_text(&instance.perks)));
-    for (label, names) in [
-        ("perks", &inspection.perk_names),
-        ("mods", &inspection.mod_names),
-        ("available perks", &inspection.available_perks),
-        ("available mods", &inspection.available_mods),
+    for (label, names, role) in [
+        (
+            "perks",
+            &inspection.perk_names,
+            destiny_app::InspectionPlugRole::Perk,
+        ),
+        (
+            "mods",
+            &inspection.mod_names,
+            destiny_app::InspectionPlugRole::Mod,
+        ),
+        (
+            "available perks",
+            &inspection.available_perks,
+            destiny_app::InspectionPlugRole::AvailablePerk,
+        ),
+        (
+            "available mods",
+            &inspection.available_mods,
+            destiny_app::InspectionPlugRole::AvailableMod,
+        ),
     ] {
         if !names.is_empty() {
             lines.push(format!(
@@ -704,9 +812,28 @@ fn inspection_human(inspection: &ItemInspection) -> String {
                     .join(", ")
             ));
         }
+        for plug in inspection
+            .plug_details
+            .iter()
+            .filter(|plug| plug.role == role)
+        {
+            push_description(
+                &mut lines,
+                4,
+                description_label(names.len() > 1, Some(&plug.name)),
+                plug.description.as_deref(),
+            );
+        }
     }
     if let Some(archetype) = &inspection.archetype {
         lines.push(format!("  archetype: {}", sanitize(archetype)));
+        for plug in inspection
+            .plug_details
+            .iter()
+            .filter(|plug| plug.role == destiny_app::InspectionPlugRole::Archetype)
+        {
+            push_description(&mut lines, 4, None, plug.description.as_deref());
+        }
     }
     if !inspection.stats.is_empty() {
         lines.push(format!(
@@ -789,7 +916,7 @@ fn search_json(result: &InventorySearchResult) -> String {
 }
 
 fn inspection_json(inspection: &ItemInspection) -> String {
-    json!({
+    let mut value = json!({
         "perk_names": inspection.perk_names,
         "mod_names": inspection.mod_names,
         "mods": inspection.mod_names,
@@ -801,8 +928,14 @@ fn inspection_json(inspection: &ItemInspection) -> String {
         "instance": instance_json(&inspection.instance),
         "kind": "item_inspection",
         "metadata": metadata_json(&inspection.metadata),
-    })
-    .to_string()
+    });
+    if !inspection.plug_details.is_empty() {
+        value["plug_details"] = json!(inspection.plug_details.iter().map(|plug| with_description(
+            json!({"hash": plug.hash.value(), "name": plug.name, "role": plug.role.as_str()}),
+            plug.description.as_deref(),
+        )).collect::<Vec<_>>());
+    }
+    value.to_string()
 }
 
 /// Replaces every control character with `?`.
@@ -1514,6 +1647,7 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            plug_details: Vec::new(),
             perk_names: Vec::new(),
             mod_names: Vec::new(),
             archetype: None,
@@ -1760,6 +1894,48 @@ mod tests {
             r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"archetype":null,"available_mods":[],"available_perks":[],"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON},"resolved":{{}}}}"#
         );
         assert_eq!(render_search(OutputMode::Json, &search_result()), expected);
+    }
+
+    #[test]
+    fn inspection_plug_descriptions_json() {
+        let inspected = described_inspection();
+        let json: serde_json::Value =
+            serde_json::from_str(&render_inspection(OutputMode::Json, &inspected)).unwrap();
+        assert_eq!(
+            json["plug_details"][0]["description"],
+            "Official tooltip.\nSecond line."
+        );
+        assert_eq!(json["plug_details"][0]["hash"], 60);
+        assert_eq!(json["plug_details"][0]["role"], "perk");
+        assert!(json["plug_details"][1].get("description").is_none());
+    }
+
+    fn described_inspection() -> ItemInspection {
+        let mut inspected = inspection();
+        inspected.perk_names = vec!["Rampage".into(), "Barrel".into()];
+        inspected.plug_details = vec![
+            destiny_app::InspectionPlug {
+                hash: ItemHash::new(60),
+                name: "Rampage".into(),
+                role: destiny_app::InspectionPlugRole::Perk,
+                description: Some("Official tooltip.\nSecond line.".into()),
+            },
+            destiny_app::InspectionPlug {
+                hash: ItemHash::new(61),
+                name: "Barrel".into(),
+                role: destiny_app::InspectionPlugRole::Perk,
+                description: None,
+            },
+        ];
+        inspected
+    }
+
+    #[test]
+    fn inspection_plug_descriptions_human() {
+        assert!(
+            render_inspection(OutputMode::Human, &described_inspection())
+                .contains("    Rampage:\n      Official tooltip.\n      Second line.")
+        );
     }
 
     #[test]

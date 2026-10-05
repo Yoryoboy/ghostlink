@@ -186,6 +186,7 @@ pub struct InMemoryDefinitionRepository {
     metadata: Option<SyncMetadata>,
     previous_input: Option<DefinitionReplacementInput>,
     world: Option<destiny_core::WorldDefinitionsAcquisition>,
+    descriptions: Vec<destiny_core::ItemDescription>,
     publication_failure: Option<AppError>,
     metadata_failure: Option<AppError>,
     publication_attempts: usize,
@@ -319,11 +320,12 @@ impl DefinitionRepository for InMemoryDefinitionRepository {
         // revision; a fingerprint would collide, so content equality is the only
         // retention authority here.
         let revision = match self.previous_input.as_ref() {
-            Some(previous) if previous.content_eq(&replacement) => self
-                .metadata
-                .as_ref()
-                .map(|metadata| metadata.revision)
-                .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))?,
+            Some(previous) if previous.content_eq(&replacement) && self.descriptions.is_empty() => {
+                self.metadata
+                    .as_ref()
+                    .map(|metadata| metadata.revision)
+                    .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))?
+            }
             _ => match self.metadata.as_ref() {
                 Some(metadata) => SyncRevision::new(
                     metadata
@@ -347,18 +349,50 @@ impl DefinitionRepository for InMemoryDefinitionRepository {
             .previous_input
             .as_ref()
             .is_none_or(|previous| !previous.content_eq(&replacement))
+            || !self.descriptions.is_empty()
         {
             self.world = None;
         }
+        self.descriptions.clear();
         self.version = Some(replacement.definitions.version.clone());
         self.definitions = replacement.definitions.definitions.clone();
         self.metadata = Some(metadata.clone());
         self.previous_input = Some(replacement);
         Ok(metadata)
     }
+
+    fn replace_definitions_with_descriptions(
+        &mut self,
+        replacement: DefinitionReplacementInput,
+        mut descriptions: Vec<destiny_core::ItemDescription>,
+    ) -> Result<SyncMetadata, AppError> {
+        destiny_core::world_definitions::validate_item_descriptions(
+            &replacement.definitions,
+            &descriptions,
+        )?;
+        descriptions.sort_by_key(destiny_core::ItemDescription::hash);
+        let mut candidate = self.clone();
+        if candidate.descriptions != descriptions {
+            candidate.previous_input = None;
+        }
+        candidate.descriptions.clear();
+        let result = candidate.replace_definitions(replacement);
+        self.publication_attempts = candidate.publication_attempts;
+        let metadata = result?;
+        candidate.descriptions = descriptions;
+        *self = candidate;
+        Ok(metadata)
+    }
 }
 
 impl destiny_core::ports::WorldDefinitionRepository for InMemoryDefinitionRepository {
+    fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
+        Ok(self
+            .descriptions
+            .iter()
+            .find(|d| d.hash() == hash)
+            .map(|d| d.description().to_owned()))
+    }
     fn lookup_milestone(
         &self,
         hash: u32,
@@ -454,7 +488,8 @@ impl destiny_core::ports::WorldDefinitionRepository for InMemoryDefinitionReposi
         if world_changed && items_unchanged {
             candidate.previous_input = None;
         }
-        let result = candidate.replace_definitions(items);
+        let result =
+            candidate.replace_definitions_with_descriptions(items, world.item_descriptions.clone());
         self.publication_attempts = candidate.publication_attempts;
         let metadata = result?;
         candidate.world = Some(world);
@@ -1006,6 +1041,7 @@ mod equip_gateway_tests {
 pub fn synthetic_world(version: DefinitionVersion) -> destiny_core::WorldDefinitionsAcquisition {
     use destiny_core::*;
     WorldDefinitionsAcquisition {
+        item_descriptions: Vec::new(),
         version,
         loadout_names: WorldDefinitionTable {
             definitions: vec![],
@@ -1072,6 +1108,7 @@ impl QueuedManifestGateway {
                     objective_path: "/common/destiny2_content/objectives.json".into(),
                     activity_type_path: "/common/destiny2_content/types.json".into(),
                     stat_path: "/common/destiny2_content/stats.json".into(),
+                    sandbox_perk_path: "/common/destiny2_content/sandbox-perks.json".into(),
                     loadout_name_path: "/common/destiny2_content/loadout-names.json".into(),
                 }));
                 self.queue_world(Ok(synthetic_world(batch.version.clone())));
@@ -1938,6 +1975,7 @@ mod tests {
 
         let mut manifest = QueuedManifestGateway::new();
         let acquisition = ManifestAcquisition {
+            sandbox_perks: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: Vec::new(),
             skipped_count: 0,

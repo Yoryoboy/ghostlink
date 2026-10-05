@@ -22,9 +22,9 @@ pub mod weekly_profile;
 pub use weekly_profile::*;
 pub mod world_definitions;
 pub use world_definitions::{
-    ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, LoadoutNameDefinition,
-    MilestoneDefinition, ObjectiveDefinition, StatDefinition, WorldDefinitionTable,
-    WorldDefinitionsAcquisition, normalize_stat_name,
+    ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, ItemDescription,
+    LoadoutNameDefinition, MilestoneDefinition, ObjectiveDefinition, StatDefinition,
+    WorldDefinitionTable, WorldDefinitionsAcquisition, normalize_stat_name,
 };
 
 pub use auth::{
@@ -68,6 +68,7 @@ pub use query::{
     SearchTerm, StatCondition, StatOp, SubclassConfig, SubclassOption, SubclassOptionsResult,
     SubclassResult, SubclassSlot, definition_matches, instance_matches, normalize_search_text,
 };
+pub use query::{InspectionPlug, InspectionPlugRole};
 pub use redact::{REDACTED, Redacted, opaque, redact_optional};
 pub use state::{
     Dataset, FreshnessInput, FreshnessPolicy, FreshnessStatus, ProfileSyncOutcome,

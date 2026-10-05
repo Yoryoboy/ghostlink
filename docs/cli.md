@@ -78,7 +78,9 @@ Elements are arc, solar, void, stasis, strand and prismatic.
 `--locked` shows only locked options in text and cannot be combined with `--json`.
 JSON always includes all statuses (`unlocked`, `locked`, `unknown`) and raw
 `can_insert`/`enabled` flags, plus `reference_character_id` and per-character
-`status_reliable`.
+`status_reliable`. Each option also includes optional `description`: the official
+Manifest tooltip, omitted when unavailable. Text shows it indented beneath its
+plug name; `--locked` filters descriptions along with options.
 
 Status is reliable only for the most recently played character's **class**;
 other classes report `unknown`, including shared options. With no last-played
@@ -293,7 +295,20 @@ Each entry has `character_id`, `class` and `subclass` (null if none is equipped)
 The subclass contains `instance_id`, `item_hash`, `name`, `element` and ordered
 `slots`, with `kind`, `plug_hash`, `name` and `empty`. Slot kinds are `super`,
 `aspect`, `fragment`, `grenade`, `melee`, `class_ability`, `movement` and
-`transcendence`. Empty sockets remain explicit; unlocked options are not included.
+`transcendence`. Slots include optional `description` (official Manifest tooltip),
+omitted when unavailable. Text shows descriptions directly beneath single-plug
+rows without repeating the name. Multi-plug rows use one indented named block per
+plug, including aspects and fragments; multiline text is preserved. The same
+layout applies to artifact, loadout, subclass-option and inspection descriptions.
+Empty sockets remain explicit; unlocked options are not included.
+
+Official descriptions prefer the item's own valid tooltip. When absent or invalid,
+sync joins its displayable sandbox perk effects in reference order, deduplicating
+identical text with a blank line between effects. Missing references are ignored;
+blank or invalid composed text is omitted (2048-character cap). Sandbox perks are
+a required Manifest component: acquisition failure leaves the published cache
+unchanged. Run `sync-manifest` after upgrading from schema v13 to backfill the
+catalog even when Bungie's version is unchanged.
 
 ### Seasonal artifact state
 
@@ -309,7 +324,9 @@ SQLite. Character selection follows the subclass rules above.
 Each character has `character_id`, `class` and nullable `equipped` with
 `instance_id`, `item_hash`, nullable `name` and ordered `slots`. Each slot has
 `plug_hash`, nullable `name` and `empty`. Missing progression or equipped artifact
-stays null. Legacy artifact tiers and power-bonus fields are not reported.
+stays null. Slots also include optional `description` (official Manifest tooltip),
+omitted when unavailable; text shows descriptions beneath named non-empty perks.
+Legacy artifact tiers and power-bonus fields are not reported.
 
 ### Saved in-game loadouts
 
@@ -323,7 +340,10 @@ upgrading to populate loadout names.
 `ghostlink --json loadouts` returns the full `kind: "loadouts"` envelope regardless
 of `--detail`. Unused slots are omitted; saved slot and socket indices retain gaps.
 Missing inventory instances are explicit (`missing: true`, nullable item fields).
-Cosmetics and stat trackers are omitted; unknown plugs remain visible.
+Cosmetics and stat trackers are omitted; unknown plugs remain visible. Each plug
+includes optional `description` (official Manifest tooltip), omitted when
+unavailable. The compact text view shows subclass/artifact descriptions; `--detail`
+also shows descriptions beneath each item's named perks and mods.
 
 ### Inspect one owned item
 
@@ -333,6 +353,17 @@ the same enrichment as search hits. Raw perk component state is separate under
 `perk states:`. CLI JSON exposes `perk_names`, `mod_names`, `mods` (the same
 names as `mod_names`), `archetype`, `available_perks`, `available_mods` and
 `stats` (`{name, value}` entries), alongside the definition and instance state.
+Inspection also adds `plug_details`: `{hash, name, role, description?}` entries.
+Roles are `perk`, `mod`, `available_perk`, `available_mod` and `archetype`.
+Only plugs already surfaced by the existing name fields are included; exotic
+intrinsics excluded by those fields remain excluded. Repeated equipped plugs
+are deduplicated by hash/role; available names still exclude equipped names and
+are unique by normalized name. Equipped details follow socket order, then the
+first archetype, then available details in socket order. Missing descriptions
+are omitted; an empty `plug_details` list is omitted entirely. Official text
+preserves newlines in JSON and appears indented under the corresponding names
+in human output. Search hits stay compact and do not include descriptions:
+inspect an item for detail.
 
 ### Weekly reset
 

@@ -1,18 +1,73 @@
 //! Bounded provider-neutral world definitions, without provider payloads.
 use crate::{AppError, DefinitionVersion, ErrorCategory};
 
+/// Shared bounded text policy: whitespace controls (including newlines) survive.
+pub fn validate_description(description: &str) -> Result<(), AppError> {
+    validate_bounded_text(description, 2048)
+}
+
+fn validate_bounded_text(text: &str, cap: usize) -> Result<(), AppError> {
+    if text.chars().count() > cap || text.chars().any(|c| c.is_control() && !c.is_whitespace()) {
+        return Err(AppError::new(ErrorCategory::ProviderValidation));
+    }
+    Ok(())
+}
+
 fn validate_text(name: &str, description: &str) -> Result<(), AppError> {
     if name.trim().is_empty()
-        || [(name, 256), (description, 2048)]
-            .into_iter()
-            .any(|(text, cap)| {
-                text.chars().count() > cap
-                    || text.chars().any(|c| c.is_control() && !c.is_whitespace())
-            })
+        || validate_bounded_text(name, 256).is_err()
+        || validate_description(description).is_err()
     {
         return Err(AppError::new(ErrorCategory::ProviderValidation));
     }
     Ok(())
+}
+
+/// Official inventory tooltip, separate from item identity and omitted from Debug.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ItemDescription {
+    hash: crate::ItemHash,
+    description: String,
+}
+impl ItemDescription {
+    pub fn new(hash: crate::ItemHash, description: String) -> Result<Self, AppError> {
+        validate_description(&description)?;
+        if description.trim().is_empty() || !(0..=i64::from(u32::MAX)).contains(&hash.value()) {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(Self { hash, description })
+    }
+    pub const fn hash(&self) -> crate::ItemHash {
+        self.hash
+    }
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+}
+/// Reject duplicate or orphan tooltip hashes before any publication mutation.
+pub fn validate_item_descriptions(
+    items: &crate::ManifestDefinitions,
+    descriptions: &[ItemDescription],
+) -> Result<(), AppError> {
+    let hashes: std::collections::HashSet<_> =
+        items.definitions.iter().map(|item| item.hash).collect();
+    let mut seen = std::collections::HashSet::new();
+    if descriptions.len() > 100_000
+        || descriptions
+            .iter()
+            .any(|d| !hashes.contains(&d.hash()) || !seen.insert(d.hash()))
+    {
+        return Err(AppError::new(ErrorCategory::ProviderValidation));
+    }
+    Ok(())
+}
+
+impl std::fmt::Debug for ItemDescription {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ItemDescription")
+            .field("hash", &self.hash)
+            .finish_non_exhaustive()
+    }
 }
 
 macro_rules! definition {
@@ -168,6 +223,8 @@ pub struct WorldDefinitionTable<T> {
 /// The seven non-item components acquired against one exact index version.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorldDefinitionsAcquisition {
+    /// Optional inventory tooltip catalog, published under the shared Manifest metadata.
+    pub item_descriptions: Vec<ItemDescription>,
     pub version: DefinitionVersion,
     pub milestones: WorldDefinitionTable<MilestoneDefinition>,
     pub activities: WorldDefinitionTable<ActivityDefinition>,
@@ -186,15 +243,23 @@ impl WorldDefinitionsAcquisition {
                 && count <= cap
                 && hashes.collect::<std::collections::HashSet<_>>().len() == count
         }
-        if (!self.loadout_names.definitions.is_empty()
-            && !valid(
-                self.loadout_names
-                    .definitions
-                    .iter()
-                    .map(LoadoutNameDefinition::hash),
-                self.loadout_names.definitions.len(),
-                1000,
-            ))
+        if self.item_descriptions.len() > 100_000
+            || self
+                .item_descriptions
+                .iter()
+                .map(ItemDescription::hash)
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != self.item_descriptions.len()
+            || (!self.loadout_names.definitions.is_empty()
+                && !valid(
+                    self.loadout_names
+                        .definitions
+                        .iter()
+                        .map(LoadoutNameDefinition::hash),
+                    self.loadout_names.definitions.len(),
+                    1000,
+                ))
             || !valid(
                 self.stats.definitions.iter().map(StatDefinition::hash),
                 self.stats.definitions.len(),
@@ -269,6 +334,7 @@ impl WorldDefinitionsAcquisition {
 
     /// Canonicalize set order and discard acquisition-only skip counts.
     pub fn canonicalize(&mut self) {
+        self.item_descriptions.sort_by_key(ItemDescription::hash);
         self.milestones
             .definitions
             .sort_by_key(MilestoneDefinition::hash);
@@ -320,6 +386,7 @@ mod tests {
         assert!(definitions[1].contains("activity_type_hash: 4"));
         assert!(definitions[1].contains("light_level: 2000"));
         let acquisition = WorldDefinitionsAcquisition {
+            item_descriptions: Vec::new(),
             loadout_names: WorldDefinitionTable {
                 definitions: vec![LoadoutNameDefinition::new(9, name.into()).unwrap()],
                 skipped_count: 0,

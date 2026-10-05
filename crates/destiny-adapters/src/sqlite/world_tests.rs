@@ -4,6 +4,246 @@ use destiny_core::ports::{DefinitionCatalogRepository, WorldDefinitionRepository
 use destiny_core::*;
 
 #[test]
+fn item_description_v14_migration_invalidates_metadata_and_is_reversible() {
+    let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+    migrations::migrate_to(&mut connection, 13).unwrap();
+    connection.execute_batch("INSERT INTO definitions(hash,name,definition_version) VALUES(1,'Item','v1'); INSERT INTO sync_metadata VALUES('manifest_definitions','1','manifest','8','v1'),('profile_inventory','1','profile','2','v1');").unwrap();
+    migrations::migrate_to(&mut connection, 14).unwrap();
+    assert_eq!(migrations::read_user_version(&connection).unwrap(), 14);
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sync_metadata WHERE dataset='manifest_definitions'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sync_metadata WHERE dataset='profile_inventory'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    let name: String = connection
+        .query_row("SELECT name FROM definitions", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(name, "Item");
+    connection
+        .execute(
+            "INSERT INTO item_descriptions VALUES(1, 'First line\nSecond line')",
+            [],
+        )
+        .unwrap();
+    assert!(
+        connection
+            .execute(
+                "INSERT INTO item_descriptions VALUES(2, ?1)",
+                ["x".repeat(2049)]
+            )
+            .is_err()
+    );
+    assert!(
+        connection
+            .execute("INSERT INTO item_descriptions VALUES(2, '')", [])
+            .is_err()
+    );
+    migrations::migrate_to(&mut connection, 13).unwrap();
+    assert!(
+        connection
+            .prepare("SELECT * FROM item_descriptions")
+            .is_err()
+    );
+    migrations::migrate_to(&mut connection, 14).unwrap();
+}
+
+#[test]
+fn item_description_upgrade_forces_same_version_republish_then_skips() {
+    use destiny_app::test_support::QueuedManifestGateway;
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(13).unwrap();
+    store
+        .publish_manifest(items("v1", "prior"), world("v1", "World"))
+        .unwrap();
+    store.migrate_to(14).unwrap();
+    assert!(store.current_metadata().unwrap().is_none());
+    let mut gateway = QueuedManifestGateway::new();
+    let acquisition = ManifestAcquisition {
+        sandbox_perks: Vec::new(),
+        version: DefinitionVersion::new("v1"),
+        definitions: vec![ManifestDefinitionCandidate {
+            perk_hashes: Vec::new(),
+            description: Some("Official\nTooltip".into()),
+            hash: ItemHash::new(10),
+            bucket_hash: None,
+            name: "prior".into(),
+            item_type: None,
+            tier: None,
+            element: None,
+            damage_type: None,
+            slot: None,
+            class_type: None,
+            plug_category: None,
+            tags: vec![],
+            version: DefinitionVersion::new("v1"),
+        }],
+        skipped_count: 0,
+    };
+    gateway.queue(Ok(acquisition.clone()));
+    gateway.queue(Ok(acquisition));
+    let mut service = destiny_app::ManifestService::new(gateway, store);
+    assert!(matches!(
+        service.sync(Timestamp::new(200)).unwrap(),
+        destiny_app::ManifestSyncReport::Updated { .. }
+    ));
+    assert_eq!(
+        service
+            .repository()
+            .lookup_item_description(ItemHash::new(10))
+            .unwrap(),
+        Some("Official\nTooltip".into())
+    );
+    assert!(matches!(
+        service.sync(Timestamp::new(300)).unwrap(),
+        destiny_app::ManifestSyncReport::Unchanged { .. }
+    ));
+    assert_eq!(service.gateway().component_calls(), 1);
+    assert_eq!(service.gateway().world_calls(), 1);
+}
+
+#[test]
+fn item_descriptions_roundtrip_revision_and_validation_match_fake() {
+    fn exercise<R: WorldDefinitionRepository>(mut repository: R) {
+        let hash = ItemHash::new(10);
+        assert_eq!(repository.lookup_item_description(hash).unwrap(), None);
+        let mut catalog = world("v1", "World");
+        catalog.item_descriptions =
+            vec![ItemDescription::new(hash, "First\n\nSecond".into()).unwrap()];
+        let first = repository
+            .publish_manifest(items("v1", "item"), catalog.clone())
+            .unwrap();
+        assert_eq!(
+            repository.lookup_item_description(hash).unwrap(),
+            Some("First\n\nSecond".into())
+        );
+        assert_eq!(
+            repository
+                .lookup_item_description(ItemHash::new(99))
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            repository
+                .publish_manifest(items("v1", "item"), catalog.clone())
+                .unwrap()
+                .revision,
+            first.revision
+        );
+        let mut bad = catalog.clone();
+        bad.item_descriptions.push(bad.item_descriptions[0].clone());
+        assert!(
+            repository
+                .publish_manifest(items("v1", "bad"), bad)
+                .is_err()
+        );
+        let mut bad = catalog.clone();
+        bad.item_descriptions =
+            vec![ItemDescription::new(ItemHash::new(99), "Orphan".into()).unwrap()];
+        assert!(
+            repository
+                .publish_manifest(items("v1", "bad"), bad)
+                .is_err()
+        );
+        assert_eq!(repository.current_metadata().unwrap(), Some(first.clone()));
+        catalog.item_descriptions[0] = ItemDescription::new(hash, "Changed".into()).unwrap();
+        assert_eq!(
+            repository
+                .publish_manifest(items("v1", "item"), catalog.clone())
+                .unwrap()
+                .revision
+                .value(),
+            first.revision.value() + 1
+        );
+        let second = repository
+            .replace_definitions_with_descriptions(
+                items("v1", "item"),
+                catalog.item_descriptions.clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            repository.lookup_item_description(hash).unwrap(),
+            Some("Changed".into())
+        );
+        assert_eq!(
+            repository
+                .replace_definitions_with_descriptions(
+                    items("v1", "item"),
+                    catalog.item_descriptions
+                )
+                .unwrap()
+                .revision,
+            second.revision
+        );
+        repository.replace_definitions(items("v1", "item")).unwrap();
+        assert_eq!(repository.lookup_item_description(hash).unwrap(), None);
+    }
+    exercise(SqliteStore::open_in_memory().unwrap());
+    exercise(InMemoryDefinitionRepository::default());
+}
+
+#[test]
+fn item_description_insertion_failure_rolls_back_all_manifest_catalogs() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let hash = ItemHash::new(10);
+    let mut catalog = world("v1", "Prior world");
+    catalog.item_descriptions = vec![ItemDescription::new(hash, "Prior tooltip".into()).unwrap()];
+    store
+        .publish_manifest(items("v1", "Prior item"), catalog.clone())
+        .unwrap();
+    let metadata = store.current_metadata().unwrap();
+    let milestone = store.lookup_milestone(1).unwrap();
+    store.connection().execute_batch("CREATE TRIGGER fail_description BEFORE INSERT ON item_descriptions BEGIN SELECT RAISE(ABORT, 'failure'); END;").unwrap();
+    catalog.version = DefinitionVersion::new("v2");
+    catalog.item_descriptions[0] = ItemDescription::new(hash, "New tooltip".into()).unwrap();
+    assert_eq!(
+        store
+            .publish_manifest(items("v2", "New item"), catalog)
+            .unwrap_err()
+            .category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(store.current_metadata().unwrap(), metadata);
+    assert_eq!(
+        store.lookup_item_description(hash).unwrap(),
+        Some("Prior tooltip".into())
+    );
+    assert_eq!(store.lookup_milestone(1).unwrap(), milestone);
+    assert!(
+        matches!(store.lookup_definition(hash).unwrap(), Resolution::Unique(item) if item.name == "Prior item")
+    );
+    assert_eq!(
+        store
+            .replace_definitions_with_descriptions(
+                items("v2", "New item"),
+                vec![ItemDescription::new(hash, "New tooltip".into()).unwrap()]
+            )
+            .unwrap_err()
+            .category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(store.current_metadata().unwrap(), metadata);
+    store
+        .connection()
+        .execute("UPDATE item_descriptions SET description=' '", [])
+        .unwrap();
+    assert_eq!(
+        store.lookup_item_description(hash).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+}
+
+#[test]
 fn loadout_names_roundtrip_replace_and_remain_optional_for_readiness() {
     fn exercise<R: WorldDefinitionRepository>(mut repository: R) {
         assert_eq!(repository.lookup_loadout_name(7).unwrap(), None);
@@ -158,6 +398,7 @@ fn loadout_name_v11_upgrade_preserves_data_and_invalidates_manifest_freshness() 
 
 fn world(version: &str, name: &str) -> WorldDefinitionsAcquisition {
     WorldDefinitionsAcquisition {
+        item_descriptions: Vec::new(),
         version: DefinitionVersion::new(version),
         loadout_names: WorldDefinitionTable {
             definitions: vec![],
@@ -231,11 +472,14 @@ fn missing_stat_catalog_forces_same_version_download_then_skips() {
     let mut gateway = destiny_app::test_support::QueuedManifestGateway::new();
     for _ in 0..2 {
         gateway.queue(Ok(ManifestAcquisition {
+            sandbox_perks: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: vec![ManifestDefinitionCandidate {
+                perk_hashes: Vec::new(),
                 hash: ItemHash::new(10),
                 bucket_hash: None,
                 name: "item".into(),
+                description: None,
                 item_type: None,
                 tier: None,
                 element: None,
@@ -449,8 +693,10 @@ fn plug_category_upgrade_forces_same_version_republish_then_skips() {
     let mut gateway = QueuedManifestGateway::new();
     for _ in 0..2 {
         gateway.queue(Ok(ManifestAcquisition {
+            sandbox_perks: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: vec![ManifestDefinitionCandidate {
+                perk_hashes: Vec::new(),
                 hash: ItemHash::new(10),
                 bucket_hash: None,
                 name: "prior".into(),
@@ -460,6 +706,7 @@ fn plug_category_upgrade_forces_same_version_republish_then_skips() {
                 damage_type: None,
                 slot: None,
                 class_type: None,
+                description: None,
                 plug_category: Some("frames".into()),
                 tags: vec![],
                 version: DefinitionVersion::new("v1"),
@@ -514,14 +761,17 @@ fn search_filter_upgrade_forces_same_version_republish_then_skips() {
     let mut gateway = QueuedManifestGateway::new();
     for _ in 0..2 {
         gateway.queue(Ok(ManifestAcquisition {
+            sandbox_perks: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: vec![ManifestDefinitionCandidate {
+                perk_hashes: Vec::new(),
                 hash: ItemHash::new(10),
                 bucket_hash: None,
                 name: "prior".into(),
                 item_type: None,
                 tier: None,
                 element: None,
+                description: None,
                 damage_type: Some(DamageType::Solar),
                 slot: Some(ItemSlot::Power),
                 class_type: Some(ClassType::Any),
@@ -571,10 +821,13 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
         let mut gateway = QueuedManifestGateway::new();
         for _ in 0..2 {
             gateway.queue(Ok(ManifestAcquisition {
+                sandbox_perks: Vec::new(),
                 version: DefinitionVersion::new("v1"),
                 definitions: vec![ManifestDefinitionCandidate {
                     hash: ItemHash::new(10),
                     bucket_hash: None,
+                    description: None,
+                    perk_hashes: Vec::new(),
                     name: "published".into(),
                     item_type: None,
                     tier: None,

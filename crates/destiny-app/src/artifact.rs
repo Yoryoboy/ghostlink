@@ -36,6 +36,7 @@ pub struct EquippedArtifact {
 pub struct ArtifactSlot {
     pub plug_hash: ItemHash,
     pub name: Option<String>,
+    pub description: Option<String>,
     pub empty: bool,
 }
 /// Sibling read contract, like the separately composed weekly service.
@@ -54,7 +55,7 @@ pub struct ArtifactService<G, R> {
 impl<G, R> ArtifactService<G, R>
 where
     G: ProfileGateway + ArtifactGateway,
-    R: InventoryRepository + DefinitionRepository,
+    R: InventoryRepository + DefinitionRepository + destiny_core::ports::WorldDefinitionRepository,
 {
     pub fn new(sync: ProfileSyncService<G, R>) -> Self {
         Self { sync }
@@ -74,7 +75,7 @@ where
 impl<G, R> ArtifactOperations for ArtifactService<G, R>
 where
     G: ProfileGateway + ArtifactGateway,
-    R: InventoryRepository + DefinitionRepository,
+    R: InventoryRepository + DefinitionRepository + destiny_core::ports::WorldDefinitionRepository,
 {
     fn artifact(
         &mut self,
@@ -159,6 +160,7 @@ where
                         plug_hash: plug.plug_hash,
                         empty: definition.name.starts_with("Empty "),
                         name: Some(definition.name),
+                        description: repository.lookup_item_description(plug.plug_hash)?,
                     });
                 }
                 equipped = Some(EquippedArtifact {

@@ -287,6 +287,54 @@ pub fn serialized_publication() {
             self.0.lock().unwrap().replace_definitions(input)
         }
     }
+    impl destiny_app::WorldDefinitionRepository for SharedStore {
+        fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
+            self.0.lock().unwrap().lookup_item_description(hash)
+        }
+        fn lookup_milestone(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_app::MilestoneDefinition>, AppError> {
+            self.0.lock().unwrap().lookup_milestone(hash)
+        }
+        fn lookup_activity(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_app::ActivityDefinition>, AppError> {
+            self.0.lock().unwrap().lookup_activity(hash)
+        }
+        fn lookup_activity_modifier(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_app::ActivityModifierDefinition>, AppError> {
+            self.0.lock().unwrap().lookup_activity_modifier(hash)
+        }
+        fn lookup_objective(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_app::ObjectiveDefinition>, AppError> {
+            self.0.lock().unwrap().lookup_objective(hash)
+        }
+        fn lookup_activity_type(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_app::ActivityTypeDefinition>, AppError> {
+            self.0.lock().unwrap().lookup_activity_type(hash)
+        }
+        fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
+            self.0.lock().unwrap().lookup_loadout_name(hash)
+        }
+        fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
+            self.0.lock().unwrap().world_definition_counts()
+        }
+        fn publish_manifest(
+            &mut self,
+            items: DefinitionReplacementInput,
+            world: destiny_app::WorldDefinitionsAcquisition,
+        ) -> Result<SyncMetadata, AppError> {
+            self.0.lock().unwrap().publish_manifest(items, world)
+        }
+    }
     impl StatDefinitionRepository for SharedStore {
         fn lookup_stat(&self, hash: u32) -> Result<Option<StatDefinition>, AppError> {
             self.0.lock().unwrap().lookup_stat(hash)

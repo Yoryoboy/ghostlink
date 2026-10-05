@@ -67,16 +67,26 @@ accept 1–1000. Search output includes `resolved.perk_terms`,
 `{"character":"hunter","element":"strand"}`. Output matches
 `ghostlink --json subclass-options --character hunter --element strand` exactly.
 The status caveat and open `can_insert` question in the [CLI reference](cli.md#available-subclass-options) apply to this tool too;
-raw `can_insert`/`enabled` flags are included.
+raw `can_insert`/`enabled` flags are included. Each option includes optional
+`description` (official Manifest tooltip), omitted when unavailable.
 
 `get_subclass` accepts an optional `character` (exact id or unique class),
 with omission selecting all characters. Its structured output matches
 `ghostlink --json subclass` exactly, including socket order and empty slots.
+Each slot includes optional `description` (official Manifest tooltip), omitted
+when unavailable. Descriptions prefer the item's own valid text, falling back to
+its displayable sandbox perk effects in reference order, deduplicated and joined
+with blank lines. Missing references are ignored; blank, overlong (2048 characters)
+or invalid composed text is omitted. Sandbox acquisition is required and atomic
+with Manifest publication; sync failure preserves the prior cache. Schema v14
+invalidates v13 freshness so `sync-manifest` backfills unchanged upstream versions.
 For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
 
 `get_artifact` accepts an optional `character` (exact id or unique class),
 with omission selecting all characters. Its structured output matches
 `ghostlink --json artifact` exactly, including points and equipped artifact sockets.
+Each perk slot includes optional `description` (official Manifest tooltip), omitted
+when unavailable.
 For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
 
 `get_loadouts` accepts an optional bounded `character` (exact id or unique class),
@@ -84,11 +94,24 @@ with omission selecting all characters. Its structured output matches
 `ghostlink --json loadouts` exactly, including names, equipment, subclass
 configuration, artifact perks and retained slot/socket indices. For example:
 `{"character": "hunter"}`. Requires login and loaded Manifest definitions;
-run `ghostlink sync-manifest` once after upgrading for loadout names.
+run `ghostlink sync-manifest` once after upgrading for loadout names. Each saved
+plug includes optional `description` (official Manifest tooltip), omitted when
+unavailable; cosmetic filtering is unchanged. Descriptions preserve multiline
+text across all four tools.
 
 `inspect_item` returns the same enriched names as CLI inspection:
 `perk_names`, `mod_names`, `mods`, `archetype`, `available_perks`,
 `available_mods` and `stats`, alongside the definition, instance and metadata.
+It also adds `plug_details` entries with `hash`, `name`, `role` and optional
+official `description` (multiline text preserved). Roles are `perk`, `mod`,
+`available_perk`, `available_mod` and `archetype`. Only plugs already surfaced
+by the existing name fields are included, not otherwise-excluded exotic
+intrinsics. Repeated equipped plugs are deduplicated by hash/role; available
+names exclude equipped names and are unique by normalized name. Entries follow
+equipped socket order, then the first archetype, then available socket order.
+Missing descriptions and an empty `plug_details` list are omitted. Existing
+name arrays are unchanged. `search_inventory` hits do not include descriptions;
+call `inspect_item` for that detail.
 
 ## Offline stdio integration test
 

@@ -27,6 +27,16 @@ use output::OutputMode;
 fn sanitize(value: &str) -> String {
     value.to_owned()
 }
+fn with_description(mut value: serde_json::Value, description: Option<&str>) -> serde_json::Value {
+    if let Some(description) = description {
+        value["description"] = serde_json::json!(description);
+    }
+    value
+}
+fn description_label(multiple: bool, name: Option<&str>) -> Option<&str> {
+    multiple.then_some(name.unwrap_or("unknown"))
+}
+fn push_description(_: &mut Vec<String>, _: usize, _: Option<&str>, _: Option<&str>) {}
 const SUBCLASS_LABELS: &[(destiny_app::SubclassPlugKind, &str)] = &[];
 #[allow(dead_code)]
 #[path = "../../destiny-cli/src/loadouts_output.rs"]
@@ -73,6 +83,8 @@ fn loadouts_cli_mcp_json_parity() {
                                 socket_index: (i * 2) as u8,
                                 plug_hash: ItemHash::new(i as i64),
                                 name: Some(format!("Plug {i}")),
+                                description: (i == 1)
+                                    .then(|| "Official tooltip.\nSecond line.".into()),
                                 subclass_kind: Some(kind),
                                 empty: i == 0,
                             })
@@ -89,6 +101,7 @@ fn loadouts_cli_mcp_json_parity() {
                                 socket_index: 9,
                                 plug_hash: ItemHash::new(999),
                                 name: None,
+                                description: None,
                                 subclass_kind: None,
                                 empty: false,
                             }],
@@ -206,12 +219,14 @@ fn artifact_cli_mcp_json_parity() {
                     slots: vec![
                         destiny_app::ArtifactSlot {
                             plug_hash: ItemHash::new(40),
-                            name: None,
+                            name: Some("Perk".into()),
+                            description: Some("Official artifact tooltip.".into()),
                             empty: false,
                         },
                         destiny_app::ArtifactSlot {
                             plug_hash: ItemHash::new(47),
                             name: Some("Empty Artifact Mod".into()),
+                            description: None,
                             empty: true,
                         },
                     ],
@@ -336,6 +351,7 @@ fn subclass_cli_mcp_json_parity() {
                         kind,
                         plug_hash: ItemHash::new(i as i64),
                         name: (i != 0).then(|| format!("Plug {i}")),
+                        description: (i == 1).then(|| "Official subclass tooltip.".into()),
                         empty: i == 8,
                     })
                     .collect(),
@@ -472,6 +488,8 @@ fn subclass_options_cli_mcp_json_and_filter_parity() {
                                 .map(|(i, status)| SubclassOption {
                                     plug_hash: ItemHash::new(i as i64),
                                     name: (i != 1).then(|| "Option".into()),
+                                    description: (i == 0)
+                                        .then(|| "Official option tooltip.".into()),
                                     status,
                                     can_insert: i == 0,
                                     enabled: i != 1,

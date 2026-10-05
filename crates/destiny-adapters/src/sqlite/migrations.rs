@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 13;
+pub(crate) const LATEST_VERSION: u32 = 14;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 13] = [
+const MIGRATIONS: [Migration; 14] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -119,7 +119,25 @@ const MIGRATIONS: [Migration; 13] = [
         up: SCHEMA_V13_UP,
         down: SCHEMA_V13_DOWN,
     },
+    Migration {
+        version: 14,
+        up: SCHEMA_V14_UP,
+        down: SCHEMA_V14_DOWN,
+    },
 ];
+
+// Existing caches must republish even when the upstream version is unchanged.
+const SCHEMA_V14_UP: &str = r#"
+CREATE TABLE item_descriptions (
+    hash INTEGER PRIMARY KEY CHECK (typeof(hash) = 'integer' AND hash BETWEEN 0 AND 4294967295),
+    description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 2048)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V14_DOWN: &str = r#"
+DROP TABLE IF EXISTS item_descriptions;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
 
 // Legacy characters retain NULL until the next component-200 sync.
 const SCHEMA_V13_UP: &str = r#"

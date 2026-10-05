@@ -74,6 +74,7 @@ mod loadout_name_tests {
             "DestinyActivityTypeDefinition",
             "DestinyStatDefinition",
             "DestinyLoadoutNameDefinition",
+            "DestinySandboxPerkDefinition",
         ] {
             en.insert(
                 component.into(),
@@ -145,6 +146,7 @@ pub struct ManifestDownloadPlan {
     pub activity_type_path: String,
     pub stat_path: String,
     pub loadout_name_path: String,
+    pub sandbox_perk_path: String,
 }
 
 /// Validates a Bungie Manifest index envelope into a download plan.
@@ -182,6 +184,7 @@ pub fn decode_manifest_index(bytes: &[u8]) -> Result<ManifestDownloadPlan, AppEr
         activity_type_path: decode_component_path(response, "DestinyActivityTypeDefinition")?,
         stat_path: decode_component_path(response, "DestinyStatDefinition")?,
         loadout_name_path: decode_component_path(response, "DestinyLoadoutNameDefinition")?,
+        sandbox_perk_path: decode_component_path(response, "DestinySandboxPerkDefinition")?,
     })
 }
 
@@ -282,6 +285,8 @@ impl<T> OptionalField<T> {
 struct InventoryRecord {
     hash: u32,
     #[serde(default)]
+    perks: Vec<InventoryPerk>,
+    #[serde(default)]
     display_properties: OptionalField<DisplayProperties>,
     #[serde(default)]
     inventory: OptionalField<InventoryFields>,
@@ -297,8 +302,17 @@ struct InventoryRecord {
     redacted: OptionalField<bool>,
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InventoryPerk {
+    #[serde(default)]
+    perk_hash: OptionalField<u32>,
+}
+
+#[derive(Deserialize)]
 struct DisplayProperties {
     name: String,
+    #[serde(default)]
+    description: OptionalField<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -352,6 +366,7 @@ impl<'de> Visitor<'de> for InventorySeed<'_> {
             return Err(de::Error::custom("empty manifest"));
         }
         Ok(ManifestAcquisition {
+            sandbox_perks: Vec::new(),
             version: self.0.clone(),
             definitions,
             skipped_count,
@@ -374,6 +389,8 @@ struct WorldRecord {
     #[serde(default)]
     activity_light_level: i32,
     #[serde(skip)]
+    is_displayable: bool,
+    #[serde(skip)]
     progress_description: String,
     #[serde(skip)]
     completion_value: i32,
@@ -387,7 +404,11 @@ struct WorldDisplay {
 }
 
 trait WorldKind {
+    const ALLOW_EMPTY: bool = false;
     const REQUIRES_DISPLAY: bool = true;
+    fn is_blank(display: &WorldDisplay) -> bool {
+        display.name.trim().is_empty()
+    }
     fn read_record<'de, M: MapAccess<'de>>(map: &mut M) -> Result<WorldRecord, M::Error> {
         map.next_value()
     }
@@ -415,6 +436,7 @@ impl WorldKind for destiny_core::StatDefinition {
         let stat = map.next_value::<StatRecord>()?;
         Ok(WorldRecord {
             hash: stat.hash,
+            is_displayable: false,
             redacted: stat.redacted,
             display_properties: stat.display_properties.map(|display| WorldDisplay {
                 name: display.name,
@@ -441,6 +463,68 @@ pub fn decode_stats(
     decode_world_reader(bytes, MAX_COMPONENT_BYTES, 1000, project_stat)
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SandboxPerkRecord {
+    hash: u32,
+    #[serde(default)]
+    redacted: OptionalField<bool>,
+    #[serde(default)]
+    is_displayable: OptionalField<bool>,
+    #[serde(default)]
+    display_properties: OptionalField<SandboxPerkDisplay>,
+}
+#[derive(Deserialize)]
+struct SandboxPerkDisplay {
+    #[serde(default)]
+    description: OptionalField<String>,
+}
+impl WorldKind for destiny_core::ports::SandboxPerkCandidate {
+    const ALLOW_EMPTY: bool = true;
+    fn is_blank(display: &WorldDisplay) -> bool {
+        display.description.trim().is_empty()
+    }
+    fn read_record<'de, M: MapAccess<'de>>(map: &mut M) -> Result<WorldRecord, M::Error> {
+        let record = map.next_value::<SandboxPerkRecord>()?;
+        let description = record
+            .display_properties
+            .into_option()
+            .and_then(|display| display.description.into_option())
+            .unwrap_or_default();
+        Ok(WorldRecord {
+            hash: record.hash,
+            redacted: record.redacted.into_option() == Some(true),
+            is_displayable: record.is_displayable.into_option() == Some(true),
+            display_properties: Some(WorldDisplay {
+                name: String::new(),
+                description,
+            }),
+            milestone_type: 0,
+            activity_type_hash: 0,
+            activity_light_level: 0,
+            progress_description: String::new(),
+            completion_value: 0,
+        })
+    }
+}
+fn project_sandbox_perk(
+    record: WorldRecord,
+    display: WorldDisplay,
+) -> Result<destiny_core::ports::SandboxPerkCandidate, AppError> {
+    Ok(destiny_core::ports::SandboxPerkCandidate {
+        hash: record.hash,
+        is_displayable: record.is_displayable,
+        description: display.description,
+    })
+}
+/// Bounded, field-limited effect decode; blank/redacted records are omitted.
+pub fn decode_sandbox_perks(
+    bytes: &[u8],
+) -> Result<Vec<destiny_core::ports::SandboxPerkCandidate>, AppError> {
+    decode_world_reader(bytes, MAX_COMPONENT_BYTES, 100_000, project_sandbox_perk)
+        .map(|table| table.definitions)
+}
+
+#[derive(Deserialize)]
 struct LoadoutNameRecord {
     hash: u32,
     #[serde(default)]
@@ -453,6 +537,7 @@ impl WorldKind for destiny_core::LoadoutNameDefinition {
         let record = map.next_value::<LoadoutNameRecord>()?;
         Ok(WorldRecord {
             hash: record.hash,
+            is_displayable: false,
             redacted: record.redacted,
             display_properties: Some(WorldDisplay {
                 name: record.name,
@@ -496,6 +581,7 @@ impl WorldKind for destiny_core::ObjectiveDefinition {
         let record = map.next_value::<ObjectiveRecord>()?;
         Ok(WorldRecord {
             hash: record.hash,
+            is_displayable: false,
             redacted: record.redacted,
             display_properties: None,
             milestone_type: 0,
@@ -556,7 +642,7 @@ impl<'de, T: WorldKind> Visitor<'de> for WorldSeed<T> {
                     .take()
                     .ok_or_else(|| de::Error::custom("invalid manifest"))?
             };
-            if !objective && display.name.trim().is_empty() {
+            if !objective && T::is_blank(&display) {
                 skipped_count += 1;
                 continue;
             }
@@ -565,7 +651,7 @@ impl<'de, T: WorldKind> Visitor<'de> for WorldSeed<T> {
                     .map_err(|_| de::Error::custom("invalid manifest"))?,
             );
         }
-        if definitions.is_empty() {
+        if definitions.is_empty() && !T::ALLOW_EMPTY {
             return Err(de::Error::custom("empty manifest"));
         }
         Ok(destiny_core::WorldDefinitionTable {
@@ -737,6 +823,9 @@ fn decode_record(
     record: InventoryRecord,
     version: &DefinitionVersion,
 ) -> Result<Option<ManifestDefinitionCandidate>, AppError> {
+    if record.perks.len() > 64 {
+        return Err(provider_validation());
+    }
     let key_value = decode_decimal_u32(key)?;
     if record.hash != key_value {
         return Err(provider_validation());
@@ -744,11 +833,12 @@ fn decode_record(
     if record.redacted.into_option() == Some(true) {
         return Ok(None);
     }
-    let name = record
+    let display = record
         .display_properties
         .into_option()
-        .ok_or_else(provider_validation)?
-        .name;
+        .ok_or_else(provider_validation)?;
+    let name = display.name;
+    let description = display.description.into_option();
     if name.trim().is_empty() {
         return Ok(None);
     }
@@ -773,6 +863,12 @@ fn decode_record(
         )
     });
     Ok(Some(ManifestDefinitionCandidate {
+        perk_hashes: record
+            .perks
+            .into_iter()
+            .filter_map(|perk| perk.perk_hash.into_option())
+            .collect(),
+        description,
         hash: ItemHash::new(i64::from(key_value)),
         bucket_hash,
         name,
@@ -1247,6 +1343,7 @@ where
             activity_type_path: plan.activity_type_path,
             stat_path: plan.stat_path,
             loadout_name_path: plan.loadout_name_path,
+            sandbox_perk_path: plan.sandbox_perk_path,
         })
     }
 
@@ -1270,6 +1367,7 @@ where
         }
         decode_version(Some(&Value::String(plan.version.as_str().to_owned())))?;
         Ok(destiny_core::WorldDefinitionsAcquisition {
+            item_descriptions: Vec::new(),
             version: plan.version.clone(),
             milestones: self.load_world_table(&plan.milestone_path, 1000, project_milestone)?,
             activities: self.load_world_table(&plan.activity_path, 50000, project_activity)?,
@@ -1293,20 +1391,27 @@ where
         &mut self,
         plan: &destiny_core::ports::ManifestIndex,
     ) -> Result<ManifestAcquisition, AppError> {
-        if !is_safe_component_path(&plan.component_path) {
+        if !is_safe_component_path(&plan.component_path)
+            || !is_safe_component_path(&plan.sandbox_perk_path)
+        {
             return Err(provider_validation());
         }
         decode_version(Some(&Value::String(plan.version.as_str().to_owned())))?;
         let component_url = format!("{MANIFEST_ORIGIN}{}", plan.component_path);
         let component_request = ManifestHttpRequest::new(&component_url, None);
-        self.read_retry
+        let mut acquisition = self
+            .read_retry
             .run(ReadRetryScope::RateLimitAndTransient, || {
                 let response = fetch_response(&mut self.transport, &component_request, || {
                     self.clock.now().ok()
                 })?;
                 decode_inventory_reader(plan.version.clone(), response.body, MAX_COMPONENT_BYTES)
                     .map_err(ReadFailure::terminal)
-            })
+            })?;
+        acquisition.sandbox_perks = self
+            .load_world_table(&plan.sandbox_perk_path, 100_000, project_sandbox_perk)?
+            .definitions;
+        Ok(acquisition)
     }
 }
 
@@ -1487,6 +1592,57 @@ mod tests {
     use super::{decode_inventory_items, decode_manifest_index};
 
     #[test]
+    fn sandbox_perks_and_inventory_references_are_decoded() {
+        let batch = decode_inventory_items(DefinitionVersion::new("v1"), br#"{"1":{"hash":1,"displayProperties":{"name":"Facet"},"perks":[{"perkHash":7},{"perkHash":8}]}}"#).unwrap();
+        assert_eq!(batch.definitions[0].perk_hashes, vec![7, 8]);
+        let perks = super::decode_sandbox_perks(br#"{"7":{"hash":7,"isDisplayable":true,"displayProperties":{"description":"First\nSecond"}},"8":{"hash":8,"isDisplayable":false,"displayProperties":{"description":"Hidden"}},"9":{"hash":9,"redacted":true},"10":{"hash":10,"displayProperties":{"description":17}}}"#).unwrap();
+        assert_eq!(perks.len(), 2);
+        assert_eq!(perks[0].description, "First\nSecond");
+        assert!(perks[0].is_displayable);
+        assert!(!perks[1].is_displayable);
+        assert!(super::decode_sandbox_perks(br#"{"7":{"hash":8}}"#).is_err());
+        assert!(super::decode_sandbox_perks(b"not json").is_err());
+        assert!(super::decode_sandbox_perks(br#"{"7":{"hash":7},"7":{"hash":7}}"#).is_err());
+        let bytes = br#"{"7":{"hash":7,"isDisplayable":true,"displayProperties":{"description":"Effect"}}} "#;
+        assert!(
+            super::decode_world_reader(
+                bytes.as_slice(),
+                bytes.len() - 1,
+                100_000,
+                super::project_sandbox_perk
+            )
+            .is_err()
+        );
+        assert!(
+            super::decode_world_reader(
+                bytes.as_slice(),
+                bytes.len(),
+                0,
+                super::project_sandbox_perk
+            )
+            .is_err()
+        );
+        assert!(super::decode_sandbox_perks(b"{}").unwrap().is_empty());
+        let oversized = format!(
+            "{{\"1\":{{\"hash\":1,\"displayProperties\":{{\"name\":\"Facet\"}},\"perks\":[{}]}}}}",
+            vec!["{\"perkHash\":7}"; 65].join(",")
+        );
+        assert!(
+            decode_inventory_items(DefinitionVersion::new("v1"), oversized.as_bytes()).is_err()
+        );
+    }
+
+    #[test]
+    fn inventory_descriptions_are_decoded_without_affecting_item_names() {
+        let batch = decode_inventory_items(DefinitionVersion::new("v1"), br#"{"1":{"hash":1,"displayProperties":{"name":"Perk","description":"First\nSecond"}},"2":{"hash":2,"displayProperties":{"name":"Other","description":17}}}"#).unwrap();
+        assert_eq!(
+            batch.definitions[0].description.as_deref(),
+            Some("First\nSecond")
+        );
+        assert_eq!(batch.definitions[1].description, None);
+    }
+
+    #[test]
     fn plug_category_decode_is_optional_and_bounded() {
         for category in [None, Some("frames"), Some("intrinsics"), Some("origins")] {
             let mut record = serde_json::json!({"hash":1,"displayProperties":{"name":"Test"}});
@@ -1518,7 +1674,7 @@ mod tests {
             "Response": {
                 "version": version,
                 "jsonWorldComponentContentPaths": {
-                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path }
+                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path, "DestinySandboxPerkDefinition": path }
                 }
             }
         })
@@ -1761,6 +1917,7 @@ mod tests {
             "DestinyActivityTypeDefinition",
             "DestinyStatDefinition",
             "DestinyLoadoutNameDefinition",
+            "DestinySandboxPerkDefinition",
         ] {
             en.insert(kind.into(), json!(VALID_PATH));
         }
@@ -1772,6 +1929,7 @@ mod tests {
             "DestinyActivityTypeDefinition",
             "DestinyStatDefinition",
             "DestinyLoadoutNameDefinition",
+            "DestinySandboxPerkDefinition",
         ] {
             let mut missing = value.clone();
             missing["Response"]["jsonWorldComponentContentPaths"]["en"]
@@ -2290,7 +2448,7 @@ mod transport_tests {
             "Response": {
                 "version": "manifest-v1",
                 "jsonWorldComponentContentPaths": {
-                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path }
+                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path, "DestinySandboxPerkDefinition": path }
                 }
             }
         })
@@ -2335,6 +2493,7 @@ mod transport_tests {
         let transport = FakeTransport::with(vec![
             Ok(json_response(index_body(COMPONENT_PATH))),
             Ok(component),
+            Ok(json_response("{}".into())),
         ]);
         let mut gateway = BungieManifestGateway::new(key(), transport, clock());
         gateway.load_definitions()
@@ -2429,10 +2588,46 @@ mod transport_tests {
     }
 
     #[test]
+    fn sandbox_failure_preserves_published_manifest_and_descriptions() {
+        use destiny_core::ports::{DefinitionRepository, WorldDefinitionRepository};
+        for failed_component in [json_response("not json".into()), status_response(503)] {
+            let transport = FakeTransport::with(vec![
+                Ok(json_response(index_body(COMPONENT_PATH))),
+                Ok(json_response(r#"{"42":{"hash":42,"displayProperties":{"name":"Facet"},"perks":[{"perkHash":7}]}}"#.into())),
+                Ok(json_response(r#"{"7":{"hash":7,"isDisplayable":true,"displayProperties":{"description":"Prior effect"}}}"#.into())),
+                Ok(json_response(index_body(COMPONENT_PATH).replace("manifest-v1", "manifest-v2"))),
+                Ok(json_response(component_body())),
+                Ok(failed_component),
+            ]);
+            let gateway = BungieManifestGateway::new(key(), transport, clock())
+                .with_read_retry(ReadRetry::single_attempt());
+            let mut service = destiny_app::ManifestService::new(
+                gateway,
+                crate::sqlite::SqliteStore::open_in_memory().unwrap(),
+            );
+            service.acquire_and_publish(Timestamp::new(1)).unwrap();
+            let metadata = service.repository().current_metadata().unwrap();
+            let hash = destiny_core::ItemHash::new(42);
+            let description = service.repository().lookup_item_description(hash).unwrap();
+            assert_eq!(description, Some("Prior effect".into()));
+            assert!(service.sync(Timestamp::new(2)).is_err());
+            assert_eq!(service.repository().current_metadata().unwrap(), metadata);
+            assert_eq!(
+                service.repository().lookup_item_description(hash).unwrap(),
+                description
+            );
+            assert!(
+                matches!(service.repository().lookup_definition(hash).unwrap(), destiny_core::Resolution::Unique(item) if item.name == "Facet")
+            );
+        }
+    }
+
+    #[test]
     fn gateway_fetches_exact_urls_and_key_only_on_index() {
         let transport = FakeTransport::with(vec![
             Ok(json_response(index_body(COMPONENT_PATH))),
             Ok(json_response(component_body())),
+            Ok(json_response("{}".into())),
         ]);
         let mut gateway = BungieManifestGateway::new(key(), transport, clock());
 
@@ -2443,7 +2638,12 @@ mod transport_tests {
         assert_eq!(acquisition.definitions[0].name, "Test Item");
 
         let requests = &gateway.transport().requests;
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
+        assert_eq!(
+            requests[2].url,
+            format!("{MANIFEST_ORIGIN}{COMPONENT_PATH}")
+        );
+        assert!(!requests[2].has_api_key);
         assert_eq!(requests[0].url, MANIFEST_ENDPOINT);
         assert!(requests[0].has_api_key);
         assert_eq!(
@@ -2459,13 +2659,14 @@ mod transport_tests {
             Ok(status_response(429)),
             Ok(json_response(index_body(COMPONENT_PATH))),
             Ok(json_response(component_body())),
+            Ok(json_response("{}".into())),
         ]);
 
         let acquisition = gateway
             .load_definitions()
             .expect("the second index attempt succeeds");
         assert_eq!(acquisition.definitions.len(), 1);
-        assert_eq!(gateway.transport().requests.len(), 3);
+        assert_eq!(gateway.transport().requests.len(), 4);
         assert_eq!(delay.waits(), vec![Duration::from_millis(10)]);
     }
 
@@ -2477,12 +2678,13 @@ mod transport_tests {
             Ok(status_response(503)),
             Ok(json_response(index_body(COMPONENT_PATH))),
             Ok(json_response(component_body())),
+            Ok(json_response("{}".into())),
         ]);
 
         gateway
             .load_definitions()
             .expect("the second index attempt succeeds");
-        assert_eq!(gateway.transport().requests.len(), 3);
+        assert_eq!(gateway.transport().requests.len(), 4);
         assert_eq!(delay.waits(), vec![Duration::from_millis(10)]);
     }
 
@@ -2541,6 +2743,7 @@ mod transport_tests {
                 Ok(status_response(429).with_retry_after(RetryAfterHeader::DeltaSeconds(2))),
                 Ok(json_response(index_body(COMPONENT_PATH))),
                 Ok(json_response(component_body())),
+                Ok(json_response("{}".into())),
             ]),
             clock(),
         )
@@ -2552,7 +2755,7 @@ mod transport_tests {
         gateway
             .load_definitions()
             .expect("the hinted repeat succeeds");
-        assert_eq!(gateway.transport().requests.len(), 3);
+        assert_eq!(gateway.transport().requests.len(), 4);
         assert_eq!(delay.waits(), vec![Duration::from_secs(2)]);
     }
 
@@ -2566,6 +2769,7 @@ mod transport_tests {
                     .with_retry_after(RetryAfterHeader::HttpDate(GATEWAY_NOW + 2))),
                 Ok(json_response(index_body(COMPONENT_PATH))),
                 Ok(json_response(component_body())),
+                Ok(json_response("{}".into())),
             ]),
             clock(),
         )
@@ -2577,7 +2781,7 @@ mod transport_tests {
         gateway
             .load_definitions()
             .expect("the date-hinted repeat succeeds");
-        assert_eq!(gateway.transport().requests.len(), 3);
+        assert_eq!(gateway.transport().requests.len(), 4);
         assert_eq!(delay.waits(), vec![Duration::from_secs(2)]);
     }
 
@@ -2910,6 +3114,7 @@ mod transport_tests {
             responses: VecDeque::from(vec![
                 Ok(fixture_response(index_fixture)),
                 Ok(fixture_response(component_fixture)),
+                Ok(fixture_response(b"{}")),
             ]),
         };
         let gateway = BungieManifestGateway::new(key(), transport, clock());
@@ -2942,7 +3147,8 @@ mod transport_tests {
         assert_eq!(outcome.revision.value(), 1);
 
         let recorded = requests.borrow();
-        assert_eq!(recorded.len(), 2);
+        assert_eq!(recorded.len(), 3);
+        assert!(!recorded[2].has_api_key);
         assert_eq!(recorded[0].url, MANIFEST_ENDPOINT);
         assert!(recorded[0].has_api_key);
         assert_eq!(

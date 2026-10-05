@@ -30,6 +30,7 @@ fn definitions(
         source: SourceMarker::Manifest,
     };
     let world = WorldDefinitionsAcquisition {
+        item_descriptions: Vec::new(),
         loadout_names: WorldDefinitionTable {
             definitions: vec![],
             skipped_count: 0,

@@ -21,11 +21,13 @@ fn fixture() -> ArtifactResult {
                         destiny_app::ArtifactSlot {
                             plug_hash: ItemHash::new(40),
                             name: Some("Perk 1".into()),
+                            description: None,
                             empty: false,
                         },
                         destiny_app::ArtifactSlot {
                             plug_hash: ItemHash::new(47),
                             name: Some("Empty Artifact Mod".into()),
+                            description: None,
                             empty: true,
                         },
                     ],
@@ -39,6 +41,33 @@ fn fixture() -> ArtifactResult {
         ],
     }
 }
+#[test]
+fn artifact_description_is_optional_and_visible_in_text_and_json() {
+    let mut result = fixture();
+    let slot = &mut result.characters[0].equipped.as_mut().unwrap().slots[0];
+    slot.description = Some("Improve damage.\nWhile active.".into());
+    assert_eq!(
+        artifact_json(&result)["characters"][0]["equipped"]["slots"][0]["description"],
+        "Improve damage.\nWhile active."
+    );
+    let human = render_artifact(OutputMode::Human, &result);
+    assert!(human.contains("    Perk 1:\n      Improve damage.\n      While active."));
+    result.characters[0]
+        .equipped
+        .as_mut()
+        .unwrap()
+        .slots
+        .truncate(1);
+    let single = render_artifact(OutputMode::Human, &result);
+    assert!(single.contains("  Perks: Perk 1\n    Improve damage.\n    While active."));
+    assert!(!single.contains("    Perk 1:"));
+    assert!(
+        artifact_json(&fixture())["characters"][0]["equipped"]["slots"][0]
+            .get("description")
+            .is_none()
+    );
+}
+
 #[test]
 fn artifact_text_uses_points_and_equipped_item() {
     assert_eq!(
