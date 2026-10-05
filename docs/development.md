@@ -39,6 +39,10 @@ command, so update the skill together with any CLI surface change.
 
 ## Baseline checks
 
+CI (`.github/workflows/ci.yml`) runs fmt, clippy, build, and the all-features
+tests on Linux and Windows. The Windows callback handler is a later phase;
+macOS is out of scope.
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings

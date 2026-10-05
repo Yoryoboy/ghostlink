@@ -71,7 +71,7 @@ push, PR or merge.
 - [x] GIE-004 Linux registrar adapter (test-first, injected paths/runner).
 - [x] GIE-005 CLI: `--callback auto` default, consent prompt, `handler`
   subcommand, composition.
-- [ ] GIE-006 README and packaging runbook.
+- [x] GIE-006 README and packaging runbook.
 - [ ] GIE-007 Independent verification and closure.
 
 ## Progress

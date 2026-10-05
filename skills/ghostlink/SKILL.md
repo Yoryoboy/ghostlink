@@ -20,6 +20,7 @@ Use when the user asks about their Destiny 2 account, items, builds, weekly cont
 - Never retry `equip` after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report.
 - Never try to free inventory space, unequip elsewhere, or change plugs; the CLI refuses these by design.
 - Run `ghostlink login` only when the user asks or after exit 10/11; it needs a human to authorize in a browser and waits for the callback.
+- `ghostlink handler install` and `ghostlink handler uninstall` change the user's desktop configuration; run them only when the user asks. `ghostlink handler status` is read-only.
 
 ## Decision Gates
 
@@ -38,6 +39,7 @@ Use when the user asks about their Destiny 2 account, items, builds, weekly cont
 | Item names missing or definitions outdated | `ghostlink sync-manifest` |
 | Equip an item on a character | `ghostlink equip` |
 | Authorize this machine | `ghostlink login` |
+| Browser callback never reaches login (Linux) | `ghostlink handler status` |
 
 `--character` accepts a class name (`hunter`, `titan`, `warlock`) on most commands, but `ghostlink search-inventory --character` requires the exact numeric character ID; get it from `ghostlink list-characters` first.
 
