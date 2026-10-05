@@ -1601,14 +1601,16 @@ fn step_views(evidence: &ExecutionEvidence) -> Vec<StepEvidenceView> {
     evidence
         .steps()
         .iter()
-        .map(|record| match &record.step.action {
+        .filter_map(|record| match &record.step.action {
             // Keep the move_item wire contract flat: no action tag or new fields.
-            StepAction::Transfer { from, to } => StepEvidenceView {
+            StepAction::Transfer { from, to } => Some(StepEvidenceView {
                 ordinal: record.step.ordinal,
                 from: location_view(from),
                 to: location_view(to),
                 outcome: step_outcome_view(record.outcome),
-            },
+            }),
+            // Equip is not exposed by move_item and cannot execute in this task.
+            StepAction::Equip { .. } => None,
         })
         .collect()
 }

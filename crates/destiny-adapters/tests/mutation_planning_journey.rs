@@ -500,7 +500,9 @@ fn semantic_last_word_plans_a_direct_vault_to_warlock_move() {
     );
     assert_eq!(plan.step_count(), 1);
     assert_eq!(plan.steps()[0].ordinal, 1);
-    let destiny_core::StepAction::Transfer { from, to } = &plan.steps()[0].action;
+    let destiny_core::StepAction::Transfer { from, to } = &plan.steps()[0].action else {
+        panic!("expected transfer");
+    };
     assert_eq!(from, &ItemLocation::Vault);
     assert_eq!(to, &character_location(WARLOCK_ID));
     assert!(!plan.effects().via_vault);
@@ -542,10 +544,14 @@ fn semantic_character_to_character_move_is_vault_mediated() {
     assert_eq!(plan.source, character_location(HUNTER_ID));
     assert_eq!(plan.destination, character_location(WARLOCK_ID));
     assert_eq!(plan.step_count(), 2);
-    let destiny_core::StepAction::Transfer { from, to } = &plan.steps()[0].action;
+    let destiny_core::StepAction::Transfer { from, to } = &plan.steps()[0].action else {
+        panic!("expected transfer");
+    };
     assert_eq!(from, &character_location(HUNTER_ID));
     assert_eq!(to, &ItemLocation::Vault);
-    let destiny_core::StepAction::Transfer { from, to } = &plan.steps()[1].action;
+    let destiny_core::StepAction::Transfer { from, to } = &plan.steps()[1].action else {
+        panic!("expected transfer");
+    };
     assert_eq!(from, &ItemLocation::Vault);
     assert_eq!(to, &character_location(WARLOCK_ID));
     assert!(plan.effects().via_vault);

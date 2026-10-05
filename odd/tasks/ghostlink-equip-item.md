@@ -54,8 +54,8 @@ pre-check (component 204), subclass/mods/perks/loadout actions.
 
 ## Tasks
 
-- [x] **EQ-001 — Generalize mutation steps.** `MutationStep { ordinal, action: StepAction }`, `StepAction::Transfer { from, to }` only variant; executor dispatches by kind, stop via `StepOutcome::continues()`; MCP flat step JSON and `MoveStep` Debug shape preserved. Refactor (RED n/a); workspace 1198 passed (unchanged; worker's 1199 baseline was a miscount, `#[test]` count identical), all-features 1209, fmt/clippy clean; independent verify pass-with-notes.
-- [ ] **EQ-002 — Equip planning.** Resolve item + character; transfer steps + equip step; refusals; no-op.
+- [x] **EQ-001 — Generalize mutation steps.** `MutationStep { ordinal, action: StepAction }`, `StepAction::Transfer { from, to }` only variant; executor dispatches by kind, stop via `StepOutcome::continues()`; MCP flat step JSON and `MoveStep` Debug shape preserved. Refactor (RED n/a); workspace 1198 passed (unchanged; worker's 1199 baseline was a miscount, `#[test]` count identical), all-features 1209, fmt/clippy clean; independent verify pass-with-notes. Commit `4048c31`.
+- [x] **EQ-002 — Equip planning.** `StepAction::Equip { character }`, `EquipRequest`/`EquipPlan`/`EquipPreflight`, `plan_equip`/`preflight_equip`; `MAX_MUTATION_STEPS = 3` (moves still 2). Refusals: equipped elsewhere, wrong/unknown class, not equippable, exotic conflict (other slot, same category), unknown rarity, unknown neighbor slot; same-slot exotic replacement allowed; non-equipment neighbors (subclass/ghost/emblem) skipped. Equip dispatch fails closed (`EquipNotYetSupported`) before any transfer. Equipment bucket mapping centralized in `ItemSlot::from_equipment_bucket`. RED→GREEN; workspace 1213, all-features 1224, fmt/clippy clean. Verify found unknown-rarity bypass (fixed); parent review found every-exotic-refused neighbor bug (fixed, realistic regression test).
 - [ ] **EQ-003 — EquipItem adapter.** Dedicated allowlisted endpoint, body, status classification, throttle.
 - [ ] **EQ-004 — Execution and verification.** Heterogeneous step dispatch; verify equipped on target.
 - [ ] **EQ-005 — Offline journey.** Real-stack scripted journey for equip scenarios.
@@ -76,6 +76,12 @@ pre-check (component 204), subclass/mods/perks/loadout actions.
 - Rejection evidence is `TransferRejection`; Debug impl (`:331`) and flat MCP
   mapping (`destiny-mcp/src/service.rs:1605`) need explicit Equip handling.
 
+## Follow-ups (outside this WU)
+
+- Weapon/armor bucket hashes still duplicated in `destiny-app/src/loadouts.rs:239`
+  and `destiny-cli/src/loadouts_output.rs:90,139` (pre-existing, WU-030);
+  migrate to `ItemSlot::from_equipment_bucket`.
+
 ## Next step
 
-EQ-002.
+EQ-003.

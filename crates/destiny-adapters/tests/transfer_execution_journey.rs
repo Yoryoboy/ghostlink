@@ -924,7 +924,9 @@ fn direct_move_is_verified_after_a_post_action_refresh() {
     assert_eq!(plan.revision, SyncRevision::new(1));
     assert_eq!(plan.step_count(), 1);
     assert!(!plan.effects().via_vault);
-    let destiny_core::StepAction::Transfer { from, to } = &plan.steps()[0].action;
+    let destiny_core::StepAction::Transfer { from, to } = &plan.steps()[0].action else {
+        panic!("expected transfer");
+    };
     assert_eq!(from, &ItemLocation::Vault);
     assert_eq!(to, &warlock_location());
 
