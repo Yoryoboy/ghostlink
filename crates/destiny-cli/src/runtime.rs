@@ -221,6 +221,60 @@ impl<S> fmt::Debug for ReadRuntime<S> {
     }
 }
 
+/// CLI-local explicit sync result; metadata is returned only after publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProfileSyncReport {
+    pub metadata: destiny_app::SyncMetadata,
+    pub previous_revision: Option<destiny_app::SyncRevision>,
+}
+
+/// Explicit profile acquisition without expanding the shared read API.
+pub trait ProfileSyncOperations {
+    fn run_profile_sync(
+        &mut self,
+        policy: destiny_app::FreshnessPolicy,
+        now: destiny_app::Timestamp,
+    ) -> Result<ProfileSyncReport, AppError>;
+}
+
+impl<G, R> ProfileSyncOperations for QueryService<G, R>
+where
+    G: destiny_app::ProfileGateway,
+    R: InventoryRepository
+        + SearchRepository
+        + DefinitionRepository
+        + destiny_app::StatDefinitionRepository,
+{
+    fn run_profile_sync(
+        &mut self,
+        policy: destiny_app::FreshnessPolicy,
+        now: destiny_app::Timestamp,
+    ) -> Result<ProfileSyncReport, AppError> {
+        let previous_revision = self
+            .repository()
+            .load_current()?
+            .map(|snapshot| snapshot.metadata.revision);
+        let outcome = self
+            .sync_mut()
+            .sync(destiny_app::ProfileSyncReason::Forced, policy, now)?;
+        match outcome {
+            destiny_app::ProfileSyncOutcome::Refreshed { metadata } => Ok(ProfileSyncReport {
+                metadata: destiny_app::SyncMetadata {
+                    dataset: destiny_app::Dataset::ProfileInventory,
+                    revision: metadata.revision,
+                    checked_at: metadata.checked_at,
+                    source: metadata.source,
+                    definition_version: metadata.definition_version,
+                },
+                previous_revision,
+            }),
+            destiny_app::ProfileSyncOutcome::SkippedFresh { .. } => {
+                Err(AppError::new(ErrorCategory::StaleState))
+            }
+        }
+    }
+}
+
 /// The injectable seam the process boundary uses to obtain a read runtime.
 ///
 /// Production supplies the real composition; tests supply a scripted service,
@@ -229,7 +283,7 @@ impl<S> fmt::Debug for ReadRuntime<S> {
 /// dispatchable runtime.
 pub trait RuntimeFactory {
     /// The read service the runner dispatches through.
-    type Service: QueryOperations;
+    type Service: QueryOperations + ProfileSyncOperations;
 
     /// Builds the runtime, or reports a sanitized typed failure.
     fn build(&mut self) -> Result<ReadRuntime<Self::Service>, CliError>;
@@ -1024,6 +1078,187 @@ mod tests {
             )
             .unwrap(),
             exact
+        );
+    }
+
+    #[test]
+    fn profile_sync_is_accepted_at_process_boundary() {
+        assert!(crate::runner::parse_process(["ghostlink", "sync", "--json"]).is_ok());
+    }
+
+    struct SyncTransport {
+        calls: Rc<RefCell<Vec<&'static str>>>,
+        fail: bool,
+    }
+    impl ProfileTransport for SyncTransport {
+        fn get(
+            &mut self,
+            request: &ProfileHttpRequest<'_>,
+        ) -> Result<ProfileHttpResponse, ProfileTransportError> {
+            let body = if request
+                .url()
+                .ends_with("User/GetMembershipsForCurrentUser/")
+            {
+                self.calls.borrow_mut().push("membership");
+                br#"{"ErrorCode":1,"Response":{"primaryMembershipId":null,"destinyMemberships":[{"membershipId":"999","membershipType":3,"crossSaveOverride":0,"applicableMembershipTypes":[3]}]}}"#.to_vec()
+            } else {
+                assert!(request.url().contains("/Destiny2/3/Profile/999/"));
+                self.calls.borrow_mut().push("profile");
+                if self.fail {
+                    return Ok(ProfileHttpResponse::new(
+                        400,
+                        None,
+                        Some("application/json".into()),
+                        Box::new(std::io::Cursor::new(b"sentinel-provider-body".to_vec())),
+                    ));
+                }
+                include_bytes!("../../destiny-adapters/tests/fixtures/profile-complete.json")
+                    .to_vec()
+            };
+            Ok(ProfileHttpResponse::new(
+                200,
+                None,
+                Some("application/json".into()),
+                Box::new(std::io::Cursor::new(body)),
+            ))
+        }
+    }
+    struct SyncFoundations {
+        store: Option<SqliteStore>,
+        calls: Rc<RefCell<Vec<&'static str>>>,
+        fail: bool,
+    }
+    impl ReadFoundations for SyncFoundations {
+        type Source = destiny_app::StaticCredentialSource;
+        type Transport = SyncTransport;
+        type Clock = ScriptedClock;
+        type Repository = SqliteStore;
+        fn config(&mut self) -> Result<ReadRuntimeConfig, AppError> {
+            Ok(config())
+        }
+        fn credential_source(&mut self, _: &ReadRuntimeConfig) -> Result<Self::Source, AppError> {
+            Ok(destiny_app::StaticCredentialSource::new(credential()))
+        }
+        fn clock(&mut self) -> Result<Self::Clock, AppError> {
+            Ok(ScriptedClock {
+                now: Ok(NOW),
+                log: Rc::clone(&self.calls),
+            })
+        }
+        fn transport(&mut self) -> Result<Self::Transport, AppError> {
+            Ok(SyncTransport {
+                calls: Rc::clone(&self.calls),
+                fail: self.fail,
+            })
+        }
+        fn store(&mut self, _: &ReadRuntimeConfig) -> Result<Self::Repository, AppError> {
+            Ok(self.store.take().unwrap())
+        }
+    }
+
+    #[test]
+    fn profile_sync_forces_fresh_sqlite_publication_and_preserves_failure() {
+        use super::ProfileSyncOperations;
+        use destiny_app::InventoryRepository;
+        let calls = log();
+        let mut foundations = SyncFoundations {
+            store: Some(SqliteStore::open_in_memory().unwrap()),
+            calls: Rc::clone(&calls),
+            fail: false,
+        };
+        let mut runtime = compose(&mut foundations).unwrap();
+        let first = runtime
+            .service_mut()
+            .run_profile_sync(
+                FreshnessPolicy {
+                    ttl_seconds: TTL_SECONDS,
+                },
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(first.previous_revision, None);
+        assert_eq!(first.metadata.revision.value(), 1);
+        let first_snapshot = runtime
+            .service_mut()
+            .repository()
+            .load_current()
+            .unwrap()
+            .unwrap();
+        calls.borrow_mut().clear();
+        let later = Timestamp::new(NOW.seconds() + 1);
+        let unchanged = runtime
+            .service_mut()
+            .run_profile_sync(
+                FreshnessPolicy {
+                    ttl_seconds: TTL_SECONDS,
+                },
+                later,
+            )
+            .unwrap();
+        assert_eq!(unchanged.previous_revision, Some(first.metadata.revision));
+        assert_eq!(unchanged.metadata.revision, first.metadata.revision);
+        assert_eq!(unchanged.metadata.checked_at, NOW); // gateway acquisition clock, not caller's evaluation time
+        assert!(calls.borrow().contains(&"membership"));
+        assert!(calls.borrow().contains(&"profile"));
+        let mut changed = destiny_app::InventorySnapshotInput {
+            membership_id: first_snapshot.metadata.membership_id,
+            membership_type: first_snapshot.metadata.membership_type,
+            checked_at: NOW,
+            source: first_snapshot.metadata.source,
+            definition_version: first_snapshot.metadata.definition_version,
+            characters: first_snapshot.characters,
+            items: first_snapshot.items,
+            plug_set_entries: first_snapshot.plug_set_entries,
+        };
+        changed.items.clear();
+        runtime
+            .service_mut()
+            .repository_mut()
+            .replace_current(changed)
+            .unwrap();
+        let different = runtime
+            .service_mut()
+            .run_profile_sync(
+                FreshnessPolicy {
+                    ttl_seconds: TTL_SECONDS,
+                },
+                later,
+            )
+            .unwrap();
+        assert_eq!(different.previous_revision.unwrap().value(), 2);
+        assert_eq!(different.metadata.revision.value(), 3);
+        let committed = runtime
+            .service_mut()
+            .repository()
+            .load_current()
+            .unwrap()
+            .unwrap();
+        let store = runtime.service_mut().repository_mut();
+        let replacement = SqliteStore::open_in_memory().unwrap();
+        foundations.store = Some(std::mem::replace(store, replacement));
+        foundations.fail = true;
+        let mut failing = compose(&mut foundations).unwrap();
+        let output = crate::runner::run_profile_sync(
+            failing.service_mut(),
+            OutputMode::Json,
+            ReadFreshness {
+                policy: FreshnessPolicy {
+                    ttl_seconds: TTL_SECONDS,
+                },
+                now: later,
+            },
+        );
+        assert_ne!(output.exit_code, 0);
+        assert!(output.stdout.is_empty());
+        assert!(!output.stderr.contains("sentinel"));
+        assert_eq!(
+            failing
+                .service_mut()
+                .repository()
+                .load_current()
+                .unwrap()
+                .unwrap(),
+            committed
         );
     }
 

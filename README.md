@@ -101,6 +101,21 @@ Add the global `--json` flag to select machine output:
 cargo run -p destiny-cli -- --json search-inventory --text gjallar --item-hash 1001
 ```
 
+### Explicit profile sync
+
+Run `ghostlink sync` (or `ghostlink --json sync`) to force authenticated profile
+acquisition even when the local projection is fresh. It takes no arguments and
+publishes the local projection before reporting success; it makes no game mutation.
+Failures use the existing sanitized errors and nonzero exits.
+
+JSON reports `kind: "profile_sync"`, `fetched: true`, `publication: "committed"`,
+`revision`, `previous_revision`, `revision_unchanged`, and `checked_at` (acquisition
+Unix seconds). The first publication has null previous revision and comparison.
+An unchanged revision means repository deduplication, not unchanged game state.
+`fetched` means acquisition completed through the production HTTP gateway; it
+promises neither origin freshness, no-cache behavior, a request count, nor mutation
+verification. Existing read retries remain unchanged.
+
 ### Available subclass options
 
 `ghostlink subclass-options [--character ID_OR_CLASS] [--element ELEMENT] [--locked]`
