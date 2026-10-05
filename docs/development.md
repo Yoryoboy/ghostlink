@@ -29,6 +29,14 @@ Design background lives in [mvp-architecture.md](mvp-architecture.md),
 [mvp-implementation-plan.md](mvp-implementation-plan.md) and
 [integration-assumptions.md](integration-assumptions.md).
 
+## Agent skill
+
+`skills/ghostlink/SKILL.md` teaches shell-capable agents to drive the CLI. It
+holds judgment (intent to command, output contract, `equip` safety) and defers
+flags to `ghostlink <cmd> --help`. `crates/destiny-cli/tests/skill_drift.rs`
+fails when the skill names a missing command or flag, or omits a public
+command, so update the skill together with any CLI surface change.
+
 ## Baseline checks
 
 ```sh
