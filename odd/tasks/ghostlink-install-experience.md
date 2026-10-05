@@ -72,9 +72,13 @@ push, PR or merge.
 - [x] GIE-005 CLI: `--callback auto` default, consent prompt, `handler`
   subcommand, composition.
 - [x] GIE-006 README and packaging runbook.
-- [ ] GIE-007 Independent verification and closure.
+- [x] GIE-007 Independent verification and closure.
 
 ## Progress
+
+All tasks complete on `feature/ghostlink-install-experience`. Push, PR and
+merge are the user's decisions. Next phase: Windows registrar adapter
+(`HKCU\Software\Classes\ghostlink`).
 
 ## Evidence
 
@@ -86,7 +90,17 @@ push, PR or merge.
 - GIE-005 (gentle-ai-worker): RED on parsing and behavior stubs; GREEN
   `cargo test -p destiny-cli --all-features` 187 passed (171 unit, 16
   integration); workspace fmt and clippy clean; `login --help` and
-  `handler --help` render. Parent reviewed the composition root.
+  `handler --help` render. Parent reviewed the composition root. Commit
+  `2fdb636`.
+- GIE-006 (gentle-ai-worker): README Login/Callback handler sections and
+  runbook automated install/revert; commit `8474cd4`.
+- GIE-007 (gentle-ai-verify): fmt, workspace clippy, build, `cargo test
+  --workspace --all-features` 1334 passed / 0 failed, help renders,
+  `git diff --check` clean. Two medium findings fixed test-first (RED 2
+  failing, GREEN 22 passed): shell-quote paths rendered as copyable commands;
+  tighten an existing loose previous-handler record to 0600. Commit `d2db7d4`.
+- Unverified: Windows compilation and the GitHub workflow (no push); no live
+  desktop install or login was run.
 
 - GIE-002: workflow reviewed; not run on GitHub (no push).
 - GIE-003: `cargo test -p destiny-app --lib uri_handler` 12 passed; fmt clean;
