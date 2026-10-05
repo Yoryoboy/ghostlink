@@ -67,7 +67,8 @@ pub trait ReadFoundations {
     type Repository: InventoryRepository
         + SearchRepository
         + DefinitionRepository
-        + destiny_app::StatDefinitionRepository;
+        + destiny_app::StatDefinitionRepository
+        + destiny_app::WorldDefinitionRepository;
 
     /// Reads and validates the shared read runtime configuration.
     fn config(&mut self) -> Result<ReadRuntimeConfig, AppError>;

@@ -888,6 +888,7 @@ pub struct OptionGroup {
 pub struct SubclassOption {
     pub plug_hash: ItemHash,
     pub name: Option<String>,
+    pub description: Option<String>,
     pub status: OptionStatus,
     pub can_insert: bool,
     pub enabled: bool,
@@ -929,6 +930,7 @@ pub struct SubclassSlot {
     pub kind: crate::SubclassPlugKind,
     pub plug_hash: ItemHash,
     pub name: Option<String>,
+    pub description: Option<String>,
     pub empty: bool,
 }
 

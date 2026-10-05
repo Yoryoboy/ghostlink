@@ -239,7 +239,10 @@ where
         character_id: Option<&destiny_core::CharacterId>,
         policy: FreshnessPolicy,
         now: Timestamp,
-    ) -> Result<destiny_core::SubclassResult, AppError> {
+    ) -> Result<destiny_core::SubclassResult, AppError>
+    where
+        R: destiny_core::ports::WorldDefinitionRepository,
+    {
         self.require_definitions()?;
         self.synchronize(policy, now)?;
         let snapshot = self.committed_snapshot()?;
@@ -287,15 +290,18 @@ where
                     .filter_map(|plug| {
                         let kind =
                             destiny_core::classify_subclass_plug(plug.plug_category.as_deref()?)?;
-                        Some(destiny_core::SubclassSlot {
-                            kind,
-                            plug_hash: plug.hash,
-                            empty: plug.name.starts_with("Empty ")
-                                && plug.name.ends_with(" Socket"),
-                            name: Some(plug.name),
-                        })
+                        Some(self.repository().lookup_item_description(plug.hash).map(
+                            |description| destiny_core::SubclassSlot {
+                                kind,
+                                plug_hash: plug.hash,
+                                empty: plug.name.starts_with("Empty ")
+                                    && plug.name.ends_with(" Socket"),
+                                description,
+                                name: Some(plug.name),
+                            },
+                        ))
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, AppError>>()?;
                 subclass = Some(destiny_core::SubclassConfig {
                     instance_id: instance.instance_id.clone(),
                     item_hash: instance.item_hash,
@@ -322,7 +328,10 @@ where
         element: Option<destiny_core::SubclassElement>,
         policy: FreshnessPolicy,
         now: Timestamp,
-    ) -> Result<destiny_core::SubclassOptionsResult, AppError> {
+    ) -> Result<destiny_core::SubclassOptionsResult, AppError>
+    where
+        R: destiny_core::ports::WorldDefinitionRepository,
+    {
         use destiny_core::{
             CharacterSubclassOptions, ElementOptions, OptionGroup, OptionStatus, PlugSetScope,
             SubclassElement as E, SubclassOption, SubclassPlugKind as K,
@@ -407,6 +416,7 @@ where
                         SubclassOption {
                             plug_hash: hash,
                             name: Some(definition.name),
+                            description: self.repository().lookup_item_description(hash)?,
                             status,
                             can_insert,
                             enabled,
@@ -720,7 +730,8 @@ where
     R: InventoryRepository
         + SearchRepository
         + DefinitionRepository
-        + destiny_core::StatDefinitionRepository,
+        + destiny_core::StatDefinitionRepository
+        + destiny_core::ports::WorldDefinitionRepository,
 {
     fn subclass_options(
         &mut self,
@@ -862,6 +873,21 @@ mod tests {
             }
         }
 
+        fn describe(&mut self, definitions: Vec<ItemDefinition>, hash: i64, text: &str) {
+            let input = destiny_core::DefinitionReplacementInput {
+                definitions: destiny_core::ManifestDefinitions {
+                    version: DefinitionVersion::new(DEFINITION_VERSION),
+                    definitions,
+                },
+                checked_at: NOW,
+                source: SourceMarker::Manifest,
+            };
+            let description = destiny_core::ItemDescription::new(ItemHash::new(hash), text.into());
+            self.definitions
+                .replace_definitions_with_descriptions(input, vec![description.unwrap()])
+                .unwrap();
+        }
+
         fn record(&self, call: &'static str) {
             self.calls.borrow_mut().push(call);
         }
@@ -966,6 +992,55 @@ mod tests {
             replacement: DefinitionReplacementInput,
         ) -> Result<SyncMetadata, AppError> {
             self.definitions.replace_definitions(replacement)
+        }
+    }
+
+    impl destiny_core::ports::WorldDefinitionRepository for CompositeRepository {
+        fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
+            self.definitions.lookup_item_description(hash)
+        }
+        fn lookup_milestone(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::MilestoneDefinition>, AppError> {
+            self.definitions.lookup_milestone(hash)
+        }
+        fn lookup_activity(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::ActivityDefinition>, AppError> {
+            self.definitions.lookup_activity(hash)
+        }
+        fn lookup_activity_modifier(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::ActivityModifierDefinition>, AppError> {
+            self.definitions.lookup_activity_modifier(hash)
+        }
+        fn lookup_objective(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::ObjectiveDefinition>, AppError> {
+            self.definitions.lookup_objective(hash)
+        }
+        fn lookup_activity_type(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::ActivityTypeDefinition>, AppError> {
+            self.definitions.lookup_activity_type(hash)
+        }
+        fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
+            self.definitions.lookup_loadout_name(hash)
+        }
+        fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
+            self.definitions.world_definition_counts()
+        }
+        fn publish_manifest(
+            &mut self,
+            items: destiny_core::DefinitionReplacementInput,
+            world: destiny_core::WorldDefinitionsAcquisition,
+        ) -> Result<SyncMetadata, AppError> {
+            self.definitions.publish_manifest(items, world)
         }
     }
 
@@ -1210,7 +1285,9 @@ mod tests {
             let mut shader = definition(48, "Shader", None, vec![]);
             shader.plug_category = Some("shader".into());
             definitions.push(shader);
-            repository.definitions = CompositeRepository::with_definitions(definitions).definitions;
+            repository.definitions =
+                CompositeRepository::with_definitions(definitions.clone()).definitions;
+            repository.describe(definitions, 40, "Official artifact tooltip.");
             let mut item = instance(
                 "tablet",
                 30,
@@ -1253,6 +1330,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             (40..48).collect::<Vec<_>>()
         );
+        assert_eq!(
+            equipped.slots[0].description.as_deref(),
+            Some("Official artifact tooltip.")
+        );
+        assert_eq!(equipped.slots[1].description, None);
         assert!(equipped.slots[..7].iter().all(|slot| !slot.empty));
         assert!(equipped.slots[7].empty);
         assert_eq!(
@@ -1426,7 +1508,7 @@ mod tests {
             (16, "Titan", "titan.prism.supers"),
             (17, "Personal", "shared.fragments"),
         ];
-        let definitions = cases
+        let definitions: Vec<_> = cases
             .iter()
             .map(|(hash, name, category)| {
                 let mut plug = definition(*hash, name, None, vec![]);
@@ -1467,7 +1549,8 @@ mod tests {
             can_insert: false,
             enabled: true,
         });
-        let mut repository = CompositeRepository::with_definitions(definitions);
+        let mut repository = CompositeRepository::with_definitions(definitions.clone());
+        repository.describe(definitions, 2, "Official option tooltip.");
         repository.commit(input);
         let shared = gateway();
         let mut service = service(&shared, repository);
@@ -1511,6 +1594,11 @@ mod tests {
         let supers = &hunter.elements[0].groups[0].options;
         assert_eq!(supers.len(), 2);
         assert_eq!(supers[0].name.as_deref(), Some("Alpha"));
+        assert_eq!(
+            supers[0].description.as_deref(),
+            Some("Official option tooltip.")
+        );
+        assert_eq!(supers[1].description, None);
         assert!(supers[0].can_insert && supers[0].enabled);
         assert_eq!(supers[0].status, OptionStatus::Unlocked);
         assert_eq!(hunter.elements.last().unwrap().groups[0].options.len(), 1);
@@ -1643,7 +1731,8 @@ mod tests {
         let mut wrong_bucket = equipped.clone();
         wrong_bucket.instance_id = "other".into();
         wrong_bucket.item_hash = ItemHash::new(30);
-        let mut repository = CompositeRepository::with_definitions(definitions);
+        let mut repository = CompositeRepository::with_definitions(definitions.clone());
+        repository.describe(definitions, 20, "Official super tooltip.");
         repository.commit(snapshot_input(
             fresh_checked_at(),
             vec![hunter, character("b")],
@@ -1660,6 +1749,11 @@ mod tests {
         assert_eq!(config.name, "Prismatic");
         assert_eq!(config.element.as_deref(), Some("Prismatic"));
         assert_eq!(config.slots.len(), cases.len());
+        assert_eq!(
+            config.slots[0].description.as_deref(),
+            Some("Official super tooltip.")
+        );
+        assert_eq!(config.slots[1].description, None);
         for (slot, (hash, name, _, kind)) in config.slots.iter().zip(cases) {
             assert_eq!(slot.kind, kind);
             assert_eq!(slot.plug_hash, ItemHash::new(hash));

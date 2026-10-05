@@ -14,9 +14,9 @@ pub fn artifact_json(result: &ArtifactResult) -> Value {
             "character_id": character.character_id.as_str(), "class": character.class,
             "equipped": character.equipped.as_ref().map(|equipped| json!({
                 "instance_id": equipped.instance_id.as_str(), "item_hash": equipped.item_hash.value(), "name": equipped.name,
-                "slots": equipped.slots.iter().map(|slot| json!({
+                "slots": equipped.slots.iter().map(|slot| super::with_description(json!({
                     "plug_hash": slot.plug_hash.value(), "name": slot.name, "empty": slot.empty,
-                })).collect::<Vec<_>>(),
+                }), slot.description.as_deref())).collect::<Vec<_>>(),
             })),
         })).collect::<Vec<_>>(),
     })

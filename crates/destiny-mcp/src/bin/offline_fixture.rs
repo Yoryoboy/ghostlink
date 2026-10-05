@@ -651,6 +651,55 @@ impl SearchRepository for FixtureRepository {
     }
 }
 
+impl destiny_app::WorldDefinitionRepository for FixtureRepository {
+    fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
+        self.definitions.lookup_item_description(hash)
+    }
+    fn lookup_milestone(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_app::MilestoneDefinition>, AppError> {
+        self.definitions.lookup_milestone(hash)
+    }
+    fn lookup_activity(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_app::ActivityDefinition>, AppError> {
+        self.definitions.lookup_activity(hash)
+    }
+    fn lookup_activity_modifier(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_app::ActivityModifierDefinition>, AppError> {
+        self.definitions.lookup_activity_modifier(hash)
+    }
+    fn lookup_objective(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_app::ObjectiveDefinition>, AppError> {
+        self.definitions.lookup_objective(hash)
+    }
+    fn lookup_activity_type(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_app::ActivityTypeDefinition>, AppError> {
+        self.definitions.lookup_activity_type(hash)
+    }
+    fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
+        self.definitions.lookup_loadout_name(hash)
+    }
+    fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
+        self.definitions.world_definition_counts()
+    }
+    fn publish_manifest(
+        &mut self,
+        items: destiny_app::DefinitionReplacementInput,
+        world: destiny_app::WorldDefinitionsAcquisition,
+    ) -> Result<destiny_app::SyncMetadata, AppError> {
+        self.definitions.publish_manifest(items, world)
+    }
+}
+
 impl destiny_app::StatDefinitionRepository for FixtureRepository {
     fn lookup_stat(&self, hash: u32) -> Result<Option<destiny_app::StatDefinition>, AppError> {
         self.definitions.lookup_stat(hash)

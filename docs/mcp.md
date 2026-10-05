@@ -67,16 +67,21 @@ accept 1–1000. Search output includes `resolved.perk_terms`,
 `{"character":"hunter","element":"strand"}`. Output matches
 `ghostlink --json subclass-options --character hunter --element strand` exactly.
 The status caveat and open `can_insert` question in the [CLI reference](cli.md#available-subclass-options) apply to this tool too;
-raw `can_insert`/`enabled` flags are included.
+raw `can_insert`/`enabled` flags are included. Each option includes optional
+`description` (official Manifest tooltip), omitted when unavailable.
 
 `get_subclass` accepts an optional `character` (exact id or unique class),
 with omission selecting all characters. Its structured output matches
 `ghostlink --json subclass` exactly, including socket order and empty slots.
+Each slot includes optional `description` (official Manifest tooltip), omitted
+when unavailable.
 For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
 
 `get_artifact` accepts an optional `character` (exact id or unique class),
 with omission selecting all characters. Its structured output matches
 `ghostlink --json artifact` exactly, including points and equipped artifact sockets.
+Each perk slot includes optional `description` (official Manifest tooltip), omitted
+when unavailable.
 For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
 
 `get_loadouts` accepts an optional bounded `character` (exact id or unique class),
@@ -84,7 +89,10 @@ with omission selecting all characters. Its structured output matches
 `ghostlink --json loadouts` exactly, including names, equipment, subclass
 configuration, artifact perks and retained slot/socket indices. For example:
 `{"character": "hunter"}`. Requires login and loaded Manifest definitions;
-run `ghostlink sync-manifest` once after upgrading for loadout names.
+run `ghostlink sync-manifest` once after upgrading for loadout names. Each saved
+plug includes optional `description` (official Manifest tooltip), omitted when
+unavailable; cosmetic filtering is unchanged. Descriptions preserve multiline
+text across all four tools.
 
 `inspect_item` returns the same enriched names as CLI inspection:
 `perk_names`, `mod_names`, `mods`, `archetype`, `available_perks`,

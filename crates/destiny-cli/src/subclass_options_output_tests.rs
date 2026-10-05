@@ -12,6 +12,7 @@ fn fixture() -> SubclassOptionsResult {
         .map(|(i, status)| SubclassOption {
             plug_hash: ItemHash::new(i as i64),
             name: (i != 1).then(|| format!("Plug {i}")),
+            description: None,
             status,
             can_insert: i == 0,
             enabled: i != 1,
@@ -49,6 +50,25 @@ fn fixture() -> SubclassOptionsResult {
         reference_character_id: Some(CharacterId::new("1")),
         characters: vec![hunter, titan],
     }
+}
+
+#[test]
+fn option_descriptions_follow_human_locked_filter_and_json_keeps_all() {
+    let mut result = fixture();
+    let option = &mut result.characters[0].elements[0].groups[0].options[0];
+    option.description = Some("Official option tooltip.".into());
+    let value = subclass_options_json(&result);
+    let options = &value["characters"][0]["elements"][0]["groups"][0]["options"];
+    assert_eq!(options[0]["description"], "Official option tooltip.");
+    assert!(options[1].get("description").is_none());
+    assert!(
+        render_subclass_options(OutputMode::Human, &result, false)
+            .contains("      Plug 0:\n        Official option tooltip.")
+    );
+    assert!(
+        !render_subclass_options(OutputMode::Human, &result, true)
+            .contains("Official option tooltip.")
+    );
 }
 
 #[test]
@@ -95,6 +115,7 @@ fn subclass_options_shared_labels_fallbacks_and_sanitization() {
     let option = SubclassOption {
         plug_hash: ItemHash::new(9),
         name: Some("Name\nInjected".into()),
+        description: None,
         status: OptionStatus::Unlocked,
         can_insert: true,
         enabled: true,

@@ -33,6 +33,27 @@ mod subclass_tests {
         SubclassResult, SubclassSlot,
     };
 
+    #[test]
+    fn subclass_descriptions_are_additive_and_readable() {
+        let mut result = fixture();
+        let slot = &mut result.characters[0].subclass.as_mut().unwrap().slots[0];
+        slot.description = Some("Official fragment tooltip.\nSecond line.".into());
+        let json = subclass_json(&result);
+        assert_eq!(
+            json["characters"][0]["subclass"]["slots"][0]["description"],
+            "Official fragment tooltip.\nSecond line."
+        );
+        assert!(
+            json["characters"][0]["subclass"]["slots"][1]
+                .get("description")
+                .is_none()
+        );
+        assert!(
+            render_subclasses(OutputMode::Human, &result)
+                .contains("    Plug 0:\n      Official fragment tooltip.\n      Second line.")
+        );
+    }
+
     fn fixture() -> SubclassResult {
         use SubclassPlugKind::*;
         SubclassResult {
@@ -62,6 +83,7 @@ mod subclass_tests {
                             kind,
                             plug_hash: ItemHash::new(i as i64),
                             name: Some(format!("Plug {i}")),
+                            description: None,
                             empty: i == 7,
                         })
                         .collect(),
@@ -114,6 +136,31 @@ mod subclass_tests {
             render_subclasses(OutputMode::Human, &SubclassResult { characters: vec![] }),
             "no characters"
         );
+    }
+}
+
+fn with_description(mut value: Value, description: Option<&str>) -> Value {
+    if let Some(description) = description {
+        value["description"] = json!(description);
+    }
+    value
+}
+
+fn push_description(
+    lines: &mut Vec<String>,
+    indent: usize,
+    name: Option<&str>,
+    description: Option<&str>,
+) {
+    if let Some(description) = description {
+        lines.push(format!(
+            "{}{}:",
+            " ".repeat(indent),
+            sanitize(name.unwrap_or("unknown"))
+        ));
+        for line in description.lines() {
+            lines.push(format!("{}{}", " ".repeat(indent + 2), sanitize(line)));
+        }
     }
 }
 
@@ -176,6 +223,18 @@ pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult)
                             .collect();
                         if !names.is_empty() {
                             lines.push(format!("  {label}: {}", names.join(", ")));
+                            for slot in config
+                                .slots
+                                .iter()
+                                .filter(|slot| slot.kind == kind && !slot.empty)
+                            {
+                                push_description(
+                                    &mut lines,
+                                    4,
+                                    slot.name.as_deref(),
+                                    slot.description.as_deref(),
+                                );
+                            }
                         }
                     }
                 }
@@ -247,6 +306,14 @@ pub fn render_artifact(mode: OutputMode, result: &destiny_app::ArtifactResult) -
                 .collect::<Vec<_>>()
                 .join(", ");
             lines.push(format!("  Perks: {perks}"));
+            for slot in equipped.slots.iter().filter(|slot| !slot.empty) {
+                push_description(
+                    &mut lines,
+                    4,
+                    slot.name.as_deref(),
+                    slot.description.as_deref(),
+                );
+            }
         } else {
             lines.push(format!("{class}: no artifact equipped"));
         }

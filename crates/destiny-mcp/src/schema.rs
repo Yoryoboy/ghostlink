@@ -594,6 +594,8 @@ pub struct EquippedArtifactView {
 pub struct ArtifactSlotView {
     pub plug_hash: i64,
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub empty: bool,
 }
 
@@ -651,6 +653,8 @@ pub struct LoadoutPlugView {
     pub socket_index: u8,
     pub plug_hash: i64,
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub subclass_kind: Option<SubclassPlugKindView>,
     pub empty: bool,
 }
@@ -722,6 +726,8 @@ pub struct OptionGroupView {
 pub struct SubclassOptionView {
     pub plug_hash: i64,
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub status: OptionStatusView,
     pub can_insert: bool,
     pub enabled: bool,
@@ -761,6 +767,8 @@ pub struct SubclassSlotView {
     pub kind: SubclassPlugKindView,
     pub plug_hash: i64,
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub empty: bool,
 }
 

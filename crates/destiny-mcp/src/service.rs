@@ -399,7 +399,8 @@ where
     S: InventoryRepository
         + DefinitionRepository
         + SearchRepository
-        + destiny_app::StatDefinitionRepository,
+        + destiny_app::StatDefinitionRepository
+        + destiny_app::WorldDefinitionRepository,
     C: Clock,
 {
     fn weekly(
@@ -626,7 +627,8 @@ where
     R: InventoryRepository
         + SearchRepository
         + DefinitionRepository
-        + destiny_app::StatDefinitionRepository,
+        + destiny_app::StatDefinitionRepository
+        + destiny_app::WorldDefinitionRepository,
     C: Clock,
 {
     fn get_subclass_options(
@@ -1258,6 +1260,7 @@ pub fn loadouts_output(result: &destiny_app::LoadoutsResult) -> crate::schema::G
                                         socket_index: plug.socket_index,
                                         plug_hash: plug.plug_hash.value(),
                                         name: plug.name.clone(),
+                                        description: plug.description.clone(),
                                         empty: plug.empty,
                                         subclass_kind: plug.subclass_kind.map(|kind| match kind {
                                             destiny_app::SubclassPlugKind::Super => {
@@ -1332,6 +1335,7 @@ pub fn artifact_output(result: &destiny_app::ArtifactResult) -> crate::schema::G
                             .map(|slot| crate::schema::ArtifactSlotView {
                                 plug_hash: slot.plug_hash.value(),
                                 name: slot.name.clone(),
+                                description: slot.description.clone(),
                                 empty: slot.empty,
                             })
                             .collect(),
@@ -1435,6 +1439,7 @@ pub fn subclass_options_output(
                                     .map(|option| SubclassOptionView {
                                         plug_hash: option.plug_hash.value(),
                                         name: option.name.clone(),
+                                        description: option.description.clone(),
                                         status: match option.status {
                                             destiny_app::OptionStatus::Unlocked => {
                                                 OptionStatusView::Unlocked
@@ -1522,6 +1527,7 @@ pub fn subclass_output(result: &destiny_app::SubclassResult) -> crate::schema::G
                                 },
                                 plug_hash: slot.plug_hash.value(),
                                 name: slot.name.clone(),
+                                description: slot.description.clone(),
                                 empty: slot.empty,
                             })
                             .collect(),
@@ -2132,6 +2138,55 @@ mod tests {
         ) -> Result<Resolution<ItemInstance>, AppError> {
             self.record("lookup_instance");
             self.search.lookup_instance(instance_id)
+        }
+    }
+
+    impl destiny_app::WorldDefinitionRepository for CompositeRepository {
+        fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
+            self.definitions.lookup_item_description(hash)
+        }
+        fn lookup_milestone(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_app::MilestoneDefinition>, AppError> {
+            self.definitions.lookup_milestone(hash)
+        }
+        fn lookup_activity(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_app::ActivityDefinition>, AppError> {
+            self.definitions.lookup_activity(hash)
+        }
+        fn lookup_activity_modifier(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_app::ActivityModifierDefinition>, AppError> {
+            self.definitions.lookup_activity_modifier(hash)
+        }
+        fn lookup_objective(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_app::ObjectiveDefinition>, AppError> {
+            self.definitions.lookup_objective(hash)
+        }
+        fn lookup_activity_type(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_app::ActivityTypeDefinition>, AppError> {
+            self.definitions.lookup_activity_type(hash)
+        }
+        fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
+            self.definitions.lookup_loadout_name(hash)
+        }
+        fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
+            self.definitions.world_definition_counts()
+        }
+        fn publish_manifest(
+            &mut self,
+            items: destiny_app::DefinitionReplacementInput,
+            world: destiny_app::WorldDefinitionsAcquisition,
+        ) -> Result<SyncMetadata, AppError> {
+            self.definitions.publish_manifest(items, world)
         }
     }
 

@@ -39,10 +39,10 @@ This is piece 1 of 3 of the perk-knowledge initiative:
 
 ## Tasks
 
-- [ ] 1. Description catalog: adapter decode, core port, shared text
+- [x] 1. Description catalog: adapter decode, core port, shared text
       validation, SQLite migration v14 (table + metadata invalidation),
       atomic publication with the Manifest, lookup by hash.
-- [ ] 2. Expose descriptions in subclass, subclass options, artifact and
+- [x] 2. Expose descriptions in subclass, subclass options, artifact and
       loadout plug outputs (CLI JSON/human, MCP, docs).
 - [ ] 3. Expose descriptions in item inspect/search via an additive
       structured plug list (CLI JSON/human, MCP, docs).
@@ -50,4 +50,12 @@ This is piece 1 of 3 of the perk-knowledge initiative:
 
 ## Evidence
 
-(commit ids and check results recorded per task)
+- Task 1 — `c9bbd3e` feat(manifest): persist official item descriptions
+  catalog. Port `WorldDefinitionRepository::lookup_item_description`.
+  Worker ran fmt, clippy `-D warnings`, full workspace tests: all pass. Parent
+  moved a misplaced test that had captured the `decode_inventory_items` doc
+  comment; focused adapter test and clippy re-run: pass.
+- Task 2 — optional `description` on subclass slots, subclass options,
+  artifact slots and loadout plugs (CLI JSON/human, MCP, docs). Independent
+  verifier with unmasked exit codes: fmt 0, clippy `-D warnings` 0, workspace
+  tests 0 (1,353 passed, 0 failed, 0 ignored).

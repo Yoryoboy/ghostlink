@@ -78,7 +78,9 @@ Elements are arc, solar, void, stasis, strand and prismatic.
 `--locked` shows only locked options in text and cannot be combined with `--json`.
 JSON always includes all statuses (`unlocked`, `locked`, `unknown`) and raw
 `can_insert`/`enabled` flags, plus `reference_character_id` and per-character
-`status_reliable`.
+`status_reliable`. Each option also includes optional `description`: the official
+Manifest tooltip, omitted when unavailable. Text shows it indented beneath its
+plug name; `--locked` filters descriptions along with options.
 
 Status is reliable only for the most recently played character's **class**;
 other classes report `unknown`, including shared options. With no last-played
@@ -293,7 +295,10 @@ Each entry has `character_id`, `class` and `subclass` (null if none is equipped)
 The subclass contains `instance_id`, `item_hash`, `name`, `element` and ordered
 `slots`, with `kind`, `plug_hash`, `name` and `empty`. Slot kinds are `super`,
 `aspect`, `fragment`, `grenade`, `melee`, `class_ability`, `movement` and
-`transcendence`. Empty sockets remain explicit; unlocked options are not included.
+`transcendence`. Slots include optional `description` (official Manifest tooltip),
+omitted when unavailable. Text shows descriptions indented beneath their plug
+names, preserving multiline text. Empty sockets remain explicit; unlocked options
+are not included.
 
 ### Seasonal artifact state
 
@@ -309,7 +314,9 @@ SQLite. Character selection follows the subclass rules above.
 Each character has `character_id`, `class` and nullable `equipped` with
 `instance_id`, `item_hash`, nullable `name` and ordered `slots`. Each slot has
 `plug_hash`, nullable `name` and `empty`. Missing progression or equipped artifact
-stays null. Legacy artifact tiers and power-bonus fields are not reported.
+stays null. Slots also include optional `description` (official Manifest tooltip),
+omitted when unavailable; text shows descriptions beneath named non-empty perks.
+Legacy artifact tiers and power-bonus fields are not reported.
 
 ### Saved in-game loadouts
 
@@ -323,7 +330,10 @@ upgrading to populate loadout names.
 `ghostlink --json loadouts` returns the full `kind: "loadouts"` envelope regardless
 of `--detail`. Unused slots are omitted; saved slot and socket indices retain gaps.
 Missing inventory instances are explicit (`missing: true`, nullable item fields).
-Cosmetics and stat trackers are omitted; unknown plugs remain visible.
+Cosmetics and stat trackers are omitted; unknown plugs remain visible. Each plug
+includes optional `description` (official Manifest tooltip), omitted when
+unavailable. The compact text view shows subclass/artifact descriptions; `--detail`
+also shows descriptions beneath each item's named perks and mods.
 
 ### Inspect one owned item
 

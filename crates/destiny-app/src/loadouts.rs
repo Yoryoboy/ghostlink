@@ -39,6 +39,7 @@ pub struct LoadoutPlugView {
     pub socket_index: u8,
     pub plug_hash: ItemHash,
     pub name: Option<String>,
+    pub description: Option<String>,
     pub subclass_kind: Option<SubclassPlugKind>,
     pub empty: bool,
 }
@@ -157,6 +158,11 @@ where
                                     d.name.starts_with("Empty ")
                                         && (d.name.contains("Socket") || d.name.contains("Mod"))
                                 }),
+                                description: if definition.is_some() {
+                                    repository.lookup_item_description(plug.plug_hash)?
+                                } else {
+                                    None
+                                },
                                 name: definition.map(|d| d.name),
                             });
                         }
@@ -268,6 +274,7 @@ mod tests {
     const NOW: Timestamp = Timestamp::new(1000);
     const TTL: FreshnessPolicy = FreshnessPolicy { ttl_seconds: 300 };
     struct Repository {
+        description_error: bool,
         inventory: InMemoryInventoryRepository,
         definitions: InMemoryDefinitionRepository,
     }
@@ -304,6 +311,9 @@ mod tests {
     }
     impl WorldDefinitionRepository for Repository {
         fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
+            if self.description_error {
+                return Err(AppError::new(ErrorCategory::LocalStorage));
+            }
             self.definitions.lookup_item_description(hash)
         }
         fn lookup_milestone(&self, hash: u32) -> Result<Option<MilestoneDefinition>, AppError> {
@@ -441,12 +451,30 @@ mod tests {
             items,
         };
         let mut repository = Repository {
+            description_error: false,
             inventory: InMemoryInventoryRepository::new(),
             definitions: InMemoryDefinitionRepository::new(
                 DefinitionVersion::new("v1"),
-                definitions,
+                definitions.clone(),
             ),
         };
+        let replacement = DefinitionReplacementInput {
+            definitions: destiny_core::ManifestDefinitions {
+                version: DefinitionVersion::new("v1"),
+                definitions,
+            },
+            checked_at: NOW,
+            source: SourceMarker::Manifest,
+        };
+        let description = destiny_core::ItemDescription::new(
+            ItemHash::new(10),
+            "Official aspect tooltip.".into(),
+        )
+        .unwrap();
+        repository
+            .definitions
+            .replace_definitions_with_descriptions(replacement, vec![description])
+            .unwrap();
         if !stale {
             repository.replace_current(input.clone()).unwrap();
         }
@@ -527,10 +555,26 @@ mod tests {
             [1, 2, 4]
         );
         assert_eq!(plugs[0].subclass_kind, Some(SubclassPlugKind::Aspect));
+        assert_eq!(
+            plugs[0].description.as_deref(),
+            Some("Official aspect tooltip.")
+        );
+        assert_eq!(plugs[1].description, None);
+        assert_eq!(plugs[2].description, None);
         assert!(plugs[1].empty);
         assert_eq!(plugs[2].name, None);
         assert!(!plugs[2].empty);
     }
+    #[test]
+    fn description_storage_error_propagates() {
+        let (mut service, _) = fixture(false);
+        service.sync.repository_mut().description_error = true;
+        assert_eq!(
+            service.loadouts(None, TTL, NOW).unwrap_err().category(),
+            ErrorCategory::LocalStorage
+        );
+    }
+
     #[test]
     fn selectors_and_freshness_match_artifact() {
         for selector in ["1", "HuNtEr", "2", "Titan"] {
