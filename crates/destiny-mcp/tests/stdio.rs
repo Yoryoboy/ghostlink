@@ -52,6 +52,107 @@ const GET_SUBCLASS_TOOL: &str = "get_subclass";
 const GET_ARTIFACT_TOOL: &str = "get_artifact";
 const GET_LOADOUTS_TOOL: &str = "get_loadouts";
 const MOVE_ITEM_TOOL: &str = "move_item";
+#[path = "support/equip.rs"]
+mod equip_support;
+
+#[tokio::test]
+async fn equip_stdio_json_matches_cli_for_all_outcomes() {
+    for (scenario, item) in [
+        ("equip-success", "123"),
+        ("equip-noop", "123"),
+        ("equip-success", "missing"),
+        ("equip-partial", "123"),
+        ("equip-auth", "123"),
+        ("equip-auth-concurrent", "123"),
+        ("equip-auth-unavailable-refresh", "123"),
+        ("equip-auth-refresh-failure", "123"),
+        ("equip-uncertain", "123"),
+        ("equip-uncertain-no-effect", "123"),
+        ("equip-refresh-failure", "123"),
+        ("equip-contradiction", "123"),
+    ] {
+        let expected = equip_support::cli_json(scenario, item, "warlock");
+        assert_eq!(expected, equip_support::mcp_json(scenario, item, "warlock"));
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let result = session
+            .call_tool("equip_item", json!({"item":item,"character":"warlock"}))
+            .await;
+        assert_eq!(
+            result["result"]["structuredContent"], expected,
+            "{scenario}"
+        );
+        assert_eq!(
+            result["result"]["isError"],
+            !matches!(
+                expected["status"].as_str().unwrap(),
+                "verified_success" | "verified_noop"
+            )
+        );
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn equip_stdio_invalid_arguments_never_mutate() {
+    equip_support::reject_before_io();
+    let mut session = FixtureSession::spawn(Some("equip-success")).await;
+    for invalid in [
+        json!({"item":"123"}),
+        json!({"item":"123","character":"warlock","membership":"secret"}),
+    ] {
+        let response = session.call_tool("equip_item", invalid).await;
+        assert_eq!(response["error"]["code"], -32602);
+    }
+    for invalid in [
+        json!({"item":"123\n","character":"warlock"}),
+        json!({"item":"123","character":""}),
+        json!({"item":"x".repeat(257),"character":"warlock"}),
+        json!({"item":"İ".repeat(129),"character":"warlock"}),
+    ] {
+        let response = session.call_tool("equip_item", invalid).await;
+        assert_eq!(response["result"]["isError"], true);
+    }
+    let response = session
+        .call_tool("equip_item", json!({"item":"123","character":"warlock"}))
+        .await;
+    assert_eq!(
+        response["result"]["structuredContent"]["status"],
+        "verified_success"
+    );
+    assert_eq!(
+        response["result"]["structuredContent"]["steps"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn equip_is_discovered_and_refuses_missing_item() {
+    let mut session = FixtureSession::spawn(None).await;
+    let id = session.next_id();
+    let tools = session.request(id, "tools/list", Some(json!({}))).await;
+    assert!(
+        tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["name"] == "equip_item")
+    );
+    let id = session.next_id();
+    let result = session
+        .request(
+            id,
+            "tools/call",
+            Some(json!({"name":"equip_item","arguments":{"item":"missing","character":"warlock"}})),
+        )
+        .await;
+    assert_eq!(result["result"]["structuredContent"]["status"], "refused");
+    assert_eq!(result["result"]["isError"], true);
+    session.shutdown().await;
+}
 const WEEKLY_RESET_TOOL: &str = "weekly_reset";
 
 /// Reads exactly one newline-delimited JSON-RPC frame from the child's stdout.
@@ -411,9 +512,10 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             WEEKLY_RESET_TOOL,
             "weekly",
             "get_subclass_options",
-            MOVE_ITEM_TOOL
+            MOVE_ITEM_TOOL,
+            "equip_item"
         ],
-        "the product-equivalent server discovers the four reads plus move_item"
+        "the product-equivalent server discovers all reads plus move_item and equip_item"
     );
 
     // --- the reads still work ----------------------------------------------------

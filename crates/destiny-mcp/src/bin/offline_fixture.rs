@@ -119,6 +119,7 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
     let world = Arc::new(Mutex::new(FixtureWorld {
         characters: characters(),
         items: scenario.world_items(),
+        refresh_failed: false,
     }));
 
     // Reads are served from a projection seeded from the world's initial state.
@@ -152,13 +153,14 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
     let mutation_service = ComposedMutationService::new(
         mutations,
         WorldTransferGateway {
-            world,
+            world: Arc::clone(&world),
             refuse_vault_route: scenario == Scenario::Partial,
         },
         FakeClock::fixed(NOW),
         TTL,
         PlanLifetime::MAX,
-    );
+    )
+    .with_equip(WorldEquipGateway { world });
 
     let read_service = destiny_mcp::service::PersonalWeeklyReadService::new(
         destiny_app::WeeklyPersonalService::new(
@@ -411,6 +413,7 @@ fn weekly_repository() -> InMemoryDefinitionRepository {
 struct FixtureWorld {
     characters: Vec<Character>,
     items: Vec<ItemInstance>,
+    refresh_failed: bool,
 }
 
 impl FixtureWorld {
@@ -464,6 +467,16 @@ impl ProfileGateway for WorldGateway {
             .world
             .lock()
             .map_err(|_| AppError::new(ErrorCategory::LocalStorage))?;
+        if world.refresh_failed {
+            return Err(AppError::new(
+                if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("equip-auth-refresh-failure")
+                {
+                    ErrorCategory::ProviderAuthentication
+                } else {
+                    ErrorCategory::ProviderUnavailable
+                },
+            ));
+        }
         Ok(world.snapshot_input())
     }
 }
@@ -490,6 +503,63 @@ impl TransferGateway for WorldTransferGateway {
             .map_err(|_| AppError::new(ErrorCategory::LocalStorage))?;
         world.apply(request.item(), request.to());
         Ok(TransferOutcome::Transferred)
+    }
+}
+
+/// Offline equip port: mutates only the fixture world, never the provider.
+struct WorldEquipGateway {
+    world: Arc<Mutex<FixtureWorld>>,
+}
+impl destiny_app::EquipGateway for WorldEquipGateway {
+    fn equip(
+        &mut self,
+        request: &destiny_app::EquipItemRequest,
+    ) -> Result<destiny_app::EquipOutcome, AppError> {
+        let scenario = std::env::var(SCENARIO_ENV).unwrap_or_default();
+        if scenario == "equip-partial" {
+            return Ok(destiny_app::EquipOutcome::Rejected(
+                destiny_app::EquipRejection::NotInSocialSpace,
+            ));
+        }
+        let mut world = self
+            .world
+            .lock()
+            .map_err(|_| AppError::new(ErrorCategory::LocalStorage))?;
+        if scenario.starts_with("equip-auth") {
+            world.refresh_failed = matches!(
+                scenario.as_str(),
+                "equip-auth-refresh-failure" | "equip-auth-unavailable-refresh"
+            );
+            if scenario == "equip-auth-concurrent" {
+                for item in &mut world.items {
+                    if item.instance_id == *request.item() {
+                        item.location = ItemLocation::Character(request.character().clone());
+                        item.equipped = true;
+                    }
+                }
+            }
+            return Ok(destiny_app::EquipOutcome::AuthenticationRefused);
+        }
+        if scenario != "equip-uncertain-no-effect" && scenario != "equip-contradiction" {
+            for item in &mut world.items {
+                if item.instance_id == *request.item() {
+                    item.location = ItemLocation::Character(request.character().clone());
+                    item.equipped = true;
+                } else if item.location == ItemLocation::Character(request.character().clone())
+                    && item.item_hash == ItemHash::new(100)
+                {
+                    item.equipped = false;
+                }
+            }
+        }
+        if scenario == "equip-refresh-failure" {
+            world.refresh_failed = true;
+        }
+        Ok(if scenario.starts_with("equip-uncertain") {
+            destiny_app::EquipOutcome::Uncertain
+        } else {
+            destiny_app::EquipOutcome::Equipped
+        })
     }
 }
 
@@ -640,6 +710,21 @@ fn base_items() -> Vec<ItemInstance> {
     if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("empty-characters") {
         return vec![];
     }
+    if std::env::var(SCENARIO_ENV)
+        .ok()
+        .is_some_and(|s| s.starts_with("equip-"))
+    {
+        let mut candidate = instance("123", 100, ItemLocation::Vault, Vec::new());
+        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("equip-noop") {
+            candidate.location = at_character("warlock");
+            candidate.equipped = true;
+        }
+        let mut ghost = instance("124", 101, at_character("warlock"), Vec::new());
+        ghost.equipped = true;
+        let mut subclass = instance("125", 102, at_character("warlock"), Vec::new());
+        subclass.equipped = true;
+        return vec![candidate, ghost, subclass];
+    }
     vec![
         instance("inst-a", 1, ItemLocation::Vault, vec![perk(10)]),
         instance(
@@ -681,6 +766,21 @@ fn set_location(items: &mut [ItemInstance], instance_id: &str, location: ItemLoc
 }
 
 fn fixture_definitions() -> Vec<ItemDefinition> {
+    if std::env::var(SCENARIO_ENV)
+        .ok()
+        .is_some_and(|s| s.starts_with("equip-"))
+    {
+        let mut equipment = definition(100, "Ace of Spades");
+        equipment.bucket_hash = Some(destiny_app::BucketHash::new(1498876634));
+        equipment.slot = Some(destiny_app::ItemSlot::Kinetic);
+        equipment.tier = Some("Exotic".into());
+        equipment.class_type = Some("any".parse().unwrap());
+        let mut ghost = definition(101, "Ghost");
+        ghost.bucket_hash = Some(destiny_app::BucketHash::new(4023194814));
+        let mut subclass = definition(102, "Subclass");
+        subclass.bucket_hash = Some(destiny_app::BucketHash::new(3284755031));
+        return vec![equipment, ghost, subclass];
+    }
     vec![
         definition(1, "Gjallarhorn"),
         definition(2, "Fatebringer"),

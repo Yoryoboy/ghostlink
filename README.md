@@ -491,10 +491,43 @@ the real `QueryService` / `ProfileSyncService` / `BungieProfileGateway` /
 `SqliteStore` with a scripted transport and clock; it proves behavior without a
 live account and is not a live-success claim.
 
+## Equip one item
+
+```sh
+ghostlink equip "Ace of Spades" --character hunter
+ghostlink equip 123456789 --character 987654321 --json
+```
+
+Both item and character are required: use an exact instance id or an unambiguous
+item selector, and an exact character id or unique class. There is no default
+character or guessed match. The command automatically transfers from the Vault,
+or via the Vault from another character, before equipping. Already equipped on
+the target is a verified no-op.
+
+The shared planner refuses ambiguous/missing selections, an item equipped on
+another character, non-equipment, incompatible or unknown class, and unsafe
+exotic conflicts or unknown equipment metadata. It does not unequip elsewhere,
+free space, or change builds/plugs. Bungie requires the target to be in orbit,
+a social space, or offline; there is no activity pre-check, so provider refusal
+may occur after a transfer.
+
+One invocation authorizes the intent. Fresh preflight precedes dispatch; every
+attempted action requires a profile refresh and verification that the item is
+on the target **and equipped**. Partial progress is reported without rollback
+or multi-call atomicity. Never blindly retry an uncertain outcome: inspect fresh
+state before deciding on another action. Refusal, incomplete execution and
+verification failure return non-zero CLI exits.
+
+The CLI JSON and MCP `equip_item` structured content use the same renderer:
+`status`, `item`, `character`, `steps`, `reason`, `profile_refresh`, and `observed`.
+A failed refresh never presents a stale observation as fresh. Deterministic
+offline tests verify this pipeline and parity; they do **not** establish live
+account success. Live equip smoke verification remains pending separate authorization.
+
 ## destiny-mcp
 
-`destiny-mcp` serves five read tools plus one default-enabled semantic
-mutation over the Model Context Protocol stdio transport:
+`destiny-mcp` serves bounded read tools plus two default-enabled semantic
+mutations over the Model Context Protocol stdio transport:
 
 ```text
 list_characters   list the signed-in account's characters
@@ -507,6 +540,7 @@ get_loadouts      show saved in-game loadouts and configured equipment per chara
 weekly_reset      show the current public weekly rotation (same data as the CLI)
 weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
+equip_item        transfer if necessary, equip on an explicit character, and verify
 ```
 
 Mutation is composed by default in the product binary: its profile gateway and
@@ -517,6 +551,13 @@ move, forces a fresh revision-bound preflight, issues only the ordered transfer
 steps, refreshes the projection after the action, and verifies the destination;
 membership and credentials are resolved internally and are never accepted or
 emitted through MCP.
+
+`equip_item` accepts exactly `{"item":"Ace of Spades","character":"hunter"}`
+(or exact instance/character ids). Both fields are required; unknown fields and
+control characters are rejected. One call is the complete intent authorization,
+with no separate token or approval ceremony. It uses the same shared equip
+pipeline and JSON as `ghostlink equip`; see the equip safety limits above.
+`move_item` remains MCP-only: there is no CLI move command.
 
 Run it with the shared read configuration present in the environment:
 
@@ -590,7 +631,11 @@ cargo test -p destiny-mcp --all-features --test stdio
 ```
 
 The fixture binary is never reachable from the product `destiny-mcp` binary and
-requires no credential, network, database, or native keyring.
+requires no credential, network, durable database, or native keyring.
+Equip child-process sessions additionally compare complete CLI/MCP JSON for
+success, no-op, refusal, partial progress, uncertainty and refresh/verification
+failure, with equipped non-equipment neighbors. These are offline observations,
+not a live-provider verification claim.
 
 ## Baseline checks
 

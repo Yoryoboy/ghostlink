@@ -683,6 +683,9 @@ where
             .sync(ProfileSyncReason::Ordinary, policy, now)
             .map_err(MutationError::from)?;
         let snapshot = self.committed_snapshot()?;
+        if request.membership != snapshot.metadata.membership_id {
+            return Err(MutationError::WrongMembership);
+        }
         let item = self.resolve_item(&request)?;
         let destination = self.resolve_plan_destination(&request, &snapshot.characters)?;
         self.validate_equip(&item, &destination, &snapshot)?;
@@ -906,6 +909,9 @@ where
             .sync(ProfileSyncReason::Ordinary, policy, now)
             .map_err(MutationError::from)?;
         let snapshot = self.committed_snapshot()?;
+        if request.membership != snapshot.metadata.membership_id {
+            return Err(MutationError::WrongMembership);
+        }
         let item = self.resolve_item(request)?;
         let destination = self.resolve_plan_destination(request, &snapshot.characters)?;
         self.build_plan(
@@ -939,6 +945,9 @@ where
         now: Timestamp,
     ) -> Result<(), MutationError> {
         authorize(request)?;
+        if request.membership != plan.membership {
+            return Err(MutationError::WrongMembership);
+        }
         if plan.requires_equipped() {
             return Err(MutationError::EquipNotYetSupported);
         }
@@ -1306,6 +1315,16 @@ where
             }
         };
         let observed = instance.location;
+        if evidence.stop_outcome() == Some(StepOutcome::AuthenticationRefused) {
+            // A definite refusal is not confirmed dispatch, even if an external
+            // action independently satisfied the target. Keep fresh observation
+            // and the original authentication error without claiming success.
+            return MoveExecutionOutcome::IncompleteExecution(IncompleteExecution::new(
+                attempt_error,
+                observed,
+                evidence,
+            ));
+        }
         if observed == plan.destination && (!plan.requires_equipped() || instance.equipped) {
             // The requested end state holds, whatever the steps individually
             // reported: a step whose effect was uncertain is now confirmed.
@@ -1371,6 +1390,13 @@ where
         if membership.membership_id() != ticket.membership() {
             return Err(MutationError::WrongMembership);
         }
+        // The ticket only authorizes the safety checks performed on this exact
+        // revision. Production must additionally serialize local publication
+        // across preflight and the whole ordered attempt; a comparison alone
+        // cannot close the check-to-dispatch race.
+        if snapshot.metadata.revision != ticket.revision() {
+            return Err(MutationError::StaleRevision);
+        }
         let instance = match self
             .repository()
             .lookup_instance(ticket.item())
@@ -1409,6 +1435,13 @@ where
             evidence
                 .record(step.ordinal, outcome)
                 .map_err(MutationError::from)?;
+            if outcome == StepOutcome::AuthenticationRefused {
+                // A received auth refusal is attempted evidence, unlike expired
+                // credentials or a transport failure known to precede dispatch.
+                return Err(MutationError::from(AppError::new(
+                    ErrorCategory::ProviderAuthentication,
+                )));
+            }
             if !outcome.continues() {
                 break;
             }
@@ -1442,6 +1475,11 @@ where
             .sync(ProfileSyncReason::Preflight, policy, now)
             .map_err(MutationError::from)?;
         let snapshot = self.committed_snapshot()?;
+        // Bind the refreshed account before resolving identities or allowing
+        // either equip or move's already-satisfied shortcut.
+        if plan.membership != snapshot.metadata.membership_id {
+            return Err(MutationError::WrongMembership);
+        }
         let (resolved_item, current_source) = self.reresolve_item(plan)?;
         Ok((outcome, snapshot, resolved_item, current_source))
     }
@@ -1940,6 +1978,160 @@ mod tests {
             item: ItemSelector::instance(item_id("candidate")),
             destination: DestinationSelector::character(CharacterId::new("warlock")),
             intent: MoveIntentAuthorization::Explicit,
+        }
+    }
+
+    #[test]
+    fn rc001_direct_move_preflight_rejects_membership_before_io() {
+        let shared = gateway();
+        let mut repository =
+            CompositeRepository::with_definitions(vec![definition(1, "Gjallarhorn")]);
+        repository.commit(fresh_vault_projection());
+        let mut service = service(&shared, repository);
+        let move_request = request(exact("item-1"), exact_character("warlock"));
+        let plan = service
+            .plan_move(&move_request, LIFETIME, TTL, NOW)
+            .unwrap();
+        service.repository().calls.borrow_mut().clear();
+        queue_refresh(&shared, fresh_vault_projection());
+        let mut wrong_request = move_request.clone();
+        wrong_request.membership = destiny_core::MembershipId::new("4611686018484639999");
+
+        assert_eq!(
+            service.preflight_move(&wrong_request, &plan, TTL, NOW),
+            Err(MutationError::WrongMembership)
+        );
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+        assert!(service.repository().recorded_calls().is_empty());
+
+        // The refused call must leave the queued refresh available for a valid
+        // same-account preflight, which still performs its mandatory refresh.
+        assert_eq!(
+            service.preflight_move(&move_request, &plan, TTL, NOW),
+            Ok(())
+        );
+        assert_eq!(shared.borrow().membership_calls(), 1);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+    }
+
+    #[test]
+    fn rc001_planning_binds_projection_membership() {
+        for equip in [true, false] {
+            let shared = gateway();
+            let mut repo = CompositeRepository::with_definitions(vec![equip_definition(
+                1,
+                destiny_core::domain::ItemSlot::Kinetic,
+            )]);
+            repo.commit(projection(
+                NOW,
+                vec![warlock_character()],
+                vec![instance("candidate", 1, ItemLocation::Vault)],
+            ));
+            let mut service = service(&shared, repo);
+            let mut req = equip_request();
+            req.membership = destiny_core::MembershipId::new("4611686018484639999");
+            let error = if equip {
+                service.plan_equip(&req, LIFETIME, TTL, NOW).unwrap_err()
+            } else {
+                service
+                    .plan_move(&req.as_move_request(), LIFETIME, TTL, NOW)
+                    .unwrap_err()
+            };
+            assert_eq!(error, MutationError::WrongMembership);
+        }
+    }
+
+    #[test]
+    fn rc001_refreshed_account_cannot_authorize_noop_or_dispatch() {
+        for equip in [true, false] {
+            for on_target in [true, false] {
+                for wrong_account in [false, true] {
+                    let shared = gateway();
+                    let mut repo = CompositeRepository::with_definitions(vec![equip_definition(
+                        1,
+                        destiny_core::domain::ItemSlot::Kinetic,
+                    )]);
+                    repo.commit(projection(
+                        NOW,
+                        vec![warlock_character()],
+                        vec![instance("candidate", 1, ItemLocation::Vault)],
+                    ));
+                    let mut service = service(&shared, repo);
+                    let req = equip_request();
+                    let equip_plan = if equip {
+                        Some(service.plan_equip(&req, LIFETIME, TTL, NOW).unwrap())
+                    } else {
+                        None
+                    };
+                    let move_plan = if !equip {
+                        Some(
+                            service
+                                .plan_move(&req.as_move_request(), LIFETIME, TTL, NOW)
+                                .unwrap(),
+                        )
+                    } else {
+                        None
+                    };
+                    let mut item = instance(
+                        "candidate",
+                        1,
+                        if on_target {
+                            warlock()
+                        } else {
+                            ItemLocation::Vault
+                        },
+                    );
+                    item.equipped = on_target;
+                    let mut refreshed = projection(NOW, vec![warlock_character()], vec![item]);
+                    if wrong_account {
+                        refreshed.membership_id =
+                            destiny_core::MembershipId::new("4611686018484639999");
+                    }
+                    let membership = destiny_core::DestinyMembership::new(
+                        refreshed.membership_type,
+                        refreshed.membership_id.clone(),
+                    )
+                    .unwrap();
+                    shared.borrow_mut().queue_membership(Ok(membership));
+                    shared.borrow_mut().queue_inventory(Ok(refreshed));
+                    let mut transfer = QueuedTransferGateway::new();
+                    let mut equip_gateway = crate::test_support::QueuedEquipGateway::new();
+                    // Same-account dispatch cases are covered by existing execution tests.
+                    if !wrong_account && !on_target {
+                        continue;
+                    }
+                    let result = if let Some(plan) = equip_plan {
+                        service.execute_equip_verified(
+                            (&mut transfer, &mut equip_gateway),
+                            &req,
+                            &plan,
+                            TTL,
+                            NOW,
+                            POST_ACTION_NOW,
+                        )
+                    } else {
+                        service.execute_move_verified(
+                            &mut transfer,
+                            &req.as_move_request(),
+                            move_plan.as_ref().unwrap(),
+                            TTL,
+                            NOW,
+                            POST_ACTION_NOW,
+                        )
+                    };
+                    if wrong_account {
+                        assert_eq!(result.unwrap_err().error(), MutationError::WrongMembership);
+                    } else {
+                        assert!(matches!(
+                            result.unwrap(),
+                            MoveExecutionOutcome::VerifiedNoOp(_)
+                        ));
+                    }
+                    assert!(transfer.requests().is_empty());
+                    assert!(equip_gateway.requests().is_empty());
+                }
+            }
         }
     }
 
@@ -4501,6 +4693,99 @@ mod tests {
             .expect_err("vanished item");
 
         assert_eq!(error, MutationError::MissingResolution);
+    }
+
+    #[test]
+    fn rc002_move_ticket_rejects_newer_same_account_revision_before_dispatch() {
+        for via_vault in [false, true] {
+            let (shared, mut svc, request, plan) = if via_vault {
+                vault_mediated_service_with_plan()
+            } else {
+                direct_service_with_plan()
+            };
+            if !via_vault {
+                queue_refresh(&shared, fresh_vault_projection());
+            }
+            let ticket = authorized_ticket(&mut svc, &request, &plan);
+            let mut newer = fresh_vault_projection();
+            newer.items[0].locked = true;
+            let committed = svc
+                .sync_mut()
+                .repository_mut()
+                .replace_current(newer)
+                .unwrap();
+            assert_eq!(committed.metadata.membership_id, *ticket.membership());
+            assert!(committed.metadata.revision > ticket.revision());
+            let mut transfer = QueuedTransferGateway::new();
+            transfer.queue(Ok(TransferOutcome::Transferred));
+            transfer.queue(Ok(TransferOutcome::Transferred));
+            let failure = svc.execute_move(&mut transfer, &plan, ticket).unwrap_err();
+            assert_eq!(failure.error(), MutationError::StaleRevision);
+            assert_eq!(failure.evidence().attempted_count(), 0);
+            assert_eq!(transfer.calls(), 0);
+        }
+    }
+
+    #[test]
+    fn rc002_equip_ticket_rejects_newer_same_account_revision_before_dispatch() {
+        use crate::test_support::QueuedEquipGateway;
+        use destiny_core::{EquipOutcome, domain::ItemSlot};
+        for source in [warlock(), ItemLocation::Vault, hunter()] {
+            for drift in [false, true] {
+                let shared = gateway();
+                let input = projection(
+                    NOW,
+                    vec![
+                        warlock_character(),
+                        character("hunter", None, Some("Hunter")),
+                    ],
+                    vec![instance("candidate", 1, source.clone())],
+                );
+                let mut repo = CompositeRepository::with_definitions(vec![equip_definition(
+                    1,
+                    ItemSlot::Kinetic,
+                )]);
+                repo.commit(input.clone());
+                let mut svc = service(&shared, repo);
+                let plan = svc
+                    .plan_equip(&equip_request(), LIFETIME, TTL, NOW)
+                    .unwrap();
+                queue_refresh(&shared, input.clone());
+                let (_, observation) = svc
+                    .fresh_equip_preflight(&equip_request(), &plan, TTL, NOW)
+                    .unwrap();
+                let ticket =
+                    ExecutionTicket::after_fresh_preflight(plan.mutation_plan(), &observation, NOW)
+                        .unwrap();
+                if drift {
+                    let mut newer = input;
+                    newer.items[0].locked = true;
+                    let committed = svc
+                        .sync_mut()
+                        .repository_mut()
+                        .replace_current(newer)
+                        .unwrap();
+                    assert_eq!(committed.metadata.membership_id, *ticket.membership());
+                    assert!(committed.metadata.revision > ticket.revision());
+                }
+                let mut transfer = QueuedTransferGateway::new();
+                transfer.queue(Ok(TransferOutcome::Transferred));
+                transfer.queue(Ok(TransferOutcome::Transferred));
+                let mut equip = QueuedEquipGateway::new();
+                equip.queue(Ok(EquipOutcome::Equipped));
+                let result = svc.execute_equip((&mut transfer, &mut equip), &plan, ticket);
+                if drift {
+                    let failure = result.unwrap_err();
+                    assert_eq!(failure.error(), MutationError::StaleRevision);
+                    assert_eq!(failure.evidence().attempted_count(), 0);
+                    assert_eq!((transfer.calls(), equip.calls()), (0, 0));
+                } else {
+                    assert!(result.unwrap().is_complete());
+                    assert_eq!(transfer.calls(), plan.steps().len() - 1);
+                    assert_eq!(equip.calls(), 1);
+                }
+            }
+        }
     }
 
     #[test]

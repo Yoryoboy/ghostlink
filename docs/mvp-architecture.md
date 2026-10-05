@@ -1,6 +1,6 @@
 # Destiny MVP Architecture
 
-This document turns the product vision into one implementable vertical slice: authenticate a local user, synchronize enough Manifest and profile data to understand inventory, search and inspect that inventory through CLI or MCP, and safely move one item through either CLI or MCP. It uses `docs/integration-assumptions.md` as the external evidence boundary; provider facts and project decisions are kept distinct.
+This document turns the product vision into one implementable vertical slice: authenticate a local user, synchronize enough Manifest and profile data to understand inventory, search and inspect that inventory through CLI or MCP, and safely equip one item through CLI or MCP (with `move_item` remaining MCP-only). It uses `docs/integration-assumptions.md` as the external evidence boundary; provider facts and project decisions are kept distinct.
 
 ## 1. MVP decision and scope
 
@@ -9,12 +9,12 @@ This document turns the product vision into one implementable vertical slice: au
 - Deliver a usable local Rust application with one shared application/core layer.
 - Authenticate with a local Bungie **Public** OAuth client: system browser, one fixed exactly registered callback URI, random CSRF state, no client secret, and no refresh token.
 - Synchronize Manifest definitions and the authenticated user's profile/inventory into a local cache and search index.
-- Support `list_characters`, `search_inventory`, and `inspect_item` through both CLI and MCP; support intent-authorized `move_item` execution through both CLI and MCP using one shared service.
+- Support inventory reads through CLI and MCP; support `ghostlink equip <ITEM> --character <CHARACTER>` and default-enabled MCP `equip_item` through the same application pipeline. `move_item` is MCP-only.
 - Demonstrate the vertical journey: “Move The Last Word to my Warlock,” with semantic resolution, explicit-intent authorization for MCP, fresh preflight, Bungie execution, refresh, and verification.
 
 ### Non-goals
 
-World State/weekly rotation, equip/build engines, multi-item build plans, dismantling, locking, Postmaster, duplicate ranking, web UI, hosted service, confidential backend, and general-purpose Bungie proxy behavior are deferred. A backend may be evaluated later, but is not an MVP port or deployment assumption.
+Build engines, multi-item build plans/apply, plugs/mod/perk mutations, dismantling, locking, Postmaster, duplicate ranking, web UI, hosted service, confidential backend, and general-purpose Bungie proxy behavior are deferred. Single-item equip is current scope; weekly read capabilities have also landed. A backend may be evaluated later, but is not an MVP port or deployment assumption.
 
 ### Vertical journey
 
@@ -23,7 +23,7 @@ World State/weekly rotation, equip/build engines, multi-item build plans, disman
 3. Manifest and profile synchronization populate local definitions and item projections.
 4. User searches for “The Last Word”; the core resolves the semantic result to a stable item instance and destination character.
 5. A move plan explains source, Vault intermediary if required, destination, and expected effects.
-6. The user explicitly confirms through the CLI, or explicit user intent authorizes one direct MCP `move_item` call. The core refreshes the relevant profile immediately before execution, re-resolves the item, performs the minimum supported remote calls, refreshes afterward, and verifies the observed destination.
+6. Explicit user intent authorizes one direct MCP `move_item` call (there is no CLI move command). The core refreshes the relevant profile immediately before execution, re-resolves the item, performs the minimum supported remote calls, refreshes afterward, and verifies the observed destination.
 7. The adapter reports a semantic result or a safe, actionable error.
 
 ## 2. System context and boundaries
@@ -108,19 +108,19 @@ Repeated syncs are idempotent at the projection level: the same Bungie state pro
 
 ## 7. Mutation workflow
 
-1. **Resolve and plan internally:** resolve item and destination semantically; reject ambiguity; validate supported location rules; create a short-lived `MovePlan` without remote mutation.
-2. **Authorization:** CLI may present its normal interactive confirmation UX, but MCP treats explicit user intent to move the item as sufficient authorization and calls the single `move_item` tool directly. MCP has no preview, confirmation token/value, approval ceremony, or two-step protocol.
+1. **Resolve and plan internally:** resolve item and destination semantically; reject ambiguity; validate supported location rules; create a short-lived move/equip plan without remote mutation. Equip requires an explicit character, refuses equipped-elsewhere/class/exotic conflicts, and never guesses.
+2. **Authorization:** one CLI equip invocation or MCP `equip_item`/`move_item` call is intent authorization. No preview, confirmation token/value, approval ceremony, or two-step protocol is required.
 3. **Mandatory fresh preflight:** fetch current profile state, re-resolve the item by stable identity, re-check destination, lock/availability and other applicable constraints, and invalidate the plan if assumptions changed. Revalidate official/current lock, availability, and transfer constraints at implementation time before relying on provider behavior.
 4. **Execution:** call the minimum Bungie operations, using Vault as an intermediate only when required by Bungie semantics. Record step outcomes without recording secrets.
 5. **Partial failure:** stop on an unsafe failure, report completed and uncompleted steps, and do not claim rollback or atomicity. A retry must refresh and re-plan.
 6. **Post-action refresh:** fetch the affected profile/components and commit the resulting projection.
-7. **Verification:** require the item to be observed at the requested destination; return `verified`, `partial_failure`, or a typed failure.
+7. **Verification:** require the item to be observed at the requested destination; equip additionally requires `equipped == true`. A failed refresh yields verification failure, not a stale observation or success.
 
 ### MCP mutation contract
 
-MCP move execution is enabled by default in the MVP and is authorized by explicit user intent. The MCP adapter exposes one semantic `move_item` tool. The tool resolves the item and destination, rejects ambiguity, creates any internal short-lived plan, performs the mandatory fresh preflight, executes the minimum supported remote calls, reports partial failure honestly, refreshes, and verifies before returning.
+MCP move and equip execution are enabled by default and authorized by explicit user intent. The MCP adapter exposes `move_item` and `equip_item`. The tool resolves the item and destination, rejects ambiguity, creates any internal short-lived plan, performs the mandatory fresh preflight, executes the minimum supported remote calls, reports partial failure honestly, refreshes, and verifies before returning.
 
-There is no mandatory preview, confirmation token/value, CLI approval, local web approval, host confirmation ceremony, or two-step MCP protocol. The MCP adapter does not infer authority from vague or ambiguous input: explicit user intent to move an identified item to a destination is sufficient, while semantic resolution and ambiguity rejection remain mandatory. CLI may retain normal interactive confirmation as operator UX, but CLI UX does not define MCP authority. Both adapters use the same mutation service, preflight, execution, refresh, and verification path.
+There is no mandatory preview, confirmation token/value, CLI approval, local web approval, host confirmation ceremony, or two-step MCP protocol. The MCP adapter does not infer authority from vague or ambiguous input: explicit user intent to move an identified item to a destination is sufficient, while semantic resolution and ambiguity rejection remain mandatory. CLI equip uses the same mutation service, preflight, execution, refresh, and equipped-state verification path as MCP equip. `destiny-output` owns their exact shared JSON projection; CLI text and exit codes remain process-specific. Equip uses an exact EquipItem-only endpoint adapter; transfer remains transfer-only. Bungie requires orbit, social space, or offline state; no activity pre-check is implemented. Transfers may succeed before equip refuses, with no rollback or blind retry. Offline fixtures establish pipeline behavior, not live-account success.
 
 ## 8. Errors, retries, and observability
 
@@ -140,7 +140,7 @@ The MVP is a local native process with a user-configured Bungie API key, public 
 
 The CLI is the operator-facing adapter. Its commands map one-to-one to application use cases, print concise human-readable summaries, and return non-zero status for typed failures. It may offer `--json` for scripting, but the JSON shape is a sanitized application result, not a Bungie response. Interactive authorization and confirmation are CLI concerns delegated to core policy inputs; the CLI never receives a token.
 
-The MCP adapter is a server-side stdio process. Its initial tools are `list_characters`, `search_inventory`, `inspect_item`, and `move_item`. Tool arguments are semantic names, destination, and bounded intent—not endpoint parameters or approval artifacts. Results contain definitions, locations, freshness markers, bounded action effects, and typed error codes. They do not contain headers, authorization URLs with secrets, authorization codes, tokens, API keys, or unbounded upstream payloads.
+The MCP adapter is a server-side stdio process. Its tools include inventory reads, `move_item`, and `equip_item`. Tool arguments are semantic names, destination, and bounded intent—not endpoint parameters or approval artifacts. Results contain definitions, locations, freshness markers, bounded action effects, and typed error codes. They do not contain headers, authorization URLs with secrets, authorization codes, tokens, API keys, or unbounded upstream payloads.
 
 | Capability | CLI | MCP default | Shared service |
 |---|---:|---:|---|
@@ -148,7 +148,8 @@ The MCP adapter is a server-side stdio process. Its initial tools are `list_char
 | Sync Manifest/profile | yes | implicit when policy requires | synchronization service |
 | List/search/inspect | yes | yes | inventory query service |
 | Move planning | internal/optional UX | internal to `move_item` | mutation planning service |
-| Execute move | yes, with normal CLI confirmation UX | yes, one direct intent-authorized call | mutation policy and executor |
+| Execute move | no | yes, one direct intent-authorized call | mutation policy and executor |
+| Equip one item | yes, explicit character required | yes, explicit item and character required | shared equip planner/executor and JSON projection |
 | Raw Bungie request | no | no | never exposed |
 
 Every use case returns either a typed success containing sanitized domain records and freshness, or a typed failure from the shared taxonomy. Adapters may translate wording and exit/status conventions, but cannot reinterpret a successful remote mutation or downgrade `verification_failed` to success.
@@ -180,7 +181,7 @@ Implementation should proceed in vertical slices that preserve a runnable path:
 3. Add Manifest versioning and transactional replacement, then profile normalization and freshness metadata.
 4. Build repository-backed character listing, semantic inventory search, and inspection against fixture snapshots.
 5. Wire the CLI to the application services and exercise the read journey end to end.
-6. Add internal move planning, optional CLI confirmation UX, preflight refresh, remote execution boundary, post-action refresh, and verification using a Bungie adapter test double.
+6. Add internal move/equip planning, preflight refresh, remote execution boundaries, post-action refresh, and destination/equipped-state verification using Bungie adapter test doubles.
 7. Add the MCP stdio adapter, including the single-call intent-authorized `move_item` contract, over the same service instances and compare its results with CLI results.
 
 Each slice should test the port boundary rather than couple domain tests to HTTP, SQLite implementation details, or a particular credential-store library. Live Bungie testing is a separate integration check and must use a non-production account where possible. The first implementation plan should turn the open questions below into explicit decisions before adding endpoint-specific code.
@@ -190,7 +191,7 @@ Each slice should test the port boundary rather than couple domain tests to HTTP
 - [ ] A fresh local user can authenticate through the system browser using the exact registered callback and public-client exchange; no secret or refresh token is required.
 - [ ] CSRF state mismatch, denial, expiry, and 401 each produce the specified typed outcome, with 401/expiry reaching `reauthorization_required`.
 - [ ] Manifest and profile snapshots expose freshness, revision, and source markers and commit atomically.
-- [ ] CLI and MCP return equivalent results through shared application services, with CLI confirmation remaining optional UX and MCP using one direct intent-authorized `move_item` call.
+- [ ] CLI equip and MCP equip return identical JSON through shared presentation and application services; MCP move remains a separate one-call intent-authorized tool.
 - [ ] Search and inspect resolve a concrete item instance and distinguish definition hash from instance ID.
 - [ ] `move_item` resolves semantically, rejects ambiguity, applies CLI UX if used, refreshes before execution, handles partial failure honestly, refreshes afterward, and verifies destination.
 - [ ] MCP move execution is enabled by default through one direct intent-authorized `move_item` call; it has no mandatory preview, confirmation token/value, approval ceremony, or two-step protocol, and cannot bypass the shared policy service.

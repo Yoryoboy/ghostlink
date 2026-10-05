@@ -202,6 +202,10 @@ fn assert_read_only_profile_requests(urls: &[String]) {
 enum TransferAction {
     /// The provider applies the move and answers with the success envelope.
     Applied,
+    /// Received HTTP authentication refusal: attempted, never applied.
+    AuthenticationRefused(u16),
+    /// Independent game action reaches the target while this call is refused.
+    AuthenticationRefusedConcurrent,
     /// The provider applies the move, then the next profile refresh fails at the
     /// transport, modelling a lost post-action observation.
     AppliedThenPostActionFails,
@@ -221,8 +225,13 @@ impl TransferAction {
     /// True when this action moves the scripted item to its requested endpoint.
     const fn lands(self) -> bool {
         match self {
-            Self::Applied | Self::AppliedThenPostActionFails => true,
-            Self::ReportWithoutApplying | Self::Refused(_) | Self::SentinelEnvelope => false,
+            Self::Applied
+            | Self::AppliedThenPostActionFails
+            | Self::AuthenticationRefusedConcurrent => true,
+            Self::ReportWithoutApplying
+            | Self::Refused(_)
+            | Self::SentinelEnvelope
+            | Self::AuthenticationRefused(_) => false,
             Self::ServerError { lands } => lands,
         }
     }
@@ -429,6 +438,8 @@ impl TransferTransport for SharedTransferTransport {
                     .push_back(ProfileFault::Unavailable);
                 Ok(transfer_json(TRANSFER_SUCCESS.to_owned()))
             }
+            TransferAction::AuthenticationRefused(status) => Ok(plain_response(status)),
+            TransferAction::AuthenticationRefusedConcurrent => Ok(plain_response(403)),
             TransferAction::ReportWithoutApplying => Ok(transfer_json(TRANSFER_SUCCESS.to_owned())),
             TransferAction::Refused(TransferRejection::InvalidRequest) => Ok(plain_response(400)),
             TransferAction::Refused(rejection) => Ok(transfer_json(refusal_envelope(rejection))),
@@ -1135,6 +1146,91 @@ fn character_to_character_move_posts_exactly_two_ordered_transfers() {
 /// honest partial evidence: the bounded record proves step one applied, the
 /// post-action projection places the item at the Vault, and no rollback is
 /// claimed.
+#[test]
+fn rc003_move_auth_concurrent_target_remains_non_success() {
+    let journey = Journey::new();
+    let mut service = journey.service();
+    seed(&journey, &mut service);
+    let mut transfer = journey.transfer_adapter();
+    let request = move_request(semantic("Crota's Sword"), warlock_label());
+    let plan = service
+        .plan_move(&request, PlanLifetime::MAX, TTL, NOW)
+        .unwrap();
+    journey.queue_transfer(TransferAction::Applied);
+    journey.queue_transfer(TransferAction::AuthenticationRefusedConcurrent);
+    let before = journey.request_count();
+    let MoveExecutionOutcome::IncompleteExecution(incomplete) = service
+        .execute_move_verified(&mut transfer, &request, &plan, TTL, NOW, NOW)
+        .unwrap()
+    else {
+        panic!("authentication refusal cannot become verified success");
+    };
+    assert_eq!(
+        incomplete.error(),
+        Some(MutationError::Application(
+            ErrorCategory::ProviderAuthentication
+        ))
+    );
+    assert_eq!(incomplete.observed(), &warlock_location());
+    assert_eq!(incomplete.evidence().completed_count(), 1);
+    assert_eq!(incomplete.evidence().attempted_count(), 2);
+    assert_eq!(
+        incomplete.stop_outcome(),
+        Some(StepOutcome::AuthenticationRefused)
+    );
+    assert_eq!(journey.transfer_calls(), 2);
+    assert_eq!(journey.request_count() - before, 4);
+}
+
+#[test]
+fn rc003_move_auth_retains_progress_stops_and_refreshes() {
+    for status in [401, 403] {
+        for prior_completed in [false, true] {
+            let journey = Journey::new();
+            let mut service = journey.service();
+            seed(&journey, &mut service);
+            let mut transfer = journey.transfer_adapter();
+            let request = move_request(semantic("Crota's Sword"), warlock_label());
+            let plan = service
+                .plan_move(&request, PlanLifetime::MAX, TTL, NOW)
+                .unwrap();
+            if prior_completed {
+                journey.queue_transfer(TransferAction::Applied);
+            }
+            journey.queue_transfer(TransferAction::AuthenticationRefused(status));
+            let before = journey.request_count();
+            let MoveExecutionOutcome::IncompleteExecution(incomplete) = service
+                .execute_move_verified(&mut transfer, &request, &plan, TTL, NOW, NOW)
+                .unwrap()
+            else {
+                panic!("auth refusal not applied");
+            };
+            let completed = usize::from(prior_completed);
+            assert_eq!(incomplete.evidence().attempted_count(), completed + 1);
+            assert_eq!(incomplete.evidence().completed_count(), completed);
+            assert_eq!(incomplete.evidence().unattempted_count(), 1 - completed);
+            assert_eq!(
+                incomplete.stop_outcome(),
+                Some(StepOutcome::AuthenticationRefused)
+            );
+            assert_eq!(
+                incomplete.error(),
+                Some(MutationError::Application(
+                    ErrorCategory::ProviderAuthentication
+                ))
+            );
+            assert_eq!(journey.transfer_calls(), completed + 1);
+            assert_eq!(journey.request_count() - before, 4);
+            let expected = if prior_completed {
+                ItemLocation::Vault
+            } else {
+                hunter_location()
+            };
+            assert_eq!(incomplete.observed(), &expected);
+        }
+    }
+}
+
 #[test]
 fn refused_second_step_strands_the_item_in_the_vault() {
     let journey = Journey::new();

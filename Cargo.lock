@@ -511,6 +511,7 @@ dependencies = [
  "clap",
  "destiny-adapters",
  "destiny-app",
+ "destiny-output",
  "libc",
  "serde_json",
 ]
@@ -526,11 +527,21 @@ dependencies = [
  "clap",
  "destiny-adapters",
  "destiny-app",
+ "destiny-cli",
+ "destiny-output",
  "rmcp",
  "schemars",
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "destiny-output"
+version = "0.1.0"
+dependencies = [
+ "destiny-app",
+ "serde_json",
 ]
 
 [[package]]

@@ -164,6 +164,38 @@ pub fn move_item_tool() -> Tool {
         .with_output_schema::<MoveItemOutput>()
 }
 
+pub const EQUIP_ITEM_TOOL: &str = "equip_item";
+
+/// Both selectors are mandatory. An invocation authorizes exactly one intent.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EquipItemArgs {
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub item: String,
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub character: String,
+}
+impl EquipItemArgs {
+    pub fn validate(&self) -> Result<(), McpError> {
+        // Like CLI EquipArgs: validate all raw selectors as bounded semantic
+        // text before I/O, even when resolution later chooses a numeric ID.
+        destiny_app::ItemSelector::semantic(&self.item).map_err(McpError::from)?;
+        for value in [&self.item, &self.character] {
+            if value.trim().is_empty()
+                || value.chars().count() > MAX_IDENTIFIER_LENGTH
+                || value.chars().any(char::is_control)
+            {
+                return Err(McpError::new(ErrorCategory::ProviderValidation));
+            }
+        }
+        Ok(())
+    }
+}
+pub fn equip_item_tool() -> Tool {
+    Tool::new(EQUIP_ITEM_TOOL, "Equip one explicitly selected item on one explicitly selected character, automatically transferring if necessary. One call authorizes fresh preflight, ordered mutation, mandatory refresh and equipped-state verification. Ambiguity refuses; partial progress is not rolled back; never blindly retry uncertain outcomes. Character must be in orbit, a social space, or offline.", JsonObject::new())
+        .with_input_schema::<EquipItemArgs>()
+}
+
 /// `list_characters` accepts no arguments.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -987,8 +1019,14 @@ pub struct StepEvidenceView {
 pub enum StepOutcomeView {
     Unattempted,
     Completed,
-    Rejected { reason: TransferRejectionView },
-    EquipRejected { reason: EquipRejectionView },
+    Rejected {
+        reason: TransferRejectionView,
+    },
+    EquipRejected {
+        reason: EquipRejectionView,
+    },
+    /// Received authentication refusal: attempted, not applied.
+    AuthenticationRefused,
     Transient,
     Uncertain,
 }

@@ -53,8 +53,8 @@
 //!
 //! Non-`200` statuses are classified at the HTTP layer with the same honesty
 //! rule: `401`/`403` is an authentication rejection observed after the request
-//! was dispatched but contract-safe as an `Err` because the provider refused
-//! before any mutation; `429` is a [`TransferOutcome::Transient`] failure because
+//! was dispatched: [`TransferOutcome::AuthenticationRefused`] preserves the
+//! attempted call without claiming any mutation; `429` is a [`TransferOutcome::Transient`] failure because
 //! the throttle status itself is a deterministic provider refusal to process the
 //! submitted request; `5xx` is [`TransferOutcome::Uncertain`] because a server
 //! error on a dispatched mutation does not prove the mutation did not apply;
@@ -666,9 +666,8 @@ pub(crate) fn is_canonical_identifier(value: &str) -> bool {
 
 /// Classifies one observed transport response into the committed outcome.
 ///
-/// The only `Err` this can produce is the authentication rejection, which is
-/// contract-safe because the provider refused the request without mutating
-/// anything. Every other post-dispatch condition a caller cannot resolve becomes
+/// A received authentication refusal records dispatch without claiming a
+/// mutation. Every post-dispatch condition a caller cannot resolve becomes
 /// [`TransferOutcome::Uncertain`]: a dispatched mutation that returns a server
 /// error does not prove the mutation did not apply, so `5xx` is uncertain, and
 /// only `429` — a deterministic throttle refusal to process the request — is
@@ -678,7 +677,7 @@ fn classify_response(response: &mut TransferHttpResponse) -> Result<TransferOutc
     let content_length = response.content_length();
     match status {
         200 => {}
-        401 | 403 => return Err(AppError::new(ErrorCategory::ProviderAuthentication)),
+        401 | 403 => return Ok(TransferOutcome::AuthenticationRefused),
         429 => return Ok(TransferOutcome::Transient),
         // A dispatched mutation that returns a server error cannot establish
         // non-application, so it is uncertain rather than transient.
@@ -1505,18 +1504,18 @@ mod tests {
 
     #[test]
     fn authentication_statuses_are_credential_rejections_without_mutation() {
-        // The request was dispatched, but `401`/`403` is the provider refusing
-        // the credential before any mutation, so a clean `Err` is contract-safe.
+        // RC003: received 401/403 proves an attempted call, not a mutation.
+        // Only authentication failures before dispatch may return Err.
         for status in [401u16, 403] {
             let mut gateway = gateway(
                 vec![Ok(json_response(status, "denied"))],
                 GATEWAY_NOW,
                 GATEWAY_EXPIRES_AT,
             );
-            let error = gateway
-                .transfer(&to_vault_request())
-                .expect_err("authentication failure");
-            assert_eq!(error.category(), ErrorCategory::ProviderAuthentication);
+            let outcome = gateway.transfer(&to_vault_request()).unwrap();
+            assert_eq!(outcome, TransferOutcome::AuthenticationRefused);
+            assert!(!outcome.applied());
+            assert_eq!(gateway.transport().recorded().len(), 1);
         }
     }
 
@@ -1796,11 +1795,9 @@ mod tests {
             GATEWAY_NOW,
             GATEWAY_EXPIRES_AT,
         );
-        let error = denied
-            .transfer(&to_vault_request())
-            .expect_err("authentication failure");
-        assert_eq!(error.category(), ErrorCategory::ProviderAuthentication);
-        assert!(!error.to_string().contains(sentinel));
-        assert!(!format!("{error:?}").contains(sentinel));
+        let outcome = denied.transfer(&to_vault_request()).unwrap();
+        assert_eq!(outcome, TransferOutcome::AuthenticationRefused);
+        assert!(!format!("{outcome:?}").contains(sentinel));
+        assert!(!format!("{outcome:?}").contains(BEARER_SENTINEL));
     }
 }
