@@ -225,14 +225,17 @@ impl LoopbackCallbackReceiver {
             })?;
             let read = match stream.read(&mut buffer) {
                 Ok(read) => read,
+                // A socket read timeout can fire slightly before the requested
+                // duration (Windows rounds it to its coarse timer tick), so the
+                // loop re-arms with the remaining time and only the shared
+                // deadline itself ends the read.
                 Err(error)
                     if matches!(
                         error.kind(),
                         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
                     ) =>
                 {
-                    Self::respond(&mut stream, false);
-                    return Err(AppError::new(ErrorCategory::CallbackTimeout));
+                    continue;
                 }
                 Err(_) => {
                     Self::respond(&mut stream, false);
