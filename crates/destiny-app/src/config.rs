@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use destiny_core::{AppError, ClientSecret, DefinitionVersion, FreshnessPolicy};
 use url::Url;
 
+use crate::defaults::{CompiledDefaults, OFFICIAL};
+
 mod file;
 
 const API_KEY: &str = "BUNGIE_API_KEY";
@@ -128,8 +130,8 @@ pub(crate) struct Config {
 
 #[allow(dead_code)]
 impl Config {
-    /// Loads the exact required keys from the environment, falling back per key
-    /// to the per-user configuration file. Present environment values win.
+    /// Loads exact keys with environment > per-user file > compiled defaults
+    /// precedence. Present values win, even when empty or invalid.
     pub fn from_env() -> Result<Self, AppError> {
         let values =
             exact_env_values(&[API_KEY, CLIENT_ID, CALLBACK_URI, REGISTERED_CALLBACK_URI])?;
@@ -224,9 +226,9 @@ pub struct LoginRuntimeConfig {
 }
 
 impl LoginRuntimeConfig {
-    /// Loads login configuration from the environment and per-user file.
+    /// Loads login configuration from the environment, file, and compiled defaults.
     ///
-    /// Present process values win per key; absent keys fall back to the file.
+    /// Precedence per key is process environment, file, then compiled defaults.
     /// Only the exact required keys are retained, apart from the environment
     /// variables used to resolve the file path. Invalid Unicode and malformed
     /// or insecure files fail closed with a sanitized configuration error.
@@ -399,14 +401,15 @@ fn required(values: &HashMap<String, String>, name: &str) -> Result<String, AppE
 
 /// Reads named configuration keys with process environment precedence per key.
 ///
-/// The bounded per-user file supplies absent keys. Only path-selection variables
-/// and requested process keys are inspected; invalid Unicode fails sanitized.
+/// The bounded per-user file, then compiled defaults, supply absent keys. Only
+/// path-selection variables and requested keys are inspected; invalid Unicode
+/// fails sanitized. Explicit empty or invalid overrides never fall back.
 fn exact_env_values(names: &[&str]) -> Result<HashMap<String, String>, AppError> {
     exact_source_values(names, |name| std::env::var_os(name))
 }
 
-/// Composes file fallback with an injected environment lookup for deterministic
-/// tests. The parsed map remains private and is never rendered in diagnostics.
+/// Composes all sources with the official defaults and an injected environment.
+/// The parsed map remains private and is never rendered in diagnostics.
 fn exact_source_values<F>(
     names: &[&str],
     mut lookup: F,
@@ -414,9 +417,33 @@ fn exact_source_values<F>(
 where
     F: FnMut(&str) -> Option<OsString>,
 {
+    exact_source_values_with_defaults(names, &OFFICIAL, &mut lookup)
+}
+
+fn exact_source_values_with_defaults<F>(
+    names: &[&str],
+    defaults: &CompiledDefaults,
+    mut lookup: F,
+) -> Result<HashMap<String, String>, AppError>
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
     let values = file::load(file::resolve_path(&mut lookup))?;
     exact_key_values(names, |name| {
-        lookup(name).or_else(|| values.get(name).map(OsString::from))
+        lookup(name)
+            .or_else(|| values.get(name).map(OsString::from))
+            .or_else(|| {
+                let value = match name {
+                    API_KEY => defaults.api_key,
+                    CLIENT_ID => defaults.public_client_id,
+                    TOKEN_BROKER_URL => defaults.token_broker_url,
+                    CALLBACK_URI => defaults.callback_uri,
+                    REGISTERED_CALLBACK_URI => defaults.registered_callback_uri,
+                    READ_FRESHNESS_TTL_SECONDS => defaults.freshness_ttl_seconds,
+                    _ => None,
+                };
+                value.map(OsString::from)
+            })
     })
 }
 
@@ -524,9 +551,9 @@ pub struct ReadRuntimeConfig {
 }
 
 impl ReadRuntimeConfig {
-    /// Loads shared read configuration from the environment and per-user file.
+    /// Loads read configuration from the environment, file, and compiled defaults.
     ///
-    /// Present process values win per key; absent keys fall back to the file.
+    /// Precedence per key is process environment, file, then compiled defaults.
     /// Only the exact required keys are retained, apart from the environment
     /// variables used to resolve the file path. Invalid Unicode and malformed
     /// or insecure files fail closed with a sanitized configuration error.
@@ -668,6 +695,187 @@ mod tests {
     use destiny_core::ErrorCategory;
     use std::collections::HashMap;
     use std::ffi::OsString;
+
+    pub(super) fn injected_defaults() -> super::CompiledDefaults {
+        super::CompiledDefaults {
+            api_key: Some("compiled-key"),
+            public_client_id: Some("compiled-client"),
+            token_broker_url: Some("https://compiled.test"),
+            callback_uri: Some("ghostlink://oauth/callback"),
+            registered_callback_uri: Some("ghostlink://oauth/callback"),
+            freshness_ttl_seconds: Some("321"),
+        }
+    }
+
+    #[test]
+    fn compiled_defaults_supply_absent_keys_and_enable_both_runtimes() {
+        let defaults = injected_defaults();
+        let load = |names: &[&str]| {
+            super::exact_source_values_with_defaults(names, &defaults, |name| match name {
+                "DESTINY_DATABASE_PATH" => Some("synthetic.db".into()),
+                "DESTINY_DEFINITION_VERSION" => Some("manifest-test".into()),
+                _ => None,
+            })
+        };
+        let read = ReadRuntimeConfig::from_values(&super::read_env_values(load).unwrap()).unwrap();
+        assert_eq!(read.api_key().expose_secret(), "compiled-key");
+        assert_eq!(read.freshness_ttl_seconds(), 321);
+        assert_eq!(
+            read.refresh_client().unwrap().client_id(),
+            "compiled-client"
+        );
+        let login = LoginRuntimeConfig::from_values(
+            &load(&[
+                super::CLIENT_ID,
+                super::CALLBACK_URI,
+                super::REGISTERED_CALLBACK_URI,
+                super::TOKEN_BROKER_URL,
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(login.public_client_id(), "compiled-client");
+        assert!(
+            matches!(login.auth_mode(), super::ClientAuthMode::Broker(url) if url == "https://compiled.test")
+        );
+    }
+
+    #[test]
+    fn absent_optional_defaults_keep_sanitized_missing_key_errors() {
+        let defaults = super::CompiledDefaults {
+            api_key: None,
+            public_client_id: None,
+            token_broker_url: None,
+            ..injected_defaults()
+        };
+        let values = super::exact_source_values_with_defaults(
+            &[
+                super::API_KEY,
+                super::CLIENT_ID,
+                super::CALLBACK_URI,
+                super::REGISTERED_CALLBACK_URI,
+                super::CLIENT_SECRET,
+                super::TOKEN_BROKER_URL,
+                super::READ_DATABASE_PATH,
+                super::READ_DEFINITION_VERSION,
+            ],
+            &defaults,
+            |_| None,
+        )
+        .unwrap();
+        for key in [
+            super::API_KEY,
+            super::CLIENT_ID,
+            super::CLIENT_SECRET,
+            super::TOKEN_BROKER_URL,
+            super::READ_DATABASE_PATH,
+            super::READ_DEFINITION_VERSION,
+        ] {
+            assert!(!values.contains_key(key));
+        }
+        for error in [
+            LoginRuntimeConfig::from_values(&values).unwrap_err(),
+            ReadRuntimeConfig::from_values(&values).unwrap_err(),
+        ] {
+            assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+            assert_eq!(
+                error.to_string(),
+                "required runtime configuration is missing or invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_beats_compiled_broker_in_both_runtimes() {
+        let defaults = injected_defaults();
+        let load = |names: &[&str]| {
+            super::exact_source_values_with_defaults(names, &defaults, |name| match name {
+                "BUNGIE_CLIENT_SECRET" => Some("synthetic-secret".into()),
+                "DESTINY_DATABASE_PATH" => Some("synthetic.db".into()),
+                "DESTINY_DEFINITION_VERSION" => Some("manifest-test".into()),
+                _ => None,
+            })
+        };
+        let login = LoginRuntimeConfig::from_values(
+            &load(&[
+                super::CLIENT_ID,
+                super::CALLBACK_URI,
+                super::REGISTERED_CALLBACK_URI,
+                super::CLIENT_SECRET,
+                super::TOKEN_BROKER_URL,
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let read = ReadRuntimeConfig::from_values(&super::read_env_values(load).unwrap()).unwrap();
+        for mode in [
+            login.auth_mode(),
+            read.refresh_client().unwrap().auth_mode(),
+        ] {
+            assert!(matches!(mode, super::ClientAuthMode::Confidential(_)));
+        }
+    }
+
+    #[test]
+    fn compiled_defaults_are_validated_and_empty_env_does_not_fall_back() {
+        for (key, invalid) in [
+            (super::API_KEY, "invalid key"),
+            (super::CLIENT_ID, ""),
+            (super::CALLBACK_URI, "ghostlink://wrong/callback"),
+            (super::REGISTERED_CALLBACK_URI, "ghostlink://oauth/other"),
+            (super::TOKEN_BROKER_URL, "http://invalid.test"),
+            (super::READ_FRESHNESS_TTL_SECONDS, "0"),
+        ] {
+            let mut defaults = injected_defaults();
+            match key {
+                super::API_KEY => defaults.api_key = Some(invalid),
+                super::CLIENT_ID => defaults.public_client_id = Some(invalid),
+                super::CALLBACK_URI => defaults.callback_uri = Some(invalid),
+                super::REGISTERED_CALLBACK_URI => defaults.registered_callback_uri = Some(invalid),
+                super::TOKEN_BROKER_URL => defaults.token_broker_url = Some(invalid),
+                _ => defaults.freshness_ttl_seconds = Some(invalid),
+            }
+            let values = super::exact_source_values_with_defaults(
+                &[
+                    super::API_KEY,
+                    super::CLIENT_ID,
+                    super::CALLBACK_URI,
+                    super::REGISTERED_CALLBACK_URI,
+                    super::TOKEN_BROKER_URL,
+                    super::READ_DATABASE_PATH,
+                    super::READ_DEFINITION_VERSION,
+                    super::READ_FRESHNESS_TTL_SECONDS,
+                ],
+                &defaults,
+                |name| match name {
+                    "DESTINY_DATABASE_PATH" => Some("synthetic.db".into()),
+                    "DESTINY_DEFINITION_VERSION" => Some("manifest-test".into()),
+                    _ => None,
+                },
+            )
+            .unwrap();
+            let error = if matches!(
+                key,
+                super::CALLBACK_URI | super::REGISTERED_CALLBACK_URI | super::CLIENT_ID
+            ) {
+                LoginRuntimeConfig::from_values(&values).unwrap_err()
+            } else {
+                ReadRuntimeConfig::from_values(&values).unwrap_err()
+            };
+            assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+            assert_eq!(
+                error.to_string(),
+                "required runtime configuration is missing or invalid"
+            );
+        }
+        let values = super::exact_source_values_with_defaults(
+            &[super::API_KEY],
+            &injected_defaults(),
+            |name| (name == super::API_KEY).then(|| OsString::from("")),
+        )
+        .unwrap();
+        assert_eq!(values[super::API_KEY], "");
+    }
 
     fn values() -> HashMap<String, String> {
         HashMap::from([

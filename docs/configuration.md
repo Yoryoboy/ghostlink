@@ -22,23 +22,25 @@ DESTINY_FRESHNESS_TTL_SECONDS Positive freshness TTL in seconds (max 2592000)
 
 Every binary reads its configuration itself, so secrets never need to be
 exported in the shell that launches it (or in an agent session that runs it).
-For each requested key, a value present in the process environment wins;
-otherwise the value comes from the per-user configuration file, resolved in
-this order:
+For each requested key, precedence is **process environment > `config.env` >
+compiled default**. Present empty or invalid values fail validation rather than
+falling back. `config.env` is optional; its path is resolved in this order:
 
 1. `$GHOSTLINK_CONFIG_FILE`, when set and non-empty;
 2. `$XDG_CONFIG_HOME/ghostlink/config.env`, when `XDG_CONFIG_HOME` is absolute;
 3. `$HOME/.config/ghostlink/config.env`.
 
-A missing file is not an error; the environment alone is then used. The file
+A missing file is not an error; environment values and compiled defaults are
+then used. The file
 holds `KEY=value` lines (blank lines, `#` comments, an optional `export`
 prefix, and one pair of surrounding quotes are accepted) and is limited to
 64 KiB. On Unix it must not be accessible by group or others: a file with any
 group/other permission bit is refused. Every failure is the sanitized
 `configuration_error`; no line, value, or key content is ever printed.
 
-Create it from the template and fill in the values locally, never in a shared
-session:
+For overrides or self-hosting, optionally create it from the template. Remove
+unused placeholder lines: they override compiled defaults. Fill any private
+values locally, never in a shared session:
 
 ```sh
 mkdir -p ~/.config/ghostlink
@@ -46,7 +48,20 @@ install -m 600 config.example.env ~/.config/ghostlink/config.env
 $EDITOR ~/.config/ghostlink/config.env
 ```
 
-Do not commit credentials. Startup diagnostics are typed and sanitized.
+Never commit a client secret or account tokens. Official public application
+values (API key, public client ID, callback URI, broker URL) are safe to commit
+and are extractable from release binaries. Their single owner-maintained block
+is `crates/destiny-app/src/defaults.rs`; every value remains overridable.
+
+Callbacks default to `ghostlink://oauth/callback` and freshness TTL to `900`
+seconds. API key, public client ID, and broker URL currently have `None` defaults
+pending owner provisioning; absent required values still produce the same
+sanitized configuration error. Thus this checkout is not yet fully zero-config.
+The database path remains required until PR-005. The definition version remains
+required pending PR-006: it is persisted in profile metadata and participates
+in inventory revision identity, so an arbitrary `live` label is not a proven
+safe substitute for the synced Manifest version. Client secrets never have a
+compiled default. Startup diagnostics are typed and sanitized.
 
 ## OAuth modes
 
@@ -71,7 +86,8 @@ refresh tokens. Its registered client and callback must match your login config.
 For direct confidential mode, change your Bungie application's OAuth client type
 to Confidential and store the issued secret only in the `0600` per-user file,
 never in shell exports or agent sessions. A secret takes precedence over a
-broker URL. Present but empty or invalid values fail sanitized configuration
+broker URL, including the compiled broker default. An environment or file
+broker URL overrides the compiled one. Present but empty or invalid values fail sanitized configuration
 validation, including an invalid broker URL when a secret is present.
 
 Both renewable modes require `BUNGIE_PUBLIC_CLIENT_ID` for reads as well as
@@ -92,8 +108,9 @@ dispatch the read through the shared `QueryService`. An invalid argument
 therefore never reads configuration, a credential, a database, a clock, or the
 network.
 
-The read runtime always requires these variables (see `config.example.env`);
-confidential and broker modes additionally require the client ID:
+The read runtime requires these values (see `config.example.env`), but they
+need not be environment variables or file entries when compiled defaults supply
+them. Confidential and broker modes additionally require the client ID:
 
 | Variable | Meaning |
 | --- | --- |

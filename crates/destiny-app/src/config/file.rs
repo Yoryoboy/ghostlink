@@ -289,6 +289,46 @@ mod tests {
     }
 
     #[test]
+    fn file_and_env_override_each_compiled_default() {
+        let defaults = super::super::tests::injected_defaults();
+        let names = [
+            "BUNGIE_API_KEY",
+            "BUNGIE_PUBLIC_CLIENT_ID",
+            "BUNGIE_CALLBACK_URI",
+            "BUNGIE_REGISTERED_CALLBACK_URI",
+            "GHOSTLINK_TOKEN_BROKER_URL",
+            "DESTINY_FRESHNESS_TTL_SECONDS",
+        ];
+        let fixture = Fixture::new(b"BUNGIE_API_KEY=file-key\nBUNGIE_PUBLIC_CLIENT_ID=file-client\nBUNGIE_CALLBACK_URI=file-callback\nBUNGIE_REGISTERED_CALLBACK_URI=file-registered\nGHOSTLINK_TOKEN_BROKER_URL=https://file.test\nDESTINY_FRESHNESS_TTL_SECONDS=456\n");
+        let expected = [
+            "file-key",
+            "file-client",
+            "file-callback",
+            "file-registered",
+            "https://file.test",
+            "456",
+        ];
+        let file_values =
+            super::super::exact_source_values_with_defaults(&names, &defaults, |name| {
+                fixture.env(name)
+            })
+            .unwrap();
+        for (key, value) in names.iter().zip(expected) {
+            assert_eq!(file_values[*key], value);
+            let env_values =
+                super::super::exact_source_values_with_defaults(&names, &defaults, |name| {
+                    if name == *key {
+                        Some("env-value".into())
+                    } else {
+                        fixture.env(name)
+                    }
+                })
+                .unwrap();
+            assert_eq!(env_values[*key], "env-value");
+        }
+    }
+
+    #[test]
     fn broker_uses_file_fallback_and_environment_precedence() {
         let fixture = Fixture::new(b"BUNGIE_API_KEY=file-key\nDESTINY_DATABASE_PATH=/tmp/synthetic.db\nDESTINY_DEFINITION_VERSION=v1\nDESTINY_FRESHNESS_TTL_SECONDS=900\nBUNGIE_PUBLIC_CLIENT_ID=file-client\nGHOSTLINK_TOKEN_BROKER_URL=https://file.test/\nBUNGIE_CALLBACK_URI=ghostlink://oauth/callback\nBUNGIE_REGISTERED_CALLBACK_URI=ghostlink://oauth/callback\n");
         for override_url in [None, Some("https://env.test/")] {

@@ -15,6 +15,7 @@ pub use destiny_core::{ArtifactGateway, ArtifactSnapshot};
 pub mod auth;
 pub mod auth_ux;
 mod config;
+mod defaults;
 pub mod manifest;
 pub mod mutation;
 pub mod queries;
