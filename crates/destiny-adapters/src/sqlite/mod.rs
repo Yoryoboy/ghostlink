@@ -71,8 +71,23 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     /// Opens a file-backed store, applies the connection policy, and migrates to
-    /// [`LATEST_SCHEMA_VERSION`].
+    /// [`LATEST_SCHEMA_VERSION`]. Missing parent directories are created with
+    /// owner-only access on Unix; permissions of existing directories stay intact.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, AppError> {
+        let path = path.as_ref();
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(parent).map_err(|_| storage_failure())?;
+        }
         let connection = Connection::open(path).map_err(|_| storage_failure())?;
         Self::initialize(connection, JournalPolicy::WriteAheadLog)
     }
@@ -172,4 +187,73 @@ pub(crate) fn parse_decimal(raw: &str) -> Result<u64, AppError> {
         return Err(storage_failure());
     }
     raw.parse::<u64>().map_err(|_| storage_failure())
+}
+
+#[cfg(test)]
+mod directory_tests {
+    use super::*;
+
+    struct TemporaryDirectory(std::path::PathBuf);
+
+    impl TemporaryDirectory {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target")
+                .join(format!(
+                    "database-parent-test-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+            std::fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    #[test]
+    fn open_creates_nested_private_parents_and_preserves_existing_modes() {
+        let root = TemporaryDirectory::new();
+        #[cfg(unix)]
+        let original = {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            root.path().metadata().unwrap().permissions().mode() & 0o777
+        };
+        let path = root.path().join("one/two/ghostlink.db");
+        let store = SqliteStore::open(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), LATEST_SCHEMA_VERSION);
+        assert!(path.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for dir in [root.path().join("one"), root.path().join("one/two")] {
+                assert_eq!(dir.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+            }
+            assert_eq!(
+                root.path().metadata().unwrap().permissions().mode() & 0o777,
+                original
+            );
+        }
+    }
+
+    #[test]
+    fn parent_and_open_failures_are_sanitized_storage_errors() {
+        let root = TemporaryDirectory::new();
+        let blocker = root.path().join("sentinel");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        for path in [
+            blocker.join("nested/ghostlink.db"),
+            root.path().to_path_buf(),
+        ] {
+            let error = SqliteStore::open(path).unwrap_err();
+            assert_eq!(error.category(), ErrorCategory::LocalStorage);
+            assert_eq!(error.to_string(), storage_failure().to_string());
+            assert!(!format!("{error:?}").contains("sentinel"));
+        }
+    }
 }

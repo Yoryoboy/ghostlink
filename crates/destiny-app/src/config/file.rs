@@ -12,18 +12,25 @@ const MAX_FILE_BYTES: usize = 64 * 1024;
 
 /// Resolves an explicit override, absolute XDG directory, or HOME fallback.
 /// Path values stay native OS strings and are never included in errors.
-pub(super) fn resolve_path<F>(mut lookup: F) -> Option<PathBuf>
+pub(super) fn resolve_path<F>(lookup: F) -> Option<PathBuf>
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
+    resolve_path_for(super::paths::Platform::current(), lookup)
+}
+
+fn resolve_path_for<F>(platform: super::paths::Platform, mut lookup: F) -> Option<PathBuf>
 where
     F: FnMut(&str) -> Option<OsString>,
 {
     if let Some(path) = lookup("GHOSTLINK_CONFIG_FILE").filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(path));
     }
-    if let Some(path) = lookup("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
-        let path = PathBuf::from(path);
-        if path.is_absolute() {
-            return Some(path.join("ghostlink/config.env"));
-        }
+    if matches!(platform, super::paths::Platform::Windows) {
+        return super::paths::windows_path(lookup("APPDATA"), r"ghostlink\config.env");
+    }
+    if let Some(path) = lookup("XDG_CONFIG_HOME").filter(super::paths::unix_absolute) {
+        return Some(PathBuf::from(path).join("ghostlink/config.env"));
     }
     lookup("HOME").map(|home| PathBuf::from(home).join(".config/ghostlink/config.env"))
 }
@@ -147,6 +154,49 @@ mod tests {
     }
 
     #[test]
+    fn windows_config_uses_appdata_and_explicit_override() {
+        use crate::config::paths::Platform;
+        let resolve = |explicit: Option<&str>, appdata: &str| {
+            super::resolve_path_for(Platform::Windows, |name| match name {
+                "GHOSTLINK_CONFIG_FILE" => explicit.map(OsString::from),
+                "APPDATA" => Some(appdata.into()),
+                _ => panic!("unexpected lookup"),
+            })
+        };
+        assert_eq!(
+            resolve(None, r"C:\Users\test\AppData\Roaming"),
+            Some(PathBuf::from(
+                r"C:\Users\test\AppData\Roaming\ghostlink\config.env"
+            ))
+        );
+        assert_eq!(
+            resolve(Some("override.env"), "relative"),
+            Some("override.env".into())
+        );
+        for invalid in ["", "relative", r"C:relative", r"\rooted"] {
+            assert!(resolve(None, invalid).is_none());
+        }
+    }
+
+    #[test]
+    fn database_file_and_env_override_os_default() {
+        let fixture = Fixture::new(b"DESTINY_DATABASE_PATH=file.db\n");
+        for override_value in [None, Some("env.db"), Some("")] {
+            let values = exact_source_values(&["DESTINY_DATABASE_PATH"], |name| match name {
+                "DESTINY_DATABASE_PATH" => override_value.map(OsString::from),
+                "HOME" => Some("/synthetic-home".into()),
+                "LOCALAPPDATA" => Some(r"C:\synthetic-home".into()),
+                _ => fixture.env(name),
+            })
+            .unwrap();
+            assert_eq!(
+                values["DESTINY_DATABASE_PATH"],
+                override_value.unwrap_or("file.db")
+            );
+        }
+    }
+
+    #[test]
     fn parsing_supports_comments_export_quotes_and_whitespace() {
         let parsed = parse(b"\n  # ignored\n export FIRST = \"first value\" \nSECOND='second'\n_THIRD9 = plain=tail\nEMPTY=\n").unwrap();
         assert_eq!(parsed.get("FIRST").map(String::as_str), Some("first value"));
@@ -185,12 +235,10 @@ mod tests {
         sanitized(load(Some(fixture.0.clone())).unwrap_err());
     }
 
-    // The fixtures use Unix absolute paths; `/xdg` is not absolute on Windows.
-    #[cfg(unix)]
     #[test]
     fn path_resolution_obeys_precedence_and_ignores_relative_xdg() {
         let resolve = |explicit: &str, xdg: &str, home: Option<&str>| {
-            super::resolve_path(|name| match name {
+            super::resolve_path_for(crate::config::paths::Platform::Unix, |name| match name {
                 "GHOSTLINK_CONFIG_FILE" => Some(explicit.into()),
                 "XDG_CONFIG_HOME" => Some(xdg.into()),
                 "HOME" => home.map(OsString::from),

@@ -13,7 +13,7 @@ the database path, Manifest definition version, and a positive freshness TTL:
 
 ```text
 BUNGIE_API_KEY                Bungie API key (also used by the read roots)
-DESTINY_DATABASE_PATH         SQLite projection database path
+DESTINY_DATABASE_PATH         Optional SQLite projection database path override
 DESTINY_DEFINITION_VERSION    Manifest definition version to persist and compare
 DESTINY_FRESHNESS_TTL_SECONDS Positive freshness TTL in seconds (max 2592000)
 ```
@@ -26,9 +26,16 @@ For each requested key, precedence is **process environment > `config.env` >
 compiled default**. Present empty or invalid values fail validation rather than
 falling back. `config.env` is optional; its path is resolved in this order:
 
+On Linux and other Unix systems:
+
 1. `$GHOSTLINK_CONFIG_FILE`, when set and non-empty;
 2. `$XDG_CONFIG_HOME/ghostlink/config.env`, when `XDG_CONFIG_HOME` is absolute;
 3. `$HOME/.config/ghostlink/config.env`.
+
+On Windows, `$GHOSTLINK_CONFIG_FILE` still wins; otherwise the file is
+`%APPDATA%\ghostlink\config.env` (APPDATA must be non-empty and absolute).
+Windows does not apply the Unix permission-bit check; protect private values
+with the operating system's access controls.
 
 A missing file is not an error; environment values and compiled defaults are
 then used. The file
@@ -57,11 +64,27 @@ Callbacks default to `ghostlink://oauth/callback` and freshness TTL to `900`
 seconds. API key, public client ID, and broker URL currently have `None` defaults
 pending owner provisioning; absent required values still produce the same
 sanitized configuration error. Thus this checkout is not yet fully zero-config.
-The database path remains required until PR-005. The definition version remains
-required pending PR-006: it is persisted in profile metadata and participates
+The database path defaults to the OS location below. The definition version
+remains required pending PR-006: it is persisted in profile metadata and participates
 in inventory revision identity, so an arbitrary `live` label is not a proven
 safe substitute for the synced Manifest version. Client secrets never have a
 compiled default. Startup diagnostics are typed and sanitized.
+
+## Database location
+
+`DESTINY_DATABASE_PATH` is optional: **process environment > `config.env` >
+OS default**. Explicit empty or invalid overrides fail rather than falling back.
+
+| OS | Default database |
+| --- | --- |
+| Linux / other Unix | `$XDG_DATA_HOME/ghostlink/ghostlink.db` when XDG_DATA_HOME is non-empty and absolute; otherwise `$HOME/.local/share/ghostlink/ghostlink.db` (HOME must be non-empty and absolute) |
+| Windows | `%LOCALAPPDATA%\ghostlink\ghostlink.db` (LOCALAPPDATA must be non-empty and absolute) |
+
+If no base directory can be resolved and no override is supplied, startup
+returns the same sanitized `configuration_error`. Every database open creates
+missing parent directories, including nested parents. New directories use
+`0700` on Unix; existing directory permissions are never changed. Creation or
+open failures return sanitized `local_storage` errors without paths.
 
 ## OAuth modes
 
@@ -115,7 +138,7 @@ them. Confidential and broker modes additionally require the client ID:
 | Variable | Meaning |
 | --- | --- |
 | `BUNGIE_API_KEY` | Bungie public-client API key |
-| `DESTINY_DATABASE_PATH` | Path to the durable SQLite projection |
+| `DESTINY_DATABASE_PATH` | Optional override for the OS-default durable SQLite projection path |
 | `DESTINY_DEFINITION_VERSION` | Manifest definition version the projection was built from |
 | `DESTINY_FRESHNESS_TTL_SECONDS` | Positive freshness TTL in seconds (maximum `2592000`) |
 

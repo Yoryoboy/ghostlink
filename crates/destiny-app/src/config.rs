@@ -11,6 +11,7 @@ use url::Url;
 use crate::defaults::{CompiledDefaults, OFFICIAL};
 
 mod file;
+mod paths;
 
 const API_KEY: &str = "BUNGIE_API_KEY";
 const CLIENT_ID: &str = "BUNGIE_PUBLIC_CLIENT_ID";
@@ -433,6 +434,10 @@ where
         lookup(name)
             .or_else(|| values.get(name).map(OsString::from))
             .or_else(|| {
+                if name == READ_DATABASE_PATH {
+                    return paths::database_path(paths::Platform::current(), &mut lookup)
+                        .map(PathBuf::into_os_string);
+                }
                 let value = match name {
                     API_KEY => defaults.api_key,
                     CLIENT_ID => defaults.public_client_id,
@@ -563,6 +568,8 @@ impl ReadRuntimeConfig {
     }
 
     /// Validates the shared read runtime configuration from an explicit value map.
+    /// Source loading supplies OS defaults; this validator never consults the
+    /// host environment, so absent paths in explicit maps still fail closed.
     pub fn from_values(values: &HashMap<String, String>) -> Result<Self, AppError> {
         let api_key = ReadApiKey::new(required(values, API_KEY)?)?;
         let database_path = read_database_path(&required(values, READ_DATABASE_PATH)?)?;
@@ -705,6 +712,37 @@ mod tests {
             registered_callback_uri: Some("ghostlink://oauth/callback"),
             freshness_ttl_seconds: Some("321"),
         }
+    }
+
+    #[test]
+    fn read_sources_supply_database_default_or_sanitized_missing_configuration() {
+        let defaults = injected_defaults();
+        let load = |resolved| {
+            super::exact_source_values_with_defaults(
+                &[
+                    super::API_KEY,
+                    super::READ_DATABASE_PATH,
+                    super::READ_DEFINITION_VERSION,
+                    super::READ_FRESHNESS_TTL_SECONDS,
+                ],
+                &defaults,
+                |name| match name {
+                    "DESTINY_DEFINITION_VERSION" => Some("manifest-test".into()),
+                    "HOME" if resolved => Some("/synthetic-home".into()),
+                    "LOCALAPPDATA" if resolved => Some(r"C:\synthetic-home".into()),
+                    _ => None,
+                },
+            )
+            .unwrap()
+        };
+        let read = ReadRuntimeConfig::from_values(&load(true)).unwrap();
+        assert!(read.database_path().ends_with("ghostlink.db"));
+        let error = ReadRuntimeConfig::from_values(&load(false)).unwrap_err();
+        assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+        assert_eq!(
+            error.to_string(),
+            "required runtime configuration is missing or invalid"
+        );
     }
 
     #[test]
@@ -1318,7 +1356,7 @@ mod tests {
     }
 
     #[test]
-    fn read_runtime_config_requires_every_value() {
+    fn read_runtime_config_requires_every_resolved_value() {
         for key in [
             "BUNGIE_API_KEY",
             "DESTINY_DATABASE_PATH",
