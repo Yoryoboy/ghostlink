@@ -2,7 +2,9 @@
 
 ## Authorization and scope
 
-Coordinating session (user-approved scope, 2026-10-05). Platforms: Linux and
+User-approved scope, 2026-10-05. The user stopped the delegated session after
+GIE-001; the coordinating session finishes the work inline, without
+delegation (user decision). Platforms: Linux and
 Windows only; macOS is out of scope. This phase: (1) CI, (2) Linux handler
 detection. The Windows handler adapter is a later phase.
 
@@ -46,6 +48,9 @@ push, PR or merge.
   `~/.local/share/ghostlink/previous-uri-handler`, one desktop id plus newline
   (empty when none), mode `0600`. An existing record is never overwritten, so a
   reinstall keeps the original handler to restore.
+- Windows compilation stays unverified locally (user decision): the host has
+  a pacman Rust toolchain without `rustup` or a Windows target. The CI
+  `windows-latest` job is the first real check, after the user pushes.
 - Pitfalls are detected and reported with exact fix commands, not repaired
   automatically: the portal store is not a documented user-editable API and
   the `mimeapps.list` conflict is DE-specific.
@@ -53,8 +58,9 @@ push, PR or merge.
 ## Tasks
 
 - [x] GIE-001 Tracker, worktree, Engram mirror.
-- [ ] GIE-002 CI workflow (ubuntu + windows) and Windows compile check.
-- [ ] GIE-003 App port and auto-resolution policy (test-first).
+- [x] GIE-002 CI workflow (ubuntu + windows). Windows compile unverified
+  locally (see Decisions).
+- [x] GIE-003 App port and auto-resolution policy (test-first).
 - [ ] GIE-004 Linux registrar adapter (test-first, injected paths/runner).
 - [ ] GIE-005 CLI: `--callback auto` default, consent prompt, `handler`
   subcommand, composition.
@@ -64,3 +70,7 @@ push, PR or merge.
 ## Progress
 
 ## Evidence
+
+- GIE-002: workflow reviewed; not run on GitHub (no push).
+- GIE-003: `cargo test -p destiny-app --lib uri_handler` 12 passed; fmt clean;
+  `cargo clippy -p destiny-app --all-targets --all-features -D warnings` clean.

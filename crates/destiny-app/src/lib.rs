@@ -20,6 +20,7 @@ pub mod mutation;
 pub mod queries;
 pub mod session;
 pub mod sync;
+pub mod uri_handler;
 pub mod weekly_personal;
 pub mod weekly_projection;
 pub mod weekly_selection;
