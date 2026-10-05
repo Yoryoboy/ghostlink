@@ -110,14 +110,24 @@ fn compose_server<S: CredentialStore + Send + 'static>(
         SystemClock::new(),
     )?;
     let policy = config.freshness_policy();
+    // A separate local connection makes version resolution lazy: an empty
+    // catalog is a typed tool error, not a startup failure or tool-time download.
+    let version_store = SqliteStore::open(config.database_path())?;
+    let version_config = config.clone();
 
     let profile_gateway = BungieProfileGateway::new(
         HttpProfileTransport::new()?,
         SystemClock::new(),
         profile_source,
         ProfileApiKey::new(config.api_key().expose_secret())?,
-        config.definition_version().clone(),
-    )?;
+        config
+            .definition_version()
+            .cloned()
+            .unwrap_or_else(|| DefinitionVersion::new("unavailable")),
+    )?
+    .with_definition_version_resolver(move || {
+        version_config.resolve_definition_version(&version_store)
+    });
     let transfer = BungieTransferGateway::new(
         HttpTransferTransport::new()?,
         SystemClock::new(),
@@ -733,6 +743,54 @@ mod tests {
         .unwrap();
         assert!(transfer.transfer(&request).is_err());
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn absent_manifest_without_override_returns_typed_tool_error_offline() {
+        use destiny_adapters::profile_gateway::{
+            ProfileHttpRequest, ProfileHttpResponse, ProfileTransport, ProfileTransportError,
+        };
+        use destiny_mcp::service::InventoryReadService;
+        struct Offline;
+        impl ProfileTransport for Offline {
+            fn get(
+                &mut self,
+                _: &ProfileHttpRequest<'_>,
+            ) -> Result<ProfileHttpResponse, ProfileTransportError> {
+                panic!("an absent manifest must not make a profile request");
+            }
+        }
+        let mut values = values("/unreachable/destiny.db");
+        values.remove("DESTINY_DEFINITION_VERSION");
+        let config = ReadRuntimeConfig::from_values(&values).unwrap();
+        let version_store = destiny_adapters::sqlite::SqliteStore::open_in_memory().unwrap();
+        let gateway = destiny_adapters::BungieProfileGateway::new(
+            Offline,
+            FakeClock::fixed(Timestamp::new(100)),
+            destiny_app::StaticCredentialSource::new(credential()),
+            destiny_adapters::ProfileApiKey::new(API_KEY_SENTINEL).unwrap(),
+            destiny_app::DefinitionVersion::new("unavailable"),
+        )
+        .unwrap()
+        .with_definition_version_resolver(move || {
+            config.resolve_definition_version(&version_store)
+        });
+        let store = destiny_adapters::sqlite::SqliteStore::open_in_memory().unwrap();
+        let mut service = destiny_mcp::QueryReadService::new(
+            destiny_app::QueryService::new(destiny_app::ProfileSyncService::new_with_definitions(
+                gateway, store,
+            )),
+            FakeClock::fixed(Timestamp::new(100)),
+            destiny_app::FreshnessPolicy { ttl_seconds: 900 },
+        );
+        let error = service
+            .list_characters(&destiny_mcp::service::ListCharactersRequest)
+            .unwrap_err();
+        assert_eq!(error.code(), "definitions_unavailable");
+        assert_eq!(
+            error.message(),
+            "definitions not loaded; run ghostlink sync-manifest"
+        );
     }
 
     #[test]

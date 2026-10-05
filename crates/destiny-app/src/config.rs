@@ -550,7 +550,7 @@ impl fmt::Debug for RefreshClientConfig {
 pub struct ReadRuntimeConfig {
     api_key: ReadApiKey,
     database_path: PathBuf,
-    definition_version: DefinitionVersion,
+    definition_version: Option<DefinitionVersion>,
     freshness_ttl_seconds: u64,
     refresh_client: Option<RefreshClientConfig>,
 }
@@ -573,8 +573,10 @@ impl ReadRuntimeConfig {
     pub fn from_values(values: &HashMap<String, String>) -> Result<Self, AppError> {
         let api_key = ReadApiKey::new(required(values, API_KEY)?)?;
         let database_path = read_database_path(&required(values, READ_DATABASE_PATH)?)?;
-        let definition_version =
-            read_definition_version(&required(values, READ_DEFINITION_VERSION)?)?;
+        let definition_version = values
+            .get(READ_DEFINITION_VERSION)
+            .map(|value| read_definition_version(value))
+            .transpose()?;
         let freshness_ttl_seconds =
             read_freshness_ttl(&required(values, READ_FRESHNESS_TTL_SECONDS)?)?;
         let auth_mode = client_auth_mode(values)?;
@@ -610,9 +612,24 @@ impl ReadRuntimeConfig {
         &self.database_path
     }
 
-    /// The trusted Manifest definition-version accessor.
-    pub fn definition_version(&self) -> &DefinitionVersion {
-        &self.definition_version
+    /// Optional backward-compatible label override (environment beats file).
+    pub fn definition_version(&self) -> Option<&DefinitionVersion> {
+        self.definition_version.as_ref()
+    }
+
+    /// Resolve from committed Manifest metadata, never from profile metadata.
+    /// An absent catalog is distinct from a corrupt/unreadable store.
+    pub fn resolve_definition_version<R: destiny_core::DefinitionRepository>(
+        &self,
+        repository: &R,
+    ) -> Result<DefinitionVersion, AppError> {
+        if let Some(version) = &self.definition_version {
+            return Ok(version.clone());
+        }
+        repository
+            .current_metadata()?
+            .map(|metadata| metadata.definition_version)
+            .ok_or_else(|| AppError::new(destiny_core::ErrorCategory::DefinitionsUnavailable))
     }
 
     /// The validated positive, bounded freshness TTL in seconds.
@@ -1346,11 +1363,84 @@ mod tests {
     }
 
     #[test]
+    fn definition_version_resolution_prefers_override_then_manifest_and_types_absence() {
+        use crate::test_support::InMemoryDefinitionRepository;
+        let repository = InMemoryDefinitionRepository::new(
+            super::DefinitionVersion::new("real-v1"),
+            vec![destiny_core::ItemDefinition {
+                hash: destiny_core::ItemHash::new(1),
+                bucket_hash: None,
+                name: "item".into(),
+                item_type: None,
+                tier: None,
+                element: None,
+                slot: None,
+                class_type: None,
+                plug_category: None,
+                tags: vec![],
+                version: super::DefinitionVersion::new("real-v1"),
+            }],
+        );
+        let mut values = read_runtime_values();
+        let explicit = ReadRuntimeConfig::from_values(&values).unwrap();
+        assert_eq!(
+            explicit
+                .resolve_definition_version(&repository)
+                .unwrap()
+                .as_str(),
+            "manifest-v1"
+        );
+        values.remove("DESTINY_DEFINITION_VERSION");
+        let automatic = ReadRuntimeConfig::from_values(&values).unwrap();
+        assert_eq!(
+            automatic
+                .resolve_definition_version(&repository)
+                .unwrap()
+                .as_str(),
+            "real-v1"
+        );
+        let empty = InMemoryDefinitionRepository::default();
+        assert_eq!(
+            automatic
+                .resolve_definition_version(&empty)
+                .unwrap_err()
+                .category(),
+            destiny_core::ErrorCategory::DefinitionsUnavailable
+        );
+        assert_eq!(
+            explicit
+                .resolve_definition_version(&empty)
+                .unwrap()
+                .as_str(),
+            "manifest-v1"
+        );
+        let broken = empty.with_metadata_failure(destiny_core::AppError::new(
+            destiny_core::ErrorCategory::LocalStorage,
+        ));
+        assert_eq!(
+            automatic
+                .resolve_definition_version(&broken)
+                .unwrap_err()
+                .category(),
+            destiny_core::ErrorCategory::LocalStorage
+        );
+    }
+
+    #[test]
+    fn read_runtime_config_accepts_absent_definition_override() {
+        let mut values = read_runtime_values();
+        values.remove("DESTINY_DEFINITION_VERSION");
+        assert!(ReadRuntimeConfig::from_values(&values).is_ok());
+        values.insert("DESTINY_DEFINITION_VERSION".into(), String::new());
+        assert!(ReadRuntimeConfig::from_values(&values).is_err());
+    }
+
+    #[test]
     fn read_runtime_config_parses_every_typed_field() {
         let config = ReadRuntimeConfig::from_values(&read_runtime_values()).unwrap();
         assert_eq!(config.api_key().expose_secret(), "api-key-placeholder");
         assert_eq!(config.database_path().to_string_lossy(), "/tmp/destiny.db");
-        assert_eq!(config.definition_version().as_str(), "manifest-v1");
+        assert_eq!(config.definition_version().unwrap().as_str(), "manifest-v1");
         assert_eq!(config.freshness_ttl_seconds(), 900);
         assert_eq!(config.freshness_policy().ttl_seconds, 900);
     }
@@ -1360,7 +1450,6 @@ mod tests {
         for key in [
             "BUNGIE_API_KEY",
             "DESTINY_DATABASE_PATH",
-            "DESTINY_DEFINITION_VERSION",
             "DESTINY_FRESHNESS_TTL_SECONDS",
         ] {
             let mut missing = read_runtime_values();
@@ -1575,6 +1664,7 @@ mod tests {
                 ReadRuntimeConfig::from_values(&valid)
                     .unwrap()
                     .definition_version()
+                    .unwrap()
                     .as_str(),
                 good
             );

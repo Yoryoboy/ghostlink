@@ -86,6 +86,15 @@ configuration, artifact perks and retained slot/socket indices. For example:
 `{"character": "hunter"}`. Requires login and loaded Manifest definitions;
 run `ghostlink sync-manifest` once after upgrading for loadout names.
 
+Definition versions are automatic: MCP uses the Manifest stored in SQLite;
+`DESTINY_DEFINITION_VERSION` is only an optional backward-compatible override.
+MCP never downloads a Manifest inside a tool call (downloads can exceed client
+timeouts). With no stored catalog, definition-dependent tools return the typed
+`definitions_unavailable` error: `definitions not loaded; run ghostlink sync-manifest`.
+Run that CLI command, or `ghostlink login` (which syncs an absent catalog after
+successful authorization). The server can observe a subsequent local sync
+without restarting.
+
 `inspect_item` returns the same enriched names as CLI inspection:
 `perk_names`, `mod_names`, `mods`, `archetype`, `available_perks`,
 `available_mods` and `stats`, alongside the definition, instance and metadata.

@@ -238,9 +238,12 @@ where
 {
     let mut read_factory = crate::runtime::production_runtime_factory();
     let mut login_factory = crate::login::ProductionLoginFactory::new();
-    run_binary_with(
+    let mut manifest =
+        crate::runtime::ComposingManifestFactory::automatic(crate::runtime::ProductionFoundations);
+    run_binary_with_manifest(
         &mut read_factory,
         &mut login_factory,
+        &mut manifest,
         &mut present_to_stdout,
         args,
     )
@@ -329,7 +332,12 @@ where
     };
     let mode = cli.output_mode();
     if let Command::Equip(arguments) = &cli.command {
-        return match crate::runtime::compose_equip(arguments) {
+        if let Err(error) = arguments.validate() {
+            return ProcessOutput::failure(mode, error);
+        }
+        return match with_definition_retry(manifest_factory, || {
+            crate::runtime::compose_equip(arguments)
+        }) {
             Ok(output) => equip_process_output(mode, &output),
             Err(error) => ProcessOutput::failure(mode, error),
         };
@@ -339,12 +347,20 @@ where
             Ok(level) => level,
             Err(error) => return ProcessOutput::failure(mode, error),
         };
-        let result = arguments.character_id().and_then(|selector| {
-            crate::runtime::compose_weekly(
-                &mut crate::runtime::ProductionFoundations,
-                destiny_adapters::manifest::HttpManifestTransport::new()?,
-                selector.as_ref(),
-            )
+        let selector = match arguments.character_id() {
+            Ok(selector) => selector,
+            Err(error) => return ProcessOutput::failure(mode, error),
+        };
+        let result = with_definition_retry(manifest_factory, || {
+            destiny_adapters::manifest::HttpManifestTransport::new()
+                .map_err(CliError::from)
+                .and_then(|transport| {
+                    crate::runtime::compose_weekly(
+                        &mut crate::runtime::ProductionFoundations,
+                        transport,
+                        selector.as_ref(),
+                    )
+                })
         });
         return match result {
             Ok((character, weekly)) => ProcessOutput::success(crate::output::render_weekly_level(
@@ -354,10 +370,12 @@ where
         };
     }
     if let Command::WeeklyReset = &cli.command {
-        return run_weekly_reset(weekly_factory, mode);
+        return with_definitions(manifest_factory, mode, || {
+            run_weekly_reset(weekly_factory, mode)
+        });
     }
     if let Command::Sync = &cli.command {
-        return match read_factory.build() {
+        return match build_with_definitions(read_factory, manifest_factory) {
             Ok(mut runtime) => {
                 let freshness = runtime.freshness();
                 run_profile_sync(runtime.service_mut(), mode, freshness)
@@ -384,7 +402,16 @@ where
             Ok(login) => login,
             Err(error) => return ProcessOutput::failure(mode, error),
         };
-        return run_login(login.as_mut(), mode, present);
+        let mut output = run_login(login.as_mut(), mode, present);
+        if output.exit_code == 0 {
+            match ensure_definitions(manifest_factory) {
+                Ok(_) => {}
+                Err(_) => output.stderr.push_str(
+                    "Manifest sync failed; run ghostlink sync-manifest before reading data.\n",
+                ),
+            }
+        }
+        return output;
     }
     if let Command::Callback(arguments) = &cli.command {
         return run_callback(&arguments.callback_uri, mode);
@@ -398,10 +425,13 @@ where
         detail,
     } = request
     {
-        return match crate::runtime::compose_loadouts(
-            &mut crate::runtime::ProductionFoundations,
-            character_id.as_ref(),
-        ) {
+        let result = with_definition_retry(manifest_factory, || {
+            crate::runtime::compose_loadouts(
+                &mut crate::runtime::ProductionFoundations,
+                character_id.as_ref(),
+            )
+        });
+        return match result {
             Ok(result) => {
                 ProcessOutput::success(crate::output::render_loadouts(mode, &result, detail))
             }
@@ -409,19 +439,72 @@ where
         };
     }
     if let ReadRequest::Artifact { character_id } = request {
-        return match crate::runtime::compose_artifact(
-            &mut crate::runtime::ProductionFoundations,
-            character_id.as_ref(),
-        ) {
+        let result = with_definition_retry(manifest_factory, || {
+            crate::runtime::compose_artifact(
+                &mut crate::runtime::ProductionFoundations,
+                character_id.as_ref(),
+            )
+        });
+        return match result {
             Ok(result) => ProcessOutput::success(crate::output::render_artifact(mode, &result)),
             Err(error) => ProcessOutput::failure(mode, error),
         };
     }
-    match read_factory.build() {
+    match build_with_definitions(read_factory, manifest_factory) {
         Ok(mut runtime) => {
             let freshness = runtime.freshness();
             dispatch(runtime.service_mut(), request, mode, freshness)
         }
+        Err(error) => ProcessOutput::failure(mode, error),
+    }
+}
+
+fn build_with_definitions<F: RuntimeFactory, M: crate::runtime::ManifestFactory>(
+    read: &mut F,
+    manifest: &mut M,
+) -> Result<crate::runtime::ReadRuntime<F::Service>, CliError> {
+    // Preserve authorization/configuration failures before a public download.
+    match read.build() {
+        Ok(runtime) => {
+            ensure_definitions(manifest)?;
+            Ok(runtime)
+        }
+        Err(error) if error == CliError::from_category(ErrorCategory::DefinitionsUnavailable) => {
+            ensure_definitions(manifest)?;
+            read.build()
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn with_definition_retry<M: crate::runtime::ManifestFactory, T>(
+    manifest: &mut M,
+    mut operation: impl FnMut() -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    match operation() {
+        Err(error) if error == CliError::from_category(ErrorCategory::DefinitionsUnavailable) => {
+            ensure_definitions(manifest)?;
+            operation()
+        }
+        result => result,
+    }
+}
+
+fn ensure_definitions<M: crate::runtime::ManifestFactory>(factory: &mut M) -> Result<(), CliError> {
+    if factory.definitions_missing()? {
+        eprintln!("Definitions not loaded; syncing manifest...");
+        factory.sync()?;
+    }
+    Ok(())
+}
+
+fn with_definitions<M: crate::runtime::ManifestFactory>(
+    factory: &mut M,
+    mode: OutputMode,
+    operation: impl FnOnce() -> ProcessOutput,
+) -> ProcessOutput {
+    match ensure_definitions(factory) {
+        Ok(()) => operation(),
         Err(error) => ProcessOutput::failure(mode, error),
     }
 }
@@ -1368,6 +1451,65 @@ mod tests {
             "a read command must not compose a login"
         );
         (output, login)
+    }
+
+    #[test]
+    fn automatic_manifest_sync_once_preserves_json_and_login_success() {
+        struct Manifest {
+            missing: bool,
+            calls: usize,
+            fail: bool,
+        }
+        impl crate::runtime::ManifestFactory for Manifest {
+            fn definitions_missing(&mut self) -> Result<bool, CliError> {
+                Ok(self.missing)
+            }
+            fn sync(&mut self) -> Result<destiny_app::ManifestSyncReport, CliError> {
+                self.calls += 1;
+                if self.fail {
+                    return Err(CliError::from_category(ErrorCategory::ProviderUnavailable));
+                }
+                self.missing = false;
+                Ok(destiny_app::ManifestSyncReport::Unchanged {
+                    version: DefinitionVersion::new("real-v1"),
+                    record_count: 1,
+                    world_counts: [1; 5],
+                    stat_count: 1,
+                })
+            }
+        }
+        for command in ["sync", "list-characters", "login"] {
+            for missing in [false, true] {
+                for fail in [false, true] {
+                    let mut manifest = Manifest {
+                        missing,
+                        calls: 0,
+                        fail,
+                    };
+                    let mut read = FakeFactory::new(RecordingService::new());
+                    let mut login = FakeLoginFactory::default();
+                    let output = super::run_binary_with_manifest(
+                        &mut read,
+                        &mut login,
+                        &mut manifest,
+                        &mut |_| Ok(()),
+                        argv(["--json", command]),
+                    );
+                    assert_eq!(manifest.calls, usize::from(missing));
+                    let failure = missing && fail && command != "login";
+                    assert_eq!(output.exit_code == 0, !failure);
+                    if !failure {
+                        assert!(serde_json::from_str::<serde_json::Value>(&output.stdout).is_ok());
+                        assert!(!output.stdout.contains("syncing manifest"));
+                    } else {
+                        assert!(output.stdout.is_empty());
+                    }
+                    if command == "login" && missing && fail {
+                        assert!(output.stderr.contains("run ghostlink sync-manifest"));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

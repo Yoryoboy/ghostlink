@@ -252,9 +252,16 @@ ghostlink sync-manifest          # or: ghostlink --json sync-manifest
 - Opening the database with this version migrates it to schema v7; older
   binaries that do not support v7 refuse the database. Run `sync-manifest`
   once after upgrading to populate plug categories for perk-name searches.
-- Until a catalog is loaded, `search-inventory`, `inspect-item` and `subclass` fail with
-  `definitions not loaded; run ghostlink sync-manifest` (CLI and MCP) instead
-  of returning an empty result.
+- On first CLI read or profile sync, an absent catalog is synced automatically
+  once using the same path as `sync-manifest`. The progress notice
+  `Definitions not loaded; syncing manifest...` goes to stderr only, including
+  with `--json`; stdout JSON shapes and exit codes are unchanged. Sync failures
+  remain typed errors, not empty results. Existing catalogs are not automatically
+  updated: run `sync-manifest` after a patch or an upgrade needing new catalogs.
+- After a successful `ghostlink login`, an absent catalog is also synced. Failure
+  does not fail the login; stderr suggests running `ghostlink sync-manifest`.
+- MCP does not download definitions during a tool call. An absent catalog returns
+  `definitions not loaded; run ghostlink sync-manifest` instead.
 
 ### Filter owned items by stats (`--stat`)
 

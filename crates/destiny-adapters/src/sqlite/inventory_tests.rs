@@ -15,6 +15,29 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
+fn configured_label_to_manifest_version_preserves_snapshots_and_revision_identity() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let schema = store.schema_version().unwrap();
+    let mut input = full_input();
+    input.definition_version = DefinitionVersion::new("old-configured-label");
+    let old = store.replace_current(input.clone()).unwrap();
+    store.replace_definitions(manifest_replacement()).unwrap();
+    assert_eq!(store.load_current().unwrap(), Some(old.clone()));
+    input.definition_version = store.current_definition_version().unwrap();
+    input.checked_at = Timestamp::new(input.checked_at.seconds() + 1);
+    let changed = store.replace_current(input.clone()).unwrap();
+    assert_eq!(
+        changed.metadata.revision.value(),
+        old.metadata.revision.value() + 1
+    );
+    for _ in 0..3 {
+        let same = store.replace_current(input.clone()).unwrap();
+        assert_eq!(same.metadata.revision, changed.metadata.revision);
+    }
+    assert_eq!(store.schema_version().unwrap(), schema);
+}
+
+#[test]
 fn plugs_round_trip_search_and_revision_identity() {
     use destiny_core::{PlugSummary, SearchRepository};
     let mut store = SqliteStore::open_in_memory().unwrap();
