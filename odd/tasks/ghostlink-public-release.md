@@ -132,10 +132,19 @@ cargo-dist handling of the libdbus runtime dependency.
   failing default/precedence tests; GREEN). Parent re-ran: fmt, clippy, 1355
   passed / 0 failed, diff check. Commit evidence: `cee6617`.
   Owner action pending: fill API key, client id and (after deploy) broker URL.
-- [ ] **PR-005 — OS data and config paths.** Default DB at
-  `<data_dir>/ghostlink/ghostlink.db` (`$XDG_DATA_HOME`/`~/.local/share`,
-  `%LOCALAPPDATA%`) with `create_dir_all`; `config.env` under `%APPDATA%` on
-  Windows.
+- [x] **PR-005 — OS data and config paths.** `DESTINY_DATABASE_PATH` optional:
+  env > `config.env` > OS default (`$XDG_DATA_HOME` absolute or
+  `~/.local/share` + `ghostlink/ghostlink.db`; Windows `%LOCALAPPDATA%\ghostlink\
+  ghostlink.db`); unresolvable keeps the sanitized missing-config error.
+  Dependency-free resolver `config/paths.rs` with injected `Platform` so both
+  OS rules are tested on any OS. Windows `config.env` at
+  `%APPDATA%\ghostlink\config.env` (`GHOSTLINK_CONFIG_FILE` still wins; Unix
+  resolution unchanged). `SqliteStore::open` creates missing parents (Unix
+  0700 for new dirs, existing perms untouched, sanitized storage error); covers
+  CLI reads, sync, sync-manifest and MCP. Delegated writer, test-first (RED: 4
+  intended failures; GREEN). Windows rules verified via injection only, not on
+  native Windows. Parent re-ran: fmt, clippy, 1361 passed / 0 failed, diff
+  check. Commit evidence: `ae7d777`.
 - [ ] **PR-006 — Manifest auto-sync.** Sync definitions automatically after login
   and on first read when none are loaded; source the definition version from the
   synced catalog instead of `DESTINY_DEFINITION_VERSION` (persisted in sync
