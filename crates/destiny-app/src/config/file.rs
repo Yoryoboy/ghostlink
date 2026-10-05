@@ -185,6 +185,8 @@ mod tests {
         sanitized(load(Some(fixture.0.clone())).unwrap_err());
     }
 
+    // The fixtures use Unix absolute paths; `/xdg` is not absolute on Windows.
+    #[cfg(unix)]
     #[test]
     fn path_resolution_obeys_precedence_and_ignores_relative_xdg() {
         let resolve = |explicit: &str, xdg: &str, home: Option<&str>| {

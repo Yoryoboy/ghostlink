@@ -2026,10 +2026,16 @@ mod tests {
         assert_eq!(result, Err(AppError::new(ErrorCategory::CallbackTimeout)));
         assert!(elapsed >= LOOPBACK_TEST_TIMEOUT);
         assert!(elapsed < LOOPBACK_TEST_TIMEOUT + Duration::from_millis(750));
-        let mut response = String::new();
-        let _ = stream.read_to_string(&mut response);
-        assert!(response.starts_with("HTTP/1.1 200 OK"));
-        assert!(response.contains("Authorization failed."));
+        // The client keeps writing after the receiver answered and closed. On
+        // Windows the resulting reset discards the already-received response,
+        // so the best-effort failure page is only observable elsewhere.
+        #[cfg(not(windows))]
+        {
+            let mut response = String::new();
+            let _ = stream.read_to_string(&mut response);
+            assert!(response.starts_with("HTTP/1.1 200 OK"));
+            assert!(response.contains("Authorization failed."));
+        }
     }
 
     #[test]
