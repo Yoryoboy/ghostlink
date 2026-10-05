@@ -567,12 +567,31 @@ impl VerificationFailure {
     }
 }
 
+/// Provider-confirmed steps whose post-action observation is still stale.
+#[derive(Debug, Eq, PartialEq)]
+pub struct PendingProviderRefresh {
+    observed: ItemLocation,
+    evidence: ExecutionEvidence,
+}
+
+impl PendingProviderRefresh {
+    /// The stale, unconfirmed location from the unchanged projection.
+    pub fn observed(&self) -> &ItemLocation {
+        &self.observed
+    }
+
+    /// Every planned step was confirmed completed by the provider.
+    pub fn evidence(&self) -> &ExecutionEvidence {
+        &self.evidence
+    }
+}
+
 /// The typed, sanitized final outcome of one verified move attempt.
 ///
 /// [`MutationService::execute_move_verified`] combines the DTE-003 attempt with
 /// the mandatory [`ProfileSyncReason::PostAction`] refresh and the concrete
 /// destination verification, so a caller never has to remember either gate. The
-/// four variants are the only terminal shapes that combination can report, and
+/// five variants are the only terminal shapes that combination can report, and
 /// every one carries the bounded [`ExecutionEvidence`] that was observed:
 ///
 /// - [`MoveExecutionOutcome::VerifiedSuccess`]: the refreshed projection proves
@@ -581,6 +600,9 @@ impl VerificationFailure {
 /// - [`MoveExecutionOutcome::VerifiedNoOp`]: the mandatory fresh preflight proved
 ///   the item already at the destination, so zero steps were dispatched and no
 ///   post-action refresh was needed.
+/// - [`MoveExecutionOutcome::AppliedPendingProviderRefresh`]: the provider
+///   confirmed every step, but the refreshed profile is content-identical to
+///   pre-dispatch and has not confirmed the target. Do not retry; sync later.
 /// - [`MoveExecutionOutcome::IncompleteExecution`]: a dispatched sequence
 ///   stopped short and the refreshed projection is consistent with the progress
 ///   it reported, so the item is honestly somewhere other than the destination
@@ -603,6 +625,9 @@ pub enum MoveExecutionOutcome {
     /// The mandatory fresh preflight proved the concrete item already at the
     /// destination, so no transfer step was dispatched.
     VerifiedNoOp(ExecutionEvidence),
+    /// All steps were provider-confirmed, but the unchanged profile has not
+    /// confirmed the target. Do not retry; synchronize later to confirm.
+    AppliedPendingProviderRefresh(PendingProviderRefresh),
     /// A dispatched sequence stopped short and the refreshed projection is
     /// consistent with the progress it reported.
     IncompleteExecution(IncompleteExecution),
@@ -1183,6 +1208,7 @@ where
             ExecutionAuthorization::Authorized(ticket) => ticket,
         };
 
+        let revision = ticket.revision();
         let (evidence, attempt_error) = match self.execute_move(transfer, plan, ticket) {
             Ok(evidence) => (evidence, None),
             Err(failure) => {
@@ -1199,7 +1225,14 @@ where
             }
         };
 
-        Ok(self.verify_attempt(plan, evidence, attempt_error, policy, post_action_now))
+        Ok(self.verify_attempt(
+            plan,
+            revision,
+            evidence,
+            attempt_error,
+            policy,
+            post_action_now,
+        ))
     }
 
     /// Executes an equip intent and verifies its equipped-state postcondition.
@@ -1235,6 +1268,7 @@ where
         }
         let ticket = ExecutionTicket::after_fresh_preflight(mutation, &observation, preflight_now)
             .map_err(|error| failure(MutationError::from(error)))?;
+        let revision = ticket.revision();
         let (evidence, attempt_error) = match self.execute_equip(gateways, plan, ticket) {
             Ok(evidence) => (evidence, None),
             Err(failure) => {
@@ -1244,7 +1278,14 @@ where
                 (*failure.evidence, Some(failure.error))
             }
         };
-        Ok(self.verify_attempt(mutation, evidence, attempt_error, policy, post_action_now))
+        Ok(self.verify_attempt(
+            mutation,
+            revision,
+            evidence,
+            attempt_error,
+            policy,
+            post_action_now,
+        ))
     }
 
     /// Consumes one fresh ticket and dispatches transfers before equip, without retries.
@@ -1277,24 +1318,28 @@ where
     fn verify_attempt(
         &mut self,
         plan: &MovePlan,
+        revision: SyncRevision,
         evidence: ExecutionEvidence,
         attempt_error: Option<MutationError>,
         policy: FreshnessPolicy,
         post_action_now: Timestamp,
     ) -> MoveExecutionOutcome {
-        // The post-action refresh is unconditional: no classification may read
-        // a projection that predates the attempt.
-        if let Err(app_error) =
-            self.sync
-                .sync(ProfileSyncReason::PostAction, policy, post_action_now)
+        // The post-action acquisition is unconditional, but the provider may
+        // still serve pre-action content. Retain its revision to detect that.
+        let refresh = match self
+            .sync
+            .sync(ProfileSyncReason::PostAction, policy, post_action_now)
         {
-            return MoveExecutionOutcome::VerificationFailed(VerificationFailure::new(
-                VerificationFailureReason::RefreshFailed,
-                None,
-                Some(MutationError::from(app_error)),
-                evidence,
-            ));
-        }
+            Ok(refresh) => refresh,
+            Err(app_error) => {
+                return MoveExecutionOutcome::VerificationFailed(VerificationFailure::new(
+                    VerificationFailureReason::RefreshFailed,
+                    None,
+                    Some(MutationError::from(app_error)),
+                    evidence,
+                ));
+            }
+        };
         let instance = match self.repository().lookup_instance(&plan.item) {
             Ok(Resolution::Unique(instance)) => instance,
             Ok(Resolution::Missing) | Ok(Resolution::Ambiguous(_)) => {
@@ -1329,6 +1374,18 @@ where
             // The requested end state holds, whatever the steps individually
             // reported: a step whose effect was uncertain is now confirmed.
             return MoveExecutionOutcome::VerifiedSuccess(evidence);
+        }
+        if refresh.revision() == revision
+            && evidence.completed_count() == plan.steps().len()
+            && evidence
+                .steps()
+                .iter()
+                .all(|step| step.outcome == StepOutcome::Completed)
+        {
+            return MoveExecutionOutcome::AppliedPendingProviderRefresh(PendingProviderRefresh {
+                observed,
+                evidence,
+            });
         }
         // The item is not at the destination. It is an honest incomplete
         // execution only when the refreshed location matches the progress the
@@ -2378,12 +2435,14 @@ mod tests {
         // 0-2: routes; 3: no-op; 4-5: equip refusals; 6-8: uncertainty;
         // 9: transfer refusal; 10: elsewhere; 11: stale preflight;
         // 12: transient; 13: pre-dispatch equip error; 14: equipped contradiction;
-        // 15: newly satisfied preflight; 16: failed post-action refresh.
+        // 15: newly satisfied preflight; 16: failed post-action refresh;
+        // 17/22: stale confirmed transfer/equip; 18: stale uncertain equip;
+        // 19: stale auth refusal; 20/21: unchanged partial plans.
         // Each case uses realistic equipped non-equipment neighbors.
-        for case in 0..17 {
+        for case in 0..23 {
             let shared = gateway();
             let source = match case {
-                0 | 3 => warlock(),
+                0 | 3 | 18..=20 | 22 => warlock(),
                 2 => hunter(),
                 _ => ItemLocation::Vault,
             };
@@ -2427,7 +2486,7 @@ mod tests {
                 .queue_inventory(Ok(projection(NOW, chars.clone(), preflight)));
             let mut transfer = QueuedTransferGateway::new();
             for _ in 0..2 {
-                transfer.queue(Ok(if case == 9 {
+                transfer.queue(Ok(if matches!(case, 9 | 21) {
                     TransferOutcome::Rejected(TransferRejection::DestinationFull)
                 } else {
                     TransferOutcome::Transferred
@@ -2437,7 +2496,9 @@ mod tests {
             let outcome = match case {
                 4 => EquipOutcome::Rejected(EquipRejection::ExoticLimit),
                 5 => EquipOutcome::Rejected(EquipRejection::NotInSocialSpace),
-                6..=8 => EquipOutcome::Uncertain,
+                6..=8 | 18 => EquipOutcome::Uncertain,
+                19 => EquipOutcome::AuthenticationRefused,
+                20 => EquipOutcome::Rejected(EquipRejection::ExoticLimit),
                 12 => EquipOutcome::Transient,
                 _ => EquipOutcome::Equipped,
             };
@@ -2448,6 +2509,7 @@ mod tests {
             });
             item.location = match case {
                 8 | 10 => hunter(),
+                17..=22 => source.clone(),
                 9 => source.clone(),
                 _ => warlock(),
             };
@@ -2475,6 +2537,14 @@ mod tests {
                 continue;
             }
             let result = result.unwrap();
+            if matches!(case, 17 | 22) {
+                let MoveExecutionOutcome::AppliedPendingProviderRefresh(pending) = result else {
+                    panic!("expected pending, got {result:?}");
+                };
+                assert_eq!(pending.observed(), &source);
+                assert_eq!(pending.evidence().completed_count(), plan.steps().len());
+                continue;
+            }
             let evidence = match result {
                 MoveExecutionOutcome::VerifiedNoOp(evidence) => {
                     assert!(matches!(case, 3 | 15));
@@ -2485,8 +2555,11 @@ mod tests {
                     evidence
                 }
                 MoveExecutionOutcome::IncompleteExecution(incomplete) => {
-                    assert!(matches!(case, 4 | 5 | 7 | 9 | 12 | 13));
+                    assert!(matches!(case, 4 | 5 | 7 | 9 | 12 | 13 | 18..=21));
                     incomplete.evidence().clone()
+                }
+                MoveExecutionOutcome::AppliedPendingProviderRefresh(_) => {
+                    panic!("unexpected pending outcome")
                 }
                 MoveExecutionOutcome::VerificationFailed(failure) => {
                     assert!(matches!(case, 8 | 10 | 14 | 16));
@@ -2507,12 +2580,16 @@ mod tests {
             );
             assert_eq!(
                 equip.calls(),
-                if matches!(case, 3 | 9 | 15) { 0 } else { 1 }
+                if matches!(case, 3 | 9 | 15 | 21) {
+                    0
+                } else {
+                    1
+                }
             );
             assert_eq!(
                 transfer.calls(),
                 match case {
-                    0 | 3 | 15 => 0,
+                    0 | 3 | 15 | 18..=20 => 0,
                     2 => 2,
                     _ => 1,
                 }
@@ -5212,12 +5289,47 @@ mod tests {
     }
 
     #[test]
+    fn execute_move_verified_pending_provider_refresh() {
+        for step in [
+            TransferOutcome::Transferred,
+            TransferOutcome::Uncertain,
+            TransferOutcome::AuthenticationRefused,
+            TransferOutcome::Rejected(TransferRejection::DestinationFull),
+        ] {
+            let (shared, mut service, request, plan) = direct_service_with_plan();
+            queue_refresh(&shared, fresh_vault_projection());
+            let mut stale = fresh_vault_projection();
+            stale.checked_at = POST_ACTION_NOW;
+            queue_refresh(&shared, stale);
+            let mut transfer = QueuedTransferGateway::new();
+            transfer.queue(Ok(step));
+            let outcome = service
+                .execute_move_verified(&mut transfer, &request, &plan, TTL, NOW, POST_ACTION_NOW)
+                .unwrap();
+            match outcome {
+                MoveExecutionOutcome::AppliedPendingProviderRefresh(pending) => {
+                    assert_eq!(step, TransferOutcome::Transferred);
+                    assert_eq!(pending.observed(), &ItemLocation::Vault);
+                    assert_eq!(pending.evidence().completed_count(), 1);
+                }
+                MoveExecutionOutcome::IncompleteExecution(incomplete) => {
+                    assert_ne!(step, TransferOutcome::Transferred);
+                    assert_eq!(incomplete.observed(), &ItemLocation::Vault);
+                    assert_eq!(incomplete.evidence().completed_count(), 0);
+                }
+                other => panic!("unexpected outcome: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn execute_move_verified_fails_verification_when_the_refreshed_state_changed_away() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         queue_refresh(&shared, fresh_vault_projection());
-        // The step reported success, yet the refreshed projection still holds the
-        // item at the source, so the claimed completion is contradicted.
-        queue_refresh(&shared, after_projection(ItemLocation::Vault));
+        // A genuinely changed revision still holds the item at the source.
+        let mut changed = after_projection(ItemLocation::Vault);
+        changed.characters[0].name = Some("Changed character".into());
+        queue_refresh(&shared, changed);
         let mut transfer = QueuedTransferGateway::new();
         transfer.queue(Ok(TransferOutcome::Transferred));
 

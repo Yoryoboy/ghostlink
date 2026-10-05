@@ -1361,10 +1361,9 @@ fn uncertain_step_confirmed_by_the_post_action_projection_is_a_success() {
     );
 }
 
-/// Scenario 6: a post-action projection that contradicts the reported progress
-/// is a verification failure, never a false success or a clean failure.
+/// Scenario 6: unchanged provider content cannot verify reported completion.
 #[test]
-fn contradictory_post_action_projection_fails_verification() {
+fn unchanged_post_action_projection_is_pending_provider_refresh() {
     let journey = Journey::new();
     journey.at(NOW);
     let mut service = journey.service();
@@ -1392,12 +1391,10 @@ fn contradictory_post_action_projection_fails_verification() {
         )
         .expect("classified outcome");
     let failure = match outcome {
-        MoveExecutionOutcome::VerificationFailed(failure) => failure,
-        other => panic!("expected a verification failure, got {other:?}"),
+        MoveExecutionOutcome::AppliedPendingProviderRefresh(pending) => pending,
+        other => panic!("expected pending provider refresh, got {other:?}"),
     };
-    assert_eq!(failure.reason(), VerificationFailureReason::Elsewhere);
-    assert_eq!(failure.observed(), Some(&ItemLocation::Vault));
-    assert_eq!(failure.error(), None);
+    assert_eq!(failure.observed(), &ItemLocation::Vault);
     assert_eq!(failure.evidence().completed_count(), 1);
     assert_eq!(
         failure.evidence().steps()[0].outcome,

@@ -172,7 +172,7 @@ fn cli_equip_routes_selectors_and_preserves_verified_outcomes_offline() {
             false,
             EquipOutcome::Equipped,
             Some(Ok(snapshot(ItemLocation::Vault, false))),
-            EquipStatus::VerificationFailed,
+            EquipStatus::AppliedPendingProviderRefresh,
         ),
     ] {
         let mut service = mutations(snapshot(source, already), post);
@@ -193,6 +193,19 @@ fn cli_equip_routes_selectors_and_preserves_verified_outcomes_offline() {
         )
         .unwrap();
         assert_eq!(output.status, expected, "{}", output.render_text());
+        if expected == EquipStatus::AppliedPendingProviderRefresh {
+            assert_eq!(output.exit_code(), 43);
+            assert_eq!(output.json()["status"], "applied_pending_provider_refresh");
+            assert_eq!(output.json()["profile_refresh"], "refreshed");
+            assert_eq!(output.json()["steps"][0]["outcome"], "completed");
+            assert_eq!(output.json()["steps"][1]["outcome"], "completed");
+            assert_eq!(output.json()["observed"]["location"]["kind"], "vault");
+            let text = output.render_text();
+            assert!(text.contains("ghostlink sync"));
+            assert!(text.contains("do not retry"));
+            assert!(text.contains("stale/unconfirmed state"));
+            assert!(!text.contains("✔ verified"));
+        }
         assert_eq!(output.json()["item"]["name"], "Ace of Spades");
         assert_eq!(output.json()["character"]["label"], "Hunter");
         if already {

@@ -1727,6 +1727,14 @@ pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> Move
                 steps: step_views(evidence),
             })
         }
+        MoveExecutionOutcome::AppliedPendingProviderRefresh(pending) => {
+            MoveItemOutput::AppliedPendingProviderRefresh(crate::schema::PendingProviderRefreshView {
+                effects: effects_view(effects),
+                observed: location_view(pending.observed()),
+                steps: step_views(pending.evidence()),
+                reason: "the provider confirmed every step, but its profile still shows the pre-action state; observed location is stale/unconfirmed; do not retry, run `ghostlink sync` later to confirm".into(),
+            })
+        }
         MoveExecutionOutcome::IncompleteExecution(incomplete) => {
             MoveItemOutput::Incomplete(IncompleteMoveView {
                 effects: effects_view(effects),
@@ -3420,12 +3428,13 @@ mod tests {
             vec![warlock(), hunter()],
             vec![instance("inst-a", 1, at_warlock(), Vec::new())],
         );
-        // Both steps reported success, yet the refreshed projection reports the
-        // item back at its source: a contradiction, never a success.
+        // A changed profile still contradicts the reported completion.
+        let mut changed_character = warlock();
+        changed_character.name = Some("Changed character".into());
         queue_projection(
             &shared,
             NOW,
-            vec![warlock(), hunter()],
+            vec![changed_character, hunter()],
             vec![instance("inst-a", 1, at_warlock(), Vec::new())],
         );
         transfer
@@ -3457,6 +3466,42 @@ mod tests {
             }
             other => panic!("expected a verification failure, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn move_item_pending_provider_refresh_preserves_stale_observation_and_steps() {
+        let shared = gateway();
+        let transfer = transfer_port();
+        let mut repository = CompositeRepository::with_definitions(standard_definitions());
+        repository.commit(snapshot_input(
+            FRESH_CHECKED_AT,
+            vec![warlock()],
+            vec![vault_item("inst-a", 1)],
+        ));
+        for checked_at in [FRESH_CHECKED_AT, NOW] {
+            queue_projection(
+                &shared,
+                checked_at,
+                vec![warlock()],
+                vec![vault_item("inst-a", 1)],
+            );
+        }
+        transfer
+            .borrow_mut()
+            .queue(Ok(TransferOutcome::Transferred));
+        let mut service = composed_service(&shared, &transfer, repository);
+        let output = service.move_item(&exact_move("inst-a", "warlock")).unwrap();
+        let MoveItemOutput::AppliedPendingProviderRefresh(pending) = &output else {
+            panic!("expected pending, got {output:?}");
+        };
+        assert_eq!(pending.observed, LocationView::Vault);
+        assert_eq!(pending.steps.len(), 1);
+        assert_eq!(pending.steps[0].outcome, StepOutcomeView::Completed);
+        assert!(pending.reason.contains("stale/unconfirmed"));
+        assert!(pending.reason.contains("ghostlink sync"));
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["status"], "applied_pending_provider_refresh");
+        assert_eq!(output.into_call_tool_result().is_error, Some(true));
     }
 
     #[test]

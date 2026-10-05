@@ -1339,6 +1339,42 @@ mod tests {
     }
 
     #[test]
+    fn equip_pending_provider_refresh_is_a_tool_error() {
+        struct PendingEquip;
+        impl MutationToolService for PendingEquip {
+            fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+                unreachable!()
+            }
+            fn equip_item(
+                &mut self,
+                _: &crate::schema::EquipItemArgs,
+            ) -> Result<destiny_output::equip::EquipOutput, McpError> {
+                let mut output = destiny_output::equip::EquipOutput::refused(
+                    destiny_app::MutationError::MissingItem,
+                );
+                output.status = destiny_output::equip::EquipStatus::AppliedPendingProviderRefresh;
+                output.profile_refresh = destiny_output::equip::ProfileRefresh::Refreshed;
+                Ok(output)
+            }
+        }
+        let server = ReadToolServer::with_mutation(
+            Box::new(RecordingService::new()),
+            Box::new(PendingEquip),
+        );
+        let result = server
+            .dispatch(
+                crate::schema::EQUIP_ITEM_TOOL,
+                args(serde_json::json!({"item":"123", "character":"456"})),
+            )
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(
+            structured(&result)["status"],
+            "applied_pending_provider_refresh"
+        );
+    }
+
+    #[test]
     fn concurrent_mutation_dispatch_is_serialized_by_the_shared_seam() {
         let delay = Duration::from_millis(5);
         let read = RecordingService::new();

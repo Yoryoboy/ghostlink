@@ -69,6 +69,7 @@ impl EquipOutput {
             EquipStatus::VerifiedSuccess | EquipStatus::VerifiedNoop => 0,
             EquipStatus::Incomplete => 41,
             EquipStatus::VerificationFailed => 42,
+            EquipStatus::AppliedPendingProviderRefresh => 43,
             EquipStatus::Refused => self.refusal_exit_code.unwrap_or(40),
         }
     }
@@ -149,7 +150,12 @@ impl EquipOutput {
         }
         if let Some(o) = &self.observed {
             lines.push(format!(
-                "refreshed state: {}; {}",
+                "{}: {}; {}",
+                if self.status == EquipStatus::AppliedPendingProviderRefresh {
+                    "stale/unconfirmed state"
+                } else {
+                    "refreshed state"
+                },
                 clean(&o.location.label),
                 if o.equipped {
                     "equipped"

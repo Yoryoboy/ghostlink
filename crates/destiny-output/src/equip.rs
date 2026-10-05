@@ -11,6 +11,7 @@ pub enum EquipStatus {
     VerifiedNoop,
     Incomplete,
     VerificationFailed,
+    AppliedPendingProviderRefresh,
     Refused,
 }
 impl EquipStatus {
@@ -20,6 +21,7 @@ impl EquipStatus {
             Self::VerifiedNoop => "verified_noop",
             Self::Incomplete => "incomplete",
             Self::VerificationFailed => "verification_failed",
+            Self::AppliedPendingProviderRefresh => "applied_pending_provider_refresh",
             Self::Refused => "refused",
         }
     }
@@ -215,6 +217,12 @@ impl EquipOutput {
                 e,
                 ProfileRefresh::NotRequired,
                 None,
+            ),
+            MoveExecutionOutcome::AppliedPendingProviderRefresh(e) => (
+                EquipStatus::AppliedPendingProviderRefresh,
+                e.evidence(),
+                ProfileRefresh::Refreshed,
+                Some("the provider confirmed every step, but its profile still shows the pre-action state; observed state is stale/unconfirmed; do not retry, run `ghostlink sync` later to confirm".into()),
             ),
             MoveExecutionOutcome::IncompleteExecution(e) => (
                 EquipStatus::Incomplete,
