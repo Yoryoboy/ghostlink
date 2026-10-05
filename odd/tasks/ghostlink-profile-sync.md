@@ -18,7 +18,7 @@ Preserve all uncommitted equip work on `feature/equip-item`.
 
 ## Tasks
 
-- [ ] PS-001 Implement CLI forced profile sync with tests and concise README.
+- [x] PS-001 Implement CLI forced profile sync with tests and concise README.
   Implementation exists; acceptance blocked by checks. Surfaces: command.rs,
   runtime.rs, runner.rs, output.rs under crates/destiny-cli/src and README.md.
   No shared QueryOperations expansion. Observed runtime RED: sync rejected at
@@ -49,6 +49,13 @@ Follow-up (user decision 2026-10-05): PS-001 merges as delivered; the
 pre-existing standalone `destiny-cli` test compilation failure (feature-gated
 `destiny_app::test_support` in `src/login.rs` and `tests/equip_pipeline.rs`,
 present on main) is a known limitation to fix in a separate work unit.
+
+Resolved on `fix/cli-test-support-feature`: `destiny-cli` now declares
+`destiny-app` with `test-support` as a dev-dependency. Observed RED (E0433/E0432
+in `login.rs:1355` and `tests/equip_pipeline.rs`), GREEN `cargo test -p
+destiny-cli` 167+5+5+4 passed. Every crate compiles its tests standalone;
+clippy `-D warnings` and fmt pass; `test-support` stays out of the normal
+(non-dev) feature graph under resolver 2.
 
 ## Evidence
 

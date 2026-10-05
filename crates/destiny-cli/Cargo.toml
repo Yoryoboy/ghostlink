@@ -23,3 +23,9 @@ serde_json.workspace = true
 # Windows uses the console API through a local binding instead.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Unit and integration tests use the application fakes. Declaring the feature
+# here keeps `cargo test -p destiny-cli` compiling on its own instead of relying
+# on workspace feature unification from sibling dev-dependencies.
+[dev-dependencies]
+destiny-app = { workspace = true, features = ["test-support"] }
