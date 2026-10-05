@@ -262,9 +262,23 @@ cargo-dist handling of the libdbus runtime dependency.
     binary owns `ghostlink://` (the browser hands the URL to that handler).
   - `list-characters` with compiled values only: 3 characters, fresh; default
     DB created at `~/.local/share/ghostlink/ghostlink.db`.
-  - Pending: post-expiry refresh through the broker (access expired after
-    ~1 h), push/PR/merge, tag pre-release, installer tests on Linux and
-    Windows, wizard and MCP reads from installed binaries.
+  - Integration: merged `origin/main` (#47/#48 perk descriptions) into the
+    branch without conflicts; 1411 passed (all features) and 1396 (default)
+    in `unshare -rn`; broker 72 tests; `dist plan` unchanged.
+  - Windows CI found a real bug: the skill ownership check required an LF
+    `---\n` prefix, but Windows checkouts (autocrlf) embed CRLF through
+    `include_str!`, so reinstalling reported a foreign skill. Fix, test-first
+    (RED: two new CRLF tests failed on Linux; GREEN): normalize CRLF in the
+    check, plus `.gitattributes` `skills/** text eol=lf` so every platform
+    embeds identical bytes; tests build paths with `join`. Commits `203d3f8`,
+    `222f8b9` (format follow-up: a `;`-chained fmt check had let an unformatted
+    commit through). CI green on ubuntu, windows and broker.
+  - PR #50 merged into `main` as `43786a6`.
+  - Pending (release session): post-expiry refresh through the broker; bump to
+    `0.1.0-rc.1`, tag `v0.1.0-rc.1` (cargo-dist marks it pre-release), test
+    installers on Linux and Windows via versioned URLs, wizard and MCP reads
+    from installed binaries, then `0.1.0` stable. On hold while the owner
+    finishes parallel work to include in the release.
 
 ## Follow-ups (out of scope)
 - Windows `ghostlink://` handler (next feature, developed on Windows).
