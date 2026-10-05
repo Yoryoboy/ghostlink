@@ -209,9 +209,29 @@ cargo-dist handling of the libdbus runtime dependency.
   test-first (RED: completion test failed; GREEN). Commit evidence: `367976d`.
 
 ### Phase 3 — Distribution
-- [ ] **PR-009 — cargo-dist release.** Package metadata, `ghostlink` +
-  `destiny-mcp` artifacts (exclude `offline-fixture`), shell and PowerShell
-  installers, libdbus handling, release workflow on tags, self-update.
+- [x] **PR-009 — cargo-dist release.** cargo-dist 0.32.0 (`dist-workspace.toml`):
+  targets `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc`, `shell` and
+  `powershell` installers, `install-path = "CARGO_HOME"`, `install-updater`
+  (`ghostlink-update`), `precise-builds`, apt `libdbus-1-dev` + `pkg-config`.
+  One archive and installer per platform with BOTH `ghostlink` and
+  `destiny-mcp` in the same directory (required by PR-007 sibling resolution).
+  Package `destiny-cli` renamed to `ghostlink` (library stays `destiny_cli`, no
+  import changes) and owns both bins; MCP entry extracted to
+  `destiny_mcp::run()`; `destiny-mcp` package is `dist = false` (library +
+  test-only `offline-fixture`). libdbus kept dynamic (`libdbus-1.so.3`,
+  documented); vendoring evaluated and rejected (keeps system security
+  updates). Tag-triggered `.github/workflows/release.yml` from `dist generate`;
+  CI build command updated; workspace metadata (repository, homepage,
+  description, authors). Delegated writer (packaging: no meaningful RED);
+  local `dist build` for Linux: archive contains both executables,
+  `ghostlink --version` and `destiny-mcp --help` ran from the extracted archive.
+  Parent review fix: removed the duplicate standalone `destiny-mcp` bin in the
+  `destiny-mcp` package (Cargo output-filename collision warning, may become a
+  hard error); docs use `cargo run -p ghostlink --bin destiny-mcp`. Parent
+  checks: no collision, fmt, clippy, `dist plan`, `dist generate --check`,
+  diff check, full suite in `unshare -rn`: 1390 passed / 0 failed. Installers
+  and native Windows build not executed (first real tag in PR-011). Commit
+  evidence: `b060874`.
 - [ ] **PR-010 — Docs refresh.** README quick start for end users, contributor
   build path, `docs/configuration.md`, skill notes (wizard, prefer MCP tools when
   present).
