@@ -1436,6 +1436,7 @@ fn changed_post_action_revision_with_wrong_location_is_elsewhere() {
     };
     assert_eq!(failure.reason(), VerificationFailureReason::Elsewhere);
     assert_eq!(failure.observed(), Some(&hunter_location()));
+    assert_eq!(failure.error(), None);
     assert_eq!(failure.evidence().completed_count(), 1);
     assert_eq!(
         failure.evidence().steps()[0].outcome,

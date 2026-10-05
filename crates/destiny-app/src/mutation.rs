@@ -1382,10 +1382,24 @@ where
                 .iter()
                 .all(|step| step.outcome == StepOutcome::Completed)
         {
-            return MoveExecutionOutcome::AppliedPendingProviderRefresh(PendingProviderRefresh {
-                observed,
-                evidence,
-            });
+            // Bracket the lookup with committed revision equality: another
+            // publisher may have changed the projection since the refresh.
+            let current = match self.committed_snapshot() {
+                Ok(snapshot) => snapshot.metadata.revision,
+                Err(error) => {
+                    return MoveExecutionOutcome::VerificationFailed(VerificationFailure::new(
+                        VerificationFailureReason::RefreshFailed,
+                        Some(observed),
+                        Some(error),
+                        evidence,
+                    ));
+                }
+            };
+            if current == refresh.revision() {
+                return MoveExecutionOutcome::AppliedPendingProviderRefresh(
+                    PendingProviderRefresh { observed, evidence },
+                );
+            }
         }
         // The item is not at the destination. It is an honest incomplete
         // execution only when the refreshed location matches the progress the
@@ -1866,7 +1880,8 @@ mod tests {
     /// sync-then-resolve ordering and that no mutation seam exists.
     #[derive(Clone, Debug, Default)]
     struct CompositeRepository {
-        inventory: InMemoryInventoryRepository,
+        inventory: RefCell<InMemoryInventoryRepository>,
+        publication_on_lookup: RefCell<Option<InventorySnapshotInput>>,
         search: InMemorySearchRepository,
         catalog: crate::test_support::InMemoryDefinitionRepository,
         hides_current: bool,
@@ -1876,7 +1891,8 @@ mod tests {
     impl CompositeRepository {
         fn with_definitions(definitions: Vec<ItemDefinition>) -> Self {
             Self {
-                inventory: InMemoryInventoryRepository::new(),
+                inventory: RefCell::new(InMemoryInventoryRepository::new()),
+                publication_on_lookup: RefCell::new(None),
                 search: InMemorySearchRepository::with_definitions(definitions.clone()),
                 catalog: crate::test_support::InMemoryDefinitionRepository::new(
                     DefinitionVersion::new(DEFINITION_VERSION),
@@ -1907,6 +1923,7 @@ mod tests {
         fn commit(&mut self, input: InventorySnapshotInput) -> SyncRevision {
             let snapshot = self
                 .inventory
+                .get_mut()
                 .replace_current(input)
                 .expect("valid seed snapshot");
             self.search.set_instances(snapshot.items.clone());
@@ -1929,7 +1946,7 @@ mod tests {
             if self.hides_current {
                 return Ok(None);
             }
-            self.inventory.load_current()
+            self.inventory.borrow().load_current()
         }
 
         fn replace_current(
@@ -1937,7 +1954,7 @@ mod tests {
             input: InventorySnapshotInput,
         ) -> Result<InventorySnapshot, AppError> {
             self.record("replace_current");
-            let snapshot = self.inventory.replace_current(input)?;
+            let snapshot = self.inventory.get_mut().replace_current(input)?;
             self.search.set_instances(snapshot.items.clone());
             Ok(snapshot)
         }
@@ -1989,6 +2006,15 @@ mod tests {
             instance_id: &ItemInstanceId,
         ) -> Result<Resolution<ItemInstance>, AppError> {
             self.record("lookup_instance");
+            if let Some(input) = self.publication_on_lookup.borrow_mut().take() {
+                // Model another process publishing after refresh, before lookup.
+                let snapshot = self.inventory.borrow_mut().replace_current(input)?;
+                return Ok(snapshot
+                    .items
+                    .into_iter()
+                    .find(|item| &item.instance_id == instance_id)
+                    .map_or(Resolution::Missing, Resolution::Unique));
+            }
             self.search.lookup_instance(instance_id)
         }
     }
@@ -5320,6 +5346,33 @@ mod tests {
                 other => panic!("unexpected outcome: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn execute_move_verified_publication_between_refresh_and_lookup_is_not_pending() {
+        let (shared, mut service, request, plan) = direct_service_with_plan();
+        queue_refresh(&shared, fresh_vault_projection());
+        let ticket = authorized_ticket(&mut service, &request, &plan);
+        let revision = ticket.revision();
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Transferred));
+        let evidence = service.execute_move(&mut transfer, &plan, ticket).unwrap();
+        queue_refresh(&shared, fresh_vault_projection());
+        *service.repository().publication_on_lookup.borrow_mut() = Some(after_projection(hunter()));
+
+        let outcome = service.verify_attempt(&plan, revision, evidence, None, TTL, POST_ACTION_NOW);
+
+        let MoveExecutionOutcome::VerificationFailed(failure) = outcome else {
+            panic!("concurrent publication must not be pending: {outcome:?}");
+        };
+        assert_eq!(failure.reason(), VerificationFailureReason::Elsewhere);
+        assert_eq!(failure.observed(), Some(&hunter()));
+        assert_eq!(failure.error(), None);
+        assert_eq!(failure.evidence().completed_count(), 1);
+        assert_ne!(
+            service.committed_snapshot().unwrap().metadata.revision,
+            revision
+        );
     }
 
     #[test]
