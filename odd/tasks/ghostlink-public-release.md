@@ -145,11 +145,28 @@ cargo-dist handling of the libdbus runtime dependency.
   intended failures; GREEN). Windows rules verified via injection only, not on
   native Windows. Parent re-ran: fmt, clippy, 1361 passed / 0 failed, diff
   check. Commit evidence: `ae7d777`.
-- [ ] **PR-006 — Manifest auto-sync.** Sync definitions automatically after login
-  and on first read when none are loaded; source the definition version from the
-  synced catalog instead of `DESTINY_DEFINITION_VERSION` (persisted in sync
-  metadata and snapshot equality: cover existing snapshots, version changes,
-  revision identity, migration).
+- [x] **PR-006 — Manifest auto-sync.** `DESTINY_DEFINITION_VERSION` optional:
+  env > file override, else the version of the manifest stored in SQLite. CLI:
+  when definitions are missing, runs the existing manifest sync once (stderr
+  notice only, never in `--json` stdout); after `ghostlink login`, syncs if none
+  stored (failure is non-fatal with a hint). MCP never downloads inside a tool
+  call: lazy local resolution, typed missing-catalog error pointing to
+  `ghostlink sync-manifest`. No schema migration: regression test shows an
+  old-label snapshot stays readable, the switch to the stored version advances
+  the revision exactly once, identical re-syncs do not (in-memory SQLite).
+  Delegated writer; test-first only partially evidenced (RED observed for the
+  config test; other behaviors went GREEN with compile-error intermediates).
+  Writer reported an intermediate run reached the production manifest sync in
+  a real-CLI test. Verifier FAIL (static): `hardening_leak_journey.rs`
+  real-CLI test used a missing parent dir as "unopenable" DB, which PR-005's
+  `create_dir_all` now creates; with a stored native-keyring credential
+  (Windows/macOS dev machines) it could auto-sync over the network. Parent fix:
+  the parent is now a regular file, so the open always fails before any read.
+  Accepted note: an expired stored credential can let the CLI download the
+  (public) manifest before the auth rejection; harmless and needed after
+  re-login. Parent checks: fmt, clippy, diff check, and the full suite inside
+  `unshare -rn` (loopback only, no outbound connectivity proven with curl):
+  1367 passed / 0 failed. Commit evidence: `0028a85`.
 - [ ] **PR-007 — Agent integration writers.** Detection plus skill install and
   MCP config merge for Claude Code, Codex, OpenCode and Pi (backup, idempotent,
   no clobbering); `ghostlink agents {status,install,uninstall}`-style surface.
