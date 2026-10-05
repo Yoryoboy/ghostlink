@@ -1,12 +1,13 @@
 //! Compiled configuration for the official Ghostlink application.
 
 /// Official PUBLIC application values: safe to commit and extractable from
-/// release binaries. The owner fills the pending values with `Some("...")`.
+/// release binaries. They identify the official Bungie application and broker.
 /// A client secret must NEVER go here or anywhere else in the repository.
 /// Every value is overridable per key by config.env and then process environment.
-pub(crate) const BUNGIE_API_KEY: Option<&'static str> = None;
-pub(crate) const BUNGIE_PUBLIC_CLIENT_ID: Option<&'static str> = None;
-pub(crate) const GHOSTLINK_TOKEN_BROKER_URL: Option<&'static str> = None;
+pub(crate) const BUNGIE_API_KEY: Option<&'static str> = Some("8a6b807cfaf342f58bb2c45c1ed33f78");
+pub(crate) const BUNGIE_PUBLIC_CLIENT_ID: Option<&'static str> = Some("55099");
+pub(crate) const GHOSTLINK_TOKEN_BROKER_URL: Option<&'static str> =
+    Some("https://ghostlink-token-broker.93jads.workers.dev");
 pub(crate) const BUNGIE_CALLBACK_URI: Option<&'static str> = Some("ghostlink://oauth/callback");
 pub(crate) const BUNGIE_REGISTERED_CALLBACK_URI: Option<&'static str> =
     Some("ghostlink://oauth/callback");

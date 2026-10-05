@@ -3,7 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2026-10-01"
 
 [vars]
-BUNGIE_CLIENT_ID = "REPLACE_WITH_PUBLIC_CLIENT_ID"
+BUNGIE_CLIENT_ID = "55099"
 ALLOWED_REDIRECT_URI = "ghostlink://oauth/callback"
 BUNGIE_TOKEN_ENDPOINT = "https://www.bungie.net/platform/app/oauth/token/"
 
