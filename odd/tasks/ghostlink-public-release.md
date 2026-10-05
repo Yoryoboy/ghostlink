@@ -167,9 +167,24 @@ cargo-dist handling of the libdbus runtime dependency.
   re-login. Parent checks: fmt, clippy, diff check, and the full suite inside
   `unshare -rn` (loopback only, no outbound connectivity proven with curl):
   1367 passed / 0 failed. Commit evidence: `0028a85`.
-- [ ] **PR-007 — Agent integration writers.** Detection plus skill install and
-  MCP config merge for Claude Code, Codex, OpenCode and Pi (backup, idempotent,
-  no clobbering); `ghostlink agents {status,install,uninstall}`-style surface.
+- [x] **PR-007 — Agent integration writers.** `ghostlink agents
+  {status,install,uninstall} --agent <claude|codex|opencode|pi>... [--skill]
+  [--mcp]` (both by default), `--json` supported, exit 51 if any step failed,
+  manual-step outcomes exit 0. Detection: binary on PATH (never executed) or
+  config dir. Skill embedded via `include_str!`, written to each agent's skills
+  dir; uninstall removes only our `ghostlink` skill. MCP registers the absolute
+  sibling `destiny-mcp` path (typed error if missing): Claude/Codex/Pi through
+  their own `mcp add/remove` CLIs (argv only, bounded output, timeout); OpenCode
+  merges `opencode.json` `mcp.ghostlink` with per-run backup and atomic write,
+  and leaves JSONC/invalid files untouched with a manual snippet. Layering
+  (parent review): ports and shared types in `destiny-core::agents`,
+  orchestration in `destiny-app::agents`, adapters depend only on core
+  (`cargo tree` confirms no production destiny-app edge). Delegated writer,
+  test-first for engine behaviors (RED: 7 failing behavior tests + 1 status
+  assertion); CLI JSON/parsing tests GREEN-only. No real agent binaries or user
+  configs touched (fakes, worktree-local fixtures). Parent checks: fmt, clippy,
+  diff check, full suite in `unshare -rn`: 1378 passed / 0 failed. Live agent
+  and native Windows behavior pending PR-011. Commit evidence: `4b5b44c`.
 - [ ] **PR-008 — First-run setup wizard.** `ghostlink setup` and bare `ghostlink`
   on first run: multi-select of detected agents, install, then login and manifest
   sync; non-interactive fallback.
