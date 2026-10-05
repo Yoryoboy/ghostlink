@@ -100,7 +100,25 @@ cargo test --workspace --all-features
 All checks run offline and need no credentials. See
 [docs/development.md](docs/development.md) for the full baseline.
 
+## Contributing
+
+Contributions are welcome. Open an issue to discuss larger changes first, keep
+pull requests focused, and run the checks in
+[docs/development.md](docs/development.md) before submitting.
+
 ## License
 
-MIT. Ghostlink is not affiliated with or endorsed by Bungie. Destiny is a
-trademark of Bungie, Inc.
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.
+
+Ghostlink is not affiliated with or endorsed by Bungie. Destiny is a trademark
+of Bungie, Inc.
