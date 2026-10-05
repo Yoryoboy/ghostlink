@@ -293,7 +293,9 @@ fn failed_steps_do_not_stop_other_agents_or_skills() {
 #[test]
 fn ownership_marker_accepts_crlf_skill_files() {
     // Windows checkouts and editors may store the skill with CRLF endings.
-    assert!(ours("---\r\nname: ghostlink\r\ndescription: x\r\n---\r\nbody\r\n"));
+    assert!(ours(
+        "---\r\nname: ghostlink\r\ndescription: x\r\n---\r\nbody\r\n"
+    ));
     assert!(ours(&SKILL.replace('\n', "\r\n")));
     assert!(!ours("---\r\nname: other\r\n---\r\n"));
 }
@@ -304,7 +306,10 @@ fn crlf_copy_of_the_embedded_skill_is_still_ours() {
         let mut files = fixture();
         let dir = files.home.join(agent.skill_dir()).join("ghostlink");
         write(&dir.join("SKILL.md"), &SKILL.replace('\n', "\r\n"));
-        assert_eq!(files.skill(agent, Action::Status), Ok(Outcome::AlreadyInstalled));
+        assert_eq!(
+            files.skill(agent, Action::Status),
+            Ok(Outcome::AlreadyInstalled)
+        );
         assert_eq!(files.skill(agent, Action::Install), Ok(Outcome::Installed));
         assert_eq!(text(&dir.join("SKILL.md")), SKILL);
     }
