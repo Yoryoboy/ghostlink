@@ -128,8 +128,8 @@ use destiny_core::{
     ItemInstance, ItemInstanceId, ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT,
     MovePlan, MovePlanValidation, MoveRequest, MutationPolicyInput, MutationPolicyOutcome,
     PlanIdGenerator, PlanLifetime, ProfileGateway, ProfileSyncOutcome, ProfileSyncReason,
-    Resolution, SearchRepository, StepOutcome, SyncRevision, Timestamp, TransferGateway,
-    TransferRequest, evaluate_mutation, resolve_destination,
+    Resolution, SearchRepository, StepAction, StepOutcome, SyncRevision, Timestamp,
+    TransferGateway, TransferRequest, evaluate_mutation, resolve_destination,
 };
 
 /// The sanitized, typed failure of semantic move planning or preflight.
@@ -1034,20 +1034,25 @@ where
             Resolution::Ambiguous(_) => return Err(MutationError::AmbiguousResolution),
         };
         for step in ticket.steps() {
-            let request = TransferRequest::new(
-                membership.clone(),
-                ticket.item().clone(),
-                instance.item_hash,
-                instance.quantity,
-                step.from.clone(),
-                step.to.clone(),
-            )
-            .map_err(MutationError::from)?;
-            let outcome = transfer.transfer(&request).map_err(MutationError::from)?;
+            let outcome = match &step.action {
+                StepAction::Transfer { from, to } => {
+                    let request = TransferRequest::new(
+                        membership.clone(),
+                        ticket.item().clone(),
+                        instance.item_hash,
+                        instance.quantity,
+                        from.clone(),
+                        to.clone(),
+                    )
+                    .map_err(MutationError::from)?;
+                    let outcome = transfer.transfer(&request).map_err(MutationError::from)?;
+                    StepOutcome::from_transfer(outcome)
+                }
+            };
             evidence
-                .record(step.ordinal, StepOutcome::from_transfer(outcome))
+                .record(step.ordinal, outcome)
                 .map_err(MutationError::from)?;
-            if !outcome.applied() {
+            if !outcome.continues() {
                 break;
             }
         }
@@ -1317,7 +1322,9 @@ fn expected_location(plan: &MovePlan, completed: usize) -> ItemLocation {
     }
     plan.steps()
         .get(completed - 1)
-        .map(|step| step.to.clone())
+        .map(|step| match &step.action {
+            StepAction::Transfer { to, .. } => to.clone(),
+        })
         .unwrap_or_else(|| plan.destination.clone())
 }
 
@@ -1339,7 +1346,8 @@ mod tests {
         ItemDefinition, ItemHash, ItemInstance, ItemInstanceId, ItemLocation, ItemSelector,
         MAX_HASH_FILTERS, MoveIntentAuthorization, MovePlan, MoveRequest, MutationPolicyOutcome,
         PlanId, PlanIdGenerator, PlanLifetime, ProfileGateway, Resolution, SearchRepository,
-        SourceMarker, StepOutcome, SyncRevision, Timestamp, TransferOutcome, TransferRejection,
+        SourceMarker, StepAction, StepOutcome, SyncRevision, Timestamp, TransferOutcome,
+        TransferRejection,
     };
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1662,8 +1670,9 @@ mod tests {
         );
         assert_eq!(plan.step_count(), 1);
         assert_eq!(plan.steps()[0].ordinal, 1);
-        assert_eq!(plan.steps()[0].from, ItemLocation::Vault);
-        assert_eq!(plan.steps()[0].to, warlock());
+        let StepAction::Transfer { from, to } = &plan.steps()[0].action;
+        assert_eq!(from, &ItemLocation::Vault);
+        assert_eq!(to, &warlock());
         assert_eq!(plan.effects().item, item_id("item-1"));
         assert!(!plan.effects().via_vault);
         assert_eq!(service.plan_ids().calls(), 1);
@@ -1855,8 +1864,9 @@ mod tests {
         assert_eq!(plan.source, warlock());
         assert_eq!(plan.destination, ItemLocation::Vault);
         assert_eq!(plan.step_count(), 1);
-        assert_eq!(plan.steps()[0].from, warlock());
-        assert_eq!(plan.steps()[0].to, ItemLocation::Vault);
+        let StepAction::Transfer { from, to } = &plan.steps()[0].action;
+        assert_eq!(from, &warlock());
+        assert_eq!(to, &ItemLocation::Vault);
         assert!(!plan.effects().via_vault);
     }
 
@@ -1956,10 +1966,12 @@ mod tests {
             .expect("plan");
 
         assert_eq!(plan.step_count(), 2);
-        assert_eq!(plan.steps()[0].from, warlock());
-        assert_eq!(plan.steps()[0].to, ItemLocation::Vault);
-        assert_eq!(plan.steps()[1].from, ItemLocation::Vault);
-        assert_eq!(plan.steps()[1].to, hunter());
+        let StepAction::Transfer { from, to } = &plan.steps()[0].action;
+        assert_eq!(from, &warlock());
+        assert_eq!(to, &ItemLocation::Vault);
+        let StepAction::Transfer { from, to } = &plan.steps()[1].action;
+        assert_eq!(from, &ItemLocation::Vault);
+        assert_eq!(to, &hunter());
         assert!(plan.effects().via_vault);
     }
 

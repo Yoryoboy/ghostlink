@@ -43,8 +43,8 @@ use destiny_app::{
     MAX_TAG_FILTERS, MembershipId, MoveEffects, MoveExecutionOutcome, MoveIntentAuthorization,
     MovePlan, MoveRequest, MutationError, MutationService, PerkHash, PlanIdGenerator, PlanLifetime,
     ProfileGateway, ProfileSyncReason, QueryMetadata, QueryService, Resolution,
-    SearchInventoryRequest, SearchRepository, SearchTerm, SourceMarker, StepOutcome, Timestamp,
-    TransferGateway, TransferRejection, VerificationFailureReason,
+    SearchInventoryRequest, SearchRepository, SearchTerm, SourceMarker, StepAction, StepOutcome,
+    Timestamp, TransferGateway, TransferRejection, VerificationFailureReason,
 };
 
 use crate::schema::{
@@ -1601,11 +1601,14 @@ fn step_views(evidence: &ExecutionEvidence) -> Vec<StepEvidenceView> {
     evidence
         .steps()
         .iter()
-        .map(|record| StepEvidenceView {
-            ordinal: record.step.ordinal,
-            from: location_view(&record.step.from),
-            to: location_view(&record.step.to),
-            outcome: step_outcome_view(record.outcome),
+        .map(|record| match &record.step.action {
+            // Keep the move_item wire contract flat: no action tag or new fields.
+            StepAction::Transfer { from, to } => StepEvidenceView {
+                ordinal: record.step.ordinal,
+                from: location_view(from),
+                to: location_view(to),
+                outcome: step_outcome_view(record.outcome),
+            },
         })
         .collect()
 }

@@ -44,10 +44,10 @@ pub use ids::{
 pub use mutation::{
     DestinationSelector, ExecutionEvidence, ExecutionTicket, IntentAuthorizationOutcome,
     ItemSelector, MAX_MOVE_STEPS, MAX_PLAN_LIFETIME_SECONDS, MoveEffects, MoveIntent,
-    MoveIntentAuthorization, MovePlan, MovePlanValidation, MoveRequest, MoveStep,
-    MutationPolicyInput, MutationPolicyOutcome, PlanBinding, PlanLifetime, PlanLifetimeValidation,
-    StepOutcome, StepRecord, character_destination, destination_matches, evaluate_mutation,
-    plan_steps, resolve_destination,
+    MoveIntentAuthorization, MovePlan, MovePlanValidation, MoveRequest, MutationPolicyInput,
+    MutationPolicyOutcome, MutationStep, PlanBinding, PlanLifetime, PlanLifetimeValidation,
+    StepAction, StepOutcome, StepRecord, character_destination, destination_matches,
+    evaluate_mutation, plan_steps, resolve_destination,
 };
 pub use ports::{
     AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,

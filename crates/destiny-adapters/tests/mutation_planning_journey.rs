@@ -500,8 +500,9 @@ fn semantic_last_word_plans_a_direct_vault_to_warlock_move() {
     );
     assert_eq!(plan.step_count(), 1);
     assert_eq!(plan.steps()[0].ordinal, 1);
-    assert_eq!(plan.steps()[0].from, ItemLocation::Vault);
-    assert_eq!(plan.steps()[0].to, character_location(WARLOCK_ID));
+    let destiny_core::StepAction::Transfer { from, to } = &plan.steps()[0].action;
+    assert_eq!(from, &ItemLocation::Vault);
+    assert_eq!(to, &character_location(WARLOCK_ID));
     assert!(!plan.effects().via_vault);
 
     // Planning contacted only the read-only provider endpoints.
@@ -541,10 +542,12 @@ fn semantic_character_to_character_move_is_vault_mediated() {
     assert_eq!(plan.source, character_location(HUNTER_ID));
     assert_eq!(plan.destination, character_location(WARLOCK_ID));
     assert_eq!(plan.step_count(), 2);
-    assert_eq!(plan.steps()[0].from, character_location(HUNTER_ID));
-    assert_eq!(plan.steps()[0].to, ItemLocation::Vault);
-    assert_eq!(plan.steps()[1].from, ItemLocation::Vault);
-    assert_eq!(plan.steps()[1].to, character_location(WARLOCK_ID));
+    let destiny_core::StepAction::Transfer { from, to } = &plan.steps()[0].action;
+    assert_eq!(from, &character_location(HUNTER_ID));
+    assert_eq!(to, &ItemLocation::Vault);
+    let destiny_core::StepAction::Transfer { from, to } = &plan.steps()[1].action;
+    assert_eq!(from, &ItemLocation::Vault);
+    assert_eq!(to, &character_location(WARLOCK_ID));
     assert!(plan.effects().via_vault);
 
     assert_read_only_requests(&journey.recorded_urls());
