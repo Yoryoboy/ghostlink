@@ -103,12 +103,14 @@ text across all four tools.
 `perk_names`, `mod_names`, `mods`, `archetype`, `available_perks`,
 `available_mods` and `stats`, alongside the definition, instance and metadata.
 It also adds `plug_details` entries with `hash`, `name`, `role` and optional
-official `description` (multiline text preserved). Roles are `perk`, `mod`,
-`available_perk`, `available_mod` and `archetype`. Only plugs already surfaced
-by the existing name fields are included, not otherwise-excluded exotic
-intrinsics. Repeated equipped plugs are deduplicated by hash/role; available
-names exclude equipped names and are unique by normalized name. Entries follow
-equipped socket order, then the first archetype, then available socket order.
+official `description` (multiline text preserved). Roles are `intrinsic`,
+`perk`, `mod`, `available_perk`, `available_mod` and `archetype`. Every resolved
+socketed plug with category `intrinsics` appears as `intrinsic` for weapons and
+armor, instead of a `perk` detail for that plug. Other details come from the
+existing name fields. Repeated equipped plugs are deduplicated by hash/role;
+available names exclude equipped names and are unique by normalized name.
+Intrinsic entries come first in socket order, then other equipped entries in
+socket order, the first archetype, and available entries in socket order.
 Missing descriptions and an empty `plug_details` list are omitted. Existing
 name arrays are unchanged. `search_inventory` hits do not include descriptions;
 call `inspect_item` for that detail.

@@ -81,9 +81,47 @@ fn mcp_inspection_descriptions_view() {
     assert_eq!(view["plug_details"][4]["role"], "archetype");
 }
 
+fn with_intrinsic() -> ItemInspection {
+    let mut inspected = inspection();
+    inspected.plug_details.insert(
+        0,
+        InspectionPlug {
+            hash: ItemHash::new(70),
+            name: "Uncanny\u{1b} Arrows".into(),
+            role: InspectionPlugRole::Intrinsic,
+            description: Some("Official\u{1b} intrinsic.\nSecond line.".into()),
+        },
+    );
+    inspected
+}
+
+#[test]
+fn inspection_intrinsic_human_single_and_multiple() {
+    let mut inspected = with_intrinsic();
+    let human = render_inspection(OutputMode::Human, &inspected);
+    assert!(
+        human.contains("  intrinsic: Uncanny? Arrows\n    Official? intrinsic.\n    Second line.")
+    );
+    assert!(!human.contains("    Uncanny? Arrows:"));
+    assert!(!human.contains('\u{1b}'));
+    assert!(human.find("  intrinsic:").unwrap() < human.find("  perks:").unwrap());
+    inspected.plug_details.insert(
+        1,
+        InspectionPlug {
+            hash: ItemHash::new(71),
+            name: "Another intrinsic".into(),
+            role: InspectionPlugRole::Intrinsic,
+            description: None,
+        },
+    );
+    let human = render_inspection(OutputMode::Human, &inspected);
+    assert!(human.contains("  intrinsic: Uncanny? Arrows, Another intrinsic\n    Uncanny? Arrows:\n      Official? intrinsic.\n      Second line."));
+    assert!(!human.contains("    Another intrinsic:"));
+}
+
 #[test]
 fn inspection_descriptions_cli_mcp_parity() {
-    let mut inspected = inspection();
+    let mut inspected = with_intrinsic();
     for empty in [false, true] {
         if empty {
             inspected.plug_details.clear();
@@ -100,6 +138,11 @@ fn inspection_descriptions_cli_mcp_parity() {
         } else {
             assert!(cli["plug_details"].is_array());
             assert_eq!(cli["plug_details"], mcp["plug_details"]);
+            assert_eq!(cli["plug_details"][0]["role"], "intrinsic");
+            assert_eq!(
+                cli["plug_details"][0]["description"],
+                "Official\u{1b} intrinsic.\nSecond line."
+            );
         }
         for field in [
             "perk_names",

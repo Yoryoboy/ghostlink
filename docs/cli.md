@@ -354,15 +354,19 @@ the same enrichment as search hits. Raw perk component state is separate under
 names as `mod_names`), `archetype`, `available_perks`, `available_mods` and
 `stats` (`{name, value}` entries), alongside the definition and instance state.
 Inspection also adds `plug_details`: `{hash, name, role, description?}` entries.
-Roles are `perk`, `mod`, `available_perk`, `available_mod` and `archetype`.
-Only plugs already surfaced by the existing name fields are included; exotic
-intrinsics excluded by those fields remain excluded. Repeated equipped plugs
-are deduplicated by hash/role; available names still exclude equipped names and
-are unique by normalized name. Equipped details follow socket order, then the
-first archetype, then available details in socket order. Missing descriptions
+Roles are `intrinsic`, `perk`, `mod`, `available_perk`, `available_mod` and
+`archetype`. Every resolved socketed plug with category `intrinsics` appears as
+`intrinsic` for weapons and armor, instead of a `perk` detail for that plug.
+Other details come from the existing name fields, which remain unchanged.
+Repeated equipped plugs are deduplicated by hash/role; available names still
+exclude equipped names and are unique by normalized name. Intrinsic details
+come first in socket order, then other equipped details in socket order, the
+first archetype, and available details in socket order. Missing descriptions
 are omitted; an empty `plug_details` list is omitted entirely. Official text
 preserves newlines in JSON and appears indented under the corresponding names
-in human output. Search hits stay compact and do not include descriptions:
+in human output. Intrinsics appear on an `intrinsic:` line; a single plug's
+description is indented directly beneath it without repeating its name.
+Search hits stay compact and do not include descriptions:
 inspect an item for detail.
 
 ### Weekly reset

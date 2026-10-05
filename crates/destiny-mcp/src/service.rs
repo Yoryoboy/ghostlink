@@ -1690,6 +1690,7 @@ pub fn inspect_item_output(
                         name: plug.name.clone(),
                         description: plug.description.clone(),
                         role: match plug.role {
+                            Role::Intrinsic => View::Intrinsic,
                             Role::Perk => View::Perk,
                             Role::Mod => View::Mod,
                             Role::AvailablePerk => View::AvailablePerk,
