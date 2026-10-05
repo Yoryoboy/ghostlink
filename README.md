@@ -49,7 +49,7 @@ install -m 600 config.example.env ~/.config/ghostlink/config.env
 $EDITOR ~/.config/ghostlink/config.env
 
 # 3. Authorize your Bungie account and load game definitions
-ghostlink login
+ghostlink login          # offers to set up the ghostlink:// handler on Linux
 ghostlink sync-manifest
 
 # 4. Use it

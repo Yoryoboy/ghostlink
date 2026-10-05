@@ -1,19 +1,14 @@
-//! Safe interactive login composition over a custom-scheme manual paste.
+//! Safe interactive login composition over handler delivery or terminal paste.
 //!
-//! This module composes the existing public-client authorization service with the
-//! provider adapters into exactly one login attempt. The provider rejects an HTTP
-//! loopback redirect for this registered client, so the registered
-//! callback is the custom-scheme URI `ghostlink://oauth/callback`. Nothing on the
-//! machine listens for that scheme, and this product deliberately registers no
-//! operating-system URI handler: the human authorizes in the browser, then copies
-//! the callback URI the provider redirected to and pastes it into the terminal.
+//! The registered callback is `ghostlink://oauth/callback`. Auto resolves the
+//! desktop registration through the application policy before authorization;
+//! installation requires terminal consent. Explicit handler and paste bypass
+//! that policy. Headless auto uses paste because no local browser can reach the
+//! handler. JSON and redirected input/output never permit a consent prompt.
 //!
-//! Exactly one decision is made here that the baseline did not make: the callback
-//! is received from the terminal instead of a local socket. Everything else has an
-//! owner and stays there. The application service still owns unpredictable state,
-//! expiry, CSRF comparison, replay rejection, and the code exchange; the adapters
-//! own the authorization URL, the optional browser launch, the bounded paste
-//! reader, the token transport, and the operating-system keyring.
+//! The application service owns unpredictable state, expiry, CSRF comparison,
+//! replay rejection, and the code exchange. Adapters own the authorization URL,
+//! browser launch, bounded callback delivery, transport, and credential storage.
 //!
 //! Security-relevant order, which the composition makes structural rather than
 //! incidental:
@@ -227,6 +222,16 @@ pub trait LoginFactory {
         mode: AuthorizationMode,
         callback: CallbackMode,
     ) -> Result<Box<dyn LoginOperations>, CliError>;
+
+    /// Builds with the process output contract, including non-interactive JSON.
+    fn build_with_output(
+        &mut self,
+        mode: AuthorizationMode,
+        callback: CallbackMode,
+        _output: crate::output::OutputMode,
+    ) -> Result<Box<dyn LoginOperations>, CliError> {
+        self.build(mode, callback)
+    }
 }
 
 /// The production login factory.
@@ -252,9 +257,52 @@ impl LoginFactory for ProductionLoginFactory {
         mode: AuthorizationMode,
         callback: CallbackMode,
     ) -> Result<Box<dyn LoginOperations>, CliError> {
+        self.build_with_output(mode, callback, crate::output::OutputMode::Human)
+    }
+
+    fn build_with_output(
+        &mut self,
+        mode: AuthorizationMode,
+        callback: CallbackMode,
+        output: crate::output::OutputMode,
+    ) -> Result<Box<dyn LoginOperations>, CliError> {
+        use std::io::{IsTerminal, Write};
+
         let config = LoginRuntimeConfig::from_env().map_err(CliError::from)?;
         let resolved =
             select_mode(mode, &EnvironmentGuiDetector::default()).map_err(CliError::from)?;
+        let callback = if callback == CallbackMode::Auto {
+            let mut registrar = crate::handler::production_registrar();
+            let stdin = std::io::stdin();
+            let stdout = std::io::stdout();
+            let stderr = std::io::stderr();
+            let mut consent = crate::handler::TerminalConsent {
+                reader: stdin.lock(),
+                writer: stderr.lock(),
+            };
+            let resolution = crate::handler::resolve_callback(
+                registrar.as_mut(),
+                resolved == AuthorizationMode::Browser,
+                stdin.is_terminal(),
+                stdout.is_terminal(),
+                output,
+                &mut consent,
+            );
+            for notice in &resolution.notices {
+                writeln!(consent.writer, "{}", crate::handler::render_notice(notice))
+                    .map_err(|_| CliError::from_category(ErrorCategory::UnsupportedOperation))?;
+            }
+            consent
+                .writer
+                .flush()
+                .map_err(|_| CliError::from_category(ErrorCategory::UnsupportedOperation))?;
+            match resolution.choice {
+                destiny_app::uri_handler::CallbackChoice::Handler => CallbackMode::Handler,
+                destiny_app::uri_handler::CallbackChoice::Paste => CallbackMode::Paste,
+            }
+        } else {
+            callback
+        };
         match resolved {
             AuthorizationMode::Browser => compose_login(&config, callback, true),
             AuthorizationMode::Headless => compose_login(&config, callback, false),
@@ -274,6 +322,7 @@ fn compose_login(
     open_browser: bool,
 ) -> Result<Box<dyn LoginOperations>, CliError> {
     match callback {
+        CallbackMode::Auto => Err(CliError::from_category(ErrorCategory::ConfigurationError)),
         CallbackMode::Paste => composed_login(config, open_browser).map(boxed),
         CallbackMode::Handler => composed_handler_login(config, open_browser),
     }

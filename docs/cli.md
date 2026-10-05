@@ -4,6 +4,37 @@ The `ghostlink` executable (crate `destiny-cli`). Commands are shown both as
 `ghostlink <command>` and, from a checkout, `cargo run -p destiny-cli -- <command>`.
 See [configuration](configuration.md) for setup and authorization.
 
+## Login
+
+`ghostlink login` prints the authorization URL and opens a local browser when
+available. Callback delivery defaults to `--callback auto`; use
+`--callback paste` for terminal paste or `--callback handler` to require the
+installed Linux handler explicitly.
+
+### Callback handler
+
+```sh
+ghostlink handler status       # inspect registration and known desktop pitfalls
+ghostlink handler install      # explicitly install this executable's handler
+ghostlink handler uninstall    # remove it and restore the recorded association
+```
+
+These commands support global `--json`. Auto uses the handler when `ghostlink://`
+already points at this executable. Otherwise, with a local browser, terminal
+stdin and stdout, and no `--json`, it shows the exact planned changes and asks
+`[y/N]`. Confirmation installs the handler and uses it; declining, unavailable
+registration, or a failed setup falls back to terminal paste with a notice on
+stderr. Headless auto uses paste. Non-interactive and JSON auto never prompt or
+install; they use paste unless the handler is already registered and a local
+browser is available. Nothing is installed without confirmation or the explicit
+install command.
+
+Handler management is Linux-only; other platforms report `unsupported_operation`
+and auto falls back to paste. Status reports contradictory `mimeapps.list`
+sections and remembered portal choices with remedies, but does not repair them.
+See the [callback handler runbook](../packaging/ghostlink-callback-handler.md)
+for installation details, manual fallback, and security limits.
+
 ## Read commands
 
 `destiny-cli` exposes three read commands over the shared WU-007 query

@@ -59,7 +59,7 @@ pub struct ProcessOutput {
 
 impl ProcessOutput {
     /// Builds a successful result whose body is written to stdout.
-    fn success(body: String) -> Self {
+    pub(crate) fn success(body: String) -> Self {
         Self {
             stdout: format!("{body}\n"),
             stderr: String::new(),
@@ -68,7 +68,7 @@ impl ProcessOutput {
     }
 
     /// Builds a sanitized failure written to stderr.
-    fn failure(mode: OutputMode, error: CliError) -> Self {
+    pub(crate) fn failure(mode: OutputMode, error: CliError) -> Self {
         Self {
             stdout: String::new(),
             stderr: format!("{}\n", render_error(mode, &error)),
@@ -368,12 +368,22 @@ where
     if let Command::SyncManifest = &cli.command {
         return run_manifest(manifest_factory, mode);
     }
+    if let Command::Handler(arguments) = &cli.command {
+        return crate::handler::run_handler(
+            crate::handler::production_registrar().as_mut(),
+            arguments.command,
+            mode,
+        );
+    }
     if let Command::Login(arguments) = &cli.command {
-        let mut login =
-            match login_factory.build(arguments.mode.authorization_mode(), arguments.callback) {
-                Ok(login) => login,
-                Err(error) => return ProcessOutput::failure(mode, error),
-            };
+        let mut login = match login_factory.build_with_output(
+            arguments.mode.authorization_mode(),
+            arguments.callback,
+            mode,
+        ) {
+            Ok(login) => login,
+            Err(error) => return ProcessOutput::failure(mode, error),
+        };
         return run_login(login.as_mut(), mode, present);
     }
     if let Command::Callback(arguments) = &cli.command {
@@ -2061,7 +2071,8 @@ mod tests {
     #[test]
     fn the_requested_callback_strategy_reaches_the_composition() {
         for (flag, expected) in [
-            (None, CallbackMode::Paste),
+            (None, CallbackMode::Auto),
+            (Some("auto"), CallbackMode::Auto),
             (Some("paste"), CallbackMode::Paste),
             (Some("handler"), CallbackMode::Handler),
         ] {

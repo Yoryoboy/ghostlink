@@ -94,7 +94,7 @@ fn parse(bytes: &[u8]) -> Result<HashMap<String, String>, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{load, parse, resolve_path};
+    use super::{load, parse};
     use crate::config::{LoginRuntimeConfig, ReadRuntimeConfig, exact_source_values};
     use destiny_core::{AppError, ErrorCategory};
     use std::ffi::OsString;
@@ -185,10 +185,12 @@ mod tests {
         sanitized(load(Some(fixture.0.clone())).unwrap_err());
     }
 
+    // The fixtures use Unix absolute paths; `/xdg` is not absolute on Windows.
+    #[cfg(unix)]
     #[test]
     fn path_resolution_obeys_precedence_and_ignores_relative_xdg() {
         let resolve = |explicit: &str, xdg: &str, home: Option<&str>| {
-            resolve_path(|name| match name {
+            super::resolve_path(|name| match name {
                 "GHOSTLINK_CONFIG_FILE" => Some(explicit.into()),
                 "XDG_CONFIG_HOME" => Some(xdg.into()),
                 "HOME" => home.map(OsString::from),
@@ -210,7 +212,7 @@ mod tests {
             );
         }
         assert_eq!(resolve("", "relative", None), None);
-        assert!(resolve_path(|_| None).is_none());
+        assert!(super::resolve_path(|_| None).is_none());
     }
 
     #[test]

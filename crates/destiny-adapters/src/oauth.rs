@@ -225,14 +225,17 @@ impl LoopbackCallbackReceiver {
             })?;
             let read = match stream.read(&mut buffer) {
                 Ok(read) => read,
+                // A socket read timeout can fire slightly before the requested
+                // duration (Windows rounds it to its coarse timer tick), so the
+                // loop re-arms with the remaining time and only the shared
+                // deadline itself ends the read.
                 Err(error)
                     if matches!(
                         error.kind(),
                         std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
                     ) =>
                 {
-                    Self::respond(&mut stream, false);
-                    return Err(AppError::new(ErrorCategory::CallbackTimeout));
+                    continue;
                 }
                 Err(_) => {
                     Self::respond(&mut stream, false);
@@ -2023,10 +2026,16 @@ mod tests {
         assert_eq!(result, Err(AppError::new(ErrorCategory::CallbackTimeout)));
         assert!(elapsed >= LOOPBACK_TEST_TIMEOUT);
         assert!(elapsed < LOOPBACK_TEST_TIMEOUT + Duration::from_millis(750));
-        let mut response = String::new();
-        let _ = stream.read_to_string(&mut response);
-        assert!(response.starts_with("HTTP/1.1 200 OK"));
-        assert!(response.contains("Authorization failed."));
+        // The client keeps writing after the receiver answered and closed. On
+        // Windows the resulting reset discards the already-received response,
+        // so the best-effort failure page is only observable elsewhere.
+        #[cfg(not(windows))]
+        {
+            let mut response = String::new();
+            let _ = stream.read_to_string(&mut response);
+            assert!(response.starts_with("HTTP/1.1 200 OK"));
+            assert!(response.contains("Authorization failed."));
+        }
     }
 
     #[test]

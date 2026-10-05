@@ -1,15 +1,16 @@
 # Ghostlink callback handler (Linux)
 
 This is the operator runbook for the Linux `ghostlink://oauth/callback` handler.
-The handler is implemented and tested offline; nothing here is installed
-automatically, and no agent runs these steps. Installing it changes the current
-user's desktop configuration and is a human decision.
+The handler is implemented and tested offline; nothing is installed without
+explicit confirmation or the explicit install command, and no agent runs these
+steps. Installing it changes the current user's desktop configuration and is a
+human decision.
 
 ## What it does
 
-`ghostlink login` renders the authorization URL, and with
-`ghostlink login --callback handler` it also binds one per-attempt Unix-domain
-socket inside a private directory under the user's runtime directory
+`ghostlink login` renders the authorization URL, and when auto selects the
+handler (or with explicit `--callback handler`) it also binds one per-attempt
+Unix-domain socket inside a private directory under the user's runtime directory
 (`$XDG_RUNTIME_DIR/ghostlink`). When the provider redirects the browser to
 `ghostlink://oauth/callback`, the desktop entry runs
 `ghostlink callback <uri>`, which validates the URI shape, resolves the
@@ -23,9 +24,18 @@ authorization succeeded. Only the waiting `ghostlink login` validates the state
 and exchanges the code, and only it reports the authorized (or failed) result.
 The handler prints no callback values; on failure it may print a sanitized error to stderr.
 
-The default is `ghostlink login --callback paste`, which reads the callback from
-the terminal and is unchanged. The handler is opt-in; the paste strategy remains
-the fallback on every platform and whenever the handler is unavailable.
+The default is `ghostlink login --callback auto`. With a local browser, it uses
+an existing handler that points at this executable. Otherwise, only when stdin
+and stdout are terminals and `--json` is absent, it shows the exact planned
+changes and asks `Install the handler now? [y/N]`. Yes installs and uses the
+handler; no, failed detection or setup, or an ineffective install falls back to
+terminal paste with a notice on stderr. Headless auto uses paste. Non-interactive
+and JSON auto never prompt or install; they use paste unless the existing
+handler points here and a local browser is available.
+
+`--callback paste` and `--callback handler` remain explicit overrides. Handler
+management is Linux-only; other platforms report `unsupported_operation` and
+auto falls back to paste. The paste strategy remains available everywhere.
 
 ## Threat model
 
@@ -90,6 +100,39 @@ stronger than the desktop session it runs in.
 
 ## Install (only after explicit authorization)
 
+Run the binary you want the desktop to invoke:
+
+```sh
+ghostlink handler install
+ghostlink handler status
+```
+
+Alternatively, run `ghostlink login` in an interactive local desktop terminal,
+review the exact planned changes, and confirm the auto prompt. The explicit
+install command is itself authorization and does not prompt. Handler commands
+support global `--json` (for example, `ghostlink --json handler status`).
+
+Install records the previously selected desktop id once in
+`~/.local/share/ghostlink/previous-uri-handler` with mode `0600`; an existing
+record is never overwritten. It writes
+`~/.local/share/applications/ghostlink-callback.desktop` with
+`Exec=<current executable> callback %u`, refreshes the desktop database when
+`update-desktop-database` is available, and selects the entry through `xdg-mime`.
+Database refresh is optional and a skipped or failed refresh is reported.
+Paths containing spaces are quoted; paths needing escaping (`"`, `` ` ``, `$`,
+`\`, `%`, or control characters) are refused rather than escaped.
+Absolute `XDG_DATA_HOME` and `XDG_CONFIG_HOME` override the default data and
+configuration directories used here.
+
+Check status after installation: registration alone does not repair the desktop
+pitfalls below. If auto setup fails, it uses paste; partial desktop changes may
+remain, so inspect status before retrying or reverting.
+
+### Manual install fallback
+
+Use these steps only when automated installation is unavailable. Keep the
+previous association yourself for the manual revert below.
+
 1. Record the association this machine already uses, so Revert can restore the
    exact previous handler instead of guessing:
 
@@ -150,8 +193,17 @@ stronger than the desktop session it runs in.
 Symptom: after authorizing, the browser opens a new window or a profile
 chooser, and `ghostlink login --callback handler` keeps waiting for the
 callback. The callback was dispatched, but to the browser. The
-`xdg-mime query` in Install step 4 can report the handler correctly while
-another layer still selects the browser. Check both layers below.
+`xdg-mime query` in manual Install step 4 can report the handler correctly while
+another layer still selects the browser. Start with:
+
+```sh
+ghostlink handler status
+```
+
+It reports registration and detected contradictory `mimeapps.list` sections or
+remembered portal choices, each with a remedy; it does not repair either.
+Portal detection is best effort. Keep the manual checks below when investigating
+an unreported problem.
 
 1. **Contradictory `mimeapps.list` sections.** An earlier choice can leave the
    browser under `[Added Associations]` while `[Default Applications]` names
@@ -201,8 +253,22 @@ journalctl --user --since "5 min ago" | grep -Ei 'ghostlink|chrome'
 
 ## Revert
 
-Restore exactly the association recorded in Install step 1, then remove this
-handler. Substitute the recorded value; never hardcode a browser, because the
+```sh
+ghostlink handler uninstall
+```
+
+Uninstall removes `ghostlink-callback.desktop` from the user's `mimeapps.list`
+scheme lines, restores the recorded desktop id through `xdg-mime` when non-empty,
+and deletes the desktop file and previous-handler record. An empty record does
+not select a replacement handler. It does not undo manual portal changes: use
+the values recorded in Troubleshooting to restore those separately. Terminal
+paste remains available.
+
+### Manual revert fallback
+
+For a manual installation, restore exactly the association recorded in manual
+Install step 1, then remove this handler. Substitute the recorded value; never
+hardcode a browser, because the
 previous handler may be any desktop file, or none at all.
 
 ```sh
