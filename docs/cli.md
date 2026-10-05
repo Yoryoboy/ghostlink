@@ -1,8 +1,9 @@
 # Ghostlink CLI reference
 
-The `ghostlink` executable (crate `destiny-cli`). Commands are shown both as
-`ghostlink <command>` and, from a checkout, `cargo run -p destiny-cli -- <command>`.
-See [configuration](configuration.md) for setup and authorization.
+Install the `ghostlink` executable from a release; see the
+[README](../README.md) for installation and setup. From a checkout, use
+`cargo run -p ghostlink --bin ghostlink -- <command>` (the library is still named
+`destiny_cli`). See [configuration](configuration.md) for optional overrides.
 
 ## First-run setup
 
@@ -114,21 +115,20 @@ for installation details, manual fallback, and security limits.
 
 ## Read commands
 
-`destiny-cli` exposes three read commands over the shared WU-007 query
-services:
+`ghostlink` exposes read commands over the shared query services:
 
 ```sh
-cargo run -p destiny-cli -- list-characters
-cargo run -p destiny-cli -- search-inventory --text gjallar --limit 5
-cargo run -p destiny-cli -- inspect-item 700000000000000001
-cargo run -p destiny-cli -- subclass --character hunter
-cargo run -p destiny-cli -- subclass-options --character hunter --element strand --locked
+ghostlink list-characters
+ghostlink search-inventory --text gjallar --limit 5
+ghostlink inspect-item 700000000000000001
+ghostlink subclass --character hunter
+ghostlink subclass-options --character hunter --element strand --locked
 ```
 
 Add the global `--json` flag to select machine output:
 
 ```sh
-cargo run -p destiny-cli -- --json search-inventory --text gjallar --item-hash 1001
+ghostlink --json search-inventory --text gjallar --item-hash 1001
 ```
 
 ### Explicit profile sync
@@ -307,8 +307,8 @@ next profile sync (`ghostlink sync`); no migration is needed.
 ### Manifest definitions
 
 Item names, types and tiers, and the activity, milestone and modifier names
-used by `weekly-reset`, come from the Destiny 2 Manifest, which must be loaded
-once before those commands can resolve them:
+used by `weekly-reset`, come from the Destiny 2 Manifest. Missing catalogs sync
+automatically after login or on a CLI read. To refresh them explicitly:
 
 ```sh
 ghostlink sync-manifest          # or: ghostlink --json sync-manifest
@@ -326,9 +326,9 @@ ghostlink sync-manifest          # or: ghostlink --json sync-manifest
 - Re-running it fetches only the small Manifest index; when the live version
   equals the stored one and all four catalogs are populated it reports
   `unchanged` and downloads nothing. Run it again after a Destiny patch.
-- Opening the database with this version migrates it to schema v7; older
-  binaries that do not support v7 refuse the database. Run `sync-manifest`
-  once after upgrading to populate plug categories for perk-name searches.
+- Opening the database applies supported schema migrations automatically;
+  older binaries can refuse a newer database. After an upgrade that adds catalog
+  attributes, run `sync-manifest` to populate them even if the version is unchanged.
 - On first CLI read or profile sync, an absent catalog is synced automatically
   once using the same path as `sync-manifest`. The progress notice
   `Definitions not loaded; syncing manifest...` goes to stderr only, including
@@ -370,7 +370,7 @@ refreshes the stored profile projection).
 `ghostlink subclass [--character <id|class>]` shows the equipped subclass super,
 abilities, aspects and fragments. Omit `--character` for all characters, or use
 an exact character id or unique `hunter`, `titan` or `warlock` class
-(case-insensitive). Requires login and `ghostlink sync-manifest`.
+(case-insensitive). Requires login; missing definitions sync automatically.
 
 `ghostlink --json subclass` returns `kind: "subclass"` and a `characters` array.
 Each entry has `character_id`, `class` and `subclass` (null if none is equipped).
@@ -385,8 +385,8 @@ The subclass contains `instance_id`, `item_hash`, `name`, `element` and ordered
 from profile `pointProgression` and each character's equipped artifact and perks
 from the freshness-synchronized inventory. Text shows points/cap and, below the
 cap, progress toward the next point. Empty perk sockets appear as `(empty)`.
-Requires login and `ghostlink sync-manifest`; live points are not persisted in
-SQLite. Character selection follows the subclass rules above.
+Requires login; missing definitions sync automatically. Live points are not
+persisted in SQLite. Character selection follows the subclass rules above.
 
 `ghostlink --json artifact` returns `kind: "artifact"`, nullable `points`
 (`points`, `points_cap`, `progress_to_next_level`, `next_level_at`) and `characters`.
@@ -492,7 +492,7 @@ and rejected with `--json`):
 - Human success output is line-oriented text with a `revision` / `checked_at` /
   `freshness` metadata footer. Empty and missing outcomes are explicit.
 - JSON success output is exactly one object on stdout with a stable `kind`
-  (`character_list`, `inventory_search`, or `item_inspection`) and a bounded
+  (such as `character_list`, `inventory_search`, or `item_inspection`) and a bounded
   `metadata` block (`revision`, `checked_at`, `source`, `freshness`). Definition
   search candidates and concrete instance hits stay in separate, bounded arrays.
 - `inspect-item` accepts only a concrete instance identifier; a missing instance

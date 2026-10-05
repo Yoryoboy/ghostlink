@@ -1,5 +1,21 @@
 # Development
 
+End users should use the [release installers](../README.md#install). Building
+from source requires a recent stable Rust toolchain; on Linux, also install
+`libdbus-1-dev` and `pkg-config` (Debian/Ubuntu names).
+
+```sh
+cargo build -p ghostlink --release
+./target/release/ghostlink --help
+./target/release/destiny-mcp --help
+```
+
+Both executables are built side by side. For interactive use, run
+`./target/release/ghostlink` for setup. This checkout's public application
+defaults still await owner provisioning; see [configuration](configuration.md)
+for optional `config.env` overrides and direct confidential mode. Never distribute
+a client secret. Broker self-hosting is covered in the [broker runbook](../broker/README.md).
+
 ## Workspace layout
 
 This repository is a Rust workspace for the Destiny application. Dependency
@@ -20,7 +36,7 @@ server, and the stdio runtime. These presentation modules never name a concrete
 adapter. The private process module (`src/main.rs`, retained at its original
 path) loads the native credential store, HTTP transports, SQLite projection
 store, and transfer gateway. Its public `destiny_mcp::run()` entry point is
-shared by two tiny binary wrappers.
+called by the tiny binary wrapper in the `ghostlink` package.
 
 The package in `crates/destiny-cli` is named `ghostlink`; its library retains the
 `destiny_cli` name, so Rust imports are unchanged. This package owns both release
@@ -38,8 +54,9 @@ Design background lives in [mvp-architecture.md](mvp-architecture.md),
 
 ## Agent skill
 
-`skills/ghostlink/SKILL.md` teaches shell-capable agents to drive the CLI. It
-holds judgment (intent to command, output contract, `equip` safety) and defers
+`skills/ghostlink/SKILL.md` prefers Ghostlink MCP tools when available, with the
+CLI as the shell-capable fallback. It holds judgment (intent to command, output
+contract, `equip` safety) and defers
 flags to `ghostlink <cmd> --help`. `crates/destiny-cli/tests/skill_drift.rs`
 fails when the skill names a missing command or flag, or omits a public
 command, so update the skill together with any CLI surface change.

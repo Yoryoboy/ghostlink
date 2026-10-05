@@ -37,9 +37,18 @@ Both `equip_item` and `move_item` can return
 `applied_pending_provider_refresh` with `isError=true`, never verified success.
 `move_item` remains MCP-only: there is no CLI move command.
 
-Run it with the shared read configuration present in the environment:
+Install both binaries from a release and run `ghostlink` for setup (or
+`ghostlink login` for sign-in only). Register `destiny-mcp` in your agent using
+the wizard or the [manual instructions](../README.md#use-it-from-an-ai-agent).
+No config file or environment exports are needed with official release defaults;
+CLI and MCP share one keyring credential and automatically renew access tokens
+in broker or confidential mode. See [configuration](configuration.md) for overrides.
+
+To launch the stdio server directly:
 
 ```sh
+destiny-mcp
+# From a source checkout:
 cargo run -p ghostlink --bin destiny-mcp
 ```
 

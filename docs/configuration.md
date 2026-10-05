@@ -1,15 +1,18 @@
 # Configuration
 
-Ghostlink reads its configuration itself; see [the README](../README.md) for a quick start.
+Official releases are designed to need no config file or Bungie developer
+account: install, run `ghostlink` for the setup wizard, and sign in. See
+[the README](../README.md) for the quick path. The current source checkout still
+awaits owner provisioning of public application defaults, as noted below.
 
-Configuration is a Bungie public-client API key, public OAuth client ID,
-custom-scheme callback URI (`ghostlink://oauth/callback`), and a separately
-configured registered callback URI. The two callback values must match exactly,
+The CLI and MCP server resolve configuration themselves and share the OS
+keyring. Overrides are mainly for development or self-hosting. OAuth uses
+`BUNGIE_PUBLIC_CLIENT_ID`, `BUNGIE_CALLBACK_URI` and
+`BUNGIE_REGISTERED_CALLBACK_URI`; the two callback values must match exactly,
 including case. Optional `BUNGIE_CLIENT_SECRET` and
 `GHOSTLINK_TOKEN_BROKER_URL` select the OAuth mode described below.
 
-The shared read composition roots (the CLI and the MCP server) additionally read
-the database path, Manifest definition version, and a positive freshness TTL:
+Shared runtime settings:
 
 ```text
 BUNGIE_API_KEY                Bungie API key (also used by the read roots)
@@ -131,12 +134,13 @@ is parsed and validated first, and only then does `destiny-cli` read the shared
 runtime configuration, load the stored access credential, build the system
 clock and the hardened HTTPS transport, open the durable SQLite store, and
 dispatch the read through the shared `QueryService`. An invalid argument
-therefore never reads configuration, a credential, a database, a clock, or the
-network.
+therefore never reads configuration, a credential or a database, and never
+accesses a clock or the network.
 
-The read runtime requires these values (see `config.example.env`), but they
-need not be environment variables or file entries when compiled defaults supply
-them. Confidential and broker modes additionally require the client ID:
+The read runtime resolves these settings (see `config.example.env`). Only the
+API key must be supplied if it is absent from compiled defaults; paths, version
+and TTL resolve automatically. Confidential and broker modes also require the
+client ID:
 
 | Variable | Meaning |
 | --- | --- |
@@ -152,7 +156,12 @@ degrades to a plaintext or filesystem fallback. When no credential is stored,
 the read exits with the typed `authorization_required` outcome (exit 10); a
 missing or invalid read configuration exits with `configuration_error` (exit
 52). The interactive browser authorization flow that writes that credential
-remains an application/adapter concern outside this read-only unit.
+is available through `ghostlink` (setup wizard) or `ghostlink login`. Linux can
+return via the `ghostlink://` handler; Windows uses terminal paste for this
+release. After login, missing Manifest definitions sync automatically; CLI reads
+also sync absent catalogs. MCP tools never download a Manifest during a call:
+if definitions are missing, run `ghostlink sync-manifest` once. Existing catalogs
+can be refreshed with the same command after game patches.
 
 Automated checks are offline: no live Bungie account or credential is used, and
 no live read is claimed. The journey in
