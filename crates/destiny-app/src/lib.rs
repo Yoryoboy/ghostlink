@@ -57,7 +57,7 @@ pub use destiny_core::ports::StatDefinitionRepository;
 pub use destiny_core::ports::{
     DefinitionCatalogRepository, ManifestIndex, WorldDefinitionRepository,
 };
-pub use destiny_core::query::{LocationFilter, MAX_NAME_TERMS};
+pub use destiny_core::query::{InspectionPlug, InspectionPlugRole, LocationFilter, MAX_NAME_TERMS};
 pub use destiny_core::{
     AccessCredential, AccessCredentialMetadata, AppError, BucketHash, Character, CharacterId,
     CharacterListResult, Clock, CredentialMaterial, CredentialSource, CredentialStore, Dataset,

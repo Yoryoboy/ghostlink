@@ -20,14 +20,14 @@ pub fn subclass_options_json(result: &SubclassOptionsResult) -> Value {
                         Melee => "melee", Grenade => "grenade", Aspect => "aspect",
                         Fragment => "fragment", Transcendence => "transcendence",
                     },
-                    "options": group.options.iter().map(|option| json!({
+                    "options": group.options.iter().map(|option| super::with_description(json!({
                         "plug_hash": option.plug_hash.value(), "name": option.name,
                         "status": match option.status {
                             OptionStatus::Unlocked => "unlocked", OptionStatus::Locked => "locked",
                             OptionStatus::Unknown => "unknown",
                         },
                         "can_insert": option.can_insert, "enabled": option.enabled,
-                    })).collect::<Vec<_>>()
+                    }), option.description.as_deref())).collect::<Vec<_>>()
                 })).collect::<Vec<_>>()
             })).collect::<Vec<_>>()
         })).collect::<Vec<_>>()
@@ -80,6 +80,20 @@ pub fn render_subclass_options(
                     .collect();
                 if !names.is_empty() {
                     groups.push(format!("    {label}: {}", names.join(", ")));
+                    for option in element
+                        .groups
+                        .iter()
+                        .filter(|group| group.kind == kind)
+                        .flat_map(|group| &group.options)
+                        .filter(|option| !locked || option.status == OptionStatus::Locked)
+                    {
+                        super::push_description(
+                            &mut groups,
+                            6,
+                            super::description_label(names.len() > 1, option.name.as_deref()),
+                            option.description.as_deref(),
+                        );
+                    }
                 }
             }
             if !groups.is_empty() {

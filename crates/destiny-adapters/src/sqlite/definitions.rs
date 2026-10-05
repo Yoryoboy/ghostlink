@@ -80,6 +80,14 @@ impl DefinitionRepository for SqliteStore {
     ) -> Result<SyncMetadata, AppError> {
         self.publish_catalog(replacement, None)
     }
+
+    fn replace_definitions_with_descriptions(
+        &mut self,
+        replacement: DefinitionReplacementInput,
+        descriptions: Vec<destiny_core::ItemDescription>,
+    ) -> Result<SyncMetadata, AppError> {
+        self.publish_catalog_with_descriptions(replacement, None, descriptions)
+    }
 }
 
 impl SqliteStore {
@@ -88,9 +96,27 @@ impl SqliteStore {
         replacement: DefinitionReplacementInput,
         world: Option<destiny_core::WorldDefinitionsAcquisition>,
     ) -> Result<SyncMetadata, AppError> {
+        let descriptions = world
+            .as_ref()
+            .map(|world| world.item_descriptions.clone())
+            .unwrap_or_default();
+        self.publish_catalog_with_descriptions(replacement, world, descriptions)
+    }
+
+    fn publish_catalog_with_descriptions(
+        &mut self,
+        replacement: DefinitionReplacementInput,
+        world: Option<destiny_core::WorldDefinitionsAcquisition>,
+        mut descriptions: Vec<destiny_core::ItemDescription>,
+    ) -> Result<SyncMetadata, AppError> {
         if let Some(world) = &world {
             world.validate_for(&replacement.definitions.version)?;
         }
+        destiny_core::world_definitions::validate_item_descriptions(
+            &replacement.definitions,
+            &descriptions,
+        )?;
+        descriptions.sort_by_key(destiny_core::ItemDescription::hash);
         // Everything that can be rejected without touching storage is rejected
         // here, before the transaction is opened, so the prior committed state
         // stays readable and no write is ever attempted.
@@ -108,11 +134,16 @@ impl SqliteStore {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| storage_failure())?;
 
+        if !descriptions.is_empty() && super::migrations::read_user_version(&transaction)? < 14 {
+            return Err(provider_validation());
+        }
         let prior = read_manifest_metadata(&transaction)?;
         let unchanged = match prior.as_ref() {
             Some(_) => {
                 let committed = read_committed_content(&transaction)?;
                 contents_match(&committed, &replacement.definitions.definitions)
+                    && (super::migrations::read_user_version(&transaction)? < 14
+                        || super::world::read_item_descriptions(&transaction)? == descriptions)
                     && match &world {
                         Some(world) => super::world::contents_match(&transaction, world)?,
                         None => true,
@@ -151,6 +182,9 @@ impl SqliteStore {
                 // An item-only publication must not leave stale world rows
                 // carrying a different version under the shared metadata.
                 super::world::clear_catalog(&transaction)?;
+            }
+            if world.is_none() && super::migrations::read_user_version(&transaction)? >= 14 {
+                super::world::replace_item_descriptions(&transaction, &descriptions)?;
             }
         }
         upsert_metadata(&transaction, &replacement, revision)?;

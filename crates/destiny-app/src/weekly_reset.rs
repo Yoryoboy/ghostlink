@@ -231,6 +231,12 @@ mod tests {
     }
 
     impl WorldDefinitionRepository for RepositoryDouble {
+        fn lookup_item_description(
+            &self,
+            hash: destiny_core::ItemHash,
+        ) -> Result<Option<String>, AppError> {
+            self.inner.lookup_item_description(hash)
+        }
         fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
             self.inner.lookup_loadout_name(hash)
         }
@@ -380,6 +386,7 @@ mod tests {
                     source: SourceMarker::Manifest,
                 },
                 WorldDefinitionsAcquisition {
+                    item_descriptions: Vec::new(),
                     loadout_names: WorldDefinitionTable {
                         definitions: vec![],
                         skipped_count: 0,

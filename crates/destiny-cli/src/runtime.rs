@@ -67,7 +67,8 @@ pub trait ReadFoundations {
     type Repository: InventoryRepository
         + SearchRepository
         + DefinitionRepository
-        + destiny_app::StatDefinitionRepository;
+        + destiny_app::StatDefinitionRepository
+        + destiny_app::WorldDefinitionRepository;
 
     /// Reads and validates the shared read runtime configuration.
     fn config(&mut self) -> Result<ReadRuntimeConfig, AppError>;
@@ -873,7 +874,9 @@ mod tests {
             destiny_adapters::manifest::ManifestTransportError,
         > {
             let body = if request.url().contains("/Platform/") {
-                r#"{"ErrorCode":1,"Response":{"version":"v1","jsonWorldComponentContentPaths":{"en":{"DestinyInventoryItemDefinition":"/common/destiny2_content/items.json","DestinyMilestoneDefinition":"/common/destiny2_content/m.json","DestinyActivityDefinition":"/common/destiny2_content/a.json","DestinyActivityModifierDefinition":"/common/destiny2_content/mod.json","DestinyObjectiveDefinition":"/common/destiny2_content/obj.json","DestinyActivityTypeDefinition":"/common/destiny2_content/type.json","DestinyStatDefinition":"/common/destiny2_content/stat.json","DestinyLoadoutNameDefinition":"/common/destiny2_content/loadout-names.json"}}}}"#
+                r#"{"ErrorCode":1,"Response":{"version":"v1","jsonWorldComponentContentPaths":{"en":{"DestinyInventoryItemDefinition":"/common/destiny2_content/items.json","DestinyMilestoneDefinition":"/common/destiny2_content/m.json","DestinyActivityDefinition":"/common/destiny2_content/a.json","DestinyActivityModifierDefinition":"/common/destiny2_content/mod.json","DestinyObjectiveDefinition":"/common/destiny2_content/obj.json","DestinyActivityTypeDefinition":"/common/destiny2_content/type.json","DestinyStatDefinition":"/common/destiny2_content/stat.json","DestinyLoadoutNameDefinition":"/common/destiny2_content/loadout-names.json","DestinySandboxPerkDefinition":"/common/destiny2_content/sandbox-perks.json"}}}}"#
+            } else if request.url().ends_with("/sandbox-perks.json") {
+                "{}"
             } else if request.url().ends_with("/loadout-names.json") {
                 r#"{"1":{"hash":1,"name":"PvE"}}"#
             } else if request.url().ends_with("/obj.json") {

@@ -594,6 +594,8 @@ pub struct EquippedArtifactView {
 pub struct ArtifactSlotView {
     pub plug_hash: i64,
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub empty: bool,
 }
 
@@ -651,6 +653,8 @@ pub struct LoadoutPlugView {
     pub socket_index: u8,
     pub plug_hash: i64,
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub subclass_kind: Option<SubclassPlugKindView>,
     pub empty: bool,
 }
@@ -722,6 +726,8 @@ pub struct OptionGroupView {
 pub struct SubclassOptionView {
     pub plug_hash: i64,
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub status: OptionStatusView,
     pub can_insert: bool,
     pub enabled: bool,
@@ -761,6 +767,8 @@ pub struct SubclassSlotView {
     pub kind: SubclassPlugKindView,
     pub plug_hash: i64,
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub empty: bool,
 }
 
@@ -959,9 +967,31 @@ pub struct ResolvedSortView {
     pub order: String,
 }
 
+/// Inspection-only plug roles, matching CLI JSON spellings.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectionPlugRoleView {
+    Perk,
+    Mod,
+    AvailablePerk,
+    AvailableMod,
+    Archetype,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct InspectionPlugView {
+    pub hash: i64,
+    pub name: String,
+    pub role: InspectionPlugRoleView,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// A found inspection: one exact definition beside one concrete instance.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct FoundInspection {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plug_details: Vec<InspectionPlugView>,
     pub perk_names: Vec<String>,
     pub mod_names: Vec<String>,
     /// Search-compatible spelling of `mod_names`.

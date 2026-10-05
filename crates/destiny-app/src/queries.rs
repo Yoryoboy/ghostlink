@@ -91,6 +91,89 @@ impl InstanceEnrichment {
         Ok(output)
     }
 
+    /// Project only the plugs admitted by the existing inspection name fields.
+    /// Alternatives use the same normalized-name dedupe as inventory search;
+    /// repeated equipped sockets are collapsed by hash/role only in this list.
+    fn inspect_details(
+        &self,
+        repository: &impl destiny_core::ports::WorldDefinitionRepository,
+        hit: &InventorySearchHit,
+    ) -> Result<Vec<destiny_core::InspectionPlug>, AppError> {
+        use destiny_core::{InspectionPlug, InspectionPlugRole as Role};
+        let mut selected = Vec::new();
+        for hash in hit.instance.plugs.iter().map(|plug| plug.plug_hash) {
+            let Some(Some(plug)) = self.plugs.get(&hash) else {
+                continue;
+            };
+            let (perks, mods) = destiny_core::query::inventory_plug_names(
+                &hit.definition,
+                std::slice::from_ref(plug),
+            );
+            if !perks.is_empty() {
+                selected.push((plug, Role::Perk));
+            }
+            if !mods.is_empty() {
+                selected.push((plug, Role::Mod));
+            }
+        }
+        if hit.archetype.is_some()
+            && let Some(plug) = hit
+                .instance
+                .plugs
+                .iter()
+                .filter_map(|plug| self.plugs.get(&plug.plug_hash).and_then(Option::as_ref))
+                .find(|plug| destiny_core::query::is_armor_archetype(plug))
+        {
+            selected.push((plug, Role::Archetype));
+        }
+        let mut available_seen = std::collections::HashSet::new();
+        for hash in hit
+            .instance
+            .available_plugs
+            .iter()
+            .map(|plug| plug.plug_hash)
+        {
+            let Some(Some(plug)) = self.plugs.get(&hash) else {
+                continue;
+            };
+            let (perks, mods) = destiny_core::query::inventory_plug_names(
+                &hit.definition,
+                std::slice::from_ref(plug),
+            );
+            for (names, surfaced, role) in [
+                (perks, &hit.available_perks, Role::AvailablePerk),
+                (mods, &hit.available_mods, Role::AvailableMod),
+            ] {
+                if !names.is_empty()
+                    && surfaced.contains(&plug.name)
+                    && available_seen
+                        .insert((destiny_core::query::normalize_search_text(&plug.name), role))
+                {
+                    selected.push((plug, role));
+                }
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut descriptions = std::collections::HashMap::new();
+        let mut details = Vec::new();
+        for (plug, role) in selected {
+            if !seen.insert((plug.hash, role)) {
+                continue;
+            }
+            if let std::collections::hash_map::Entry::Vacant(entry) = descriptions.entry(plug.hash)
+            {
+                entry.insert(repository.lookup_item_description(plug.hash)?);
+            }
+            details.push(InspectionPlug {
+                hash: plug.hash,
+                name: plug.name.clone(),
+                role,
+                description: descriptions[&plug.hash].clone(),
+            });
+        }
+        Ok(details)
+    }
+
     fn resolve(
         &mut self,
         repository: &(impl DefinitionRepository + destiny_core::StatDefinitionRepository),
@@ -239,7 +322,10 @@ where
         character_id: Option<&destiny_core::CharacterId>,
         policy: FreshnessPolicy,
         now: Timestamp,
-    ) -> Result<destiny_core::SubclassResult, AppError> {
+    ) -> Result<destiny_core::SubclassResult, AppError>
+    where
+        R: destiny_core::ports::WorldDefinitionRepository,
+    {
         self.require_definitions()?;
         self.synchronize(policy, now)?;
         let snapshot = self.committed_snapshot()?;
@@ -287,15 +373,18 @@ where
                     .filter_map(|plug| {
                         let kind =
                             destiny_core::classify_subclass_plug(plug.plug_category.as_deref()?)?;
-                        Some(destiny_core::SubclassSlot {
-                            kind,
-                            plug_hash: plug.hash,
-                            empty: plug.name.starts_with("Empty ")
-                                && plug.name.ends_with(" Socket"),
-                            name: Some(plug.name),
-                        })
+                        Some(self.repository().lookup_item_description(plug.hash).map(
+                            |description| destiny_core::SubclassSlot {
+                                kind,
+                                plug_hash: plug.hash,
+                                empty: plug.name.starts_with("Empty ")
+                                    && plug.name.ends_with(" Socket"),
+                                description,
+                                name: Some(plug.name),
+                            },
+                        ))
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, AppError>>()?;
                 subclass = Some(destiny_core::SubclassConfig {
                     instance_id: instance.instance_id.clone(),
                     item_hash: instance.item_hash,
@@ -322,7 +411,10 @@ where
         element: Option<destiny_core::SubclassElement>,
         policy: FreshnessPolicy,
         now: Timestamp,
-    ) -> Result<destiny_core::SubclassOptionsResult, AppError> {
+    ) -> Result<destiny_core::SubclassOptionsResult, AppError>
+    where
+        R: destiny_core::ports::WorldDefinitionRepository,
+    {
         use destiny_core::{
             CharacterSubclassOptions, ElementOptions, OptionGroup, OptionStatus, PlugSetScope,
             SubclassElement as E, SubclassOption, SubclassPlugKind as K,
@@ -407,6 +499,7 @@ where
                         SubclassOption {
                             plug_hash: hash,
                             name: Some(definition.name),
+                            description: self.repository().lookup_item_description(hash)?,
                             status,
                             can_insert,
                             enabled,
@@ -593,7 +686,10 @@ where
         request: &InspectItemRequest,
         policy: FreshnessPolicy,
         now: Timestamp,
-    ) -> Result<Resolution<ItemInspection>, AppError> {
+    ) -> Result<Resolution<ItemInspection>, AppError>
+    where
+        R: destiny_core::ports::WorldDefinitionRepository,
+    {
         self.require_definitions()?;
         let outcome = self.synchronize(policy, now)?;
         let metadata = query_metadata(&outcome, policy, now);
@@ -608,8 +704,11 @@ where
             Resolution::Ambiguous(_) => return Err(invalid_repository_state()),
         };
         let definition = self.resolve_definition(instance.item_hash)?;
-        let hit = InstanceEnrichment::default().resolve(self.repository(), definition, instance)?;
+        let mut enrichment = InstanceEnrichment::default();
+        let hit = enrichment.resolve(self.repository(), definition, instance)?;
+        let plug_details = enrichment.inspect_details(self.repository(), &hit)?;
         Ok(Resolution::Unique(ItemInspection {
+            plug_details,
             perk_names: hit.perk_names,
             mod_names: hit.mod_names,
             archetype: hit.archetype,
@@ -720,7 +819,8 @@ where
     R: InventoryRepository
         + SearchRepository
         + DefinitionRepository
-        + destiny_core::StatDefinitionRepository,
+        + destiny_core::StatDefinitionRepository
+        + destiny_core::ports::WorldDefinitionRepository,
 {
     fn subclass_options(
         &mut self,
@@ -862,6 +962,21 @@ mod tests {
             }
         }
 
+        fn describe(&mut self, definitions: Vec<ItemDefinition>, hash: i64, text: &str) {
+            let input = destiny_core::DefinitionReplacementInput {
+                definitions: destiny_core::ManifestDefinitions {
+                    version: DefinitionVersion::new(DEFINITION_VERSION),
+                    definitions,
+                },
+                checked_at: NOW,
+                source: SourceMarker::Manifest,
+            };
+            let description = destiny_core::ItemDescription::new(ItemHash::new(hash), text.into());
+            self.definitions
+                .replace_definitions_with_descriptions(input, vec![description.unwrap()])
+                .unwrap();
+        }
+
         fn record(&self, call: &'static str) {
             self.calls.borrow_mut().push(call);
         }
@@ -966,6 +1081,55 @@ mod tests {
             replacement: DefinitionReplacementInput,
         ) -> Result<SyncMetadata, AppError> {
             self.definitions.replace_definitions(replacement)
+        }
+    }
+
+    impl destiny_core::ports::WorldDefinitionRepository for CompositeRepository {
+        fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
+            self.definitions.lookup_item_description(hash)
+        }
+        fn lookup_milestone(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::MilestoneDefinition>, AppError> {
+            self.definitions.lookup_milestone(hash)
+        }
+        fn lookup_activity(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::ActivityDefinition>, AppError> {
+            self.definitions.lookup_activity(hash)
+        }
+        fn lookup_activity_modifier(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::ActivityModifierDefinition>, AppError> {
+            self.definitions.lookup_activity_modifier(hash)
+        }
+        fn lookup_objective(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::ObjectiveDefinition>, AppError> {
+            self.definitions.lookup_objective(hash)
+        }
+        fn lookup_activity_type(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::ActivityTypeDefinition>, AppError> {
+            self.definitions.lookup_activity_type(hash)
+        }
+        fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
+            self.definitions.lookup_loadout_name(hash)
+        }
+        fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
+            self.definitions.world_definition_counts()
+        }
+        fn publish_manifest(
+            &mut self,
+            items: destiny_core::DefinitionReplacementInput,
+            world: destiny_core::WorldDefinitionsAcquisition,
+        ) -> Result<SyncMetadata, AppError> {
+            self.definitions.publish_manifest(items, world)
         }
     }
 
@@ -1210,7 +1374,9 @@ mod tests {
             let mut shader = definition(48, "Shader", None, vec![]);
             shader.plug_category = Some("shader".into());
             definitions.push(shader);
-            repository.definitions = CompositeRepository::with_definitions(definitions).definitions;
+            repository.definitions =
+                CompositeRepository::with_definitions(definitions.clone()).definitions;
+            repository.describe(definitions, 40, "Official artifact tooltip.");
             let mut item = instance(
                 "tablet",
                 30,
@@ -1253,6 +1419,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             (40..48).collect::<Vec<_>>()
         );
+        assert_eq!(
+            equipped.slots[0].description.as_deref(),
+            Some("Official artifact tooltip.")
+        );
+        assert_eq!(equipped.slots[1].description, None);
         assert!(equipped.slots[..7].iter().all(|slot| !slot.empty));
         assert!(equipped.slots[7].empty);
         assert_eq!(
@@ -1426,7 +1597,7 @@ mod tests {
             (16, "Titan", "titan.prism.supers"),
             (17, "Personal", "shared.fragments"),
         ];
-        let definitions = cases
+        let definitions: Vec<_> = cases
             .iter()
             .map(|(hash, name, category)| {
                 let mut plug = definition(*hash, name, None, vec![]);
@@ -1467,7 +1638,8 @@ mod tests {
             can_insert: false,
             enabled: true,
         });
-        let mut repository = CompositeRepository::with_definitions(definitions);
+        let mut repository = CompositeRepository::with_definitions(definitions.clone());
+        repository.describe(definitions, 2, "Official option tooltip.");
         repository.commit(input);
         let shared = gateway();
         let mut service = service(&shared, repository);
@@ -1511,6 +1683,11 @@ mod tests {
         let supers = &hunter.elements[0].groups[0].options;
         assert_eq!(supers.len(), 2);
         assert_eq!(supers[0].name.as_deref(), Some("Alpha"));
+        assert_eq!(
+            supers[0].description.as_deref(),
+            Some("Official option tooltip.")
+        );
+        assert_eq!(supers[1].description, None);
         assert!(supers[0].can_insert && supers[0].enabled);
         assert_eq!(supers[0].status, OptionStatus::Unlocked);
         assert_eq!(hunter.elements.last().unwrap().groups[0].options.len(), 1);
@@ -1643,7 +1820,8 @@ mod tests {
         let mut wrong_bucket = equipped.clone();
         wrong_bucket.instance_id = "other".into();
         wrong_bucket.item_hash = ItemHash::new(30);
-        let mut repository = CompositeRepository::with_definitions(definitions);
+        let mut repository = CompositeRepository::with_definitions(definitions.clone());
+        repository.describe(definitions, 20, "Official super tooltip.");
         repository.commit(snapshot_input(
             fresh_checked_at(),
             vec![hunter, character("b")],
@@ -1660,6 +1838,11 @@ mod tests {
         assert_eq!(config.name, "Prismatic");
         assert_eq!(config.element.as_deref(), Some("Prismatic"));
         assert_eq!(config.slots.len(), cases.len());
+        assert_eq!(
+            config.slots[0].description.as_deref(),
+            Some("Official super tooltip.")
+        );
+        assert_eq!(config.slots[1].description, None);
         for (slot, (hash, name, _, kind)) in config.slots.iter().zip(cases) {
             assert_eq!(slot.kind, kind);
             assert_eq!(slot.plug_hash, ItemHash::new(hash));
@@ -1776,7 +1959,8 @@ mod tests {
         let mut alternative = definition(63, "Kill Clip", None, vec![]);
         alternative.plug_category = Some("frames".into());
         definitions.extend([rampage, barrel, cosmetic, alternative]);
-        let mut repository = CompositeRepository::with_definitions(definitions);
+        let mut repository = CompositeRepository::with_definitions(definitions.clone());
+        repository.describe(definitions, 60, "Official rampage tooltip.\nSecond line.");
         let mut item = instance("owned", 1, ItemLocation::Vault, vec![]);
         item.available_plugs = [60, 63, 99]
             .into_iter()
@@ -1815,6 +1999,17 @@ mod tests {
         assert_eq!(inspected.available_perks, result.hits[0].available_perks);
         assert_eq!(inspected.available_perks, ["Kill Clip"]);
         assert!(inspected.mod_names.is_empty());
+        assert_eq!(inspected.plug_details.len(), 3);
+        assert_eq!(inspected.plug_details[0].hash, ItemHash::new(61));
+        assert_eq!(inspected.plug_details[0].description, None);
+        assert_eq!(
+            inspected.plug_details[1].description.as_deref(),
+            Some("Official rampage tooltip.\nSecond line.")
+        );
+        assert_eq!(
+            inspected.plug_details[2].role,
+            destiny_core::InspectionPlugRole::AvailablePerk
+        );
     }
 
     #[test]
@@ -1834,9 +2029,22 @@ mod tests {
         archetype.plug_category = Some("armor_archetypes".into());
         let mut second = definition(63, "Paragon", None, vec![]);
         second.plug_category = Some("armor_archetypes".into());
-        definitions.extend([armor_mod, intrinsic, archetype, second]);
-        let mut repository = CompositeRepository::with_definitions(definitions);
+        let mut alternative = definition(64, "Heavy Ammo Finder", None, vec![]);
+        alternative.plug_category = Some("enhancements.v2_head".into());
+        let mut empty = definition(65, "Empty Mod Socket", None, vec![]);
+        empty.plug_category = Some("enhancements.v2_head".into());
+        definitions.extend([armor_mod, intrinsic, archetype, second, alternative, empty]);
+        let mut repository = CompositeRepository::with_definitions(definitions.clone());
+        repository.describe(definitions, 60, "Official mod tooltip.");
         let mut item = instance("owned", 1, ItemLocation::Vault, vec![]);
+        item.available_plugs = [60, 64, 64, 65, 99]
+            .into_iter()
+            .enumerate()
+            .map(|(index, hash)| destiny_core::AvailablePlug {
+                socket_index: index as u8,
+                plug_hash: ItemHash::new(hash),
+            })
+            .collect();
         item.plugs = [61, 60, 99, 62, 63, 60]
             .into_iter()
             .map(|hash| destiny_core::PlugSummary {
@@ -1872,6 +2080,27 @@ mod tests {
         assert_eq!(inspected.mod_names, result.hits[0].mod_names);
         assert_eq!(inspected.archetype, result.hits[0].archetype);
         assert_eq!(inspected.available_mods, result.hits[0].available_mods);
+        assert_eq!(
+            inspected
+                .plug_details
+                .iter()
+                .map(|plug| plug.hash.value())
+                .collect::<Vec<_>>(),
+            [60, 62, 64]
+        );
+        assert_eq!(
+            inspected.plug_details[1].role,
+            destiny_core::InspectionPlugRole::Archetype
+        );
+        assert_eq!(inspected.available_mods, ["Heavy Ammo Finder"]);
+        assert_eq!(
+            inspected.plug_details[0].description.as_deref(),
+            Some("Official mod tooltip.")
+        );
+        assert_eq!(
+            inspected.plug_details[2].role,
+            destiny_core::InspectionPlugRole::AvailableMod
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ description: "Trigger: Destiny 2, D2 inventory, vault, weapon perks, armor stats
 license: MIT OR Apache-2.0
 metadata:
   author: "Yoryoboy"
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## Activation Contract
@@ -25,6 +25,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - Never try to free inventory space, unequip elsewhere, or change plugs; the CLI refuses these by design.
 - Run `ghostlink login` only when the user asks or after exit 10/11; it needs a human to authorize in a browser and waits for the callback.
 - `ghostlink handler install` and `ghostlink handler uninstall` change the user's desktop configuration; run them only when the user asks. `ghostlink handler status` is read-only.
+- Perk, mod, aspect, fragment and ability effects come only from `description` fields in command output (official Bungie tooltip text). It is qualitative: never add numbers, percentages or durations the output does not contain; say the exact value is not available.
 
 ## Decision Gates
 
@@ -32,20 +33,26 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 |---|---|
 | Which characters exist, their IDs and light | `ghostlink list-characters` |
 | Find owned items by name, type, perk, mod, stat, slot | `ghostlink search-inventory` |
-| Full detail of one owned item | `ghostlink inspect-item` (concrete instance ID only) |
-| Current subclass setup | `ghostlink subclass` |
+| Full detail of one owned item, including what each perk and mod does | `ghostlink inspect-item` (the `instance` ID from search hits, never the definition `hash`) |
+| Current subclass setup and what each equipped plug does | `ghostlink subclass` |
 | Unlockable supers, aspects, fragments | `ghostlink subclass-options` |
 | Artifact points and active perks | `ghostlink artifact` |
 | Saved in-game loadouts | `ghostlink loadouts` |
 | Public weekly reset (no account needed) | `ghostlink weekly-reset` |
 | Weekly progress for one character | `ghostlink weekly` |
 | Data looks outdated or after an in-game change | `ghostlink sync` |
-| Item names missing or definitions outdated | `ghostlink sync-manifest` |
+| Item names or descriptions missing, or definitions outdated | `ghostlink sync-manifest` |
 | Equip an item on a character | `ghostlink equip` |
 | Authorize this machine | `ghostlink login` |
 | Browser callback never reaches login (Linux) | `ghostlink handler status` |
 
 `--character` accepts a class name (`hunter`, `titan`, `warlock`) on most commands, but `ghostlink search-inventory --character` requires the exact numeric character ID; get it from `ghostlink list-characters` first.
+
+## Descriptions
+
+- `ghostlink subclass`, `ghostlink subclass-options`, `ghostlink artifact` and `ghostlink loadouts` add an optional `description` next to each plug name. `ghostlink inspect-item` adds `plug_details` (`hash`, `name`, `role`, optional `description`). A missing `description` means none is known.
+- `ghostlink search-inventory` returns names only. To explain perks, search first, then inspect the chosen instance.
+- Descriptions exist only for plugs present in the user's items, subclass or subclass options; there is no lookup for arbitrary perk names.
 
 ## Execution Steps
 

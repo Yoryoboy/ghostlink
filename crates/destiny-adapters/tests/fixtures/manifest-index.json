@@ -11,6 +11,7 @@
         "DestinyObjectiveDefinition": "/common/destiny2_content/json/en/objectives-fixture.json",
         "DestinyActivityTypeDefinition": "/common/destiny2_content/json/en/types-fixture.json",
         "DestinyStatDefinition": "/common/destiny2_content/json/en/stats-fixture.json",
+        "DestinySandboxPerkDefinition": "/common/destiny2_content/json/en/sandbox-perks-fixture.json",
         "DestinyLoadoutNameDefinition": "/common/destiny2_content/json/en/loadout-names-fixture.json"
       }
     }

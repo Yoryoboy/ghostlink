@@ -130,16 +130,17 @@ where
         acquisition: ManifestAcquisition,
         checked_at: Timestamp,
     ) -> Result<PublicationOutcome, AppError> {
-        let (definitions, skipped_count) = normalize_with_count(acquisition)?;
+        let (definitions, skipped_count, descriptions) = normalize_with_count(acquisition)?;
         let version = definitions.version.clone();
         let definition_count = definitions.definitions.len();
-        let metadata = self
-            .repository
-            .replace_definitions(DefinitionReplacementInput {
+        let metadata = self.repository.replace_definitions_with_descriptions(
+            DefinitionReplacementInput {
                 definitions,
                 checked_at,
                 source: SourceMarker::Manifest,
-            })?;
+            },
+            descriptions,
+        )?;
         Ok(PublicationOutcome {
             version,
             definition_count,
@@ -181,8 +182,9 @@ where
         if acquisition.version != version {
             return Err(invalid());
         }
-        let (definitions, skipped) = normalize_with_count(acquisition)?;
-        let world = self.gateway.load_world_components(&index)?;
+        let (definitions, skipped, descriptions) = normalize_with_count(acquisition)?;
+        let mut world = self.gateway.load_world_components(&index)?;
+        world.item_descriptions = descriptions;
         world.validate_for(&version)?;
         let world_counts = world.counts();
         let world_skipped = world.skipped_counts();
@@ -243,14 +245,49 @@ where
 pub fn normalize_manifest(
     acquisition: ManifestAcquisition,
 ) -> Result<ManifestDefinitions, AppError> {
-    normalize_with_count(acquisition).map(|(definitions, _)| definitions)
+    normalize_with_count(acquisition).map(|(definitions, _, _)| definitions)
 }
 
-fn normalize_with_count(
-    acquisition: ManifestAcquisition,
-) -> Result<(ManifestDefinitions, usize), AppError> {
+type NormalizedManifest = (
+    ManifestDefinitions,
+    usize,
+    Vec<destiny_core::ItemDescription>,
+);
+
+fn compose_description(
+    candidate: &destiny_core::ports::ManifestDefinitionCandidate,
+    perks: &std::collections::HashMap<u32, &destiny_core::ports::SandboxPerkCandidate>,
+) -> Option<destiny_core::ItemDescription> {
+    if let Some(text) = &candidate.description
+        && let Ok(description) = destiny_core::ItemDescription::new(candidate.hash, text.clone())
+    {
+        return Some(description);
+    }
+    let mut texts = Vec::new();
+    for hash in &candidate.perk_hashes {
+        if let Some(perk) = perks.get(hash)
+            && perk.is_displayable
+            && !perk.description.trim().is_empty()
+            && !texts.contains(&perk.description.as_str())
+        {
+            texts.push(perk.description.as_str());
+        }
+    }
+    destiny_core::ItemDescription::new(candidate.hash, texts.join("\n\n")).ok()
+}
+
+fn normalize_with_count(acquisition: ManifestAcquisition) -> Result<NormalizedManifest, AppError> {
     let mut skipped_count = acquisition.skipped_count;
     let version = normalize_version(acquisition.version.as_str())?;
+    if acquisition.sandbox_perks.len() > 100_000 {
+        return Err(invalid());
+    }
+    let mut perks = std::collections::HashMap::new();
+    for perk in &acquisition.sandbox_perks {
+        if perks.insert(perk.hash, perk).is_some() {
+            return Err(invalid());
+        }
+    }
     let candidates = acquisition.definitions;
     if candidates.is_empty() || candidates.len() > MAX_DEFINITION_COUNT {
         return Err(invalid());
@@ -258,6 +295,7 @@ fn normalize_with_count(
 
     let mut seen = HashSet::with_capacity(candidates.len());
     let mut definitions = Vec::with_capacity(candidates.len());
+    let mut descriptions = Vec::new();
     for candidate in candidates {
         if normalize_version(candidate.version.as_str())? != version {
             return Err(invalid());
@@ -269,6 +307,14 @@ fn normalize_with_count(
             skipped_count = skipped_count.checked_add(1).ok_or_else(invalid)?;
             continue;
         };
+        // Tooltip failures must not discard otherwise usable item definitions.
+        // Keep the official text verbatim, including leading whitespace and newlines.
+        if candidate.perk_hashes.len() > 64 {
+            return Err(invalid());
+        }
+        if let Some(description) = compose_description(&candidate, &perks) {
+            descriptions.push(description);
+        }
         definitions.push(ItemDefinition {
             hash: candidate.hash,
             bucket_hash: candidate.bucket_hash,
@@ -290,12 +336,14 @@ fn normalize_with_count(
         return Err(invalid());
     }
     definitions.sort_by_key(|definition| definition.hash);
+    descriptions.sort_by_key(destiny_core::ItemDescription::hash);
     Ok((
         ManifestDefinitions {
             version,
             definitions,
         },
         skipped_count,
+        descriptions,
     ))
 }
 
@@ -419,8 +467,105 @@ mod tests {
         }
     }
 
+    #[test]
+    fn item_only_acquisition_publishes_descriptions_without_changing_item_identity() {
+        use crate::test_support::{InMemoryDefinitionRepository, QueuedManifestGateway};
+        use destiny_core::ports::WorldDefinitionRepository;
+        let mut gateway = QueuedManifestGateway::new();
+        let mut item = candidate(1, "Perk");
+        item.description = Some("First\nSecond".into());
+        gateway.queue(Ok(acquisition(VERSION, vec![item])));
+        let mut service = ManifestService::new(gateway, InMemoryDefinitionRepository::default());
+        service.acquire_and_publish(Timestamp::new(1)).unwrap();
+        assert_eq!(
+            service
+                .repository()
+                .lookup_item_description(ItemHash::new(1))
+                .unwrap(),
+            Some("First\nSecond".into())
+        );
+    }
+
+    #[test]
+    fn descriptions_preserve_multiline_and_drop_blank_or_invalid_text() {
+        let texts = [
+            Some("  First line\n\nSecond\tline  ".to_owned()),
+            Some(" \n\t".into()),
+            None,
+            Some("x".repeat(2049)),
+            Some("bad\0text".into()),
+            Some("é".repeat(2048)),
+        ];
+        let candidates = texts
+            .into_iter()
+            .enumerate()
+            .map(|(index, description)| {
+                let mut item = candidate(index as i64 + 1, "Item");
+                item.description = description;
+                item
+            })
+            .collect();
+        let (_, _, descriptions) = normalize_with_count(acquisition(VERSION, candidates)).unwrap();
+        assert_eq!(descriptions.len(), 2);
+        assert_eq!(descriptions[0].hash(), ItemHash::new(1));
+        assert_eq!(
+            descriptions[0].description(),
+            "  First line\n\nSecond\tline  "
+        );
+        assert_eq!(descriptions[1].description(), "é".repeat(2048));
+        let mut blank = candidate(8, " ");
+        blank.description = Some("Not retained".into());
+        let (_, _, descriptions) =
+            normalize_with_count(acquisition(VERSION, vec![blank, candidate(9, "Kept")])).unwrap();
+        assert!(descriptions.is_empty());
+    }
+
+    #[test]
+    fn sandbox_description_composition_preserves_order_and_policy() {
+        use destiny_core::ports::SandboxPerkCandidate;
+        let perk = |hash, is_displayable, description: &str| SandboxPerkCandidate {
+            hash,
+            is_displayable,
+            description: description.into(),
+        };
+        let perks = [
+            perk(1, true, "First\nline"),
+            perk(2, false, "Hidden"),
+            perk(3, true, "+10 Weapon ▲"),
+            perk(4, true, "First\nline"),
+            perk(5, true, " "),
+            perk(6, true, &"x".repeat(2040)),
+            perk(7, true, "bad\0text"),
+        ];
+        let lookup = perks.iter().map(|perk| (perk.hash, perk)).collect();
+        let mut item = candidate(1, "Facet");
+        item.perk_hashes = vec![3, 99, 2, 1, 4, 5];
+        assert_eq!(
+            compose_description(&item, &lookup).unwrap().description(),
+            "+10 Weapon ▲\n\nFirst\nline"
+        );
+        item.description = Some(" Own\ntext ".into());
+        assert_eq!(
+            compose_description(&item, &lookup).unwrap().description(),
+            " Own\ntext "
+        );
+        item.description = Some(" \n".into());
+        item.perk_hashes = vec![1, 6];
+        assert!(compose_description(&item, &lookup).is_none());
+        item.perk_hashes = vec![7];
+        assert!(compose_description(&item, &lookup).is_none());
+        item.description = Some("bad\0own".into());
+        item.perk_hashes = vec![1];
+        assert_eq!(
+            compose_description(&item, &lookup).unwrap().description(),
+            "First\nline"
+        );
+    }
+
     fn candidate(hash: i64, name: &str) -> ManifestDefinitionCandidate {
         ManifestDefinitionCandidate {
+            perk_hashes: Vec::new(),
+            description: None,
             hash: ItemHash::new(hash),
             bucket_hash: None,
             name: name.into(),
@@ -448,6 +593,7 @@ mod tests {
         definitions: Vec<ManifestDefinitionCandidate>,
     ) -> ManifestAcquisition {
         ManifestAcquisition {
+            sandbox_perks: Vec::new(),
             version: DefinitionVersion::new(version),
             definitions,
             skipped_count: 0,
@@ -460,8 +606,10 @@ mod tests {
             VERSION,
             vec![
                 ManifestDefinitionCandidate {
+                    description: None,
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(11)),
+                    perk_hashes: Vec::new(),
                     name: "  Ri   FLE  ".into(),
                     item_type: Some("  WEAPON ".into()),
                     tier: Some(" Legendary ".into()),
@@ -481,8 +629,10 @@ mod tests {
             vec![
                 candidate(1, "Alpha"),
                 ManifestDefinitionCandidate {
+                    description: None,
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(11)),
+                    perk_hashes: Vec::new(),
                     name: "Ri FLE".into(),
                     item_type: Some("WEAPON".into()),
                     tier: Some("Legendary".into()),
@@ -625,6 +775,8 @@ mod tests {
         // non-definition field were added to the candidate or to the normalized
         // record, this test would stop compiling.
         let ManifestDefinitionCandidate {
+            perk_hashes: _,
+            description: _,
             hash,
             bucket_hash,
             name,
@@ -856,6 +1008,7 @@ mod tests {
                 objective_path: "unused".into(),
                 activity_type_path: "unused".into(),
                 stat_path: "unused".into(),
+                sandbox_perk_path: "unused".into(),
                 loadout_name_path: "unused".into(),
             }));
             let mut service = ManifestService::new(gateway, repository);
@@ -945,6 +1098,7 @@ mod tests {
                         objective_path: "unused".into(),
                         activity_type_path: "unused".into(),
                         stat_path: "unused".into(),
+                        sandbox_perk_path: "unused".into(),
                         loadout_name_path: "unused".into(),
                     }));
                     gateway.queue_component(Err(error.clone()));
@@ -994,6 +1148,7 @@ mod tests {
                     objective_path: "unused".into(),
                     activity_type_path: "unused".into(),
                     stat_path: "unused".into(),
+                    sandbox_perk_path: "unused".into(),
                     loadout_name_path: "unused".into(),
                 }));
                 gateway.queue_component(Ok(acquisition(VERSION, vec![candidate(42, "next")])));
@@ -1078,6 +1233,7 @@ mod tests {
                 objective_path: "unused".into(),
                 activity_type_path: "unused".into(),
                 stat_path: "unused".into(),
+                sandbox_perk_path: "unused".into(),
                 loadout_name_path: "unused".into(),
             }));
             gateway.queue_component(Ok(acquisition(VERSION, vec![candidate(42, "Gamma")])));

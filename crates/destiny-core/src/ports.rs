@@ -303,6 +303,19 @@ pub trait DefinitionRepository {
         &mut self,
         replacement: DefinitionReplacementInput,
     ) -> Result<SyncMetadata, AppError>;
+    /// Item-only acquisition compatibility seam. Implementations that support
+    /// tooltips publish both catalogs atomically; unsupported repositories reject
+    /// a nonempty catalog rather than silently losing it.
+    fn replace_definitions_with_descriptions(
+        &mut self,
+        replacement: DefinitionReplacementInput,
+        descriptions: Vec<crate::ItemDescription>,
+    ) -> Result<SyncMetadata, AppError> {
+        if !descriptions.is_empty() {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        self.replace_definitions(replacement)
+    }
 }
 
 /// Manifest sync read seam for repositories that expose the complete catalog count.
@@ -317,6 +330,8 @@ pub trait DefinitionCatalogRepository: DefinitionRepository {
 /// Counts are ordered milestone, activity, activity modifier. Failed publication
 /// leaves every catalog and the shared Manifest metadata unchanged.
 pub trait WorldDefinitionRepository: DefinitionRepository {
+    /// Reads the official inventory tooltip without changing item identity.
+    fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError>;
     fn lookup_milestone(&self, hash: u32) -> Result<Option<crate::MilestoneDefinition>, AppError>;
     fn lookup_activity(&self, hash: u32) -> Result<Option<crate::ActivityDefinition>, AppError>;
     fn lookup_activity_modifier(
@@ -609,6 +624,10 @@ impl DefinitionReplacementInput {
 /// record and needs no provider metadata to rule out.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ManifestDefinitionCandidate {
+    /// Optional untrusted tooltip text; application validation may omit it.
+    pub description: Option<String>,
+    /// Ordered, bounded references into the same-version effect catalog.
+    pub perk_hashes: Vec<u32>,
     pub hash: ItemHash,
     pub bucket_hash: Option<BucketHash>,
     pub name: String,
@@ -639,10 +658,28 @@ impl fmt::Debug for ManifestDefinitionCandidate {
 /// service validates and normalizes the batch before any repository mutation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestAcquisition {
+    pub sandbox_perks: Vec<SandboxPerkCandidate>,
     pub version: DefinitionVersion,
     pub definitions: Vec<ManifestDefinitionCandidate>,
     /// Blank-name or redacted records omitted by the gateway.
     pub skipped_count: usize,
+}
+
+/// Untrusted provider-neutral effect text acquired with inventory definitions.
+#[derive(Clone, Eq, PartialEq)]
+pub struct SandboxPerkCandidate {
+    pub hash: u32,
+    pub is_displayable: bool,
+    pub description: String,
+}
+
+impl fmt::Debug for SandboxPerkCandidate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SandboxPerkCandidate")
+            .field("hash", &self.hash)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A small index with an exact version and an adapter-validated component plan.
@@ -660,6 +697,7 @@ pub struct ManifestIndex {
     pub activity_type_path: String,
     pub stat_path: String,
     pub loadout_name_path: String,
+    pub sandbox_perk_path: String,
 }
 
 impl fmt::Debug for ManifestIndex {

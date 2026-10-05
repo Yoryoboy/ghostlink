@@ -1357,6 +1357,7 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            plug_details: Vec::new(),
             perk_names: Vec::new(),
             mod_names: Vec::new(),
             archetype: None,

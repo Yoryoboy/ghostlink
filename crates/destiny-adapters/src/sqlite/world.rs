@@ -80,6 +80,23 @@ macro_rules! lookup {
 }
 
 impl WorldDefinitionRepository for SqliteStore {
+    fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
+        let text: Option<String> = self
+            .connection()
+            .query_row(
+                "SELECT description FROM item_descriptions WHERE hash = ?1",
+                [hash.value()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| storage_failure())?;
+        text.map(|text| {
+            ItemDescription::new(hash, text)
+                .map(|value| value.description().to_owned())
+                .map_err(|_| storage_failure())
+        })
+        .transpose()
+    }
     fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
         Ok(read_loadout_names(self.connection())?
             .into_iter()
@@ -184,6 +201,11 @@ fn read_loadout_names(
 }
 
 pub(super) fn clear_catalog(connection: &Connection) -> Result<(), AppError> {
+    if super::migrations::read_user_version(connection)? >= 14 {
+        connection
+            .execute("DELETE FROM item_descriptions", [])
+            .map_err(|_| storage_failure())?;
+    }
     if super::migrations::read_user_version(connection)? >= 11 {
         connection
             .execute("DELETE FROM loadout_name_definitions", [])
@@ -204,6 +226,9 @@ pub(super) fn replace_catalog(
 ) -> Result<(), AppError> {
     clear_catalog(connection)?;
     let version = world.version.as_str();
+    if super::migrations::read_user_version(connection)? >= 14 {
+        replace_item_descriptions(connection, &world.item_descriptions)?;
+    }
     if super::migrations::read_user_version(connection)? >= 11 {
         for definition in &world.loadout_names.definitions {
             connection
@@ -315,6 +340,42 @@ macro_rules! table_matches {
     }};
 }
 
+pub(super) fn replace_item_descriptions(
+    connection: &Connection,
+    descriptions: &[ItemDescription],
+) -> Result<(), AppError> {
+    connection
+        .execute("DELETE FROM item_descriptions", [])
+        .map_err(|_| storage_failure())?;
+    for description in descriptions {
+        connection
+            .execute(
+                "INSERT INTO item_descriptions VALUES (?1, ?2)",
+                params![description.hash().value(), description.description()],
+            )
+            .map_err(|_| storage_failure())?;
+    }
+    Ok(())
+}
+
+pub(super) fn read_item_descriptions(
+    connection: &Connection,
+) -> Result<Vec<ItemDescription>, AppError> {
+    let mut statement = connection
+        .prepare("SELECT hash, description FROM item_descriptions ORDER BY hash")
+        .map_err(|_| storage_failure())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|_| storage_failure())?;
+    rows.map(|row| {
+        let (hash, text) = row.map_err(|_| storage_failure())?;
+        ItemDescription::new(ItemHash::new(hash), text).map_err(|_| storage_failure())
+    })
+    .collect()
+}
+
 pub(super) fn contents_match(
     connection: &Connection,
     world: &WorldDefinitionsAcquisition,
@@ -345,7 +406,15 @@ pub(super) fn contents_match(
     } else {
         true
     };
-    Ok(loadout_names_match
+    let descriptions_match = if super::migrations::read_user_version(connection)? >= 14 {
+        let mut incoming = world.item_descriptions.clone();
+        incoming.sort_by_key(ItemDescription::hash);
+        read_item_descriptions(connection)? == incoming
+    } else {
+        world.item_descriptions.is_empty()
+    };
+    Ok(descriptions_match
+        && loadout_names_match
         && stats_match
         && table_matches!(
             connection,
