@@ -988,6 +988,7 @@ pub enum StepOutcomeView {
     Unattempted,
     Completed,
     Rejected { reason: TransferRejectionView },
+    EquipRejected { reason: EquipRejectionView },
     Transient,
     Uncertain,
 }
@@ -999,6 +1000,18 @@ pub enum TransferRejectionView {
     NotTransferable,
     Equipped,
     DestinationFull,
+    InvalidRequest,
+}
+
+/// The sanitized reason an equip step was refused.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EquipRejectionView {
+    NotInSocialSpace,
+    ExoticLimit,
+    Unequippable,
+    ItemNotFound,
+    CharacterNotFound,
     InvalidRequest,
 }
 

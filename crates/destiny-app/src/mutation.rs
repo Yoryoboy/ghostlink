@@ -506,7 +506,7 @@ pub enum VerificationFailureReason {
     /// The item did not resolve to exactly one concrete instance in the
     /// refreshed projection.
     Unresolved,
-    /// The item resolved to a concrete location that contradicts the progress
+    /// The item's location or required equipped state contradicts the progress
     /// the dispatched sequence reported.
     Elsewhere,
 }
@@ -717,6 +717,20 @@ where
     where
         R: destiny_core::DefinitionRepository,
     {
+        self.fresh_equip_preflight(request, plan, policy, now)
+            .map(|(state, _)| state)
+    }
+
+    fn fresh_equip_preflight(
+        &mut self,
+        request: &destiny_core::EquipRequest,
+        plan: &destiny_core::EquipPlan,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<(destiny_core::EquipPreflight, ProfileSyncOutcome), MutationError>
+    where
+        R: destiny_core::DefinitionRepository,
+    {
         let request = request.as_move_request();
         authorize(&request)?;
         let mutation = plan.mutation_plan();
@@ -741,7 +755,7 @@ where
         }
         self.validate_equip(&item, &destination, &snapshot)?;
         if plan.already_satisfied(&item) {
-            return Ok(destiny_core::EquipPreflight::AlreadySatisfied);
+            return Ok((destiny_core::EquipPreflight::AlreadySatisfied, outcome));
         }
         self.evaluate_preflight(
             &request,
@@ -757,7 +771,7 @@ where
             // after its equipped-state postcondition stopped holding.
             return Err(MutationError::StaleRevision);
         }
-        Ok(destiny_core::EquipPreflight::Ready)
+        Ok((destiny_core::EquipPreflight::Ready, outcome))
     }
 
     fn validate_equip(
@@ -1077,7 +1091,7 @@ where
         // failure below can report exactly how much of the plan was attempted
         // without losing the record of an earlier applied step.
         let mut evidence = ExecutionEvidence::for_plan(plan);
-        match self.run_steps(transfer, plan, &ticket, &mut evidence) {
+        match self.run_steps(transfer, None, plan, &ticket, &mut evidence) {
             Ok(()) => Ok(evidence),
             Err(error) => Err(ExecutionFailure::new(error, evidence)),
         }
@@ -1179,6 +1193,71 @@ where
         Ok(self.verify_attempt(plan, evidence, attempt_error, policy, post_action_now))
     }
 
+    /// Executes an equip intent and verifies its equipped-state postcondition.
+    ///
+    /// The gateway pair is (transfer, equip). A single fresh preflight either
+    /// proves a no-op or authorizes one ordered attempt. Every dispatched call,
+    /// including a refusal or uncertainty, requires a PostAction refresh; only
+    /// the concrete item equipped on the target proves success. No retry occurs.
+    pub fn execute_equip_verified<T: TransferGateway, E: destiny_core::EquipGateway>(
+        &mut self,
+        gateways: (&mut T, &mut E),
+        request: &destiny_core::EquipRequest,
+        plan: &destiny_core::EquipPlan,
+        policy: FreshnessPolicy,
+        preflight_now: Timestamp,
+        post_action_now: Timestamp,
+    ) -> Result<MoveExecutionOutcome, ExecutionFailure>
+    where
+        R: destiny_core::DefinitionRepository,
+    {
+        let mutation = plan.mutation_plan();
+        let failure = |error| ExecutionFailure::new(error, ExecutionEvidence::for_plan(mutation));
+        if post_action_now < preflight_now {
+            return Err(failure(MutationError::InvalidTimestamps));
+        }
+        let (state, observation) = self
+            .fresh_equip_preflight(request, plan, policy, preflight_now)
+            .map_err(failure)?;
+        if state == destiny_core::EquipPreflight::AlreadySatisfied {
+            return Ok(MoveExecutionOutcome::VerifiedNoOp(
+                ExecutionEvidence::for_plan(mutation),
+            ));
+        }
+        let ticket = ExecutionTicket::after_fresh_preflight(mutation, &observation, preflight_now)
+            .map_err(|error| failure(MutationError::from(error)))?;
+        let (evidence, attempt_error) = match self.execute_equip(gateways, plan, ticket) {
+            Ok(evidence) => (evidence, None),
+            Err(failure) => {
+                if !failure.requires_post_action_refresh() {
+                    return Err(failure);
+                }
+                (*failure.evidence, Some(failure.error))
+            }
+        };
+        Ok(self.verify_attempt(mutation, evidence, attempt_error, policy, post_action_now))
+    }
+
+    /// Consumes one fresh ticket and dispatches transfers before equip, without retries.
+    pub fn execute_equip<T: TransferGateway, E: destiny_core::EquipGateway>(
+        &mut self,
+        gateways: (&mut T, &mut E),
+        plan: &destiny_core::EquipPlan,
+        ticket: ExecutionTicket,
+    ) -> Result<ExecutionEvidence, ExecutionFailure> {
+        let mut evidence = ExecutionEvidence::for_plan(plan.mutation_plan());
+        match self.run_steps(
+            gateways.0,
+            Some(gateways.1),
+            plan.mutation_plan(),
+            &ticket,
+            &mut evidence,
+        ) {
+            Ok(()) => Ok(evidence),
+            Err(error) => Err(ExecutionFailure::new(error, evidence)),
+        }
+    }
+
     /// Forces the mandatory post-action refresh and classifies the destination.
     ///
     /// The refresh outcome is never optional, and its failure is itself a
@@ -1207,8 +1286,8 @@ where
                 evidence,
             ));
         }
-        let observed = match self.repository().lookup_instance(&plan.item) {
-            Ok(Resolution::Unique(instance)) => instance.location,
+        let instance = match self.repository().lookup_instance(&plan.item) {
+            Ok(Resolution::Unique(instance)) => instance,
             Ok(Resolution::Missing) | Ok(Resolution::Ambiguous(_)) => {
                 return MoveExecutionOutcome::VerificationFailed(VerificationFailure::new(
                     VerificationFailureReason::Unresolved,
@@ -1226,7 +1305,8 @@ where
                 ));
             }
         };
-        if observed == plan.destination {
+        let observed = instance.location;
+        if observed == plan.destination && (!plan.requires_equipped() || instance.equipped) {
             // The requested end state holds, whatever the steps individually
             // reported: a step whose effect was uncertain is now confirmed.
             return MoveExecutionOutcome::VerifiedSuccess(evidence);
@@ -1235,7 +1315,9 @@ where
         // execution only when the refreshed location matches the progress the
         // sequence reported; any other location contradicts it and is a
         // verification failure. Neither shape rolls an applied step back.
-        if observed == expected_location(plan, evidence.completed_count()) {
+        if observed == expected_location(plan, evidence.completed_count())
+            && (!plan.requires_equipped() || evidence.completed_count() < plan.steps().len())
+        {
             return MoveExecutionOutcome::IncompleteExecution(IncompleteExecution::new(
                 attempt_error,
                 observed,
@@ -1261,6 +1343,7 @@ where
     fn run_steps<T: TransferGateway>(
         &mut self,
         transfer: &mut T,
+        mut equip: Option<&mut dyn destiny_core::EquipGateway>,
         plan: &MovePlan,
         ticket: &ExecutionTicket,
         evidence: &mut ExecutionEvidence,
@@ -1269,15 +1352,9 @@ where
         // evidence skeleton, so the two must describe the same authorized move.
         // A mismatch can only come from a contract violation, and it fails closed
         // before any provider call.
-        if plan.requires_equipped()
-            || plan
-                .steps()
-                .iter()
-                .any(|step| matches!(step.action, StepAction::Equip { .. }))
-        {
-            // Refuse the whole sequence before even its first transfer. Equip
-            // execution and equipped-state verification belong to EQ-003/004.
-            return Err(MutationError::EquipNotYetSupported);
+        if equip.is_none() && plan.requires_equipped() {
+            // A move-only composition cannot execute an equip intent.
+            return Err(MutationError::InvalidPlan);
         }
         if ticket.plan_id() != &plan.plan_id
             || ticket.item() != &plan.item
@@ -1318,7 +1395,16 @@ where
                     let outcome = transfer.transfer(&request).map_err(MutationError::from)?;
                     StepOutcome::from_transfer(outcome)
                 }
-                StepAction::Equip { .. } => return Err(MutationError::EquipNotYetSupported),
+                StepAction::Equip { character } => {
+                    let request = destiny_core::EquipItemRequest::new(
+                        membership.clone(),
+                        ticket.item().clone(),
+                        character.clone(),
+                    )
+                    .map_err(MutationError::from)?;
+                    let gateway = equip.as_deref_mut().ok_or(MutationError::InvalidPlan)?;
+                    StepOutcome::from_equip(gateway.equip(&request).map_err(MutationError::from)?)
+                }
             };
             evidence
                 .record(step.ordinal, outcome)
@@ -2094,7 +2180,186 @@ mod tests {
     }
 
     #[test]
-    fn equip_executor_fails_closed_before_any_transfer() {
+    fn equip_verified_execution_scenarios() {
+        use crate::test_support::QueuedEquipGateway;
+        use destiny_core::{EquipOutcome, EquipRejection, domain::ItemSlot};
+        // 0-2: routes; 3: no-op; 4-5: equip refusals; 6-8: uncertainty;
+        // 9: transfer refusal; 10: elsewhere; 11: stale preflight;
+        // 12: transient; 13: pre-dispatch equip error; 14: equipped contradiction;
+        // 15: newly satisfied preflight; 16: failed post-action refresh.
+        // Each case uses realistic equipped non-equipment neighbors.
+        for case in 0..17 {
+            let shared = gateway();
+            let source = match case {
+                0 | 3 => warlock(),
+                2 => hunter(),
+                _ => ItemLocation::Vault,
+            };
+            let mut item = instance("candidate", 1, source.clone());
+            item.equipped = case == 3;
+            let mut neighbors = Vec::new();
+            let mut definitions = vec![equip_definition(1, ItemSlot::Kinetic)];
+            for (hash, name) in [(2, "Subclass"), (3, "Ghost"), (4, "Emblem")] {
+                let mut def = definition(hash, name);
+                def.slot = Some(ItemSlot::Other);
+                definitions.push(def);
+                let mut neighbor = instance(&format!("neighbor-{hash}"), hash, warlock());
+                neighbor.equipped = true;
+                neighbors.push(neighbor);
+            }
+            let chars = vec![
+                warlock_character(),
+                character("hunter", None, Some("Hunter")),
+            ];
+            let mut before = neighbors.clone();
+            before.push(item.clone());
+            let input = projection(NOW, chars.clone(), before);
+            let mut repo = CompositeRepository::with_definitions(definitions);
+            repo.commit(input);
+            let mut svc = service(&shared, repo);
+            let plan = svc
+                .plan_equip(&equip_request(), LIFETIME, TTL, NOW)
+                .unwrap();
+            shared.borrow_mut().queue_membership(Ok(membership()));
+            if case == 11 {
+                item.location = hunter();
+            }
+            if case == 15 {
+                item.location = warlock();
+                item.equipped = true;
+            }
+            let mut preflight = neighbors.clone();
+            preflight.push(item.clone());
+            shared
+                .borrow_mut()
+                .queue_inventory(Ok(projection(NOW, chars.clone(), preflight)));
+            let mut transfer = QueuedTransferGateway::new();
+            for _ in 0..2 {
+                transfer.queue(Ok(if case == 9 {
+                    TransferOutcome::Rejected(TransferRejection::DestinationFull)
+                } else {
+                    TransferOutcome::Transferred
+                }));
+            }
+            let mut equip = QueuedEquipGateway::new();
+            let outcome = match case {
+                4 => EquipOutcome::Rejected(EquipRejection::ExoticLimit),
+                5 => EquipOutcome::Rejected(EquipRejection::NotInSocialSpace),
+                6..=8 => EquipOutcome::Uncertain,
+                12 => EquipOutcome::Transient,
+                _ => EquipOutcome::Equipped,
+            };
+            equip.queue(if case == 13 {
+                Err(AppError::new(ErrorCategory::ProviderUnavailable))
+            } else {
+                Ok(outcome)
+            });
+            item.location = match case {
+                8 | 10 => hunter(),
+                9 => source.clone(),
+                _ => warlock(),
+            };
+            item.equipped = matches!(case, 0..=3 | 6);
+            neighbors.push(item);
+            if !matches!(case, 3 | 11 | 15) {
+                shared.borrow_mut().queue_membership(Ok(membership()));
+                shared.borrow_mut().queue_inventory(if case == 16 {
+                    Err(AppError::new(ErrorCategory::ProviderUnavailable))
+                } else {
+                    Ok(projection(POST_ACTION_NOW, chars, neighbors))
+                });
+            }
+            let result = svc.execute_equip_verified(
+                (&mut transfer, &mut equip),
+                &equip_request(),
+                &plan,
+                TTL,
+                NOW,
+                POST_ACTION_NOW,
+            );
+            if case == 11 {
+                assert_eq!(result.unwrap_err().error(), MutationError::StaleRevision);
+                assert_eq!((transfer.calls(), equip.calls()), (0, 0));
+                continue;
+            }
+            let result = result.unwrap();
+            let evidence = match result {
+                MoveExecutionOutcome::VerifiedNoOp(evidence) => {
+                    assert!(matches!(case, 3 | 15));
+                    evidence
+                }
+                MoveExecutionOutcome::VerifiedSuccess(evidence) => {
+                    assert!(matches!(case, 0..=2 | 6));
+                    evidence
+                }
+                MoveExecutionOutcome::IncompleteExecution(incomplete) => {
+                    assert!(matches!(case, 4 | 5 | 7 | 9 | 12 | 13));
+                    incomplete.evidence().clone()
+                }
+                MoveExecutionOutcome::VerificationFailed(failure) => {
+                    assert!(matches!(case, 8 | 10 | 14 | 16));
+                    assert_eq!(
+                        failure.reason(),
+                        if case == 16 {
+                            VerificationFailureReason::RefreshFailed
+                        } else {
+                            VerificationFailureReason::Elsewhere
+                        }
+                    );
+                    failure.evidence().clone()
+                }
+            };
+            assert_eq!(
+                shared.borrow().inventory_calls(),
+                if matches!(case, 3 | 15) { 1 } else { 2 }
+            );
+            assert_eq!(
+                equip.calls(),
+                if matches!(case, 3 | 9 | 15) { 0 } else { 1 }
+            );
+            assert_eq!(
+                transfer.calls(),
+                match case {
+                    0 | 3 | 15 => 0,
+                    2 => 2,
+                    _ => 1,
+                }
+            );
+            if matches!(case, 0..=2 | 14 | 16) {
+                assert_eq!(evidence.completed_count(), plan.steps().len());
+            }
+            if matches!(case, 4 | 5 | 7 | 12 | 13) {
+                assert_eq!(evidence.completed_count(), 1);
+                assert!(evidence.steps()[0].outcome.continues());
+            }
+            if case == 12 {
+                assert_eq!(evidence.stop_outcome(), Some(StepOutcome::Transient));
+            }
+            if matches!(case, 6..=8) {
+                assert_eq!(evidence.stop_outcome(), Some(StepOutcome::Uncertain));
+            }
+            if case == 4 || case == 5 {
+                assert_eq!(
+                    evidence.stop_outcome(),
+                    Some(StepOutcome::EquipRejected(if case == 4 {
+                        EquipRejection::ExoticLimit
+                    } else {
+                        EquipRejection::NotInSocialSpace
+                    }))
+                );
+            }
+            if equip.calls() == 1 {
+                assert_eq!(equip.requests()[0].item(), &plan.mutation_plan().item);
+                assert_eq!(
+                    equip.requests()[0].character(),
+                    &CharacterId::new("warlock")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn equip_move_entry_point_fails_closed_before_any_transfer() {
         use destiny_core::domain::ItemSlot;
         for (source, equipped) in [
             (ItemLocation::Vault, false),
@@ -2141,7 +2406,7 @@ mod tests {
             let failure = svc
                 .execute_move(&mut transfer, plan.mutation_plan(), ticket)
                 .unwrap_err();
-            assert_eq!(failure.error(), MutationError::EquipNotYetSupported);
+            assert_eq!(failure.error(), MutationError::InvalidPlan);
             assert_eq!(transfer.calls(), 0);
             assert!(!failure.requires_post_action_refresh());
         }

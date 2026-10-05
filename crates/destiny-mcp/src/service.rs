@@ -1622,6 +1622,28 @@ fn step_outcome_view(outcome: StepOutcome) -> StepOutcomeView {
         StepOutcome::Rejected(rejection) => StepOutcomeView::Rejected {
             reason: rejection_view(rejection),
         },
+        StepOutcome::EquipRejected(rejection) => StepOutcomeView::EquipRejected {
+            reason: match rejection {
+                destiny_app::EquipRejection::NotInSocialSpace => {
+                    crate::schema::EquipRejectionView::NotInSocialSpace
+                }
+                destiny_app::EquipRejection::ExoticLimit => {
+                    crate::schema::EquipRejectionView::ExoticLimit
+                }
+                destiny_app::EquipRejection::Unequippable => {
+                    crate::schema::EquipRejectionView::Unequippable
+                }
+                destiny_app::EquipRejection::ItemNotFound => {
+                    crate::schema::EquipRejectionView::ItemNotFound
+                }
+                destiny_app::EquipRejection::CharacterNotFound => {
+                    crate::schema::EquipRejectionView::CharacterNotFound
+                }
+                destiny_app::EquipRejection::InvalidRequest => {
+                    crate::schema::EquipRejectionView::InvalidRequest
+                }
+            },
+        },
         StepOutcome::Transient => StepOutcomeView::Transient,
         StepOutcome::Uncertain => StepOutcomeView::Uncertain,
     }

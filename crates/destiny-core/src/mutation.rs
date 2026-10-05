@@ -807,6 +807,8 @@ pub enum StepOutcome {
     Completed,
     /// The provider deterministically refused this step; it changed nothing.
     Rejected(TransferRejection),
+    /// The equip provider deterministically refused this step.
+    EquipRejected(crate::EquipRejection),
     /// The provider failed transiently for this step; nothing was applied.
     Transient,
     /// Whether an already-issued step applied could not be determined.
@@ -816,6 +818,16 @@ pub enum StepOutcome {
 }
 
 impl StepOutcome {
+    /// Maps one sanitized equip result without changing transfer evidence.
+    pub const fn from_equip(outcome: crate::EquipOutcome) -> Self {
+        match outcome {
+            crate::EquipOutcome::Equipped => Self::Completed,
+            crate::EquipOutcome::Rejected(reason) => Self::EquipRejected(reason),
+            crate::EquipOutcome::Transient => Self::Transient,
+            crate::EquipOutcome::Uncertain => Self::Uncertain,
+        }
+    }
+
     /// Maps one sanitized provider result to the step outcome it implies.
     pub const fn from_transfer(outcome: TransferOutcome) -> Self {
         match outcome {
@@ -830,7 +842,11 @@ impl StepOutcome {
     pub const fn is_attempted(self) -> bool {
         match self {
             Self::Unattempted => false,
-            Self::Completed | Self::Rejected(_) | Self::Transient | Self::Uncertain => true,
+            Self::Completed
+            | Self::Rejected(_)
+            | Self::EquipRejected(_)
+            | Self::Transient
+            | Self::Uncertain => true,
         }
     }
 
@@ -838,7 +854,11 @@ impl StepOutcome {
     pub const fn continues(self) -> bool {
         match self {
             Self::Completed => true,
-            Self::Rejected(_) | Self::Transient | Self::Uncertain | Self::Unattempted => false,
+            Self::Rejected(_)
+            | Self::EquipRejected(_)
+            | Self::Transient
+            | Self::Uncertain
+            | Self::Unattempted => false,
         }
     }
 
@@ -855,7 +875,11 @@ impl StepOutcome {
     pub const fn is_uncertain(self) -> bool {
         match self {
             Self::Uncertain => true,
-            Self::Completed | Self::Rejected(_) | Self::Transient | Self::Unattempted => false,
+            Self::Completed
+            | Self::Rejected(_)
+            | Self::EquipRejected(_)
+            | Self::Transient
+            | Self::Unattempted => false,
         }
     }
 }
