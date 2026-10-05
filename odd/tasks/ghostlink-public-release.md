@@ -232,9 +232,18 @@ cargo-dist handling of the libdbus runtime dependency.
   diff check, full suite in `unshare -rn`: 1390 passed / 0 failed. Installers
   and native Windows build not executed (first real tag in PR-011). Commit
   evidence: `b060874`.
-- [ ] **PR-010 — Docs refresh.** README quick start for end users, contributor
-  build path, `docs/configuration.md`, skill notes (wizard, prefer MCP tools when
-  present).
+- [x] **PR-010 — Docs refresh.** README for end users: Install (cargo-dist
+  `curl`/`irm` one-liners from `releases/latest/download`, both executables
+  side by side, `ghostlink-update`) -> Set up (wizard, one shared login,
+  ~90-day renewal, Linux handler vs Windows paste) -> Use it -> manual agent
+  integration (`ghostlink agents ...`, per-agent MCP commands, skill) ->
+  privacy -> For developers. Provisioning caveat kept until PR-011.
+  `docs/configuration.md`, `cli.md`, `mcp.md`, `development.md` aligned (config
+  optional, precedence, three OAuth modes, OS paths, automatic definition
+  version, `-p ghostlink`). Skill prefers Ghostlink MCP tools when present,
+  first-run guidance, automatic manifest. Delegated writer (passive docs: no
+  meaningful RED); checks: `skill_drift` 5/5, README commands checked against
+  `--help`, diff check. Commit evidence: `861d9aa`.
 - [ ] **PR-011 — Live validation.** Owner deploys the broker; human-run install
   from a release on Linux and Windows (paste login), wizard, MCP and CLI reads,
   post-expiry refresh through the broker; close the tracker.
