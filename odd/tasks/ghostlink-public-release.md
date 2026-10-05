@@ -117,16 +117,30 @@ cargo-dist handling of the libdbus runtime dependency.
   1350 passed / 0 failed, diff check. Commit evidence: `94d7435`.
 
 ### Phase 2 — Zero configuration and wizard
-- [ ] **PR-004 — Compiled-in defaults layer.** Precedence env > `config.env` >
-  compiled defaults for API key, client id, callbacks, broker URL, definition
-  label and freshness TTL. Open decision: commit the (non-secret) API key and
-  client id in the repo vs inject them only in release CI.
+- [x] **PR-004 — Compiled-in defaults layer.** Decision (user, 2026-10-05):
+  commit the official PUBLIC values in the repo (extractable from binaries
+  anyway; the client secret never). `crates/destiny-app/src/defaults.rs`: API
+  key, client id and broker URL are `None` until the owner fills them with
+  `Some(..)`; callbacks default to `ghostlink://oauth/callback`, TTL to 900.
+  Precedence env > `config.env` > compiled, in one place
+  (`exact_source_values_with_defaults`, injectable `CompiledDefaults`); existing
+  validators apply to defaults; empty/invalid overrides never fall back; secret
+  still beats a compiled broker URL. `DESTINY_DEFINITION_VERSION` NOT defaulted:
+  it is persisted in profile sync metadata (`sqlite/inventory.rs:889-905`) and
+  part of snapshot equality (`destiny-core/src/ports.rs:158`), so it moves to
+  PR-006. Delegated writer, test-first (RED: missing injection API, then 2
+  failing default/precedence tests; GREEN). Parent re-ran: fmt, clippy, 1355
+  passed / 0 failed, diff check. Commit evidence: `cee6617`.
+  Owner action pending: fill API key, client id and (after deploy) broker URL.
 - [ ] **PR-005 — OS data and config paths.** Default DB at
   `<data_dir>/ghostlink/ghostlink.db` (`$XDG_DATA_HOME`/`~/.local/share`,
   `%LOCALAPPDATA%`) with `create_dir_all`; `config.env` under `%APPDATA%` on
   Windows.
 - [ ] **PR-006 — Manifest auto-sync.** Sync definitions automatically after login
-  and on first read when none are loaded; resolve the definition-label question.
+  and on first read when none are loaded; source the definition version from the
+  synced catalog instead of `DESTINY_DEFINITION_VERSION` (persisted in sync
+  metadata and snapshot equality: cover existing snapshots, version changes,
+  revision identity, migration).
 - [ ] **PR-007 — Agent integration writers.** Detection plus skill install and
   MCP config merge for Claude Code, Codex, OpenCode and Pi (backup, idempotent,
   no clobbering); `ghostlink agents {status,install,uninstall}`-style surface.
