@@ -13,6 +13,8 @@
 //! service is composed only in [`login`].
 
 pub mod command;
+pub mod equip;
+pub mod equip_output;
 pub mod login;
 pub mod output;
 pub mod runner;

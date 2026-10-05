@@ -36,8 +36,8 @@ pub const SUCCESS_EXIT_CODE: i32 = 0;
 #[command(
     name = "ghostlink",
     version,
-    about = "Read-only Destiny profile, inventory, and item inspection, and safe interactive login",
-    long_about = "Read Destiny profile, inventory, and item data, and authorize this machine against the provider by opening the authorization URL and pasting the returned callback."
+    about = "Destiny profile, inventory, verified item equip, and safe interactive login",
+    long_about = "Read Destiny profile, inventory, and item data, equip one item with explicit character intent and verification, or authorize this machine against the provider."
 )]
 pub struct Cli {
     /// Emit exactly one bounded JSON object instead of human text.
@@ -112,7 +112,8 @@ impl Cli {
             // A `login` command line carries no read, and the hidden `callback`
             // handler is not a read either, so both report the stable
             // unsupported-operation outcome instead of guessing at a read.
-            Command::SyncManifest
+            Command::Equip(_)
+            | Command::SyncManifest
             | Command::WeeklyReset
             | Command::Weekly(_)
             | Command::Login(_)
@@ -126,6 +127,10 @@ impl Cli {
 /// The read commands and the interactive login command this journey exposes.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Equip one item, transferring first when needed, then refresh and verify.
+    #[command(name = "equip")]
+    Equip(EquipArgs),
+
     /// Download and publish the public English Manifest item definitions.
     #[command(name = "sync-manifest")]
     SyncManifest,
@@ -571,6 +576,26 @@ impl WeeklyArgs {
                 Ok(CharacterId::new(value))
             })
             .transpose()
+    }
+}
+
+/// One invocation explicitly authorizes equipping exactly one item.
+#[derive(Debug, Args)]
+pub struct EquipArgs {
+    /// Concrete instance id or item name; ambiguous names require an instance id.
+    #[arg(value_name = "ITEM")]
+    pub item: String,
+    /// Required explicit target: exact id or hunter|titan|warlock (case-insensitive).
+    #[arg(long, value_name = "CHARACTER")]
+    pub character: String,
+}
+impl EquipArgs {
+    /// Pure validation runs before configuration, credentials, or network access.
+    pub fn validate(&self) -> Result<(), CliError> {
+        validate_identity(&self.item, "ITEM")?;
+        destiny_app::ItemSelector::semantic(&self.item).map_err(CliError::from)?;
+        validate_identity(&self.character, "--character")?;
+        Ok(())
     }
 }
 
