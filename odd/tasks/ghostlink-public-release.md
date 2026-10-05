@@ -86,11 +86,18 @@ cargo-dist handling of the libdbus runtime dependency.
   one shared login). Docs only (no meaningful RED); `git diff --check`. Commit evidence: `e491aa6`.
 
 ### Phase 1 — Token broker
-- [ ] **PR-002 — Broker service.** Stateless Cloudflare Worker: `POST /token`
-  (code exchange) and `POST /refresh`, secret from Worker secrets, Basic auth to
-  Bungie, strict input validation, rate limiting, no logging of codes or tokens.
-  Open decision: language (TypeScript vs Rust/WASM) and location (`broker/` in
-  this repo vs separate repo).
+- [x] **PR-002 — Broker service.** TypeScript Cloudflare Worker in `broker/`
+  (decided 2026-10-05). Single strict `POST /token` proxy for both grants:
+  accepts exactly the confidential-shaped bodies (`authorization_code`: code +
+  redirect_uri; `refresh_token`: refresh_token), rejects extra/duplicate/empty
+  fields, pins `redirect_uri` to `ALLOWED_REDIRECT_URI`, adds Basic auth
+  (form-encoded id/secret, same as Rust), no redirects, 10 s deadline, 4 KiB
+  request / 8 KiB JSON-only relay, fixed OAuth-style errors, `no-store`, rate
+  limit binding per IP (fails closed on binding error), observability off, no
+  logging. CI job `broker` (typecheck + tests). Delegated writer, test-first
+  (RED: 67 failed / 1 passed on 501 stub; GREEN: 68, then 72 after
+  triangulation). Parent re-ran: 72 passed, typecheck clean, diff check. Not
+  deployed (owner, PR-011). Commit evidence: `edbcf2b`.
 - [ ] **PR-003 — Broker mode in the token adapter.** Configurable token endpoint
   (compiled-in broker URL, overridable); broker mode sends no Basic header and no
   secret; refresh available without a secret; wire CLI login, CLI read runtime
