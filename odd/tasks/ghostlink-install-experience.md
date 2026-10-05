@@ -2,9 +2,9 @@
 
 ## Authorization and scope
 
-User-approved scope, 2026-10-05. The user stopped the delegated session after
-GIE-001; the coordinating session finishes the work inline, without
-delegation (user decision). Platforms: Linux and
+User-approved scope, 2026-10-05. The user stopped the delegated Pi session
+after GIE-001; the coordinating session finishes the work with the normal ODD
+flow (Gentle AI subagents for bounded writes and verification). Platforms: Linux and
 Windows only; macOS is out of scope. This phase: (1) CI, (2) Linux handler
 detection. The Windows handler adapter is a later phase.
 
@@ -51,6 +51,13 @@ push, PR or merge.
 - Windows compilation stays unverified locally (user decision): the host has
   a pacman Rust toolchain without `rustup` or a Windows target. The CI
   `windows-latest` job is the first real check, after the user pushes.
+- The registrar port lives in `destiny-core` (`uri_handler.rs`), like every
+  other port; `destiny-adapters` depends only on core, so a port in
+  `destiny-app` could not be implemented there. The `auto` policy stays in
+  `destiny-app` and re-exports the port.
+- The Linux adapter refuses executable paths that would need escaping inside
+  a quoted `Exec` (`"`, `` ` ``, `$`, `\`, `%`, controls) instead of escaping
+  them; spaces and other reserved characters are double-quoted.
 - Pitfalls are detected and reported with exact fix commands, not repaired
   automatically: the portal store is not a documented user-editable API and
   the `mimeapps.list` conflict is DE-specific.
@@ -61,7 +68,7 @@ push, PR or merge.
 - [x] GIE-002 CI workflow (ubuntu + windows). Windows compile unverified
   locally (see Decisions).
 - [x] GIE-003 App port and auto-resolution policy (test-first).
-- [ ] GIE-004 Linux registrar adapter (test-first, injected paths/runner).
+- [x] GIE-004 Linux registrar adapter (test-first, injected paths/runner).
 - [ ] GIE-005 CLI: `--callback auto` default, consent prompt, `handler`
   subcommand, composition.
 - [ ] GIE-006 README and packaging runbook.
@@ -70,6 +77,12 @@ push, PR or merge.
 ## Progress
 
 ## Evidence
+
+- Commits: GIE-002 `c480ab6`; GIE-003 `a7d0829`, port move `d08b773`.
+- GIE-004: RED observed (20 failing against a `todo!()` skeleton), GREEN
+  `cargo test -p destiny-adapters --lib uri_handler` 20 passed; clippy
+  `-p destiny-adapters --all-targets --all-features -D warnings` clean. Tests
+  are `cfg(unix)` because fixtures use Unix absolute paths.
 
 - GIE-002: workflow reviewed; not run on GitHub (no push).
 - GIE-003: `cargo test -p destiny-app --lib uri_handler` 12 passed; fmt clean;

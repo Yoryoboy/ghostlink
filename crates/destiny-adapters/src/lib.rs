@@ -14,6 +14,7 @@ pub mod random;
 pub mod sqlite;
 pub mod token;
 pub mod transfer;
+pub mod uri_handler;
 pub mod weekly_profile;
 
 pub use clock::SystemClock;
