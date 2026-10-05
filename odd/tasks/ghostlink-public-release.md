@@ -247,6 +247,24 @@ cargo-dist handling of the libdbus runtime dependency.
 - [ ] **PR-011 — Live validation.** Owner deploys the broker; human-run install
   from a release on Linux and Windows (paste login), wizard, MCP and CLI reads,
   post-expiry refresh through the broker; close the tracker.
+  Live log (2026-10-05, human-run where interactive):
+  - Broker deployed with wrangler 4.147 to
+    `https://ghostlink-token-broker.93jads.workers.dev` (`BUNGIE_CLIENT_ID`
+    55099 var; `BUNGIE_CLIENT_SECRET` set by the owner via `wrangler secret
+    put`, never seen by the agent). Smoke: GET 405, non-form POST 415, other
+    path 404, form POST before the secret 500 `server_misconfigured`.
+  - `defaults.rs` filled (API key, client id 55099, broker URL); fmt, clippy,
+    1390 passed / 0 failed in `unshare -rn`. Commit evidence: `cf39e7d`.
+  - Broker-mode login with compiled values only
+    (`GHOSTLINK_CONFIG_FILE=/nonexistent ghostlink login --callback handler`):
+    `authorized`, renewable session until ~90 days; manifest auto-synced after
+    login. Note: `--callback paste` cannot work on a machine where another
+    binary owns `ghostlink://` (the browser hands the URL to that handler).
+  - `list-characters` with compiled values only: 3 characters, fresh; default
+    DB created at `~/.local/share/ghostlink/ghostlink.db`.
+  - Pending: post-expiry refresh through the broker (access expired after
+    ~1 h), push/PR/merge, tag pre-release, installer tests on Linux and
+    Windows, wizard and MCP reads from installed binaries.
 
 ## Follow-ups (out of scope)
 - Windows `ghostlink://` handler (next feature, developed on Windows).
