@@ -166,21 +166,44 @@ impl LoopbackCallbackReceiver {
         let _ = stream.write_all(header.as_bytes());
         let _ = stream.write_all(body);
     }
+
+    fn respond_not_found(stream: &mut TcpStream) {
+        let _ = stream
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    }
 }
 
 impl CallbackReceiver for LoopbackCallbackReceiver {
+    /// Waits for the one callback addressed to the configured path.
+    ///
+    /// Other local processes may probe the freshly bound port, so a well-formed
+    /// request for any other path is answered `404` and ignored. The accept
+    /// deadline is shared across those connections and is never renewed.
     fn receive(&mut self) -> Result<AuthorizationCallback, AppError> {
         let deadline = Instant::now() + self.accept_timeout;
+        loop {
+            if let Some(callback) = self.serve_next(deadline)? {
+                return Ok(callback);
+            }
+        }
+    }
+}
+
+impl LoopbackCallbackReceiver {
+    /// Serves one connection; `None` means it was a foreign request.
+    fn serve_next(&mut self, deadline: Instant) -> Result<Option<AuthorizationCallback>, AppError> {
         let mut stream = 'accept_loop: loop {
+            // Checked before every accept so queued connections cannot outlive
+            // the window that foreign requests share.
+            if Instant::now() >= deadline {
+                return Err(AppError::new(ErrorCategory::CallbackTimeout));
+            }
             for listener in &self.listeners {
                 match listener.accept() {
                     Ok((stream, _)) => break 'accept_loop stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
                     Err(_) => return Err(AppError::configuration()),
                 }
-            }
-            if Instant::now() >= deadline {
-                return Err(AppError::new(ErrorCategory::CallbackTimeout));
             }
             thread::sleep(Duration::from_millis(10));
         };
@@ -230,9 +253,13 @@ impl CallbackReceiver for LoopbackCallbackReceiver {
         }
         let parsed = parse_request(&request, &self.endpoint.path);
         match parsed {
-            Ok((state, result)) => {
+            Ok(Some((state, result))) => {
                 Self::respond(&mut stream, matches!(result, CallbackResult::Code(_)));
-                Ok(AuthorizationCallback { state, result })
+                Ok(Some(AuthorizationCallback { state, result }))
+            }
+            Ok(None) => {
+                Self::respond_not_found(&mut stream);
+                Ok(None)
             }
             Err(error) => {
                 Self::respond(&mut stream, false);
@@ -242,10 +269,12 @@ impl CallbackReceiver for LoopbackCallbackReceiver {
     }
 }
 
+/// Parses a loopback request; `Ok(None)` marks a well-formed request for a path
+/// other than the callback, which is not an authorization attempt.
 fn parse_request(
     request: &[u8],
     expected_path: &str,
-) -> Result<(AuthorizationState, CallbackResult), AppError> {
+) -> Result<Option<(AuthorizationState, CallbackResult)>, AppError> {
     let text = std::str::from_utf8(request).map_err(|_| AppError::configuration())?;
     let header_end = request
         .windows(4)
@@ -258,7 +287,11 @@ fn parse_request(
         return Err(AppError::configuration());
     }
     let parts: Vec<_> = line.split(' ').collect();
-    if parts.len() != 3 || parts[0] != "GET" || parts[2] != "HTTP/1.1" {
+    if parts.len() != 3
+        || parts[0].is_empty()
+        || !parts[0].bytes().all(|byte| byte.is_ascii_uppercase())
+        || parts[2] != "HTTP/1.1"
+    {
         return Err(AppError::new(ErrorCategory::UnsupportedOperation));
     }
     let target = parts[1];
@@ -272,6 +305,9 @@ fn parse_request(
     let url =
         Url::parse(&format!("http://loopback{target}")).map_err(|_| AppError::configuration())?;
     if url.path() != expected_path {
+        return Ok(None);
+    }
+    if parts[0] != "GET" {
         return Err(AppError::new(ErrorCategory::UnsupportedOperation));
     }
     let mut state = None;
@@ -299,7 +335,7 @@ fn parse_request(
             .map(|value| CallbackResult::Code(AuthorizationCode::from_bytes(value)))
             .ok_or_else(|| AppError::new(ErrorCategory::AuthorizationDenied))?,
     };
-    Ok((state, result))
+    Ok(Some((state, result)))
 }
 
 fn shell_quote(value: &str) -> String {
@@ -1437,6 +1473,7 @@ mod tests {
                 .as_slice(),
             "/callback",
         )
+        .unwrap()
         .unwrap();
         assert!(matches!(code.1, CallbackResult::Code(_)));
         assert_eq!(code.0.as_bytes(), &b"safe-state"[..]);
@@ -1444,12 +1481,14 @@ mod tests {
             b"GET /callback?state=safe-state&error=access_denied&description=sentinel HTTP/1.1\r\n\r\n".as_slice(),
             "/callback",
         )
+        .unwrap()
         .unwrap();
         assert_eq!(denied.1, CallbackResult::Denied);
         let cancelled = parse_request(
             b"GET /callback?state=safe-state&error=cancelled HTTP/1.1\r\n\r\n".as_slice(),
             "/callback",
         )
+        .unwrap()
         .unwrap();
         assert_eq!(cancelled.1, CallbackResult::Cancelled);
         let missing_state = parse_request(
@@ -1836,6 +1875,88 @@ mod tests {
     }
 
     #[test]
+    fn callback_receiver_ignores_a_foreign_request_before_the_callback() {
+        let _guard = lock_loopback_tests();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let endpoint =
+            CallbackEndpoint::parse(&format!("http://127.0.0.1:{port}/callback")).unwrap();
+        let mut receiver =
+            LoopbackCallbackReceiver::from_bound_listeners(endpoint, vec![listener]).unwrap();
+        let thread = std::thread::spawn(move || receiver.receive());
+        let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        probe
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .unwrap();
+        let mut probe_response = String::new();
+        probe.read_to_string(&mut probe_response).unwrap();
+        assert!(probe_response.starts_with("HTTP/1.1 404 Not Found"));
+
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .write_all(b"GET /callback?state=safe&code=code HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).unwrap();
+        let callback = thread.join().unwrap().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert_eq!(callback.state.as_bytes(), b"safe");
+        assert!(matches!(callback.result, CallbackResult::Code(_)));
+    }
+
+    #[test]
+    fn callback_receiver_times_out_when_only_foreign_requests_arrive() {
+        let _guard = lock_loopback_tests();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let endpoint =
+            CallbackEndpoint::parse(&format!("http://127.0.0.1:{port}/callback")).unwrap();
+        let mut receiver = LoopbackCallbackReceiver::from_bound_listeners(endpoint, vec![listener])
+            .unwrap()
+            .with_timeouts(LOOPBACK_TEST_TIMEOUT, LOOPBACK_TEST_TIMEOUT);
+        let thread = std::thread::spawn(move || receiver.receive());
+        for request in [
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            "GET /favicon.ico HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+            "POST /other?state=x&code=y HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+        ] {
+            let mut probe = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+            probe.write_all(request.as_bytes()).unwrap();
+            let mut response = String::new();
+            probe.read_to_string(&mut response).unwrap();
+            assert!(response.starts_with("HTTP/1.1 404 Not Found"));
+            assert!(!response.contains("Authorization"));
+        }
+        let result = thread.join().unwrap();
+        assert_eq!(result, Err(AppError::new(ErrorCategory::CallbackTimeout)));
+    }
+
+    #[test]
+    fn callback_receiver_accepts_nothing_after_the_deadline() {
+        let _guard = lock_loopback_tests();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let endpoint =
+            CallbackEndpoint::parse(&format!("http://127.0.0.1:{port}/callback")).unwrap();
+        let mut receiver = LoopbackCallbackReceiver::from_bound_listeners(endpoint, vec![listener])
+            .unwrap()
+            .with_timeouts(Duration::ZERO, LOOPBACK_TEST_TIMEOUT);
+        // Both connections are queued before the already expired window opens.
+        let mut foreign = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        foreign
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .unwrap();
+        let mut callback = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        callback
+            .write_all(b"GET /callback?state=late&code=code HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        assert_eq!(
+            receiver.receive(),
+            Err(AppError::new(ErrorCategory::CallbackTimeout))
+        );
+    }
+
+    #[test]
     fn callback_receiver_times_out_without_a_connection() {
         let _guard = lock_loopback_tests();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2030,7 +2151,7 @@ mod tests {
     }
 
     #[test]
-    fn callback_parser_rejects_wrong_path_and_method() {
+    fn callback_parser_rejects_wrong_method_and_marks_foreign_paths() {
         assert!(
             parse_request(
                 b"POST /callback?state=x&code=y HTTP/1.1\r\n\r\n",
@@ -2038,7 +2159,24 @@ mod tests {
             )
             .is_err()
         );
-        assert!(parse_request(b"GET /other?state=x&code=y HTTP/1.1\r\n\r\n", "/callback").is_err());
+        assert!(matches!(
+            parse_request(b"GET /other?state=x&code=y HTTP/1.1\r\n\r\n", "/callback"),
+            Ok(None)
+        ));
+        assert!(matches!(
+            parse_request(b"POST /other HTTP/1.1\r\n\r\n", "/callback"),
+            Ok(None)
+        ));
+        for malformed in [
+            b" / HTTP/1.1\r\n\r\n".as_slice(),
+            b"G\x01T /other HTTP/1.1\r\n\r\n".as_slice(),
+            b"get /other HTTP/1.1\r\n\r\n".as_slice(),
+        ] {
+            assert_eq!(
+                parse_request(malformed, "/callback").map(|_| ()),
+                Err(AppError::new(ErrorCategory::UnsupportedOperation))
+            );
+        }
         assert!(
             parse_request(
                 b"GET /callback?state=x&code=y HTTP/1.1\r\n\r\n",
