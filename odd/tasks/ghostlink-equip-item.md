@@ -60,7 +60,12 @@ pre-check (component 204), subclass/mods/perks/loadout actions.
 - [x] **EQ-004 — Execution and verification.** `execute_equip` / `execute_equip_verified` share the ordered executor with gateways `(&mut transfer, &mut equip)`; `StepOutcome::EquipRejected(EquipRejection)` (+ MCP `EquipRejectionView`, additive); mandatory PostAction refresh after any attempted call; success = on target AND equipped; consistent partial progress = incomplete; contradiction = verification failure; no retry. Move entry points still reject equip plans. RED→GREEN (17 queued-fake scenarios); workspace 1225, all-features 1236, fmt/clippy clean. Independent review deferred to feature end (user request). Commit `27997e4`.
 - [x] **EQ-005 — Offline journey.** `crates/destiny-adapters/tests/equip_execution_journey.rs`: 7 real-stack scenarios (vault and cross-character routes, no-op, 1641 ExoticLimit and 1634 NotInSocialSpace after transfer, uncertain equip with/without effect) with exact EquipItem wire checks, read-only profile requests, realistic neighbors, SQLite reopen, secret scans. No production bug found. Workspace 1232, all-features 1243, fmt/clippy clean. Commit `875c92b`.
 - [x] **EQ-006 — CLI `ghostlink equip`.** `ghostlink equip <ITEM> --character <CHARACTER> [--json]` (character required); `equip.rs` orchestration, `equip_output.rs` stable JSON (status, item, character, steps[kind/from/to/outcome/reason], profile_refresh, observed) for MCP parity; runtime composes profile/transfer/equip gateways on one credential session; non-zero exit for refusals/incomplete. RED→GREEN (10 tests); workspace 1242, all-features 1253, fmt/clippy clean. Follow-up: gateway composition replicated from destiny-mcp (extract shared composition later). Commit `bbe9a32`.
-- [ ] **EQ-007 — MCP `equip_item` and docs.** IN PROGRESS after restart; exact CLI JSON parity, README, architecture non-goals update. User approved a neutral `destiny-output` crate (shared JSON presentation; CLI exit codes remain CLI-specific) and the five additional workspace/CLI dependency paths. Independent reviews and authorized live smoke remain pending.
+- [x] **EQ-007 — MCP `equip_item` and docs.** CLOSED 2026-10-05 on live
+  evidence: Antiope-D Vault->Hunter transfer+equip provider-confirmed and later
+  forced sync (revision 9) showed it equipped; immediate verification lag is
+  now reported as `applied_pending_provider_refresh` (see
+  ghostlink-pending-provider-refresh.md). Original notes follow.
+  Previously IN PROGRESS after restart; exact CLI JSON parity, README, architecture non-goals update. User approved a neutral `destiny-output` crate (shared JSON presentation; CLI exit codes remain CLI-specific) and the five additional workspace/CLI dependency paths. Independent reviews and authorized live smoke remain pending.
 
 ## Review corrections (authorized by user)
 
@@ -123,7 +128,9 @@ checks (1244 default / 1258 all-features). No live actions performed.
   retains prior progress/auth evidence without stale observations. All final
   offline checks PASS (1265 / 1279); no remaining findings in correction scope.
   Previous security PASS remains applicable to unchanged allowlists/credentials.
-  No live calls or commits; EQ-007 final closure awaits authorized live smoke.
+  No live calls; EQ-007 final closure awaits authorized live smoke.
+  EQ-007 and RC-001..RC-004 committed together as `201f0e4` (RC hunks interleave
+  with EQ-007 in shared files).
 
 Revision, no-op identity and authentication evidence gaps are inherited from
 move; equip exposes them too. They are not new move regressions. Reproductions
