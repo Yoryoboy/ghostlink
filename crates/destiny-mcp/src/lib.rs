@@ -13,8 +13,8 @@
 //! adapter-free mutation seam: it composes the shared planner/executor and
 //! derives the provider membership from the committed projection, so a caller
 //! never supplies a membership, a credential, or a plan. The production
-//! composition that names concrete provider and platform adapters stays in the
-//! binary root; this library names no adapter.
+//! composition that names concrete provider and platform adapters stays in a
+//! private process module, shared by the development and distribution binaries.
 //!
 //! # Boundaries
 //!
@@ -26,9 +26,13 @@
 //! - Failures expose stable sanitized categories and messages only. Raw provider
 //!   payloads, credentials, membership identifiers, and unbounded upstream
 //!   records never cross this boundary.
-//! - No concrete adapter type appears in this library: the server, schemas, and
-//!   service seams depend only on the application services. The binary root is
-//!   the single composition point that names adapters.
+//! - The server, schemas, and service seams depend only on application services.
+//!   The private process root is the single composition point that names adapters;
+//!   its only public surface is [`run`].
+
+#[path = "main.rs"]
+mod process;
+pub use process::run;
 
 pub mod runtime;
 pub mod schema;
@@ -60,14 +64,12 @@ pub use service::{
 
 #[cfg(test)]
 mod tests {
-    /// The library must never name a concrete provider or platform adapter.
+    /// Presentation modules must never name concrete provider/platform adapters.
     ///
-    /// Concrete adapters are a binary-composition concern. Keeping the library
-    /// free of `destiny_adapters` references protects the presentation contracts
-    /// from adapter churn and keeps the stdio server injectable with any
-    /// application read service.
+    /// Adapters stay in the private process composition module. Keeping the
+    /// presentation contracts adapter-free keeps the stdio server injectable.
     #[test]
-    fn the_library_never_names_concrete_adapters() {
+    fn the_presentation_modules_never_name_concrete_adapters() {
         for relative in [
             "src/lib.rs",
             "src/schema.rs",
@@ -90,9 +92,9 @@ mod tests {
         }
     }
 
-    /// The binary composition root must be the place that names adapters.
+    /// The shared process composition root must be the place that names adapters.
     #[test]
-    fn the_binary_root_owns_adapter_composition() {
+    fn the_process_root_owns_adapter_composition() {
         let path = format!("{}/src/main.rs", env!("CARGO_MANIFEST_DIR"));
         let source = std::fs::read_to_string(&path).expect("binary source is readable");
         assert!(

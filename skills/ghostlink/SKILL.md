@@ -1,6 +1,6 @@
 ---
 name: ghostlink
-description: "Trigger: Destiny 2, D2 inventory, vault, weapon perks, armor stats, builds, weekly reset, loadouts, subclass, equip item. Operate the ghostlink CLI safely."
+description: "Trigger: Destiny 2, D2 inventory, vault, weapon perks, armor stats, builds, weekly reset, loadouts, subclass, equip item. Prefer Ghostlink MCP tools; use the ghostlink CLI safely when needed."
 license: MIT OR Apache-2.0
 metadata:
   author: "Yoryoboy"
@@ -9,14 +9,18 @@ metadata:
 
 ## Activation Contract
 
-Use when the user asks about their Destiny 2 account, items, builds, weekly content, or wants an item equipped, and a `ghostlink` executable is on `PATH`.
+Use when the user asks about their Destiny 2 account, items, builds, weekly content, or item actions, and Ghostlink MCP tools are available or `ghostlink` is on `PATH`.
+
+Prefer Ghostlink MCP tools available in this session over shelling out to the CLI. Follow their schemas and report structured results; never blindly retry a mutation. The CLI rules below apply to the fallback path.
+
+First-time users should run `ghostlink` in their own terminal for the setup wizard, or `ghostlink login` for sign-in only. One login serves CLI and MCP. Missing Manifest definitions sync automatically after login or on a CLI read; use `ghostlink sync-manifest` for outdated definitions or a missing-catalog MCP error.
 
 ## Hard Rules
 
-- Always add `--json`; never scrape human text. Exit 0 prints one JSON object on stdout; a non-zero exit prints one JSON object on stderr. Exceptions: `ghostlink login` first prints an `authorizing` instruction object, and `--help` is plain text.
+- For CLI operations, always add `--json`; never scrape human text. Exit 0 prints one JSON object on stdout; a non-zero exit prints one JSON object on stderr. Exceptions: `ghostlink login` first prints an `authorizing` instruction object, and `--help` is plain text.
 - Flags are not listed here. Before using a command for the first time in a session, run `ghostlink <cmd> --help`.
 - Never guess an item or character. Resolve ambiguity with a read command or ask the user.
-- `ghostlink equip` is the only game mutation. Run it only when the user explicitly named both the item and the character for this action.
+- `ghostlink equip` is the only CLI game mutation. Run it only when the user explicitly named both the item and the character for this action.
 - Never retry `equip` after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report.
 - Never try to free inventory space, unequip elsewhere, or change plugs; the CLI refuses these by design.
 - Run `ghostlink login` only when the user asks or after exit 10/11; it needs a human to authorize in a browser and waits for the callback.

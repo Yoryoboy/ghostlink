@@ -1,6 +1,6 @@
 //! `destiny-mcp` process composition root.
 //!
-//! This binary is the single place in the workspace that names concrete
+//! This process module is the single MCP composition point that names concrete
 //! provider and platform adapters. It is deliberately small: it loads the
 //! redacted shared read runtime configuration, loads the complete stored access
 //! credential, builds the authenticated Bungie profile gateway, the SQLite
@@ -9,12 +9,11 @@
 //!
 //! # Architecture
 //!
-//! The library crate (`destiny_mcp`) holds the RMCP server, the bounded MCP
-//! schemas, and the injectable [`InventoryReadService`] and
-//! [`MutationToolService`] seams, and never names an adapter. This binary is the
-//! composition root that satisfies those seams with concrete adapters, which is
-//! why `destiny-adapters` is a dependency of this crate rather than of the
-//! library contracts.
+//! The presentation modules hold the RMCP server, bounded MCP schemas, and
+//! injectable read and mutation seams without naming adapters. This private
+//! process module satisfies those seams with concrete adapters. The historical
+//! `main.rs` is compiled as a private library module so both development and
+//! distribution binaries call the same entry point.
 //!
 //! One profile gateway and one durable store are shared by both compositions
 //! through `Arc<Mutex<..>>`, so the read path and the mutation path observe the
@@ -41,6 +40,8 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::runtime::serve_stdio;
+use crate::{ComposedMutationService, QueryReadService, ReadToolServer};
 use clap::Parser;
 use destiny_adapters::sqlite::SqliteStore;
 use destiny_adapters::{
@@ -55,8 +56,6 @@ use destiny_app::{
     PlanIdGenerator, PlanLifetime, ProfileGateway, ProfileSyncReason, ProfileSyncService,
     QueryService, ReadRuntimeConfig, Resolution, SearchRepository, SyncMetadata,
 };
-use destiny_mcp::runtime::serve_stdio;
-use destiny_mcp::{ComposedMutationService, QueryReadService, ReadToolServer};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -66,10 +65,12 @@ use destiny_mcp::{ComposedMutationService, QueryReadService, ReadToolServer};
 )]
 struct Cli;
 
+/// Runs the production MCP process, including argument parsing and its runtime.
+/// `--help` and `--version` exit before configuration or adapter access.
 #[tokio::main]
-async fn main() {
+pub async fn run() {
     let _ = Cli::parse();
-    if let Err(error) = run().await {
+    if let Err(error) = serve_runtime().await {
         // Startup and runtime diagnostics go to stderr; stdout belongs to the
         // protocol. `AppError` carries only a sanitized category message.
         eprintln!("{error}");
@@ -79,7 +80,7 @@ async fn main() {
 
 /// Loads configuration, composes the shared read and mutation services, and
 /// serves them over stdio.
-async fn run() -> Result<(), AppError> {
+async fn serve_runtime() -> Result<(), AppError> {
     let config = ReadRuntimeConfig::from_env()?;
     let store = NativeCredentialStore::new()?;
     let server = compose_server(&config, store)?;
@@ -104,28 +105,30 @@ fn compose_server<S: CredentialStore + Send + 'static>(
 ) -> Result<ReadToolServer, AppError> {
     let (profile_source, transfer_source) = gateway_credentials(
         store,
-        config.refresh_client().map(|client| {
-            move || {
-                destiny_adapters::BungieTokenExchange::confidential(
-                    client.client_id(),
-                    "ghostlink://oauth/callback",
-                    client.client_secret().clone(),
-                    destiny_adapters::HttpTokenTransport::new()?,
-                    SystemClock::new(),
-                )
-            }
-        }),
+        config
+            .refresh_client()
+            .map(|client| move || configured_refresher(client)),
         SystemClock::new(),
     )?;
     let policy = config.freshness_policy();
+    // A separate local connection makes version resolution lazy: an empty
+    // catalog is a typed tool error, not a startup failure or tool-time download.
+    let version_store = SqliteStore::open(config.database_path())?;
+    let version_config = config.clone();
 
     let profile_gateway = BungieProfileGateway::new(
         HttpProfileTransport::new()?,
         SystemClock::new(),
         profile_source,
         ProfileApiKey::new(config.api_key().expose_secret())?,
-        config.definition_version().clone(),
-    )?;
+        config
+            .definition_version()
+            .cloned()
+            .unwrap_or_else(|| DefinitionVersion::new("unavailable")),
+    )?
+    .with_definition_version_resolver(move || {
+        version_config.resolve_definition_version(&version_store)
+    });
     let transfer = BungieTransferGateway::new(
         HttpTransferTransport::new()?,
         SystemClock::new(),
@@ -148,6 +151,35 @@ fn compose_server<S: CredentialStore + Send + 'static>(
         personal_public(config)?,
         SqliteStore::open(config.database_path())?,
     ))
+}
+
+fn configured_refresher(
+    client: &destiny_app::RefreshClientConfig,
+) -> Result<
+    destiny_adapters::BungieTokenExchange<destiny_adapters::HttpTokenTransport, SystemClock>,
+    AppError,
+> {
+    match client.auth_mode() {
+        destiny_app::ClientAuthMode::Confidential(secret) => {
+            destiny_adapters::BungieTokenExchange::confidential(
+                client.client_id(),
+                "ghostlink://oauth/callback",
+                secret.clone(),
+                destiny_adapters::HttpTokenTransport::new()?,
+                SystemClock::new(),
+            )
+        }
+        destiny_app::ClientAuthMode::Broker(base) => {
+            destiny_adapters::BungieTokenExchange::brokered(
+                client.client_id(),
+                "ghostlink://oauth/callback",
+                base,
+                destiny_adapters::HttpTokenTransport::brokered(base)?,
+                SystemClock::new(),
+            )
+        }
+        destiny_app::ClientAuthMode::Public => Err(AppError::configuration()),
+    }
 }
 
 type PersonalPublicGateway = destiny_adapters::manifest::BungieManifestGateway<
@@ -231,7 +263,7 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     let read_service =
         QueryReadService::new(QueryService::new(read_sync), SystemClock::new(), policy);
 
-    let read_service = destiny_mcp::service::PersonalWeeklyReadService::new(
+    let read_service = crate::service::PersonalWeeklyReadService::new(
         destiny_app::WeeklyPersonalService::new(
             personal_public,
             gateway.clone(),
@@ -240,11 +272,11 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         read_service,
     );
 
-    let read_service = destiny_mcp::service::WeeklyReadService::new(weekly, read_service, |t| {
+    let read_service = crate::service::WeeklyReadService::new(weekly, read_service, |t| {
         destiny_adapters::format_reset_timestamp(t, false)
     });
 
-    let read_service = destiny_mcp::service::ArtifactReadService::new(
+    let read_service = crate::service::ArtifactReadService::new(
         destiny_app::ArtifactService::new(ProfileSyncService::new_with_definitions(
             gateway.clone(),
             repository.clone(),
@@ -254,7 +286,7 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         policy,
     );
 
-    let read_service = destiny_mcp::service::LoadoutsReadService::new(
+    let read_service = crate::service::LoadoutsReadService::new(
         destiny_app::LoadoutService::new(ProfileSyncService::new_with_definitions(
             gateway.clone(),
             repository.clone(),
@@ -718,6 +750,89 @@ mod tests {
         .unwrap();
         assert!(transfer.transfer(&request).is_err());
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn absent_manifest_without_override_returns_typed_tool_error_offline() {
+        use crate::service::InventoryReadService;
+        use destiny_adapters::profile_gateway::{
+            ProfileHttpRequest, ProfileHttpResponse, ProfileTransport, ProfileTransportError,
+        };
+        struct Offline;
+        impl ProfileTransport for Offline {
+            fn get(
+                &mut self,
+                _: &ProfileHttpRequest<'_>,
+            ) -> Result<ProfileHttpResponse, ProfileTransportError> {
+                panic!("an absent manifest must not make a profile request");
+            }
+        }
+        let mut values = values("/unreachable/destiny.db");
+        values.remove("DESTINY_DEFINITION_VERSION");
+        let config = ReadRuntimeConfig::from_values(&values).unwrap();
+        let version_store = destiny_adapters::sqlite::SqliteStore::open_in_memory().unwrap();
+        let gateway = destiny_adapters::BungieProfileGateway::new(
+            Offline,
+            FakeClock::fixed(Timestamp::new(100)),
+            destiny_app::StaticCredentialSource::new(credential()),
+            destiny_adapters::ProfileApiKey::new(API_KEY_SENTINEL).unwrap(),
+            destiny_app::DefinitionVersion::new("unavailable"),
+        )
+        .unwrap()
+        .with_definition_version_resolver(move || {
+            config.resolve_definition_version(&version_store)
+        });
+        let store = destiny_adapters::sqlite::SqliteStore::open_in_memory().unwrap();
+        let mut service = crate::QueryReadService::new(
+            destiny_app::QueryService::new(destiny_app::ProfileSyncService::new_with_definitions(
+                gateway, store,
+            )),
+            FakeClock::fixed(Timestamp::new(100)),
+            destiny_app::FreshnessPolicy { ttl_seconds: 900 },
+        );
+        let error = service
+            .list_characters(&crate::service::ListCharactersRequest)
+            .unwrap_err();
+        assert_eq!(error.code(), "definitions_unavailable");
+        assert_eq!(
+            error.message(),
+            "definitions not loaded; run ghostlink sync-manifest"
+        );
+    }
+
+    #[test]
+    fn broker_config_selects_shared_refreshing_gateway_credentials() {
+        let mut values = values("/unreachable/destiny.db");
+        values.insert("BUNGIE_PUBLIC_CLIENT_ID".into(), "123".into());
+        values.insert(
+            "GHOSTLINK_TOKEN_BROKER_URL".into(),
+            "https://broker.test".into(),
+        );
+        let config = ReadRuntimeConfig::from_values(&values).unwrap();
+        let mut store = InMemoryCredentialStore::default();
+        store.save(credential()).unwrap();
+        let (profile, transfer) = super::gateway_credentials(
+            store,
+            config
+                .refresh_client()
+                .map(|client| move || super::configured_refresher(client)),
+            FakeClock::fixed(Timestamp::new(100)),
+        )
+        .unwrap();
+        assert!(matches!(
+            profile,
+            destiny_app::ConfiguredCredentialSource::Refreshing(_)
+        ));
+        assert!(matches!(
+            transfer,
+            destiny_app::ConfiguredCredentialSource::Refreshing(_)
+        ));
+        assert_eq!(
+            compose_server(&config, InMemoryCredentialStore::default())
+                .unwrap_err()
+                .category(),
+            ErrorCategory::AuthorizationRequired
+        );
     }
 
     #[test]

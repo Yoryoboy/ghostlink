@@ -8,11 +8,15 @@ use std::path::{Path, PathBuf};
 use destiny_core::{AppError, ClientSecret, DefinitionVersion, FreshnessPolicy};
 use url::Url;
 
+use crate::defaults::{CompiledDefaults, OFFICIAL};
+
 mod file;
+pub(crate) mod paths;
 
 const API_KEY: &str = "BUNGIE_API_KEY";
 const CLIENT_ID: &str = "BUNGIE_PUBLIC_CLIENT_ID";
 const CLIENT_SECRET: &str = "BUNGIE_CLIENT_SECRET";
+const TOKEN_BROKER_URL: &str = "GHOSTLINK_TOKEN_BROKER_URL";
 const CALLBACK_URI: &str = "BUNGIE_CALLBACK_URI";
 const REGISTERED_CALLBACK_URI: &str = "BUNGIE_REGISTERED_CALLBACK_URI";
 
@@ -127,8 +131,8 @@ pub(crate) struct Config {
 
 #[allow(dead_code)]
 impl Config {
-    /// Loads the exact required keys from the environment, falling back per key
-    /// to the per-user configuration file. Present environment values win.
+    /// Loads exact keys with environment > per-user file > compiled defaults
+    /// precedence. Present values win, even when empty or invalid.
     pub fn from_env() -> Result<Self, AppError> {
         let values =
             exact_env_values(&[API_KEY, CLIENT_ID, CALLBACK_URI, REGISTERED_CALLBACK_URI])?;
@@ -208,8 +212,9 @@ impl LoginCallbackUri {
 /// Validated configuration for the interactive login composition.
 ///
 /// It carries the client identifier, registered custom-scheme callback URI,
-/// and optional confidential-client secret. Without a secret, login remains a
-/// public-client flow. Login never loads the API key needed by the read runtime.
+/// and the selected client mode. A secret selects direct confidential exchange;
+/// otherwise a broker URL selects renewable broker exchange, else public mode.
+/// Login never loads the API key needed by the read runtime.
 ///
 /// Every field is private and reachable only through a trusted accessor.
 /// [`fmt::Debug`] renders no value, and every parse failure is a sanitized
@@ -218,13 +223,13 @@ impl LoginCallbackUri {
 pub struct LoginRuntimeConfig {
     public_client_id: String,
     callback_uri: LoginCallbackUri,
-    client_secret: Option<ClientSecret>,
+    auth_mode: ClientAuthMode,
 }
 
 impl LoginRuntimeConfig {
-    /// Loads login configuration from the environment and per-user file.
+    /// Loads login configuration from the environment, file, and compiled defaults.
     ///
-    /// Present process values win per key; absent keys fall back to the file.
+    /// Precedence per key is process environment, file, then compiled defaults.
     /// Only the exact required keys are retained, apart from the environment
     /// variables used to resolve the file path. Invalid Unicode and malformed
     /// or insecure files fail closed with a sanitized configuration error.
@@ -234,6 +239,7 @@ impl LoginRuntimeConfig {
             CALLBACK_URI,
             REGISTERED_CALLBACK_URI,
             CLIENT_SECRET,
+            TOKEN_BROKER_URL,
         ])?;
         Self::from_values(&values)
     }
@@ -253,7 +259,7 @@ impl LoginRuntimeConfig {
         Ok(Self {
             public_client_id,
             callback_uri: callback,
-            client_secret: optional_client_secret(values)?,
+            auth_mode: client_auth_mode(values)?,
         })
     }
 
@@ -268,7 +274,12 @@ impl LoginRuntimeConfig {
 
     /// The confidential-client secret, or `None` for public mode.
     pub fn client_secret(&self) -> Option<&ClientSecret> {
-        self.client_secret.as_ref()
+        self.auth_mode.client_secret()
+    }
+
+    /// The explicitly selected public, confidential, or broker mode.
+    pub fn auth_mode(&self) -> &ClientAuthMode {
+        &self.auth_mode
     }
 
     /// The exact validated custom-scheme callback URI to send to the provider.
@@ -297,7 +308,73 @@ fn optional_client_secret(
         .transpose()
 }
 
-/// Loads only the additional client identifier needed by confidential reads.
+/// Validated OAuth client mode. Values never appear in diagnostics.
+#[derive(Clone, Eq, PartialEq)]
+pub enum ClientAuthMode {
+    Public,
+    Confidential(ClientSecret),
+    /// The validated HTTPS broker base URL (not the token path).
+    Broker(String),
+}
+
+impl ClientAuthMode {
+    pub fn client_secret(&self) -> Option<&ClientSecret> {
+        match self {
+            Self::Confidential(secret) => Some(secret),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Debug for ClientAuthMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        destiny_core::redact::opaque(formatter, "ClientAuthMode")
+    }
+}
+
+fn client_auth_mode(values: &HashMap<String, String>) -> Result<ClientAuthMode, AppError> {
+    // Validate every supplied key, even when a secret takes precedence.
+    let broker = values
+        .get(TOKEN_BROKER_URL)
+        .map(|value| {
+            if value.is_empty()
+                || value.len() > 2048
+                || value.trim() != value
+                || value.chars().any(char::is_control)
+            {
+                return Err(AppError::configuration());
+            }
+            let url = Url::parse(value).map_err(|_| AppError::configuration())?;
+            if url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+                || !has_plain_https_authority(value)
+            {
+                return Err(AppError::configuration());
+            }
+            Ok(value.clone())
+        })
+        .transpose()?;
+    Ok(match (optional_client_secret(values)?, broker) {
+        (Some(secret), _) => ClientAuthMode::Confidential(secret),
+        (None, Some(broker)) => ClientAuthMode::Broker(broker),
+        (None, None) => ClientAuthMode::Public,
+    })
+}
+
+/// Checks the raw text, because the URL parser silently drops empty userinfo
+/// and extra authority slashes (`https:////@host`).
+fn has_plain_https_authority(value: &str) -> bool {
+    value.strip_prefix("https://").is_some_and(|rest| {
+        let authority = rest.split('/').next().unwrap_or_default();
+        !authority.is_empty() && !authority.contains('@')
+    })
+}
+
+/// Loads only the additional client identifier needed by renewable reads.
 fn read_env_values<F>(mut load: F) -> Result<HashMap<String, String>, AppError>
 where
     F: FnMut(&[&str]) -> Result<HashMap<String, String>, AppError>,
@@ -308,8 +385,9 @@ where
         READ_DEFINITION_VERSION,
         READ_FRESHNESS_TTL_SECONDS,
         CLIENT_SECRET,
+        TOKEN_BROKER_URL,
     ])?;
-    if values.contains_key(CLIENT_SECRET) {
+    if values.contains_key(CLIENT_SECRET) || values.contains_key(TOKEN_BROKER_URL) {
         values.extend(load(&[CLIENT_ID])?);
     }
     Ok(values)
@@ -324,14 +402,15 @@ fn required(values: &HashMap<String, String>, name: &str) -> Result<String, AppE
 
 /// Reads named configuration keys with process environment precedence per key.
 ///
-/// The bounded per-user file supplies absent keys. Only path-selection variables
-/// and requested process keys are inspected; invalid Unicode fails sanitized.
+/// The bounded per-user file, then compiled defaults, supply absent keys. Only
+/// path-selection variables and requested keys are inspected; invalid Unicode
+/// fails sanitized. Explicit empty or invalid overrides never fall back.
 fn exact_env_values(names: &[&str]) -> Result<HashMap<String, String>, AppError> {
     exact_source_values(names, |name| std::env::var_os(name))
 }
 
-/// Composes file fallback with an injected environment lookup for deterministic
-/// tests. The parsed map remains private and is never rendered in diagnostics.
+/// Composes all sources with the official defaults and an injected environment.
+/// The parsed map remains private and is never rendered in diagnostics.
 fn exact_source_values<F>(
     names: &[&str],
     mut lookup: F,
@@ -339,9 +418,37 @@ fn exact_source_values<F>(
 where
     F: FnMut(&str) -> Option<OsString>,
 {
+    exact_source_values_with_defaults(names, &OFFICIAL, &mut lookup)
+}
+
+fn exact_source_values_with_defaults<F>(
+    names: &[&str],
+    defaults: &CompiledDefaults,
+    mut lookup: F,
+) -> Result<HashMap<String, String>, AppError>
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
     let values = file::load(file::resolve_path(&mut lookup))?;
     exact_key_values(names, |name| {
-        lookup(name).or_else(|| values.get(name).map(OsString::from))
+        lookup(name)
+            .or_else(|| values.get(name).map(OsString::from))
+            .or_else(|| {
+                if name == READ_DATABASE_PATH {
+                    return paths::database_path(paths::Platform::current(), &mut lookup)
+                        .map(PathBuf::into_os_string);
+                }
+                let value = match name {
+                    API_KEY => defaults.api_key,
+                    CLIENT_ID => defaults.public_client_id,
+                    TOKEN_BROKER_URL => defaults.token_broker_url,
+                    CALLBACK_URI => defaults.callback_uri,
+                    REGISTERED_CALLBACK_URI => defaults.registered_callback_uri,
+                    READ_FRESHNESS_TTL_SECONDS => defaults.freshness_ttl_seconds,
+                    _ => None,
+                };
+                value.map(OsString::from)
+            })
     })
 }
 
@@ -400,11 +507,11 @@ impl fmt::Debug for ReadApiKey {
     }
 }
 
-/// Validated confidential refresh client; never renders its values.
+/// Validated renewable refresh client; never renders its values.
 #[derive(Clone, Eq, PartialEq)]
 pub struct RefreshClientConfig {
     client_id: String,
-    client_secret: ClientSecret,
+    auth_mode: ClientAuthMode,
 }
 
 impl RefreshClientConfig {
@@ -413,9 +520,14 @@ impl RefreshClientConfig {
         &self.client_id
     }
 
-    /// The trusted confidential-client secret accessor.
-    pub fn client_secret(&self) -> &ClientSecret {
-        &self.client_secret
+    /// The trusted confidential-client secret accessor, absent in broker mode.
+    pub fn client_secret(&self) -> Option<&ClientSecret> {
+        self.auth_mode.client_secret()
+    }
+
+    /// The selected renewable mode (confidential or broker).
+    pub fn auth_mode(&self) -> &ClientAuthMode {
+        &self.auth_mode
     }
 }
 
@@ -438,15 +550,15 @@ impl fmt::Debug for RefreshClientConfig {
 pub struct ReadRuntimeConfig {
     api_key: ReadApiKey,
     database_path: PathBuf,
-    definition_version: DefinitionVersion,
+    definition_version: Option<DefinitionVersion>,
     freshness_ttl_seconds: u64,
     refresh_client: Option<RefreshClientConfig>,
 }
 
 impl ReadRuntimeConfig {
-    /// Loads shared read configuration from the environment and per-user file.
+    /// Loads read configuration from the environment, file, and compiled defaults.
     ///
-    /// Present process values win per key; absent keys fall back to the file.
+    /// Precedence per key is process environment, file, then compiled defaults.
     /// Only the exact required keys are retained, apart from the environment
     /// variables used to resolve the file path. Invalid Unicode and malformed
     /// or insecure files fail closed with a sanitized configuration error.
@@ -456,31 +568,36 @@ impl ReadRuntimeConfig {
     }
 
     /// Validates the shared read runtime configuration from an explicit value map.
+    /// Source loading supplies OS defaults; this validator never consults the
+    /// host environment, so absent paths in explicit maps still fail closed.
     pub fn from_values(values: &HashMap<String, String>) -> Result<Self, AppError> {
         let api_key = ReadApiKey::new(required(values, API_KEY)?)?;
         let database_path = read_database_path(&required(values, READ_DATABASE_PATH)?)?;
-        let definition_version =
-            read_definition_version(&required(values, READ_DEFINITION_VERSION)?)?;
+        let definition_version = values
+            .get(READ_DEFINITION_VERSION)
+            .map(|value| read_definition_version(value))
+            .transpose()?;
         let freshness_ttl_seconds =
             read_freshness_ttl(&required(values, READ_FRESHNESS_TTL_SECONDS)?)?;
+        let auth_mode = client_auth_mode(values)?;
+        let refresh_client = match auth_mode {
+            ClientAuthMode::Public => None,
+            auth_mode => Some(RefreshClientConfig {
+                client_id: required(values, CLIENT_ID)?,
+                auth_mode,
+            }),
+        };
         Ok(Self {
             api_key,
             database_path,
             definition_version,
             freshness_ttl_seconds,
-            refresh_client: optional_client_secret(values)?
-                .map(|client_secret| -> Result<_, AppError> {
-                    Ok(RefreshClientConfig {
-                        client_id: required(values, CLIENT_ID)?,
-                        client_secret,
-                    })
-                })
-                .transpose()?,
+            refresh_client,
         })
     }
 
-    /// The confidential refresh client, or `None` for public reads.
-    /// A client identifier is required only when a secret is configured.
+    /// The renewable refresh client, or `None` for public reads.
+    /// A client identifier is required for confidential and broker modes.
     pub fn refresh_client(&self) -> Option<&RefreshClientConfig> {
         self.refresh_client.as_ref()
     }
@@ -495,9 +612,24 @@ impl ReadRuntimeConfig {
         &self.database_path
     }
 
-    /// The trusted Manifest definition-version accessor.
-    pub fn definition_version(&self) -> &DefinitionVersion {
-        &self.definition_version
+    /// Optional backward-compatible label override (environment beats file).
+    pub fn definition_version(&self) -> Option<&DefinitionVersion> {
+        self.definition_version.as_ref()
+    }
+
+    /// Resolve from committed Manifest metadata, never from profile metadata.
+    /// An absent catalog is distinct from a corrupt/unreadable store.
+    pub fn resolve_definition_version<R: destiny_core::DefinitionRepository>(
+        &self,
+        repository: &R,
+    ) -> Result<DefinitionVersion, AppError> {
+        if let Some(version) = &self.definition_version {
+            return Ok(version.clone());
+        }
+        repository
+            .current_metadata()?
+            .map(|metadata| metadata.definition_version)
+            .ok_or_else(|| AppError::new(destiny_core::ErrorCategory::DefinitionsUnavailable))
     }
 
     /// The validated positive, bounded freshness TTL in seconds.
@@ -587,6 +719,218 @@ mod tests {
     use destiny_core::ErrorCategory;
     use std::collections::HashMap;
     use std::ffi::OsString;
+
+    pub(super) fn injected_defaults() -> super::CompiledDefaults {
+        super::CompiledDefaults {
+            api_key: Some("compiled-key"),
+            public_client_id: Some("compiled-client"),
+            token_broker_url: Some("https://compiled.test"),
+            callback_uri: Some("ghostlink://oauth/callback"),
+            registered_callback_uri: Some("ghostlink://oauth/callback"),
+            freshness_ttl_seconds: Some("321"),
+        }
+    }
+
+    #[test]
+    fn read_sources_supply_database_default_or_sanitized_missing_configuration() {
+        let defaults = injected_defaults();
+        let load = |resolved| {
+            super::exact_source_values_with_defaults(
+                &[
+                    super::API_KEY,
+                    super::READ_DATABASE_PATH,
+                    super::READ_DEFINITION_VERSION,
+                    super::READ_FRESHNESS_TTL_SECONDS,
+                ],
+                &defaults,
+                |name| match name {
+                    "DESTINY_DEFINITION_VERSION" => Some("manifest-test".into()),
+                    "HOME" if resolved => Some("/synthetic-home".into()),
+                    "LOCALAPPDATA" if resolved => Some(r"C:\synthetic-home".into()),
+                    _ => None,
+                },
+            )
+            .unwrap()
+        };
+        let read = ReadRuntimeConfig::from_values(&load(true)).unwrap();
+        assert!(read.database_path().ends_with("ghostlink.db"));
+        let error = ReadRuntimeConfig::from_values(&load(false)).unwrap_err();
+        assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+        assert_eq!(
+            error.to_string(),
+            "required runtime configuration is missing or invalid"
+        );
+    }
+
+    #[test]
+    fn compiled_defaults_supply_absent_keys_and_enable_both_runtimes() {
+        let defaults = injected_defaults();
+        let load = |names: &[&str]| {
+            super::exact_source_values_with_defaults(names, &defaults, |name| match name {
+                "DESTINY_DATABASE_PATH" => Some("synthetic.db".into()),
+                "DESTINY_DEFINITION_VERSION" => Some("manifest-test".into()),
+                _ => None,
+            })
+        };
+        let read = ReadRuntimeConfig::from_values(&super::read_env_values(load).unwrap()).unwrap();
+        assert_eq!(read.api_key().expose_secret(), "compiled-key");
+        assert_eq!(read.freshness_ttl_seconds(), 321);
+        assert_eq!(
+            read.refresh_client().unwrap().client_id(),
+            "compiled-client"
+        );
+        let login = LoginRuntimeConfig::from_values(
+            &load(&[
+                super::CLIENT_ID,
+                super::CALLBACK_URI,
+                super::REGISTERED_CALLBACK_URI,
+                super::TOKEN_BROKER_URL,
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(login.public_client_id(), "compiled-client");
+        assert!(
+            matches!(login.auth_mode(), super::ClientAuthMode::Broker(url) if url == "https://compiled.test")
+        );
+    }
+
+    #[test]
+    fn absent_optional_defaults_keep_sanitized_missing_key_errors() {
+        let defaults = super::CompiledDefaults {
+            api_key: None,
+            public_client_id: None,
+            token_broker_url: None,
+            ..injected_defaults()
+        };
+        let values = super::exact_source_values_with_defaults(
+            &[
+                super::API_KEY,
+                super::CLIENT_ID,
+                super::CALLBACK_URI,
+                super::REGISTERED_CALLBACK_URI,
+                super::CLIENT_SECRET,
+                super::TOKEN_BROKER_URL,
+                super::READ_DATABASE_PATH,
+                super::READ_DEFINITION_VERSION,
+            ],
+            &defaults,
+            |_| None,
+        )
+        .unwrap();
+        for key in [
+            super::API_KEY,
+            super::CLIENT_ID,
+            super::CLIENT_SECRET,
+            super::TOKEN_BROKER_URL,
+            super::READ_DATABASE_PATH,
+            super::READ_DEFINITION_VERSION,
+        ] {
+            assert!(!values.contains_key(key));
+        }
+        for error in [
+            LoginRuntimeConfig::from_values(&values).unwrap_err(),
+            ReadRuntimeConfig::from_values(&values).unwrap_err(),
+        ] {
+            assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+            assert_eq!(
+                error.to_string(),
+                "required runtime configuration is missing or invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn secret_beats_compiled_broker_in_both_runtimes() {
+        let defaults = injected_defaults();
+        let load = |names: &[&str]| {
+            super::exact_source_values_with_defaults(names, &defaults, |name| match name {
+                "BUNGIE_CLIENT_SECRET" => Some("synthetic-secret".into()),
+                "DESTINY_DATABASE_PATH" => Some("synthetic.db".into()),
+                "DESTINY_DEFINITION_VERSION" => Some("manifest-test".into()),
+                _ => None,
+            })
+        };
+        let login = LoginRuntimeConfig::from_values(
+            &load(&[
+                super::CLIENT_ID,
+                super::CALLBACK_URI,
+                super::REGISTERED_CALLBACK_URI,
+                super::CLIENT_SECRET,
+                super::TOKEN_BROKER_URL,
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let read = ReadRuntimeConfig::from_values(&super::read_env_values(load).unwrap()).unwrap();
+        for mode in [
+            login.auth_mode(),
+            read.refresh_client().unwrap().auth_mode(),
+        ] {
+            assert!(matches!(mode, super::ClientAuthMode::Confidential(_)));
+        }
+    }
+
+    #[test]
+    fn compiled_defaults_are_validated_and_empty_env_does_not_fall_back() {
+        for (key, invalid) in [
+            (super::API_KEY, "invalid key"),
+            (super::CLIENT_ID, ""),
+            (super::CALLBACK_URI, "ghostlink://wrong/callback"),
+            (super::REGISTERED_CALLBACK_URI, "ghostlink://oauth/other"),
+            (super::TOKEN_BROKER_URL, "http://invalid.test"),
+            (super::READ_FRESHNESS_TTL_SECONDS, "0"),
+        ] {
+            let mut defaults = injected_defaults();
+            match key {
+                super::API_KEY => defaults.api_key = Some(invalid),
+                super::CLIENT_ID => defaults.public_client_id = Some(invalid),
+                super::CALLBACK_URI => defaults.callback_uri = Some(invalid),
+                super::REGISTERED_CALLBACK_URI => defaults.registered_callback_uri = Some(invalid),
+                super::TOKEN_BROKER_URL => defaults.token_broker_url = Some(invalid),
+                _ => defaults.freshness_ttl_seconds = Some(invalid),
+            }
+            let values = super::exact_source_values_with_defaults(
+                &[
+                    super::API_KEY,
+                    super::CLIENT_ID,
+                    super::CALLBACK_URI,
+                    super::REGISTERED_CALLBACK_URI,
+                    super::TOKEN_BROKER_URL,
+                    super::READ_DATABASE_PATH,
+                    super::READ_DEFINITION_VERSION,
+                    super::READ_FRESHNESS_TTL_SECONDS,
+                ],
+                &defaults,
+                |name| match name {
+                    "DESTINY_DATABASE_PATH" => Some("synthetic.db".into()),
+                    "DESTINY_DEFINITION_VERSION" => Some("manifest-test".into()),
+                    _ => None,
+                },
+            )
+            .unwrap();
+            let error = if matches!(
+                key,
+                super::CALLBACK_URI | super::REGISTERED_CALLBACK_URI | super::CLIENT_ID
+            ) {
+                LoginRuntimeConfig::from_values(&values).unwrap_err()
+            } else {
+                ReadRuntimeConfig::from_values(&values).unwrap_err()
+            };
+            assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+            assert_eq!(
+                error.to_string(),
+                "required runtime configuration is missing or invalid"
+            );
+        }
+        let values = super::exact_source_values_with_defaults(
+            &[super::API_KEY],
+            &injected_defaults(),
+            |name| (name == super::API_KEY).then(|| OsString::from("")),
+        )
+        .unwrap();
+        assert_eq!(values[super::API_KEY], "");
+    }
 
     fn values() -> HashMap<String, String> {
         HashMap::from([
@@ -794,6 +1138,105 @@ mod tests {
     }
 
     #[test]
+    fn auth_mode_precedence_and_broker_lookup() {
+        for secret in [false, true] {
+            let mut login = login_values();
+            login.insert(
+                "GHOSTLINK_TOKEN_BROKER_URL".into(),
+                "https://broker.test".into(),
+            );
+            let mut read = read_runtime_values();
+            read.insert("BUNGIE_PUBLIC_CLIENT_ID".into(), "123".into());
+            read.insert(
+                "GHOSTLINK_TOKEN_BROKER_URL".into(),
+                "https://broker.test".into(),
+            );
+            if secret {
+                login.insert("BUNGIE_CLIENT_SECRET".into(), "secret-sentinel".into());
+                read.insert("BUNGIE_CLIENT_SECRET".into(), "secret-sentinel".into());
+            }
+            let login = LoginRuntimeConfig::from_values(&login).unwrap();
+            let loaded = super::read_env_values(|names| {
+                exact_key_values(names, |name| read.get(name).map(OsString::from))
+            })
+            .unwrap();
+            let read = ReadRuntimeConfig::from_values(&loaded).unwrap();
+            for mode in [
+                login.auth_mode(),
+                read.refresh_client().unwrap().auth_mode(),
+            ] {
+                assert!(if secret {
+                    matches!(mode, super::ClientAuthMode::Confidential(_))
+                } else {
+                    matches!(mode, super::ClientAuthMode::Broker(_))
+                });
+                assert!(!format!("{mode:?}").contains("broker.test"));
+            }
+        }
+        assert!(matches!(
+            LoginRuntimeConfig::from_values(&login_values())
+                .unwrap()
+                .auth_mode(),
+            super::ClientAuthMode::Public
+        ));
+        let values =
+            super::exact_source_values(&["GHOSTLINK_TOKEN_BROKER_URL"], |name| match name {
+                "GHOSTLINK_CONFIG_FILE" => {
+                    Some(OsString::from("/nonexistent/ghostlink-test-config.env"))
+                }
+                "GHOSTLINK_TOKEN_BROKER_URL" => Some(OsString::from("https://env.test")),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(values["GHOSTLINK_TOKEN_BROKER_URL"], "https://env.test");
+    }
+
+    #[test]
+    fn broker_config_enables_refresh_and_rejects_unsafe_urls() {
+        let mut read = read_runtime_values();
+        read.insert("BUNGIE_PUBLIC_CLIENT_ID".into(), "123".into());
+        read.insert(
+            "GHOSTLINK_TOKEN_BROKER_URL".into(),
+            "https://broker.test/".into(),
+        );
+        assert!(
+            ReadRuntimeConfig::from_values(&read)
+                .unwrap()
+                .refresh_client()
+                .is_some()
+        );
+        for invalid in [
+            "http://broker.test",
+            "//broker.test",
+            "https://user@broker.test",
+            "https://@broker.test",
+            "https:////@broker.test",
+            "https:///broker.test",
+            "HTTPS://@broker.test",
+            "https://:pass@broker.test",
+            "https://broker.test?query",
+            "https://broker.test#fragment",
+            "https://broker.test\n",
+            "",
+            &format!("https://broker.test/{}", "x".repeat(2048)),
+        ] {
+            read.insert("GHOSTLINK_TOKEN_BROKER_URL".into(), invalid.into());
+            let mut login = login_values();
+            login.insert("GHOSTLINK_TOKEN_BROKER_URL".into(), invalid.into());
+            for error in [
+                ReadRuntimeConfig::from_values(&read).unwrap_err(),
+                LoginRuntimeConfig::from_values(&login).unwrap_err(),
+            ] {
+                assert_eq!(error.category(), ErrorCategory::ConfigurationError);
+                assert_eq!(
+                    error.to_string(),
+                    "required runtime configuration is missing or invalid"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn optional_secret_preserves_public_login_and_reads() {
         assert!(
             LoginRuntimeConfig::from_values(&login_values())
@@ -828,7 +1271,10 @@ mod tests {
         let read = ReadRuntimeConfig::from_values(&read).unwrap();
         let client = read.refresh_client().unwrap();
         assert_eq!(client.client_id(), "client-id-placeholder");
-        assert_eq!(client.client_secret().as_bytes(), sentinel.as_bytes());
+        assert_eq!(
+            client.client_secret().unwrap().as_bytes(),
+            sentinel.as_bytes()
+        );
         let rendered = format!(
             "{login:?} {read:?} {read} {client:?} {:?}",
             login.client_secret()
@@ -899,6 +1345,7 @@ mod tests {
                             | "DESTINY_DEFINITION_VERSION"
                             | "DESTINY_FRESHNESS_TTL_SECONDS"
                             | "BUNGIE_CLIENT_SECRET"
+                            | "GHOSTLINK_TOKEN_BROKER_URL"
                             | "BUNGIE_PUBLIC_CLIENT_ID"
                     ));
                     source.get(name).map(OsString::from)
@@ -916,21 +1363,93 @@ mod tests {
     }
 
     #[test]
+    fn definition_version_resolution_prefers_override_then_manifest_and_types_absence() {
+        use crate::test_support::InMemoryDefinitionRepository;
+        let repository = InMemoryDefinitionRepository::new(
+            super::DefinitionVersion::new("real-v1"),
+            vec![destiny_core::ItemDefinition {
+                hash: destiny_core::ItemHash::new(1),
+                bucket_hash: None,
+                name: "item".into(),
+                item_type: None,
+                tier: None,
+                element: None,
+                slot: None,
+                class_type: None,
+                plug_category: None,
+                tags: vec![],
+                version: super::DefinitionVersion::new("real-v1"),
+            }],
+        );
+        let mut values = read_runtime_values();
+        let explicit = ReadRuntimeConfig::from_values(&values).unwrap();
+        assert_eq!(
+            explicit
+                .resolve_definition_version(&repository)
+                .unwrap()
+                .as_str(),
+            "manifest-v1"
+        );
+        values.remove("DESTINY_DEFINITION_VERSION");
+        let automatic = ReadRuntimeConfig::from_values(&values).unwrap();
+        assert_eq!(
+            automatic
+                .resolve_definition_version(&repository)
+                .unwrap()
+                .as_str(),
+            "real-v1"
+        );
+        let empty = InMemoryDefinitionRepository::default();
+        assert_eq!(
+            automatic
+                .resolve_definition_version(&empty)
+                .unwrap_err()
+                .category(),
+            destiny_core::ErrorCategory::DefinitionsUnavailable
+        );
+        assert_eq!(
+            explicit
+                .resolve_definition_version(&empty)
+                .unwrap()
+                .as_str(),
+            "manifest-v1"
+        );
+        let broken = empty.with_metadata_failure(destiny_core::AppError::new(
+            destiny_core::ErrorCategory::LocalStorage,
+        ));
+        assert_eq!(
+            automatic
+                .resolve_definition_version(&broken)
+                .unwrap_err()
+                .category(),
+            destiny_core::ErrorCategory::LocalStorage
+        );
+    }
+
+    #[test]
+    fn read_runtime_config_accepts_absent_definition_override() {
+        let mut values = read_runtime_values();
+        values.remove("DESTINY_DEFINITION_VERSION");
+        assert!(ReadRuntimeConfig::from_values(&values).is_ok());
+        values.insert("DESTINY_DEFINITION_VERSION".into(), String::new());
+        assert!(ReadRuntimeConfig::from_values(&values).is_err());
+    }
+
+    #[test]
     fn read_runtime_config_parses_every_typed_field() {
         let config = ReadRuntimeConfig::from_values(&read_runtime_values()).unwrap();
         assert_eq!(config.api_key().expose_secret(), "api-key-placeholder");
         assert_eq!(config.database_path().to_string_lossy(), "/tmp/destiny.db");
-        assert_eq!(config.definition_version().as_str(), "manifest-v1");
+        assert_eq!(config.definition_version().unwrap().as_str(), "manifest-v1");
         assert_eq!(config.freshness_ttl_seconds(), 900);
         assert_eq!(config.freshness_policy().ttl_seconds, 900);
     }
 
     #[test]
-    fn read_runtime_config_requires_every_value() {
+    fn read_runtime_config_requires_every_resolved_value() {
         for key in [
             "BUNGIE_API_KEY",
             "DESTINY_DATABASE_PATH",
-            "DESTINY_DEFINITION_VERSION",
             "DESTINY_FRESHNESS_TTL_SECONDS",
         ] {
             let mut missing = read_runtime_values();
@@ -1145,6 +1664,7 @@ mod tests {
                 ReadRuntimeConfig::from_values(&valid)
                     .unwrap()
                     .definition_version()
+                    .unwrap()
                     .as_str(),
                 good
             );

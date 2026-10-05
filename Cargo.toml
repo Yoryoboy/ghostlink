@@ -13,6 +13,10 @@ members = [
 edition = "2024"
 license = "MIT OR Apache-2.0"
 version = "0.1.0"
+repository = "https://github.com/Yoryoboy/ghostlink"
+homepage = "https://github.com/Yoryoboy/ghostlink"
+description = "Destiny inventory tools for the command line and AI agents"
+authors = ["Yoryoboy"]
 
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -32,3 +36,8 @@ destiny-core = { path = "crates/destiny-core" }
 keyring-core = "1.0.0"
 tokio = { version = "1", default-features = false }
 windows-native-keyring-store = "1.1.0"
+
+# cargo-dist's optimized release profile.
+[profile.dist]
+inherits = "release"
+lto = "thin"

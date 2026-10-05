@@ -1,8 +1,86 @@
 # Ghostlink CLI reference
 
-The `ghostlink` executable (crate `destiny-cli`). Commands are shown both as
-`ghostlink <command>` and, from a checkout, `cargo run -p destiny-cli -- <command>`.
-See [configuration](configuration.md) for setup and authorization.
+Install the `ghostlink` executable from a release; see the
+[README](../README.md) for installation and setup. From a checkout, use
+`cargo run -p ghostlink --bin ghostlink -- <command>` (the library is still named
+`destiny_cli`). See [configuration](configuration.md) for optional overrides.
+
+## First-run setup
+
+Run `ghostlink` in an interactive terminal for the first-run wizard, or run
+`ghostlink setup` to repeat it at any time. Both stdin and stdout must be TTYs.
+Bare `ghostlink` otherwise prints the normal help, including with `--json` or
+when setup has already completed. Explicit `setup` without both TTYs, or with
+`--json`, returns a typed `invalid_request` error (exit 2), never a prompt.
+
+The wizard offers only detected Claude Code, Codex, OpenCode and Pi agents,
+all preselected. Use space to toggle and enter to confirm. Selecting none skips
+installation; if no agents are detected, the wizard says so and proceeds to
+login. Choose skill and MCP server (recommended), MCP only, or CLI skill only.
+Installation uses the same engine and per-agent outcomes described below,
+including the manual configuration snippet when OpenCode cannot be merged.
+
+Sign-in defaults to yes and runs the existing `ghostlink login --callback auto`
+flow; successful login auto-syncs missing Manifest definitions. A Manifest sync
+failure is non-fatal and includes a `ghostlink sync-manifest` hint. Login may be
+skipped. Esc or Ctrl+C at a wizard prompt cancels with exit 130 and keeps any
+already-completed installations; no completion marker is written on abort.
+
+At the end, the wizard writes `setup-complete` beside the **default** database:
+`$XDG_DATA_HOME/ghostlink/` (absolute XDG path), otherwise
+`~/.local/share/ghostlink/`, or `%LOCALAPPDATA%\\ghostlink\\` on Windows.
+`DESTINY_DATABASE_PATH` does not relocate this marker. Reaching the end writes
+the marker even when login was skipped or installation/login reported errors;
+those errors retain a non-zero exit and can be retried with `ghostlink setup`.
+Failure to write the marker returns a non-zero exit.
+
+For automation, use the explicit non-interactive equivalents:
+
+```sh
+ghostlink agents install --agent claude pi       # both skill and MCP
+# Or add --skill / --mcp to install only one integration.
+ghostlink login                                # callback auto; may use paste
+```
+
+## AI agent integrations (non-interactive)
+
+```sh
+ghostlink agents status --json
+ghostlink agents install --agent claude codex opencode pi
+ghostlink agents uninstall --agent pi --mcp
+```
+
+Only these four agents are supported. Repeated `--agent` is also accepted;
+install/uninstall require an explicit selection. `--skill` or `--mcp` selects
+one step; neither flag means both. No wizard or confirmation is involved.
+Detection resolves PATH without execution or checks the agent's config directory.
+Status inspects the skill and uses `mcp list` for CLI-managed registrations.
+
+The embedded, version-matched skill installs into each agent's skill directory
+(Pi uses `~/.agents/skills`). Foreign skills and symlinked paths are refused.
+Uninstall requires the `name: ghostlink` marker and preserves unknown files.
+MCP install requires an absolute `destiny-mcp` sibling of this `ghostlink` binary
+(`destiny-mcp.exe` on Windows); there is no PATH fallback. Claude uses user scope.
+CLI registration retries only an explicit `already exists` diagnostic, by
+removing the named Ghostlink registration and adding it again. Commands use
+argv, captured bounded output, and a 15-second timeout, never a shell.
+
+OpenCode merges only `mcp.ghostlink` into strict JSON, preserving other keys.
+Each adapter run backs up the pre-write file to `opencode.json.ghostlink-backup`
+once, then writes via a same-directory temporary file and rename. JSONC,
+invalid JSON, or incompatible object shapes remain untouched and produce
+`manual_step_required` with a snippet. A failed write may leave its temporary
+file for recovery. Uninstall removes only `mcp.ghostlink`.
+
+JSON has `kind: "agents"` and an `agents` array with `agent`, `detected`, `skill`
+and `mcp`; each selected step has `status`, plus `snippet` or a typed `error`
+when applicable. Unselected steps are null. Outcomes are `installed`,
+`already_installed`, `removed`, `not_installed`, `manual_step_required`, `failed`.
+All agents and steps are attempted independently. Exit 51 (`local_storage`)
+means at least one failed step; the complete report is on stderr, otherwise
+stdout and exit 0 (including manual steps). Invalid arguments exit 2.
+Integration bootstrap is operator-facing; it is not required in the embedded
+game-operation skill's command-coverage checklist.
 
 ## Login
 
@@ -37,21 +115,20 @@ for installation details, manual fallback, and security limits.
 
 ## Read commands
 
-`destiny-cli` exposes three read commands over the shared WU-007 query
-services:
+`ghostlink` exposes read commands over the shared query services:
 
 ```sh
-cargo run -p destiny-cli -- list-characters
-cargo run -p destiny-cli -- search-inventory --text gjallar --limit 5
-cargo run -p destiny-cli -- inspect-item 700000000000000001
-cargo run -p destiny-cli -- subclass --character hunter
-cargo run -p destiny-cli -- subclass-options --character hunter --element strand --locked
+ghostlink list-characters
+ghostlink search-inventory --text gjallar --limit 5
+ghostlink inspect-item 700000000000000001
+ghostlink subclass --character hunter
+ghostlink subclass-options --character hunter --element strand --locked
 ```
 
 Add the global `--json` flag to select machine output:
 
 ```sh
-cargo run -p destiny-cli -- --json search-inventory --text gjallar --item-hash 1001
+ghostlink --json search-inventory --text gjallar --item-hash 1001
 ```
 
 ### Explicit profile sync
@@ -232,8 +309,8 @@ next profile sync (`ghostlink sync`); no migration is needed.
 ### Manifest definitions
 
 Item names, types and tiers, and the activity, milestone and modifier names
-used by `weekly-reset`, come from the Destiny 2 Manifest, which must be loaded
-once before those commands can resolve them:
+used by `weekly-reset`, come from the Destiny 2 Manifest. Missing catalogs sync
+automatically after login or on a CLI read. To refresh them explicitly:
 
 ```sh
 ghostlink sync-manifest          # or: ghostlink --json sync-manifest
@@ -251,12 +328,19 @@ ghostlink sync-manifest          # or: ghostlink --json sync-manifest
 - Re-running it fetches only the small Manifest index; when the live version
   equals the stored one and all four catalogs are populated it reports
   `unchanged` and downloads nothing. Run it again after a Destiny patch.
-- Opening the database with this version migrates it to schema v7; older
-  binaries that do not support v7 refuse the database. Run `sync-manifest`
-  once after upgrading to populate plug categories for perk-name searches.
-- Until a catalog is loaded, `search-inventory`, `inspect-item` and `subclass` fail with
-  `definitions not loaded; run ghostlink sync-manifest` (CLI and MCP) instead
-  of returning an empty result.
+- Opening the database applies supported schema migrations automatically;
+  older binaries can refuse a newer database. After an upgrade that adds catalog
+  attributes, run `sync-manifest` to populate them even if the version is unchanged.
+- On first CLI read or profile sync, an absent catalog is synced automatically
+  once using the same path as `sync-manifest`. The progress notice
+  `Definitions not loaded; syncing manifest...` goes to stderr only, including
+  with `--json`; stdout JSON shapes and exit codes are unchanged. Sync failures
+  remain typed errors, not empty results. Existing catalogs are not automatically
+  updated: run `sync-manifest` after a patch or an upgrade needing new catalogs.
+- After a successful `ghostlink login`, an absent catalog is also synced. Failure
+  does not fail the login; stderr suggests running `ghostlink sync-manifest`.
+- MCP does not download definitions during a tool call. An absent catalog returns
+  `definitions not loaded; run ghostlink sync-manifest` instead.
 
 ### Filter owned items by stats (`--stat`)
 
@@ -288,7 +372,7 @@ refreshes the stored profile projection).
 `ghostlink subclass [--character <id|class>]` shows the equipped subclass super,
 abilities, aspects and fragments. Omit `--character` for all characters, or use
 an exact character id or unique `hunter`, `titan` or `warlock` class
-(case-insensitive). Requires login and `ghostlink sync-manifest`.
+(case-insensitive). Requires login; missing definitions sync automatically.
 
 `ghostlink --json subclass` returns `kind: "subclass"` and a `characters` array.
 Each entry has `character_id`, `class` and `subclass` (null if none is equipped).
@@ -316,8 +400,8 @@ catalog even when Bungie's version is unchanged.
 from profile `pointProgression` and each character's equipped artifact and perks
 from the freshness-synchronized inventory. Text shows points/cap and, below the
 cap, progress toward the next point. Empty perk sockets appear as `(empty)`.
-Requires login and `ghostlink sync-manifest`; live points are not persisted in
-SQLite. Character selection follows the subclass rules above.
+Requires login; missing definitions sync automatically. Live points are not
+persisted in SQLite. Character selection follows the subclass rules above.
 
 `ghostlink --json artifact` returns `kind: "artifact"`, nullable `points`
 (`points`, `points_cap`, `progress_to_next_level`, `next_level_at`) and `characters`.
@@ -443,7 +527,7 @@ and rejected with `--json`):
 - Human success output is line-oriented text with a `revision` / `checked_at` /
   `freshness` metadata footer. Empty and missing outcomes are explicit.
 - JSON success output is exactly one object on stdout with a stable `kind`
-  (`character_list`, `inventory_search`, or `item_inspection`) and a bounded
+  (such as `character_list`, `inventory_search`, or `item_inspection`) and a bounded
   `metadata` block (`revision`, `checked_at`, `source`, `freshness`). Definition
   search candidates and concrete instance hits stay in separate, bounded arrays.
 - `inspect-item` accepts only a concrete instance identifier; a missing instance

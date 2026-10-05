@@ -2,6 +2,7 @@
 
 pub mod loadout;
 pub use loadout::*;
+pub mod agents;
 pub mod artifact;
 pub use artifact::*;
 pub mod auth;

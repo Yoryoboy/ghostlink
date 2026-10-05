@@ -12,18 +12,25 @@ const MAX_FILE_BYTES: usize = 64 * 1024;
 
 /// Resolves an explicit override, absolute XDG directory, or HOME fallback.
 /// Path values stay native OS strings and are never included in errors.
-pub(super) fn resolve_path<F>(mut lookup: F) -> Option<PathBuf>
+pub(super) fn resolve_path<F>(lookup: F) -> Option<PathBuf>
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
+    resolve_path_for(super::paths::Platform::current(), lookup)
+}
+
+fn resolve_path_for<F>(platform: super::paths::Platform, mut lookup: F) -> Option<PathBuf>
 where
     F: FnMut(&str) -> Option<OsString>,
 {
     if let Some(path) = lookup("GHOSTLINK_CONFIG_FILE").filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(path));
     }
-    if let Some(path) = lookup("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
-        let path = PathBuf::from(path);
-        if path.is_absolute() {
-            return Some(path.join("ghostlink/config.env"));
-        }
+    if matches!(platform, super::paths::Platform::Windows) {
+        return super::paths::windows_path(lookup("APPDATA"), r"ghostlink\config.env");
+    }
+    if let Some(path) = lookup("XDG_CONFIG_HOME").filter(super::paths::unix_absolute) {
+        return Some(PathBuf::from(path).join("ghostlink/config.env"));
     }
     lookup("HOME").map(|home| PathBuf::from(home).join(".config/ghostlink/config.env"))
 }
@@ -147,6 +154,49 @@ mod tests {
     }
 
     #[test]
+    fn windows_config_uses_appdata_and_explicit_override() {
+        use crate::config::paths::Platform;
+        let resolve = |explicit: Option<&str>, appdata: &str| {
+            super::resolve_path_for(Platform::Windows, |name| match name {
+                "GHOSTLINK_CONFIG_FILE" => explicit.map(OsString::from),
+                "APPDATA" => Some(appdata.into()),
+                _ => panic!("unexpected lookup"),
+            })
+        };
+        assert_eq!(
+            resolve(None, r"C:\Users\test\AppData\Roaming"),
+            Some(PathBuf::from(
+                r"C:\Users\test\AppData\Roaming\ghostlink\config.env"
+            ))
+        );
+        assert_eq!(
+            resolve(Some("override.env"), "relative"),
+            Some("override.env".into())
+        );
+        for invalid in ["", "relative", r"C:relative", r"\rooted"] {
+            assert!(resolve(None, invalid).is_none());
+        }
+    }
+
+    #[test]
+    fn database_file_and_env_override_os_default() {
+        let fixture = Fixture::new(b"DESTINY_DATABASE_PATH=file.db\n");
+        for override_value in [None, Some("env.db"), Some("")] {
+            let values = exact_source_values(&["DESTINY_DATABASE_PATH"], |name| match name {
+                "DESTINY_DATABASE_PATH" => override_value.map(OsString::from),
+                "HOME" => Some("/synthetic-home".into()),
+                "LOCALAPPDATA" => Some(r"C:\synthetic-home".into()),
+                _ => fixture.env(name),
+            })
+            .unwrap();
+            assert_eq!(
+                values["DESTINY_DATABASE_PATH"],
+                override_value.unwrap_or("file.db")
+            );
+        }
+    }
+
+    #[test]
     fn parsing_supports_comments_export_quotes_and_whitespace() {
         let parsed = parse(b"\n  # ignored\n export FIRST = \"first value\" \nSECOND='second'\n_THIRD9 = plain=tail\nEMPTY=\n").unwrap();
         assert_eq!(parsed.get("FIRST").map(String::as_str), Some("first value"));
@@ -185,12 +235,10 @@ mod tests {
         sanitized(load(Some(fixture.0.clone())).unwrap_err());
     }
 
-    // The fixtures use Unix absolute paths; `/xdg` is not absolute on Windows.
-    #[cfg(unix)]
     #[test]
     fn path_resolution_obeys_precedence_and_ignores_relative_xdg() {
         let resolve = |explicit: &str, xdg: &str, home: Option<&str>| {
-            super::resolve_path(|name| match name {
+            super::resolve_path_for(crate::config::paths::Platform::Unix, |name| match name {
                 "GHOSTLINK_CONFIG_FILE" => Some(explicit.into()),
                 "XDG_CONFIG_HOME" => Some(xdg.into()),
                 "HOME" => home.map(OsString::from),
@@ -289,6 +337,87 @@ mod tests {
     }
 
     #[test]
+    fn file_and_env_override_each_compiled_default() {
+        let defaults = super::super::tests::injected_defaults();
+        let names = [
+            "BUNGIE_API_KEY",
+            "BUNGIE_PUBLIC_CLIENT_ID",
+            "BUNGIE_CALLBACK_URI",
+            "BUNGIE_REGISTERED_CALLBACK_URI",
+            "GHOSTLINK_TOKEN_BROKER_URL",
+            "DESTINY_FRESHNESS_TTL_SECONDS",
+        ];
+        let fixture = Fixture::new(b"BUNGIE_API_KEY=file-key\nBUNGIE_PUBLIC_CLIENT_ID=file-client\nBUNGIE_CALLBACK_URI=file-callback\nBUNGIE_REGISTERED_CALLBACK_URI=file-registered\nGHOSTLINK_TOKEN_BROKER_URL=https://file.test\nDESTINY_FRESHNESS_TTL_SECONDS=456\n");
+        let expected = [
+            "file-key",
+            "file-client",
+            "file-callback",
+            "file-registered",
+            "https://file.test",
+            "456",
+        ];
+        let file_values =
+            super::super::exact_source_values_with_defaults(&names, &defaults, |name| {
+                fixture.env(name)
+            })
+            .unwrap();
+        for (key, value) in names.iter().zip(expected) {
+            assert_eq!(file_values[*key], value);
+            let env_values =
+                super::super::exact_source_values_with_defaults(&names, &defaults, |name| {
+                    if name == *key {
+                        Some("env-value".into())
+                    } else {
+                        fixture.env(name)
+                    }
+                })
+                .unwrap();
+            assert_eq!(env_values[*key], "env-value");
+        }
+    }
+
+    #[test]
+    fn broker_uses_file_fallback_and_environment_precedence() {
+        let fixture = Fixture::new(b"BUNGIE_API_KEY=file-key\nDESTINY_DATABASE_PATH=/tmp/synthetic.db\nDESTINY_DEFINITION_VERSION=v1\nDESTINY_FRESHNESS_TTL_SECONDS=900\nBUNGIE_PUBLIC_CLIENT_ID=file-client\nGHOSTLINK_TOKEN_BROKER_URL=https://file.test/\nBUNGIE_CALLBACK_URI=ghostlink://oauth/callback\nBUNGIE_REGISTERED_CALLBACK_URI=ghostlink://oauth/callback\n");
+        for override_url in [None, Some("https://env.test/")] {
+            let lookup = |name: &str| {
+                if name == "GHOSTLINK_TOKEN_BROKER_URL" {
+                    override_url
+                        .map(OsString::from)
+                        .or_else(|| fixture.env(name))
+                } else {
+                    fixture.env(name)
+                }
+            };
+            let read =
+                super::super::read_env_values(|names| exact_source_values(names, lookup)).unwrap();
+            let read = ReadRuntimeConfig::from_values(&read).unwrap();
+            let login = exact_source_values(
+                &[
+                    "BUNGIE_PUBLIC_CLIENT_ID",
+                    "BUNGIE_CALLBACK_URI",
+                    "BUNGIE_REGISTERED_CALLBACK_URI",
+                    "GHOSTLINK_TOKEN_BROKER_URL",
+                ],
+                lookup,
+            )
+            .unwrap();
+            let login = LoginRuntimeConfig::from_values(&login).unwrap();
+            for mode in [
+                login.auth_mode(),
+                read.refresh_client().unwrap().auth_mode(),
+            ] {
+                match mode {
+                    super::super::ClientAuthMode::Broker(base) => {
+                        assert_eq!(base, override_url.unwrap_or("https://file.test/"))
+                    }
+                    _ => panic!("expected broker mode"),
+                }
+            }
+        }
+    }
+
+    #[test]
     fn confidential_secret_uses_file_fallback_and_environment_precedence() {
         let fixture = Fixture::new(b"BUNGIE_API_KEY=file-key\nDESTINY_DATABASE_PATH=/tmp/synthetic.db\nDESTINY_DEFINITION_VERSION=v1\nDESTINY_FRESHNESS_TTL_SECONDS=900\nBUNGIE_PUBLIC_CLIENT_ID=file-client\nBUNGIE_CLIENT_SECRET=file-secret-sentinel\nBUNGIE_CALLBACK_URI=ghostlink://oauth/callback\nBUNGIE_REGISTERED_CALLBACK_URI=ghostlink://oauth/callback\n");
         for override_secret in [None, Some("env-secret-sentinel")] {
@@ -318,7 +447,11 @@ mod tests {
             let expected = override_secret.unwrap_or("file-secret-sentinel").as_bytes();
             assert_eq!(login.client_secret().unwrap().as_bytes(), expected);
             assert_eq!(
-                read.refresh_client().unwrap().client_secret().as_bytes(),
+                read.refresh_client()
+                    .unwrap()
+                    .client_secret()
+                    .unwrap()
+                    .as_bytes(),
                 expected
             );
             assert!(!format!("{login:?} {read:?}").contains("secret-sentinel"));

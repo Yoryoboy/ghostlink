@@ -1,0 +1,16 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.32.0"
+ci = ["github"]
+installers = ["shell", "powershell"]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+install-path = "CARGO_HOME"
+install-updater = true
+# Build only the release package, not standalone MCP or its offline fixture.
+precise-builds = true
+
+[dist.dependencies.apt]
+libdbus-1-dev = "*"
+pkg-config = "*"

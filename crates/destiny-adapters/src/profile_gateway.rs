@@ -1017,6 +1017,7 @@ pub struct BungieProfileGateway<T, C, S = StaticCredentialSource> {
     source: S,
     api_key: ProfileApiKey,
     definition_version: DefinitionVersion,
+    version_resolver: Option<Box<dyn FnMut() -> Result<DefinitionVersion, AppError> + Send>>,
     read_retry: ReadRetry,
 }
 
@@ -1039,8 +1040,20 @@ impl<T, C, S> BungieProfileGateway<T, C, S> {
             source,
             api_key,
             definition_version,
+            version_resolver: None,
             read_retry: ReadRetry::default(),
         })
+    }
+
+    /// Resolves the locally stored version before each logical profile request.
+    /// This performs no Manifest download and gates requests on a typed error
+    /// when the catalog is absent. Long-lived servers see subsequent local syncs.
+    pub fn with_definition_version_resolver(
+        mut self,
+        resolver: impl FnMut() -> Result<DefinitionVersion, AppError> + Send + 'static,
+    ) -> Self {
+        self.version_resolver = Some(Box::new(resolver));
+        self
     }
 
     /// Replaces the bounded read-retry runtime, for composition or a
@@ -1118,6 +1131,9 @@ where
         limit: usize,
         scope: ReadRetryScope,
     ) -> Result<(Vec<u8>, Timestamp), AppError> {
+        if let Some(resolve) = &mut self.version_resolver {
+            self.definition_version = resolve()?;
+        }
         let source = &self.source;
         let api_key = &self.api_key;
         let clock = &self.clock;
@@ -2228,6 +2244,19 @@ mod tests {
             delay.clone(),
         ));
         (gateway, delay)
+    }
+
+    #[test]
+    fn missing_manifest_version_is_typed_and_never_requests_profile() {
+        let mut gateway = gateway(vec![], GATEWAY_NOW, GATEWAY_EXPIRES_AT)
+            .with_definition_version_resolver(|| {
+                Err(AppError::new(ErrorCategory::DefinitionsUnavailable))
+            });
+        assert_eq!(
+            gateway.resolve_membership().unwrap_err().category(),
+            ErrorCategory::DefinitionsUnavailable
+        );
+        assert!(gateway.transport().recorded().is_empty());
     }
 
     fn gateway(

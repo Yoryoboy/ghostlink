@@ -11,105 +11,169 @@ Instead of digging through Vaults, filters and perk lists, you ask:
 > "Move The Last Word to my Warlock."
 > "What's featured this week?"
 
-Ghostlink ships two front ends over the same core:
+## Install
 
-- **`ghostlink`** — a command-line tool for humans and scripts.
-- **`destiny-mcp`** — a [Model Context Protocol](https://modelcontextprotocol.io)
-  server that exposes the same capabilities as tools for AI agents.
-
-## Features
-
-- **Inventory search** by name, type, element, slot, class, power, tier, perks,
-  mods, armor archetype and stats, with sorting and typo suggestions.
-- **Item inspection** with resolved perks, mods, archetype and stats.
-- **Build insight**: equipped subclass, available subclass options, seasonal
-  artifact and saved in-game loadouts.
-- **Weekly content**: the public weekly rotation and per-character featured
-  activities with challenge progress.
-- **Safe actions**: move items (MCP) and equip items (CLI and MCP), each with a
-  fresh preflight and post-action verification. No blind retries, no guessing.
-- **Local cache**: a SQLite projection of your profile plus the Destiny
-  Manifest, refreshed on demand.
-- **Credentials stay private**: tokens live in the OS keyring; secrets are
-  never printed or accepted as tool input.
-
-## Quick start
-
-Requirements: a recent stable Rust toolchain and a
-[Bungie developer application](https://www.bungie.net/en/Application) with
-OAuth enabled and the callback URL `ghostlink://oauth/callback`.
+**Linux** (x86_64):
 
 ```sh
-# 1. Build
-cargo build --release
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Yoryoboy/ghostlink/releases/latest/download/ghostlink-installer.sh | sh
+```
 
-# 2. Configure (owner-only file, never commit it)
-mkdir -p ~/.config/ghostlink
-install -m 600 config.example.env ~/.config/ghostlink/config.env
-$EDITOR ~/.config/ghostlink/config.env
+**Windows** (x86_64, PowerShell):
 
-# 3. Authorize your Bungie account and load game definitions
-ghostlink login          # offers to set up the ghostlink:// handler on Linux
-ghostlink sync-manifest
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/Yoryoboy/ghostlink/releases/latest/download/ghostlink-installer.ps1 | iex"
+```
 
-# 4. Use it
+The installer puts **`ghostlink`** (CLI) and **`destiny-mcp`** (AI-agent server)
+side by side. Follow its PATH instructions if needed. Run `ghostlink-update` to
+update both together.
+
+No Bungie developer account or config file is needed for the official release.
+Linux needs a running Secret Service keyring (GNOME Keyring or KWallet with
+Secret Service enabled) and `libdbus-1`, normally present on desktop distros.
+
+> Release preparation is still in progress: this checkout's official application
+> defaults await owner provisioning, and release installation/live sign-in await
+> validation. See [configuration](docs/configuration.md) for the current defaults.
+
+## Set up
+
+Run `ghostlink` in an interactive terminal. The first run opens the setup wizard;
+run `ghostlink setup` to repeat it any time.
+
+1. Pick detected agents: **Claude Code, Codex, OpenCode or Pi**. Use space to
+   toggle selections and enter to confirm.
+2. Choose **skill + MCP** (recommended), **MCP only**, or **skill only**.
+3. Sign in to Bungie in your browser.
+
+One sign-in serves both the CLI and the MCP server. Access tokens renew
+automatically; expect to sign in again after roughly 90 days. On Linux, login
+can register the `ghostlink://` handler with your permission to return to the
+app. On Windows, paste the final URL back into the terminal; a Windows handler
+is coming in a later release. Game definitions (the Manifest) sync automatically
+when missing after login or on a CLI read.
+
+## Use it
+
+```sh
 ghostlink list-characters
 ghostlink search-inventory --type "Hand Cannon" --element solar --sort Range
 ghostlink weekly --character hunter
 ghostlink equip "Ace of Spades" --character hunter
 ```
 
-Add `--json` to any command for machine-readable output.
+Add `--json` for machine-readable output. Search by perks, mods, armor stats and
+more; inspect items, subclasses, the seasonal artifact and saved loadouts. See
+the [CLI reference](docs/cli.md) for all commands.
 
-### Use it from an AI agent
+Actions use fresh preflight checks and post-action verification. Bungie can lag
+in reflecting a change: an "applied but pending refresh" outcome is not verified
+success. Do not blindly retry; run `ghostlink sync` later to check.
 
-Register `destiny-mcp` as a stdio MCP server in your client. It reads the same
-configuration file, so no secrets need to be passed through the agent:
+## Use it from an AI agent
+
+The wizard handles integration for you. The following are **manual alternatives**;
+pick one or both. You can also manage the bundled integrations without the wizard:
+
+```sh
+ghostlink agents install --agent claude codex opencode pi  # skill + MCP
+ghostlink agents status --json
+ghostlink agents uninstall --agent pi --mcp
+```
+
+Use `--skill` or `--mcp` on install/uninstall to select just one integration.
+Either way, sign in once with `ghostlink login` if you skipped wizard sign-in.
+The CLI and `destiny-mcp` share the OS keyring; MCP needs no separate login and
+no tokens pass through the agent.
+
+### Option A: MCP server
+
+Register `destiny-mcp` as a stdio MCP server. The commands below assume it is
+on your `PATH`; otherwise use its absolute installed path.
+
+```sh
+# Claude Code (user scope, available in every project)
+claude mcp add --scope user ghostlink -- destiny-mcp
+
+# Codex
+codex mcp add ghostlink -- destiny-mcp
+
+# Pi (global ~/.pi/agent/mcp.json; add -l for the current project only)
+pi mcp add ghostlink -- destiny-mcp
+```
+
+OpenCode: add the server to `~/.config/opencode/opencode.json` (or run
+`opencode mcp add` and follow the prompts):
 
 ```json
 {
-  "mcpServers": {
-    "ghostlink": { "command": "/path/to/target/release/destiny-mcp" }
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "ghostlink": { "type": "local", "command": ["destiny-mcp"], "enabled": true }
   }
 }
 ```
 
-Agents with shell access can use the CLI instead: copy or symlink
-[`skills/ghostlink`](skills/ghostlink/SKILL.md) into the agent's skills
-directory (for example `~/.claude/skills/` or `~/.agents/skills/`). The skill
-maps intents to commands and sets the safety rules for `equip`.
+Other MCP clients usually accept the common `mcpServers` shape:
 
-## Documentation
-
-| Topic | Where |
-| --- | --- |
-| Configuration, public vs. confidential mode, authorization | [docs/configuration.md](docs/configuration.md) |
-| Every CLI command, filter and output format | [docs/cli.md](docs/cli.md) |
-| MCP tools and their contracts | [docs/mcp.md](docs/mcp.md) |
-| Linux `ghostlink://` callback handler | [packaging/ghostlink-callback-handler.md](packaging/ghostlink-callback-handler.md) |
-| Architecture, workspace layout and checks | [docs/development.md](docs/development.md) |
-
-## Project status
-
-Early development (`0.1.0`). Read features are stable; mutation paths are
-verified by deterministic offline tests, while live-account verification is
-still in progress. Bungie may lag in reflecting changes, so an action can be
-reported as applied but pending refresh — run `ghostlink sync` later to confirm.
-
-## Development
-
-```sh
-cargo test --workspace --all-features
+```json
+{
+  "mcpServers": {
+    "ghostlink": { "command": "destiny-mcp" }
+  }
+}
 ```
 
-All checks run offline and need no credentials. See
-[docs/development.md](docs/development.md) for the full baseline.
+Restart your agent if needed, then ask the questions at the top of this page.
+See the [MCP reference](docs/mcp.md) for tools and safety contracts.
 
-## Contributing
+### Option B: CLI skill
+
+Agents with shell access can drive the CLI through the bundled
+[skill](skills/ghostlink/SKILL.md), which maps intents to commands and sets the
+safety rules for `equip`. Install the version-matched skill with:
+
+```sh
+ghostlink agents install --agent claude codex opencode pi --skill
+```
+
+Alternatively, use the [`skills`](https://github.com/vercel-labs/skills) CLI:
+
+```sh
+npx skills add Yoryoboy/ghostlink --skill ghostlink -g
+```
+
+Or copy or symlink `skills/ghostlink` into the agent's skills directory:
+
+| Agent | Skills directory |
+|---|---|
+| Claude Code | `~/.claude/skills/` |
+| Codex | `~/.codex/skills/` |
+| OpenCode | `~/.config/opencode/skills/` |
+| Pi | `~/.agents/skills/` |
+
+When Ghostlink MCP tools are available in the session, prefer them over shelling
+out to the CLI.
+
+## Privacy and security
+
+Tokens stay in the OS keyring, not in a config file or agent prompt. The official
+[token broker](broker/README.md) only exchanges and refreshes OAuth tokens; it
+stores nothing and never sees game API traffic. Game requests go directly to
+Bungie.
+
+## For developers
+
+For building from source, architecture and offline checks, see
+[development](docs/development.md). Optional `config.env` overrides, public /
+broker / direct confidential OAuth modes and database paths are documented in
+[configuration](docs/configuration.md). To self-host a token broker, see the
+[broker runbook](broker/README.md); ordinary users do not need their own Bungie
+application.
 
 Contributions are welcome. Open an issue to discuss larger changes first, keep
-pull requests focused, and run the checks in
-[docs/development.md](docs/development.md) before submitting.
+pull requests focused, and run the development checks before submitting.
 
 ## License
 

@@ -129,7 +129,14 @@ fn skill_covers_every_command() {
         .into_iter()
         .filter_map(|invocation| invocation.command)
         .collect();
-    let missing: BTreeSet<String> = subcommands().difference(&mentioned).cloned().collect();
+    // Integration bootstrap is operator-facing, not an in-game agent operation.
+    // Its command contracts are covered by tests/agents.rs, tests/setup.rs,
+    // and docs/cli.md.
+    let missing: BTreeSet<String> = subcommands()
+        .difference(&mentioned)
+        .filter(|name| !matches!(name.as_str(), "agents" | "setup"))
+        .cloned()
+        .collect();
     assert!(
         missing.is_empty(),
         "skill does not cover commands: {missing:?}"

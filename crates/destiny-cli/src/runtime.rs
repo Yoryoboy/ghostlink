@@ -17,8 +17,8 @@
 //! 3. the production [`SystemClock`] is built and read exactly once;
 //! 4. the hardened [`HttpProfileTransport`] is built;
 //! 5. the [`ProfileApiKey`] is derived from the validated [`ReadApiKey`];
-//! 6. [`BungieProfileGateway`] is built with the configured definition version;
-//! 7. the durable [`SqliteStore`] is opened at the configured path;
+//! 6. the durable [`SqliteStore`] is opened at the configured path;
+//! 7. [`BungieProfileGateway`] is built with the override or stored Manifest version;
 //! 8. [`ProfileSyncService`] and then [`QueryService`] are assembled.
 //!
 //! The one clock reading supplies the [`ReadFreshness`] the runner forwards to
@@ -125,20 +125,7 @@ impl ReadFoundations for ProductionFoundations {
 
     fn credential_source(&mut self, config: &ReadRuntimeConfig) -> Result<Self::Source, AppError> {
         let store = NativeCredentialStore::new()?;
-        compose_credentials(
-            config,
-            store,
-            |client| {
-                destiny_adapters::BungieTokenExchange::confidential(
-                    client.client_id(),
-                    "ghostlink://oauth/callback",
-                    client.client_secret().clone(),
-                    destiny_adapters::HttpTokenTransport::new()?,
-                    SystemClock::new(),
-                )
-            },
-            SystemClock::new(),
-        )
+        compose_credentials(config, store, configured_refresher, SystemClock::new())
     }
 
     fn clock(&mut self) -> Result<SystemClock, AppError> {
@@ -151,6 +138,35 @@ impl ReadFoundations for ProductionFoundations {
 
     fn store(&mut self, config: &ReadRuntimeConfig) -> Result<SqliteStore, AppError> {
         SqliteStore::open(config.database_path())
+    }
+}
+
+fn configured_refresher(
+    client: &destiny_app::RefreshClientConfig,
+) -> Result<
+    destiny_adapters::BungieTokenExchange<destiny_adapters::HttpTokenTransport, SystemClock>,
+    AppError,
+> {
+    match client.auth_mode() {
+        destiny_app::ClientAuthMode::Confidential(secret) => {
+            destiny_adapters::BungieTokenExchange::confidential(
+                client.client_id(),
+                "ghostlink://oauth/callback",
+                secret.clone(),
+                destiny_adapters::HttpTokenTransport::new()?,
+                SystemClock::new(),
+            )
+        }
+        destiny_app::ClientAuthMode::Broker(base) => {
+            destiny_adapters::BungieTokenExchange::brokered(
+                client.client_id(),
+                "ghostlink://oauth/callback",
+                base,
+                destiny_adapters::HttpTokenTransport::brokered(base)?,
+                SystemClock::new(),
+            )
+        }
+        destiny_app::ClientAuthMode::Public => Err(AppError::configuration()),
     }
 }
 
@@ -346,14 +362,9 @@ fn compose_configured<F: ReadFoundations>(
     let now = clock.now()?;
     let transport = foundations.transport()?;
     let api_key = ProfileApiKey::new(config.api_key().expose_secret())?;
-    let gateway = BungieProfileGateway::new(
-        transport,
-        clock,
-        source,
-        api_key,
-        config.definition_version().clone(),
-    )?;
     let repository = foundations.store(config)?;
+    let version = config.resolve_definition_version(&repository)?;
+    let gateway = BungieProfileGateway::new(transport, clock, source, api_key, version)?;
     let service = QueryService::new(ProfileSyncService::new_with_definitions(
         gateway, repository,
     ));
@@ -366,9 +377,9 @@ fn compose_configured<F: ReadFoundations>(
 
 /// Public Manifest acquisitions. Deliberately has no credential-store seam.
 ///
-/// Reuses shared read config (API key, database path, definition label, TTL),
+/// Reuses shared read config (API key, database path, optional label, TTL),
 /// which loads no OAuth-only key. Sync uses only the API key and database path;
-/// the configured definition label remains a label, not the live version.
+/// it always publishes the real upstream version, never the optional override.
 pub trait ManifestFoundations {
     type Transport: destiny_adapters::manifest::ManifestTransport;
     type Clock: Clock;
@@ -404,17 +415,43 @@ impl ManifestFoundations for ProductionFoundations {
 /// Runs one public Manifest sync; construction acquires nothing.
 pub trait ManifestFactory {
     fn sync(&mut self) -> Result<destiny_app::ManifestSyncReport, CliError>;
+
+    /// Opt-in preflight: injected legacy factories perform no new acquisitions.
+    fn definitions_missing(&mut self) -> Result<bool, CliError> {
+        Ok(false)
+    }
 }
 
 pub struct ComposingManifestFactory<F> {
     foundations: F,
+    automatic: bool,
 }
 impl<F> ComposingManifestFactory<F> {
     pub fn new(foundations: F) -> Self {
-        Self { foundations }
+        Self {
+            foundations,
+            automatic: false,
+        }
+    }
+
+    /// Enables first-use synchronization at the production process boundary.
+    pub fn automatic(foundations: F) -> Self {
+        Self {
+            foundations,
+            automatic: true,
+        }
     }
 }
 impl<F: ManifestFoundations> ManifestFactory for ComposingManifestFactory<F> {
+    fn definitions_missing(&mut self) -> Result<bool, CliError> {
+        if !self.automatic {
+            return Ok(false);
+        }
+        let config = self.foundations.config()?;
+        let repository = self.foundations.store(&config)?;
+        Ok(repository.current_metadata()?.is_none())
+    }
+
     fn sync(&mut self) -> Result<destiny_app::ManifestSyncReport, CliError> {
         let foundations = &mut self.foundations;
         let config = foundations.config()?;
@@ -486,12 +523,13 @@ pub fn compose_equip(
     let config = ReadFoundations::config(&mut foundations)?;
     let source = foundations.credential_source(&config)?;
     let clock = ReadFoundations::clock(&mut foundations)?;
+    let repository = ReadFoundations::store(&mut foundations, &config)?;
     let gateway = BungieProfileGateway::new(
         ReadFoundations::transport(&mut foundations)?,
         clock,
         source.clone(),
         ProfileApiKey::new(config.api_key().expose_secret())?,
-        config.definition_version().clone(),
+        config.resolve_definition_version(&repository)?,
     )?;
     let mut transfer = BungieTransferGateway::new(
         HttpTransferTransport::new()?,
@@ -505,7 +543,6 @@ pub fn compose_equip(
         source,
         EquipApiKey::new(config.api_key().expose_secret())?,
     )?;
-    let repository = ReadFoundations::store(&mut foundations, &config)?;
     let mut mutations = destiny_app::MutationService::new(
         ProfileSyncService::new_with_definitions(gateway, repository),
         crate::equip::InvocationPlanId::new(),
@@ -1559,6 +1596,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn broker_composition_selects_refreshing_credentials() {
+        let mut values = HashMap::from([
+            ("BUNGIE_API_KEY".into(), API_KEY_SENTINEL.into()),
+            ("DESTINY_DATABASE_PATH".into(), DATABASE_SENTINEL.into()),
+            ("DESTINY_DEFINITION_VERSION".into(), "manifest-v1".into()),
+            ("DESTINY_FRESHNESS_TTL_SECONDS".into(), "900".into()),
+            ("BUNGIE_PUBLIC_CLIENT_ID".into(), "123".into()),
+        ]);
+        values.insert(
+            "GHOSTLINK_TOKEN_BROKER_URL".into(),
+            "https://broker.test".into(),
+        );
+        let config = ReadRuntimeConfig::from_values(&values).unwrap();
+        let source = super::compose_credentials(
+            &config,
+            FakeCredentialStore {
+                result: Ok(Some(credential())),
+            },
+            super::configured_refresher,
+            destiny_app::test_support::FakeClock::fixed(NOW),
+        )
+        .unwrap();
+        assert!(matches!(
+            source,
+            destiny_app::ConfiguredCredentialSource::Refreshing(_)
+        ));
     }
 
     #[test]

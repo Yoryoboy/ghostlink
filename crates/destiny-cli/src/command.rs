@@ -29,25 +29,56 @@ pub const SUCCESS_EXIT_CODE: i32 = 0;
 
 /// The product command surface: the shared read commands and interactive login.
 ///
-/// The crate keeps the internal `destiny-cli` name, so the parsed program name
-/// is the product name `ghostlink`. The explicit `about` and `long_about` keep
+/// The library keeps the internal `destiny_cli` name while the package and
+/// parsed program are named `ghostlink`. The explicit `about` and `long_about` keep
 /// this developer documentation out of the product's help output.
 #[derive(Debug, Parser)]
 #[command(
+    override_usage = "ghostlink [OPTIONS] <COMMAND>",
     name = "ghostlink",
     version,
     about = "Destiny profile, inventory, verified item equip, and safe interactive login",
     long_about = "Read Destiny profile, inventory, and item data, equip one item with explicit character intent and verification, or authorize this machine against the provider."
 )]
-pub struct Cli {
+struct ParsedCli {
     /// Emit exactly one bounded JSON object instead of human text.
     #[arg(long, global = true)]
     pub json: bool,
 
     /// The read command to run, or the interactive login command.
     #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+/// Public parsed command; absent subcommands are represented without breaking
+/// the existing command API used by other presentation crates.
+#[derive(Debug)]
+pub struct Cli {
+    pub json: bool,
     pub command: Command,
 }
+impl clap::CommandFactory for Cli {
+    fn command() -> clap::Command {
+        ParsedCli::command()
+    }
+    fn command_for_update() -> clap::Command {
+        ParsedCli::command_for_update()
+    }
+}
+impl clap::FromArgMatches for Cli {
+    fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        let parsed = ParsedCli::from_arg_matches(matches)?;
+        Ok(Self {
+            json: parsed.json,
+            command: parsed.command.unwrap_or(Command::Help),
+        })
+    }
+    fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+        *self = Self::from_arg_matches(matches)?;
+        Ok(())
+    }
+}
+impl Parser for Cli {}
 
 impl Cli {
     /// The output mode selected by the global `--json` flag.
@@ -118,6 +149,9 @@ impl Cli {
             | Command::WeeklyReset
             | Command::Weekly(_)
             | Command::Login(_)
+            | Command::Agents(_)
+            | Command::Setup
+            | Command::Help
             | Command::Handler(_)
             | Command::Callback(_) => {
                 Err(CliError::from_category(ErrorCategory::UnsupportedOperation))
@@ -126,9 +160,46 @@ impl Cli {
     }
 }
 
+#[derive(Debug, Args)]
+pub struct AgentsArgs {
+    #[command(subcommand)]
+    pub command: AgentsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AgentsCommand {
+    Status,
+    Install(AgentSelection),
+    Uninstall(AgentSelection),
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum AgentName {
+    Claude,
+    Codex,
+    Opencode,
+    Pi,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentSelection {
+    #[arg(long, required = true, num_args = 1..)]
+    pub agent: Vec<AgentName>,
+    #[arg(long)]
+    pub skill: bool,
+    #[arg(long)]
+    pub mcp: bool,
+}
+
 /// The read commands and the interactive login command this journey exposes.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(skip)]
+    Help,
+    /// Interactively connect agents and optionally sign in to Bungie.
+    Setup,
+    /// Inspect or explicitly install integrations for supported AI agents.
+    Agents(AgentsArgs),
     /// Equip one item, transferring first when needed, then refresh and verify.
     #[command(name = "equip")]
     Equip(EquipArgs),

@@ -1,19 +1,23 @@
 # Configuration
 
-Ghostlink reads its configuration itself; see [the README](../README.md) for a quick start.
+Official releases are designed to need no config file or Bungie developer
+account: install, run `ghostlink` for the setup wizard, and sign in. See
+[the README](../README.md) for the quick path. The current source checkout still
+awaits owner provisioning of public application defaults, as noted below.
 
-Configuration is a Bungie public-client API key, public OAuth client ID,
-custom-scheme callback URI (`ghostlink://oauth/callback`), and a separately
-configured registered callback URI. The two callback values must match exactly,
-including case. An optional `BUNGIE_CLIENT_SECRET` selects confidential mode.
+The CLI and MCP server resolve configuration themselves and share the OS
+keyring. Overrides are mainly for development or self-hosting. OAuth uses
+`BUNGIE_PUBLIC_CLIENT_ID`, `BUNGIE_CALLBACK_URI` and
+`BUNGIE_REGISTERED_CALLBACK_URI`; the two callback values must match exactly,
+including case. Optional `BUNGIE_CLIENT_SECRET` and
+`GHOSTLINK_TOKEN_BROKER_URL` select the OAuth mode described below.
 
-The shared read composition roots (the CLI and the MCP server) additionally read
-the database path, Manifest definition version, and a positive freshness TTL:
+Shared runtime settings:
 
 ```text
 BUNGIE_API_KEY                Bungie API key (also used by the read roots)
-DESTINY_DATABASE_PATH         SQLite projection database path
-DESTINY_DEFINITION_VERSION    Manifest definition version to persist and compare
+DESTINY_DATABASE_PATH         Optional SQLite projection database path override
+DESTINY_DEFINITION_VERSION    Optional override for the stored Manifest version
 DESTINY_FRESHNESS_TTL_SECONDS Positive freshness TTL in seconds (max 2592000)
 ```
 
@@ -21,23 +25,32 @@ DESTINY_FRESHNESS_TTL_SECONDS Positive freshness TTL in seconds (max 2592000)
 
 Every binary reads its configuration itself, so secrets never need to be
 exported in the shell that launches it (or in an agent session that runs it).
-For each requested key, a value present in the process environment wins;
-otherwise the value comes from the per-user configuration file, resolved in
-this order:
+For each requested key, precedence is **process environment > `config.env` >
+compiled default**. Present empty or invalid values fail validation rather than
+falling back. `config.env` is optional; its path is resolved in this order:
+
+On Linux and other Unix systems:
 
 1. `$GHOSTLINK_CONFIG_FILE`, when set and non-empty;
 2. `$XDG_CONFIG_HOME/ghostlink/config.env`, when `XDG_CONFIG_HOME` is absolute;
 3. `$HOME/.config/ghostlink/config.env`.
 
-A missing file is not an error; the environment alone is then used. The file
+On Windows, `$GHOSTLINK_CONFIG_FILE` still wins; otherwise the file is
+`%APPDATA%\ghostlink\config.env` (APPDATA must be non-empty and absolute).
+Windows does not apply the Unix permission-bit check; protect private values
+with the operating system's access controls.
+
+A missing file is not an error; environment values and compiled defaults are
+then used. The file
 holds `KEY=value` lines (blank lines, `#` comments, an optional `export`
 prefix, and one pair of surrounding quotes are accepted) and is limited to
 64 KiB. On Unix it must not be accessible by group or others: a file with any
 group/other permission bit is refused. Every failure is the sanitized
 `configuration_error`; no line, value, or key content is ever printed.
 
-Create it from the template and fill in the values locally, never in a shared
-session:
+For overrides or self-hosting, optionally create it from the template. Remove
+unused placeholder lines: they override compiled defaults. Fill any private
+values locally, never in a shared session:
 
 ```sh
 mkdir -p ~/.config/ghostlink
@@ -45,23 +58,73 @@ install -m 600 config.example.env ~/.config/ghostlink/config.env
 $EDITOR ~/.config/ghostlink/config.env
 ```
 
-Do not commit credentials. Startup diagnostics are typed and sanitized.
+Never commit a client secret or account tokens. Official public application
+values (API key, public client ID, callback URI, broker URL) are safe to commit
+and are extractable from release binaries. Their single owner-maintained block
+is `crates/destiny-app/src/defaults.rs`; every value remains overridable.
 
-## Confidential and public mode
+Callbacks default to `ghostlink://oauth/callback` and freshness TTL to `900`
+seconds. API key, public client ID, and broker URL currently have `None` defaults
+pending owner provisioning; absent required values still produce the same
+sanitized configuration error. Thus this checkout is not yet fully zero-config.
+The database path defaults to the OS location below. The definition version is
+automatically read from committed Manifest metadata in that database. An explicit
+`DESTINY_DEFINITION_VERSION` still overrides it (environment > file); empty or
+invalid overrides fail rather than falling back. Remove old label overrides to
+use the real version. Existing snapshots remain readable; a changed label can
+advance the next profile revision once, while identical re-syncs retain it. No
+schema migration is needed for this change. Client secrets never have a compiled
+default. Startup diagnostics are typed and sanitized.
 
-Without `BUNGIE_CLIENT_SECRET`, Ghostlink uses public mode and requires browser
-reauthorization when the access token expires. For persistent sessions, edit
-your app in the Bungie Developer Portal, change its OAuth client type to
-Confidential, and save the change. Put the issued `BUNGIE_CLIENT_SECRET` only in
-the `0600` per-user configuration file above, never in shell exports or agent
-sessions. Keep `BUNGIE_PUBLIC_CLIENT_ID` unchanged: when a secret is configured,
-that client ID is required for reads as well as login. A present but empty or
-invalid secret fails configuration validation; remove the key to use public mode.
+## Database location
 
-Confidential mode enables refresh tokens lasting approximately 90 days, stored
-alongside the access credential in the OS keyring rather than in the config
-file. Login and automatic-refresh wiring follow in the persistent-session
-implementation; configuring the secret alone does not yet enable refresh.
+`DESTINY_DATABASE_PATH` is optional: **process environment > `config.env` >
+OS default**. Explicit empty or invalid overrides fail rather than falling back.
+
+| OS | Default database |
+| --- | --- |
+| Linux / other Unix | `$XDG_DATA_HOME/ghostlink/ghostlink.db` when XDG_DATA_HOME is non-empty and absolute; otherwise `$HOME/.local/share/ghostlink/ghostlink.db` (HOME must be non-empty and absolute) |
+| Windows | `%LOCALAPPDATA%\ghostlink\ghostlink.db` (LOCALAPPDATA must be non-empty and absolute) |
+
+If no base directory can be resolved and no override is supplied, startup
+returns the same sanitized `configuration_error`. Every database open creates
+missing parent directories, including nested parents. New directories use
+`0700` on Unix; existing directory permissions are never changed. Creation or
+open failures return sanitized `local_storage` errors without paths.
+
+## OAuth modes
+
+Selection is identical for login, CLI reads, and MCP, in this order:
+
+| Configuration | Mode | Token exchange and refresh |
+| --- | --- | --- |
+| `BUNGIE_CLIENT_SECRET` present | Direct confidential (development/self-hosting) | Bungie, with Basic authentication |
+| No secret, `GHOSTLINK_TOKEN_BROKER_URL` present | Broker | Trusted broker, without client authentication |
+| Neither key present | Public | Bungie code exchange only; no refresh |
+
+Broker mode keeps the client secret on the broker, never in Ghostlink. The
+stateless broker handles only authorization-code and refresh grants, not Destiny
+API traffic. Configure its **base URL**, for example
+`GHOSTLINK_TOKEN_BROKER_URL=https://YOUR_BROKER.workers.dev`; Ghostlink posts to
+`https://YOUR_BROKER.workers.dev/token`. A trailing slash is optional; a path
+prefix is treated as a directory and preserved. The URL must be absolute HTTPS,
+no longer than 2048 bytes, with no userinfo, query, fragment, control characters,
+or surrounding whitespace. Only use a trusted broker: it receives codes and
+refresh tokens. Its registered client and callback must match your login config.
+
+For direct confidential mode, change your Bungie application's OAuth client type
+to Confidential and store the issued secret only in the `0600` per-user file,
+never in shell exports or agent sessions. A secret takes precedence over a
+broker URL, including the compiled broker default. An environment or file
+broker URL overrides the compiled one. Present but empty or invalid values fail sanitized configuration
+validation, including an invalid broker URL when a secret is present.
+
+Both renewable modes require `BUNGIE_PUBLIC_CLIENT_ID` for reads as well as
+login. Login stores refresh tokens (approximately 90 days) alongside the access
+credential in the OS keyring. CLI and MCP automatically refresh expiring access
+credentials and persist rotated refresh tokens. Login reports renewable status
+when the exchange returns a refresh grant. Public mode remains unchanged and
+requires browser reauthorization when its access token expires.
 
 
 ## Runtime configuration and authorization
@@ -71,17 +134,19 @@ is parsed and validated first, and only then does `destiny-cli` read the shared
 runtime configuration, load the stored access credential, build the system
 clock and the hardened HTTPS transport, open the durable SQLite store, and
 dispatch the read through the shared `QueryService`. An invalid argument
-therefore never reads configuration, a credential, a database, a clock, or the
-network.
+therefore never reads configuration, a credential or a database, and never
+accesses a clock or the network.
 
-The read runtime always requires these variables (see `config.example.env`);
-confidential mode additionally requires the client ID paired with the secret:
+The read runtime resolves these settings (see `config.example.env`). Only the
+API key must be supplied if it is absent from compiled defaults; paths, version
+and TTL resolve automatically. Confidential and broker modes also require the
+client ID:
 
 | Variable | Meaning |
 | --- | --- |
 | `BUNGIE_API_KEY` | Bungie public-client API key |
-| `DESTINY_DATABASE_PATH` | Path to the durable SQLite projection |
-| `DESTINY_DEFINITION_VERSION` | Manifest definition version the projection was built from |
+| `DESTINY_DATABASE_PATH` | Optional override for the OS-default durable SQLite projection path |
+| `DESTINY_DEFINITION_VERSION` | Optional backward-compatible label override; defaults to the stored Manifest version |
 | `DESTINY_FRESHNESS_TTL_SECONDS` | Positive freshness TTL in seconds (maximum `2592000`) |
 
 A read also requires an already-authorized account. `destiny-cli` loads a
@@ -91,7 +156,12 @@ degrades to a plaintext or filesystem fallback. When no credential is stored,
 the read exits with the typed `authorization_required` outcome (exit 10); a
 missing or invalid read configuration exits with `configuration_error` (exit
 52). The interactive browser authorization flow that writes that credential
-remains an application/adapter concern outside this read-only unit.
+is available through `ghostlink` (setup wizard) or `ghostlink login`. Linux can
+return via the `ghostlink://` handler; Windows uses terminal paste for this
+release. After login, missing Manifest definitions sync automatically; CLI reads
+also sync absent catalogs. MCP tools never download a Manifest during a call:
+if definitions are missing, run `ghostlink sync-manifest` once. Existing catalogs
+can be refreshed with the same command after game patches.
 
 Automated checks are offline: no live Bungie account or credential is used, and
 no live read is claimed. The journey in

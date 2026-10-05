@@ -6,6 +6,7 @@ pub use loadouts::{
     CharacterLoadoutsView, LoadoutItemView, LoadoutOperations, LoadoutPlugView, LoadoutService,
     LoadoutView, LoadoutsResult,
 };
+pub mod agents;
 pub mod artifact;
 pub use artifact::{
     ArtifactOperations, ArtifactPoints, ArtifactResult, ArtifactService, ArtifactSlot,
@@ -15,10 +16,12 @@ pub use destiny_core::{ArtifactGateway, ArtifactSnapshot};
 pub mod auth;
 pub mod auth_ux;
 mod config;
+mod defaults;
 pub mod manifest;
 pub mod mutation;
 pub mod queries;
 pub mod session;
+pub mod setup;
 pub mod sync;
 pub mod uri_handler;
 pub mod weekly_personal;
@@ -34,8 +37,8 @@ pub mod test_support;
 
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
 pub use config::{
-    LoginCallbackUri, LoginRuntimeConfig, MAX_READ_FRESHNESS_TTL_SECONDS, ReadApiKey,
-    ReadRuntimeConfig, RefreshClientConfig,
+    ClientAuthMode, LoginCallbackUri, LoginRuntimeConfig, MAX_READ_FRESHNESS_TTL_SECONDS,
+    ReadApiKey, ReadRuntimeConfig, RefreshClientConfig,
 };
 // Additive provider-neutral re-exports for presentation crates.
 //

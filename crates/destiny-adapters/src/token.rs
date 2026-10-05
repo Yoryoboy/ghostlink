@@ -1,4 +1,4 @@
-//! Production public/confidential Bungie OAuth token exchange.
+//! Production public/confidential/brokered Bungie OAuth token exchange.
 //!
 //! This module owns the only network-facing OAuth token path. It performs one
 //! blocking HTTPS `application/x-www-form-urlencoded` POST to the documented
@@ -7,7 +7,7 @@
 //!
 //! Security posture:
 //!
-//! - one fixed HTTPS endpoint with rustls certificate verification;
+//! - one pinned HTTPS endpoint with rustls certificate verification;
 //! - redirects disabled, proxies disabled, and no decompression features;
 //! - a total request timeout plus a separate connect timeout;
 //! - a small, strict response-size cap enforced from `Content-Length` and from
@@ -246,11 +246,14 @@ impl HttpTokenTransport {
         Self::for_endpoint(TOKEN_ENDPOINT)
     }
 
+    /// Builds a pinned HTTPS-only transport for a validated broker base URL.
+    pub fn brokered(base: &str) -> Result<Self, AppError> {
+        Self::for_endpoint(&broker_endpoint(base)?)
+    }
+
     fn for_endpoint(endpoint: &str) -> Result<Self, AppError> {
-        if endpoint != TOKEN_ENDPOINT {
-            return Err(configuration());
-        }
         let client = reqwest::blocking::Client::builder()
+            .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .timeout(REQUEST_TIMEOUT)
@@ -329,9 +332,49 @@ fn classify_transport_error(error: reqwest::Error) -> TokenTransportError {
 pub struct BungieTokenExchange<T, C> {
     client_id: String,
     redirect_uri: String,
-    client_secret: Option<ClientSecret>,
+    auth_mode: TokenAuthMode,
+    endpoint: String,
     transport: T,
     clock: C,
+}
+
+enum TokenAuthMode {
+    Public,
+    Confidential(ClientSecret),
+    Broker,
+}
+
+/// Validates the base before URL parsing can discard controls or credentials.
+fn broker_endpoint(base: &str) -> Result<String, AppError> {
+    if base.is_empty()
+        || base.len() > 2048
+        || base.trim() != base
+        || base.chars().any(char::is_control)
+    {
+        return Err(configuration());
+    }
+    let mut url = url::Url::parse(base).map_err(|_| configuration())?;
+    if url.scheme() != "https"
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        // Check the raw text: the parser drops empty userinfo and extra
+        // authority slashes (`https:////@host`).
+        || !base.strip_prefix("https://").is_some_and(|rest| {
+            let authority = rest.split('/').next().unwrap_or_default();
+            !authority.is_empty() && !authority.contains('@')
+        })
+    {
+        return Err(configuration());
+    }
+    // Treat the configured path as a directory, with or without a final slash.
+    let path = format!("{}/", url.path().trim_end_matches('/'));
+    url.set_path(&path);
+    url.join("token")
+        .map(|endpoint| endpoint.into())
+        .map_err(|_| configuration())
 }
 
 impl<T, C> BungieTokenExchange<T, C> {
@@ -350,7 +393,8 @@ impl<T, C> BungieTokenExchange<T, C> {
         Ok(Self {
             client_id,
             redirect_uri,
-            client_secret: None,
+            auth_mode: TokenAuthMode::Public,
+            endpoint: TOKEN_ENDPOINT.to_owned(),
             transport,
             clock,
         })
@@ -365,7 +409,23 @@ impl<T, C> BungieTokenExchange<T, C> {
         clock: C,
     ) -> Result<Self, AppError> {
         let mut exchange = Self::new(client_id, redirect_uri, transport, clock)?;
-        exchange.client_secret = Some(client_secret);
+        exchange.auth_mode = TokenAuthMode::Confidential(client_secret);
+        Ok(exchange)
+    }
+
+    /// Exchanges and refreshes through a broker holding the client secret.
+    /// `base` is an HTTPS directory URL; requests go to its `token` child.
+    pub fn brokered(
+        client_id: impl Into<String>,
+        redirect_uri: impl Into<String>,
+        base: &str,
+        transport: T,
+        clock: C,
+    ) -> Result<Self, AppError> {
+        let endpoint = broker_endpoint(base)?;
+        let mut exchange = Self::new(client_id, redirect_uri, transport, clock)?;
+        exchange.endpoint = endpoint;
+        exchange.auth_mode = TokenAuthMode::Broker;
         Ok(exchange)
     }
 
@@ -400,13 +460,15 @@ where
     fn exchange(&mut self, code: AuthorizationCode) -> Result<AccessCredential, AppError> {
         let code = std::str::from_utf8(code.as_bytes()).map_err(|_| provider_validation())?;
         let mut request = TokenRequest::authorization_code(
-            TOKEN_ENDPOINT,
+            &self.endpoint,
             &self.client_id,
             &self.redirect_uri,
             code,
         );
-        if let Some(secret) = &self.client_secret {
+        if !matches!(self.auth_mode, TokenAuthMode::Public) {
             request.fields.retain(|(name, _)| *name != "client_id");
+        }
+        if let TokenAuthMode::Confidential(secret) = &self.auth_mode {
             request.authenticate(&self.client_id, secret)?;
         }
         self.send_and_decode(&request, false)
@@ -415,11 +477,13 @@ where
 
 impl<T: TokenTransport, C: Clock> TokenRefresh for BungieTokenExchange<T, C> {
     fn refresh(&mut self, token: &RefreshToken) -> Result<AccessCredential, AppError> {
-        let secret = self.client_secret.as_ref().ok_or_else(configuration)?;
+        if matches!(self.auth_mode, TokenAuthMode::Public) {
+            return Err(configuration());
+        }
         let token = std::str::from_utf8(token.as_bytes()).map_err(|_| provider_validation())?;
         let mut request = TokenRequest {
             method: "POST",
-            url: TOKEN_ENDPOINT.to_owned(),
+            url: self.endpoint.clone(),
             headers: vec![("content-type", CONTENT_TYPE_FORM)],
             authorization: None,
             fields: vec![
@@ -427,7 +491,9 @@ impl<T: TokenTransport, C: Clock> TokenRefresh for BungieTokenExchange<T, C> {
                 ("refresh_token", token.to_owned()),
             ],
         };
-        request.authenticate(&self.client_id, secret)?;
+        if let TokenAuthMode::Confidential(secret) = &self.auth_mode {
+            request.authenticate(&self.client_id, secret)?;
+        }
         self.send_and_decode(&request, true)
     }
 }
@@ -453,7 +519,11 @@ impl<T: TokenTransport, C: Clock> BungieTokenExchange<T, C> {
             serde_json::from_slice(&body).map_err(|_| provider_validation())?;
         let object = value.as_object().ok_or_else(provider_validation)?;
         let now = self.clock.now()?;
-        decode_success(object, now, self.client_secret.is_some())
+        decode_success(
+            object,
+            now,
+            !matches!(self.auth_mode, TokenAuthMode::Public),
+        )
     }
 }
 
@@ -564,7 +634,7 @@ fn read_bounded_body(
 /// Decodes a strict 200 response into an [`AccessCredential`].
 ///
 /// Unknown keys (including membership identity) are ignored. Refresh fields
-/// must be paired and are only accepted for confidential clients.
+/// must be paired and are only accepted for confidential or brokered clients.
 fn decode_success(
     object: &serde_json::Map<String, serde_json::Value>,
     now: Timestamp,
@@ -1337,6 +1407,147 @@ mod tests {
             ErrorCategory::ConfigurationError
         );
         assert!(public.transport().recorded.is_empty());
+    }
+
+    #[test]
+    fn broker_code_and_refresh_contract() {
+        for base in ["https://broker.test", "https://broker.test/"] {
+            let body =
+                grant_body("\"refresh_token\":\"rotated-refresh\",\"refresh_expires_in\":120");
+            let mut exchange = BungieTokenExchange::brokered(
+                CLIENT_SENTINEL,
+                REDIRECT_SENTINEL,
+                base,
+                FakeTransport::with(Ok(json_response(200, &body))),
+                FakeClock(1000),
+            )
+            .unwrap();
+            let credential = exchange
+                .exchange(AuthorizationCode::from_bytes(CODE_SENTINEL))
+                .unwrap();
+            assert!(credential.refresh_grant().is_some());
+            let request = exchange.transport().last_request();
+            assert_eq!(request.url(), "https://broker.test/token");
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.headers(), &[("content-type", CONTENT_TYPE_FORM)]);
+            assert!(request.authorization().is_none());
+            assert_eq!(
+                request.encoded_body(),
+                "grant_type=authorization_code&code=sentinel-authorization-code&redirect_uri=http%3A%2F%2F127.0.0.1%3A43127%2Fsentinel-callback"
+            );
+            assert_no_secrets(
+                &format!("{request:?} {exchange:?}"),
+                &[CLIENT_SENTINEL, CODE_SENTINEL, REDIRECT_SENTINEL],
+            );
+            exchange
+                .transport
+                .responses
+                .push_back(Ok(json_response(200, &body)));
+            let credential = exchange
+                .refresh(&RefreshToken::from_bytes(REFRESH_SENTINEL).unwrap())
+                .unwrap();
+            let grant = credential.refresh_grant().unwrap();
+            assert_eq!(grant.token.as_bytes(), b"rotated-refresh");
+            assert_eq!(grant.expires_at, Timestamp::new(1120));
+            let request = exchange.transport().last_request();
+            assert_eq!(request.url(), "https://broker.test/token");
+            assert!(request.authorization().is_none());
+            assert_eq!(
+                request.encoded_body(),
+                "grant_type=refresh_token&refresh_token=refresh%3A%2B%2F%25"
+            );
+            assert_no_secrets(
+                &format!("{request:?} {credential:?}"),
+                &[REFRESH_SENTINEL, "rotated-refresh", TOKEN_SENTINEL],
+            );
+        }
+    }
+
+    #[test]
+    fn broker_refresh_errors_and_invalid_grants_are_sanitized() {
+        for (status, category) in [
+            (400, ErrorCategory::ReauthorizationRequired),
+            (401, ErrorCategory::ReauthorizationRequired),
+            (403, ErrorCategory::ProviderAuthentication),
+        ] {
+            let mut exchange = BungieTokenExchange::brokered(
+                CLIENT_SENTINEL,
+                REDIRECT_SENTINEL,
+                "https://broker.test",
+                FakeTransport::with(Ok(json_response(status, "upstream-secret"))),
+                FakeClock(1000),
+            )
+            .unwrap();
+            let error = exchange
+                .refresh(&RefreshToken::from_bytes(REFRESH_SENTINEL).unwrap())
+                .unwrap_err();
+            assert_eq!(error.category(), category);
+            assert_no_secrets(
+                &format!("{error} {error:?}"),
+                &["upstream-secret", REFRESH_SENTINEL],
+            );
+        }
+        for extra in [
+            "\"refresh_token\":\"refresh\"".to_owned(),
+            "\"refresh_token\":\"refresh\",\"refresh_expires_in\":0".to_owned(),
+            format!(
+                "\"refresh_token\":\"{}\",\"refresh_expires_in\":120",
+                "x".repeat(RefreshToken::MAX_LENGTH + 1)
+            ),
+        ] {
+            let mut exchange = BungieTokenExchange::brokered(
+                CLIENT_SENTINEL,
+                REDIRECT_SENTINEL,
+                "https://broker.test",
+                FakeTransport::with(Ok(json_response(200, &grant_body(&extra)))),
+                FakeClock(1000),
+            )
+            .unwrap();
+            assert_eq!(
+                failure_category(&exchange.exchange(AuthorizationCode::from_bytes(CODE_SENTINEL))),
+                ErrorCategory::ProviderValidation
+            );
+        }
+    }
+
+    #[test]
+    fn broker_transport_rejects_insecure_endpoints_without_network() {
+        for base in [
+            "http://broker.test",
+            "https://user@broker.test",
+            "https://@broker.test",
+            "https:////@broker.test",
+            "https:///broker.test",
+            "HTTPS://@broker.test",
+            "https://broker.test?q",
+            "https://broker.test#f",
+            "https://broker.test\n",
+            "relative",
+        ] {
+            assert_eq!(
+                BungieTokenExchange::brokered(
+                    CLIENT_SENTINEL,
+                    REDIRECT_SENTINEL,
+                    base,
+                    unused_transport(),
+                    FakeClock(0)
+                )
+                .unwrap_err()
+                .category(),
+                ErrorCategory::ConfigurationError
+            );
+            assert_eq!(
+                HttpTokenTransport::brokered(base).unwrap_err().category(),
+                ErrorCategory::ConfigurationError
+            );
+        }
+        assert!(HttpTokenTransport::brokered("https://broker.test").is_ok());
+        for base in ["https://broker.test/prefix", "https://broker.test/prefix/"] {
+            assert_eq!(
+                broker_endpoint(base).unwrap(),
+                "https://broker.test/prefix/token"
+            );
+        }
     }
 
     fn assert_no_secrets(rendered: &str, secrets: &[&str]) {

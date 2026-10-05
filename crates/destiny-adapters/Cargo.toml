@@ -19,7 +19,7 @@ url.workspace = true
 [dev-dependencies]
 flate2 = "1.1"
 destiny-app = { path = "../destiny-app", features = ["test-support"] }
-destiny-cli = { path = "../destiny-cli" }
+destiny-cli = { package = "ghostlink", path = "../destiny-cli" }
 # Dev-only edge used by the CLI/MCP read-parity journey to serialize the real
 # MCP read projections. Production edges stay `destiny-mcp -> destiny-adapters`;
 # this dev-dependency edge introduces no production dependency inversion.

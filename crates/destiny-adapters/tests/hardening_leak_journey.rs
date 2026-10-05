@@ -675,19 +675,21 @@ fn serialized_error_shapes_never_carry_a_shared_sentinel() {
 /// The check requires the built `ghostlink` binary and fails loudly when it is
 /// absent rather than skipping: a silently skipped process check would report a
 /// clean subprocess leak scan without ever running the process. Build the
-/// binary with `cargo build -p destiny-cli` before a focused
+/// binary with `cargo build -p ghostlink` before a focused
 /// `cargo test -p destiny-adapters` run.
 #[test]
 fn the_real_cli_process_streams_carry_no_shared_sentinel() {
     let binary = cli_binary().expect(
         "the real `ghostlink` subprocess leak check requires the built binary; \
-         run `cargo build -p destiny-cli` before `cargo test -p destiny-adapters`",
+         run `cargo build -p ghostlink` before `cargo test -p destiny-adapters`",
     );
     let scratch = TempDirectory::new("cli");
-    let blocked = scratch
-        .path()
-        .join("missing")
-        .join(format!("{}.db", leak_sentinels::BEARER_TOKEN));
+    // The store creates missing parent directories, so the parent must be a
+    // regular file: no directory can ever be created there, the open fails
+    // before any read, and the manifest auto-sync can never start.
+    let blocking_file = scratch.path().join("missing");
+    std::fs::write(&blocking_file, b"").expect("the blocking file is written");
+    let blocked = blocking_file.join(format!("{}.db", leak_sentinels::BEARER_TOKEN));
     let environment = [
         ("BUNGIE_API_KEY", leak_sentinels::API_KEY),
         (

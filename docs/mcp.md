@@ -37,10 +37,19 @@ Both `equip_item` and `move_item` can return
 `applied_pending_provider_refresh` with `isError=true`, never verified success.
 `move_item` remains MCP-only: there is no CLI move command.
 
-Run it with the shared read configuration present in the environment:
+Install both binaries from a release and run `ghostlink` for setup (or
+`ghostlink login` for sign-in only). Register `destiny-mcp` in your agent using
+the wizard or the [manual instructions](../README.md#use-it-from-an-ai-agent).
+No config file or environment exports are needed with official release defaults;
+CLI and MCP share one keyring credential and automatically renew access tokens
+in broker or confidential mode. See [configuration](configuration.md) for overrides.
+
+To launch the stdio server directly:
 
 ```sh
-cargo run -p destiny-mcp
+destiny-mcp
+# From a source checkout:
+cargo run -p ghostlink --bin destiny-mcp
 ```
 
 The process speaks newline-delimited JSON-RPC on stdout only. Every startup and
@@ -98,6 +107,15 @@ run `ghostlink sync-manifest` once after upgrading for loadout names. Each saved
 plug includes optional `description` (official Manifest tooltip), omitted when
 unavailable; cosmetic filtering is unchanged. Descriptions preserve multiline
 text across all four tools.
+
+Definition versions are automatic: MCP uses the Manifest stored in SQLite;
+`DESTINY_DEFINITION_VERSION` is only an optional backward-compatible override.
+MCP never downloads a Manifest inside a tool call (downloads can exceed client
+timeouts). With no stored catalog, definition-dependent tools return the typed
+`definitions_unavailable` error: `definitions not loaded; run ghostlink sync-manifest`.
+Run that CLI command, or `ghostlink login` (which syncs an absent catalog after
+successful authorization). The server can observe a subsequent local sync
+without restarting.
 
 `inspect_item` returns the same enriched names as CLI inspection:
 `perk_names`, `mod_names`, `mods`, `archetype`, `available_perks`,
