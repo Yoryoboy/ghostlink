@@ -25,6 +25,10 @@
 //! mutation projection identically; `already-satisfied` and `preflight-change`
 //! place one designated item differently in the world than in the seed, and
 //! `partial` refuses the second step of the one two-step move.
+//! `equip-provider-stale` and `move-provider-stale` confirm every step without
+//! mutating the world, retaining the pre-dispatch projection. In contrast,
+//! `equip-contradiction` applies the transfer but leaves the item unequipped,
+//! producing changed content that cannot verify the requested equip.
 //!
 //! The fixture data embeds a secret sentinel inside an opaque provider location
 //! value. The MCP projection drops that text, so the integration test can assert
@@ -501,7 +505,12 @@ impl TransferGateway for WorldTransferGateway {
             .world
             .lock()
             .map_err(|_| AppError::new(ErrorCategory::LocalStorage))?;
-        world.apply(request.item(), request.to());
+        if !matches!(
+            std::env::var(SCENARIO_ENV).ok().as_deref(),
+            Some("equip-provider-stale" | "move-provider-stale")
+        ) {
+            world.apply(request.item(), request.to());
+        }
         Ok(TransferOutcome::Transferred)
     }
 }
@@ -540,7 +549,10 @@ impl destiny_app::EquipGateway for WorldEquipGateway {
             }
             return Ok(destiny_app::EquipOutcome::AuthenticationRefused);
         }
-        if scenario != "equip-uncertain-no-effect" && scenario != "equip-contradiction" {
+        if !matches!(
+            scenario.as_str(),
+            "equip-uncertain-no-effect" | "equip-contradiction" | "equip-provider-stale"
+        ) {
             for item in &mut world.items {
                 if item.instance_id == *request.item() {
                     item.location = ItemLocation::Character(request.character().clone());

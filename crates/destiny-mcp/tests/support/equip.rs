@@ -133,6 +133,8 @@ fn sync_service(
             Err(AppError::new(ErrorCategory::ProviderUnavailable))
         } else if scenario == "equip-auth-refresh-failure" {
             Err(AppError::new(ErrorCategory::ProviderAuthentication))
+        } else if scenario == "equip-provider-stale" {
+            Ok(snapshot(false, false, ambiguous))
         } else {
             Ok(snapshot(
                 !matches!(
@@ -179,6 +181,11 @@ pub fn cli_json(scenario: &str, item: &str, character: &str) -> serde_json::Valu
         POLICY,
     )
     .map(|output| {
+        if scenario == "equip-provider-stale" {
+            assert_eq!(output.exit_code(), 43);
+        } else if scenario == "equip-contradiction" {
+            assert_eq!(output.exit_code(), 42);
+        }
         if scenario == "equip-auth-concurrent" {
             assert_ne!(output.exit_code(), 0);
             assert!(output.render_text().contains("authentication"));
@@ -189,7 +196,7 @@ pub fn cli_json(scenario: &str, item: &str, character: &str) -> serde_json::Valu
 }
 pub fn mcp_json(scenario: &str, item: &str, character: &str) -> serde_json::Value {
     let (mutations, transfer, equip) = service(scenario);
-    ComposedMutationService::new(
+    let output = ComposedMutationService::new(
         mutations,
         transfer,
         FakeClock::fixed(NOW),
@@ -201,8 +208,8 @@ pub fn mcp_json(scenario: &str, item: &str, character: &str) -> serde_json::Valu
         item: item.into(),
         character: character.into(),
     })
-    .unwrap()
-    .json()
+    .unwrap();
+    output.json()
 }
 
 /// Exercise the production server boundary with real planning, SQLite publication,

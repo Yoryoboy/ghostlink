@@ -60,6 +60,7 @@ async fn equip_stdio_json_matches_cli_for_all_outcomes() {
     for (scenario, item) in [
         ("equip-success", "123"),
         ("equip-noop", "123"),
+        ("equip-provider-stale", "123"),
         ("equip-success", "missing"),
         ("equip-partial", "123"),
         ("equip-auth", "123"),
@@ -848,6 +849,25 @@ async fn move_item_reports_a_changed_preflight_as_a_typed_sanitized_failure() {
     assert_eq!(structured(&moved)["code"], "stale_state");
     assert_no_secret_in(&moved);
 
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn move_item_reports_pending_provider_refresh_for_confirmed_stale_profile() {
+    let mut session = FixtureSession::spawn(Some("move-provider-stale")).await;
+    let moved = session
+        .call_tool(
+            MOVE_ITEM_TOOL,
+            json!({"instance_id":"inst-a","character_id":"warlock"}),
+        )
+        .await;
+    assert_eq!(moved["result"]["isError"], true);
+    let pending = structured(&moved);
+    assert_eq!(pending["status"], "applied_pending_provider_refresh");
+    assert_eq!(pending["observed"]["kind"], "vault");
+    assert_eq!(pending["steps"].as_array().unwrap().len(), 1);
+    assert_eq!(pending["steps"][0]["outcome"]["status"], "completed");
+    assert_no_secret_in(&moved);
     session.shutdown().await;
 }
 
