@@ -913,6 +913,97 @@ pub trait TransferGateway {
     fn transfer(&mut self, request: &TransferRequest) -> Result<TransferOutcome, AppError>;
 }
 
+/// A validated, provider-neutral intent to equip one concrete item on a character.
+/// Identifier syntax is adapter-owned; empty opaque identifiers are refused here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EquipItemRequest {
+    membership: DestinyMembership,
+    item: ItemInstanceId,
+    character: crate::CharacterId,
+}
+
+impl EquipItemRequest {
+    pub fn new(
+        membership: DestinyMembership,
+        item: ItemInstanceId,
+        character: crate::CharacterId,
+    ) -> Result<Self, AppError> {
+        if item.as_str().is_empty() || character.as_str().is_empty() {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(Self {
+            membership,
+            item,
+            character,
+        })
+    }
+
+    pub const fn membership(&self) -> &DestinyMembership {
+        &self.membership
+    }
+    pub const fn item(&self) -> &ItemInstanceId {
+        &self.item
+    }
+    pub const fn character(&self) -> &crate::CharacterId {
+        &self.character
+    }
+}
+
+/// Bounded provider refusals; no provider text or identifiers cross the seam.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EquipRejection {
+    /// The character's current location or online state disallows this action.
+    NotInSocialSpace,
+    ExoticLimit,
+    Unequippable,
+    ItemNotFound,
+    CharacterNotFound,
+    InvalidRequest,
+}
+
+impl EquipRejection {
+    pub const fn category(self) -> ErrorCategory {
+        match self {
+            Self::NotInSocialSpace | Self::ExoticLimit | Self::Unequippable => {
+                ErrorCategory::UnsupportedOperation
+            }
+            Self::ItemNotFound | Self::CharacterNotFound | Self::InvalidRequest => {
+                ErrorCategory::ProviderValidation
+            }
+        }
+    }
+}
+
+/// Honest classification of exactly one equip attempt (not verified state).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EquipOutcome {
+    Equipped,
+    Rejected(EquipRejection),
+    /// A deterministic transient refusal: nothing applied.
+    Transient,
+    /// Dispatch occurred but whether it applied is unknown. Never blindly retry.
+    Uncertain,
+}
+
+impl EquipOutcome {
+    pub const fn applied(self) -> bool {
+        matches!(self, Self::Equipped)
+    }
+    pub const fn rejection(self) -> Option<EquipRejection> {
+        match self {
+            Self::Rejected(reason) => Some(reason),
+            _ => None,
+        }
+    }
+}
+
+/// Issues one equip request with no retry, sequencing, or verification.
+/// `Err` is reserved for failures in which no mutation can have occurred;
+/// post-dispatch ambiguity must be `Ok(EquipOutcome::Uncertain)`.
+pub trait EquipGateway {
+    fn equip(&mut self, request: &EquipItemRequest) -> Result<EquipOutcome, AppError>;
+}
+
 /// Opaque credential material. Bytes are available only through the explicit
 /// trusted-adapter exposure boundary and are never available to formatting APIs.
 #[derive(Clone, Eq, PartialEq)]

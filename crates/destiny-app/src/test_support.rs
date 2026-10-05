@@ -922,6 +922,86 @@ impl TransferGateway for QueuedTransferGateway {
     }
 }
 
+/// Queues equip outcomes in call order; exhaustion fails closed, never succeeds.
+#[derive(Debug, Default)]
+pub struct QueuedEquipGateway {
+    outcomes: VecDeque<Result<destiny_core::EquipOutcome, AppError>>,
+    requests: Vec<destiny_core::EquipItemRequest>,
+    calls: usize,
+}
+
+impl QueuedEquipGateway {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn queue(&mut self, outcome: Result<destiny_core::EquipOutcome, AppError>) {
+        self.outcomes.push_back(outcome);
+    }
+
+    pub const fn calls(&self) -> usize {
+        self.calls
+    }
+
+    pub fn requests(&self) -> &[destiny_core::EquipItemRequest] {
+        &self.requests
+    }
+}
+
+impl destiny_core::EquipGateway for QueuedEquipGateway {
+    fn equip(
+        &mut self,
+        request: &destiny_core::EquipItemRequest,
+    ) -> Result<destiny_core::EquipOutcome, AppError> {
+        self.calls += 1;
+        self.requests.push(request.clone());
+        self.outcomes
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
+    }
+}
+
+#[cfg(test)]
+mod equip_gateway_tests {
+    use super::QueuedEquipGateway;
+    use destiny_core::{
+        AppError, CharacterId, DestinyMembership, EquipGateway, EquipItemRequest, EquipOutcome,
+        EquipRejection, ErrorCategory, ItemInstanceId, MembershipId, MembershipType,
+    };
+
+    #[test]
+    fn equip_fake_records_every_attempt_and_fails_closed_on_exhaustion() {
+        let request = EquipItemRequest::new(
+            DestinyMembership::new(MembershipType::new(3), MembershipId::new("123")).unwrap(),
+            ItemInstanceId::new("456"),
+            CharacterId::new("789"),
+        )
+        .unwrap();
+        let mut fake = QueuedEquipGateway::new();
+        fake.queue(Ok(EquipOutcome::Equipped));
+        fake.queue(Ok(EquipOutcome::Rejected(EquipRejection::ExoticLimit)));
+        fake.queue(Err(AppError::new(ErrorCategory::ProviderAuthentication)));
+        assert_eq!(fake.equip(&request).unwrap(), EquipOutcome::Equipped);
+        assert_eq!(
+            fake.equip(&request).unwrap(),
+            EquipOutcome::Rejected(EquipRejection::ExoticLimit)
+        );
+        assert_eq!(
+            fake.equip(&request).unwrap_err().category(),
+            ErrorCategory::ProviderAuthentication
+        );
+        assert_eq!(
+            fake.equip(&request).unwrap_err().category(),
+            ErrorCategory::ProviderUnavailable
+        );
+        assert_eq!(fake.calls(), 4);
+        assert_eq!(
+            fake.requests(),
+            &[request.clone(), request.clone(), request.clone(), request]
+        );
+    }
+}
+
 /// Minimal valid world acquisition for deterministic item-focused sync tests.
 pub fn synthetic_world(version: DefinitionVersion) -> destiny_core::WorldDefinitionsAcquisition {
     use destiny_core::*;

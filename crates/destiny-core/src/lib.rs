@@ -52,11 +52,11 @@ pub use mutation::{
 pub use ports::{
     AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,
     CredentialSource, CredentialStore, DefinitionReplacementInput, DefinitionRepository,
-    DestinyMembership, InventoryRepository, InventorySnapshotInput, ManifestAcquisition,
-    ManifestDefinitionCandidate, ManifestDefinitions, ManifestGateway, PlanIdGenerator,
-    ProfileGateway, PublicTokenExchange, SearchRepository, SecureRandom, StatDefinitionRepository,
-    StaticCredentialSource, TokenRefresh, TransferGateway, TransferOutcome, TransferRejection,
-    TransferRequest,
+    DestinyMembership, EquipGateway, EquipItemRequest, EquipOutcome, EquipRejection,
+    InventoryRepository, InventorySnapshotInput, ManifestAcquisition, ManifestDefinitionCandidate,
+    ManifestDefinitions, ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange,
+    SearchRepository, SecureRandom, StatDefinitionRepository, StaticCredentialSource, TokenRefresh,
+    TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
 };
 pub use query::{
     ARTIFACT_BUCKET_HASH, CharacterListResult, CharacterSubclass, CharacterSubclassOptions,
