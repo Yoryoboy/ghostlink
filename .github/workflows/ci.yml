@@ -17,6 +17,22 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  broker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: broker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: broker/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
   check:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}

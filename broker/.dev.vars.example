@@ -1,0 +1,3 @@
+# Dummy credentials only. Copy to ignored .dev.vars for local development.
+BUNGIE_CLIENT_ID="local-test-client"
+BUNGIE_CLIENT_SECRET="local-test-secret-not-a-real-credential"
