@@ -99,8 +99,19 @@ merge are the user's decisions. Next phase: Windows registrar adapter
   `git diff --check` clean. Two medium findings fixed test-first (RED 2
   failing, GREEN 22 passed): shell-quote paths rendered as copyable commands;
   tighten an existing loose previous-handler record to 0600. Commit `d2db7d4`.
-- Unverified: Windows compilation and the GitHub workflow (no push); no live
-  desktop install or login was run.
+- Delivery: rebased onto `origin/main` `2414b85`, PR #46. First Windows CI run
+  compiled and failed one test; fixes `63b406c` (OAuth loopback read re-arms
+  early socket timeouts until the shared deadline), `f16c7ab` (CI
+  `--no-fail-fast`), `73ea07a` and `efb32ef` (Unix-path and reset-sensitive
+  tests made portable). CI run 37339209583 green on ubuntu-latest and
+  windows-latest.
+- Unverified: no live desktop install or login was run.
+
+## Follow-ups (Windows phase)
+
+- The configuration file resolves only from `XDG_CONFIG_HOME`/`HOME`; Windows
+  normally sets neither, so it needs `%APPDATA%` resolution.
+- Windows registrar adapter (`HKCU\Software\Classes\ghostlink`).
 
 - GIE-002: workflow reviewed; not run on GitHub (no push).
 - GIE-003: `cargo test -p destiny-app --lib uri_handler` 12 passed; fmt clean;
