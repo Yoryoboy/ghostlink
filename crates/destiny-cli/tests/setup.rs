@@ -112,7 +112,8 @@ fn detected_modes_outcomes_login_and_completion() {
             assert_eq!(e.plans, [(vec![Agent::OpenCode, Agent::Pi], skill, mcp)]);
             assert_eq!(calls, usize::from(yes));
             assert!(m.0);
-            assert!(p.text.contains("Done. Try asking your agent"));
+            assert!(p.text.ends_with("Done.\n"));
+            assert!(!p.text.contains("Try asking"));
             if mcp {
                 assert!(p.text.contains("opencode: detected"));
                 assert!(p.text.contains("manual-config-snippet"));
@@ -389,7 +390,7 @@ fn failed_login_still_reaches_end_and_marker_failure_is_nonzero() {
     assert_eq!(out.exit_code, 12);
     assert!(marker.0);
     assert!(p.text.contains("fake login failure"));
-    assert!(!p.text.contains("Done. Try asking"));
+    assert!(!p.text.contains("Done."));
     struct Unwritable;
     impl MarkerStore for Unwritable {
         fn complete(&self) -> bool {

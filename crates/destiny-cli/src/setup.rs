@@ -85,7 +85,7 @@ pub fn wizard(
             });
         }
         p.show(if exit_code == 0 {
-            "Done. Try asking your agent: \"Which shotguns do I have?\"\n"
+            "Done.\n"
         } else {
             "Setup finished with errors; see the results above and retry with ghostlink setup.\n"
         });
