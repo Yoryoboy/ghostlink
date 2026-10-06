@@ -1,4 +1,4 @@
-# Inventory Actions Core (Feature A) — IN PROGRESS
+# Inventory Actions Core (Feature A) — COMPLETE (live validation pending)
 
 ## Objective
 
@@ -60,7 +60,7 @@ its own branch in the same worktree.
   execute, post-action refresh and verification; fakes and tests.
 - [x] **IAC-005 — Expose lock in CLI and MCP.** `ghostlink lock` /
   `ghostlink unlock`, MCP `set_lock_state` tool, offline fixture, docs, skill.
-- [ ] **IAC-006 — Close.** Full checks, tracker evidence, live validation
+- [x] **IAC-006 — Close.** Full checks, tracker evidence, live validation
   notes for the user.
 
 ## Evidence
@@ -88,3 +88,15 @@ its own branch in the same worktree.
   README, skill and exit codes updated. RED: missing CLI variants/output/MCP
   schema; GREEN: workspace default + all-features (17 stdio tests), fmt, clippy
   -D warnings, diff check passed.
+- IAC-006: independent verification at `eaa1ab4`: fmt, clippy (default and
+  all-features) clean; 1,460 tests (default) and 1,477 (all-features) passed;
+  diff check clean; `move`/`lock`/`unlock`/`destiny-mcp --help` OK; no retries,
+  zero mutation calls on pre-dispatch refusals, no new sensitive exposure, docs
+  match exit codes. Branch is ~4k lines: deliver as chained PRs (move, then lock).
+
+## Live validation (user)
+
+- `ghostlink move <item> --vault` and back with `--character <class>`.
+- `ghostlink lock`/`unlock` on a character item and on a Vault item (confirms
+  Vault routing through the first character).
+- `ghostlink lock` on an already locked item reports a verified no-op.
