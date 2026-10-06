@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod artifact;
+pub mod clarity;
 pub mod clock;
 pub mod credential_store;
 pub mod equip;

@@ -385,7 +385,17 @@ pub trait ManifestFoundations {
     type Clock: Clock;
     type Repository: destiny_app::DefinitionCatalogRepository
         + destiny_app::WorldDefinitionRepository
-        + destiny_app::StatDefinitionRepository;
+        + destiny_app::StatDefinitionRepository
+        + destiny_app::ClarityRepository;
+
+    /// Injectable, credential-free acquisition; legacy fixtures remain offline.
+    fn clarity_transport(
+        &mut self,
+    ) -> Result<Box<dyn destiny_adapters::clarity::ClarityTransport>, AppError> {
+        Err(AppError::new(
+            destiny_app::ErrorCategory::ProviderUnavailable,
+        ))
+    }
 
     fn config(&mut self) -> Result<ReadRuntimeConfig, AppError>;
     fn clock(&mut self) -> Result<Self::Clock, AppError>;
@@ -394,6 +404,14 @@ pub trait ManifestFoundations {
 }
 
 impl ManifestFoundations for ProductionFoundations {
+    fn clarity_transport(
+        &mut self,
+    ) -> Result<Box<dyn destiny_adapters::clarity::ClarityTransport>, AppError> {
+        Ok(Box::new(
+            destiny_adapters::clarity::HttpClarityTransport::new()?,
+        ))
+    }
+
     type Transport = destiny_adapters::manifest::HttpManifestTransport;
     type Clock = SystemClock;
     type Repository = SqliteStore;
@@ -415,6 +433,13 @@ impl ManifestFoundations for ProductionFoundations {
 /// Runs one public Manifest sync; construction acquires nothing.
 pub trait ManifestFactory {
     fn sync(&mut self) -> Result<destiny_app::ManifestSyncReport, CliError>;
+
+    fn sync_with_clarity(&mut self) -> Result<destiny_app::ManifestAndClarityReport, CliError> {
+        Ok(destiny_app::ManifestAndClarityReport {
+            manifest: self.sync()?,
+            clarity: destiny_app::ClaritySyncReport::unavailable(),
+        })
+    }
 
     /// Opt-in preflight: injected legacy factories perform no new acquisitions.
     fn definitions_missing(&mut self) -> Result<bool, CliError> {
@@ -453,6 +478,12 @@ impl<F: ManifestFoundations> ManifestFactory for ComposingManifestFactory<F> {
     }
 
     fn sync(&mut self) -> Result<destiny_app::ManifestSyncReport, CliError> {
+        let report = self.sync_with_clarity()?;
+        eprintln!("clarity: {}", report.clarity.status);
+        Ok(report.manifest)
+    }
+
+    fn sync_with_clarity(&mut self) -> Result<destiny_app::ManifestAndClarityReport, CliError> {
         let foundations = &mut self.foundations;
         let config = foundations.config()?;
         let clock = foundations.clock()?;
@@ -463,9 +494,16 @@ impl<F: ManifestFoundations> ManifestFactory for ComposingManifestFactory<F> {
         let gateway =
             destiny_adapters::manifest::BungieManifestGateway::new(api_key, transport, clock);
         let repository = foundations.store(&config)?;
-        destiny_app::ManifestService::new(gateway, repository)
-            .sync(checked_at)
-            .map_err(CliError::from)
+        destiny_app::clarity::sync_manifest_and_clarity(
+            &mut destiny_app::ManifestService::new(gateway, repository),
+            || {
+                foundations
+                    .clarity_transport()
+                    .map(destiny_adapters::clarity::ClarityAdapter)
+            },
+            checked_at,
+        )
+        .map_err(CliError::from)
     }
 }
 
@@ -893,7 +931,26 @@ mod tests {
         }
     }
 
+    struct FailingClarityTransport;
+    impl destiny_adapters::clarity::ClarityTransport for FailingClarityTransport {
+        fn get(
+            &mut self,
+            resource: destiny_adapters::clarity::ClarityResource,
+        ) -> Result<Vec<u8>, AppError> {
+            assert_eq!(
+                resource,
+                destiny_adapters::clarity::ClarityResource::Versions
+            );
+            Err(AppError::new(ErrorCategory::ProviderUnavailable))
+        }
+    }
+
     impl super::ManifestFoundations for FakeManifestFoundations {
+        fn clarity_transport(
+            &mut self,
+        ) -> Result<Box<dyn destiny_adapters::clarity::ClarityTransport>, AppError> {
+            Ok(Box::new(FailingClarityTransport))
+        }
         type Transport = ManifestTransport;
         type Clock = ScriptedClock;
         type Repository = SqliteStore;
@@ -1589,13 +1646,68 @@ mod tests {
                         "{\"activities\":1,\"activity_modifiers\":1,\"activity_types\":1,\"definitions\":1,\"kind\":\"sync_manifest\",\"milestones\":1,\"objectives\":1,\"stat_definitions\":1,\"status\":\"unchanged\",\"version\":\"v1\"}\n"
                     }
                 };
-                assert_eq!(output.stdout, expected);
+                if json {
+                    let mut actual: serde_json::Value =
+                        serde_json::from_str(&output.stdout).unwrap();
+                    assert_eq!(
+                        actual["clarity"],
+                        serde_json::json!({"status":"unavailable","version":null,"entries_stored":0,"entries_skipped":0})
+                    );
+                    actual.as_object_mut().unwrap().remove("clarity");
+                    assert_eq!(
+                        actual,
+                        serde_json::from_str::<serde_json::Value>(expected).unwrap()
+                    );
+                } else {
+                    assert_eq!(
+                        output.stdout,
+                        format!(
+                            "{expected}clarity: unavailable\nclarity_version: unavailable\nclarity_entries_stored: 0\nclarity_entries_skipped: 0\n"
+                        )
+                    );
+                }
                 assert_eq!(
                     &log.borrow()[..],
                     ["config", "clock", "now", "transport", "store"]
                 );
             }
         }
+    }
+
+    #[test]
+    fn clarity_transport_failure_leaves_manifest_published() {
+        use destiny_app::DefinitionRepository;
+        let gateway = destiny_adapters::manifest::BungieManifestGateway::new(
+            destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL).unwrap(),
+            ManifestTransport,
+            ScriptedClock {
+                now: Ok(NOW),
+                log: log(),
+            },
+        );
+        let mut service =
+            destiny_app::ManifestService::new(gateway, SqliteStore::open_in_memory().unwrap());
+        let report = destiny_app::clarity::sync_manifest_and_clarity(
+            &mut service,
+            || {
+                Ok(destiny_adapters::clarity::ClarityAdapter(
+                    FailingClarityTransport,
+                ))
+            },
+            NOW,
+        )
+        .unwrap();
+        assert_eq!(report.clarity.status, "unavailable");
+        assert_eq!(
+            service
+                .repository()
+                .current_metadata()
+                .unwrap()
+                .unwrap()
+                .definition_version
+                .as_str(),
+            "v1"
+        );
     }
 
     #[test]

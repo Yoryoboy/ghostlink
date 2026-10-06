@@ -175,6 +175,15 @@ application.
 Contributions are welcome. Open an issue to discuss larger changes first, keep
 pull requests focused, and run the development checks before submitting.
 
+## Credits
+
+Perk insights come from **[Clarity](https://d2clarity.com)**, community-researched
+and maintained by the Clarity team, not by Ghostlink. Thanks for sharing that
+careful work! Feedback about those insights belongs in
+[Clarity's Discord](https://d2clarity.com/discord).
+
+Official item data comes from Bungie's Destiny 2 API.
+
 ## License
 
 Licensed under either of

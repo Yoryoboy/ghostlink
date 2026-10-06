@@ -10,12 +10,14 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 19] = [
+const EXPECTED_TABLE_NAMES: [&str; 21] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
     "activity_type_definitions",
     "characters",
+    "clarity_insights",
+    "clarity_metadata",
     "definition_tags",
     "definitions",
     "item_available_plugs",
@@ -32,13 +34,27 @@ const EXPECTED_TABLE_NAMES: [&str; 19] = [
     "sync_metadata",
 ];
 
-const EXPECTED_INDEX_NAMES: [&str; 2] = ["items_definition_hash_idx", "items_location_idx"];
+const EXPECTED_INDEX_NAMES: [&str; 3] = [
+    "clarity_insights_name",
+    "items_definition_hash_idx",
+    "items_location_idx",
+];
 
 /// Expected `(table, column, declared type)` triples in declaration order.
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 88] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 98] = [
+    ("clarity_insights", "hash", "INTEGER"),
+    ("clarity_insights", "name", "TEXT"),
+    ("clarity_insights", "kind", "TEXT"),
+    ("clarity_insights", "item_hash", "INTEGER"),
+    ("clarity_insights", "item_name", "TEXT"),
+    ("clarity_insights", "text", "TEXT"),
+    ("clarity_metadata", "id", "INTEGER"),
+    ("clarity_metadata", "version", "TEXT"),
+    ("clarity_metadata", "checked_at", "TEXT"),
+    ("clarity_metadata", "updated_at", "TEXT"),
     ("item_descriptions", "hash", "INTEGER"),
     ("item_descriptions", "description", "TEXT"),
     ("subclass_plug_options", "scope", "TEXT"),
@@ -380,7 +396,7 @@ fn reject_membership_type(store: &SqliteStore, value: &str) {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 14);
+    assert_eq!(LATEST_SCHEMA_VERSION, 15);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION
@@ -589,7 +605,7 @@ fn v2_down_drops_only_item_perks_then_reapply_up_preserves_v1_rows() {
 
     // The entire v1 -> v2 -> v1 -> v2 cycle stays durable across a reopen.
     let store = SqliteStore::open(temp.path()).expect("reopen after the cycle");
-    assert_eq!(store.schema_version().expect("read schema version"), 14);
+    assert_eq!(store.schema_version().expect("read schema version"), 15);
     assert_eq!(row_count(&store, "items"), 1);
     assert_eq!(row_count(&store, "item_perks"), 0);
 }
