@@ -900,6 +900,7 @@ pub struct PerkView {
 pub enum LocationView {
     Vault,
     Character { character_id: String },
+    Postmaster { character_id: String },
     Other,
 }
 

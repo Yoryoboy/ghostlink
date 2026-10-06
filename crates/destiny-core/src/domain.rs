@@ -11,6 +11,8 @@ use crate::state::{Dataset, SourceMarker, Timestamp};
 pub enum ItemLocation {
     Vault,
     Character(CharacterId),
+    /// Owned Postmaster holdings, never carried or equipped inventory.
+    Postmaster(CharacterId),
     Other(String),
 }
 
@@ -22,7 +24,7 @@ impl ItemLocation {
     pub fn unknown_value(&self) -> Option<&str> {
         match self {
             Self::Other(value) => Some(value),
-            Self::Vault | Self::Character(_) => None,
+            Self::Vault | Self::Character(_) | Self::Postmaster(_) => None,
         }
     }
 }

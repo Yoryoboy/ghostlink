@@ -294,7 +294,11 @@ impl InventorySnapshotInput {
             {
                 return false;
             }
-            if let ItemLocation::Character(character_id) = &item.location
+            if matches!(item.location, ItemLocation::Postmaster(_)) && item.equipped {
+                return false;
+            }
+            if let ItemLocation::Character(character_id) | ItemLocation::Postmaster(character_id) =
+                &item.location
                 && !character_ids.contains(character_id)
             {
                 return false;
@@ -858,7 +862,9 @@ impl TransferRequest {
     pub const fn to_vault(&self) -> bool {
         match self.to {
             ItemLocation::Vault => true,
-            ItemLocation::Character(_) | ItemLocation::Other(_) => false,
+            ItemLocation::Character(_) | ItemLocation::Postmaster(_) | ItemLocation::Other(_) => {
+                false
+            }
         }
     }
 }
@@ -881,7 +887,8 @@ fn validate_endpoints(from: &ItemLocation, to: &ItemLocation) -> Result<(), AppE
                 Ok(())
             }
         }
-        (ItemLocation::Other(_), _) | (_, ItemLocation::Other(_)) => {
+        (ItemLocation::Other(_) | ItemLocation::Postmaster(_), _)
+        | (_, ItemLocation::Other(_) | ItemLocation::Postmaster(_)) => {
             Err(AppError::new(ErrorCategory::UnsupportedOperation))
         }
     }

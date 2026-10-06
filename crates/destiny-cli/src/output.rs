@@ -1223,6 +1223,9 @@ fn location_text(location: &ItemLocation) -> String {
         ItemLocation::Character(character) => {
             format!("character:{}", sanitize(character.as_str()))
         }
+        ItemLocation::Postmaster(character) => {
+            format!("postmaster:{}", sanitize(character.as_str()))
+        }
         ItemLocation::Other(value) => format!("other:{}", sanitize(value)),
     }
 }
@@ -1306,12 +1309,27 @@ fn perk_json(perk: &PerkSummary) -> Value {
     })
 }
 
+#[cfg(test)]
+#[test]
+fn postmaster_location_projection_is_distinct_and_owned() {
+    let location = ItemLocation::Postmaster(destiny_app::CharacterId::new("123"));
+    assert_eq!(location_text(&location), "postmaster:123");
+    assert_eq!(
+        location_json(&location),
+        json!({"kind": "postmaster", "character_id": "123"})
+    );
+}
+
 fn location_json(location: &ItemLocation) -> Value {
     match location {
         ItemLocation::Vault => json!({ "kind": "vault" }),
         ItemLocation::Character(character) => json!({
             "character_id": character.as_str(),
             "kind": "character",
+        }),
+        ItemLocation::Postmaster(character) => json!({
+            "character_id": character.as_str(),
+            "kind": "postmaster",
         }),
         ItemLocation::Other(value) => json!({
             "kind": "other",

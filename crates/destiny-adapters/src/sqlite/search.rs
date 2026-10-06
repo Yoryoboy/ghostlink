@@ -374,6 +374,9 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
     ) {
         ("vault", None, None) => ItemLocation::Vault,
         ("character", Some(character_id), None) => ItemLocation::Character(character_id.into()),
+        ("postmaster", Some(character_id), None) if equipped == 0 => {
+            ItemLocation::Postmaster(character_id.into())
+        }
         ("other", None, Some(other)) => ItemLocation::Other(other),
         _ => return Err(storage_failure()),
     };

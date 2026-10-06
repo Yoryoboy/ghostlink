@@ -67,7 +67,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   replacement. Validate owner references; mechanically propagate empty stacks
   through existing constructors. Until durable support lands, SQLite explicitly
   rejects non-empty stack snapshots rather than dropping data.
-- [ ] **GPM-003b — Combined SQLite v16 and Postmaster safety.** Persist
+- [x] **GPM-003b — Combined SQLite v16 and Postmaster safety.** Persist
   stacks and explicit Postmaster ownership in one migration; preserve all four
   child projections, indexes and metadata; atomic readback/replacement and
   existing move/equip/lock exclusions. Reject unsafe downgrade without changing
@@ -121,8 +121,9 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 - Explorer `muwy5mlp-4-e2z0` completed the GPM-003 map. Split into GPM-003a
   (snapshot contract plus fail-closed durable bridge) and GPM-003b (one combined
   v16 migration and Postmaster ownership). GPM-003a is COMPLETE;
-  GPM-003b is IN PROGRESS (implementation delegation).
-- GPM-003a worker `muwy92h2-5-3djs`: completed snapshot stack fields, multiset
+  GPM-003b is COMPLETE (worker checks and native assessment).
+- GPM-003a commit `1bca7d1` (321 additions / 8 deletions, including tests).
+  Worker `muwy92h2-5-3djs`: completed snapshot stack fields, multiset
   equality/owner validation, fake preservation, mechanical literal propagation,
   and v15 SQLite rejection before transaction creation. RED: missing fields
   (E0560/E0609); GREEN: 3 focused core tests, 1 app and 1 SQLite regression.
@@ -132,7 +133,21 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   independent verifier `muwylpuq-6-7976`: PASS, no findings. All six authorized
   checks passed; source remained unchanged. Tracker-only concurrent update was
   confirmed as parent bookkeeping. Full-suite totals above remain worker evidence.
-  No v16 migration yet.
+  No v16 migration in GPM-003a.
+- GPM-003b worker `muwyqnth-7-9weo`: combined v16 migration, durable stack
+  roundtrip, owned ItemLocation::Postmaster and transfer/equip/lock exclusions.
+  UP backs up/restores all four cascading child tables with foreign keys enabled;
+  DOWN guards unrepresentable rows before permanent mutations. Duplicate stacks
+  use snapshot-local ordinals, not provider identity. No acquisition/pull yet.
+  RED: v15 refused stacks; missing Postmaster enum (E0599). GREEN: 120 SQLite
+  tests and core/app/rendering regressions; workspace 1,486 / 1,503 tests,
+  fmt/clippy/diff check passed. Two initial focused invocations used wrong feature
+  or package name; corrected invocations passed, not hidden failures.
+- GPM-003b ASSESS: medium risk, 14 changed paths / 753 changed lines;
+  writerSelfVerification=true, independentVerifier=false. RDD off, outcome unknown,
+  candidate not consumed. reviewDue=true (slice_budget_reached); no native review
+  initiated. Exact provider continuation (informational, not executed):
+  `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
 - Migration hazard: dropping/rebuilding `items` can cascade-delete item_perks,
   item_plugs, item_stats and item_available_plugs. Foreign keys are enabled and
   the runner is already in a transaction; foreign_keys=OFF inside migration SQL

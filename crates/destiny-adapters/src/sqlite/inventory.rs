@@ -44,10 +44,11 @@
 
 use super::{SqliteStore, encode_decimal, parse_decimal, storage_failure};
 use destiny_core::{
-    AppError, Character, CharacterId, Dataset, DefinitionVersion, ErrorCategory,
+    AppError, BucketHash, Character, CharacterId, Dataset, DefinitionVersion, ErrorCategory,
     InventoryRepository, InventorySnapshot, InventorySnapshotInput, ItemHash, ItemInstance,
     ItemLocation, MembershipId, MembershipType, PerkHash, PerkSummary, PlugSetEntry, PlugSetScope,
-    PlugSummary, SnapshotMetadata, SourceMarker, SyncMetadata, SyncRevision, Timestamp,
+    PlugSummary, SnapshotMetadata, SourceMarker, StackContainer, StackObservation, SyncMetadata,
+    SyncRevision, Timestamp,
 };
 use rusqlite::{Connection, Error as SqlError, TransactionBehavior, params};
 use std::collections::HashSet;
@@ -78,12 +79,6 @@ impl InventoryRepository for SqliteStore {
             return Err(provider_validation());
         }
         if !input.is_structurally_valid() {
-            return Err(provider_validation());
-        }
-        // Temporary GPM-003a boundary: v15 cannot durably represent stacks.
-        // Reject before ANY mutation rather than silently dropping observations.
-        // Remove this guard when GPM-003b adds combined v16 stack/Postmaster storage.
-        if !input.stacks.is_empty() {
             return Err(provider_validation());
         }
 
@@ -156,6 +151,7 @@ impl InventoryRepository for SqliteStore {
 
 /// Returns the input with its collections in the deterministic canonical order.
 fn canonicalize(mut input: InventorySnapshotInput) -> InventorySnapshotInput {
+    input.stacks.sort();
     input.plug_set_entries.sort();
     input
         .characters
@@ -197,7 +193,8 @@ fn read_projection(connection: &Connection) -> Result<Option<InventorySnapshot>,
                     .map(|character| character.id.as_str())
                     .collect();
                 for item in &items {
-                    if let ItemLocation::Character(character_id) = &item.location
+                    if let ItemLocation::Character(character_id)
+                    | ItemLocation::Postmaster(character_id) = &item.location
                         && !character_ids.contains(character_id.as_str())
                     {
                         return Err(storage_failure());
@@ -209,8 +206,7 @@ fn read_projection(connection: &Connection) -> Result<Option<InventorySnapshot>,
             items.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
 
             Ok(Some(InventorySnapshot {
-                // v15 has no stack storage; GPM-003b replaces this with durable readback.
-                stacks: Vec::new(),
+                stacks: read_stacks(connection, &characters)?,
                 plug_set_entries: read_subclass_options(connection, &characters)?,
                 metadata: SnapshotMetadata {
                     membership_id,
@@ -343,7 +339,66 @@ fn projection_rows_exist(connection: &Connection) -> Result<bool, AppError> {
             row.get(0)
         })
         .map_err(|_| storage_failure())?;
-    Ok(perks > 0 || plugs > 0 || stats > 0 || available > 0 || options > 0)
+    let stacks: i64 = connection
+        .query_row("SELECT count(*) FROM stacks", [], |row| row.get(0))
+        .map_err(|_| storage_failure())?;
+    Ok(perks > 0 || plugs > 0 || stats > 0 || available > 0 || options > 0 || stacks > 0)
+}
+
+/// Reconstruct observations through their validated constructor, preserving multiplicity.
+fn read_stacks(
+    connection: &Connection,
+    characters: &[Character],
+) -> Result<Vec<StackObservation>, AppError> {
+    let mut statement = connection.prepare(
+        "SELECT ordinal, container, owner, bucket_hash, item_hash, quantity FROM stacks ORDER BY ordinal"
+    ).map_err(|_| storage_failure())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(|_| storage_failure())?;
+    let mut stacks = Vec::new();
+    for row in rows {
+        let (ordinal, kind, owner, bucket, hash, quantity) = row.map_err(|_| storage_failure())?;
+        if usize::try_from(ordinal).ok() != Some(stacks.len()) {
+            return Err(storage_failure());
+        }
+        if let Some(owner) = &owner
+            && !characters
+                .iter()
+                .any(|character| character.id.as_str() == owner)
+        {
+            return Err(storage_failure());
+        }
+        let container = match (kind.as_str(), owner) {
+            ("profile_inventory", None) => StackContainer::ProfileInventory,
+            ("profile_currencies", None) => StackContainer::ProfileCurrencies,
+            ("character_inventory", Some(owner)) => {
+                StackContainer::CharacterInventory(owner.into())
+            }
+            ("postmaster", Some(owner)) => StackContainer::Postmaster(owner.into()),
+            _ => return Err(storage_failure()),
+        };
+        stacks.push(
+            StackObservation::new(
+                ItemHash::new(hash),
+                BucketHash::new(bucket),
+                quantity,
+                container,
+            )
+            .map_err(|_| storage_failure())?,
+        );
+    }
+    stacks.sort();
+    Ok(stacks)
 }
 
 /// Reconstructs scoped options, rejecting corrupt flags, hashes and references.
@@ -496,6 +551,9 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
         ) {
             ("vault", None, None) => ItemLocation::Vault,
             ("character", Some(character_id), None) => ItemLocation::Character(character_id.into()),
+            ("postmaster", Some(character_id), None) if equipped == 0 => {
+                ItemLocation::Postmaster(character_id.into())
+            }
             ("other", None, Some(other)) => ItemLocation::Other(other),
             _ => return Err(storage_failure()),
         };
@@ -755,6 +813,9 @@ fn replace_projection(
         .execute("DELETE FROM items", [])
         .map_err(|_| storage_failure())?;
     connection
+        .execute("DELETE FROM stacks", [])
+        .map_err(|_| storage_failure())?;
+    connection
         .execute("DELETE FROM characters", [])
         .map_err(|_| storage_failure())?;
 
@@ -790,11 +851,30 @@ fn replace_projection(
             .map_err(|_| storage_failure())?;
     }
 
+    for (ordinal, stack) in input.stacks.iter().enumerate() {
+        let (container, owner) = match stack.container() {
+            StackContainer::ProfileInventory => ("profile_inventory", None),
+            StackContainer::ProfileCurrencies => ("profile_currencies", None),
+            StackContainer::CharacterInventory(owner) => {
+                ("character_inventory", Some(owner.as_str()))
+            }
+            StackContainer::Postmaster(owner) => ("postmaster", Some(owner.as_str())),
+        };
+        connection.execute(
+            "INSERT INTO stacks(ordinal,container,owner,bucket_hash,item_hash,quantity) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![i64::try_from(ordinal).map_err(|_| storage_failure())?, container, owner,
+                stack.bucket_hash().value(), stack.item_hash().value(), i64::from(stack.quantity())],
+        ).map_err(|_| storage_failure())?;
+    }
+
     for item in &input.items {
         let (location_kind, location_character_id, location_other) = match &item.location {
             ItemLocation::Vault => ("vault", None, None),
             ItemLocation::Character(character_id) => {
                 ("character", Some(character_id.as_str()), None)
+            }
+            ItemLocation::Postmaster(character_id) => {
+                ("postmaster", Some(character_id.as_str()), None)
             }
             ItemLocation::Other(other) => ("other", None, Some(other.as_str())),
         };

@@ -2106,10 +2106,23 @@ fn instance_view(instance: &ItemInstance) -> InstanceView {
     }
 }
 
+#[cfg(test)]
+#[test]
+fn postmaster_location_projection_is_distinct_and_owned() {
+    let location = ItemLocation::Postmaster("123".into());
+    assert_eq!(
+        serde_json::to_value(location_view(&location)).unwrap(),
+        serde_json::json!({"kind": "postmaster", "character_id": "123"})
+    );
+}
+
 fn location_view(location: &ItemLocation) -> LocationView {
     match location {
         ItemLocation::Vault => LocationView::Vault,
         ItemLocation::Character(character_id) => LocationView::Character {
+            character_id: character_id.as_str().to_owned(),
+        },
+        ItemLocation::Postmaster(character_id) => LocationView::Postmaster {
             character_id: character_id.as_str().to_owned(),
         },
         // The opaque provider value is deliberately dropped so no provider text

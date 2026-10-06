@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 15;
+pub(crate) const LATEST_VERSION: u32 = 16;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 15] = [
+const MIGRATIONS: [Migration; 16] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -129,7 +129,110 @@ const MIGRATIONS: [Migration; 15] = [
         up: SCHEMA_V15_UP,
         down: SCHEMA_V15_DOWN,
     },
+    Migration {
+        version: 16,
+        up: SCHEMA_V16_UP,
+        down: SCHEMA_V16_DOWN,
+    },
 ];
+
+// Foreign keys stay enabled. Back up every cascading child before dropping
+// items, and restore against the same parent name (never rename the old parent).
+// All temporary tables and changes belong to the runner's step transaction.
+const SCHEMA_V16_UP: &str = r#"
+CREATE TEMP TABLE saved_items AS SELECT * FROM items;
+CREATE TEMP TABLE saved_perks AS SELECT * FROM item_perks;
+CREATE TEMP TABLE saved_plugs AS SELECT * FROM item_plugs;
+CREATE TEMP TABLE saved_stats AS SELECT * FROM item_stats;
+CREATE TEMP TABLE saved_available AS SELECT * FROM item_available_plugs;
+DROP TABLE items;
+CREATE TABLE items (
+    instance_id TEXT NOT NULL PRIMARY KEY CHECK (length(instance_id) BETWEEN 1 AND 128),
+    item_hash INTEGER NOT NULL CHECK (typeof(item_hash) = 'integer'),
+    location_kind TEXT NOT NULL CHECK (location_kind IN ('vault', 'character', 'postmaster', 'other')),
+    location_character_id TEXT REFERENCES characters(character_id) ON DELETE RESTRICT,
+    location_other TEXT CHECK (location_other IS NULL OR length(location_other) BETWEEN 1 AND 256),
+    quantity INTEGER NOT NULL CHECK (typeof(quantity) = 'integer' AND quantity BETWEEN 0 AND 4294967295),
+    equipped INTEGER NOT NULL CHECK (typeof(equipped) = 'integer' AND equipped IN (0, 1)),
+    locked INTEGER NOT NULL CHECK (typeof(locked) = 'integer' AND locked IN (0, 1)),
+    power INTEGER CHECK (power IS NULL OR (typeof(power) = 'integer' AND power BETWEEN 0 AND 65535)),
+    CHECK (
+        (location_kind = 'vault' AND location_character_id IS NULL AND location_other IS NULL)
+        OR (location_kind IN ('character', 'postmaster') AND location_character_id IS NOT NULL AND location_other IS NULL)
+        OR (location_kind = 'other' AND location_character_id IS NULL AND location_other IS NOT NULL)
+    ),
+    CHECK (location_kind != 'postmaster' OR equipped = 0)
+) STRICT;
+CREATE INDEX items_definition_hash_idx ON items(item_hash);
+CREATE INDEX items_location_idx ON items(location_kind, location_character_id);
+INSERT INTO items SELECT * FROM saved_items;
+INSERT INTO item_perks SELECT * FROM saved_perks;
+INSERT INTO item_plugs SELECT * FROM saved_plugs;
+INSERT INTO item_stats SELECT * FROM saved_stats;
+INSERT INTO item_available_plugs SELECT * FROM saved_available;
+DROP TABLE saved_items;
+DROP TABLE saved_perks;
+DROP TABLE saved_plugs;
+DROP TABLE saved_stats;
+DROP TABLE saved_available;
+CREATE TABLE stacks (
+    ordinal INTEGER NOT NULL PRIMARY KEY CHECK (typeof(ordinal) = 'integer' AND ordinal >= 0),
+    container TEXT NOT NULL CHECK (container IN ('profile_inventory', 'profile_currencies', 'character_inventory', 'postmaster')),
+    owner TEXT REFERENCES characters(character_id) ON DELETE RESTRICT,
+    bucket_hash INTEGER NOT NULL CHECK (typeof(bucket_hash) = 'integer' AND bucket_hash BETWEEN 0 AND 4294967295),
+    item_hash INTEGER NOT NULL CHECK (typeof(item_hash) = 'integer' AND item_hash BETWEEN 0 AND 4294967295),
+    quantity INTEGER NOT NULL CHECK (typeof(quantity) = 'integer' AND quantity BETWEEN 1 AND 2147483647),
+    CHECK (
+        (container IN ('profile_inventory', 'profile_currencies') AND owner IS NULL)
+        OR (container IN ('character_inventory', 'postmaster') AND owner IS NOT NULL)
+    )
+) STRICT;
+"#;
+
+// The guard fails before changing any permanent table. Rollback preserves both
+// schema and data for observations that v15 cannot represent.
+const SCHEMA_V16_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN
+    EXISTS (SELECT 1 FROM stacks) OR EXISTS (SELECT 1 FROM items WHERE location_kind = 'postmaster')
+    THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+CREATE TEMP TABLE saved_items AS SELECT * FROM items;
+CREATE TEMP TABLE saved_perks AS SELECT * FROM item_perks;
+CREATE TEMP TABLE saved_plugs AS SELECT * FROM item_plugs;
+CREATE TEMP TABLE saved_stats AS SELECT * FROM item_stats;
+CREATE TEMP TABLE saved_available AS SELECT * FROM item_available_plugs;
+DROP TABLE items;
+CREATE TABLE items (
+    instance_id TEXT NOT NULL PRIMARY KEY CHECK (length(instance_id) BETWEEN 1 AND 128),
+    item_hash INTEGER NOT NULL CHECK (typeof(item_hash) = 'integer'),
+    location_kind TEXT NOT NULL CHECK (location_kind IN ('vault', 'character', 'other')),
+    location_character_id TEXT REFERENCES characters(character_id) ON DELETE RESTRICT,
+    location_other TEXT CHECK (location_other IS NULL OR length(location_other) BETWEEN 1 AND 256),
+    quantity INTEGER NOT NULL CHECK (typeof(quantity) = 'integer' AND quantity BETWEEN 0 AND 4294967295),
+    equipped INTEGER NOT NULL CHECK (typeof(equipped) = 'integer' AND equipped IN (0, 1)),
+    locked INTEGER NOT NULL CHECK (typeof(locked) = 'integer' AND locked IN (0, 1)),
+    power INTEGER CHECK (power IS NULL OR (typeof(power) = 'integer' AND power BETWEEN 0 AND 65535)),
+    CHECK (
+        (location_kind = 'vault' AND location_character_id IS NULL AND location_other IS NULL)
+        OR (location_kind = 'character' AND location_character_id IS NOT NULL AND location_other IS NULL)
+        OR (location_kind = 'other' AND location_character_id IS NULL AND location_other IS NOT NULL)
+    )
+) STRICT;
+CREATE INDEX items_definition_hash_idx ON items(item_hash);
+CREATE INDEX items_location_idx ON items(location_kind, location_character_id);
+INSERT INTO items SELECT * FROM saved_items;
+INSERT INTO item_perks SELECT * FROM saved_perks;
+INSERT INTO item_plugs SELECT * FROM saved_plugs;
+INSERT INTO item_stats SELECT * FROM saved_stats;
+INSERT INTO item_available_plugs SELECT * FROM saved_available;
+DROP TABLE saved_items;
+DROP TABLE saved_perks;
+DROP TABLE saved_plugs;
+DROP TABLE saved_stats;
+DROP TABLE saved_available;
+DROP TABLE stacks;
+"#;
 
 const SCHEMA_V15_UP: &str = r#"
 CREATE TABLE clarity_insights (

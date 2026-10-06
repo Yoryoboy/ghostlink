@@ -1511,6 +1511,16 @@ mod tests {
                 ItemLocation::Other("unknown".into()),
                 MovePlanValidation::UnsupportedLocation,
             ),
+            (
+                ItemLocation::Postmaster(CharacterId::new("owner")),
+                ItemLocation::Vault,
+                MovePlanValidation::UnsupportedLocation,
+            ),
+            (
+                ItemLocation::Vault,
+                ItemLocation::Postmaster(CharacterId::new("owner")),
+                MovePlanValidation::UnsupportedLocation,
+            ),
         ] {
             assert_eq!(plan_steps(&source, &destination), Err(expected));
         }

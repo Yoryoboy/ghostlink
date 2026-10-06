@@ -29,6 +29,80 @@ fn input() -> InventorySnapshotInput {
 }
 
 #[test]
+fn postmaster_requires_owner_and_refuses_transfer_endpoints() {
+    let owner = CharacterId::new("123");
+    let mut candidate = input();
+    candidate.characters.push(Character {
+        id: owner.clone(),
+        name: None,
+        class: None,
+        race: None,
+        gender: None,
+        light: None,
+        date_last_played: None,
+    });
+    candidate.items.push(ItemInstance {
+        instance_id: ItemInstanceId::new("456"),
+        item_hash: ItemHash::new(7),
+        location: ItemLocation::Postmaster(owner.clone()),
+        quantity: 1,
+        equipped: false,
+        locked: false,
+        power: None,
+        perks: vec![],
+        plugs: vec![],
+        stats: vec![],
+        available_plugs: vec![],
+    });
+    assert!(candidate.is_structurally_valid());
+    let mut query = InstanceSearchQuery {
+        sort: None,
+        location: None,
+        equipped: None,
+        include_available: false,
+        item_hashes: ItemHashFilter::Any,
+        perk_hash: None,
+        perk_name: None,
+        mod_name: None,
+        archetype: None,
+        stats: vec![],
+        character_id: None,
+        definitions: None,
+        min_power: None,
+        limit: 10,
+    };
+    assert!(instance_matches(&query, &candidate.items[0]));
+    query.character_id = Some(owner.clone());
+    assert!(!instance_matches(&query, &candidate.items[0]));
+    query.character_id = None;
+    query.location = Some(LocationFilter::Character);
+    assert!(!instance_matches(&query, &candidate.items[0]));
+    candidate.items[0].equipped = true;
+    assert!(!candidate.is_structurally_valid());
+    candidate.items[0].equipped = false;
+    candidate.characters.clear();
+    assert!(!candidate.is_structurally_valid());
+    for (from, to) in [
+        (ItemLocation::Postmaster(owner.clone()), ItemLocation::Vault),
+        (ItemLocation::Vault, ItemLocation::Postmaster(owner)),
+    ] {
+        assert_eq!(
+            TransferRequest::new(
+                DestinyMembership::new(MembershipType::new(3), MembershipId::new("123")).unwrap(),
+                ItemInstanceId::new("456"),
+                ItemHash::new(7),
+                1,
+                from,
+                to,
+            )
+            .unwrap_err()
+            .category(),
+            ErrorCategory::UnsupportedOperation
+        );
+    }
+}
+
+#[test]
 fn stack_snapshot_metadata_conversion_preserves_observations() {
     let input = input();
     let snapshot = InventorySnapshot {

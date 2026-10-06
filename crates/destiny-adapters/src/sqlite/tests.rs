@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 21] = [
+const EXPECTED_TABLE_NAMES: [&str; 22] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -29,6 +29,7 @@ const EXPECTED_TABLE_NAMES: [&str; 21] = [
     "loadout_name_definitions",
     "milestone_definitions",
     "objective_definitions",
+    "stacks",
     "stat_definitions",
     "subclass_plug_options",
     "sync_metadata",
@@ -44,7 +45,13 @@ const EXPECTED_INDEX_NAMES: [&str; 3] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 98] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 104] = [
+    ("stacks", "ordinal", "INTEGER"),
+    ("stacks", "container", "TEXT"),
+    ("stacks", "owner", "TEXT"),
+    ("stacks", "bucket_hash", "INTEGER"),
+    ("stacks", "item_hash", "INTEGER"),
+    ("stacks", "quantity", "INTEGER"),
     ("clarity_insights", "hash", "INTEGER"),
     ("clarity_insights", "name", "TEXT"),
     ("clarity_insights", "kind", "TEXT"),
@@ -393,10 +400,152 @@ fn reject_membership_type(store: &SqliteStore, value: &str) {
 }
 
 #[test]
+fn v16_preserves_all_children_metadata_and_representable_downgrade() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(15).unwrap();
+    seed_v1_projection(&store);
+    store
+        .connection()
+        .execute_batch(
+            "INSERT INTO item_perks VALUES ('item-1',0,42,1,0);
+             INSERT INTO item_plugs VALUES ('item-1',0,43);
+             INSERT INTO item_stats VALUES ('item-1',44,-5);
+             INSERT INTO item_available_plugs VALUES ('item-1',2,0,45);",
+        )
+        .unwrap();
+    fn rows(connection: &Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM {table}"))
+            .unwrap();
+        let columns = statement.column_count();
+        statement
+            .query_map([], |row| (0..columns).map(|index| row.get(index)).collect())
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+    let preserved = [
+        "active_profile",
+        "characters",
+        "items",
+        "item_perks",
+        "item_plugs",
+        "item_stats",
+        "item_available_plugs",
+        "sync_metadata",
+    ]
+    .map(|table| (table, rows(store.connection(), table)));
+    let children = [
+        "item_perks",
+        "item_plugs",
+        "item_stats",
+        "item_available_plugs",
+    ];
+    for version in [16, 15, 16] {
+        store.migrate_to(version).unwrap();
+        assert_eq!(store.schema_version().unwrap(), version);
+        // Every column, including location, ordered child fields and revision,
+        // must remain byte-for-byte identical to the populated v15 projection.
+        for (table, expected) in &preserved {
+            assert_eq!(
+                &rows(store.connection(), table),
+                expected,
+                "{table} at v{version}"
+            );
+        }
+        assert_eq!(index_names(&store), strings(EXPECTED_INDEX_NAMES));
+        assert!(
+            !store
+                .connection()
+                .prepare("PRAGMA foreign_key_check")
+                .unwrap()
+                .exists([])
+                .unwrap()
+        );
+        for table in children {
+            let target: String = store
+                .connection()
+                .query_row(&format!("PRAGMA foreign_key_list({table})"), [], |r| {
+                    r.get(2)
+                })
+                .unwrap();
+            assert_eq!(target, "items");
+        }
+    }
+    // Prove cascade references still operate after both rebuild directions.
+    store.connection().execute("DELETE FROM items", []).unwrap();
+    for table in children {
+        assert_eq!(row_count(&store, table), 0);
+    }
+}
+
+#[test]
+fn v16_stack_and_postmaster_constraints_are_enforced() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    seed_v1_projection(&store);
+    for sql in [
+        "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,7,0)",
+        "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,7,2147483648)",
+        "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,-1,7,1)",
+        "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,4294967296,1)",
+        "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,7,1.5)",
+        "INSERT INTO stacks VALUES(0,'postmaster','missing',8,7,1)",
+        "INSERT INTO stacks VALUES(0,'postmaster',NULL,8,7,1)",
+        "INSERT INTO stacks VALUES(0,'profile_inventory','character-1',8,7,1)",
+        "UPDATE items SET location_kind='postmaster',equipped=1",
+        "UPDATE items SET location_kind='postmaster',equipped=0,location_character_id='missing'",
+    ] {
+        assert!(store.connection().execute_batch(sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
+fn v16_downgrade_refuses_information_loss_without_mutation() {
+    for postmaster in [false, true] {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        seed_v1_projection(&store);
+        if postmaster {
+            store
+                .connection()
+                .execute("UPDATE items SET location_kind='postmaster',equipped=0", [])
+                .unwrap();
+        } else {
+            store
+                .connection()
+                .execute(
+                    "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,7,2)",
+                    [],
+                )
+                .unwrap();
+        }
+        let before = table_names(&store);
+        assert_eq!(
+            store.migrate_to(0).unwrap_err().category(),
+            ErrorCategory::LocalStorage
+        );
+        assert_eq!(store.schema_version().unwrap(), 16);
+        assert_eq!(table_names(&store), before);
+        assert_eq!(row_count(&store, "items"), 1);
+        assert_eq!(row_count(&store, "sync_metadata"), 1);
+        assert_eq!(row_count(&store, "stacks"), i64::from(!postmaster));
+        if postmaster {
+            assert_eq!(
+                store
+                    .connection()
+                    .query_row("SELECT location_kind FROM items", [], |r| r
+                        .get::<_, String>(0))
+                    .unwrap(),
+                "postmaster"
+            );
+        }
+    }
+}
+
+#[test]
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 15);
+    assert_eq!(LATEST_SCHEMA_VERSION, 16);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION
@@ -605,7 +754,7 @@ fn v2_down_drops_only_item_perks_then_reapply_up_preserves_v1_rows() {
 
     // The entire v1 -> v2 -> v1 -> v2 cycle stays durable across a reopen.
     let store = SqliteStore::open(temp.path()).expect("reopen after the cycle");
-    assert_eq!(store.schema_version().expect("read schema version"), 15);
+    assert_eq!(store.schema_version().expect("read schema version"), 16);
     assert_eq!(row_count(&store, "items"), 1);
     assert_eq!(row_count(&store, "item_perks"), 0);
 }

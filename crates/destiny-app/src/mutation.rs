@@ -1583,7 +1583,7 @@ where
             ),
             // An unsupported planned destination is rejected by the shared core
             // policy before the re-resolved destination is consulted.
-            ItemLocation::Other(_) => Resolution::Missing,
+            ItemLocation::Postmaster(_) | ItemLocation::Other(_) => Resolution::Missing,
         };
         let input = MutationPolicyInput {
             now,
@@ -3072,6 +3072,56 @@ mod tests {
         req.item = exact("item-1");
         assert_eq!(
             svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap_err(),
+            MutationError::UnsupportedSource
+        );
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+    }
+
+    #[test]
+    fn postmaster_lock_refuses_owned_source_with_zero_dispatch() {
+        use crate::test_support::QueuedLockGateway;
+        let shared = gateway();
+        let mut repo = CompositeRepository::with_definitions(vec![definition(1, "Candidate")]);
+        repo.commit(fresh_vault_projection());
+        let mut svc = service(&shared, repo);
+        let req = lock_request();
+        let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+        let mut refreshed = fresh_vault_projection();
+        refreshed.items[0].location = ItemLocation::Postmaster(CharacterId::new("warlock"));
+        queue_refresh(&shared, refreshed);
+        let mut lock = QueuedLockGateway::new();
+        let failure = svc
+            .execute_lock_verified(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW)
+            .unwrap_err();
+        assert_eq!(failure.error(), MutationError::UnsupportedSource);
+        assert_eq!(failure.evidence().attempt(), None);
+        assert_eq!(lock.calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+        assert_eq!(
+            svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap_err(),
+            MutationError::UnsupportedSource
+        );
+    }
+
+    #[test]
+    fn postmaster_equip_refuses_owned_source() {
+        use destiny_core::domain::ItemSlot;
+        let shared = gateway();
+        let mut repo =
+            CompositeRepository::with_definitions(vec![equip_definition(1, ItemSlot::Kinetic)]);
+        repo.commit(projection(
+            NOW,
+            vec![warlock_character()],
+            vec![instance(
+                "candidate",
+                1,
+                ItemLocation::Postmaster(CharacterId::new("warlock")),
+            )],
+        ));
+        assert_eq!(
+            service(&shared, repo)
+                .plan_equip(&equip_request(), LIFETIME, TTL, NOW)
+                .unwrap_err(),
             MutationError::UnsupportedSource
         );
         assert_eq!(shared.borrow().inventory_calls(), 0);
