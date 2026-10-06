@@ -1609,7 +1609,7 @@ where
     }
 
     /// Returns the committed projection, or reports that none is visible.
-    fn committed_snapshot(&self) -> Result<InventorySnapshot, MutationError> {
+    pub(crate) fn committed_snapshot(&self) -> Result<InventorySnapshot, MutationError> {
         self.repository()
             .load_current()
             .map_err(MutationError::from)?
@@ -1617,7 +1617,10 @@ where
     }
 
     /// Resolves the requested item to exactly one concrete instance.
-    fn resolve_item(&self, request: &MoveRequest) -> Result<ItemInstance, MutationError> {
+    pub(crate) fn resolve_item(
+        &self,
+        request: &MoveRequest,
+    ) -> Result<ItemInstance, MutationError> {
         match &request.item {
             ItemSelector::Instance(instance_id) => {
                 match self
@@ -1811,7 +1814,7 @@ fn exotic_neighbor_slot(
 }
 
 /// Rejects absent or ambiguous explicit intent before any side effect.
-fn authorize(request: &MoveRequest) -> Result<(), MutationError> {
+pub(crate) fn authorize(request: &MoveRequest) -> Result<(), MutationError> {
     match request.authorization() {
         IntentAuthorizationOutcome::Authorized => Ok(()),
         IntentAuthorizationOutcome::MissingIntent => Err(MutationError::MissingIntent),
@@ -3013,6 +3016,294 @@ mod tests {
 
     fn gateway() -> Rc<RefCell<QueuedProfileGateway>> {
         Rc::new(RefCell::new(QueuedProfileGateway::new()))
+    }
+
+    fn lock_request() -> destiny_core::LockRequest {
+        destiny_core::LockRequest {
+            membership: membership_id(),
+            item: exact("item-1"),
+            locked: true,
+            intent: MoveIntentAuthorization::Explicit,
+        }
+    }
+
+    #[test]
+    fn lock_plan_resolution_and_refusals() {
+        let shared = gateway();
+        let mut repo = CompositeRepository::with_definitions(vec![definition(1, "Lock candidate")]);
+        repo.commit(fresh_vault_projection());
+        let mut svc = service(&shared, repo);
+        let mut req = lock_request();
+        let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+        assert_eq!(plan.item(), &item_id("item-1"));
+        assert_eq!(plan.character(), &CharacterId::new("warlock"));
+        req.item = semantic("Lock candidate");
+        assert!(svc.plan_lock(&req, LIFETIME, TTL, NOW).is_ok());
+        req.item = exact("missing");
+        assert_eq!(
+            svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap_err(),
+            MutationError::MissingItem
+        );
+        req.item = exact("item-1");
+        req.intent = MoveIntentAuthorization::Absent;
+        assert_eq!(
+            svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap_err(),
+            MutationError::MissingIntent
+        );
+        req.intent = MoveIntentAuthorization::Explicit;
+        svc.repository_mut().seed_instances(vec![
+            instance("item-1", 1, ItemLocation::Vault),
+            instance("second", 1, ItemLocation::Vault),
+        ]);
+        req.item = semantic("Lock candidate");
+        assert_eq!(
+            svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap_err(),
+            MutationError::AmbiguousItem
+        );
+        svc.repository_mut()
+            .seed_instances(vec![instance("", 1, ItemLocation::Vault)]);
+        req.item = exact("");
+        assert!(svc.plan_lock(&req, LIFETIME, TTL, NOW).is_err());
+        svc.repository_mut().seed_instances(vec![instance(
+            "item-1",
+            1,
+            ItemLocation::Other("unknown".into()),
+        )]);
+        req.item = exact("item-1");
+        assert_eq!(
+            svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap_err(),
+            MutationError::UnsupportedSource
+        );
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+    }
+
+    #[test]
+    fn lock_verified_execution_scenarios() {
+        use crate::lock::{LockExecutionOutcome, LockVerificationFailureReason};
+        use crate::test_support::QueuedLockGateway;
+        use destiny_core::{LockOutcome, LockRejection};
+        // Success, fresh no-op, rejection, uncertain (confirmed/unconfirmed),
+        // refresh failure, mismatch, unchanged applied, pre-dispatch error,
+        // moved/disappeared, auth refusal, transient, unlock, unresolved after dispatch.
+        for case in 0..15 {
+            let shared = gateway();
+            let chars = vec![warlock_character(), character("hunter", None, None)];
+            let mut item = instance("item-1", 1, ItemLocation::Vault);
+            item.locked = case == 13;
+            let mut repo = CompositeRepository::with_definitions(vec![]);
+            repo.commit(projection(NOW, chars.clone(), vec![item.clone()]));
+            let mut svc = service(&shared, repo);
+            let mut req = lock_request();
+            req.locked = case != 13;
+            let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+            if case == 1 {
+                item.locked = true;
+            }
+            if case == 9 {
+                item.location = hunter();
+            }
+            queue_refresh(
+                &shared,
+                projection(
+                    NOW,
+                    chars.clone(),
+                    if case == 10 {
+                        vec![]
+                    } else {
+                        vec![item.clone()]
+                    },
+                ),
+            );
+            let mut lock = QueuedLockGateway::new();
+            let outcome = match case {
+                2 => LockOutcome::Rejected(LockRejection::ItemNotFound),
+                3 | 4 => LockOutcome::Uncertain,
+                11 => LockOutcome::AuthenticationRefused,
+                12 => LockOutcome::Transient,
+                _ => LockOutcome::Applied,
+            };
+            lock.queue(if case == 8 {
+                Err(AppError::new(ErrorCategory::ProviderUnavailable))
+            } else {
+                Ok(outcome)
+            });
+            if !matches!(case, 1 | 8..=10) {
+                if matches!(case, 0 | 3 | 13) {
+                    item.locked = req.locked;
+                }
+                if case == 6 {
+                    item.quantity = 2; // changed revision, not provider lag
+                }
+                shared.borrow_mut().queue_membership(Ok(membership()));
+                shared.borrow_mut().queue_inventory(if case == 5 {
+                    Err(AppError::new(ErrorCategory::ProviderUnavailable))
+                } else {
+                    Ok(projection(
+                        POST_ACTION_NOW,
+                        chars,
+                        if case == 14 { vec![] } else { vec![item] },
+                    ))
+                });
+            }
+            let result =
+                svc.execute_lock_verified(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW);
+            if matches!(case, 8..=10) {
+                let error = result.unwrap_err();
+                assert_eq!(error.evidence().attempt(), None);
+                assert_eq!(lock.calls(), usize::from(case == 8));
+                assert_eq!(shared.borrow().inventory_calls(), 1);
+                continue;
+            }
+            let outcome = result.unwrap();
+            match &outcome {
+                LockExecutionOutcome::VerifiedSuccess(_) => assert!(matches!(case, 0 | 3 | 13)),
+                LockExecutionOutcome::VerifiedNoOp(_) => assert_eq!(case, 1),
+                LockExecutionOutcome::IncompleteExecution(_) => {
+                    assert!(matches!(case, 2 | 4 | 11 | 12))
+                }
+                LockExecutionOutcome::AppliedPendingProviderRefresh(_) => assert_eq!(case, 7),
+                LockExecutionOutcome::VerificationFailed(failure) => {
+                    assert!(matches!(case, 5 | 6 | 14));
+                    assert_eq!(
+                        failure.reason(),
+                        match case {
+                            5 => LockVerificationFailureReason::RefreshFailed,
+                            14 => LockVerificationFailureReason::Unresolved,
+                            _ => LockVerificationFailureReason::Contradiction,
+                        }
+                    );
+                }
+            }
+            assert_eq!(
+                outcome.evidence().attempt(),
+                if case == 1 {
+                    None
+                } else {
+                    Some(outcome_for_case(case))
+                }
+            );
+            assert_eq!(lock.calls(), usize::from(case != 1));
+            assert_eq!(
+                shared.borrow().inventory_calls(),
+                if case == 1 { 1 } else { 2 }
+            );
+            if case != 1 {
+                assert_eq!(lock.requests()[0].character(), &CharacterId::new("hunter"));
+                assert_eq!(lock.requests()[0].locked(), req.locked);
+            }
+        }
+        fn outcome_for_case(case: usize) -> destiny_core::LockOutcome {
+            use destiny_core::{LockOutcome, LockRejection};
+            match case {
+                2 => LockOutcome::Rejected(LockRejection::ItemNotFound),
+                3 | 4 => LockOutcome::Uncertain,
+                11 => LockOutcome::AuthenticationRefused,
+                12 => LockOutcome::Transient,
+                _ => LockOutcome::Applied,
+            }
+        }
+    }
+
+    #[test]
+    fn lock_character_routing_ignores_equip_policy() {
+        use crate::test_support::QueuedLockGateway;
+        use destiny_core::LockOutcome;
+        let shared = gateway();
+        let chars = vec![warlock_character(), character("hunter", None, None)];
+        let mut item = instance("item-1", 1, warlock());
+        item.equipped = true;
+        let mut repo = CompositeRepository::with_definitions(vec![]);
+        repo.commit(projection(NOW, chars.clone(), vec![item.clone()]));
+        let mut svc = service(&shared, repo);
+        let req = lock_request();
+        let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+        assert_eq!(plan.character(), &CharacterId::new("warlock"));
+        queue_refresh(&shared, projection(NOW, chars.clone(), vec![item.clone()]));
+        item.locked = true;
+        queue_refresh(&shared, projection(POST_ACTION_NOW, chars, vec![item]));
+        let mut lock = QueuedLockGateway::new();
+        lock.queue(Ok(LockOutcome::Applied));
+        assert!(matches!(
+            svc.execute_lock_verified(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW),
+            Ok(crate::lock::LockExecutionOutcome::VerifiedSuccess(_))
+        ));
+        assert_eq!(lock.requests()[0].character(), &CharacterId::new("warlock"));
+        assert_eq!(lock.calls(), 1);
+    }
+
+    #[test]
+    fn lock_preflight_binds_intent_plan_time_and_membership_before_io() {
+        use crate::test_support::QueuedLockGateway;
+        for case in 0..7 {
+            let shared = gateway();
+            let mut repo = CompositeRepository::with_definitions(vec![]);
+            repo.commit(fresh_vault_projection());
+            let mut svc = service(&shared, repo);
+            let mut req = lock_request();
+            let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+            let mut pre = NOW;
+            let mut post = POST_ACTION_NOW;
+            let expected = match case {
+                0 => {
+                    req.intent = MoveIntentAuthorization::Absent;
+                    MutationError::MissingIntent
+                }
+                1 => {
+                    req.intent = MoveIntentAuthorization::Ambiguous;
+                    MutationError::AmbiguousIntent
+                }
+                2 => {
+                    req.membership = destiny_core::MembershipId::new("999");
+                    MutationError::WrongMembership
+                }
+                3 => {
+                    req.locked = false;
+                    MutationError::InvalidPlan
+                }
+                4 => {
+                    post = Timestamp::new(NOW.seconds() - 1);
+                    MutationError::InvalidTimestamps
+                }
+                5 => {
+                    pre = LIFETIME.expires_at(NOW).unwrap();
+                    post = pre;
+                    MutationError::Expired
+                }
+                _ => {
+                    pre = Timestamp::new(NOW.seconds() - 1);
+                    MutationError::Expired
+                }
+            };
+            let mut lock = QueuedLockGateway::new();
+            let failure = svc
+                .execute_lock_verified(&mut lock, &req, &plan, TTL, pre, post)
+                .unwrap_err();
+            assert_eq!(failure.error(), expected);
+            assert_eq!(failure.evidence().attempt(), None);
+            assert_eq!(lock.calls(), 0);
+            assert_eq!(shared.borrow().inventory_calls(), 0);
+        }
+    }
+
+    #[test]
+    fn lock_refuses_publication_between_preflight_and_dispatch() {
+        use crate::test_support::QueuedLockGateway;
+        let shared = gateway();
+        let mut repo = CompositeRepository::with_definitions(vec![]);
+        repo.commit(fresh_vault_projection());
+        let mut svc = service(&shared, repo);
+        let req = lock_request();
+        let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+        queue_refresh(&shared, fresh_vault_projection());
+        let mut changed = fresh_vault_projection();
+        changed.items[0].quantity = 2;
+        *svc.repository().publication_on_lookup.borrow_mut() = Some(changed);
+        let mut lock = QueuedLockGateway::new();
+        let failure = svc
+            .execute_lock_verified(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW)
+            .unwrap_err();
+        assert_eq!(failure.error(), MutationError::StaleRevision);
+        assert_eq!(lock.calls(), 0);
     }
 
     fn service(

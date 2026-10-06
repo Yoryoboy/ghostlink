@@ -55,7 +55,7 @@ its own branch in the same worktree.
 - [x] **IAC-003 — Lock seam in core and adapter.** Provider-neutral request,
   gateway and outcome types; `SetLockState` adapter with endpoint allowlist and
   sanitized outcomes; adapter journey tests.
-- [ ] **IAC-004 — Lock app service.** Plan with fresh preflight (owned
+- [x] **IAC-004 — Lock app service.** Plan with fresh preflight (owned
   instance, lockable, verified no-op when already in the requested state),
   execute, post-action refresh and verification; fakes and tests.
 - [ ] **IAC-005 — Expose lock in CLI and MCP.** `ghostlink lock` /
@@ -76,3 +76,9 @@ its own branch in the same worktree.
   tests) and `lock_execution_journey.rs`. RED: missing types; GREEN: workspace
   tests default + all-features, fmt, clippy -D warnings, diff check passed.
   Note: shared HTTP Debug labels the lock endpoint `<unallowlisted>` (fix in IAC-004).
+- IAC-004: `destiny-app/src/lock.rs` with `plan_lock` and `execute_lock_verified`
+  (fresh preflight, verified no-op, single dispatch, forced PostAction
+  verification); `QueuedLockGateway`; Vault items route through the first
+  character in committed order (live validation pending); lock endpoint Debug
+  label fixed. RED: missing module/fake/methods; GREEN: 376 destiny-app tests,
+  workspace default + all-features, fmt, clippy -D warnings, diff check passed.

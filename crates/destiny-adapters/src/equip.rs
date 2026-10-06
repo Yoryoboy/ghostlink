@@ -303,6 +303,7 @@ mod tests {
         let token = EquipBearerToken::new("TOKEN_CANARY").unwrap();
         for (url, label) in [
             (EQUIP_ENDPOINT, "EquipItem"),
+            (crate::lock::LOCK_ENDPOINT, "SetLockState"),
             (
                 "https://www.bungie.net/Platform/Destiny2/Actions/Items/EquipItem/?access_token=URL_CANARY",
                 "<unallowlisted>",

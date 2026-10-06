@@ -20,8 +20,14 @@ pub mod auth;
 pub mod auth_ux;
 mod config;
 mod defaults;
+pub mod lock;
 pub mod manifest;
 pub mod mutation;
+pub use destiny_core::{LockGateway, LockOutcome, LockRejection, LockRequest, SetLockStateRequest};
+pub use lock::{
+    LockExecutionEvidence, LockExecutionFailure, LockExecutionOutcome, LockPlan,
+    LockVerificationFailure, LockVerificationFailureReason,
+};
 pub mod queries;
 pub mod session;
 pub mod setup;

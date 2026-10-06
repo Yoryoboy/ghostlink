@@ -285,6 +285,7 @@ impl fmt::Debug for TransferHttpRequest<'_> {
         let endpoint = match self.url {
             TRANSFER_ENDPOINT => "TransferItem",
             crate::equip::EQUIP_ENDPOINT => "EquipItem",
+            crate::lock::LOCK_ENDPOINT => "SetLockState",
             _ => "<unallowlisted>",
         };
         formatter

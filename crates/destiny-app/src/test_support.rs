@@ -996,6 +996,45 @@ impl destiny_core::EquipGateway for QueuedEquipGateway {
     }
 }
 
+/// Queues lock outcomes in call order; exhaustion fails closed, never succeeds.
+#[derive(Debug, Default)]
+pub struct QueuedLockGateway {
+    outcomes: VecDeque<Result<destiny_core::LockOutcome, AppError>>,
+    requests: Vec<destiny_core::SetLockStateRequest>,
+    calls: usize,
+}
+
+impl QueuedLockGateway {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn queue(&mut self, outcome: Result<destiny_core::LockOutcome, AppError>) {
+        self.outcomes.push_back(outcome);
+    }
+
+    pub const fn calls(&self) -> usize {
+        self.calls
+    }
+
+    pub fn requests(&self) -> &[destiny_core::SetLockStateRequest] {
+        &self.requests
+    }
+}
+
+impl destiny_core::LockGateway for QueuedLockGateway {
+    fn set_lock_state(
+        &mut self,
+        request: &destiny_core::SetLockStateRequest,
+    ) -> Result<destiny_core::LockOutcome, AppError> {
+        self.calls += 1;
+        self.requests.push(request.clone());
+        self.outcomes
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
+    }
+}
+
 #[cfg(test)]
 mod equip_gateway_tests {
     use super::QueuedEquipGateway;
@@ -1003,6 +1042,36 @@ mod equip_gateway_tests {
         AppError, CharacterId, DestinyMembership, EquipGateway, EquipItemRequest, EquipOutcome,
         EquipRejection, ErrorCategory, ItemInstanceId, MembershipId, MembershipType,
     };
+
+    #[test]
+    fn lock_fake_records_every_attempt_and_fails_closed_on_exhaustion() {
+        use super::QueuedLockGateway;
+        use destiny_core::{LockGateway, LockOutcome, SetLockStateRequest};
+        let request = SetLockStateRequest::new(
+            DestinyMembership::new(MembershipType::new(3), MembershipId::new("123")).unwrap(),
+            ItemInstanceId::new("456"),
+            CharacterId::new("789"),
+            true,
+        )
+        .unwrap();
+        let mut fake = QueuedLockGateway::new();
+        fake.queue(Ok(LockOutcome::Applied));
+        fake.queue(Ok(LockOutcome::Uncertain));
+        assert_eq!(fake.set_lock_state(&request).unwrap(), LockOutcome::Applied);
+        assert_eq!(
+            fake.set_lock_state(&request).unwrap(),
+            LockOutcome::Uncertain
+        );
+        assert_eq!(
+            fake.set_lock_state(&request).unwrap_err().category(),
+            ErrorCategory::ProviderUnavailable
+        );
+        assert_eq!(fake.calls(), 3);
+        assert_eq!(
+            fake.requests(),
+            &[request.clone(), request.clone(), request]
+        );
+    }
 
     #[test]
     fn equip_fake_records_every_attempt_and_fails_closed_on_exhaustion() {

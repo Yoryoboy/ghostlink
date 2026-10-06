@@ -204,6 +204,7 @@ mod tests {
                 "https://www.bungie.net/Platform/Destiny2/Actions/Items/SetLockState/"
             );
             assert!(format!("{http:?}").contains("POST"));
+            assert!(format!("{http:?}").contains("SetLockState"));
             assert_eq!(
                 serde_json::from_str::<Value>(http.body()).unwrap(),
                 json!({
