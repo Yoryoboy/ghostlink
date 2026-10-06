@@ -52,18 +52,27 @@ Source: <https://github.com/Database-Clarity/Live-Clarity-Database>
 - [x] 2. PR B — exposure: `clarity` field on five surfaces with matching rule
       and variant marking; CLI JSON/human, MCP, parity tests.
 - [x] 3. PR C — agents: docs and skill rule to cite Clarity.
-- [ ] 4. Live check after each PR on a copy of the real DB.
+- [ ] 4. Deliver chained PRs after checks: A/B copied-DB live checks passed;
+      C structural docs checks passed (runtime N/A). Publishing/CI pending.
 
 ## Current state
 
 PR A committed `8b18b98`; PR B committed `a5b30ab` after corrected live
-acceptance. Both remain local, not pushed. PR C documentation checks passed on
-`feature/clarity-agent-guidance`, stacked on PR B; commit pending. Native RDD remains off.
+acceptance; PR C committed `fe438a7` after documentation checks. All remain
+local, not pushed. Delivery preparation in progress on
+`feature/clarity-agent-guidance`, stacked on PR B. Native RDD remains off.
 All live checks used a copied DB; installed binaries and real DB unchanged.
 
 Delivery chain: A data -> B five-surface exposure -> C agent guidance.
-PR B's coherent cross-layer surface/parity coverage totals 1,240 changed
-lines including task evidence; avoid unrelated expansion. Only pre-existing
+Changed-line budgets: A 959, B 1,240, C 76 (including task evidence).
+Single slicing pass completed: A could split into three infrastructure units;
+B could split into four units but the matching foundation alone remains about
+550-650 lines. Preserve A/B/C is recommended, but the owner explicitly accepted the size exception for A/B via the
+`keep_three_size_exception` selection. Publish the existing three-slice chain. Alternative
+chain would grow to eight PRs; intermediate rewritten bases are not verified.
+Repository has no issues or PR template. Native workflows do not validate
+approved issue/type labels/branch regex; README requests issue discussion for
+large changes. Gentle AI skill-specific policy is not native Ghostlink CI. Only pre-existing
 inspection raw perk-hash parity difference remains a separate followup.
 
 ## Evidence log
