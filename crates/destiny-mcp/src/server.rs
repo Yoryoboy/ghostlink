@@ -249,6 +249,16 @@ fn dispatch_locked(
 ) -> Result<CallToolResult, ErrorData> {
     let mut guard = service.lock().map_err(|_| internal_error())?;
     match name {
+        "get_postmaster" => {
+            let arguments: crate::schema::GetPostmasterArgs = deserialize(arguments)?;
+            let character = match arguments.into_request() {
+                Ok(character) => character,
+                Err(error) => return Ok(error.into_call_tool_result()),
+            };
+            Ok(guard
+                .get_postmaster(character.as_ref())
+                .map_or_else(tool_error, |output| output.into_call_tool_result()))
+        }
         LIST_CHARACTERS_TOOL => dispatch_list_characters(guard.as_mut(), arguments),
         SEARCH_INVENTORY_TOOL => dispatch_search_inventory(guard.as_mut(), arguments),
         INSPECT_ITEM_TOOL => dispatch_inspect_item(guard.as_mut(), arguments),
@@ -524,6 +534,15 @@ mod tests {
     }
 
     impl InventoryReadService for RecordingService {
+        fn get_postmaster(
+            &mut self,
+            _: Option<&destiny_app::CharacterId>,
+        ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+            self.enter("get_postmaster");
+            Err(McpError::new(
+                destiny_app::ErrorCategory::ProviderValidation,
+            ))
+        }
         fn get_loadouts(
             &mut self,
             character: Option<&destiny_app::CharacterId>,
@@ -821,6 +840,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "get_postmaster",
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",
@@ -1183,6 +1203,43 @@ mod tests {
     }
 
     #[test]
+    fn postmaster_arguments_are_rejected_before_service_calls() {
+        let (server, handle) = server(RecordingService::new());
+        for invalid in [
+            json!({"quantity": 1}),
+            json!({"character": 2}),
+            json!({"membership": "secret"}),
+        ] {
+            assert!(server.dispatch("get_postmaster", args(invalid)).is_err());
+        }
+        for value in [
+            "".to_owned(),
+            " ".to_owned(),
+            "a".repeat(513),
+            "bad\u{7}".to_owned(),
+        ] {
+            let result = server
+                .dispatch("get_postmaster", args(json!({"character": value})))
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+        }
+        assert!(handle.recorded().is_empty());
+        for valid in [
+            json!({}),
+            json!({"character": null}),
+            json!({"character": "wArLoCk"}),
+        ] {
+            let result = server.dispatch("get_postmaster", args(valid)).unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(structured(&result)["code"], "provider_validation");
+        }
+        assert_eq!(
+            handle.recorded(),
+            ["get_postmaster", "get_postmaster", "get_postmaster"]
+        );
+    }
+
+    #[test]
     fn repeated_dispatch_is_deterministic() {
         let (server, _handle) = server(RecordingService::new());
         let first = server
@@ -1202,6 +1259,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "get_postmaster",
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",
@@ -1245,6 +1303,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "get_postmaster",
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",

@@ -135,7 +135,12 @@ Other MCP clients usually accept the common `mcpServers` shape:
 ```
 
 Restart your agent if needed, then ask the questions at the top of this page.
-See the [MCP reference](docs/mcp.md) for tools and safety contracts.
+Use read-only `get_postmaster` with `{}` for all owned characters or
+`{"character":"hunter"}` for one unique class (an exact ID also works).
+It matches CLI JSON, including empty groups and duplicate anonymous stacks;
+these are committed observations, not guaranteed live or complete holdings.
+See the [MCP reference](docs/mcp.md#postmaster-observations) for its schema,
+currency-coverage limits and the other tools' safety contracts.
 
 ### Option B: CLI skill
 

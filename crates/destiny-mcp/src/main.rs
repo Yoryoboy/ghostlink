@@ -1102,6 +1102,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "get_postmaster",
                 "list_characters",
                 "search_inventory",
                 "inspect_item",

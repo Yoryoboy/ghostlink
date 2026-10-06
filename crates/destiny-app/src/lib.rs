@@ -90,7 +90,7 @@ pub use destiny_core::{
 };
 pub use destiny_core::{
     CharacterPostmaster, PostmasterInstance, PostmasterResult, PostmasterStack,
-    ProfileCurrenciesCoverage,
+    ProfileCurrenciesCoverage, StackContainer, StackObservation,
 };
 pub use destiny_core::{
     CharacterSubclass, CharacterSubclassOptions, ElementOptions, OptionGroup, OptionStatus,

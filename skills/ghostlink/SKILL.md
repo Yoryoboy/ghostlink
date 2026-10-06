@@ -37,7 +37,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Which characters exist, their IDs and light | `ghostlink list-characters` |
 | Find owned items by name, type, perk, mod, stat, slot | `ghostlink search-inventory` |
 | Full detail of one owned item, including what each perk and mod does | `ghostlink inspect-item` (the `instance` ID from search hits, never the definition `hash`) |
-| Committed Postmaster instances and anonymous stacks (no pull) | `ghostlink postmaster` |
+| Committed Postmaster instances and anonymous stacks (no pull) | MCP `get_postmaster`; fallback `ghostlink postmaster` |
 | Current subclass setup and what each equipped plug does | `ghostlink subclass` |
 | Unlockable supers, aspects, fragments | `ghostlink subclass-options` |
 | Artifact points and active perks | `ghostlink artifact` |
@@ -57,8 +57,12 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 
 ## Postmaster limits
 
-Use `ghostlink postmaster --json`, or `ghostlink postmaster --character hunter --json`
-for one exact ID or unique case-insensitive class. Ordinary freshness sync applies;
+Prefer MCP `get_postmaster` with `{}` (or `{"character":null}`) for all owned
+characters, or `{"character":"hunter"}` for an exact ID or unique case-insensitive
+class. Only optional `character` is accepted: strings must be 1–512 characters,
+nonblank and control-free; unknown fields and wrong types are refused before reads.
+CLI fallback: `ghostlink postmaster --json`, or
+`ghostlink postmaster --character hunter --json`. Ordinary freshness sync applies;
 refresh errors do not serve stale fallback. All-character reads include empty groups.
 Separate `instances` and `stacks` preserve duplicate observations. Only instances
 have real string `instance_id` values; never synthesize IDs for anonymous stacks or
@@ -66,7 +70,7 @@ use a stack row as a stable pull selector. Stack `bucket_hash` is the actual run
 bucket; instances have no inferred bucket. Nullable names fall back to hashes.
 `profile_currencies_coverage` qualifies component 103 only: `available` does not
 mean complete Postmaster coverage. Report committed observations, not guaranteed
-live holdings. There is no pull feature in this command.
+live holdings. There is no pull feature in either read surface.
 
 ## Descriptions
 

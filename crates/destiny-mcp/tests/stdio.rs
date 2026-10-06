@@ -56,6 +56,106 @@ const MOVE_ITEM_TOOL: &str = "move_item";
 mod equip_support;
 
 #[tokio::test]
+async fn postmaster_stdio_committed_service_journey_and_refusals() {
+    for (scenario, coverage) in [
+        ("postmaster-not-observed", "not_observed"),
+        ("postmaster-unavailable", "unavailable"),
+        ("postmaster-available", "available"),
+    ] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let id = session.next_id();
+        let discovery = session.request(id, "tools/list", None).await;
+        let tool = discovery["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "get_postmaster")
+            .unwrap();
+        assert_eq!(tool["annotations"]["readOnlyHint"], true);
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        let all = session.call_tool("get_postmaster", json!({})).await;
+        assert_eq!(all["result"]["isError"], false);
+        let output = structured(&all);
+        assert_eq!(output["kind"], "postmaster");
+        assert_eq!(output["profile_currencies_coverage"], coverage);
+        assert_eq!(output["metadata"]["checked_at"], 10000);
+        assert_eq!(output["metadata"]["freshness"], "fresh");
+        assert_eq!(output["metadata"]["source"], "profile");
+        assert_eq!(output["characters"].as_array().unwrap().len(), 2);
+        let owner = &output["characters"][0];
+        assert_eq!(owner["character_id"], "warlock");
+        assert_eq!(owner["instances"][0]["instance_id"], "postmaster-gear");
+        assert_eq!(owner["instances"][0]["name"], "Gjallarhorn");
+        assert_eq!(owner["stacks"].as_array().unwrap().len(), 3);
+        assert_eq!(owner["stacks"][0], owner["stacks"][1]);
+        assert_eq!(owner["stacks"][2]["bucket_hash"], 1469714392);
+        assert!(owner["stacks"][2]["name"].is_null());
+        assert!(owner["stacks"][0].get("instance_id").is_none());
+        assert!(owner["instances"][0].get("bucket_hash").is_none());
+        assert_eq!(output["characters"][1]["stacks"], json!([]));
+        for selector in ["warlock", "WaRlOcK"] {
+            let selected = session
+                .call_tool("get_postmaster", json!({"character": selector}))
+                .await;
+            assert_eq!(structured(&selected)["characters"], json!([owner]));
+        }
+        let empty = session
+            .call_tool("get_postmaster", json!({"character": "Titan"}))
+            .await;
+        assert_eq!(structured(&empty)["characters"][0]["instances"], json!([]));
+        let null = session
+            .call_tool("get_postmaster", json!({"character": null}))
+            .await;
+        assert_eq!(structured(&null), output);
+        for invalid in [
+            json!({"quantity":1}),
+            json!({"character":1}),
+            json!({"pull":true}),
+        ] {
+            let rejected = session.call_tool("get_postmaster", invalid).await;
+            assert_eq!(rejected["error"]["code"], -32602);
+        }
+        for selector in ["missing".to_owned(), "".into(), "a".repeat(513)] {
+            let rejected = session
+                .call_tool("get_postmaster", json!({"character":selector}))
+                .await;
+            assert_eq!(rejected["result"]["isError"], true);
+            assert_eq!(structured(&rejected)["code"], "provider_validation");
+        }
+        session.shutdown().await;
+    }
+    let mut session = FixtureSession::spawn(Some("empty-characters")).await;
+    let empty = session.call_tool("get_postmaster", json!({})).await;
+    assert_eq!(structured(&empty)["characters"], json!([]));
+    session.shutdown().await;
+    for (scenario, selector, code) in [
+        (
+            "postmaster-auth-refused",
+            json!({}),
+            "provider_authentication",
+        ),
+        ("postmaster-local-storage", json!({}), "local_storage"),
+        (
+            "postmaster-refresh-refused",
+            json!({}),
+            "provider_unavailable",
+        ),
+        (
+            "ambiguous-character",
+            json!({"character":"Titan"}),
+            "ambiguous_match",
+        ),
+    ] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let result = session.call_tool("get_postmaster", selector).await;
+        assert_eq!(result["result"]["isError"], true);
+        assert_eq!(structured(&result)["code"], code);
+        assert!(structured(&result).get("characters").is_none());
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn lock_stdio_success_noop_refusal_and_unverified_outcomes() {
     for (scenario, item, locked, status) in [
         ("success", "inst-a", true, "verified_success"),
@@ -578,6 +678,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
     assert_eq!(
         names,
         [
+            "get_postmaster",
             LIST_CHARACTERS_TOOL,
             SEARCH_INVENTORY_TOOL,
             INSPECT_ITEM_TOOL,

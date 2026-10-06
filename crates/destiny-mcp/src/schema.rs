@@ -90,6 +90,14 @@ pub const MAX_IDENTIFIER_LENGTH: usize = 512;
 pub fn tool_specs() -> Vec<Tool> {
     vec![
         Tool::new(
+            "get_postmaster",
+            "Read committed Postmaster observations, not guaranteed live or complete. Omit character (or use null) for all owned characters; select an exact id or unique case-insensitive class. Anonymous stacks are not actionable. Component 103 currency coverage is independent of Postmaster coverage.",
+            JsonObject::new(),
+        )
+        .with_input_schema::<GetPostmasterArgs>()
+        .with_output_schema::<GetPostmasterOutput>()
+        .with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
+        Tool::new(
             LIST_CHARACTERS_TOOL,
             LIST_CHARACTERS_DESCRIPTION,
             JsonObject::new(),
@@ -565,6 +573,68 @@ pub struct InspectItemArgs {
     /// Concrete instance identifier; never a definition hash or display name.
     #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
     pub instance_id: String,
+}
+
+/// Optional Postmaster selector; omitted or null returns all owned characters.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetPostmasterArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub character: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename = "postmaster")]
+pub struct GetPostmasterOutput {
+    pub metadata: PostmasterMetadataView,
+    pub profile_currencies_coverage: PostmasterCurrencyCoverageView,
+    pub characters: Vec<PostmasterCharacterView>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostmasterCurrencyCoverageView {
+    NotObserved,
+    Unavailable,
+    Available,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PostmasterMetadataView {
+    pub checked_at: u64,
+    pub freshness: String,
+    pub revision: u64,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PostmasterCharacterView {
+    pub character_id: String,
+    pub class: Option<String>,
+    pub instances: Vec<PostmasterInstanceView>,
+    pub stacks: Vec<PostmasterStackView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PostmasterInstanceView {
+    pub instance_id: String,
+    pub item_hash: i64,
+    pub name: Option<String>,
+    pub quantity: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PostmasterStackView {
+    pub item_hash: i64,
+    pub name: Option<String>,
+    pub bucket_hash: i64,
+    pub quantity: i32,
+}
+
+impl GetPostmasterOutput {
+    pub fn into_call_tool_result(self) -> CallToolResult {
+        structured_result(self)
+    }
 }
 
 /// Optional character selector; omitted returns all characters.
@@ -1361,12 +1431,28 @@ mod tests {
     }
 
     #[test]
+    fn postmaster_is_discoverable_with_strict_optional_selector() {
+        let tool = tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == "get_postmaster")
+            .expect("Postmaster read must be discoverable");
+        let schema = tool.schema_as_json_value();
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(
+            schema["properties"]["character"]
+                .to_string()
+                .contains("512")
+        );
+    }
+
+    #[test]
     fn tool_specs_expose_semantic_reads_in_stable_order() {
         let tools = tool_specs();
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
         assert_eq!(
             names,
             [
+                "get_postmaster",
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 INSPECT_ITEM_TOOL,

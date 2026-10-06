@@ -4,6 +4,7 @@
 mutations over the Model Context Protocol stdio transport:
 
 ```text
+get_postmaster    read committed Postmaster instances and anonymous stacks (no pull)
 list_characters   list the signed-in account's characters
 search_inventory  search Manifest definitions and concrete instances
 inspect_item      inspect exactly one concrete instance by instance identifier
@@ -76,6 +77,54 @@ runtime failure is a sanitized message written to stderr; nothing else is writte
 to stdout. A missing stored credential fails closed with `authorization is
 required`, a legacy raw-material credential with `reauthorization is required`,
 and neither path guesses an expiry or falls back to an environment value.
+
+## Postmaster observations
+
+Read-only `get_postmaster` uses the same account scope, ordinary freshness policy
+and committed snapshot as `ghostlink postmaster --json`. Omit `character` or use
+`null` for all owned characters, including empty groups. A selector resolves an
+exact ID first, then a unique case-insensitive class; ambiguity is an error.
+Names are optional and do not require a loaded Manifest catalog.
+
+| Input | Contract |
+|---|---|
+| Arguments | Object; `additionalProperties: false` |
+| `character` | Optional string or null; string length 1–512 characters |
+| Refused strings | Empty, whitespace-only, control-containing or oversized |
+| Other fields | Rejected before service calls; no quantity, pull or membership input |
+
+Example MCP tool call:
+
+```json
+{"name":"get_postmaster","arguments":{"character":"hunter"}}
+```
+
+`structuredContent` matches the CLI logical JSON exactly:
+
+```json
+{
+  "kind": "postmaster",
+  "metadata": {"checked_at": 10000, "freshness": "fresh", "revision": 2, "source": "profile"},
+  "profile_currencies_coverage": "not_observed",
+  "characters": [{
+    "character_id": "123", "class": "Hunter",
+    "instances": [{"instance_id": "456", "item_hash": 1, "name": null, "quantity": 1}],
+    "stacks": [{"item_hash": 900, "name": null, "bucket_hash": 215593132, "quantity": 7}]
+  }]
+}
+```
+
+IDs are strings; hashes, quantities, timestamps and revisions are numbers.
+Missing names/classes are null. Equal stack rows remain separate; do not sum
+potentially overlapping sources. Stack buckets are actual runtime observations;
+gear has no inferred bucket. Anonymous stacks have no instance ID, ordinal or
+stable action selector. This tool exposes no pull action.
+
+Metadata reports committed observations, not guaranteed live holdings or full
+Postmaster coverage. Currency coverage is `not_observed`, `unavailable` or
+`available` and qualifies component 103 only, independently of Postmaster coverage.
+A failed refresh returns a sanitized categorized MCP error, never stale holdings.
+Selector, storage and provider errors retain their shared application categories.
 
 ## Inventory search and inspection
 
@@ -194,4 +243,9 @@ Equip child-process sessions additionally compare complete CLI/MCP JSON for
 success, no-op, refusal, partial progress, uncertainty, pending provider refresh
 and refresh/verification failure, with equipped non-equipment neighbors. These
 are offline observations, not a live-provider verification claim.
+Postmaster child sessions additionally refresh stale synthetic seeds through the
+real query service and committed in-memory repository, preserving owned gear,
+duplicate material/consumable stacks and runtime buckets. They exercise filtering,
+all currency-coverage states, empty groups and refresh refusal with protocol-only,
+secret-canary-checked streams. No user database or live account is accessed.
 

@@ -475,6 +475,13 @@ impl ProfileGateway for WorldGateway {
             .world
             .lock()
             .map_err(|_| AppError::new(ErrorCategory::LocalStorage))?;
+        if let Some(category) = match std::env::var(SCENARIO_ENV).ok().as_deref() {
+            Some("postmaster-refresh-refused") => Some(ErrorCategory::ProviderUnavailable),
+            Some("postmaster-auth-refused") => Some(ErrorCategory::ProviderAuthentication),
+            _ => None,
+        } {
+            return Err(AppError::new(category));
+        }
         if world.refresh_failed {
             return Err(AppError::new(
                 if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("equip-auth-refresh-failure")
@@ -637,9 +644,13 @@ impl FixtureRepository {
             search: InMemorySearchRepository::with_definitions(definitions.clone()),
             definitions: InMemoryDefinitionRepository::new(version, definitions),
         };
+        let mut input = snapshot_input(characters, items);
+        if postmaster_scenario() {
+            input.checked_at = Timestamp::new(1);
+        }
         let snapshot = repository
             .inventory
-            .replace_current(snapshot_input(characters, items))
+            .replace_current(input)
             .expect("fixture projection is valid");
         repository.search.set_instances(snapshot.items);
         repository
@@ -648,6 +659,9 @@ impl FixtureRepository {
 
 impl InventoryRepository for FixtureRepository {
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
+        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("postmaster-local-storage") {
+            return Err(AppError::new(ErrorCategory::LocalStorage));
+        }
         self.inventory.load_current()
     }
 
@@ -789,8 +803,31 @@ fn membership() -> DestinyMembership {
 fn snapshot_input(characters: &[Character], items: &[ItemInstance]) -> InventorySnapshotInput {
     let membership = membership();
     InventorySnapshotInput {
-        profile_currencies_coverage: Default::default(),
-        stacks: Vec::new(),
+        profile_currencies_coverage: match std::env::var(SCENARIO_ENV).ok().as_deref() {
+            Some("postmaster-available") => destiny_app::ProfileCurrenciesCoverage::Available,
+            Some("postmaster-unavailable") => destiny_app::ProfileCurrenciesCoverage::Unavailable,
+            _ => Default::default(),
+        },
+        stacks: if postmaster_scenario() {
+            [
+                (900, 215593132, 7),
+                (900, 215593132, 7),
+                (901, 1469714392, 3),
+            ]
+            .into_iter()
+            .map(|(hash, bucket, quantity)| {
+                destiny_app::StackObservation::new(
+                    ItemHash::new(hash),
+                    destiny_app::BucketHash::new(bucket),
+                    quantity,
+                    destiny_app::StackContainer::Postmaster(CharacterId::new("warlock")),
+                )
+                .expect("synthetic Postmaster stack")
+            })
+            .collect()
+        } else {
+            vec![]
+        },
         plug_set_entries: Vec::new(),
         membership_id: membership.membership_id().clone(),
         membership_type: membership.membership_type(),
@@ -813,7 +850,21 @@ fn characters() -> Vec<Character> {
     characters
 }
 
+fn postmaster_scenario() -> bool {
+    std::env::var(SCENARIO_ENV)
+        .ok()
+        .is_some_and(|s| s.starts_with("postmaster-"))
+}
+
 fn base_items() -> Vec<ItemInstance> {
+    if postmaster_scenario() {
+        return vec![instance(
+            "postmaster-gear",
+            1,
+            ItemLocation::Postmaster(CharacterId::new("warlock")),
+            vec![],
+        )];
+    }
     if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("empty-characters") {
         return vec![];
     }
@@ -873,6 +924,12 @@ fn set_location(items: &mut [ItemInstance], instance_id: &str, location: ItemLoc
 }
 
 fn fixture_definitions() -> Vec<ItemDefinition> {
+    if postmaster_scenario() {
+        return vec![
+            definition(1, "Gjallarhorn"),
+            definition(900, "Synthetic Material"),
+        ];
+    }
     if std::env::var(SCENARIO_ENV)
         .ok()
         .is_some_and(|s| s.starts_with("equip-"))

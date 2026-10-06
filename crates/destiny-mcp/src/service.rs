@@ -91,6 +91,11 @@ pub struct ListCharactersRequest;
 /// without touching `rmcp`. Requests are already validated and bounded; outputs
 /// are the bounded MCP projections defined in [`crate::schema`].
 pub trait InventoryReadService {
+    /// Reads synchronized committed Postmaster observations without authorizing actions.
+    fn get_postmaster(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetPostmasterOutput, McpError>;
     /// Reads saved in-game loadouts when composed with a loadout service.
     fn get_loadouts(
         &mut self,
@@ -168,6 +173,12 @@ impl<A, I, C> ArtifactReadService<A, I, C> {
 impl<A: destiny_app::ArtifactOperations, I: InventoryReadService, C: Clock> InventoryReadService
     for ArtifactReadService<A, I, C>
 {
+    fn get_postmaster(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+        self.inventory.get_postmaster(character)
+    }
     fn get_subclass_options(
         &mut self,
         character: Option<&CharacterId>,
@@ -243,6 +254,12 @@ impl<L, I, C> LoadoutsReadService<L, I, C> {
 impl<L: destiny_app::LoadoutOperations, I: InventoryReadService, C: Clock> InventoryReadService
     for LoadoutsReadService<L, I, C>
 {
+    fn get_postmaster(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+        self.inventory.get_postmaster(character)
+    }
     fn get_subclass_options(
         &mut self,
         character: Option<&CharacterId>,
@@ -329,6 +346,12 @@ where
     R: destiny_app::WorldDefinitionRepository,
     I: InventoryReadService,
 {
+    fn get_postmaster(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+        self.inventory.get_postmaster(character)
+    }
     fn get_subclass_options(
         &mut self,
         character: Option<&CharacterId>,
@@ -403,6 +426,12 @@ where
         + destiny_app::WorldDefinitionRepository,
     C: Clock,
 {
+    fn get_postmaster(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+        self.inventory.get_postmaster(character)
+    }
     fn weekly(
         &mut self,
         args: &crate::schema::WeeklyArgs,
@@ -631,6 +660,17 @@ where
         + destiny_app::WorldDefinitionRepository,
     C: Clock,
 {
+    fn get_postmaster(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+        let now = self.clock.now().map_err(McpError::from)?;
+        let result = self
+            .queries
+            .postmaster(character, self.policy, now)
+            .map_err(McpError::from)?;
+        Ok(postmaster_output(&result))
+    }
     fn get_subclass_options(
         &mut self,
         character: Option<&CharacterId>,
@@ -1570,6 +1610,71 @@ pub fn subclass_options_output(
                                     .collect(),
                             })
                             .collect(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+impl crate::schema::GetPostmasterArgs {
+    pub fn into_request(self) -> Result<Option<CharacterId>, McpError> {
+        if let Some(character) = &self.character {
+            validate_identifier(character, "character")?;
+        }
+        Ok(self.character.map(CharacterId::new))
+    }
+}
+
+/// Preserve every committed row and optional name, with no actionable stack identity.
+pub fn postmaster_output(
+    result: &destiny_app::PostmasterResult,
+) -> crate::schema::GetPostmasterOutput {
+    use crate::schema::{
+        GetPostmasterOutput, PostmasterCharacterView, PostmasterInstanceView, PostmasterStackView,
+    };
+    GetPostmasterOutput {
+        metadata: crate::schema::PostmasterMetadataView {
+            checked_at: result.metadata.sync.checked_at.seconds(),
+            freshness: freshness_code(result.metadata.freshness).into(),
+            revision: result.metadata.sync.revision.value(),
+            source: source_code(result.metadata.sync.source).into(),
+        },
+        profile_currencies_coverage: match result.profile_currencies_coverage {
+            destiny_app::ProfileCurrenciesCoverage::NotObserved => {
+                crate::schema::PostmasterCurrencyCoverageView::NotObserved
+            }
+            destiny_app::ProfileCurrenciesCoverage::Unavailable => {
+                crate::schema::PostmasterCurrencyCoverageView::Unavailable
+            }
+            destiny_app::ProfileCurrenciesCoverage::Available => {
+                crate::schema::PostmasterCurrencyCoverageView::Available
+            }
+        },
+        characters: result
+            .characters
+            .iter()
+            .map(|character| PostmasterCharacterView {
+                character_id: character.character_id.as_str().to_owned(),
+                class: character.class.clone(),
+                instances: character
+                    .instances
+                    .iter()
+                    .map(|item| PostmasterInstanceView {
+                        instance_id: item.instance_id.as_str().to_owned(),
+                        item_hash: item.item_hash.value(),
+                        name: item.name.clone(),
+                        quantity: item.quantity,
+                    })
+                    .collect(),
+                stacks: character
+                    .stacks
+                    .iter()
+                    .map(|item| PostmasterStackView {
+                        item_hash: item.item_hash.value(),
+                        name: item.name.clone(),
+                        bucket_hash: item.bucket_hash.value(),
+                        quantity: item.quantity,
                     })
                     .collect(),
             })

@@ -101,7 +101,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 - [x] **GPM-005b — CLI Postmaster listing.** `ghostlink postmaster`
   with optional character ID/class and JSON; shared QueryOperations forwarding,
   pipeline/help checks, CLI docs and skill, no pull action.
-- [ ] **GPM-005c — MCP Postmaster listing.** `get_postmaster` with CLI
+- [x] **GPM-005c — MCP Postmaster listing.** `get_postmaster` with CLI
   parity, strict schema, forwarding wrappers, discovery/stdio checks and MCP docs.
 - [ ] **GPM-006 — Resolve pull wire contracts.** Primary-source contract
   evidence, explicit stack ambiguity/capacity rules, request fixtures.
@@ -150,7 +150,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   GPM-004a, GPM-004b1 and GPM-004b2 are COMPLETE;
   GPM-005a is COMPLETE (independently verified);
   GPM-005b is COMPLETE (independently verified);
-  GPM-005c is IN PROGRESS (MCP presentation parity).
+  GPM-005c is COMPLETE (independently verified);
+  GPM-006 is IN PROGRESS (public pull-contract research, no action code yet).
 - GPM-003a commit `1bca7d1` (321 additions / 8 deletions, including tests).
   Worker `muwy92h2-5-3djs`: completed snapshot stack fields, multiset
   equality/owner validation, fake preservation, mechanical literal propagation,
@@ -271,7 +272,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Gear has no persisted runtime bucket: omit it, never substitute definition
   bucket. Stack runtime buckets are retained. Split shared projection, CLI and
   MCP into separate work units; no extra runtime/account-scoping rewrite.
-- GPM-005b worker `mux1fmc6-g-cud2`: strict CLI postmaster command,
+- GPM-005b commit `84b1e1b`.
+  Worker `mux1fmc6-g-cud2`: strict CLI postmaster command,
   required QueryOperations forwarding, text/JSON output, offline SQLite/service
   pipeline and README/CLI docs/skill. RED: InvalidSubcommand, missing request,
   trait/module/dispatch/fake. GREEN: seven focused CLI tests; 5 skill drift,
@@ -293,6 +295,30 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   trait, service and SQLite and refresh refusal. Duplicate stacks are injected
   for renderer assertions rather than passed through this SQLite CLI fixture;
   app tests separately cover stack projection. Synthetic only, not native approval.
+- GPM-005c worker `mux1zi63-i-2jdy` partial: get_postmaster schema,
+  dispatch and required forwarding through four wrappers; CLI JSON parity and
+  actual child-process cases. Selector `character` follows existing MCP conventions;
+  omitted/null selects all. Dedicated metadata DTO preserves CLI parity without
+  existing MCP dataset/definition-version extras. RED missing discovery; focused
+  GREEN 5 tests. Stdio currently E0433: app does not export StackObservation/
+  StackContainer; other checks/docs/main expectations remain pending. No outside
+  edits or completion claimed. Parent inspected existing app facade contract and
+  approved ONLY additive re-exports in crates/destiny-app/src/lib.rs, avoiding a
+  new destiny-core dependency explicitly forbidden by its architecture comment.
+  Same writer resumed as `mux28y88-j-vgq0`: COMPLETE implementation and docs.
+  Corrected E0433 then 18 stdio tests passed; focused 5 MCP/5 skill/14 app passed,
+  1,535 default / 1,553 all-features workspace tests, fmt/clippy/diff green.
+  Formatting/trailing-whitespace failures corrected; approx. 604 authored lines.
+  Fixture refreshes stale synthetic seeds and commits actual gear/stacks through
+  all four wrappers; no live validation or pull feature. Additive app exports only,
+  no dependency changes. ASSESS unassessable due new untracked parity test;
+  high-risk independent verification required. Verifier `mux2l3js-k-rm5b` PASS,
+  no blocking counterexample. 5 MCP/18 stdio/5 skill/14 app, 1,535 default / 1,553
+  all-features tests; fmt/clippy/diff passed and untracked parity file inspected.
+  Confirmed all four wrappers and actual publication of duplicate stacks. Child
+  fixture storage is IN-MEMORY FAKE, not SQLite: transport/service integration is
+  proven, not durable readback or live-provider correctness. Default workspace
+  compilation passes; stdio requires offline-fixtures. RDD off, no native approval.
 - GPM-005b scope scout `mux1d2co-f-c4dl`: only QueryService and CLI
   runner RecordingService implement QueryOperations. Add required object-safe
   postmaster method and true forwarding; no fallback stub or MCP changes needed.
