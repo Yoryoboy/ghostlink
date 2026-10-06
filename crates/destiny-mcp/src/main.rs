@@ -202,17 +202,24 @@ type PublicWeeklyService = destiny_app::weekly_reset::WeeklyResetService<
     SqliteStore,
 >;
 
-fn weekly_service(config: &ReadRuntimeConfig) -> Result<PublicWeeklyService, AppError> {
+fn weekly_service(
+    config: &ReadRuntimeConfig,
+) -> Result<(PublicWeeklyService, destiny_app::calendar::Calendar), AppError> {
     use destiny_adapters::manifest::{
         BungieManifestGateway, HttpManifestTransport, ManifestApiKey,
     };
-    Ok(destiny_app::weekly_reset::WeeklyResetService::new(
-        BungieManifestGateway::new(
-            ManifestApiKey::new(config.api_key().expose_secret())?,
-            HttpManifestTransport::new()?,
-            SystemClock::new(),
+    let calendar = destiny_adapters::calendar::embedded_calendar()
+        .map_err(|_| AppError::new(ErrorCategory::ClockOverflow))?;
+    Ok((
+        destiny_app::weekly_reset::WeeklyResetService::new(
+            BungieManifestGateway::new(
+                ManifestApiKey::new(config.api_key().expose_secret())?,
+                HttpManifestTransport::new()?,
+                SystemClock::new(),
+            ),
+            SqliteStore::open(config.database_path())?,
         ),
-        SqliteStore::open(config.database_path())?,
+        calendar,
     ))
 }
 
@@ -252,7 +259,7 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     ),
     repository: SqliteStore,
     policy: FreshnessPolicy,
-    weekly: PublicWeeklyService,
+    weekly: (PublicWeeklyService, destiny_app::calendar::Calendar),
     personal_public: PersonalPublicGateway,
     personal_repository: SqliteStore,
 ) -> ReadToolServer {
@@ -272,9 +279,13 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         read_service,
     );
 
-    let read_service = crate::service::WeeklyReadService::new(weekly, read_service, |t| {
-        destiny_adapters::format_reset_timestamp(t, false)
-    });
+    let read_service = crate::service::WeeklyReadService::new(
+        weekly.0,
+        read_service,
+        |t| destiny_adapters::format_reset_timestamp(t, false),
+        weekly.1,
+        SystemClock::new(),
+    );
 
     let read_service = crate::service::ArtifactReadService::new(
         destiny_app::ArtifactService::new(ProfileSyncService::new_with_definitions(
@@ -1062,13 +1073,16 @@ mod tests {
             (transfer, equip),
             store,
             FreshnessPolicy { ttl_seconds: 900 },
-            destiny_app::weekly_reset::WeeklyResetService::new(
-                destiny_adapters::manifest::BungieManifestGateway::new(
-                    destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL).unwrap(),
-                    destiny_adapters::manifest::HttpManifestTransport::new().unwrap(),
-                    SystemClock::new(),
+            (
+                destiny_app::weekly_reset::WeeklyResetService::new(
+                    destiny_adapters::manifest::BungieManifestGateway::new(
+                        destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL).unwrap(),
+                        destiny_adapters::manifest::HttpManifestTransport::new().unwrap(),
+                        SystemClock::new(),
+                    ),
+                    SqliteStore::open_in_memory().unwrap(),
                 ),
-                SqliteStore::open_in_memory().unwrap(),
+                destiny_adapters::calendar::embedded_calendar().unwrap(),
             ),
             personal_public(&config()).unwrap(),
             SqliteStore::open_in_memory().unwrap(),

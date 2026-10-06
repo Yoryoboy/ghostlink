@@ -28,6 +28,7 @@ path = "src/bin/destiny_mcp.rs"
 [dependencies]
 destiny-mcp = { path = "../destiny-mcp" }
 clap.workspace = true
+chrono = { version = "=0.4.45", default-features = false, features = ["clock"] }
 destiny-adapters = { path = "../destiny-adapters" }
 destiny-app.workspace = true
 destiny-output.workspace = true

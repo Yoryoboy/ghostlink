@@ -146,7 +146,7 @@ impl Cli {
             Command::Equip(_)
             | Command::Sync
             | Command::SyncManifest
-            | Command::WeeklyReset
+            | Command::WeeklyReset(_)
             | Command::Weekly(_)
             | Command::Login(_)
             | Command::Agents(_)
@@ -212,9 +212,9 @@ pub enum Command {
     #[command(name = "sync-manifest")]
     SyncManifest,
 
-    /// Show the public weekly reset using stored Manifest definitions.
+    /// Predict weekly rotations and show observed current-week milestones.
     #[command(name = "weekly-reset")]
-    WeeklyReset,
+    WeeklyReset(WeeklyResetArgs),
 
     /// Show reliable weekly content and progress for one character.
     #[command(name = "weekly")]
@@ -623,6 +623,19 @@ fn parse_slot(value: &str) -> Result<String, String> {
 }
 fn parse_class(value: &str) -> Result<String, String> {
     validate_filter(value, "class")
+}
+
+#[derive(Debug, Args)]
+pub struct WeeklyResetArgs {
+    /// Predict the week in effect at the end of this local calendar day.
+    #[arg(long, value_name = "YYYY-MM-DD", value_parser = parse_calendar_date)]
+    pub date: Option<String>,
+}
+
+fn parse_calendar_date(value: &str) -> Result<String, String> {
+    destiny_adapters::calendar::instant_for_utc_date(value)
+        .map(|_| value.into())
+        .map_err(|_| "expected an ISO calendar date".into())
 }
 
 /// Weekly accepts opaque IDs and uniquely matched character classes.
