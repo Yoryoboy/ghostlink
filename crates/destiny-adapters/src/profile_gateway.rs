@@ -358,7 +358,7 @@ const PROFILE_PATH_PREFIX: &str = "/Platform/Destiny2/";
 const PROFILE_PATH_INFIX: &str = "/Profile/";
 
 /// The exact, ordered profile component query this adapter may request.
-const PROFILE_COMPONENTS_QUERY: &str = "components=102,200,201,205,300,302,304,305,310";
+const PROFILE_COMPONENTS_QUERY: &str = "components=102,103,200,201,205,300,302,304,305,310";
 
 /// Strict upper bound on the current-user membership response body (256 KiB).
 pub const MEMBERSHIP_RESPONSE_LIMIT: usize = 256 * 1024;
@@ -1174,12 +1174,24 @@ where
         let url = profile_endpoint(membership);
         let (bytes, observed_at) =
             self.read_with_live_credential(&url, PROFILE_RESPONSE_LIMIT, scope)?;
-        decode_profile(
+        let mut candidate = decode_profile(
             &bytes,
             membership,
             self.definition_version.clone(),
             observed_at,
-        )
+        )?;
+        // Unlike legacy pure decoding, this authenticated request explicitly
+        // asks for 103. Its omission is unavailable coverage, not unobserved.
+        if candidate.profile_currencies_coverage
+            == destiny_core::ProfileCurrenciesCoverage::NotObserved
+        {
+            candidate.profile_currencies_coverage =
+                destiny_core::ProfileCurrenciesCoverage::Unavailable;
+        }
+        if !candidate.is_structurally_valid() {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(candidate)
     }
 }
 
@@ -1935,7 +1947,7 @@ mod tests {
 
     const API_KEY_SENTINEL: &str = "sentinel-profile-api-key";
     const BEARER_SENTINEL: &str = "sentinel-profile-bearer-token";
-    const PROFILE_QUERY: &str = "?components=102,200,201,205,300,302,304,305,310";
+    const PROFILE_QUERY: &str = "?components=102,103,200,201,205,300,302,304,305,310";
     const PROFILE_PREFIX: &str =
         "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/";
     const RESPONSE_BODY: &str = "{\"ErrorCode\":1,\"Response\":{}}";
@@ -2304,7 +2316,7 @@ mod tests {
         assert!(is_allowed_profile_url(&url));
         assert_eq!(
             url,
-            "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/?components=102,200,201,205,300,302,304,305,310"
+            "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/?components=102,103,200,201,205,300,302,304,305,310"
         );
     }
 
@@ -2425,7 +2437,7 @@ mod tests {
         assert!(is_allowed_profile_url(&profile_endpoint(&selected())));
 
         let encoded_components = format!(
-            "{PROFILE_PREFIX}?components=102%2C200%2C201%2C205%2C300%2C302%2C304%2C305%2C310"
+            "{PROFILE_PREFIX}?components=102%2C103%2C200%2C201%2C205%2C300%2C302%2C304%2C305%2C310"
         );
         let negatives = [
             String::new(),
@@ -2447,12 +2459,14 @@ mod tests {
             // Profile endpoint query and path variants.
             format!("{PROFILE_PREFIX}{PROFILE_QUERY}&extra=1"),
             format!("{PROFILE_PREFIX}?components=102"),
-            format!("{PROFILE_PREFIX}?components=102,200,201,205,300,302,305,304,310"),
-            format!("{PROFILE_PREFIX}?components=102,200,201,205,300,302,304,305"),
-            format!("{PROFILE_PREFIX}?components=102,200,201,205,300,302"),
-            format!("{PROFILE_PREFIX}?components=102,200,201,205,302,300,304,305,310"),
-            format!("{PROFILE_PREFIX}?components=102,102,200,201,205,300,302,304,305,310"),
-            format!("{PROFILE_PREFIX}?components=102,200,201,205,300"),
+            // Legacy inventory query cannot establish requested currency coverage.
+            format!("{PROFILE_PREFIX}?components=102,200,201,205,300,302,304,305,310"),
+            format!("{PROFILE_PREFIX}?components=102,103,200,201,205,300,302,305,304,310"),
+            format!("{PROFILE_PREFIX}?components=102,103,200,201,205,300,302,304,305"),
+            format!("{PROFILE_PREFIX}?components=102,103,200,201,205,300,302"),
+            format!("{PROFILE_PREFIX}?components=102,103,200,201,205,302,300,304,305,310"),
+            format!("{PROFILE_PREFIX}?components=102,103,103,200,201,205,300,302,304,305,310"),
+            format!("{PROFILE_PREFIX}?components=102,103,200,201,205,300"),
             format!("{PROFILE_PREFIX}?components="),
             encoded_components,
             format!("{PROFILE_PREFIX}{PROFILE_QUERY}#fragment"),

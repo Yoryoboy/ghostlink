@@ -56,11 +56,12 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   hasTransferDestination=false. Public Manifest succeeded without credentials.
   Definition source:
   <https://www.bungie.net/common/destiny2_content/json/en/DestinyInventoryBucketDefinition-a8ba855a-93c7-4014-8f2e-d92357fdfb42.json>
-- Currency/material destination coverage: existing components 102/201 omit 103.
+- Currency acquisition RESOLVED: component103 is requested and qualified as
+  NotObserved (legacy decoder), Unavailable or Available (including empty/zero).
+  This does not yet establish safe per-material destination reconciliation.
   Official DestinyProfileResponse confirms profileCurrencies is
-  SingleComponentResponseOfDestinyInventoryComponent (component 103), while
-  characterInventories is character-keyed inventory. Acquire and establish
-  coverage; do not count overlapping summaries twice.
+  SingleComponentResponseOfDestinyInventoryComponent; characterInventories is
+  character-keyed inventory. Do not count overlapping summaries twice.
 - Representative sanitized fixtures and eventual owner-run live verification.
 
 ## Tasks
@@ -88,7 +89,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   snapshots/revisions/SQLite v17. Zero quantities allowed ONLY for profile currency
   balances; physical stacks remain positive. Legacy snapshots default NotObserved;
   no destructive downgrade of new information.
-- [ ] **GPM-004b2 — Acquire currencies and classify verified buckets.**
+- [x] **GPM-004b2 — Acquire currencies and classify verified buckets.**
   Request103, decode profileCurrencies separately with explicit availability;
   normal gear reads tolerate genuinely unavailable optional currency data, not
   malformed currency records. Use officially verified Lost Items bucket for
@@ -140,8 +141,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   (snapshot contract plus fail-closed durable bridge) and GPM-003b (one combined
   v16 migration and Postmaster ownership). GPM-003a is COMPLETE;
   GPM-003b is COMPLETE (worker checks and native assessment);
-  GPM-004a and GPM-004b1 are COMPLETE;
-  GPM-004b2 is IN PROGRESS (currency acquisition and bucket classification).
+  GPM-004a, GPM-004b1 and GPM-004b2 are COMPLETE;
+  GPM-005 is IN PROGRESS (read-only surface mapping).
 - GPM-003a commit `1bca7d1` (321 additions / 8 deletions, including tests).
   Worker `muwy92h2-5-3djs`: completed snapshot stack fields, multiset
   equality/owner validation, fake preservation, mechanical literal propagation,
@@ -192,7 +193,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   v16). Coverage enum is per-snapshot, included in equality and readback. Keep
   ordinary gear reads available when optional currencies are unavailable, while
   stronger currency/pull claims require Available fresh coverage.
-- GPM-004b1 worker `mux008qq-a-wocy`: ProfileCurrenciesCoverage
+- GPM-004b1 commit `0a08c0d`.
+  Worker `mux008qq-a-wocy`: ProfileCurrenciesCoverage
   NotObserved/Unavailable/Available on both snapshots, cloning/equality/fakes and
   SQLite17. Currency-only zero balances, physical stacks remain positive; known
   coverage or zero balances prevent destructive downgrade. RED: rejected zero,
@@ -200,6 +202,21 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   coverage test, 128 SQLite tests, 1,505 / 1,522 workspace tests. fmt/clippy/diff
   clean. Initial wrong feature and test FK setup corrected before final pass.
   ASSESS medium (29 paths / 763 diff lines), writerSelfVerification=true,
+  independentVerifier=false; RDD off, outcome unknown, not consumed. reviewDue
+  slice_budget_reached, no native review initiated. Exact continuation:
+  `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
+- GPM-004b2 worker `mux0emlt-b-y1b8`: component103 acquisition and
+  strict optional currency decoding; requested omission becomes Unavailable,
+  legacy omission NotObserved. Private usable data accepted; available empty/zero
+  retained; invalid rows reject entire snapshot. Multiplicity/provenance retained.
+  Verified runtime bucket identifies character Postmaster even location1/absent;
+  equipped and unowned Postmaster refused. Existing public signatures unchanged.
+  RED: wrong query, coverage, bucket classification (after correcting test import).
+  GREEN: 131 profile tests, one durable/atomic journey, six weekly tests and 1,528
+  all-features workspace tests. fmt/clippy/diff passed after format/lint correction.
+  Journey added after implementation, not separately RED. Synthetic fixtures only;
+  compiler/clippy passed despite false-positive lens JSON indexing diagnostics.
+  ASSESS medium (5 paths / 456 diff lines), writerSelfVerification=true,
   independentVerifier=false; RDD off, outcome unknown, not consumed. reviewDue
   slice_budget_reached, no native review initiated. Exact continuation:
   `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.

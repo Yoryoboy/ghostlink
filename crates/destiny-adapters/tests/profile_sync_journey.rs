@@ -416,6 +416,123 @@ fn profile_stack_multiset_and_postmaster_survive_sqlite_sync() {
     assert_eq!(committed(&service).stacks.len(), 4);
 }
 
+/// Synthetic component wrappers exercise durable availability, never live coverage.
+#[test]
+fn profile_currency_coverage_balances_and_atomic_rejection_survive_reopen() {
+    use destiny_core::{ProfileCurrenciesCoverage as Coverage, StackContainer};
+    let journey = Journey::new();
+    let mut service = journey.service();
+    journey.queue_membership();
+    journey.queue_profile(FIXTURE);
+    service.sync(ProfileSyncReason::Ordinary, TTL, NOW).unwrap();
+    let legacy = committed(&service);
+    assert_eq!(legacy.profile_currencies_coverage, Coverage::Unavailable);
+    assert!(
+        journey.recorded_urls()[1].ends_with("?components=102,103,200,201,205,300,302,304,305,310")
+    );
+    drop(service);
+    let mut service = journey.service();
+    assert_eq!(committed(&service), legacy);
+
+    let mut value: Value = serde_json::from_slice(FIXTURE).unwrap();
+    value["Response"]["profileCurrencies"] = json!({"privacy":2,"data":{"items":[]}});
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+    let empty = committed(&service);
+    assert_eq!(empty.profile_currencies_coverage, Coverage::Available);
+    assert_eq!(
+        empty.metadata.revision.value(),
+        legacy.metadata.revision.value() + 1
+    );
+    assert_eq!(empty.stacks, legacy.stacks);
+
+    let overlap = value["Response"]["profileInventory"]["data"]["items"][2].clone();
+    let mut zero = overlap.clone();
+    zero["quantity"] = json!(0);
+    value["Response"]["profileCurrencies"]["data"]["items"] =
+        json!([overlap.clone(), overlap, zero]);
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+    let balances = committed(&service);
+    assert_eq!(
+        balances.metadata.revision.value(),
+        empty.metadata.revision.value() + 1
+    );
+    assert_eq!(balances.stacks.len(), legacy.stacks.len() + 3);
+    assert_eq!(
+        balances
+            .stacks
+            .iter()
+            .filter(|s| s.container() == &StackContainer::ProfileCurrencies)
+            .count(),
+        3
+    );
+    assert_eq!(
+        balances
+            .stacks
+            .iter()
+            .filter(|s| s.container() == &StackContainer::ProfileInventory)
+            .count(),
+        2
+    );
+    drop(service);
+    let mut service = journey.service();
+    assert_eq!(committed(&service), balances);
+
+    value["Response"]["profileCurrencies"]["data"]["items"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+    assert_eq!(
+        committed(&service).metadata.revision,
+        balances.metadata.revision
+    );
+    for (field, invalid) in [
+        ("quantity", json!(-1)),
+        ("quantity", json!(2147483648u64)),
+        ("itemHash", json!(4294967296u64)),
+        ("bucketHash", Value::Null),
+        ("itemInstanceId", json!("0")),
+    ] {
+        let mut bad = value.clone();
+        bad["Response"]["profileInventory"]["data"]["items"][0]["quantity"] = json!(2);
+        bad["Response"]["profileCurrencies"]["data"]["items"][0][field] = invalid;
+        journey.queue_membership();
+        journey.queue_profile(&serde_json::to_vec(&bad).unwrap());
+        assert_eq!(
+            service
+                .sync(ProfileSyncReason::Forced, TTL, NOW)
+                .unwrap_err()
+                .category(),
+            ErrorCategory::ProviderValidation
+        );
+        assert_eq!(committed(&service), balances);
+    }
+    for wrapper in [
+        Value::Null,
+        json!({"disabled":true}),
+        json!({"privacy":2,"data":null}),
+    ] {
+        value["Response"]["profileCurrencies"] = wrapper;
+        journey.queue_membership();
+        journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+        service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+        assert_eq!(
+            committed(&service).profile_currencies_coverage,
+            Coverage::Unavailable
+        );
+        assert_eq!(committed(&service).stacks, legacy.stacks);
+    }
+    let unavailable = committed(&service);
+    drop(service);
+    assert_eq!(committed(&journey.service()), unavailable);
+}
+
 #[test]
 fn profile_invalid_stack_rows_never_publish_partial_sqlite_content() {
     let journey = Journey::new();
