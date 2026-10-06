@@ -108,6 +108,7 @@ pub trait PlanIdGenerator {
 /// change.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySnapshotInput {
+    pub stacks: Vec<crate::StackObservation>,
     pub plug_set_entries: Vec<crate::domain::PlugSetEntry>,
     pub membership_id: MembershipId,
     pub membership_type: MembershipType,
@@ -128,6 +129,7 @@ impl InventorySnapshotInput {
             source: snapshot.metadata.source,
             characters: snapshot.characters.clone(),
             items: snapshot.items.clone(),
+            stacks: snapshot.stacks.clone(),
             plug_set_entries: snapshot.plug_set_entries.clone(),
         }
     }
@@ -149,7 +151,8 @@ impl InventorySnapshotInput {
     /// permutation of the *items* themselves is not. Stat values participate in
     /// identity, but stat order does not: both sides are sorted by stat hash.
     /// Plug-set entries are unordered, keyed by scope and hash; both flags
-    /// participate in content identity independently.
+    /// participate in content identity independently. Stacks are sorted multisets:
+    /// all fields and duplicate multiplicity matter, but observation order does not.
     ///
     /// [`PerkSummary`]: crate::domain::PerkSummary
     pub fn content_eq(&self, other: &Self) -> bool {
@@ -181,7 +184,11 @@ impl InventorySnapshotInput {
         let mut right_options = other.plug_set_entries.clone();
         left_options.sort();
         right_options.sort();
-        left_items == right_items && left_options == right_options
+        let mut left_stacks = self.stacks.clone();
+        let mut right_stacks = other.stacks.clone();
+        left_stacks.sort();
+        right_stacks.sort();
+        left_items == right_items && left_options == right_options && left_stacks == right_stacks
     }
 
     /// Reports whether the character and item collections form a complete,
@@ -202,11 +209,27 @@ impl InventorySnapshotInput {
     /// and at most 64 entries per item; incoming order need not be canonical.
     /// Plug-set entries must have unique scoped u32 hashes, and character scopes
     /// must be canonical decimal identifiers referencing this projection.
+    /// Character inventory and Postmaster stack owners must reference characters
+    /// in this projection. Profile stack containers have no owner; duplicate
+    /// observations are valid and are never deduplicated.
     pub fn is_structurally_valid(&self) -> bool {
         let mut character_ids = HashSet::with_capacity(self.characters.len());
         for character in &self.characters {
             if !character_ids.insert(character.id.clone()) {
                 return false;
+            }
+        }
+
+        for stack in &self.stacks {
+            match stack.container() {
+                crate::StackContainer::CharacterInventory(owner)
+                | crate::StackContainer::Postmaster(owner) => {
+                    if !character_ids.contains(owner) {
+                        return false;
+                    }
+                }
+                crate::StackContainer::ProfileInventory
+                | crate::StackContainer::ProfileCurrencies => {}
             }
         }
 

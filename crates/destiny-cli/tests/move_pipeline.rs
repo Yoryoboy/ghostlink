@@ -26,6 +26,7 @@ fn character(id: &str) -> Character {
 }
 fn snapshot(location: ItemLocation) -> InventorySnapshotInput {
     InventorySnapshotInput {
+        stacks: Vec::new(),
         membership_id: MembershipId::new("789"),
         membership_type: MembershipType::new(3),
         checked_at: NOW,

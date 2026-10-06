@@ -267,6 +267,7 @@ pub fn decode_profile(
     });
 
     let snapshot = InventorySnapshotInput {
+        stacks: Vec::new(),
         plug_set_entries: decode_plug_sets(response, &character_ids)?,
         membership_id: membership.membership_id().clone(),
         membership_type: membership.membership_type(),
@@ -1319,6 +1320,7 @@ mod tests {
         let snapshot = decode(FIXTURE).expect("complete fixture");
 
         let expected = InventorySnapshotInput {
+            stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_id: MembershipId::new(MEMBERSHIP_ID),
             membership_type: MembershipType::new(MEMBERSHIP_TYPE),

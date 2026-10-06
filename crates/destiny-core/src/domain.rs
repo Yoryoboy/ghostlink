@@ -732,6 +732,7 @@ pub struct PlugSetEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySnapshot {
+    pub stacks: Vec<crate::StackObservation>,
     pub plug_set_entries: Vec<PlugSetEntry>,
     pub metadata: SnapshotMetadata,
     pub characters: Vec<Character>,
@@ -846,6 +847,7 @@ mod tests {
     #[test]
     fn snapshot_records_are_normalized_and_provider_neutral() {
         let snapshot = InventorySnapshot {
+            stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             metadata: SnapshotMetadata {
                 membership_id: MembershipId::new("membership"),

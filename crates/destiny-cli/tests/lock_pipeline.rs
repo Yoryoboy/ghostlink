@@ -10,6 +10,7 @@ const NOW: Timestamp = Timestamp::new(100);
 const POLICY: FreshnessPolicy = FreshnessPolicy { ttl_seconds: 300 };
 fn snapshot(locked: bool, vault: bool) -> InventorySnapshotInput {
     InventorySnapshotInput {
+        stacks: Vec::new(),
         membership_id: MembershipId::new("789"),
         membership_type: MembershipType::new(3),
         checked_at: NOW,

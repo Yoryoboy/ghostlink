@@ -62,9 +62,16 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 - [x] **GPM-002 — Validated non-instanced stack observation contracts.**
   Domain types and invariant tests, preserving duplicates and separating
   observations from actionable instance IDs. No production acquisition yet.
-- [ ] **GPM-003 — Persist complete inventory projections.** Explicit
-  Postmaster ownership, stack-aware snapshots/equality, SQLite migration,
-  atomic replacement/readback, fakes and legacy mutation safety regressions.
+- [x] **GPM-003a — Stack-aware snapshot contracts.** Preserve stack
+  observations through metadata cloning, multiset equality and in-memory
+  replacement. Validate owner references; mechanically propagate empty stacks
+  through existing constructors. Until durable support lands, SQLite explicitly
+  rejects non-empty stack snapshots rather than dropping data.
+- [ ] **GPM-003b — Combined SQLite v16 and Postmaster safety.** Persist
+  stacks and explicit Postmaster ownership in one migration; preserve all four
+  child projections, indexes and metadata; atomic readback/replacement and
+  existing move/equip/lock exclusions. Reject unsafe downgrade without changing
+  data; no silent relabeling or projection invalidation.
 - [ ] **GPM-004 — Decode Postmaster and stacks with coverage evidence.**
   Correct character classification; preserve quantity/container/bucket;
   establish destination component coverage and sanitized fixture journeys.
@@ -98,7 +105,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 ## Progress and next step
 
 - GPM-001: branch created from clean `4adc624`; tracker created before source
-  writes. Full Engram copy uses topic `odd/ghostlink-postmaster/tasks`.
+  writes. Tracker and GPM-002 committed together as `1dc9158`.
+  Full Engram copy uses topic `odd/ghostlink-postmaster/tasks`.
 - GPM-002 COMPLETE (independently verified): worker `muwy0kc9-2-eynx`
   completed `core/src/stacks.rs`, exports and ten invariant tests. Observed RED:
   missing types (E0432). GREEN: 10 stack tests, 141 core tests including rustdoc;
@@ -110,6 +118,26 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Verifier `muwy5mk7-3-wq4a`: PASS, no findings; 141 core tests (130 unit,
   10 integration, 1 compile-fail rustdoc), fmt/clippy/diff check all passed.
   Untracked source files were inspected separately from `git diff --check`.
-- Explorer `muwy5mlp-4-e2z0` maps GPM-003 migration/snapshot surfaces read-only.
-  Pull-contract gaps do not block this persistence planning.
+- Explorer `muwy5mlp-4-e2z0` completed the GPM-003 map. Split into GPM-003a
+  (snapshot contract plus fail-closed durable bridge) and GPM-003b (one combined
+  v16 migration and Postmaster ownership). GPM-003a is COMPLETE;
+  GPM-003b is IN PROGRESS (implementation delegation).
+- GPM-003a worker `muwy92h2-5-3djs`: completed snapshot stack fields, multiset
+  equality/owner validation, fake preservation, mechanical literal propagation,
+  and v15 SQLite rejection before transaction creation. RED: missing fields
+  (E0560/E0609); GREEN: 3 focused core tests, 1 app and 1 SQLite regression.
+  Workspace tests: 1,476 default / 1,493 all-features; fmt, clippy and diff check
+  passed. Derived CLI runtime snapshot preserves first_snapshot.stacks.
+- GPM-003a native assess was unassessable due undeclared untracked files;
+  independent verifier `muwylpuq-6-7976`: PASS, no findings. All six authorized
+  checks passed; source remained unchanged. Tracker-only concurrent update was
+  confirmed as parent bookkeeping. Full-suite totals above remain worker evidence.
+  No v16 migration yet.
+- Migration hazard: dropping/rebuilding `items` can cascade-delete item_perks,
+  item_plugs, item_stats and item_available_plugs. Foreign keys are enabled and
+  the runner is already in a transaction; foreign_keys=OFF inside migration SQL
+  is not a valid workaround. Preservation tests are mandatory.
+- Keep `--character` and carried-inventory filters restricted to Character,
+  never implicitly Postmaster(owner); lock's fallback remains Vault-only.
+  Pull-contract gaps do not block safe snapshot/persistence work.
 - Feature A live checks remain pending; no claim of live provider validation.

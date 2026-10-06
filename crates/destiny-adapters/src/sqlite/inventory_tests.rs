@@ -15,6 +15,59 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
+fn stack_snapshot_sqlite_refuses_nonempty_stacks_without_mutation() {
+    use destiny_core::{BucketHash, StackContainer, StackObservation};
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let original = store.replace_current(full_input()).unwrap();
+    assert!(original.stacks.is_empty());
+    let before = store.connection().total_changes();
+    let schema = store.schema_version().unwrap();
+    let mut replacement = InventorySnapshotInput::with_metadata(&original);
+    replacement.items.clear();
+    replacement.checked_at = Timestamp::new(original.metadata.checked_at.seconds() + 10);
+    replacement.definition_version = DefinitionVersion::new("replacement");
+    replacement.stacks.push(
+        StackObservation::new(
+            ItemHash::new(7),
+            BucketHash::new(8),
+            2,
+            StackContainer::ProfileInventory,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        store.replace_current(replacement).unwrap_err(),
+        AppError::new(ErrorCategory::ProviderValidation)
+    );
+    assert_eq!(store.connection().total_changes(), before);
+    assert_eq!(store.schema_version().unwrap(), schema);
+    assert_eq!(store.load_current().unwrap(), Some(original.clone()));
+    let same = store
+        .replace_current(InventorySnapshotInput::with_metadata(&original))
+        .unwrap();
+    assert_eq!(same, original);
+
+    let mut empty_store = SqliteStore::open_in_memory().unwrap();
+    let mut input = full_input();
+    input.stacks.push(
+        StackObservation::new(
+            ItemHash::new(7),
+            BucketHash::new(8),
+            2,
+            StackContainer::ProfileCurrencies,
+        )
+        .unwrap(),
+    );
+    let before = empty_store.connection().total_changes();
+    assert_eq!(
+        empty_store.replace_current(input).unwrap_err().category(),
+        ErrorCategory::ProviderValidation
+    );
+    assert_eq!(empty_store.connection().total_changes(), before);
+    assert_eq!(empty_store.load_current().unwrap(), None);
+}
+
+#[test]
 fn configured_label_to_manifest_version_preserves_snapshots_and_revision_identity() {
     let mut store = SqliteStore::open_in_memory().unwrap();
     let schema = store.schema_version().unwrap();
@@ -457,6 +510,7 @@ fn storage_error() -> AppError {
 /// bounds, and an empty list.
 fn full_input() -> InventorySnapshotInput {
     InventorySnapshotInput {
+        stacks: Vec::new(),
         plug_set_entries: Vec::new(),
         membership_id: MembershipId::new("membership-1"),
         membership_type: MembershipType::new(u32::MAX),

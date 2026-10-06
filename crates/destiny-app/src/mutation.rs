@@ -3391,6 +3391,7 @@ mod tests {
         items: Vec<ItemInstance>,
     ) -> InventorySnapshotInput {
         InventorySnapshotInput {
+            stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_id: membership_id(),
             membership_type: destiny_core::MembershipType::new(3),

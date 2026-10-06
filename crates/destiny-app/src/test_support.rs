@@ -564,6 +564,7 @@ impl InMemoryInventoryRepository {
         revision: SyncRevision,
     ) -> Self {
         input.plug_set_entries.sort();
+        input.stacks.sort();
         input
             .characters
             .sort_by(|left, right| left.id.cmp(&right.id));
@@ -581,6 +582,7 @@ impl InMemoryInventoryRepository {
             },
             characters: input.characters.clone(),
             items: input.items.clone(),
+            stacks: input.stacks.clone(),
             plug_set_entries: input.plug_set_entries.clone(),
         };
         Self {
@@ -627,6 +629,7 @@ impl InventoryRepository for InMemoryInventoryRepository {
             item.stats.sort_by_key(|stat| stat.stat_hash);
         }
         input.plug_set_entries.sort();
+        input.stacks.sort();
         let revision = match (self.current.as_ref(), self.previous_input.as_ref()) {
             (Some(current), Some(previous)) if previous.content_eq(&input) => {
                 current.metadata.revision
@@ -652,6 +655,7 @@ impl InventoryRepository for InMemoryInventoryRepository {
             },
             characters: input.characters,
             items: input.items,
+            stacks: input.stacks,
             plug_set_entries: input.plug_set_entries,
         };
         self.current = Some(snapshot.clone());
@@ -1333,10 +1337,78 @@ mod tests {
         );
     }
 
+    #[test]
+    fn stack_snapshot_fake_preserves_stacks_and_multiset_revisions() {
+        use destiny_core::{BucketHash, StackContainer, StackObservation};
+        let stack = |quantity| {
+            StackObservation::new(
+                ItemHash::new(7),
+                BucketHash::new(8),
+                quantity,
+                StackContainer::ProfileInventory,
+            )
+            .unwrap()
+        };
+        let mut candidate = input(1);
+        candidate.stacks = vec![stack(2), stack(3), stack(2)];
+        let mut repository = InMemoryInventoryRepository::new();
+        let first = repository.replace_current(candidate.clone()).unwrap();
+        let mut expected = candidate.stacks.clone();
+        expected.sort();
+        assert_eq!(first.stacks, expected);
+        assert_eq!(repository.load_current().unwrap(), Some(first.clone()));
+        let seeded = InMemoryInventoryRepository::with_revision_for_test(
+            candidate.clone(),
+            first.metadata.revision,
+        );
+        assert_eq!(seeded.load_current().unwrap(), Some(first.clone()));
+        candidate.stacks.rotate_left(1);
+        candidate.checked_at = Timestamp::new(201);
+        let same = repository.replace_current(candidate.clone()).unwrap();
+        assert_eq!(same.metadata.revision, first.metadata.revision);
+        assert_eq!(same.metadata.checked_at, candidate.checked_at);
+        candidate.stacks[0] = stack(4);
+        let changed = repository.replace_current(candidate.clone()).unwrap();
+        assert_eq!(
+            changed.metadata.revision.value(),
+            first.metadata.revision.value() + 1
+        );
+        candidate.stacks.push(stack(2));
+        let duplicated = repository.replace_current(candidate.clone()).unwrap();
+        assert_eq!(
+            duplicated.metadata.revision.value(),
+            changed.metadata.revision.value() + 1
+        );
+        candidate.stacks.pop();
+        let removed = repository.replace_current(candidate.clone()).unwrap();
+        assert_eq!(
+            removed.metadata.revision.value(),
+            duplicated.metadata.revision.value() + 1
+        );
+        candidate.stacks.push(
+            StackObservation::new(
+                ItemHash::new(7),
+                BucketHash::new(8),
+                1,
+                StackContainer::Postmaster("missing".into()),
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            repository
+                .replace_current(candidate)
+                .unwrap_err()
+                .category(),
+            ErrorCategory::ProviderValidation
+        );
+        assert_eq!(repository.load_current().unwrap(), Some(removed));
+    }
+
     type RevisionMutation = (&'static str, fn(&mut InventorySnapshotInput));
 
     fn input(quantity: u32) -> InventorySnapshotInput {
         InventorySnapshotInput {
+            stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_id: MembershipId::new("membership"),
             membership_type: MembershipType::new(1),
@@ -1362,6 +1434,7 @@ mod tests {
 
     fn multi_input() -> InventorySnapshotInput {
         InventorySnapshotInput {
+            stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_id: MembershipId::new("membership"),
             membership_type: MembershipType::new(1),
@@ -2858,6 +2931,7 @@ mod tests {
     #[test]
     fn search_repository_seeds_from_a_committed_snapshot() {
         let snapshot = InventorySnapshot {
+            stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             metadata: SnapshotMetadata {
                 membership_id: MembershipId::new("membership"),

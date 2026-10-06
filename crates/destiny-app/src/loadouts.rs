@@ -464,6 +464,7 @@ mod tests {
             })
             .collect();
         let input = InventorySnapshotInput {
+            stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_type: MembershipType::new(3),
             membership_id: MembershipId::new("999"),

@@ -1377,6 +1377,7 @@ mod tests {
         assert!(calls.borrow().contains(&"membership"));
         assert!(calls.borrow().contains(&"profile"));
         let mut changed = destiny_app::InventorySnapshotInput {
+            stacks: first_snapshot.stacks,
             membership_id: first_snapshot.metadata.membership_id,
             membership_type: first_snapshot.metadata.membership_type,
             checked_at: NOW,
@@ -1532,6 +1533,7 @@ mod tests {
                     .unwrap();
                 store
                     .replace_current(destiny_app::InventorySnapshotInput {
+                        stacks: Vec::new(),
                         plug_set_entries: Vec::new(),
                         membership_id: destiny_app::MembershipId::new("999"),
                         membership_type: destiny_app::MembershipType::new(3),

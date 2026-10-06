@@ -80,6 +80,12 @@ impl InventoryRepository for SqliteStore {
         if !input.is_structurally_valid() {
             return Err(provider_validation());
         }
+        // Temporary GPM-003a boundary: v15 cannot durably represent stacks.
+        // Reject before ANY mutation rather than silently dropping observations.
+        // Remove this guard when GPM-003b adds combined v16 stack/Postmaster storage.
+        if !input.stacks.is_empty() {
+            return Err(provider_validation());
+        }
 
         // Characters and items are unordered sets, so the committed and
         // returned vectors are canonicalized by identifier. This keeps reads
@@ -132,6 +138,7 @@ impl InventoryRepository for SqliteStore {
         transaction.commit().map_err(|_| storage_failure())?;
 
         Ok(InventorySnapshot {
+            stacks: ordered.stacks,
             plug_set_entries: ordered.plug_set_entries,
             metadata: SnapshotMetadata {
                 membership_id: ordered.membership_id,
@@ -202,6 +209,8 @@ fn read_projection(connection: &Connection) -> Result<Option<InventorySnapshot>,
             items.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
 
             Ok(Some(InventorySnapshot {
+                // v15 has no stack storage; GPM-003b replaces this with durable readback.
+                stacks: Vec::new(),
                 plug_set_entries: read_subclass_options(connection, &characters)?,
                 metadata: SnapshotMetadata {
                     membership_id,

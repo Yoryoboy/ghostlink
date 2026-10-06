@@ -141,6 +141,7 @@ fn profile(
     checked_at: u64,
 ) -> InventorySnapshotInput {
     InventorySnapshotInput {
+        stacks: Vec::new(),
         plug_set_entries: Vec::new(),
         membership_id: MembershipId::new(membership_id),
         membership_type: MembershipType::new(3),
