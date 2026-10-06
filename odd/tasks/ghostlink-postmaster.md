@@ -94,9 +94,15 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   normal gear reads tolerate genuinely unavailable optional currency data, not
   malformed currency records. Use officially verified Lost Items bucket for
   owner-aware classification; never sum overlapping source observations.
-- [ ] **GPM-005 — Expose Postmaster reads.** CLI/MCP search or dedicated
-  listing with owner/location parity, stack quantities and honest coverage;
-  docs and skill alongside tests.
+- [x] **GPM-005a — Shared Postmaster read projection.** Dedicated core
+  result and QueryService method over the synchronized committed snapshot;
+  separate real instances and non-instanced stacks, optional names, multiplicity,
+  owner filtering, empty groups, freshness and qualified currency coverage.
+- [ ] **GPM-005b — CLI Postmaster listing.** `ghostlink postmaster`
+  with optional character ID/class and JSON; shared QueryOperations forwarding,
+  pipeline/help checks, CLI docs and skill, no pull action.
+- [ ] **GPM-005c — MCP Postmaster listing.** `get_postmaster` with CLI
+  parity, strict schema, forwarding wrappers, discovery/stdio checks and MCP docs.
 - [ ] **GPM-006 — Resolve pull wire contracts.** Primary-source contract
   evidence, explicit stack ambiguity/capacity rules, request fixtures.
 - [ ] **GPM-007 — Dedicated pull adapter.** Core request/gateway and strict
@@ -142,7 +148,9 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   v16 migration and Postmaster ownership). GPM-003a is COMPLETE;
   GPM-003b is COMPLETE (worker checks and native assessment);
   GPM-004a, GPM-004b1 and GPM-004b2 are COMPLETE;
-  GPM-005 is IN PROGRESS (read-only surface mapping).
+  GPM-005a is COMPLETE (independently verified);
+  GPM-005b is IN PROGRESS (CLI and required query-trait forwarding scope);
+  GPM-005c follows as a separate MCP presentation unit.
 - GPM-003a commit `1bca7d1` (321 additions / 8 deletions, including tests).
   Worker `muwy92h2-5-3djs`: completed snapshot stack fields, multiset
   equality/owner validation, fake preservation, mechanical literal propagation,
@@ -205,7 +213,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   independentVerifier=false; RDD off, outcome unknown, not consumed. reviewDue
   slice_budget_reached, no native review initiated. Exact continuation:
   `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
-- GPM-004b2 worker `mux0emlt-b-y1b8`: component103 acquisition and
+- GPM-004b2 commit `eb75019`.
+  Worker `mux0emlt-b-y1b8`: component103 acquisition and
   strict optional currency decoding; requested omission becomes Unavailable,
   legacy omission NotObserved. Private usable data accepted; available empty/zero
   retained; invalid rows reject entire snapshot. Multiplicity/provenance retained.
@@ -231,6 +240,36 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   item_plugs, item_stats and item_available_plugs. Foreign keys are enabled and
   the runner is already in a transaction; foreign_keys=OFF inside migration SQL
   is not a valid workaround. Preservation tests are mandatory.
+- GPM-005a worker `mux0umr1-d-fkx1`: dedicated DTOs and inherent
+  QueryService::postmaster, no QueryOperations/frontends yet. Fourteen tests
+  cover owner filtering, duplicate preservation, optional names, currency coverage,
+  metadata/freshness/errors and contradictory repository state. RED E0599;
+  GREEN after numeric fixture/test-fake setup corrections; fmt failures fixed.
+  Worker 1,542 all-features tests, focused 14 app/1 existing core test, fmt/clippy
+  and diff check passed. Test fakes cfg(test) repaired default test compilation;
+  no production fixture exposure. Definition readiness only selected holdings;
+  metadata errors always propagate. Approx. 832 authored diff lines, mostly tests.
+  ASSESS unassessable (new untracked files require explicit declaration), so high
+  risk independent-verifier plan applies. Verifier `mux19144-e-qkwu` PASS,
+  no blocking findings: 14 focused app/1 core regression, 1,525 default and 1,542
+  all-features tests (zero failures/ignored), fmt/clippy/diff passed. Explicitly
+  inspected both untracked files and their whitespace; deterministic-order test
+  bypasses fake canonicalization. Scope matches five candidate files plus tracker.
+  RDD off; no native approval, live accounts or external contracts validated.
+  CodeGraph status resolved parent index; no index initialized, checkout-local
+  evidence used exclusively.
+- GPM-005 exploration `mux0qx3l-c-l38n`: dedicated projection avoids
+  search's required ItemInstance/definition. Existing load_current snapshot and
+  ordinary sync gate suffice; no migration/SQL search change. Separate instance
+  and stack arrays per owned character preserve duplicate stack rows; optional
+  definitions never erase observations. Exact ID/unique case-insensitive class
+  filtering; propagate refresh errors rather than serve stale holdings. Metadata
+  reports committed revision/timestamp/source/freshness, not live guarantees.
+  Component103 coverage describes only currency balances, not Postmaster source
+  completeness; legacy snapshots cannot prove coverage retrospectively.
+  Gear has no persisted runtime bucket: omit it, never substitute definition
+  bucket. Stack runtime buckets are retained. Split shared projection, CLI and
+  MCP into separate work units; no extra runtime/account-scoping rewrite.
 - Keep `--character` and carried-inventory filters restricted to Character,
   never implicitly Postmaster(owner); lock's fallback remains Vault-only.
   Pull-contract gaps do not block safe snapshot/persistence work.

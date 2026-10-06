@@ -41,7 +41,7 @@ pub use destiny_core::{
 };
 pub mod weekly_reset;
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
@@ -87,6 +87,10 @@ pub use destiny_core::{
     ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, MilestoneDefinition,
     ObjectiveDefinition, PublicMilestone, PublicMilestoneActivity, PublicMilestonesGateway,
     PublicMilestonesSnapshot, StatDefinition, WorldDefinitionTable, WorldDefinitionsAcquisition,
+};
+pub use destiny_core::{
+    CharacterPostmaster, PostmasterInstance, PostmasterResult, PostmasterStack,
+    ProfileCurrenciesCoverage,
 };
 pub use destiny_core::{
     CharacterSubclass, CharacterSubclassOptions, ElementOptions, OptionGroup, OptionStatus,
