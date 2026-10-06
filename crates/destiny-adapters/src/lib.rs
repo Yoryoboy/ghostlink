@@ -7,6 +7,7 @@ pub mod clock;
 pub mod credential_store;
 pub mod equip;
 pub mod loadout;
+pub mod lock;
 pub mod manifest;
 pub mod oauth;
 pub mod profile;
@@ -25,6 +26,11 @@ pub use equip::{
     BungieEquipGateway, EQUIP_ENDPOINT, EQUIP_RESPONSE_LIMIT, EquipApiKey, EquipBearerToken,
     EquipHttpRequest, EquipHttpResponse, EquipTransport, EquipTransportError, HttpEquipTransport,
     is_allowed_equip_url,
+};
+pub use lock::{
+    BungieLockGateway, HttpLockTransport, LOCK_ENDPOINT, LOCK_RESPONSE_LIMIT, LockApiKey,
+    LockBearerToken, LockHttpRequest, LockHttpResponse, LockTransport, LockTransportError,
+    is_allowed_lock_url,
 };
 pub use oauth::{
     CommandLauncher, DesktopBrowserAuthorization, HeadlessAuthorizationInstruction,

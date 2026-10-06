@@ -47,19 +47,21 @@ pub use ids::{
 };
 pub use mutation::{
     DestinationSelector, EquipPlan, EquipPreflight, EquipRequest, ExecutionEvidence,
-    ExecutionTicket, IntentAuthorizationOutcome, ItemSelector, MAX_MOVE_STEPS, MAX_MUTATION_STEPS,
-    MAX_PLAN_LIFETIME_SECONDS, MoveEffects, MoveIntent, MoveIntentAuthorization, MovePlan,
-    MovePlanValidation, MoveRequest, MutationPolicyInput, MutationPolicyOutcome, MutationStep,
-    PlanBinding, PlanLifetime, PlanLifetimeValidation, StepAction, StepOutcome, StepRecord,
-    character_destination, destination_matches, evaluate_mutation, plan_steps, resolve_destination,
+    ExecutionTicket, IntentAuthorizationOutcome, ItemSelector, LockRequest, MAX_MOVE_STEPS,
+    MAX_MUTATION_STEPS, MAX_PLAN_LIFETIME_SECONDS, MoveEffects, MoveIntent,
+    MoveIntentAuthorization, MovePlan, MovePlanValidation, MoveRequest, MutationPolicyInput,
+    MutationPolicyOutcome, MutationStep, PlanBinding, PlanLifetime, PlanLifetimeValidation,
+    StepAction, StepOutcome, StepRecord, character_destination, destination_matches,
+    evaluate_mutation, plan_steps, resolve_destination,
 };
 pub use ports::{
     AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,
     CredentialSource, CredentialStore, DefinitionReplacementInput, DefinitionRepository,
     DestinyMembership, EquipGateway, EquipItemRequest, EquipOutcome, EquipRejection,
-    InventoryRepository, InventorySnapshotInput, ManifestAcquisition, ManifestDefinitionCandidate,
-    ManifestDefinitions, ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange,
-    SearchRepository, SecureRandom, StatDefinitionRepository, StaticCredentialSource, TokenRefresh,
+    InventoryRepository, InventorySnapshotInput, LockGateway, LockOutcome, LockRejection,
+    ManifestAcquisition, ManifestDefinitionCandidate, ManifestDefinitions, ManifestGateway,
+    PlanIdGenerator, ProfileGateway, PublicTokenExchange, SearchRepository, SecureRandom,
+    SetLockStateRequest, StatDefinitionRepository, StaticCredentialSource, TokenRefresh,
     TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
 };
 pub use query::{

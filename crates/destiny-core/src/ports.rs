@@ -1065,6 +1065,101 @@ pub trait EquipGateway {
     fn equip(&mut self, request: &EquipItemRequest) -> Result<EquipOutcome, AppError>;
 }
 
+/// A validated, provider-neutral intent to set one concrete item's lock state.
+/// Identifier syntax is adapter-owned; empty opaque identifiers are refused here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetLockStateRequest {
+    membership: DestinyMembership,
+    item: ItemInstanceId,
+    character: crate::CharacterId,
+    locked: bool,
+}
+
+impl SetLockStateRequest {
+    pub fn new(
+        membership: DestinyMembership,
+        item: ItemInstanceId,
+        character: crate::CharacterId,
+        locked: bool,
+    ) -> Result<Self, AppError> {
+        if item.as_str().is_empty() || character.as_str().is_empty() {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(Self {
+            membership,
+            item,
+            character,
+            locked,
+        })
+    }
+
+    pub const fn membership(&self) -> &DestinyMembership {
+        &self.membership
+    }
+    pub const fn item(&self) -> &ItemInstanceId {
+        &self.item
+    }
+    pub const fn character(&self) -> &crate::CharacterId {
+        &self.character
+    }
+    pub const fn locked(&self) -> bool {
+        self.locked
+    }
+}
+
+/// Bounded provider refusals; no provider text or identifiers cross the seam.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LockRejection {
+    NotInSocialSpace,
+    ItemNotFound,
+    CharacterNotFound,
+    InvalidRequest,
+}
+
+impl LockRejection {
+    pub const fn category(self) -> ErrorCategory {
+        match self {
+            Self::NotInSocialSpace => ErrorCategory::UnsupportedOperation,
+            Self::ItemNotFound | Self::CharacterNotFound | Self::InvalidRequest => {
+                ErrorCategory::ProviderValidation
+            }
+        }
+    }
+}
+
+/// Honest classification of exactly one lock-state attempt (not verified state).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LockOutcome {
+    Applied,
+    Rejected(LockRejection),
+    /// Received authentication refusal after dispatch, not an applied mutation.
+    AuthenticationRefused,
+    /// A deterministic transient refusal: nothing applied.
+    Transient,
+    /// Dispatch occurred but whether it applied is unknown. Never blindly retry.
+    Uncertain,
+}
+
+impl LockOutcome {
+    pub const fn applied(self) -> bool {
+        matches!(self, Self::Applied)
+    }
+    pub const fn rejection(self) -> Option<LockRejection> {
+        match self {
+            Self::Rejected(reason) => Some(reason),
+            _ => None,
+        }
+    }
+}
+
+/// Issues one lock-state request with no retry, sequencing, or verification.
+/// `Err` is reserved for pre-dispatch failures. Received auth refusals are
+/// `Ok(LockOutcome::AuthenticationRefused)`; post-dispatch ambiguity must be
+/// `Ok(LockOutcome::Uncertain)`. No raw provider payload crosses this seam.
+pub trait LockGateway {
+    fn set_lock_state(&mut self, request: &SetLockStateRequest) -> Result<LockOutcome, AppError>;
+}
+
 /// Opaque credential material. Bytes are available only through the explicit
 /// trusted-adapter exposure boundary and are never available to formatting APIs.
 #[derive(Clone, Eq, PartialEq)]

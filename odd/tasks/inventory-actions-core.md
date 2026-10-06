@@ -52,7 +52,7 @@ its own branch in the same worktree.
 - [x] **IAC-002 — CLI `ghostlink move`.** Parsing (`--character` xor `--vault`),
   runner/runtime composition, thin orchestration, move output contract and exit
   codes, tests, docs and skill.
-- [ ] **IAC-003 — Lock seam in core and adapter.** Provider-neutral request,
+- [x] **IAC-003 — Lock seam in core and adapter.** Provider-neutral request,
   gateway and outcome types; `SetLockState` adapter with endpoint allowlist and
   sanitized outcomes; adapter journey tests.
 - [ ] **IAC-004 — Lock app service.** Plan with fresh preflight (owned
@@ -71,3 +71,8 @@ its own branch in the same worktree.
   then missing "already in <destination>" text. GREEN: 9 move tests, 5 skill-drift,
   10 equip; fmt, clippy -D warnings, workspace tests (default + all-features),
   diff check passed. Live provider run pending (user).
+- IAC-003: core `SetLockStateRequest`/`LockGateway`/sanitized outcomes and
+  `LockRequest`; adapter `lock.rs` (exact endpoint allowlist, single POST, 7 unit
+  tests) and `lock_execution_journey.rs`. RED: missing types; GREEN: workspace
+  tests default + all-features, fmt, clippy -D warnings, diff check passed.
+  Note: shared HTTP Debug labels the lock endpoint `<unallowlisted>` (fix in IAC-004).
