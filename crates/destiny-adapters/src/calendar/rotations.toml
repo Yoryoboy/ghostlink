@@ -1,0 +1,225 @@
+# Weekly featured rotation calendar.
+#
+# Algorithm and lists follow the ShatteredVault weekly engine
+# (https://shatteredvault.com/the-portal/, fetched 2026-10-06):
+#   week  = floor((t - reference_reset) / 7 days)
+#   entry = entries[(anchor + week) mod len(entries)]
+# Every rotation is independent. When a verified in-game week disagrees, move
+# that rotation's anchor; do not reorder its entries.
+#
+# Each activity carries a short display name and one Manifest activity hash.
+# The hash identifies the activity; the Manifest name of that hash must
+# contain the display name.
+
+reference_reset = "2026-09-22T17:00:00Z"
+
+# Raid hashes: the Standard activity hashes reported by GetPublicMilestones
+# on 2026-10-06 for all nine raids.
+[activities.vow-of-the-disciple]
+name = "Vow of the Disciple"
+hash = 1441982566
+
+[activities.last-wish]
+name = "Last Wish"
+hash = 2122313384
+
+[activities.kings-fall]
+name = "King's Fall"
+hash = 1374392663
+
+[activities.garden-of-salvation]
+name = "Garden of Salvation"
+hash = 1042180643
+
+[activities.root-of-nightmares]
+name = "Root of Nightmares"
+hash = 2381413764
+
+[activities.deep-stone-crypt]
+name = "Deep Stone Crypt"
+hash = 910380154
+
+[activities.crotas-end]
+name = "Crota's End"
+hash = 107319834
+
+[activities.vault-of-glass]
+name = "Vault of Glass"
+hash = 3881495763
+
+[activities.salvations-edge]
+name = "Salvation's Edge"
+hash = 1541433876
+
+# Dungeon hashes: the activity hashes probed through public
+# /Trending/Details/2/{hash}/ in the 2026-10 weekly research.
+[activities.duality]
+name = "Duality"
+hash = 2823159265
+
+[activities.the-shattered-throne]
+name = "The Shattered Throne"
+hash = 2032534090
+
+[activities.spire-of-the-watcher]
+name = "Spire of the Watcher"
+hash = 1262462921
+
+[activities.pit-of-heresy]
+name = "Pit of Heresy"
+hash = 2582501063
+
+[activities.ghosts-of-the-deep]
+name = "Ghosts of the Deep"
+hash = 313828469
+
+[activities.prophecy]
+name = "Prophecy"
+hash = 1077850348
+
+[activities.warlords-ruin]
+name = "Warlord's Ruin"
+hash = 2004855007
+
+[activities.grasp-of-avarice]
+name = "Grasp of Avarice"
+hash = 4078656646
+
+[activities.vespers-host]
+name = "Vesper's Host"
+hash = 300092127
+
+[activities.sundered-doctrine]
+name = "Sundered Doctrine"
+hash = 3834447244
+
+# Pantheon hashes: the dedicated "Featured Reprise/Encore: <boss>: The
+# Pantheon" activities.
+[activities.reprise-gahlran]
+name = "Gahlran"
+hash = 1953549041
+
+[activities.reprise-calus]
+name = "Calus"
+hash = 1566552947
+
+[activities.reprise-argos]
+name = "Argos"
+hash = 796488315
+
+[activities.encore-consecrated-mind]
+name = "Consecrated Mind"
+hash = 3975235718
+
+[activities.encore-morgeth]
+name = "Morgeth"
+hash = 43862588
+
+[activities.encore-insurrection-prime]
+name = "Insurrection Prime"
+hash = 206811036
+
+[activities.encore-warpriest]
+name = "Warpriest"
+hash = 145874766
+
+# Grandmaster Vanguard Alert hashes: "Nightfall Grandmaster: <strike>".
+# Exodus Crash and Warden of Nothing each have two such definitions; the
+# chosen ones share the current modifier layout of The Arms Dealer
+# (/Trending/Details, 2026-10-06). Either resolves to the same name.
+[activities.warden-of-nothing]
+name = "Warden of Nothing"
+hash = 1473557543
+
+[activities.birthplace-of-the-vile]
+name = "Birthplace of the Vile"
+hash = 967120713
+
+[activities.defiant-battleground-edz]
+name = "Defiant Battleground: EDZ"
+hash = 952545351
+
+[activities.the-sunless-cell]
+name = "The Sunless Cell"
+hash = 2438990097
+
+[activities.exodus-crash]
+name = "Exodus Crash"
+hash = 2280860193
+
+[activities.the-arms-dealer]
+name = "The Arms Dealer"
+hash = 1446478334
+
+[rotations.raid]
+title = "Featured raids"
+anchor = 6
+coverage_start = "2026-06-16T17:00:00Z"
+coverage_note = "The current featured raid pair rotation is verified from the week of June 16, 2026 (Bungie TWID, June 18, 2026)."
+entries = [
+  ["vow-of-the-disciple", "last-wish"],
+  ["kings-fall", "garden-of-salvation"],
+  ["root-of-nightmares", "deep-stone-crypt"],
+  ["crotas-end", "vault-of-glass"],
+  ["salvations-edge", "vow-of-the-disciple"],
+  ["kings-fall", "last-wish"],
+  ["root-of-nightmares", "garden-of-salvation"],
+  ["deep-stone-crypt", "crotas-end"],
+  ["salvations-edge", "vault-of-glass"],
+]
+
+[rotations.dungeon]
+title = "Featured dungeons"
+anchor = 5
+coverage_start = "2026-06-16T17:00:00Z"
+coverage_note = "The current featured dungeon pair rotation is verified from the week of June 16, 2026 (Bungie TWID, June 18, 2026)."
+entries = [
+  ["duality", "the-shattered-throne"],
+  ["spire-of-the-watcher", "pit-of-heresy"],
+  ["ghosts-of-the-deep", "prophecy"],
+  ["warlords-ruin", "grasp-of-avarice"],
+  ["vespers-host", "duality"],
+  # Diverges from ShatteredVault, which lists Grasp of Avarice here. That
+  # list has Spire once and Grasp three times while every other dungeon
+  # appears twice, and Kyber's Corner showed Sundered Doctrine + Spire of the
+  # Watcher for this slot on 2026-07-14 and 2026-09-22. Re-check 2026-12-01.
+  ["sundered-doctrine", "spire-of-the-watcher"],
+  ["ghosts-of-the-deep", "the-shattered-throne"],
+  ["pit-of-heresy", "warlords-ruin"],
+  ["vespers-host", "prophecy"],
+  ["sundered-doctrine", "grasp-of-avarice"],
+]
+
+[rotations.pantheon]
+title = "Featured Pantheon (Reprise, Encore)"
+anchor = 2
+coverage_start = "2026-06-16T17:00:00Z"
+coverage_note = "The weekly featured Pantheon bosses began on June 16, 2026 (Destiny 2 Update 9.7.0)."
+entries = [
+  ["reprise-gahlran", "encore-consecrated-mind"],
+  ["reprise-calus", "encore-morgeth"],
+  ["reprise-argos", "encore-insurrection-prime"],
+  ["reprise-gahlran", "encore-warpriest"],
+  ["reprise-calus", "encore-consecrated-mind"],
+  ["reprise-argos", "encore-morgeth"],
+  ["reprise-gahlran", "encore-insurrection-prime"],
+  ["reprise-calus", "encore-warpriest"],
+  ["reprise-argos", "encore-consecrated-mind"],
+  ["reprise-gahlran", "encore-morgeth"],
+  ["reprise-calus", "encore-insurrection-prime"],
+  ["reprise-argos", "encore-warpriest"],
+]
+
+[rotations.grandmaster]
+title = "Grandmaster Vanguard Alert"
+anchor = 3
+coverage_start = "2026-09-22T17:00:00Z"
+coverage_note = "The Grandmaster Vanguard Alert rotation is only verified from the week of September 22, 2026 (Kyber's Corner weekly posts)."
+entries = [
+  ["warden-of-nothing"],
+  ["birthplace-of-the-vile"],
+  ["defiant-battleground-edz"],
+  ["the-sunless-cell"],
+  ["exodus-crash"],
+  ["the-arms-dealer"],
+]
