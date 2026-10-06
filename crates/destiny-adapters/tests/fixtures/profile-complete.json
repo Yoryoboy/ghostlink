@@ -33,13 +33,6 @@
             "state": 1
           },
           {
-            "itemHash": 1002,
-            "itemInstanceId": "700000000000000002",
-            "quantity": 1,
-            "location": 4,
-            "state": 0
-          },
-          {
             "itemHash": 1003,
             "itemInstanceId": "700000000000000003",
             "quantity": 5,
@@ -48,6 +41,7 @@
           },
           {
             "itemHash": 1004,
+            "bucketHash": 4100,
             "itemInstanceId": null,
             "quantity": 99,
             "location": 2,
@@ -55,6 +49,7 @@
           },
           {
             "itemHash": 1005,
+            "bucketHash": 4100,
             "quantity": 50,
             "location": 2,
             "state": 0
@@ -76,6 +71,7 @@
             },
             {
               "itemHash": 2002,
+              "bucketHash": 4200,
               "itemInstanceId": null,
               "quantity": 50,
               "location": 1,

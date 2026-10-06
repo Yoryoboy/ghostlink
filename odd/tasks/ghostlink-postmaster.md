@@ -52,8 +52,11 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 - Non-instanced `itemId` wire convention: omitted versus `"0"`.
 - Partial-pull and duplicate-hash selection semantics for `stackSize`.
 - Postmaster bucket identification: do not hard-code an unverified hash.
-- Currency/material destination coverage: existing components 102/201 omit 103;
-  establish coverage and avoid counting overlapping summaries twice.
+- Currency/material destination coverage: existing components 102/201 omit 103.
+  Official DestinyProfileResponse confirms profileCurrencies is
+  SingleComponentResponseOfDestinyInventoryComponent (component 103), while
+  characterInventories is character-keyed inventory. Acquire and establish
+  coverage; do not count overlapping summaries twice.
 - Representative sanitized fixtures and eventual owner-run live verification.
 
 ## Tasks
@@ -72,9 +75,14 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   child projections, indexes and metadata; atomic readback/replacement and
   existing move/equip/lock exclusions. Reject unsafe downgrade without changing
   data; no silent relabeling or projection invalidation.
-- [ ] **GPM-004 — Decode Postmaster and stacks with coverage evidence.**
-  Correct character classification; preserve quantity/container/bucket;
-  establish destination component coverage and sanitized fixture journeys.
+- [x] **GPM-004a — Decode Postmaster and existing inventory stacks.**
+  Correct character classification using verified location enum; preserve
+  non-instanced quantity/container/runtime bucket in components 102/201;
+  synthetic sanitized fixture journeys and fail-closed invalid ownership.
+- [ ] **GPM-004b — Currency acquisition and coverage evidence.** Request
+  component 103, decode profileCurrencies as its distinct inventory source,
+  distinguish missing coverage from empty holdings, avoid double-counting and
+  confirm bucket-based classification before claiming complete coverage.
 - [ ] **GPM-005 — Expose Postmaster reads.** CLI/MCP search or dedicated
   listing with owner/location parity, stack quantities and honest coverage;
   docs and skill alongside tests.
@@ -121,7 +129,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 - Explorer `muwy5mlp-4-e2z0` completed the GPM-003 map. Split into GPM-003a
   (snapshot contract plus fail-closed durable bridge) and GPM-003b (one combined
   v16 migration and Postmaster ownership). GPM-003a is COMPLETE;
-  GPM-003b is COMPLETE (worker checks and native assessment).
+  GPM-003b is COMPLETE (worker checks and native assessment);
+  GPM-004a is COMPLETE; GPM-004b is IN PROGRESS (coverage/contract research).
 - GPM-003a commit `1bca7d1` (321 additions / 8 deletions, including tests).
   Worker `muwy92h2-5-3djs`: completed snapshot stack fields, multiset
   equality/owner validation, fake preservation, mechanical literal propagation,
@@ -134,7 +143,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   checks passed; source remained unchanged. Tracker-only concurrent update was
   confirmed as parent bookkeeping. Full-suite totals above remain worker evidence.
   No v16 migration in GPM-003a.
-- GPM-003b worker `muwyqnth-7-9weo`: combined v16 migration, durable stack
+- GPM-003b commit `bdc8322`.
+  Worker `muwyqnth-7-9weo`: combined v16 migration, durable stack
   roundtrip, owned ItemLocation::Postmaster and transfer/equip/lock exclusions.
   UP backs up/restores all four cascading child tables with foreign keys enabled;
   DOWN guards unrepresentable rows before permanent mutations. Duplicate stacks
@@ -148,6 +158,21 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   candidate not consumed. reviewDue=true (slice_budget_reached); no native review
   initiated. Exact provider continuation (informational, not executed):
   `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
+- GPM-004a worker `muwze6zb-8-27zq`: keeps missing/null-ID inventory stacks,
+  classifies explicit character location4 as Postmaster(owner), rejects equipped
+  or unowned Postmaster, preserves omitted character-location compatibility.
+  RED: discarded stacks and wrong location; GREEN: 125 focused tests and 1,511
+  all-features workspace tests. fmt/clippy/diff check passed. Initial seven
+  transfer regressions were fixed before completion by preserving legacy absent
+  location behavior. Fixtures are synthetic; no live validation.
+- GPM-004a ASSESS: medium risk, 4 paths / 476 changed lines; writer verification
+  stands, independentVerifier=false. RDD off, outcome unknown, not consumed;
+  reviewDue=true (slice_budget_reached). Exact continuation (not executed):
+  `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
+- GPM-004b must resolve currency missing-versus-empty coverage and bucket-only
+  Postmaster classification before complete-support claims. Literal instance
+  string `"0"` still follows the existing instance parser; outgoing non-instance
+  pull convention remains a separate unresolved contract gate.
 - Migration hazard: dropping/rebuilding `items` can cascade-delete item_perks,
   item_plugs, item_stats and item_available_plugs. Foreign keys are enabled and
   the runner is already in a transaction; foreign_keys=OFF inside migration SQL

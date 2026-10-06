@@ -348,10 +348,112 @@ fn committed(service: &Service) -> InventorySnapshot {
         .expect("committed projection")
 }
 
-/// A materially changed fixture: the vaulted item [`CHANGED_INSTANCE`] carries a
-/// different quantity, which is part of revision identity.
+/// The vaulted gear instance used by the existing quantity-change journey.
 const CHANGED_INSTANCE: &str = "700000000000000001";
 
+/// Synthetic bucket hashes exercise provenance only, not provider bucket contracts.
+#[test]
+fn profile_stack_multiset_and_postmaster_survive_sqlite_sync() {
+    use destiny_core::{CharacterId, ItemLocation, StackContainer};
+    let journey = Journey::new();
+    let mut value: Value = serde_json::from_slice(FIXTURE).unwrap();
+    let rows =
+        &mut value["Response"]["characterInventories"]["data"]["900000000000000001"]["items"];
+    rows[0]["location"] = json!(4);
+    rows[1]["location"] = json!(4);
+    let duplicate = rows[1].clone();
+    rows.as_array_mut().unwrap().push(duplicate);
+    let bytes = serde_json::to_vec(&value).unwrap();
+    let mut service = journey.service();
+    journey.queue_membership();
+    journey.queue_profile(&bytes);
+    service.sync(ProfileSyncReason::Ordinary, TTL, NOW).unwrap();
+    let first = committed(&service);
+    let owner = CharacterId::new("900000000000000001");
+    assert_eq!(first.stacks.len(), 4);
+    assert_eq!(
+        first
+            .stacks
+            .iter()
+            .filter(|row| row.container() == &StackContainer::Postmaster(owner.clone()))
+            .count(),
+        2
+    );
+    assert_eq!(
+        first
+            .items
+            .iter()
+            .find(|item| item.instance_id.as_str() == "700000000000000004")
+            .unwrap()
+            .location,
+        ItemLocation::Postmaster(owner)
+    );
+    drop(service);
+    let mut service = journey.service();
+    assert_eq!(committed(&service), first);
+
+    value["Response"]["profileInventory"]["data"]["items"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    value["Response"]["characterInventories"]["data"]["900000000000000001"]["items"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    let reordered = service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+    assert_eq!(reordered.revision(), first.metadata.revision);
+    value["Response"]["characterInventories"]["data"]["900000000000000001"]["items"][0]["quantity"] =
+        json!(49);
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    let changed = service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+    assert_eq!(
+        changed.revision().value(),
+        first.metadata.revision.value() + 1
+    );
+    assert_eq!(committed(&service).stacks.len(), 4);
+}
+
+#[test]
+fn profile_invalid_stack_rows_never_publish_partial_sqlite_content() {
+    let journey = Journey::new();
+    let mut service = journey.service();
+    journey.queue_membership();
+    journey.queue_profile(FIXTURE);
+    service.sync(ProfileSyncReason::Ordinary, TTL, NOW).unwrap();
+    let before = committed(&service);
+    for (field, invalid) in [
+        ("bucketHash", Value::Null),
+        ("bucketHash", json!(-1)),
+        ("bucketHash", json!(4294967296u64)),
+        ("itemHash", json!(-1)),
+        ("itemHash", json!(4294967296u64)),
+        ("quantity", json!(-1)),
+        ("quantity", json!(0)),
+        ("quantity", json!(2147483648u64)),
+        ("quantity", json!(1.5)),
+        ("location", json!(4)),
+    ] {
+        let mut value: Value = serde_json::from_slice(FIXTURE).unwrap();
+        // A valid gear change before the invalid stack must not leak through.
+        value["Response"]["profileInventory"]["data"]["items"][0]["quantity"] = json!(2);
+        value["Response"]["profileInventory"]["data"]["items"][2][field] = invalid;
+        journey.queue_membership();
+        journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+        let error = service
+            .sync(ProfileSyncReason::Forced, TTL, NOW)
+            .unwrap_err();
+        assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+        assert_eq!(committed(&service), before);
+    }
+    drop(service);
+    assert_eq!(committed(&journey.service()), before);
+}
+
+/// A materially changed fixture: the vaulted item [`CHANGED_INSTANCE`] carries a
+/// different quantity, which is part of revision identity.
 fn changed_profile() -> Vec<u8> {
     let mut value: Value = serde_json::from_slice(FIXTURE).expect("fixture is JSON");
     value["Response"]["profileInventory"]["data"]["items"][0]["quantity"] = json!(2);
