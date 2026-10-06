@@ -607,6 +607,23 @@ pub trait ProfileGateway {
     ) -> Result<InventorySnapshotInput, AppError> {
         self.load_inventory(membership)
     }
+
+    /// Acquires an immutable input/observation pair with the original retry scope.
+    ///
+    /// The compatibility default calls the existing scoped loader exactly once
+    /// and explicitly marks observations unavailable. It does not resolve a
+    /// membership, retry, look up definitions, or invent buckets or metadata.
+    /// Overrides may supply complete actual runtime associations; construction
+    /// alone proves neither authenticated acquisition nor freshness/publication.
+    /// Sync remains responsible for requested membership validation before publish.
+    fn load_inventory_with_observations_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<crate::ProfileAcquisition, AppError> {
+        let input = self.load_inventory_scoped(membership, reason)?;
+        crate::ProfileAcquisition::new(input, None)
+    }
 }
 
 /// A complete versioned normalized definition set published as one replacement.

@@ -128,6 +128,28 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 - [x] **GPM-007b — Instanced pull adapter.** Dedicated exact allowlisted
   endpoint, both hash/real ID, credential/dispatch bounds, sanitized outcomes and
   explicit uncertainty; no inherited transfer-specific refusal assumptions.
+- [x] **GPM-008a1 — Fresh runtime bucket core contract.** Acquisition envelope
+  pairing existing InventorySnapshotInput with unavailable or complete instanced
+  actual-bucket observations. Exact ID/owner/location correspondence and uint32
+  validation; default scoped gateway method delegates once and marks unavailable.
+  No default definition-bucket substitution, publication or action dispatch.
+- [ ] **GPM-008a2 — Acquire instanced runtime buckets.** Scoped decoder/gateway
+  observations, retain omitted evidence as unavailable; existing reads compatible.
+  Exact source surfaces: adapters/src/profile.rs, profile_gateway.rs and export-only
+  lib.rs. Tests stay in existing nested modules; fixtures mutate in memory only.
+  Share one normalization pass and one scoped acquisition; requested currency
+  coverage adjustment precedes immutable envelope creation. Missing any accepted
+  instance bucket gives None; zero instances gives Some(empty). Preserve current
+  rejection of explicit null or malformed present bucketHash in BOTH decoders;
+  no new nullable policy flag or weakened stack bucket validation.
+- [ ] **GPM-008a3 — Publish then expose fresh evidence.** Share sync acquisition,
+  membership validation/filtering/publication. Return observations only after
+  successful replace_current alongside THAT returned snapshot, never an unrelated
+  reload. No proof on freshness skips/failure. Ephemeral buckets do not advance
+  inventory revision: planning/execution reacquire and compare proof fingerprints.
+- [ ] **GPM-008b — Qualify equipment capacity policy.** Current public Manifest
+  index, exact supported bucket policy/provenance and definition-version binding;
+  missing/changed/unqualified evidence closes the proof. Scope still to map fully.
 - [ ] **GPM-008 — Verified pull service.** Owned instance/stack selection,
   membership/revision preflight, bounded quantity, conservative post-action
   evidence, no retry and provider-lag tests.
@@ -147,7 +169,13 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   public facts alone do not establish it. Private non-clone plans consumed by
   value avoid existing ticket-reminting semantics; bind definition version AND
   eligibility fingerprint. Force Preflight/PostAction acquisitions, no stale
-  fallback. No service source write or runtime binding from this research alone.
+  fallback. Parent selected fresh-only actual bucket evidence through successful
+  existing sync publication instead of persisted ItemInstance/SQLite changes.
+  Actual seams are InventorySnapshotInput and metadata-only sync, not previously
+  conjectured acquisition/result types. Core contract is the next bounded unit;
+  acquisition, successful-publication evidence and capacity policy follow before
+  service dispatch. Normal-bucket inference and restrictive all-owner proof are
+  not selected. No user-facing/runtime action binding from research alone.
 - [ ] **GPM-009 — CLI/MCP pull exposure.** Thin adapters, pipeline/stdio
   coverage, docs, skill and exact outcome/exit semantics.
 - [ ] **GPM-010 — Close technical verification and record live gaps.**
@@ -167,6 +195,37 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
+- GPM-008a1 COMPLETE (independently verified): core fresh runtime bucket
+  acquisition contract only. Local work-unit commit follows the final PASS.
+  Parent-approved source surfaces: core/src/profile_observations.rs, ports.rs,
+  lib.rs and tests/profile_observations.rs. No adapter, sync, SQLite or dispatch
+  writes in this unit. Deterministic test-first and self-verification required;
+  parent assessment/required independent verification precedes closure/commit.
+  Writer `mux99b2t-z-fllp` COMPLETE: 395 additions across four allowed paths.
+  ProfileAcquisition::new/input/observations/into_parts pairs immutable input with
+  None (unavailable) or Some(complete observations). InstancedBucketObservation
+  validates uint32 actual bucket and exact instance/location correspondence.
+  Default scoped loader delegates once without resolving membership/retrying.
+  RED missing types/method; GREEN six focused tests and two compile-fail docs.
+  Input/duplicate stacks/currency coverage/metadata preserved; incomplete/extra/
+  duplicate IDs, wrong owner/location and invalid input/buckets refused.
+  Worker 167 core tests, 1,575 default / 1,593 all-features offline tests;
+  fmt/clippy pass after formatting correction. Parent source spot check agrees.
+  ASSESS unassessable due untracked module/tests; high-risk independent-verifier
+  plan followed. Verifier `mux9gxhj-10-0xvc` PASS: all six focused/167 core/
+  1,575 default / 1,593 all-features plus fmt/clippy/diff/explicit whitespace
+  green; inspected all new files and unchanged source hashes. Non-blocking test
+  limitation: wrong owner/location cases were confounded by missing second ID.
+  Parent mechanically strengthened that one test: valid complete control plus
+  complete ID vectors with only first location wrong. Production unchanged; no
+  meaningful RED for already-correct behavior. Final independent recheck
+  `mux9lryz-12-cvnj` PASS: full valid control accepted and every wrong owner/location
+  vector complete, resolving confounding. All six focused/167 core/1,575 default/
+  1,593 all-features, fmt/clippy/diff/new-file whitespace pass; production and
+  build-input hashes unchanged. No mutation-run RED or native approval claimed.
+  No adapter/sync/publication/durability/revision/action proof in this core unit.
+  Scout `mux9htj8-11-e5fo` complete; exact adapter surfaces and missing-versus-
+  malformed bucket decision recorded above. No blanket null acceptance.
 - GPM-001: branch created from clean `4adc624`; tracker created before source
   writes. Tracker and GPM-002 committed together as `1dc9158`.
   Full Engram copy uses topic `odd/ghostlink-postmaster/tasks`.
@@ -468,9 +527,10 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   unchanged. Compile-fail examples use valid exports and intended restrictions.
   Syntax does not prove provider identity; fresh eligibility/capacity/service remain
   future. RDD/native approval unknown; core seam only, not transport proof.
-  GPM-007b is IN PROGRESS: dedicated hardened instanced pull adapter in
-  destiny-adapters/src/instanced_pull.rs and lib exports only; no runtime binding
-  or user-facing action exposure before service preflight/verification exists.
+  GPM-007b COMPLETE (independently verified, commit `012bdc9`): dedicated
+  hardened instanced pull adapter and isolated shared transport policy correction.
+  No runtime binding or user-facing action before service verification exists.
+  The following records initial implementation and correction evidence.
   Worker `mux8cha7-s-ib04` implementing the adapter. Unknown provider codes,
   server/throttle/redirect responses without non-application proof remain Uncertain;
   no borrowed transfer-specific refusal mappings. Essential acknowledgement fields
@@ -516,7 +576,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   1,585 all-features, fmt/clippy/diff/explicit untracked whitespace all pass.
   Previous gzip BLOCK resolved. Retry::never is configuration evidence only,
   not a protocol replay test. Technical PASS is not native RDD approval.
-  Local work-unit commit pending immediately after this verified closure.
+  Work-unit commit: `012bdc9` — hardened instanced Postmaster pull gateway.
   No external-provider/TLS/live, runtime binding, capacity, global pacing or
   recovery verification claimed. Read-only service scout `mux92juo-y-hf00`
   continues mapping usable runtime bucket and policy-qualification surfaces.
