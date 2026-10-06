@@ -65,15 +65,42 @@ commits; push/PR/merge are user decisions. Expected size exceeds 400 lines:
 deliver as chained PRs.
 
 ## Tasks
-- [ ] **WRC-001 — Calendar data.** Choose one canonical Manifest activity
+- [x] **WRC-001 — Calendar data.** Choose one canonical Manifest activity
   hash per raid, dungeon, Pantheon boss and GM strike (evidence from the local
   Manifest and previously observed live hashes), write the embedded TOML with
   lists, anchors, reference reset, per-rotation coverage start, the slot-5
   correction and provenance comments.
-- [ ] **WRC-002 — Core calendar arithmetic.** Pure types and week-index
+  Result: `crates/destiny-adapters/src/calendar/rotations.toml`. Each
+  activity has a short display name plus one hash, because Manifest names are
+  unsuitable for display ("Vow of the Disciple: Standard", "Featured Reprise:
+  Gahlran: The Pantheon"). Hash sources: raids from live GetPublicMilestones
+  Standard hashes (2026-10-06); dungeons from the hashes probed via
+  `/Trending/Details` in the weekly research; Pantheon from the dedicated
+  Featured Reprise/Encore activities; GM from "Nightfall Grandmaster: X"
+  (Exodus Crash and Warden of Nothing have two definitions each; picked the
+  ones sharing The Arms Dealer's current modifier layout). Coverage start:
+  raids/dungeons/Pantheon 2026-06-16 (Bungie TWID June 18 pairs and Update
+  9.7.0); GM 2026-09-22 (only Kyber evidence). Structural check (passive
+  data, no meaningful RED; python tomllib + local Manifest): 32/32 hashes
+  resolve with matching names, no unused activities, raids and dungeons each
+  appear exactly twice; reconstructed 2026-06-16, 07-14, 09-22, 09-29 match
+  TWID/Kyber. Commit evidence: `a7a726b` (data; this tracker note landed
+  with WRC-002).
+- [x] **WRC-002 — Core calendar arithmetic.** Pure types and week-index
   computation (signed floor division, Euclidean modulo, dates before the
   reference reset), coverage-start "no data", window for a week. Pinned
   vectors: 2026-09-22, 09-29, 10-06, 10-13 and a pre-coverage date.
+  Result: `crates/destiny-core/src/calendar.rs` (dependency-free):
+  validated `ActivityReference`, `Rotation`, `Calendar`; `week_index`
+  (i128 `div_euclid`), `Rotation::slot_index` (`rem_euclid`),
+  `week_window` (typed `WindowOutOfRange` instead of panics),
+  `Calendar::week_at` -> `RotationOutcome::{Predicted, NoData}` with NoData
+  when the week start precedes `coverage_start`. Delegated writer,
+  test-first: RED 63 compile errors (`RotationOutcome` missing); GREEN
+  destiny-core 136 tests (6 new: pinned raid/Pantheon vectors incl. week -14,
+  reset boundaries, coverage, invalid constructors, extremes); fmt, clippy
+  `-D warnings`, diff check passed. Commit evidence: see git log for
+  `feat(core): add weekly rotation calendar arithmetic`.
 - [ ] **WRC-003 — Embedded TOML parsing and validation (adapters).** Parse
   and validate (nonempty lists, anchor in range, pair shape, every hash
   resolves in the Manifest in a data test, each raid/dungeon appears exactly
