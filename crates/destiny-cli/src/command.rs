@@ -118,6 +118,14 @@ impl Cli {
                 .into_request()?;
                 Ok(ReadRequest::Artifact { character_id })
             }
+            Command::Postmaster(arguments) => {
+                if arguments.character.as_ref().is_some_and(|value| {
+                    value.chars().count() > destiny_app::MAX_SEARCH_TEXT_LENGTH
+                }) {
+                    return Err(CliError::invalid_request());
+                }
+                arguments.into_request().map(ReadRequest::Postmaster)
+            }
             Command::ListCharacters => Ok(ReadRequest::ListCharacters),
             Command::SearchInventory(arguments) => {
                 arguments.into_request().map(ReadRequest::SearchInventory)
@@ -233,6 +241,9 @@ pub enum Command {
     /// List the characters in the current profile projection.
     #[command(name = "list-characters")]
     ListCharacters,
+
+    /// List committed Postmaster instances and anonymous stacks, without pulling.
+    Postmaster(SubclassArgs),
 
     /// Search definitions and, optionally, concrete inventory instances.
     #[command(name = "search-inventory")]
@@ -1015,6 +1026,7 @@ impl InspectItemArgs {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReadRequest {
+    Postmaster(Option<CharacterId>),
     ListCharacters,
     SearchInventory(SearchInventoryRequest),
     InspectItem(InspectItemRequest),

@@ -98,7 +98,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   result and QueryService method over the synchronized committed snapshot;
   separate real instances and non-instanced stacks, optional names, multiplicity,
   owner filtering, empty groups, freshness and qualified currency coverage.
-- [ ] **GPM-005b — CLI Postmaster listing.** `ghostlink postmaster`
+- [x] **GPM-005b — CLI Postmaster listing.** `ghostlink postmaster`
   with optional character ID/class and JSON; shared QueryOperations forwarding,
   pipeline/help checks, CLI docs and skill, no pull action.
 - [ ] **GPM-005c — MCP Postmaster listing.** `get_postmaster` with CLI
@@ -149,8 +149,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   GPM-003b is COMPLETE (worker checks and native assessment);
   GPM-004a, GPM-004b1 and GPM-004b2 are COMPLETE;
   GPM-005a is COMPLETE (independently verified);
-  GPM-005b is IN PROGRESS (CLI and required query-trait forwarding scope);
-  GPM-005c follows as a separate MCP presentation unit.
+  GPM-005b is COMPLETE (independently verified);
+  GPM-005c is IN PROGRESS (MCP presentation parity).
 - GPM-003a commit `1bca7d1` (321 additions / 8 deletions, including tests).
   Worker `muwy92h2-5-3djs`: completed snapshot stack fields, multiset
   equality/owner validation, fake preservation, mechanical literal propagation,
@@ -240,7 +240,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   item_plugs, item_stats and item_available_plugs. Foreign keys are enabled and
   the runner is already in a transaction; foreign_keys=OFF inside migration SQL
   is not a valid workaround. Preservation tests are mandatory.
-- GPM-005a worker `mux0umr1-d-fkx1`: dedicated DTOs and inherent
+- GPM-005a commit `37d7196`.
+  Worker `mux0umr1-d-fkx1`: dedicated DTOs and inherent
   QueryService::postmaster, no QueryOperations/frontends yet. Fourteen tests
   cover owner filtering, duplicate preservation, optional names, currency coverage,
   metadata/freshness/errors and contradictory repository state. RED E0599;
@@ -270,6 +271,35 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Gear has no persisted runtime bucket: omit it, never substitute definition
   bucket. Stack runtime buckets are retained. Split shared projection, CLI and
   MCP into separate work units; no extra runtime/account-scoping rewrite.
+- GPM-005b worker `mux1fmc6-g-cud2`: strict CLI postmaster command,
+  required QueryOperations forwarding, text/JSON output, offline SQLite/service
+  pipeline and README/CLI docs/skill. RED: InvalidSubcommand, missing request,
+  trait/module/dispatch/fake. GREEN: seven focused CLI tests; 5 skill drift,
+  9 setup and 14 app tests; help/fmt/clippy/diff passed, 1,531 default / 1,548
+  all-features tests. Intermediate fixture readiness, category names/imports,
+  sanitization expectations and formatting errors corrected before final pass.
+  Approx. 502 authored diff lines. No MCP changes/actions/live validation.
+  JSON: kind=postmaster; metadata checked_at/freshness/revision/source;
+  profile_currencies_coverage not_observed/unavailable/available; character groups
+  with character_id/class, instances(instance_id/item_hash/name/quantity),
+  stacks(item_hash/name/bucket_hash/quantity). IDs strings, numeric fields numeric,
+  optional names/classes null; duplicates preserved, no inferred gear bucket.
+  Text uses control-character sanitization and honest committed-read qualifiers.
+  ASSESS unassessable due new untracked files; high-risk independent verification
+  required. Verifier `mux1ulxs-h-c0wn` PASS, no blocking counterexample:
+  7 focused CLI, 5 skill drift, 9 setup, 14 app; help/fmt/clippy and diff passed;
+  1,531 default / 1,548 all-features tests, zero failures/ignored. All three
+  untracked files explicitly read/whitespace checked. Pipeline exercises runner,
+  trait, service and SQLite and refresh refusal. Duplicate stacks are injected
+  for renderer assertions rather than passed through this SQLite CLI fixture;
+  app tests separately cover stack projection. Synthetic only, not native approval.
+- GPM-005b scope scout `mux1d2co-f-c4dl`: only QueryService and CLI
+  runner RecordingService implement QueryOperations. Add required object-safe
+  postmaster method and true forwarding; no fallback stub or MCP changes needed.
+  MCP QueryReadService implements its own InventoryReadService trait with a concrete
+  QueryService. Help/setup expectations are dynamic; skill drift requires a
+  documented public postmaster invocation. Existing mapped CLI/app/docs surfaces
+  suffice; no extra edit paths identified.
 - Keep `--character` and carried-inventory filters restricted to Character,
   never implicitly Postmaster(owner); lock's fallback remains Vault-only.
   Pull-contract gaps do not block safe snapshot/persistence work.

@@ -929,6 +929,14 @@ where
 /// associated types, or `Self`-typed returns, so `&mut dyn QueryOperations` is
 /// a valid dispatch target.
 pub trait QueryOperations {
+    /// Reads committed Postmaster holdings for one selector or all owned characters.
+    fn postmaster(
+        &mut self,
+        character_id: Option<&destiny_core::CharacterId>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::PostmasterResult, AppError>;
+
     fn subclass_options(
         &mut self,
         character_id: Option<&destiny_core::CharacterId>,
@@ -978,6 +986,15 @@ where
         + destiny_core::StatDefinitionRepository
         + destiny_core::ports::WorldDefinitionRepository,
 {
+    fn postmaster(
+        &mut self,
+        character_id: Option<&destiny_core::CharacterId>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::PostmasterResult, AppError> {
+        QueryService::postmaster(self, character_id, policy, now)
+    }
+
     fn subclass_options(
         &mut self,
         character_id: Option<&destiny_core::CharacterId>,

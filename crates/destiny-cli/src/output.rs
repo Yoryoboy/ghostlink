@@ -1241,7 +1241,7 @@ fn perks_text(perks: &[PerkSummary]) -> String {
         .join("; ")
 }
 
-fn metadata_text(metadata: &QueryMetadata) -> String {
+pub(crate) fn metadata_text(metadata: &QueryMetadata) -> String {
     format!(
         "revision: {}\nchecked_at: {}\nfreshness: {}",
         metadata.sync.revision.value(),
@@ -1250,7 +1250,7 @@ fn metadata_text(metadata: &QueryMetadata) -> String {
     )
 }
 
-fn metadata_json(metadata: &QueryMetadata) -> Value {
+pub(crate) fn metadata_json(metadata: &QueryMetadata) -> Value {
     json!({
         "checked_at": metadata.sync.checked_at.seconds(),
         "freshness": freshness_text(metadata.freshness),

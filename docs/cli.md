@@ -119,6 +119,7 @@ for installation details, manual fallback, and security limits.
 
 ```sh
 ghostlink list-characters
+ghostlink postmaster --character hunter --json
 ghostlink search-inventory --text gjallar --limit 5
 ghostlink inspect-item 700000000000000001
 ghostlink subclass --character hunter
@@ -130,6 +131,40 @@ Add the global `--json` flag to select machine output:
 ```sh
 ghostlink --json search-inventory --text gjallar --item-hash 1001
 ```
+
+### Postmaster observations
+
+`ghostlink postmaster [--character ID_OR_CLASS] [--json]` lists committed
+Postmaster holdings. Omit the selector for all owned characters, including empty
+groups; use an exact ID or a unique case-insensitive class such as `hunter`.
+Empty/control-bearing selectors, selectors longer than 256 characters, duplicate
+selectors, positional extras and mutation flags are rejected before dispatch.
+
+```sh
+ghostlink postmaster
+ghostlink postmaster --character hunter --json
+ghostlink --json postmaster --character 700000000000000001
+```
+
+This read uses ordinary profile freshness synchronization, not an unconditional
+live lookup. Refresh failures refuse stale fallback. Text separates instances
+and stacks, shows quantities and actual stack runtime buckets, and includes a
+revision/time/freshness footer. Missing names fall back to hashes. Instance runtime
+buckets are not persisted and are never inferred from definition buckets.
+
+JSON is one stdout object with `kind: "postmaster"`, `metadata` (the existing
+`checked_at`, `freshness`, `revision`, `source` fields),
+`profile_currencies_coverage` and `characters`. Each character has `character_id`
+(string), nullable `class`, and separate `instances` and `stacks` arrays. Instances
+have string `instance_id`, numeric `item_hash`/`quantity` and nullable `name`;
+stacks have numeric `item_hash`/`bucket_hash`/`quantity` and nullable `name`.
+Duplicate rows remain separate, without totals or synthetic IDs. Errors retain
+the sanitized stderr/exit contract and leave stdout empty.
+
+Currency coverage is `not_observed`, `unavailable` or `available` and qualifies
+only profile currency component 103. Even `available` currencies or an empty
+group do not prove Postmaster completeness or live holdings. Anonymous stack
+rows have no stable pull selector. This command exposes no pull feature.
 
 ### Explicit profile sync
 

@@ -58,6 +58,7 @@ when missing after login or on a CLI read.
 
 ```sh
 ghostlink list-characters
+ghostlink postmaster --character hunter --json
 ghostlink search-inventory --type "Hand Cannon" --element solar --sort Range
 ghostlink weekly --character hunter
 ghostlink move "Ace of Spades" --vault
@@ -69,6 +70,11 @@ ghostlink unlock "Ace of Spades" --json
 Add `--json` for machine-readable output. Search by perks, mods, armor stats and
 more; inspect items, subclasses, the seasonal artifact and saved loadouts. See
 the [CLI reference](docs/cli.md) for all commands.
+
+`ghostlink postmaster` lists committed Postmaster instances and anonymous stacks,
+including empty character groups, with ordinary freshness synchronization. Currency
+coverage qualifies currency data only, not Postmaster completeness. No pull feature
+or synthetic instance IDs are exposed.
 
 Actions use fresh preflight checks and post-action verification. Bungie can lag
 in reflecting a change: an "applied but pending refresh" outcome is not verified
