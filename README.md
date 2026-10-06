@@ -182,6 +182,12 @@ and maintained by the Clarity team, not by Ghostlink. Thanks for sharing that
 careful work! Feedback about those insights belongs in
 [Clarity's Discord](https://d2clarity.com/discord).
 
+Weekly rotation predictions use **[ShatteredVault](https://shatteredvault.com)**'s
+algorithm and lists, verified against historical weekly data from
+**[Kyber's Corner](https://kyberscorner.com)**. Thanks for sharing that work!
+Ghostlink corrects one dungeon slot: Sundered Doctrine pairs with Spire of the
+Watcher instead of Grasp of Avarice, following Kyber's historical data.
+
 Official item data comes from Bungie's Destiny 2 API.
 
 ## License

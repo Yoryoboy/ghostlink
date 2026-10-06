@@ -39,7 +39,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Unlockable supers, aspects, fragments | `ghostlink subclass-options` |
 | Artifact points and active perks | `ghostlink artifact` |
 | Saved in-game loadouts | `ghostlink loadouts` |
-| Public weekly reset (no account needed) | `ghostlink weekly-reset` |
+| Weekly rotation predictions (login required) | `ghostlink weekly-reset` |
 | Weekly progress for one character | `ghostlink weekly` |
 | Data looks outdated or after an in-game change | `ghostlink sync` |
 | Item names or descriptions missing, or definitions outdated | `ghostlink sync-manifest` |
@@ -54,6 +54,13 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - Five plug surfaces expose optional official `description` and community `clarity`: subclass slots, subclass options, artifact slots, loadout plugs and inspect `plug_details` (`hash`, `name`, `role`, optional `description`, `clarity`, `clarity_match`). Missing fields mean no text is available, not no effect.
 - `ghostlink search-inventory` returns names only. To explain perks, search first, then inspect the chosen instance.
 - Descriptions exist only for plugs present in the user's items, subclass or subclass options; there is no lookup for arbitrary perk names.
+
+## Weekly Calendar
+
+- Calendar values are predictions from a community-derived rotation, never confirmed rotations.
+- For the current week, prefer observed live milestones when they disagree with the calendar, and mention the disagreement.
+- For "what is featured next week", use MCP `date` (`YYYY-MM-DD`, UTC end of day) or CLI `--date` (local end of day); check the returned window.
+- "No data" means outside verified coverage; do not guess.
 
 ## Execution Steps
 

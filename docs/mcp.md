@@ -11,7 +11,7 @@ get_subclass      show equipped subclass configurations per character
 get_subclass_options list available subclass options with unlock status
 get_artifact      read live seasonal artifact state and per-character perks
 get_loadouts      show saved in-game loadouts and configured equipment per character
-weekly_reset      show the current public weekly rotation (same data as the CLI)
+weekly_reset      predict weekly rotations and observe current-week milestones
 weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
 equip_item        transfer if necessary, equip on an explicit character, and verify
@@ -150,6 +150,26 @@ socket order, the first archetype, and available entries in socket order.
 Missing descriptions and an empty `plug_details` list are omitted. Existing
 name arrays are unchanged. `search_inventory` hits do not include descriptions;
 call `inspect_item` for that detail.
+
+## Weekly reset
+
+`weekly_reset` accepts an optional `date` in `YYYY-MM-DD` format, for example
+`{"date":"2026-10-13"}`. Omit it for the current week. A date selects the
+weekly period in effect at the end of that day in **UTC**, unlike the CLI's
+local-time rule. Requires login.
+
+The calendar predicts featured raids, dungeons, Pantheon Reprise/Encore, and
+Grandmaster Vanguard Alert from a community-derived rotation; these are not
+confirmed values. Dates before each rotation's verified coverage return
+**no data** with the reason. Live Bungie milestones are observed data for the
+current week only.
+
+Structured output matches CLI JSON, including the additive `current_week`
+boolean, `calendar` (`source: "prediction"`, RFC 3339 UTC `start` and `end`,
+and `rotations`), and `milestones_source: "observed"`. Rotations include `key`,
+`title`, `status` (`predicted` or `no_data`) and `activities` (`name`, `hash`),
+with `coverage_start` and `coverage_note` for no data. Non-current weeks retain
+`milestones: []`.
 
 ## Offline stdio integration test
 
