@@ -101,10 +101,24 @@ deliver as chained PRs.
   reset boundaries, coverage, invalid constructors, extremes); fmt, clippy
   `-D warnings`, diff check passed. Commit evidence: see git log for
   `feat(core): add weekly rotation calendar arithmetic`.
-- [ ] **WRC-003 — Embedded TOML parsing and validation (adapters).** Parse
+- [x] **WRC-003 — Embedded TOML parsing and validation (adapters).** Parse
   and validate (nonempty lists, anchor in range, pair shape, every hash
   resolves in the Manifest in a data test, each raid/dungeon appears exactly
   twice).
+  Result: `crates/destiny-adapters/src/calendar/mod.rs`,
+  `embedded_calendar() -> Result<Calendar, CalendarLoadError>`; strict serde
+  (`deny_unknown_fields`), typed errors for undefined/unused activities and
+  bad instants, slot shapes, canonical order raid -> dungeon -> pantheon ->
+  grandmaster (TOML maps are unordered). New dependency `toml =0.9.8`,
+  default features off, `parse` + `serde` (MIT OR Apache-2.0; `winnow` MIT).
+  Manifest hash resolution stays the WRC-001 structural check (a Manifest is
+  not available to unit tests). Delegated writer, test-first: RED 8 failing,
+  1 passing against a stub; GREEN 9/9 (balance invariant, pinned 2026-10-06
+  and 2026-09-22 predictions, pre-coverage NoData). Independent verifier
+  PASS: fmt, `cargo build -p ghostlink -p destiny-mcp`, workspace tests
+  1,461 passed / 0 failed, clippy `-D warnings`, diff check, licenses.
+  Commit evidence: see git log for
+  `feat(adapters): load embedded weekly rotation calendar`.
 - [ ] **WRC-004 — App and CLI.** `weekly-reset --date`, calendar section in
   human and JSON output, resolved window, live milestones only for the
   current week, require login.
