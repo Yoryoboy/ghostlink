@@ -146,6 +146,10 @@ fn stack(hash: i64, quantity: i64, container: StackContainer) -> StackObservatio
 }
 fn definition(hash: i64, name: &str) -> ItemDefinition {
     ItemDefinition {
+        does_postmaster_pull_have_side_effects: None,
+        is_instance_item: None,
+        max_stack_size: None,
+        stack_unique_label: None,
         hash: ItemHash::new(hash),
         name: name.into(),
         bucket_hash: Some(BucketHash::new(999)),

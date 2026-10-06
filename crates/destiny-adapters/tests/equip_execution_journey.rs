@@ -333,6 +333,10 @@ fn definitions() -> Vec<ItemDefinition> {
         .zip(buckets)
         .enumerate()
         .map(|(index, (slot, bucket))| ItemDefinition {
+            does_postmaster_pull_have_side_effects: None,
+            is_instance_item: None,
+            max_stack_size: None,
+            stack_unique_label: None,
             hash: ItemHash::new(if index == 0 {
                 1001
             } else {

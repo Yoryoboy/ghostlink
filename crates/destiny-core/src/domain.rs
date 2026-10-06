@@ -235,7 +235,22 @@ parse_filter_name!(ClassType, Titan, Hunter, Warlock, Any, Unknown);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemDefinition {
     pub hash: ItemHash,
+    /// Normal Manifest definition bucket, not an observed runtime container.
     pub bucket_hash: Option<BucketHash>,
+    /// Official DestinyInventoryItemDefinition.doesPostmasterPullHaveSideEffects.
+    /// `Some(true)` warns of potential destructive redemption, not certainty;
+    /// unknown (`None`) is not explicit false and cannot prove safe eligibility.
+    pub does_postmaster_pull_have_side_effects: Option<bool>,
+    /// Official DestinyItemInventoryBlockDefinition.isInstanceItem; unknown is
+    /// not false and does not identify any particular runtime observation.
+    pub is_instance_item: Option<bool>,
+    /// Official inventory.maxStackSize, preserved as supplied signed int32.
+    /// Unknown or nonpositive values cannot establish usable capacity.
+    pub max_stack_size: Option<i32>,
+    /// Official inventory.stackUniqueLabel, preserved exactly without trimming.
+    /// A populated label forbids multiple stacks with that label; empty is known
+    /// empty, while `None` is unknown. Neither proves destination coverage.
+    pub stack_unique_label: Option<String>,
     pub name: String,
     pub item_type: Option<String>,
     pub tier: Option<String>,

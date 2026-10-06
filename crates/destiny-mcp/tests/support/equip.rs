@@ -68,6 +68,10 @@ fn snapshot(equipped: bool, on_target: bool, ambiguous: bool) -> InventorySnapsh
 }
 fn definitions() -> Vec<ItemDefinition> {
     let definition = |hash, name: &str, bucket| ItemDefinition {
+        does_postmaster_pull_have_side_effects: None,
+        is_instance_item: None,
+        max_stack_size: None,
+        stack_unique_label: None,
         hash: ItemHash::new(hash),
         bucket_hash: Some(BucketHash::new(bucket)),
         name: name.into(),

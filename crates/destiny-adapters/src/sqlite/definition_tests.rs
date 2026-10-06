@@ -45,12 +45,141 @@ impl Drop for TempDatabase {
     }
 }
 
+#[test]
+fn qualified_postmaster_metadata_is_refused_before_refresh_or_replacement() {
+    use destiny_core::ports::WorldDefinitionRepository;
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let prior = replacement("v1", base_manifest().definitions);
+    let world = bridge_world();
+    let metadata = store
+        .publish_manifest(prior.clone(), world.clone())
+        .unwrap();
+    store.connection().execute_batch(
+        "INSERT INTO active_profile(singleton,membership_id,membership_type) VALUES (1,'123','3');
+         INSERT INTO items VALUES ('instance',10,'vault',NULL,NULL,1,0,0,NULL);
+         INSERT INTO item_perks VALUES ('instance',0,7,1,1);
+         INSERT INTO sync_metadata VALUES ('profile_inventory','100','profile','4','v1');"
+    ).unwrap();
+    let before = bridge_rows(&store);
+    let changes = store.connection().total_changes();
+    // Test each field independently, including values truthiness would lose.
+    for known in 0..11 {
+        for path in 0..3 {
+            for changed_catalog in [false, true] {
+                let mut next = prior.clone();
+                next.checked_at = Timestamp::new(999);
+                let definition = &mut next.definitions.definitions[0];
+                if changed_catalog {
+                    definition.name = "Replacement".into();
+                    definition.tags.clear();
+                }
+                match known {
+                    0 => definition.does_postmaster_pull_have_side_effects = Some(false),
+                    1 => definition.does_postmaster_pull_have_side_effects = Some(true),
+                    2 => definition.is_instance_item = Some(false),
+                    3 => definition.is_instance_item = Some(true),
+                    4 => definition.max_stack_size = Some(i32::MIN),
+                    5 => definition.max_stack_size = Some(-1),
+                    6 => definition.max_stack_size = Some(0),
+                    7 => definition.max_stack_size = Some(1),
+                    8 => definition.max_stack_size = Some(i32::MAX),
+                    9 => definition.stack_unique_label = Some(String::new()),
+                    _ => definition.stack_unique_label = Some(" Exact Label ".into()),
+                }
+                let result = match path {
+                    0 => store.replace_definitions(next),
+                    1 => store.replace_definitions_with_descriptions(
+                        next,
+                        world.item_descriptions.clone(),
+                    ),
+                    _ => store.publish_manifest(next, world.clone()),
+                };
+                assert_eq!(result, Err(storage_error()));
+                assert_eq!(
+                    store.connection().total_changes(),
+                    changes,
+                    "no writes, even freshness-only"
+                );
+                assert_eq!(bridge_rows(&store), before, "all committed tables intact");
+                assert_eq!(store.current_metadata().unwrap(), Some(metadata.clone()));
+                assert_eq!(
+                    store.lookup_definition(ItemHash::new(10)).unwrap(),
+                    Resolution::Unique(prior.definitions.definitions[0].clone())
+                );
+            }
+        }
+    }
+    assert_eq!(store.schema_version().unwrap(), 17);
+}
+
+fn bridge_world() -> destiny_core::WorldDefinitionsAcquisition {
+    use destiny_core::*;
+    fn table<T>(definition: T) -> WorldDefinitionTable<T> {
+        WorldDefinitionTable {
+            definitions: vec![definition],
+            skipped_count: 0,
+        }
+    }
+    WorldDefinitionsAcquisition {
+        version: DefinitionVersion::new("v1"),
+        item_descriptions: vec![
+            ItemDescription::new(ItemHash::new(10), "Original tooltip".into()).unwrap(),
+        ],
+        milestones: table(
+            MilestoneDefinition::new(1, "Milestone".into(), "Description".into(), 3).unwrap(),
+        ),
+        activities: table(
+            ActivityDefinition::new(2, "Activity".into(), "".into(), 4, 2000).unwrap(),
+        ),
+        modifiers: table(ActivityModifierDefinition::new(3, "Modifier".into(), "".into()).unwrap()),
+        objectives: table(ObjectiveDefinition::new(5, "Objective".into(), 1).unwrap()),
+        activity_types: table(ActivityTypeDefinition::new(4, "Type".into(), "".into()).unwrap()),
+        stats: table(StatDefinition::new(6, "Stat".into()).unwrap()),
+        loadout_names: WorldDefinitionTable {
+            definitions: vec![],
+            skipped_count: 0,
+        },
+    }
+}
+
+// Capture every row of the synthetic in-memory database, including inventory,
+// tags, descriptions, world tables and both datasets' freshness/revision rows.
+fn bridge_rows(store: &SqliteStore) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
+    let tables: Vec<String> = store.connection().prepare(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ).unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+    tables
+        .into_iter()
+        .map(|table| {
+            let mut statement = store
+                .connection()
+                .prepare(&format!("SELECT * FROM \"{table}\" ORDER BY rowid"))
+                .unwrap();
+            let columns = statement.column_count();
+            let rows = statement
+                .query_map([], |row| {
+                    (0..columns)
+                        .map(|column| row.get(column))
+                        .collect::<Result<Vec<rusqlite::types::Value>, _>>()
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            (table, rows)
+        })
+        .collect()
+}
+
 fn storage_error() -> AppError {
     AppError::new(ErrorCategory::LocalStorage)
 }
 
 fn item(hash: i64, name: &str) -> ItemDefinition {
     ItemDefinition {
+        does_postmaster_pull_have_side_effects: None,
+        is_instance_item: None,
+        max_stack_size: None,
+        stack_unique_label: None,
         hash: ItemHash::new(hash),
         bucket_hash: None,
         name: name.into(),
@@ -72,6 +201,10 @@ fn versioned(mut definition: ItemDefinition, version: &str) -> ItemDefinition {
 
 fn full_definition(hash: i64, tags: &[&str]) -> ItemDefinition {
     ItemDefinition {
+        does_postmaster_pull_have_side_effects: None,
+        is_instance_item: None,
+        max_stack_size: None,
+        stack_unique_label: None,
         hash: ItemHash::new(hash),
         bucket_hash: Some(BucketHash::new(1_498_876_634)),
         name: "Suros Regime".into(),
@@ -102,6 +235,10 @@ fn base_manifest() -> ManifestDefinitions {
         version: DefinitionVersion::new("v1"),
         definitions: vec![
             ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: ItemHash::new(10),
                 bucket_hash: Some(BucketHash::new(100)),
                 name: "Alpha".into(),
@@ -115,6 +252,10 @@ fn base_manifest() -> ManifestDefinitions {
                 version: DefinitionVersion::new("v1"),
             },
             ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: ItemHash::new(20),
                 bucket_hash: None,
                 name: "Beta".into(),

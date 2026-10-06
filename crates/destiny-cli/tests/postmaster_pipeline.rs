@@ -54,6 +54,10 @@ fn service() -> QueryService<QueuedProfileGateway, SqliteStore> {
             definitions: ManifestDefinitions {
                 version: DefinitionVersion::new("v1"),
                 definitions: vec![ItemDefinition {
+                    does_postmaster_pull_have_side_effects: None,
+                    is_instance_item: None,
+                    max_stack_size: None,
+                    stack_unique_label: None,
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(999)),
                     name: "Unrelated definition".into(),

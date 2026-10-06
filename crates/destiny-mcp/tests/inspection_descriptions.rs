@@ -30,6 +30,10 @@ fn inspection() -> ItemInspection {
         })
         .collect(),
         definition: ItemDefinition {
+            does_postmaster_pull_have_side_effects: None,
+            is_instance_item: None,
+            max_stack_size: None,
+            stack_unique_label: None,
             hash: ItemHash::new(1),
             name: "Item".into(),
             bucket_hash: None,

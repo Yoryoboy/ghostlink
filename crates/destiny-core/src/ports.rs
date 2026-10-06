@@ -677,7 +677,19 @@ pub struct ManifestDefinitionCandidate {
     /// Ordered, bounded references into the same-version effect catalog.
     pub perk_hashes: Vec<u32>,
     pub hash: ItemHash,
+    /// Normal definition bucket, never an observed runtime container.
     pub bucket_hash: Option<BucketHash>,
+    /// Official top-level doesPostmasterPullHaveSideEffects: potential destructive
+    /// action, not certainty. Missing/null is unknown, never explicit false.
+    pub does_postmaster_pull_have_side_effects: Option<bool>,
+    /// Official inventory.isInstanceItem; missing/null is unknown, not false.
+    pub is_instance_item: Option<bool>,
+    /// Official inventory.maxStackSize, exact signed int32 metadata. Nonpositive
+    /// or unknown values cannot establish usable capacity.
+    pub max_stack_size: Option<i32>,
+    /// Official inventory.stackUniqueLabel, exact and untrimmed. Populated labels
+    /// forbid multiple stacks with that label; known empty differs from unknown.
+    pub stack_unique_label: Option<String>,
     pub name: String,
     pub item_type: Option<String>,
     pub tier: Option<String>,

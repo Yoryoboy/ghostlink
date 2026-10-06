@@ -13,6 +13,10 @@ fn definitions(
         definitions: ManifestDefinitions {
             version: version.clone(),
             definitions: vec![ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: ItemHash::new(1),
                 bucket_hash: None,
                 name: "Helmet".into(),

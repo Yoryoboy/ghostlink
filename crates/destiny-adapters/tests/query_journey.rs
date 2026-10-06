@@ -345,6 +345,10 @@ fn expected_membership() -> DestinyMembership {
 /// A deterministic normalized Manifest definition.
 fn definition(hash: i64, name: &str, item_type: Option<&str>, tags: &[&str]) -> ItemDefinition {
     ItemDefinition {
+        does_postmaster_pull_have_side_effects: None,
+        is_instance_item: None,
+        max_stack_size: None,
+        stack_unique_label: None,
         hash: ItemHash::new(hash),
         bucket_hash: None,
         name: name.to_owned(),

@@ -1550,6 +1550,10 @@ mod tests {
 
     fn item_definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
         ItemDefinition {
+            does_postmaster_pull_have_side_effects: None,
+            is_instance_item: None,
+            max_stack_size: None,
+            stack_unique_label: None,
             hash: ItemHash::new(hash),
             bucket_hash: None,
             name: name.into(),
@@ -2112,6 +2116,10 @@ mod tests {
     fn repositories_and_gateways_cover_contract_outcomes() {
         let hash = ItemHash::new(7);
         let definition = ItemDefinition {
+            does_postmaster_pull_have_side_effects: None,
+            is_instance_item: None,
+            max_stack_size: None,
+            stack_unique_label: None,
             hash,
             bucket_hash: None,
             name: "Item".into(),

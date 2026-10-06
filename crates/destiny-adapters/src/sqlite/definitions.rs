@@ -109,6 +109,22 @@ impl SqliteStore {
         world: Option<destiny_core::WorldDefinitionsAcquisition>,
         mut descriptions: Vec<destiny_core::ItemDescription>,
     ) -> Result<SyncMetadata, AppError> {
+        // Pre-v18 bridge: known metadata cannot be persisted yet. Reject before
+        // any transaction, catalog replacement, or unchanged-content refresh.
+        // Presence matters: false, empty labels and nonpositive sizes are known.
+        if replacement
+            .definitions
+            .definitions
+            .iter()
+            .any(|definition| {
+                definition.does_postmaster_pull_have_side_effects.is_some()
+                    || definition.is_instance_item.is_some()
+                    || definition.max_stack_size.is_some()
+                    || definition.stack_unique_label.is_some()
+            })
+        {
+            return Err(storage_failure());
+        }
         if let Some(world) = &world {
             world.validate_for(&replacement.definitions.version)?;
         }
@@ -453,6 +469,10 @@ fn read_definition(
             class_type,
             plug_category,
         )) => Ok(Some(ItemDefinition {
+            does_postmaster_pull_have_side_effects: None,
+            is_instance_item: None,
+            max_stack_size: None,
+            stack_unique_label: None,
             hash,
             bucket_hash: bucket_hash.map(BucketHash::new),
             name,
@@ -575,6 +595,10 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
             ) = row.map_err(|_| storage_failure())?;
             positions.insert(hash, definitions.len());
             definitions.push(ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: ItemHash::new(hash),
                 bucket_hash: bucket_hash.map(BucketHash::new),
                 name,
@@ -674,6 +698,10 @@ mod live_publish_tests {
         let version = DefinitionVersion::new("large-synthetic-v1");
         let definitions = (0..40_000)
             .map(|hash| ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: ItemHash::new(hash),
                 bucket_hash: Some(BucketHash::new(1)),
                 name: format!("Synthetic {hash}"),

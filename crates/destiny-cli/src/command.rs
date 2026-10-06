@@ -1944,6 +1944,10 @@ mod tests {
             available_mods: Vec::new(),
             stats: Vec::new(),
             definition: destiny_app::ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: destiny_app::ItemHash::new(1),
                 bucket_hash: None,
                 name: "Gjallarhorn".to_string(),

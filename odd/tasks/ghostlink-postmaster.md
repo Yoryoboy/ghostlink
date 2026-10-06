@@ -62,6 +62,12 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Official DestinyProfileResponse confirms profileCurrencies is
   SingleComponentResponseOfDestinyInventoryComponent; characterInventories is
   character-keyed inventory. Do not count overlapping summaries twice.
+- Redemption/destructive side effects CONFIRMED: top-level item definition
+  doesPostmasterPullHaveSideEffects indicates potential destruction, not a reliable
+  prediction of whether it will happen. Official docs require checking the flag.
+  Acquisition/persistence must retain explicit false versus unknown; reject true
+  or unknown rather than authorize unintended redemption. This gate is NOT yet
+  implemented in the pull service (which does not exist).
 - Representative sanitized fixtures and eventual owner-run live verification.
 
 ## Tasks
@@ -103,8 +109,19 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   pipeline/help checks, CLI docs and skill, no pull action.
 - [x] **GPM-005c — MCP Postmaster listing.** `get_postmaster` with CLI
   parity, strict schema, forwarding wrappers, discovery/stdio checks and MCP docs.
+- [x] **GPM-006a1 — Acquire qualified definition metadata.** Flat optional
+  side-effect flag, instance kind, signed int32 maximum stack size and uniqueness
+  label; strict raw decoding/normalization, explicit false/empty versus unknown,
+  default-unknown literal propagation and fake preservation. Pre-v18 publication
+  refuses any known field before mutation; no data loss in interim storage.
+- [ ] **GPM-006a2 — Persist definition metadata in SQLite v18.** Additive
+  nullable columns, all publication/readback/catalog/equality paths, metadata-only
+  change detection and guarded downgrade/preservation tests. No readiness claim
+  between acquisition and durable support; no pull eligibility from unknown data.
 - [ ] **GPM-006 — Resolve pull wire contracts.** Primary-source contract
-  evidence, explicit stack ambiguity/capacity rules, request fixtures.
+  evidence, explicit stack ambiguity/capacity rules, request fixtures. Non-instance
+  itemId, partial/duplicate selection and per-material coverage remain unresolved;
+  this task is not complete just because a limited instanced slice is possible.
 - [ ] **GPM-007 — Dedicated pull adapter.** Core request/gateway and strict
   endpoint adapter, sanitized outcomes, one dispatch and encoding tests.
 - [ ] **GPM-008 — Verified pull service.** Owned instance/stack selection,
@@ -151,7 +168,9 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   GPM-005a is COMPLETE (independently verified);
   GPM-005b is COMPLETE (independently verified);
   GPM-005c is COMPLETE (independently verified);
-  GPM-006 is IN PROGRESS (public pull-contract research, no action code yet).
+  GPM-006a1 is COMPLETE (worker checks and native risk assessment);
+  GPM-006a2 is IN PROGRESS (durable SQLite v18 support);
+  GPM-006 wire contracts remain pending with explicit technical gates.
 - GPM-003a commit `1bca7d1` (321 additions / 8 deletions, including tests).
   Worker `muwy92h2-5-3djs`: completed snapshot stack fields, multiset
   equality/owner validation, fake preservation, mechanical literal propagation,
@@ -295,7 +314,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   trait, service and SQLite and refresh refusal. Duplicate stacks are injected
   for renderer assertions rather than passed through this SQLite CLI fixture;
   app tests separately cover stack projection. Synthetic only, not native approval.
-- GPM-005c worker `mux1zi63-i-2jdy` partial: get_postmaster schema,
+- GPM-005c commit `215e30c`.
+  Worker `mux1zi63-i-2jdy` partial: get_postmaster schema,
   dispatch and required forwarding through four wrappers; CLI JSON parity and
   actual child-process cases. Selector `character` follows existing MCP conventions;
   omitted/null selects all. Dedicated metadata DTO preserves CLI parity without
@@ -319,6 +339,57 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   fixture storage is IN-MEMORY FAKE, not SQLite: transport/service integration is
   proven, not durable readback or live-provider correctness. Default workspace
   compilation passes; stdio requires offline-fixtures. RDD off, no native approval.
+- GPM-006 public parent research: official generated operation/request/item
+  inventory block/item definition pages fetched without account access. Confirmed
+  both reference and instance ID for instanced pulls; request integer widths,
+  0.1s throttle and mutation scope. No explicit non-instance zero/omission, partial
+  or duplicate selection guarantees in these pages. Inventory block exposes
+  maxStackSize/stackUniqueLabel/normal/recovery bucket and isInstanceItem; these
+  do not identify current rows or establish destination coverage.
+  Official top-level side-effect flag passage retrieved from:
+  <https://bungie-net.github.io/multi/schema_Destiny-Definitions-DestinyInventoryItemDefinition.html>.
+  Scout `mux2r6j2-l-k25k` mapping definition safety metadata and remaining contracts
+  read-only. Do not equate absent flag with explicit false or acknowledge pulls
+  as observed success. No action code or live-account request initiated.
+  Scout confirms absent safety/capacity fields in core definitions/candidates,
+  raw Manifest decoding and normalized SQLite definition records; SQLite is v17.
+  Follow-up `mux2usid-m-paqf` enumerates affected literal/fake/readback paths and
+  coherent metadata acquisition/persistence boundaries before any writer.
+  Parent targeted public search found official API wiki Postmaster Actions:
+  <https://github.com/Bungie-net/api/wiki/Postmaster-Actions>.
+  Retrieved passage confirms provider's conservative flag can have false positives;
+  no consistent way exists to predict destructive side effects, and apparently
+  benign items may be refused. Do not create a client override/whitelist. Wiki
+  supplies no non-instance itemId or partial/duplicate selection guarantee.
+- GPM-006a footprint scout `mux2usid-m-paqf`: four flat optional fields fit
+  existing records/equality/clone paths. Tolerant OptionalField decoding would
+  erase malformed safety values and is prohibited for these fields. Strict signed
+  int32 width validation preserves supplied capacities; nonpositive capacities
+  are not usable action proof. Uniqueness labels retain exact empty/text values.
+  Approx. 34 mechanical constructor-bearing paths plus scoped behavior surfaces.
+  Parent chose acquisition/bridge then v18 persistence as two review units; the
+  intermediate bridge intentionally refuses Manifest publications with ANY known
+  field, including false or empty label, before permanent mutation. It is local
+  development scaffolding, not release/operational readiness. v17 remains intact;
+  v18 uses additive columns rather than rebuilding items. No action code yet.
+  Worker `mux30h29-n-7dlu` implementing GPM-006a1 within enumerated behavior
+  surfaces and mechanical-only unknown literal propagation; no migration in this
+  unit. Signed nonpositive capacity metadata is retained but never usable action
+  proof; strict errors must not be swallowed by tolerant outer raw wrappers.
+  COMPLETE: four fields retained, strict object parsing before filtering prevents
+  swallowed child errors; normalization/exhaustive identity paths updated.
+  39 source files, +578/-4 (constructor defaults only outside behavior surfaces).
+  RED malformed decoder acceptance/E0609; GREEN core130, decoder26, SQLitedefs16,
+  appManifest16/default28/all-features and 1,539 default / 1,557 all-features workspace
+  tests. Bridge tests exercise 66 combinations/three publication paths, preserve
+  all committed tables and observe zero SQLite writes. Expanded cases post-GREEN.
+  fmt/clippy/diff green after missing-literal and formatting failures corrected.
+  ASSESS medium (40 paths / 645 diff lines); writerSelfVerification=true,
+  independentVerifier=false. RDD off, outcome unknown/not consumed, reviewDue
+  slice_budget_reached. Exact continuation (informational, not executed):
+  `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
+  Known Manifest metadata publication remains intentionally blocked until v18;
+  this is not operational metadata or pull readiness.
 - GPM-005b scope scout `mux1d2co-f-c4dl`: only QueryService and CLI
   runner RecordingService implement QueryOperations. Add required object-safe
   postmaster method and true forwarding; no fallback stub or MCP changes needed.

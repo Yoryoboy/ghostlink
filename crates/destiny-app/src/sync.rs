@@ -375,6 +375,10 @@ mod tests {
             ]
             .into_iter()
             .map(|(hash, category)| ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: ItemHash::new(hash),
                 bucket_hash: None,
                 name: "plug".into(),

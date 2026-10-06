@@ -288,8 +288,10 @@ struct InventoryRecord {
     perks: Vec<InventoryPerk>,
     #[serde(default)]
     display_properties: OptionalField<DisplayProperties>,
+    #[serde(default, deserialize_with = "deserialize_inventory_fields")]
+    inventory: Option<InventoryFields>,
     #[serde(default)]
-    inventory: OptionalField<InventoryFields>,
+    does_postmaster_pull_have_side_effects: Option<bool>,
     #[serde(default)]
     plug: Option<PlugFields>,
     #[serde(default)]
@@ -318,9 +320,29 @@ struct DisplayProperties {
 #[serde(rename_all = "camelCase")]
 struct InventoryFields {
     #[serde(default)]
+    is_instance_item: Option<bool>,
+    #[serde(default)]
+    max_stack_size: Option<i32>,
+    #[serde(default)]
+    stack_unique_label: Option<String>,
+    #[serde(default)]
     bucket_type_hash: OptionalField<u32>,
     #[serde(default)]
     tier_type_name: OptionalField<String>,
+}
+
+// Keep legacy tolerance for absent/non-object inventory blocks, but never let
+// the tolerant outer wrapper turn malformed safety children into unknown values.
+fn deserialize_inventory_fields<'de, D: de::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<InventoryFields>, D::Error> {
+    let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+    if !raw.get().trim_start().starts_with('{') {
+        return Ok(None);
+    }
+    serde_json::from_str(raw.get())
+        .map(Some)
+        .map_err(|_| de::Error::custom("invalid manifest"))
 }
 
 #[derive(Deserialize)]
@@ -852,7 +874,14 @@ fn decode_record(
     {
         return Err(provider_validation());
     }
-    let inventory = record.inventory.into_option();
+    let inventory = record.inventory;
+    let is_instance_item = inventory
+        .as_ref()
+        .and_then(|fields| fields.is_instance_item);
+    let max_stack_size = inventory.as_ref().and_then(|fields| fields.max_stack_size);
+    let stack_unique_label = inventory
+        .as_ref()
+        .and_then(|fields| fields.stack_unique_label.clone());
     let (bucket_hash, tier) = inventory.map_or((None, None), |inventory| {
         (
             inventory
@@ -863,6 +892,10 @@ fn decode_record(
         )
     });
     Ok(Some(ManifestDefinitionCandidate {
+        does_postmaster_pull_have_side_effects: record.does_postmaster_pull_have_side_effects,
+        is_instance_item,
+        max_stack_size,
+        stack_unique_label,
         perk_hashes: record
             .perks
             .into_iter()
@@ -1590,6 +1623,81 @@ fn read_bounded_body(
 #[cfg(test)]
 mod tests {
     use super::{decode_inventory_items, decode_manifest_index};
+
+    #[test]
+    fn postmaster_metadata_preserves_unknown_false_and_exact_values() {
+        for metadata in [
+            "",
+            r#", "inventory": null, "doesPostmasterPullHaveSideEffects": null"#,
+            r#", "inventory": {"isInstanceItem":null,"maxStackSize":null,"stackUniqueLabel":null}"#,
+        ] {
+            let bytes = format!(
+                "{{\"1\":{{\"hash\":1,\"displayProperties\":{{\"name\":\"Item\"}}{metadata}}}}}"
+            );
+            let batch = decode_inventory_items(version(), bytes.as_bytes()).unwrap();
+            let item = &batch.definitions[0];
+            assert_eq!(item.does_postmaster_pull_have_side_effects, None);
+            assert_eq!(item.is_instance_item, None);
+            assert_eq!(item.max_stack_size, None);
+            assert_eq!(item.stack_unique_label, None);
+        }
+        for flag in [false, true] {
+            for capacity in [i32::MIN, -1, 0, 1, i32::MAX] {
+                for label in ["", "  Exact Label\n", "Case.Sensitive"] {
+                    let bytes = serde_json::json!({"1": {
+                        "hash": 1, "displayProperties": {"name": "Item"},
+                        "doesPostmasterPullHaveSideEffects": flag,
+                        "inventory": {"isInstanceItem": flag, "maxStackSize": capacity,
+                            "stackUniqueLabel": label, "bucketTypeHash": 123}
+                    }})
+                    .to_string();
+                    let batch = decode_inventory_items(version(), bytes.as_bytes()).unwrap();
+                    let item = &batch.definitions[0];
+                    assert_eq!(item.does_postmaster_pull_have_side_effects, Some(flag));
+                    assert_eq!(item.is_instance_item, Some(flag));
+                    assert_eq!(item.max_stack_size, Some(capacity));
+                    assert_eq!(item.stack_unique_label.as_deref(), Some(label));
+                    assert_eq!(item.bucket_hash, Some(destiny_core::BucketHash::new(123)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn postmaster_metadata_wrong_types_are_not_swallowed() {
+        for metadata in [
+            r#""doesPostmasterPullHaveSideEffects":"private-invalid""#,
+            r#""doesPostmasterPullHaveSideEffects":0"#,
+            r#""doesPostmasterPullHaveSideEffects":[]"#,
+            r#""doesPostmasterPullHaveSideEffects":{}"#,
+            r#""inventory":{"isInstanceItem":1}"#,
+            r#""inventory":{"isInstanceItem":"false"}"#,
+            r#""inventory":{"isInstanceItem":[]}"#,
+            r#""inventory":{"maxStackSize":1.5}"#,
+            r#""inventory":{"maxStackSize":1.0}"#,
+            r#""inventory":{"maxStackSize":2147483648}"#,
+            r#""inventory":{"maxStackSize":-2147483649}"#,
+            r#""inventory":{"maxStackSize":18446744073709551616}"#,
+            r#""inventory":{"maxStackSize":"1"}"#,
+            r#""inventory":{"maxStackSize":true}"#,
+            r#""inventory":{"maxStackSize":{}}"#,
+            r#""inventory":{"stackUniqueLabel":false}"#,
+            r#""inventory":{"stackUniqueLabel":1}"#,
+            r#""inventory":{"stackUniqueLabel":[]}"#,
+            r#""inventory":{"stackUniqueLabel":{}}"#,
+        ] {
+            for presentation in [
+                r#""displayProperties":{"name":"Item"}"#,
+                r#""displayProperties":{"name":""}"#,
+                r#""redacted":true"#,
+            ] {
+                let bytes = format!(
+                    "{{\"1\":{{\"hash\":1,{presentation},{metadata}}},\"2\":{{\"hash\":2,\"displayProperties\":{{\"name\":\"Other\"}}}}}}"
+                );
+                assert_validation(decode_inventory_items(version(), bytes.as_bytes()));
+            }
+        }
+    }
 
     #[test]
     fn sandbox_perks_and_inventory_references_are_decoded() {
@@ -3123,6 +3231,10 @@ mod transport_tests {
         let repository = InMemoryDefinitionRepository::new(
             prior_version.clone(),
             vec![ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: ItemHash::new(PRIOR_FAKE_HASH),
                 bucket_hash: None,
                 name: "Prior Fake".to_owned(),
