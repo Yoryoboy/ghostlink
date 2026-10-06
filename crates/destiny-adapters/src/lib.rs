@@ -6,6 +6,7 @@ pub mod clarity;
 pub mod clock;
 pub mod credential_store;
 pub mod equip;
+pub mod instanced_pull;
 pub mod loadout;
 pub mod lock;
 pub mod manifest;
@@ -26,6 +27,12 @@ pub use equip::{
     BungieEquipGateway, EQUIP_ENDPOINT, EQUIP_RESPONSE_LIMIT, EquipApiKey, EquipBearerToken,
     EquipHttpRequest, EquipHttpResponse, EquipTransport, EquipTransportError, HttpEquipTransport,
     is_allowed_equip_url,
+};
+pub use instanced_pull::{
+    BungieInstancedPullGateway, HttpInstancedPullTransport, INSTANCED_PULL_ENDPOINT,
+    INSTANCED_PULL_RESPONSE_LIMIT, InstancedPullApiKey, InstancedPullBearerToken,
+    InstancedPullHttpRequest, InstancedPullHttpResponse, InstancedPullTransport,
+    InstancedPullTransportError, is_allowed_instanced_pull_url,
 };
 pub use lock::{
     BungieLockGateway, HttpLockTransport, LOCK_ENDPOINT, LOCK_RESPONSE_LIMIT, LockApiKey,

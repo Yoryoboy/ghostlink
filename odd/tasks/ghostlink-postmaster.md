@@ -125,12 +125,29 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 - [x] **GPM-007a — Instanced pull core contract.** Genuine positive int64
   IDs, uint32 reference hash, representable membership type, fixed quantity one;
   immutable request and one-shot gateway/outcomes. No anonymous stack request.
-- [ ] **GPM-007b — Instanced pull adapter.** Dedicated exact allowlisted
+- [x] **GPM-007b — Instanced pull adapter.** Dedicated exact allowlisted
   endpoint, both hash/real ID, credential/dispatch bounds, sanitized outcomes and
   explicit uncertainty; no inherited transfer-specific refusal assumptions.
 - [ ] **GPM-008 — Verified pull service.** Owned instance/stack selection,
   membership/revision preflight, bounded quantity, conservative post-action
   evidence, no retry and provider-lag tests.
+  Read-only scouts found no equipment capacity policy. Official bucket schema
+  and current English Manifest establish all eight supported equipment buckets:
+  itemCount=10, character scope, location=1, category=3, enabled, non-redacted,
+  non-FIFO, transfer destination present. Version
+  244213.26.06.29.2000-1-bnet.65864 points to bucket artifact
+  DestinyInventoryBucketDefinition-a8ba855a-93c7-4014-8f2e-d92357fdfb42.json.
+  Possible conservative proof: count ALL owner carried instances (equipped
+  included) plus ALL owner character-inventory stack records; admit only total
+  <10 using checked arithmetic. Duplicate stacks remain separate; quantities
+  are not slot counts. Decoder rejects duplicate IDs and incomplete owner groups.
+  This overcounts unrelated buckets and refuses most typical characters: refusal
+  means capacity unproven, not target bucket full. Strategy not yet selected;
+  policy applicability/freshness/version qualification remains a gate. Pinned
+  public facts alone do not establish it. Private non-clone plans consumed by
+  value avoid existing ticket-reminting semantics; bind definition version AND
+  eligibility fingerprint. Force Preflight/PostAction acquisitions, no stale
+  fallback. No service source write or runtime binding from this research alone.
 - [ ] **GPM-009 — CLI/MCP pull exposure.** Thin adapters, pipeline/stdio
   coverage, docs, skill and exact outcome/exit semantics.
 - [ ] **GPM-010 — Close technical verification and record live gaps.**
@@ -438,6 +455,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   GPM-007a worker `mux81k5v-q-e1dw` implementing only core instanced_pull.rs,
   ports trait and lib exports: immutable request, representability tests and
   honest acknowledgement/refusal/uncertainty. Adapter is the next unit.
+  GPM-007a commit `0fb310b`.
   Implementation COMPLETE: request private fields/read-only accessors/fixed1,
   seven tests and five compile-fail docs. RED E0432; GREEN 7 focused, 159 core,
   1,556 default / 1,574 all-features offline tests, zero failed/ignored; fmt/clippy
@@ -450,6 +468,58 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   unchanged. Compile-fail examples use valid exports and intended restrictions.
   Syntax does not prove provider identity; fresh eligibility/capacity/service remain
   future. RDD/native approval unknown; core seam only, not transport proof.
+  GPM-007b is IN PROGRESS: dedicated hardened instanced pull adapter in
+  destiny-adapters/src/instanced_pull.rs and lib exports only; no runtime binding
+  or user-facing action exposure before service preflight/verification exists.
+  Worker `mux8cha7-s-ib04` implementing the adapter. Unknown provider codes,
+  server/throttle/redirect responses without non-application proof remain Uncertain;
+  no borrowed transfer-specific refusal mappings. Essential acknowledgement fields
+  use bounded typed int32 parsing, including duplicate-key refusal tests.
+  Implementation COMPLETE: 650-line adapter/eight tests plus lib exports only.
+  Exact five-field body; HTTP200 typed success acknowledges, 401/403 auth refusal,
+  all other received results uncertain. Shared actual/declared response cap 8 KiB;
+  duplicate typed fields, numeric widths, read faults and redaction covered.
+  RED missingAPI E0432; fixture membership-ID failures corrected before GREEN.
+  Worker 8 focused/24 equip/19 lock/43 transfer and 1,564 default / 1,582
+  all-features offline tests, fmt/clippy/diff/newfile whitespace green.
+  ASSESS unassessable due untracked adapter; independent-verifier required.
+  Verifier `mux8kjh2-t-uh1w` found BLOCKER before tests: inherited shared
+  HttpTransferTransport::new builder lacks no_gzip while reqwest gzip is enabled;
+  automatic decompression can hide original Content-Length. Required disabled
+  decompression posture is not met. Verifier continuing approved read-only checks;
+  verifier completed BLOCK despite all authorized checks green (8/24/19/43
+  focused and 1,564 default / 1,582 all-features tests). Source-derived encoded
+  gzip/header counterexample; reader tests supplied already-decoded cursors.
+  Retry inspection found default protocol-NACK retries but http2/http3 absent in
+  tested build, so no observed POST resubmission claimed; explicit never-retry
+  policy required for feature-independent one-attempt semantics. No other blocker.
+  Parent approved bounded additive transfer.rs pull-specific constructor with all
+  automatic decompression disabled and retry::never; existing action constructors
+  unchanged. Deterministic loopback-only synthetic HTTP regression is permitted,
+  never external/Bungie/account requests. Not closed/committed or runtime-bound.
+  Corrective worker `mux8s5rf-w-koi2` COMPLETE: shared hardened builder plus
+  crate-private pull-only constructor disables gzip/brotli/zstd/deflate and
+  explicitly retry::never; existing transfer/equip/lock public policy unchanged.
+  Three real-client credential-free loopback regressions added. Observed RED:
+  old policy 9 pass/2 fail (gzip decoded and original length lost); GREEN 11.
+  Identity/unknown encoding/raw bytes checked; no protocol-NACK replay claimed.
+  Worker checks 11 pull/46 transfer/24 equip/19 lock, 1,567 default / 1,585
+  all-features offline tests plus fmt/clippy/diff/new-file whitespace pass.
+  Parent builder spot check agrees; re-ASSESS still unassessable due untracked
+  module. Required independent recheck `mux91aev-x-q0xl` returned PASS:
+  reviewed all 651 new adapter lines and complete lib/transfer diffs; source
+  hashes unchanged during checks. Production-config loopback confirms raw gzip
+  and original length preservation, cap refusal, identity and unknown encoding.
+  Exact allowlist-before-secrets, five-field body, typed bounded envelope,
+  one-shot dispatch, sanitized outcomes and old action policy remain intact.
+  Independent checks: 11 pull/46 transfer/24 equip/19 lock; 1,567 default /
+  1,585 all-features, fmt/clippy/diff/explicit untracked whitespace all pass.
+  Previous gzip BLOCK resolved. Retry::never is configuration evidence only,
+  not a protocol replay test. Technical PASS is not native RDD approval.
+  Local work-unit commit pending immediately after this verified closure.
+  No external-provider/TLS/live, runtime binding, capacity, global pacing or
+  recovery verification claimed. Read-only service scout `mux92juo-y-hf00`
+  continues mapping usable runtime bucket and policy-qualification surfaces.
 - GPM-005b scope scout `mux1d2co-f-c4dl`: only QueryService and CLI
   runner RecordingService implement QueryOperations. Add required object-safe
   postmaster method and true forwarding; no fallback stub or MCP changes needed.
