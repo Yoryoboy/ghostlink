@@ -27,8 +27,11 @@ CharacterOverlay redesign.
   on 2026-07-14 and 2026-09-22 (exactly 10 weeks apart). Re-check on
   2026-12-01; revert in one line if Grasp appears.
 - `--date YYYY-MM-DD` (ISO 8601). A date means the weekly period in effect at
-  the end of that UTC day, so a Tuesday yields the week starting that
-  Tuesday's reset. Output always shows the resolved window.
+  the end of that day in the system local time zone (CLI); MCP uses UTC.
+  In Argentina a Tuesday yields the week starting that Tuesday's reset; in
+  UTC+10 and later, local Tuesday ends before the reset, so Wednesday yields
+  the new week. Output always shows the resolved window, in local time for
+  humans and RFC 3339 UTC in JSON.
 - Dates before a rotation's coverage start return "no data" with the reason
   (for example, the Pantheon weekly began 2026-06-16).
 - `weekly-reset` requires login (user decision).
@@ -119,9 +122,32 @@ deliver as chained PRs.
   1,461 passed / 0 failed, clippy `-D warnings`, diff check, licenses.
   Commit evidence: see git log for
   `feat(adapters): load embedded weekly rotation calendar`.
-- [ ] **WRC-004 — App and CLI.** `weekly-reset --date`, calendar section in
+- [x] **WRC-004 — App and CLI.** `weekly-reset --date`, calendar section in
   human and JSON output, resolved window, live milestones only for the
   current week, require login.
+  Result: app service takes the injected `Calendar`, the evaluation instant
+  and now; the milestones gateway is called only when both fall in the same
+  week. CLI resolves the date at local 23:59:59 (chrono `clock` feature in
+  the CLI only; DST ambiguity/gaps resolved without panics), renders the
+  window in local time, and composes `embedded_calendar()` plus the existing
+  credential path (login required, same outcome as other authenticated
+  commands). JSON is additive: `current_week`, `calendar {source, start, end,
+  rotations[{key, title, status predicted|no_data, activities[{name, hash}],
+  coverage_start?, coverage_note?}]}`, `milestones_source`; non-current weeks
+  keep `milestones: []`. MCP composition root injects calendar and clock
+  (service.rs stays adapter-free; scope extension approved by the parent).
+  New activated crates: iana-time-zone and platform helpers, all MIT OR
+  Apache-2.0. Delegated writer, test-first: RED exit 101 for missing APIs and
+  timezone tests; GREEN pinned Argentina/Brisbane/UTC vectors, pre-coverage
+  notes, zero gateway calls for other weeks, login parity. Checks: fmt,
+  build `ghostlink` + `destiny-mcp`, workspace tests 1,470 passed / 0
+  failed, clippy `-D warnings`, diff check (all exit 0). Parent spot check
+  with the real binary and local DB: `--date 2026-10-13` -> VotD+LW,
+  Vesper+Prophecy, Argos+Morgeth, Warden; `--date 2026-06-15` -> all four
+  no data with notes; `06/10/2026` -> exit 2; `TZ=Australia/Brisbane`
+  2026-10-06 -> previous week, 2026-10-07 -> week of 2026-10-07 03:00 +10:00.
+  Commit evidence: see git log for
+  `feat(cli): predict weekly rotations for any date`.
 - [ ] **WRC-005 — MCP.** Optional `date` argument, schema, stdio tests,
   offline fixture.
 - [ ] **WRC-006 — Docs and skill.** CLI/MCP docs, README credit to

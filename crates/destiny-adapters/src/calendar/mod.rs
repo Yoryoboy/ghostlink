@@ -41,6 +41,55 @@ pub fn embedded_calendar() -> Result<Calendar, CalendarLoadError> {
     parse_calendar(include_str!("rotations.toml"))
 }
 
+/// UTC entry point for consumers that do not depend on chrono directly.
+pub fn instant_for_utc_date(value: &str) -> Result<Timestamp, CalendarLoadError> {
+    instant_for_date(value, &chrono::Utc)
+}
+
+/// Strict ISO calendar date, evaluated at the end of the day in `zone`.
+/// Pass `Utc` for UTC semantics. Ambiguous times select the later instant;
+/// gaps advance to the next valid local second (bounded to two days).
+/// Core timestamps cannot represent dates before the Unix epoch.
+pub fn instant_for_date<Tz: chrono::TimeZone>(
+    value: &str,
+    zone: &Tz,
+) -> Result<Timestamp, CalendarLoadError> {
+    let invalid = || CalendarLoadError::InvalidInstant {
+        field: "date".into(),
+    };
+    let bytes = value.as_bytes();
+    if bytes.len() != 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !bytes
+            .iter()
+            .enumerate()
+            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
+    {
+        return Err(invalid());
+    }
+    let date = chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").map_err(|_| invalid())?;
+    let mut local = date.and_hms_opt(23, 59, 59).ok_or_else(invalid)?;
+    for _ in 0..=2 * 24 * 60 * 60 {
+        let instant = match zone.from_local_datetime(&local) {
+            chrono::LocalResult::Single(instant) => Some(instant),
+            chrono::LocalResult::Ambiguous(a, b) => {
+                Some(if a.timestamp() > b.timestamp() { a } else { b })
+            }
+            chrono::LocalResult::None => None,
+        };
+        if let Some(instant) = instant {
+            return Ok(Timestamp::new(
+                u64::try_from(instant.timestamp()).map_err(|_| invalid())?,
+            ));
+        }
+        local = local
+            .checked_add_signed(chrono::Duration::seconds(1))
+            .ok_or_else(invalid)?;
+    }
+    Err(invalid())
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Document {
@@ -157,6 +206,119 @@ mod tests {
     use super::*;
     use destiny_core::{Timestamp, calendar::RotationOutcome};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn strict_calendar_date_uses_end_of_utc_day() {
+        assert_eq!(
+            instant_for_utc_date("2026-10-06").unwrap(),
+            instant("2026-10-06T23:59:59Z")
+        );
+        for invalid in [
+            "2026-13-01",
+            "2026-10-6",
+            "06/10/2026",
+            "",
+            "2026-02-29",
+            "2026-10-06T00:00:00Z",
+            " 2026-10-06",
+            "1969-12-31",
+        ] {
+            assert!(
+                instant_for_date(invalid, &chrono::Utc).is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn calendar_date_uses_the_requested_zone() {
+        let calendar = embedded_calendar().unwrap();
+        for (date, offset, instant_text, week_start) in [
+            (
+                "2026-10-06",
+                -3 * 3600,
+                "2026-10-07T02:59:59Z",
+                "2026-10-06T17:00:00Z",
+            ),
+            (
+                "2026-10-06",
+                10 * 3600,
+                "2026-10-06T13:59:59Z",
+                "2026-09-29T17:00:00Z",
+            ),
+            (
+                "2026-10-07",
+                10 * 3600,
+                "2026-10-07T13:59:59Z",
+                "2026-10-06T17:00:00Z",
+            ),
+            (
+                "2026-10-06",
+                0,
+                "2026-10-06T23:59:59Z",
+                "2026-10-06T17:00:00Z",
+            ),
+        ] {
+            let zone = chrono::FixedOffset::east_opt(offset).unwrap();
+            let timestamp = instant_for_date(date, &zone).unwrap();
+            assert_eq!(timestamp, instant(instant_text));
+            assert_eq!(
+                calendar.week_at(timestamp).unwrap().window.start,
+                instant(week_start)
+            );
+        }
+    }
+
+    #[derive(Clone)]
+    struct TransitionZone(u8);
+    impl chrono::TimeZone for TransitionZone {
+        type Offset = chrono::FixedOffset;
+        fn from_offset(_: &Self::Offset) -> Self {
+            Self(0)
+        }
+        fn offset_from_local_date(
+            &self,
+            date: &chrono::NaiveDate,
+        ) -> chrono::LocalResult<Self::Offset> {
+            self.offset_from_local_datetime(&date.and_hms_opt(12, 0, 0).unwrap())
+        }
+        fn offset_from_local_datetime(
+            &self,
+            local: &chrono::NaiveDateTime,
+        ) -> chrono::LocalResult<Self::Offset> {
+            let one = chrono::FixedOffset::east_opt(3600).unwrap();
+            match self.0 {
+                0 => chrono::LocalResult::Ambiguous(
+                    one,
+                    chrono::FixedOffset::east_opt(7200).unwrap(),
+                ),
+                1 if local.time() == chrono::NaiveTime::from_hms_opt(23, 59, 59).unwrap() => {
+                    chrono::LocalResult::None
+                }
+                2 => chrono::LocalResult::None,
+                _ => chrono::LocalResult::Single(one),
+            }
+        }
+        fn offset_from_utc_date(&self, _: &chrono::NaiveDate) -> Self::Offset {
+            chrono::FixedOffset::east_opt(3600).unwrap()
+        }
+        fn offset_from_utc_datetime(&self, _: &chrono::NaiveDateTime) -> Self::Offset {
+            chrono::FixedOffset::east_opt(3600).unwrap()
+        }
+    }
+
+    #[test]
+    fn calendar_date_resolves_ambiguities_gaps_and_unresolvable_zones() {
+        assert_eq!(
+            instant_for_date("2026-10-06", &TransitionZone(0)).unwrap(),
+            instant("2026-10-06T22:59:59Z")
+        );
+        assert_eq!(
+            instant_for_date("2026-10-06", &TransitionZone(1)).unwrap(),
+            instant("2026-10-06T23:00:00Z")
+        );
+        assert!(instant_for_date("2026-10-06", &TransitionZone(2)).is_err());
+    }
 
     const FIXTURE: &str = r#"
 reference_reset = "2026-09-22T17:00:00Z"

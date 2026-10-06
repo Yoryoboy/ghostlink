@@ -308,7 +308,7 @@ where
     )
 }
 
-/// Injectable routing for both credential-free public commands.
+/// Injectable routing for Manifest sync and authenticated weekly reset.
 pub fn run_binary_with_public<F, G, M, W, P, I, T>(
     read_factory: &mut F,
     login_factory: &mut G,
@@ -404,10 +404,16 @@ where
             Err(error) => ProcessOutput::failure(mode, error),
         };
     }
-    if let Command::WeeklyReset = &cli.command {
-        return with_definitions(manifest_factory, mode, || {
-            run_weekly_reset(weekly_factory, mode)
-        });
+    if let Command::WeeklyReset(arguments) = &cli.command {
+        let requested = arguments
+            .date
+            .as_deref()
+            .map(|date| destiny_adapters::calendar::instant_for_date(date, &chrono::Local))
+            .transpose();
+        return match requested {
+            Ok(requested) => run_weekly_reset(weekly_factory, mode, requested),
+            Err(_) => ProcessOutput::failure(mode, CliError::invalid_request()),
+        };
     }
     if let Command::Sync = &cli.command {
         return match build_with_definitions(read_factory, manifest_factory) {
@@ -536,17 +542,6 @@ fn ensure_definitions<M: crate::runtime::ManifestFactory>(factory: &mut M) -> Re
     Ok(())
 }
 
-fn with_definitions<M: crate::runtime::ManifestFactory>(
-    factory: &mut M,
-    mode: OutputMode,
-    operation: impl FnOnce() -> ProcessOutput,
-) -> ProcessOutput {
-    match ensure_definitions(factory) {
-        Ok(()) => operation(),
-        Err(error) => ProcessOutput::failure(mode, error),
-    }
-}
-
 /// Render one mutation outcome; typed refusals and partial progress are failures.
 /// Like existing CLI errors, their sole object is written to stderr.
 pub fn equip_process_output(
@@ -596,13 +591,18 @@ pub fn run_manifest<M: crate::runtime::ManifestFactory>(
     }
 }
 
-/// Runs a fresh public weekly read through its credential-free composition.
+/// Runs the authenticated weekly reset with an optional evaluation instant.
 pub fn run_weekly_reset<W: crate::runtime::WeeklyResetFactory>(
     factory: &mut W,
     mode: OutputMode,
+    requested: Option<Timestamp>,
 ) -> ProcessOutput {
-    match factory.weekly_reset() {
-        Ok(reset) => ProcessOutput::success(crate::output::render_weekly_reset(mode, &reset)),
+    match factory.weekly_reset(requested) {
+        Ok(reset) => ProcessOutput::success(crate::output::render_weekly_reset(
+            mode,
+            &reset,
+            &chrono::Local,
+        )),
         Err(error) => ProcessOutput::failure(mode, error),
     }
 }
@@ -1564,7 +1564,10 @@ mod tests {
             }
         }
         impl crate::runtime::WeeklyResetFactory for Public {
-            fn weekly_reset(&mut self) -> Result<destiny_app::weekly_reset::WeeklyReset, CliError> {
+            fn weekly_reset(
+                &mut self,
+                _: Option<Timestamp>,
+            ) -> Result<destiny_app::weekly_reset::WeeklyReset, CliError> {
                 panic!("no public read")
             }
         }
@@ -1681,10 +1684,14 @@ mod tests {
                 panic!("weekly read must not sync")
             }
         }
-        struct Weekly(usize);
+        struct Weekly(usize, Vec<Option<Timestamp>>);
         impl crate::runtime::WeeklyResetFactory for Weekly {
-            fn weekly_reset(&mut self) -> Result<destiny_app::weekly_reset::WeeklyReset, CliError> {
+            fn weekly_reset(
+                &mut self,
+                requested: Option<Timestamp>,
+            ) -> Result<destiny_app::weekly_reset::WeeklyReset, CliError> {
                 self.0 += 1;
+                self.1.push(requested);
                 Err(CliError::from_category(
                     ErrorCategory::DefinitionsUnavailable,
                 ))
@@ -1692,10 +1699,12 @@ mod tests {
         }
         let mut read = FakeFactory::new(RecordingService::new());
         let mut login = FakeLoginFactory::default();
-        let mut weekly = Weekly(0);
+        let mut weekly = Weekly(0, Vec::new());
         for arguments in [
             vec!["weekly-reset", "--unknown"],
             vec!["weekly-reset", "--help"],
+            vec!["weekly-reset", "--date", "2026-10-6"],
+            vec!["weekly-reset", "--date", "2026-13-01", "--json"],
         ] {
             super::run_binary_with_public(
                 &mut read,
@@ -1740,6 +1749,28 @@ mod tests {
             output.stderr,
             "{\"error\":{\"code\":\"definitions_unavailable\",\"message\":\"definitions not loaded; run ghostlink sync-manifest\"}}\n"
         );
+        let output = super::run_binary_with_public(
+            &mut read,
+            &mut login,
+            &mut Public,
+            &mut weekly,
+            &mut |_| panic!("weekly read must not present login"),
+            argv(["weekly-reset", "--date", "2026-10-06", "--json"]),
+        );
+        assert_eq!(output.exit_code, 33);
+        assert_eq!(weekly.0, 2);
+        assert_eq!(
+            weekly.1,
+            vec![
+                None,
+                Some(
+                    destiny_adapters::calendar::instant_for_date("2026-10-06", &chrono::Local)
+                        .unwrap()
+                )
+            ]
+        );
+        assert_eq!(read.build_count(), 0);
+        assert!(login.modes().is_empty());
     }
 
     #[test]

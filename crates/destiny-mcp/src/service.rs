@@ -307,6 +307,8 @@ pub struct WeeklyReadService<G, R, I> {
     weekly: destiny_app::weekly_reset::WeeklyResetService<G, R>,
     inventory: I,
     timestamp: fn(Timestamp) -> Option<String>,
+    calendar: destiny_app::calendar::Calendar,
+    clock: Box<dyn destiny_app::Clock + Send>,
 }
 
 impl<G, R, I> WeeklyReadService<G, R, I> {
@@ -314,11 +316,15 @@ impl<G, R, I> WeeklyReadService<G, R, I> {
         weekly: destiny_app::weekly_reset::WeeklyResetService<G, R>,
         inventory: I,
         timestamp: fn(Timestamp) -> Option<String>,
+        calendar: destiny_app::calendar::Calendar,
+        clock: impl destiny_app::Clock + Send + 'static,
     ) -> Self {
         Self {
             weekly,
             inventory,
             timestamp,
+            calendar,
+            clock: Box::new(clock),
         }
     }
 }
@@ -351,7 +357,11 @@ where
     }
 
     fn weekly_reset(&mut self) -> Result<crate::schema::WeeklyResetOutput, McpError> {
-        let reset = self.weekly.weekly_reset().map_err(McpError::from)?;
+        let now = self.clock.now().map_err(McpError::from)?;
+        let reset = self
+            .weekly
+            .weekly_reset(&self.calendar, now, now)
+            .map_err(McpError::from)?;
         Ok(weekly_reset_output(&reset, self.timestamp))
     }
 
@@ -2551,6 +2561,25 @@ mod tests {
             ),
             mcp_service(queries),
             |_| None,
+            destiny_app::calendar::Calendar::new(
+                Timestamp::new(10),
+                vec![
+                    destiny_app::calendar::Rotation::new(
+                        "raid",
+                        "Raids",
+                        0,
+                        Timestamp::new(10),
+                        "Verified",
+                        vec![vec![
+                            destiny_app::calendar::ActivityReference::new("alpha", "Alpha", 42)
+                                .unwrap(),
+                        ]],
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
+            destiny_app::test_support::FakeClock::fixed(Timestamp::new(10)),
         );
         let error = service.weekly_reset().unwrap_err();
         assert_eq!(error.code(), "definitions_unavailable");
@@ -2567,6 +2596,14 @@ mod tests {
     fn weekly_output_bounds_and_sanitizes_provider_text() {
         use destiny_app::weekly_reset::{DefinitionResolution, WeeklyMilestone, WeeklyReset};
         let reset = WeeklyReset {
+            current_week: true,
+            calendar: destiny_app::weekly_reset::WeeklyCalendar {
+                window: destiny_app::calendar::WeekWindow {
+                    start: Timestamp::new(10),
+                    end: Timestamp::new(20),
+                },
+                rotations: vec![],
+            },
             definition_version: DefinitionVersion::new("v1"),
             milestones: vec![WeeklyMilestone {
                 hash: 1,

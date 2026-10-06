@@ -178,6 +178,9 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         destiny_app::weekly_reset::WeeklyResetService::new(PublicGateway, weekly_repository()),
         read_service,
         |t| destiny_adapters::format_reset_timestamp(t, false),
+        destiny_adapters::calendar::embedded_calendar().expect("embedded fixture calendar"),
+        // The calendar needs a representable full week; NOW is near the Unix epoch.
+        FakeClock::fixed(Timestamp::new(1_791_306_000)),
     );
     let read_service = destiny_mcp::service::ArtifactReadService::new(
         FixtureArtifact,
