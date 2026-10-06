@@ -595,6 +595,45 @@ pub fn compose_equip(
     )
 }
 
+/// Compose profile and transfer gateways over one lock-backed credential session.
+pub fn compose_move(
+    arguments: &crate::command::MoveArgs,
+) -> Result<crate::move_output::MoveOutput, CliError> {
+    use destiny_adapters::transfer::{
+        BungieTransferGateway, HttpTransferTransport, TransferApiKey,
+    };
+    arguments.validate()?;
+    let mut foundations = ProductionFoundations;
+    let config = ReadFoundations::config(&mut foundations)?;
+    let source = foundations.credential_source(&config)?;
+    let clock = ReadFoundations::clock(&mut foundations)?;
+    let repository = ReadFoundations::store(&mut foundations, &config)?;
+    let gateway = BungieProfileGateway::new(
+        ReadFoundations::transport(&mut foundations)?,
+        clock,
+        source.clone(),
+        ProfileApiKey::new(config.api_key().expose_secret())?,
+        config.resolve_definition_version(&repository)?,
+    )?;
+    let mut transfer = BungieTransferGateway::new(
+        HttpTransferTransport::new()?,
+        SystemClock::new(),
+        source,
+        TransferApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let mut mutations = destiny_app::MutationService::new(
+        ProfileSyncService::new_with_definitions(gateway, repository),
+        crate::move_item::InvocationPlanId::new(),
+    );
+    crate::move_item::move_item(
+        arguments,
+        &mut mutations,
+        &mut transfer,
+        &SystemClock::new(),
+        config.freshness_policy(),
+    )
+}
+
 /// Composes the live artifact query with the real authenticated profile gateway.
 /// Freshness synchronization and definition gating remain application-owned.
 pub fn compose_artifact<F: ReadFoundations>(

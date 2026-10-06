@@ -60,6 +60,7 @@ when missing after login or on a CLI read.
 ghostlink list-characters
 ghostlink search-inventory --type "Hand Cannon" --element solar --sort Range
 ghostlink weekly --character hunter
+ghostlink move "Ace of Spades" --vault
 ghostlink equip "Ace of Spades" --character hunter
 ```
 
@@ -132,7 +133,10 @@ See the [MCP reference](docs/mcp.md) for tools and safety contracts.
 
 Agents with shell access can drive the CLI through the bundled
 [skill](skills/ghostlink/SKILL.md), which maps intents to commands and sets the
-safety rules for `equip`. Install the version-matched skill with:
+safety rules for `move` and `equip`. Both require explicit item and destination
+intent and never blindly retry uncertain outcomes. Move requires exactly one of
+`--character` or `--vault`; an item already at that destination during planning
+is refused (exit 40). See the [CLI reference](docs/cli.md#move-one-item). Install the version-matched skill with:
 
 ```sh
 ghostlink agents install --agent claude codex opencode pi --skill

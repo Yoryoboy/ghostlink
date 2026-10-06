@@ -366,6 +366,17 @@ where
             })
         });
     }
+    if let Command::Move(arguments) = &cli.command {
+        if let Err(error) = arguments.validate() {
+            return ProcessOutput::failure(mode, error);
+        }
+        // Never recompose a mutation after an error: dispatch uncertainty is
+        // authoritative. Definition acquisition remains an explicit sync.
+        return match crate::runtime::compose_move(arguments) {
+            Ok(output) => move_process_output(mode, &output),
+            Err(error) => ProcessOutput::failure(mode, error),
+        };
+    }
     if let Command::Equip(arguments) = &cli.command {
         if let Err(error) = arguments.validate() {
             return ProcessOutput::failure(mode, error);
@@ -552,6 +563,27 @@ fn with_definitions<M: crate::runtime::ManifestFactory>(
 pub fn equip_process_output(
     mode: OutputMode,
     output: &crate::equip_output::EquipOutput,
+) -> ProcessOutput {
+    let body = match mode {
+        OutputMode::Human => output.render_text(),
+        OutputMode::Json => output.json().to_string(),
+    };
+    let exit_code = output.exit_code();
+    if exit_code == SUCCESS_EXIT_CODE {
+        ProcessOutput::success(body)
+    } else {
+        ProcessOutput {
+            stdout: String::new(),
+            stderr: format!("{body}\n"),
+            exit_code,
+        }
+    }
+}
+
+/// Move successes go to stdout; refusals and partial progress go to stderr.
+pub fn move_process_output(
+    mode: OutputMode,
+    output: &crate::move_output::MoveOutput,
 ) -> ProcessOutput {
     let body = match mode {
         OutputMode::Human => output.render_text(),

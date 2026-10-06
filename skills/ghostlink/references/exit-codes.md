@@ -5,9 +5,8 @@ one object on stderr. (`ghostlink login` also prints an `authorizing`
 instruction object on stdout before waiting.) The failure object is either:
 
 - `{"error":{"code":"...","message":"..."}}` for every command, including
-  `equip` argument, configuration and authorization failures; or
-- an equip result with `status` and `reason`, once `equip` has validated its
-  arguments and is selecting the character and item.
+  `move` / `equip` argument, configuration and authorization failures; or
+- a move or equip result with `status` and `reason`, after argument validation.
 
 ## Error codes
 
@@ -20,15 +19,29 @@ instruction object on stdout before waiting.) The failure object is either:
 | 11 | `reauthorization_required` | Ask the user to run `ghostlink login` again. |
 | 20 | `provider_rate_limit` | Wait before any further call; do not loop. |
 | 21 | `provider_unavailable` | Bungie unreachable, or a login callback timed out; report and stop. |
-| 30 | `stale_state` | State changed underneath the operation. Run `ghostlink sync`, re-check, and ask before any new equip. |
+| 30 | `stale_state` | State changed underneath the operation. Run `ghostlink sync`, re-check, and ask before any new move or equip. |
 | 31 | `ambiguous_match` | Show candidates and ask the user which one. |
 | 32 | `item_not_found` | No such instance ID; search again with `ghostlink search-inventory`. |
-| 33 | `definitions_unavailable` | Run `ghostlink sync-manifest`, then repeat once. |
+| 33 | `definitions_unavailable` | Run `ghostlink sync-manifest`; repeat reads once. For mutations, re-check state and explicit intent before another invocation. |
 | 40 | `unsupported_operation` | Report; do not work around it. |
 | 41 | `partial_failure` | Report what completed; do not retry. |
 | 42 | `verification_failed` | Run `ghostlink sync`, inspect the item, report. |
 | 50–52 | `credential_store_unavailable` / `local_storage` / `configuration_error` | Local setup problem; report to the user. |
 | 70 | `internal_error` | Report and stop. |
+
+## Move `status`
+
+| `status` | Exit | Agent action |
+|---|---:|---|
+| `verified_success` | 0 | Freshly observed at the destination; report it. |
+| `verified_noop` | 0 | Reached the destination between planning and fresh preflight; no transfer dispatched. |
+| `refused` | varies | Report `reason` and steps; do not retry. Already in the destination when planning is exit **40** (`unsupported_operation`), not no-op success. Missing item is 32, missing character 2, ambiguity 31, changed preflight 30. |
+| `incomplete` | 41 | Report completed, rejected/uncertain and unrun steps; no rollback. Do not retry. |
+| `verification_failed` | 42 | Run `ghostlink sync`, inspect the item, report uncertainty. |
+| `applied_pending_provider_refresh` | 43 | Provider accepted every step but refreshed profile lags. Not verified; check later, never repeat blindly. |
+
+Move may be rejected by Bungie for an equipped item or full destination after
+dispatch. A character-to-character route uses the Vault and may stop there.
 
 ## Equip `status`
 

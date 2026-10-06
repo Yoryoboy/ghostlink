@@ -569,6 +569,48 @@ and rejected with `--json`):
   `odd/tasks/destiny-cli-read-journey.md`.
 
 
+## Move one item
+
+```sh
+ghostlink move "Ace of Spades" --character hunter
+ghostlink move 123456789 --vault --json
+```
+
+Exactly one destination is required: `--character <id|class>` or `--vault`;
+using both or neither exits 2. Exact instance and character IDs win over names
+and class labels. Otherwise the item selector and character class must each
+resolve uniquely; no defaults or guessed matches are used. Requires login and
+loaded Manifest definitions; if missing, run `ghostlink sync-manifest` explicitly.
+
+The CLI uses the same `plan_move` / `execute_move_verified` pipeline as MCP
+`move_item`. It transfers character-to-character via the Vault, without
+equipping, freeing space, or changing plugs. An item already at the destination
+when planning is **refused**: `already in <destination>`, exit **40**
+(`unsupported_operation`), not a verified no-op. If the item reaches the
+requested destination between planning and mandatory fresh preflight, the
+shared executor instead reports `verified_noop` (exit 0), with no transfer.
+Other changed preflight locations are refused before dispatch (exit 30).
+Equipped-item and capacity restrictions can be provider refusals after dispatch;
+the move planner does not apply equip's class/exotic policy.
+
+One invocation explicitly authorizes one item and destination. There are no
+retries or rollback. After any attempted step, the shared pipeline refreshes
+and verifies the destination. Never blindly retry an uncertain result: run
+`ghostlink sync`, inspect the item, and reassess the user's intent first.
+
+Move has its own transport-neutral text/JSON contract: `status`, `item`,
+`destination`, ordered `steps`, `steps_completed`, `steps_uncompleted`,
+`verification`, `reason`, `profile_refresh`, and `observed`. Completed counts
+are provider-confirmed steps, not inferred completions from verification;
+uncertain steps remain uncertain even if refreshed state verifies success.
+A failed refresh omits the observation rather than presenting stale state as fresh.
+Success/no-op goes to stdout (0); other results go to stderr. Incomplete execution
+exits 41, failed verification 42, and applied-but-pending-provider-refresh 43.
+For exit 43, do not retry; run `ghostlink sync` later to confirm. Missing item
+exits 32, missing character 2, ambiguity 31; other refusals follow the existing
+category exit mapping. Offline tests establish the pipeline, not live account
+success.
+
 ## Equip one item
 
 ```sh

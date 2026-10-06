@@ -19,14 +19,19 @@ its own branch in the same worktree.
   `execute_move_verified`); no MCP dependency. Destination is exactly one of
   `--character <id|class>` or `--vault`. Move gets its own transport-neutral
   output contract; equip output is not reused as the move schema.
+- CLI move matches MCP `move_item` semantics: an item already at the
+  destination is a `SameLocation` planner refusal, not a verified no-op
+  (unlike equip). `destiny-app` stays unchanged.
 - Lock is its own mutation seam (core port, exact-endpoint adapter, app
   service, thin CLI/MCP adapters). Verification compares the refreshed
   `instance.locked` to the requested state. Equip policy (class, exotic,
   equipped state) is not reused.
-- Bungie contract assumption to validate live: POST
-  `Destiny2/Actions/Items/SetLockState/` with
-  `{state, itemId, characterId, membershipType}`, OAuth scope
-  `MoveEquipDestinyItems`; for Vault items any owned character id is accepted.
+- Bungie contract (confirmed in official docs, operation
+  `Destiny2.SetItemLockState`): POST `/Destiny2/Actions/Items/SetLockState/`,
+  body `DestinyItemStateRequest {state, itemId, characterId, membershipType}`,
+  scope `MoveEquipDestinyItems` (already requested), throttle 0.1 s per user,
+  response `int32`. Still to validate live: Vault items accept any owned
+  character id.
 - Dropped from scope: "first-read freshness stale". Already fixed by GAM-004
   (`crates/destiny-app/src/queries.rs:910-917`, regression tests at
   `queries.rs:2600`); older follow-up notes are superseded.
@@ -44,7 +49,7 @@ its own branch in the same worktree.
 ## Tasks
 
 - [x] **IAC-001 — Establish worktree, branch and tracker.**
-- [ ] **IAC-002 — CLI `ghostlink move`.** Parsing (`--character` xor `--vault`),
+- [x] **IAC-002 — CLI `ghostlink move`.** Parsing (`--character` xor `--vault`),
   runner/runtime composition, thin orchestration, move output contract and exit
   codes, tests, docs and skill.
 - [ ] **IAC-003 — Lock seam in core and adapter.** Provider-neutral request,
@@ -61,3 +66,8 @@ its own branch in the same worktree.
 ## Evidence
 
 - IAC-001: worktree created at `c353045`.
+- IAC-002: `ghostlink move` via shared plan_move/execute_move_verified; already
+  at destination refuses with exit 40 (MCP parity). RED: missing MoveArgs/modules,
+  then missing "already in <destination>" text. GREEN: 9 move tests, 5 skill-drift,
+  10 equip; fmt, clippy -D warnings, workspace tests (default + all-features),
+  diff check passed. Live provider run pending (user).

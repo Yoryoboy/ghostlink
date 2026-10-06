@@ -1,10 +1,10 @@
 ---
 name: ghostlink
-description: "Trigger: Destiny 2, D2 inventory, vault, weapon perks, armor stats, builds, weekly reset, loadouts, subclass, equip item. Prefer Ghostlink MCP tools; use the ghostlink CLI safely when needed."
+description: "Trigger: Destiny 2, D2 inventory, vault, weapon perks, armor stats, builds, weekly reset, loadouts, subclass, move item, equip item. Prefer Ghostlink MCP tools; use the ghostlink CLI safely when needed."
 license: MIT OR Apache-2.0
 metadata:
   author: "Yoryoboy"
-  version: "1.2"
+  version: "1.3"
 ---
 
 ## Activation Contract
@@ -20,8 +20,9 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - For CLI operations, always add `--json`; never scrape human text. Exit 0 prints one JSON object on stdout; a non-zero exit prints one JSON object on stderr. Exceptions: `ghostlink login` first prints an `authorizing` instruction object, and `--help` is plain text.
 - Flags are not listed here. Before using a command for the first time in a session, run `ghostlink <cmd> --help`.
 - Never guess an item or character. Resolve ambiguity with a read command or ask the user.
-- `ghostlink equip` is the only CLI game mutation. Run it only when the user explicitly named both the item and the character for this action.
-- Never retry `equip` after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report.
+- `ghostlink move` and `ghostlink equip` are CLI game mutations. Run them only with explicit user intent for this item and destination. Move requires exactly one explicit character or Vault destination; equip requires a character. Never select defaults.
+- Never blindly retry `move` or `equip`, including after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report. Exit 43 means applied but pending provider refresh: check later, do not repeat the mutation.
+- Move already at its destination during planning is refused (exit 40), not a verified no-op. Report it without working around the refusal.
 - Never try to free inventory space, unequip elsewhere, or change plugs; the CLI refuses these by design.
 - Run `ghostlink login` only when the user asks or after exit 10/11; it needs a human to authorize in a browser and waits for the callback.
 - `ghostlink handler install` and `ghostlink handler uninstall` change the user's desktop configuration; run them only when the user asks. `ghostlink handler status` is read-only.
@@ -43,6 +44,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Weekly progress for one character | `ghostlink weekly` |
 | Data looks outdated or after an in-game change | `ghostlink sync` |
 | Item names or descriptions missing, or definitions outdated | `ghostlink sync-manifest` |
+| Move one owned item to a character or Vault | `ghostlink move` |
 | Equip an item on a character | `ghostlink equip` |
 | Authorize this machine | `ghostlink login` |
 | Browser callback never reaches login (Linux) | `ghostlink handler status` |
@@ -60,13 +62,13 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 1. Pick the command from the table; check its `--help` if not yet seen.
 2. Run it with `--json`. Reads refresh a stale profile automatically; use `ghostlink sync` only to force freshness.
 3. On exit 0, answer from the JSON. Mention `metadata.checked_at` when freshness matters.
-4. On non-zero exit, parse stderr. An object with `status` is an equip result: read `status` and `reason`. Otherwise read `error.code`. Then follow `references/exit-codes.md`.
-5. For equip, quote the resolved item and character back to the user before running if either was inferred from earlier conversation.
+4. On non-zero exit, parse stderr. An object with `status` is a move or equip result: read `status` and `reason`. Otherwise read `error.code`. Then follow `references/exit-codes.md`.
+5. For move or equip, quote the resolved item and destination back to the user before running if either was inferred from earlier conversation; obtain explicit intent before acting.
 
 ## Output Contract
 
 - State facts only from command output; say when a result is empty instead of inventing items.
-- For equip, report `status`, each step, and `reason`. Exit 43 is applied but not yet visible: tell the user to check again later; it is not verified success.
+- For move or equip, report `status`, each step, and `reason`; never claim rollback after partial progress. Move verifies location, equip verifies location and equipped state. Exit 43 is applied but not yet visible: tell the user to check again later; it is not verified success.
 - Never echo tokens, membership IDs, or raw provider errors.
 
 ## References

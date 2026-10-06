@@ -37,8 +37,8 @@ pub const SUCCESS_EXIT_CODE: i32 = 0;
     override_usage = "ghostlink [OPTIONS] <COMMAND>",
     name = "ghostlink",
     version,
-    about = "Destiny profile, inventory, verified item equip, and safe interactive login",
-    long_about = "Read Destiny profile, inventory, and item data, equip one item with explicit character intent and verification, or authorize this machine against the provider."
+    about = "Destiny profile, inventory, verified item move/equip, and safe interactive login",
+    long_about = "Read Destiny profile, inventory, and item data, move or equip one item with explicit destination intent and verification, or authorize this machine against the provider."
 )]
 struct ParsedCli {
     /// Emit exactly one bounded JSON object instead of human text.
@@ -144,6 +144,7 @@ impl Cli {
             // handler is not a read either, so both report the stable
             // unsupported-operation outcome instead of guessing at a read.
             Command::Equip(_)
+            | Command::Move(_)
             | Command::Sync
             | Command::SyncManifest
             | Command::WeeklyReset
@@ -203,6 +204,9 @@ pub enum Command {
     /// Equip one item, transferring first when needed, then refresh and verify.
     #[command(name = "equip")]
     Equip(EquipArgs),
+    /// Move one item to an explicit character or Vault, then refresh and verify.
+    #[command(name = "move")]
+    Move(MoveArgs),
 
     /// Force profile acquisition and publish the local inventory projection.
     #[command(name = "sync")]
@@ -695,6 +699,43 @@ impl EquipArgs {
         validate_identity(&self.item, "ITEM")?;
         destiny_app::ItemSelector::semantic(&self.item).map_err(CliError::from)?;
         validate_identity(&self.character, "--character")?;
+        Ok(())
+    }
+}
+
+/// One invocation explicitly authorizes moving exactly one owned item.
+#[derive(Debug, Args)]
+pub struct MoveArgs {
+    /// Concrete instance id or item name; ambiguous names require an instance id.
+    #[arg(value_name = "ITEM")]
+    pub item: String,
+    /// Exact character id or unique class (case-insensitive).
+    #[arg(
+        long,
+        value_name = "CHARACTER",
+        required_unless_present = "vault",
+        conflicts_with = "vault"
+    )]
+    pub character: Option<String>,
+    /// Move to the Vault instead of a character.
+    #[arg(
+        long,
+        required_unless_present = "character",
+        conflicts_with = "character"
+    )]
+    pub vault: bool,
+}
+impl MoveArgs {
+    /// Validate before configuration, credentials, clock, or network access.
+    pub fn validate(&self) -> Result<(), CliError> {
+        validate_identity(&self.item, "ITEM")?;
+        destiny_app::ItemSelector::semantic(&self.item).map_err(CliError::from)?;
+        if self.vault == self.character.is_some() {
+            return Err(CliError::invalid_request());
+        }
+        if let Some(character) = &self.character {
+            validate_identity(character, "--character")?;
+        }
         Ok(())
     }
 }
