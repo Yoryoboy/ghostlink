@@ -1,10 +1,10 @@
 ---
 name: ghostlink
-description: "Trigger: Destiny 2, D2 inventory, vault, weapon perks, armor stats, builds, weekly reset, loadouts, subclass, move item, equip item. Prefer Ghostlink MCP tools; use the ghostlink CLI safely when needed."
+description: "Trigger: Destiny 2, D2 inventory, vault, weapon perks, armor stats, builds, weekly reset, loadouts, subclass, move item, equip item, lock item, unlock item. Prefer Ghostlink MCP tools; use the ghostlink CLI safely when needed."
 license: MIT OR Apache-2.0
 metadata:
   author: "Yoryoboy"
-  version: "1.3"
+  version: "1.4"
 ---
 
 ## Activation Contract
@@ -21,7 +21,8 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - Flags are not listed here. Before using a command for the first time in a session, run `ghostlink <cmd> --help`.
 - Never guess an item or character. Resolve ambiguity with a read command or ask the user.
 - `ghostlink move` and `ghostlink equip` are CLI game mutations. Run them only with explicit user intent for this item and destination. Move requires exactly one explicit character or Vault destination; equip requires a character. Never select defaults.
-- Never blindly retry `move` or `equip`, including after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report. Exit 43 means applied but pending provider refresh: check later, do not repeat the mutation.
+- `ghostlink lock` and `ghostlink unlock` require explicit user intent for this item and requested state; MCP `set_lock_state` requires the same intent. Already satisfied is a verified no-op. Vault items use one owned character for the provider call, not a destination selection.
+- Never blindly retry `move`, `equip`, `lock` or `unlock`, including after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report. Exit 43 means applied but pending provider refresh: check later, do not repeat the mutation.
 - Move already at its destination during planning is refused (exit 40), not a verified no-op. Report it without working around the refusal.
 - Never try to free inventory space, unequip elsewhere, or change plugs; the CLI refuses these by design.
 - Run `ghostlink login` only when the user asks or after exit 10/11; it needs a human to authorize in a browser and waits for the callback.
@@ -46,6 +47,8 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Item names or descriptions missing, or definitions outdated | `ghostlink sync-manifest` |
 | Move one owned item to a character or Vault | `ghostlink move` |
 | Equip an item on a character | `ghostlink equip` |
+| Protect one owned item from dismantling | `ghostlink lock` |
+| Remove one owned item's lock | `ghostlink unlock` |
 | Authorize this machine | `ghostlink login` |
 | Browser callback never reaches login (Linux) | `ghostlink handler status` |
 
@@ -62,13 +65,14 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 1. Pick the command from the table; check its `--help` if not yet seen.
 2. Run it with `--json`. Reads refresh a stale profile automatically; use `ghostlink sync` only to force freshness.
 3. On exit 0, answer from the JSON. Mention `metadata.checked_at` when freshness matters.
-4. On non-zero exit, parse stderr. An object with `status` is a move or equip result: read `status` and `reason`. Otherwise read `error.code`. Then follow `references/exit-codes.md`.
-5. For move or equip, quote the resolved item and destination back to the user before running if either was inferred from earlier conversation; obtain explicit intent before acting.
+4. On non-zero exit, parse stderr. An object with `status` is a move, equip, lock or unlock result: read `status` and `reason`. Otherwise read `error.code`. Then follow `references/exit-codes.md`.
+5. For mutations, quote the resolved item and destination (move/equip) or requested lock state (lock/unlock) back to the user if inferred from earlier conversation; obtain explicit intent before acting.
 
 ## Output Contract
 
 - State facts only from command output; say when a result is empty instead of inventing items.
 - For move or equip, report `status`, each step, and `reason`; never claim rollback after partial progress. Move verifies location, equip verifies location and equipped state. Exit 43 is applied but not yet visible: tell the user to check again later; it is not verified success.
+- For lock/unlock, report `status`, requested `locked`, `attempt`, `observed` and `reason`. Only verified success/no-op proves the lock state. Exit 41/42/43 is not verified success; never blindly retry.
 - Never echo tokens, membership IDs, or raw provider errors.
 
 ## References

@@ -723,6 +723,12 @@ pub struct MoveItemRequest {
 /// bounded MCP projections defined in [`crate::schema`]; a failure is a stable
 /// sanitized [`McpError`].
 pub trait MutationToolService {
+    fn set_lock_state(
+        &mut self,
+        _request: &crate::schema::SetLockStateArgs,
+    ) -> Result<destiny_output::lock::LockOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
     fn equip_item(
         &mut self,
         _request: &crate::schema::EquipItemArgs,
@@ -876,6 +882,107 @@ pub struct EquipMutationService<G, R, P, C, T, E> {
     inner: ComposedMutationService<G, R, P, C, T>,
     equip: E,
 }
+impl<G, R, P, C, T, E> EquipMutationService<G, R, P, C, T, E> {
+    /// All three mutations share one planner, repository and server operation guard.
+    pub fn with_lock<L>(self, lock: L) -> LockMutationService<G, R, P, C, T, E, L> {
+        LockMutationService { inner: self, lock }
+    }
+}
+
+/// Lock composition over the same service and publication boundary as equip.
+pub struct LockMutationService<G, R, P, C, T, E, L> {
+    inner: EquipMutationService<G, R, P, C, T, E>,
+    lock: L,
+}
+impl<G, R, P, C, T, E, L> MutationToolService for LockMutationService<G, R, P, C, T, E, L>
+where
+    G: ProfileGateway,
+    R: InventoryRepository + SearchRepository + DefinitionRepository,
+    P: PlanIdGenerator,
+    C: Clock,
+    T: TransferGateway,
+    E: destiny_app::EquipGateway,
+    L: destiny_app::LockGateway,
+{
+    fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+        self.inner.move_item(request)
+    }
+    fn equip_item(
+        &mut self,
+        args: &crate::schema::EquipItemArgs,
+    ) -> Result<destiny_output::equip::EquipOutput, McpError> {
+        self.inner.equip_item(args)
+    }
+    fn set_lock_state(
+        &mut self,
+        args: &crate::schema::SetLockStateArgs,
+    ) -> Result<destiny_output::lock::LockOutput, McpError> {
+        use destiny_output::lock::{LockItem, LockOutput};
+        args.validate()?;
+        let service = &mut self.inner.inner;
+        let now = service.clock.now().map_err(McpError::from)?;
+        let membership = service.committed_membership(now)?;
+        let mutations = &mut service.mutations;
+        let item = match mutations
+            .repository()
+            .lookup_instance(&ItemInstanceId::new(&args.item))
+            .map_err(McpError::from)?
+        {
+            Resolution::Unique(_) | Resolution::Ambiguous(_) => {
+                ItemSelector::instance(ItemInstanceId::new(&args.item))
+            }
+            Resolution::Missing if args.item.bytes().all(|b| b.is_ascii_digit()) => {
+                ItemSelector::instance(ItemInstanceId::new(&args.item))
+            }
+            Resolution::Missing => ItemSelector::semantic(&args.item).map_err(McpError::from)?,
+        };
+        let request = destiny_app::LockRequest {
+            membership,
+            item,
+            locked: args.locked,
+            intent: MoveIntentAuthorization::Explicit,
+        };
+        let plan = match mutations.plan_lock(&request, service.lifetime, service.policy, now) {
+            Ok(plan) => plan,
+            Err(error) => return Ok(LockOutput::refused(error, args.locked)),
+        };
+        let item_view = match mutations
+            .repository()
+            .lookup_instance(plan.item())
+            .map_err(McpError::from)?
+        {
+            Resolution::Unique(instance) => match mutations
+                .repository()
+                .lookup_definition(instance.item_hash)
+                .map_err(McpError::from)?
+            {
+                Resolution::Unique(definition) => Some(LockItem {
+                    name: definition.name,
+                    instance_id: instance.instance_id.as_str().into(),
+                }),
+                _ => None,
+            },
+            _ => None,
+        };
+        let post = service.clock.now().map_err(McpError::from)?;
+        let mut output = match mutations.execute_lock_verified(
+            &mut self.lock,
+            &request,
+            &plan,
+            service.policy,
+            now,
+            post,
+        ) {
+            Ok(outcome) => LockOutput::from_outcome(&outcome, args.locked),
+            Err(failure) => {
+                LockOutput::refused(failure.error(), args.locked).with_evidence(failure.evidence())
+            }
+        };
+        output.item = item_view;
+        Ok(output)
+    }
+}
+
 impl<G, R, P, C, T, E> MutationToolService for EquipMutationService<G, R, P, C, T, E>
 where
     G: ProfileGateway,

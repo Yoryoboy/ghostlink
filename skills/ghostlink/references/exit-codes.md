@@ -5,8 +5,8 @@ one object on stderr. (`ghostlink login` also prints an `authorizing`
 instruction object on stdout before waiting.) The failure object is either:
 
 - `{"error":{"code":"...","message":"..."}}` for every command, including
-  `move` / `equip` argument, configuration and authorization failures; or
-- a move or equip result with `status` and `reason`, after argument validation.
+  `move` / `equip` / `lock` / `unlock` argument, configuration and authorization failures; or
+- a mutation result with `status` and `reason`, after argument validation.
 
 ## Error codes
 
@@ -19,7 +19,7 @@ instruction object on stdout before waiting.) The failure object is either:
 | 11 | `reauthorization_required` | Ask the user to run `ghostlink login` again. |
 | 20 | `provider_rate_limit` | Wait before any further call; do not loop. |
 | 21 | `provider_unavailable` | Bungie unreachable, or a login callback timed out; report and stop. |
-| 30 | `stale_state` | State changed underneath the operation. Run `ghostlink sync`, re-check, and ask before any new move or equip. |
+| 30 | `stale_state` | State changed underneath the operation. Run `ghostlink sync`, re-check, and ask before any new mutation. |
 | 31 | `ambiguous_match` | Show candidates and ask the user which one. |
 | 32 | `item_not_found` | No such instance ID; search again with `ghostlink search-inventory`. |
 | 33 | `definitions_unavailable` | Run `ghostlink sync-manifest`; repeat reads once. For mutations, re-check state and explicit intent before another invocation. |
@@ -55,3 +55,16 @@ dispatch. A character-to-character route uses the Vault and may stop there.
 
 Equip requires the character to be in orbit, a social space, or offline;
 Bungie may refuse after a transfer already happened.
+
+## Lock/unlock `status`
+
+| `status` | Exit | Agent action |
+|---|---:|---|
+| `verified_success` / `verified_noop` | 0 | Requested lock state verified; no-op did not dispatch. |
+| `refused` | varies | Report `reason`; missing item 32, ambiguity 31, stale state 30, otherwise category exit. No dispatch; do not work around refusal. |
+| `incomplete` | 41 | Report bounded `attempt` and `observed`; never blindly retry. |
+| `verification_failed` | 42 | Outcome unverified; sync and inspect, then report. |
+| `applied_pending_provider_refresh` | 43 | Provider accepted the action but observed state is stale/unconfirmed; check later, do not repeat. |
+
+Vault items use one owned character for the provider call. Lock/unlock do not
+apply equip class, exotic, or equipped-state policy.

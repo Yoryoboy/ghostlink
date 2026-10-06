@@ -1,6 +1,6 @@
 # Ghostlink MCP server (`destiny-mcp`)
 
-`destiny-mcp` serves bounded read tools plus two default-enabled semantic
+`destiny-mcp` serves bounded read tools plus three default-enabled semantic
 mutations over the Model Context Protocol stdio transport:
 
 ```text
@@ -15,6 +15,7 @@ weekly_reset      show the current public weekly rotation (same data as the CLI)
 weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
 equip_item        transfer if necessary, equip on an explicit character, and verify
+set_lock_state    lock or unlock one explicitly selected owned item and verify
 ```
 
 Mutation is composed by default in the product binary: its profile gateway and
@@ -35,7 +36,25 @@ with no separate token or approval ceremony. It uses the same shared equip
 pipeline and JSON as `ghostlink equip`; see the [equip safety limits](cli.md#equip-one-item).
 Both `equip_item` and `move_item` can return
 `applied_pending_provider_refresh` with `isError=true`, never verified success.
-`move_item` remains MCP-only: there is no CLI move command.
+`move_item` also has the `ghostlink move` CLI surface.
+
+`set_lock_state` accepts exactly `{"item":"Ace of Spades","locked":true}`;
+use `false` to unlock. Both fields are required, `locked` must be a boolean, and
+unknown fields, controls, and overlong selectors are rejected before I/O.
+Item resolution matches move/equip; ambiguous names require an instance ID.
+One call is explicit intent for shared fresh preflight, at most one dispatch,
+mandatory post-action refresh, and verification of `instance.locked`. Already
+satisfied is a verified no-op, with no provider mutation. Vault items use one
+owned character for the provider call; live validation remains pending.
+
+Lock JSON matches `ghostlink lock` / `ghostlink unlock`: `status`, `item`,
+requested `locked`, sanitized `attempt` and `reason`, `profile_refresh`, and
+`observed` lock state. Only verified success/no-op have `isError=false`.
+Refusal, incomplete, verification-failed and applied-pending-refresh results
+have `isError=true`. No stale observation is presented as fresh after a failed
+refresh. Never blindly retry uncertain outcomes or applied-pending-refresh;
+sync later to confirm. See [Lock or unlock one item](cli.md#lock-or-unlock-one-item).
+All publishing reads and mutations share the same server operation guard.
 
 Install both binaries from a release and run `ghostlink` for setup (or
 `ghostlink login` for sign-in only). Register `destiny-mcp` in your agent using

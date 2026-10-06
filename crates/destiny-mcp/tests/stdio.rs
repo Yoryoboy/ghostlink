@@ -56,6 +56,80 @@ const MOVE_ITEM_TOOL: &str = "move_item";
 mod equip_support;
 
 #[tokio::test]
+async fn lock_stdio_success_noop_refusal_and_unverified_outcomes() {
+    for (scenario, item, locked, status) in [
+        ("success", "inst-a", true, "verified_success"),
+        ("success", "inst-a", false, "verified_noop"),
+        ("success", "missing", true, "refused"),
+        ("lock-refused", "inst-a", true, "incomplete"),
+        (
+            "lock-provider-stale",
+            "inst-a",
+            true,
+            "applied_pending_provider_refresh",
+        ),
+        ("lock-uncertain", "inst-a", true, "verified_success"),
+        ("lock-uncertain-no-effect", "inst-a", true, "incomplete"),
+        (
+            "lock-refresh-failure",
+            "inst-a",
+            true,
+            "verification_failed",
+        ),
+    ] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let response = session
+            .call_tool("set_lock_state", json!({"item":item,"locked":locked}))
+            .await;
+        let output = &response["result"]["structuredContent"];
+        assert_eq!(output["status"], status, "{scenario}: {response}");
+        assert_eq!(output["locked"], locked);
+        assert_eq!(
+            response["result"]["isError"],
+            !matches!(status, "verified_success" | "verified_noop")
+        );
+        if status == "verified_success" {
+            let repeated = session
+                .call_tool("set_lock_state", json!({"item":item,"locked":locked}))
+                .await;
+            assert_eq!(
+                repeated["result"]["structuredContent"]["status"],
+                "verified_noop"
+            );
+            let unlock = session
+                .call_tool("set_lock_state", json!({"item":item,"locked":false}))
+                .await;
+            assert_eq!(
+                unlock["result"]["structuredContent"]["status"],
+                "verified_success"
+            );
+        }
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn lock_stdio_rejects_invalid_schema_without_dispatch() {
+    let mut session = FixtureSession::spawn(Some("success")).await;
+    for invalid in [
+        json!({"item":"inst-a"}),
+        json!({"item":"inst-a","locked":"true"}),
+        json!({"item":"inst-a","locked":true,"character":"warlock"}),
+    ] {
+        let response = session.call_tool("set_lock_state", invalid).await;
+        assert!(response.get("error").is_some());
+    }
+    let response = session
+        .call_tool("set_lock_state", json!({"item":"inst-a","locked":false}))
+        .await;
+    assert_eq!(
+        response["result"]["structuredContent"]["status"],
+        "verified_noop"
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn equip_stdio_json_matches_cli_for_all_outcomes() {
     for (scenario, item) in [
         ("equip-success", "123"),
@@ -514,7 +588,8 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             "weekly",
             "get_subclass_options",
             MOVE_ITEM_TOOL,
-            "equip_item"
+            "equip_item",
+            "set_lock_state"
         ],
         "the product-equivalent server discovers all reads plus move_item and equip_item"
     );

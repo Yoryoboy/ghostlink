@@ -37,8 +37,8 @@ pub const SUCCESS_EXIT_CODE: i32 = 0;
     override_usage = "ghostlink [OPTIONS] <COMMAND>",
     name = "ghostlink",
     version,
-    about = "Destiny profile, inventory, verified item move/equip, and safe interactive login",
-    long_about = "Read Destiny profile, inventory, and item data, move or equip one item with explicit destination intent and verification, or authorize this machine against the provider."
+    about = "Destiny profile, inventory, verified item move/equip/lock, and safe interactive login",
+    long_about = "Read Destiny profile, inventory, and item data, move or equip one item with explicit destination intent and verification, lock or unlock one explicitly selected item, or authorize this machine against the provider."
 )]
 struct ParsedCli {
     /// Emit exactly one bounded JSON object instead of human text.
@@ -145,6 +145,8 @@ impl Cli {
             // unsupported-operation outcome instead of guessing at a read.
             Command::Equip(_)
             | Command::Move(_)
+            | Command::Lock(_)
+            | Command::Unlock(_)
             | Command::Sync
             | Command::SyncManifest
             | Command::WeeklyReset
@@ -207,6 +209,10 @@ pub enum Command {
     /// Move one item to an explicit character or Vault, then refresh and verify.
     #[command(name = "move")]
     Move(MoveArgs),
+    /// Lock one explicitly selected owned item, then refresh and verify.
+    Lock(LockArgs),
+    /// Unlock one explicitly selected owned item, then refresh and verify.
+    Unlock(LockArgs),
 
     /// Force profile acquisition and publish the local inventory projection.
     #[command(name = "sync")]
@@ -736,6 +742,22 @@ impl MoveArgs {
         if let Some(character) = &self.character {
             validate_identity(character, "--character")?;
         }
+        Ok(())
+    }
+}
+
+/// One invocation explicitly authorizes setting one owned item's lock state.
+#[derive(Debug, Args)]
+pub struct LockArgs {
+    /// Concrete instance id or item name; ambiguous names require an instance id.
+    #[arg(value_name = "ITEM")]
+    pub item: String,
+}
+impl LockArgs {
+    /// Validate before configuration, credentials, clock, or provider access.
+    pub fn validate(&self) -> Result<(), CliError> {
+        validate_identity(&self.item, "ITEM")?;
+        destiny_app::ItemSelector::semantic(&self.item).map_err(CliError::from)?;
         Ok(())
     }
 }

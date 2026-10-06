@@ -3,7 +3,7 @@
 Ghostlink connects AI assistants to your Destiny 2 account. It reads your real
 characters, inventory, builds and weekly activities through the official Bungie
 API, and can act on them safely: move items between the Vault and characters,
-and equip gear with verification.
+equip gear, and lock or unlock items with verification.
 
 Instead of digging through Vaults, filters and perk lists, you ask:
 
@@ -62,6 +62,8 @@ ghostlink search-inventory --type "Hand Cannon" --element solar --sort Range
 ghostlink weekly --character hunter
 ghostlink move "Ace of Spades" --vault
 ghostlink equip "Ace of Spades" --character hunter
+ghostlink lock "Ace of Spades" --json
+ghostlink unlock "Ace of Spades" --json
 ```
 
 Add `--json` for machine-readable output. Search by perks, mods, armor stats and
@@ -136,7 +138,9 @@ Agents with shell access can drive the CLI through the bundled
 safety rules for `move` and `equip`. Both require explicit item and destination
 intent and never blindly retry uncertain outcomes. Move requires exactly one of
 `--character` or `--vault`; an item already at that destination during planning
-is refused (exit 40). See the [CLI reference](docs/cli.md#move-one-item). Install the version-matched skill with:
+is refused (exit 40). Lock/unlock require explicit item and requested-state intent;
+Vault items use one owned character for the provider call. Never blindly retry.
+See the [CLI reference](docs/cli.md#lock-or-unlock-one-item). Install the version-matched skill with:
 
 ```sh
 ghostlink agents install --agent claude codex opencode pi --skill

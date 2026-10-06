@@ -58,7 +58,7 @@ its own branch in the same worktree.
 - [x] **IAC-004 — Lock app service.** Plan with fresh preflight (owned
   instance, lockable, verified no-op when already in the requested state),
   execute, post-action refresh and verification; fakes and tests.
-- [ ] **IAC-005 — Expose lock in CLI and MCP.** `ghostlink lock` /
+- [x] **IAC-005 — Expose lock in CLI and MCP.** `ghostlink lock` /
   `ghostlink unlock`, MCP `set_lock_state` tool, offline fixture, docs, skill.
 - [ ] **IAC-006 — Close.** Full checks, tracker evidence, live validation
   notes for the user.
@@ -82,3 +82,9 @@ its own branch in the same worktree.
   character in committed order (live validation pending); lock endpoint Debug
   label fixed. RED: missing module/fake/methods; GREEN: 376 destiny-app tests,
   workspace default + all-features, fmt, clippy -D warnings, diff check passed.
+- IAC-005: `ghostlink lock|unlock <ITEM> [--json]` (exits 0/41/42/43/32 like
+  equip/move) and MCP `set_lock_state {item, locked}` reusing the shared service
+  under the existing operation guard; offline fixture fake lock gateway; docs,
+  README, skill and exit codes updated. RED: missing CLI variants/output/MCP
+  schema; GREEN: workspace default + all-features (17 stdio tests), fmt, clippy
+  -D warnings, diff check passed.

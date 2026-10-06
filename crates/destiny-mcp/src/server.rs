@@ -60,7 +60,7 @@ const READ_ONLY_INSTRUCTIONS: &str =
 /// The text must not claim the server is read-only: composing the seam adds the
 /// single intent-authorized `move_item` mutation, so the advertised capability
 /// has to match the discovery set.
-const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item` and `equip_item` mutations.";
+const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item`, `equip_item`, and `set_lock_state` mutations.";
 
 /// The tools-only RMCP server over one shared read service and an optional
 /// mutation seam.
@@ -120,6 +120,7 @@ impl ReadToolServer {
         if self.mutation.is_some() {
             tools.push(move_item_tool());
             tools.push(crate::schema::equip_item_tool());
+            tools.push(crate::schema::set_lock_state_tool());
         }
         ListToolsResult {
             tools,
@@ -147,7 +148,10 @@ impl ReadToolServer {
 
     /// The mutation seam to use for one tool name, if it is composed.
     fn mutation_for(&self, name: &str) -> Option<&SharedMutationService> {
-        if name == MOVE_ITEM_TOOL || name == crate::schema::EQUIP_ITEM_TOOL {
+        if name == MOVE_ITEM_TOOL
+            || name == crate::schema::EQUIP_ITEM_TOOL
+            || name == crate::schema::SET_LOCK_STATE_TOOL
+        {
             self.mutation.as_ref()
         } else {
             None
@@ -366,6 +370,25 @@ fn dispatch_mutation_locked(
     name: &str,
     arguments: JsonObject,
 ) -> Result<CallToolResult, ErrorData> {
+    if name == crate::schema::SET_LOCK_STATE_TOOL {
+        let args: crate::schema::SetLockStateArgs = deserialize(arguments)?;
+        if let Err(error) = args.validate() {
+            return Ok(error.into_call_tool_result());
+        }
+        let mut guard = mutation.lock().map_err(|_| internal_error())?;
+        return Ok(guard
+            .set_lock_state(&args)
+            .map_or_else(tool_error, |output| {
+                let is_error = !matches!(
+                    output.status,
+                    destiny_output::lock::LockStatus::VerifiedSuccess
+                        | destiny_output::lock::LockStatus::VerifiedNoop
+                );
+                let mut result = CallToolResult::structured(output.json());
+                result.is_error = Some(is_error);
+                result
+            }));
+    }
     if name == crate::schema::EQUIP_ITEM_TOOL {
         let args: crate::schema::EquipItemArgs = deserialize(arguments)?;
         if let Err(error) = args.validate() {
@@ -1232,7 +1255,8 @@ mod tests {
                 "weekly",
                 "get_subclass_options",
                 MOVE_ITEM_TOOL,
-                crate::schema::EQUIP_ITEM_TOOL
+                crate::schema::EQUIP_ITEM_TOOL,
+                crate::schema::SET_LOCK_STATE_TOOL
             ]
         );
         let tool = server

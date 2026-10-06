@@ -611,6 +611,32 @@ exits 32, missing character 2, ambiguity 31; other refusals follow the existing
 category exit mapping. Offline tests establish the pipeline, not live account
 success.
 
+## Lock or unlock one item
+
+```sh
+ghostlink lock "Ace of Spades" --json
+ghostlink unlock 700000000000000001 --json
+```
+
+Each invocation explicitly authorizes the requested lock state of one owned
+instance. Item selectors follow move/equip: concrete IDs win, numeric misses
+remain exact IDs, and semantic names refuse ambiguity. No character or destination
+flag is accepted. Vault items use one owned character for the provider call
+(the first in committed projection order); live Vault routing validation remains
+pending. Locking does not apply equip class, exotic, or equipped-state policy.
+
+The shared service forces fresh preflight, returns a verified no-op when already
+satisfied, otherwise dispatches once, refreshes, and verifies `instance.locked`.
+Never blindly retry. Applied-pending-refresh means check later with `ghostlink sync`
+and `ghostlink inspect-item`, not repeat the action.
+
+JSON includes `status`, `item` (name and instance ID), requested `locked`,
+`attempt` (null when not dispatched), sanitized `reason`, `profile_refresh`, and
+`observed` (lock state, null when unavailable). Exit 0 means verified success or
+no-op; 41 incomplete, 42 verification failed, 43 applied-pending-refresh.
+Refusals use category exits (missing item 32, ambiguity 31, stale state 30).
+Success goes to stdout; refusals and unverified results go to stderr.
+
 ## Equip one item
 
 ```sh

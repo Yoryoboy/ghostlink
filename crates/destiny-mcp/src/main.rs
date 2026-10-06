@@ -138,13 +138,19 @@ fn compose_server<S: CredentialStore + Send + 'static>(
     let equip = destiny_adapters::BungieEquipGateway::new(
         destiny_adapters::HttpEquipTransport::new()?,
         SystemClock::new(),
-        transfer_source,
+        transfer_source.clone(),
         destiny_adapters::EquipApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let lock = destiny_adapters::lock::BungieLockGateway::new(
+        destiny_adapters::lock::HttpLockTransport::new()?,
+        SystemClock::new(),
+        transfer_source,
+        destiny_adapters::lock::LockApiKey::new(config.api_key().expose_secret())?,
     )?;
     let repository = SqliteStore::open(config.database_path())?;
     Ok(assemble_server(
         profile_gateway,
-        (transfer, equip),
+        (transfer, equip, lock),
         repository,
         policy,
         weekly_service(config)?,
@@ -237,6 +243,17 @@ where
     Ok((source.clone(), source))
 }
 
+/// Exact action gateways share the profile's credential session.
+type MutationPorts<C> = (
+    BungieTransferGateway<HttpTransferTransport, SystemClock, C>,
+    destiny_adapters::BungieEquipGateway<destiny_adapters::HttpEquipTransport, SystemClock, C>,
+    destiny_adapters::lock::BungieLockGateway<
+        destiny_adapters::lock::HttpLockTransport,
+        SystemClock,
+        C,
+    >,
+);
+
 /// Wires the concrete adapters into one read-plus-mutation tool server.
 ///
 /// The read service and the mutation service share the profile gateway and the
@@ -246,10 +263,7 @@ where
 /// safest accepted window.
 fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     profile_gateway: BungieProfileGateway<HttpProfileTransport, SystemClock, C>,
-    ports: (
-        BungieTransferGateway<HttpTransferTransport, SystemClock, C>,
-        destiny_adapters::BungieEquipGateway<destiny_adapters::HttpEquipTransport, SystemClock, C>,
-    ),
+    ports: MutationPorts<C>,
     repository: SqliteStore,
     policy: FreshnessPolicy,
     weekly: PublicWeeklyService,
@@ -307,7 +321,8 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         policy,
         PlanLifetime::MAX,
     )
-    .with_equip(ports.1);
+    .with_equip(ports.1)
+    .with_lock(ports.2);
 
     // Every publishing read decorator and both mutations enter the same outer
     // operation boundary. Do not expose a second unguarded dispatch path for
@@ -1053,13 +1068,20 @@ mod tests {
         let equip = destiny_adapters::BungieEquipGateway::new(
             destiny_adapters::HttpEquipTransport::new().unwrap(),
             SystemClock::new(),
-            destiny_app::StaticCredentialSource::new(credential),
+            destiny_app::StaticCredentialSource::new(credential.clone()),
             destiny_adapters::EquipApiKey::new(API_KEY_SENTINEL).unwrap(),
+        )
+        .unwrap();
+        let lock = destiny_adapters::lock::BungieLockGateway::new(
+            destiny_adapters::lock::HttpLockTransport::new().unwrap(),
+            SystemClock::new(),
+            destiny_app::StaticCredentialSource::new(credential),
+            destiny_adapters::lock::LockApiKey::new(API_KEY_SENTINEL).unwrap(),
         )
         .unwrap();
         let server = assemble_server(
             profile_gateway,
-            (transfer, equip),
+            (transfer, equip, lock),
             store,
             FreshnessPolicy { ttl_seconds: 900 },
             destiny_app::weekly_reset::WeeklyResetService::new(
@@ -1088,7 +1110,8 @@ mod tests {
                 "weekly",
                 "get_subclass_options",
                 "move_item",
-                "equip_item"
+                "equip_item",
+                "set_lock_state"
             ],
             "mutation must be default-enabled in the product composition"
         );

@@ -196,6 +196,30 @@ pub fn equip_item_tool() -> Tool {
         .with_input_schema::<EquipItemArgs>()
 }
 
+pub const SET_LOCK_STATE_TOOL: &str = "set_lock_state";
+
+/// One explicit intent to set a concrete owned item's lock state.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetLockStateArgs {
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub item: String,
+    pub locked: bool,
+}
+impl SetLockStateArgs {
+    pub fn validate(&self) -> Result<(), McpError> {
+        destiny_app::ItemSelector::semantic(&self.item).map_err(McpError::from)?;
+        if self.item.trim().is_empty() || self.item.chars().any(char::is_control) {
+            return Err(McpError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(())
+    }
+}
+pub fn set_lock_state_tool() -> Tool {
+    Tool::new(SET_LOCK_STATE_TOOL, "Set one explicitly selected owned item's lock state (locked=true locks, false unlocks). One call is explicit intent for fresh preflight, at most one dispatch, mandatory refresh and lock-state verification; already satisfied is a verified no-op. Ambiguity refuses. Never blindly retry uncertain or applied-pending-refresh outcomes; sync later to confirm. Vault items use one owned character for the provider call.", JsonObject::new())
+        .with_input_schema::<SetLockStateArgs>()
+}
+
 /// `list_characters` accepts no arguments.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

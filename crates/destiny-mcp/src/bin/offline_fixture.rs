@@ -164,7 +164,10 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         TTL,
         PlanLifetime::MAX,
     )
-    .with_equip(WorldEquipGateway { world });
+    .with_equip(WorldEquipGateway {
+        world: Arc::clone(&world),
+    })
+    .with_lock(WorldLockGateway { world });
 
     let read_service = destiny_mcp::service::PersonalWeeklyReadService::new(
         destiny_app::WeeklyPersonalService::new(
@@ -572,6 +575,46 @@ impl destiny_app::EquipGateway for WorldEquipGateway {
             destiny_app::EquipOutcome::Uncertain
         } else {
             destiny_app::EquipOutcome::Equipped
+        })
+    }
+}
+
+/// Offline lock port: one bounded attempt against the shared provider world.
+struct WorldLockGateway {
+    world: Arc<Mutex<FixtureWorld>>,
+}
+impl destiny_app::LockGateway for WorldLockGateway {
+    fn set_lock_state(
+        &mut self,
+        request: &destiny_app::SetLockStateRequest,
+    ) -> Result<destiny_app::LockOutcome, AppError> {
+        let scenario = std::env::var(SCENARIO_ENV).unwrap_or_default();
+        if scenario == "lock-refused" {
+            return Ok(destiny_app::LockOutcome::Rejected(
+                destiny_app::LockRejection::NotInSocialSpace,
+            ));
+        }
+        let mut world = self
+            .world
+            .lock()
+            .map_err(|_| AppError::new(ErrorCategory::LocalStorage))?;
+        if scenario == "lock-refresh-failure" {
+            world.refresh_failed = true;
+        }
+        if !matches!(
+            scenario.as_str(),
+            "lock-provider-stale" | "lock-uncertain-no-effect"
+        ) {
+            for item in &mut world.items {
+                if item.instance_id == *request.item() {
+                    item.locked = request.locked();
+                }
+            }
+        }
+        Ok(if scenario.starts_with("lock-uncertain") {
+            destiny_app::LockOutcome::Uncertain
+        } else {
+            destiny_app::LockOutcome::Applied
         })
     }
 }

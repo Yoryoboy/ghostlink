@@ -17,6 +17,8 @@ pub mod command;
 pub mod equip;
 pub mod equip_output;
 pub mod handler;
+pub mod lock;
+pub mod lock_output;
 pub mod login;
 pub mod move_item;
 pub mod move_output;

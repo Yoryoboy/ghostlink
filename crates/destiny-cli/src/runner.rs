@@ -366,6 +366,19 @@ where
             })
         });
     }
+    if let Command::Lock(arguments) | Command::Unlock(arguments) = &cli.command {
+        if let Err(error) = arguments.validate() {
+            return ProcessOutput::failure(mode, error);
+        }
+        // Never recompose after dispatch uncertainty or acquire definitions by retry.
+        return match crate::runtime::compose_lock(
+            arguments,
+            matches!(cli.command, Command::Lock(_)),
+        ) {
+            Ok(output) => lock_process_output(mode, &output),
+            Err(error) => ProcessOutput::failure(mode, error),
+        };
+    }
     if let Command::Move(arguments) = &cli.command {
         if let Err(error) = arguments.validate() {
             return ProcessOutput::failure(mode, error);
@@ -584,6 +597,27 @@ pub fn equip_process_output(
 pub fn move_process_output(
     mode: OutputMode,
     output: &crate::move_output::MoveOutput,
+) -> ProcessOutput {
+    let body = match mode {
+        OutputMode::Human => output.render_text(),
+        OutputMode::Json => output.json().to_string(),
+    };
+    let exit_code = output.exit_code();
+    if exit_code == SUCCESS_EXIT_CODE {
+        ProcessOutput::success(body)
+    } else {
+        ProcessOutput {
+            stdout: String::new(),
+            stderr: format!("{body}\n"),
+            exit_code,
+        }
+    }
+}
+
+/// Lock successes go to stdout; refusals and unverified progress go to stderr.
+pub fn lock_process_output(
+    mode: OutputMode,
+    output: &crate::lock_output::LockOutput,
 ) -> ProcessOutput {
     let body = match mode {
         OutputMode::Human => output.render_text(),

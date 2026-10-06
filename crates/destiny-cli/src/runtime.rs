@@ -595,6 +595,46 @@ pub fn compose_equip(
     )
 }
 
+/// Compose profile and lock gateways over one credential session and one local
+/// repository. The synchronous invocation owns publication through dispatch.
+pub fn compose_lock(
+    arguments: &crate::command::LockArgs,
+    locked: bool,
+) -> Result<crate::lock_output::LockOutput, CliError> {
+    use destiny_adapters::lock::{BungieLockGateway, HttpLockTransport, LockApiKey};
+    arguments.validate()?;
+    let mut foundations = ProductionFoundations;
+    let config = ReadFoundations::config(&mut foundations)?;
+    let source = foundations.credential_source(&config)?;
+    let clock = ReadFoundations::clock(&mut foundations)?;
+    let repository = ReadFoundations::store(&mut foundations, &config)?;
+    let gateway = BungieProfileGateway::new(
+        ReadFoundations::transport(&mut foundations)?,
+        clock,
+        source.clone(),
+        ProfileApiKey::new(config.api_key().expose_secret())?,
+        config.resolve_definition_version(&repository)?,
+    )?;
+    let mut lock = BungieLockGateway::new(
+        HttpLockTransport::new()?,
+        SystemClock::new(),
+        source,
+        LockApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let mut mutations = destiny_app::MutationService::new(
+        ProfileSyncService::new_with_definitions(gateway, repository),
+        crate::equip::InvocationPlanId::new(),
+    );
+    crate::lock::set_lock_state(
+        arguments,
+        locked,
+        &mut mutations,
+        &mut lock,
+        &SystemClock::new(),
+        config.freshness_policy(),
+    )
+}
+
 /// Compose profile and transfer gateways over one lock-backed credential session.
 pub fn compose_move(
     arguments: &crate::command::MoveArgs,

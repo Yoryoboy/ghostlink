@@ -55,7 +55,7 @@ crates/
   destiny-core/       domain IDs, records, errors, ports, policies, test doubles
   destiny-app/        authorization, sync, query, planning, execution services
   destiny-adapters/   Bungie HTTP/OAuth, Manifest, SQLite, credential store, clock/IDs
-  destiny-output/     transport-neutral equip JSON and move text/JSON projections
+  destiny-output/     transport-neutral equip JSON and move/lock text/JSON projections
   destiny-cli/        command parsing, terminal UX, process exit policy
   destiny-mcp/        MCP stdio server, tool schemas, sanitized result mapping
 ```
@@ -308,7 +308,7 @@ Each slice should target roughly one reviewer session and monitor authored addit
 
 ## Explicit non-goals and post-MVP boundary
 
-The current scope includes single-item move/equip and weekly read capabilities. Build engines, multi-item build plans/apply, plug/mod/perk mutations, dismantling, locking, Postmaster, duplicate ranking, web UI, hosted/confidential backend, general-purpose Bungie proxying, and broad inventory actions remain deferred. Later capabilities may reuse the ports and projections but must not bypass fresh preflight, bounded intent, or post-action verification.
+The current scope includes single-item move/equip, lock/unlock (CLI and MCP `set_lock_state`), and weekly read capabilities. Lock uses shared fresh preflight, one dispatch, post-action refresh and lock-state verification; already satisfied is a verified no-op. Vault items use one owned character for the provider call (live validation pending). Build engines, multi-item build plans/apply, plug/mod/perk mutations, dismantling, Postmaster, duplicate ranking, web UI, hosted/confidential backend, general-purpose Bungie proxying, and broad inventory actions remain deferred. Later capabilities may reuse the ports and projections but must not bypass fresh preflight, bounded intent, or post-action verification.
 
 ## Architecture traceability
 
