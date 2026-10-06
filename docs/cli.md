@@ -483,17 +483,34 @@ inspect an item for detail.
 
 ```sh
 ghostlink weekly-reset           # or: ghostlink --json weekly-reset
+ghostlink weekly-reset --date 2026-10-13
 ```
 
-Shows the current public weekly rotation from Bungie `GetPublicMilestones`:
-each milestone with its reset window (UTC), its activities, and their
-modifiers. Like `sync-manifest`, it needs only `BUNGIE_API_KEY` and
-`DESTINY_DATABASE_PATH`, never an OAuth login. Names are resolved against the
-stored Manifest; a hash with no stored definition is shown as
-`unresolved #<hash>` (JSON: `"resolved": false`, `"name": null`) and is never
-guessed. Modifier descriptions may contain `{var:<hash>}` placeholders, which
-are shown verbatim. Per-character weekly content and progress is covered by
-`weekly` below.
+Requires login. Omit `--date` for the current week. `--date YYYY-MM-DD`
+selects the weekly period in effect at the end of that day in the system's
+local time zone. In Australia at UTC+10 and later, Tuesday yields the previous
+week because the reset is Wednesday locally. The resolved window is shown in
+local time; JSON timestamps are RFC 3339 UTC.
+
+The calendar section contains community-derived **predictions**, not confirmed
+rotations: featured raids, dungeons, Pantheon Reprise/Encore, and Grandmaster
+Vanguard Alert. Dates before each rotation's verified coverage show **no data**
+with the reason. Live milestones from Bungie `GetPublicMilestones` are
+**observed** data, available for the current week only, with activities and
+modifiers; other weeks have no live milestones.
+
+JSON adds `current_week` (whether the selected week is current),
+`calendar` (`source: "prediction"`, `start`, `end`, and `rotations`), and
+`milestones_source: "observed"`. Each rotation includes `key`, `title`,
+`status` (`predicted` or `no_data`) and `activities` (`name`, `hash`), with
+`coverage_start` and `coverage_note` for no data. Non-current weeks retain
+`milestones: []`.
+
+Live milestone names are resolved against the stored Manifest; a hash with no
+stored definition is shown as `unresolved #<hash>` (JSON: `"resolved": false`,
+`"name": null`) and is never guessed. Modifier descriptions may contain
+`{var:<hash>}` placeholders, which are shown verbatim. Per-character weekly
+content and progress is covered by `weekly` below.
 
 ### Weekly content for one character
 

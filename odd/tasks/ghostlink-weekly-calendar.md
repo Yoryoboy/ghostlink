@@ -164,8 +164,18 @@ deliver as chained PRs.
   build, workspace tests 1,472 passed / 0 failed, clippy `-D warnings`,
   diff check (all exit 0). Commit evidence: see git log for
   `feat(mcp): accept a date for weekly_reset predictions`.
-- [ ] **WRC-006 — Docs and skill.** CLI/MCP docs, README credit to
+- [x] **WRC-006 — Docs and skill.** CLI/MCP docs, README credit to
   ShatteredVault, skill guidance (predictions vs observations).
+  Result: `docs/cli.md` (login, local end-of-day `--date`, UTC+10 Tuesday
+  caveat, local window, prediction vs observed, coverage, additive JSON),
+  `docs/mcp.md` (optional UTC `date`, same fields), README Credits
+  (ShatteredVault algorithm and lists, Kyber's Corner historical data, the
+  one corrected dungeon slot), skill `## Weekly Calendar` section and the
+  weekly-reset table row now says login required. Delegated writer; passive
+  docs, no meaningful RED. Checks: flags verified against `--help`, skill
+  tests 4/4, workspace tests 1,472 passed / 0 failed, diff check (exit 0).
+  Commit evidence: see git log for
+  `docs(calendar): document weekly rotation predictions`.
 - [ ] **WRC-007 — Live validation.** Run against today's reset
   (2026-10-06 17:00 UTC) and compare with in-game/Kyber data.
 
