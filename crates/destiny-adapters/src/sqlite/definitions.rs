@@ -109,19 +109,19 @@ impl SqliteStore {
         world: Option<destiny_core::WorldDefinitionsAcquisition>,
         mut descriptions: Vec<destiny_core::ItemDescription>,
     ) -> Result<SyncMetadata, AppError> {
-        // Pre-v18 bridge: known metadata cannot be persisted yet. Reject before
-        // any transaction, catalog replacement, or unchanged-content refresh.
-        // Presence matters: false, empty labels and nonpositive sizes are known.
-        if replacement
-            .definitions
-            .definitions
-            .iter()
-            .any(|definition| {
-                definition.does_postmaster_pull_have_side_effects.is_some()
-                    || definition.is_instance_item.is_some()
-                    || definition.max_stack_size.is_some()
-                    || definition.stack_unique_label.is_some()
-            })
+        // Test seams permit legacy schemas. Refuse known metadata before any
+        // transaction or freshness write when it cannot be represented.
+        if super::migrations::read_user_version(self.connection())? < 18
+            && replacement
+                .definitions
+                .definitions
+                .iter()
+                .any(|definition| {
+                    definition.does_postmaster_pull_have_side_effects.is_some()
+                        || definition.is_instance_item.is_some()
+                        || definition.max_stack_size.is_some()
+                        || definition.stack_unique_label.is_some()
+                })
         {
             return Err(storage_failure());
         }
@@ -280,8 +280,13 @@ fn replace_catalog(
     let schema = super::migrations::read_user_version(connection)?;
     let has_attributes = schema >= 5;
     let has_plug_category = schema >= 6;
+    let has_qualified_metadata = schema >= 18;
     let mut insert_definition = connection
-        .prepare_cached(if has_plug_category {
+        .prepare_cached(if has_qualified_metadata {
+            "INSERT INTO definitions \
+             (hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, plug_category, does_postmaster_pull_have_side_effects, is_instance_item, max_stack_size, stack_unique_label) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"
+        } else if has_plug_category {
             "INSERT INTO definitions \
              (hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, plug_category) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
@@ -335,6 +340,17 @@ fn replace_catalog(
             values.push(plug_category.into());
         } else if plug_category.is_some() {
             return Err(storage_failure());
+        }
+        if has_qualified_metadata {
+            values.extend([
+                definition
+                    .does_postmaster_pull_have_side_effects
+                    .map(i64::from)
+                    .into(),
+                definition.is_instance_item.map(i64::from).into(),
+                definition.max_stack_size.map(i64::from).into(),
+                definition.stack_unique_label.clone().into(),
+            ]);
         }
         insert_definition
             .execute(rusqlite::params_from_iter(values))
@@ -432,13 +448,7 @@ fn read_definition(
     hash: ItemHash,
 ) -> Result<Option<ItemDefinition>, AppError> {
     let row = connection.query_row(
-        if super::migrations::read_user_version(connection)? >= 6 {
-            "SELECT bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, plug_category FROM definitions WHERE hash = ?1"
-        } else if super::migrations::read_user_version(connection)? >= 5 {
-            "SELECT bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, NULL FROM definitions WHERE hash = ?1"
-        } else {
-            "SELECT bucket_hash, name, item_type, tier, element, definition_version, NULL, NULL, NULL, NULL FROM definitions WHERE hash = ?1"
-        },
+        &definition_select(connection, false)?,
         [hash.value()],
         |row| {
             Ok((
@@ -452,6 +462,10 @@ fn read_definition(
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<String>>(9)?,
+                read_bool(row, 10)?,
+                read_bool(row, 11)?,
+                row.get::<_, Option<i32>>(12)?,
+                row.get::<_, Option<String>>(13)?,
             ))
         },
     );
@@ -468,11 +482,15 @@ fn read_definition(
             slot,
             class_type,
             plug_category,
+            does_postmaster_pull_have_side_effects,
+            is_instance_item,
+            max_stack_size,
+            stack_unique_label,
         )) => Ok(Some(ItemDefinition {
-            does_postmaster_pull_have_side_effects: None,
-            is_instance_item: None,
-            max_stack_size: None,
-            stack_unique_label: None,
+            does_postmaster_pull_have_side_effects,
+            is_instance_item,
+            max_stack_size,
+            stack_unique_label,
             hash,
             bucket_hash: bucket_hash.map(BucketHash::new),
             name,
@@ -487,6 +505,43 @@ fn read_definition(
         })),
         Err(SqlError::QueryReturnedNoRows) => Ok(None),
         Err(_) => Err(storage_failure()),
+    }
+}
+
+// Use one schema read per query, never per catalog row. Legacy schemas have
+// genuinely unknown fields; v18 must read the actual columns or fail closed.
+fn definition_select(connection: &Connection, catalog: bool) -> Result<String, AppError> {
+    let schema = super::migrations::read_user_version(connection)?;
+    let attributes = if schema >= 5 {
+        "damage_type, slot, class_type"
+    } else {
+        "NULL, NULL, NULL"
+    };
+    let plug = if schema >= 6 { "plug_category" } else { "NULL" };
+    let qualified = if schema >= 18 {
+        "does_postmaster_pull_have_side_effects, is_instance_item, max_stack_size, stack_unique_label"
+    } else {
+        "NULL, NULL, NULL, NULL"
+    };
+    let hash = if catalog { "hash, " } else { "" };
+    let suffix = if catalog {
+        "ORDER BY hash"
+    } else {
+        "WHERE hash = ?1"
+    };
+    Ok(format!(
+        "SELECT {hash}bucket_hash, name, item_type, tier, element, definition_version, {attributes}, {plug}, {qualified} FROM definitions {suffix}"
+    ))
+}
+
+// rusqlite's bool conversion treats every nonzero integer as true; that would
+// conceal corruption. Only the two canonical stored integers are accepted.
+fn read_bool(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Option<bool>> {
+    match row.get::<_, Option<i64>>(index)? {
+        None => Ok(None),
+        Some(0) => Ok(Some(false)),
+        Some(1) => Ok(Some(true)),
+        Some(_) => Err(SqlError::InvalidQuery),
     }
 }
 
@@ -553,13 +608,7 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
 
     {
         let mut statement = connection
-            .prepare(if super::migrations::read_user_version(connection)? >= 6 {
-                "SELECT hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, plug_category FROM definitions ORDER BY hash"
-            } else if super::migrations::read_user_version(connection)? >= 5 {
-                "SELECT hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, NULL FROM definitions ORDER BY hash"
-            } else {
-                "SELECT hash, bucket_hash, name, item_type, tier, element, definition_version, NULL, NULL, NULL, NULL FROM definitions ORDER BY hash"
-            })
+            .prepare(&definition_select(connection, true)?)
             .map_err(|_| storage_failure())?;
         let rows = statement
             .query_map([], |row| {
@@ -575,6 +624,10 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
                     row.get::<_, Option<String>>(8)?,
                     row.get::<_, Option<String>>(9)?,
                     row.get::<_, Option<String>>(10)?,
+                    read_bool(row, 11)?,
+                    read_bool(row, 12)?,
+                    row.get::<_, Option<i32>>(13)?,
+                    row.get::<_, Option<String>>(14)?,
                 ))
             })
             .map_err(|_| storage_failure())?;
@@ -592,13 +645,17 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
                 slot,
                 class_type,
                 plug_category,
+                does_postmaster_pull_have_side_effects,
+                is_instance_item,
+                max_stack_size,
+                stack_unique_label,
             ) = row.map_err(|_| storage_failure())?;
             positions.insert(hash, definitions.len());
             definitions.push(ItemDefinition {
-                does_postmaster_pull_have_side_effects: None,
-                is_instance_item: None,
-                max_stack_size: None,
-                stack_unique_label: None,
+                does_postmaster_pull_have_side_effects,
+                is_instance_item,
+                max_stack_size,
+                stack_unique_label,
                 hash: ItemHash::new(hash),
                 bucket_hash: bucket_hash.map(BucketHash::new),
                 name,

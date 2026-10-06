@@ -46,7 +46,7 @@ const EXPECTED_INDEX_NAMES: [&str; 3] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 106] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 110] = [
     ("inventory_coverage", "id", "INTEGER"),
     ("inventory_coverage", "profile_currencies", "TEXT"),
     ("stacks", "ordinal", "INTEGER"),
@@ -132,6 +132,14 @@ const EXPECTED_COLUMNS: [(&str, &str, &str); 106] = [
     ("definitions", "slot", "TEXT"),
     ("definitions", "class_type", "TEXT"),
     ("definitions", "plug_category", "TEXT"),
+    (
+        "definitions",
+        "does_postmaster_pull_have_side_effects",
+        "INTEGER",
+    ),
+    ("definitions", "is_instance_item", "INTEGER"),
+    ("definitions", "max_stack_size", "INTEGER"),
+    ("definitions", "stack_unique_label", "TEXT"),
     ("item_stats", "instance_id", "TEXT"),
     ("item_stats", "stat_hash", "INTEGER"),
     ("item_stats", "value", "INTEGER"),
@@ -573,6 +581,71 @@ fn v17_preserves_populated_v16_rows_ordinals_and_foreign_keys() {
 }
 
 #[test]
+fn v18_qualified_metadata_constraints_and_lossless_affinity() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO definitions(hash,name,definition_version) VALUES(1,'Test','v1')",
+            [],
+        )
+        .unwrap();
+    for column in ["does_postmaster_pull_have_side_effects", "is_instance_item"] {
+        for invalid in ["-1", "2", "0.5", "'true'", "x'00'"] {
+            expect_rejected(
+                &store,
+                &format!("UPDATE definitions SET {column}={invalid}"),
+            );
+        }
+        // SQLite STRICT losslessly coerces integer-valued REAL and numeric
+        // text. The stored type, not the expression type, is constrained.
+        for valid in ["NULL", "0", "1", "1.0", "'0'"] {
+            store
+                .connection()
+                .execute_batch(&format!("UPDATE definitions SET {column}={valid}"))
+                .unwrap();
+            let kind: String = store
+                .connection()
+                .query_row(
+                    &format!("SELECT typeof({column}) FROM definitions"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(kind == "null" || kind == "integer");
+        }
+    }
+    for invalid in ["-2147483649", "2147483648", "1.5", "'invalid'", "x'00'"] {
+        expect_rejected(
+            &store,
+            &format!("UPDATE definitions SET max_stack_size={invalid}"),
+        );
+    }
+    for valid in ["NULL", "-2147483648", "-1", "0", "1", "2147483647"] {
+        store
+            .connection()
+            .execute_batch(&format!("UPDATE definitions SET max_stack_size={valid}"))
+            .unwrap();
+    }
+    expect_rejected(&store, "UPDATE definitions SET stack_unique_label=x'00'");
+    for label in ["", " ", " \0\n\tExact "] {
+        store
+            .connection()
+            .execute("UPDATE definitions SET stack_unique_label=?1", [label])
+            .unwrap();
+        assert_eq!(
+            store
+                .connection()
+                .query_row("SELECT stack_unique_label FROM definitions", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            label
+        );
+    }
+}
+
+#[test]
 fn v17_checks_balances_and_singleton_coverage() {
     let store = SqliteStore::open_in_memory().unwrap();
     for sql in [
@@ -639,6 +712,7 @@ fn v17_down_refuses_zero_or_known_coverage_without_mutation() {
         ("not_observed", true),
     ] {
         let mut store = SqliteStore::open_in_memory().unwrap();
+        store.migrate_to(17).unwrap();
         seed_v1_projection(&store);
         store
             .connection()
@@ -753,7 +827,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 17);
+    assert_eq!(LATEST_SCHEMA_VERSION, 18);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION
@@ -962,7 +1036,7 @@ fn v2_down_drops_only_item_perks_then_reapply_up_preserves_v1_rows() {
 
     // The entire v1 -> v2 -> v1 -> v2 cycle stays durable across a reopen.
     let store = SqliteStore::open(temp.path()).expect("reopen after the cycle");
-    assert_eq!(store.schema_version().expect("read schema version"), 17);
+    assert_eq!(store.schema_version().expect("read schema version"), 18);
     assert_eq!(row_count(&store, "items"), 1);
     assert_eq!(row_count(&store, "item_perks"), 0);
 }

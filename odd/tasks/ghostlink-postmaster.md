@@ -114,7 +114,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   label; strict raw decoding/normalization, explicit false/empty versus unknown,
   default-unknown literal propagation and fake preservation. Pre-v18 publication
   refuses any known field before mutation; no data loss in interim storage.
-- [ ] **GPM-006a2 — Persist definition metadata in SQLite v18.** Additive
+- [x] **GPM-006a2 — Persist definition metadata in SQLite v18.** Additive
   nullable columns, all publication/readback/catalog/equality paths, metadata-only
   change detection and guarded downgrade/preservation tests. No readiness claim
   between acquisition and durable support; no pull eligibility from unknown data.
@@ -169,8 +169,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   GPM-005b is COMPLETE (independently verified);
   GPM-005c is COMPLETE (independently verified);
   GPM-006a1 is COMPLETE (worker checks and native risk assessment);
-  GPM-006a2 is IN PROGRESS (durable SQLite v18 support);
-  GPM-006 wire contracts remain pending with explicit technical gates.
+  GPM-006a2 is COMPLETE (durable SQLite v18, worker checks and risk assessment);
+  GPM-006 is IN PROGRESS (wire contracts with explicit technical gates).
 - GPM-003a commit `1bca7d1` (321 additions / 8 deletions, including tests).
   Worker `muwy92h2-5-3djs`: completed snapshot stack fields, multiset
   equality/owner validation, fake preservation, mechanical literal propagation,
@@ -376,6 +376,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   surfaces and mechanical-only unknown literal propagation; no migration in this
   unit. Signed nonpositive capacity metadata is retained but never usable action
   proof; strict errors must not be swallowed by tolerant outer raw wrappers.
+  GPM-006a1 commit `cbce8d4`.
   COMPLETE: four fields retained, strict object parsing before filtering prevents
   swallowed child errors; normalization/exhaustive identity paths updated.
   39 source files, +578/-4 (constructor defaults only outside behavior surfaces).
@@ -390,6 +391,26 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
   Known Manifest metadata publication remains intentionally blocked until v18;
   this is not operational metadata or pull readiness.
+  GPM-006a2 worker `mux3owle-o-mpny` implementing SQLite v18 in four scoped
+  SQLite files: additive nullable fields, true single/catalog readback and content
+  identity, transactional publication, migration preservation and guarded downgrade.
+  No source writes outside those files or pull action changes are authorized.
+  COMPLETE: v18 nullable additive columns; single/catalog exact Option readback,
+  strict 0/1 boolean decoding, metadata content identity; ordinary/description/world
+  publication supported. Pre-v18 known metadata refusal preserved, including 66
+  bridge combinations. Upgrade preserves catalog/children/tags/world/inventory,
+  stacks/coverage/indexes/metadata; DOWN refuses ANY non-NULL field before data
+  loss, while unknown-only downgrade preserves legacy data. Migrations 1-17 intact.
+  RED restart/identity test LocalStorage; GREEN 20 definition, 31 migration and
+  134 SQLite tests; 1,544 default / 1,562 all-features offline workspace tests,
+  zero failed/ignored. fmt/clippy/diff green after fixture-column and formatting
+  failures corrected. 597 source diff lines, primarily tests across four files.
+  ASSESS medium (5 paths / 602 diff lines), writerSelfVerification=true,
+  independentVerifier=false; RDD off, outcome unknown/not consumed, reviewDue
+  slice_budget_reached. Exact continuation (informational, not executed):
+  `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
+  Temporary v17 publication block is lifted on v18; no pull eligibility/service,
+  live-provider correctness or native approval claimed.
 - GPM-005b scope scout `mux1d2co-f-c4dl`: only QueryService and CLI
   runner RecordingService implement QueryOperations. Add required object-safe
   postmaster method and true forwarding; no fallback stub or MCP changes needed.

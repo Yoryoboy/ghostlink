@@ -49,6 +49,7 @@ impl Drop for TempDatabase {
 fn qualified_postmaster_metadata_is_refused_before_refresh_or_replacement() {
     use destiny_core::ports::WorldDefinitionRepository;
     let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(17).unwrap();
     let prior = replacement("v1", base_manifest().definitions);
     let world = bridge_world();
     let metadata = store
@@ -110,6 +111,355 @@ fn qualified_postmaster_metadata_is_refused_before_refresh_or_replacement() {
         }
     }
     assert_eq!(store.schema_version().unwrap(), 17);
+}
+
+#[test]
+fn qualified_metadata_v18_restart_and_content_identity() {
+    let database = TempDatabase::new();
+    let mut next = replacement("v1", base_manifest().definitions);
+    let definition = &mut next.definitions.definitions[0];
+    definition.does_postmaster_pull_have_side_effects = Some(false);
+    definition.is_instance_item = Some(true);
+    definition.max_stack_size = Some(i32::MIN);
+    definition.stack_unique_label = Some(" \0\n Exact ".into());
+    let metadata = {
+        let mut store = SqliteStore::open(database.path()).unwrap();
+        store.replace_definitions(next.clone()).unwrap()
+    };
+    let mut store = SqliteStore::open(database.path()).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 18);
+    assert_eq!(
+        store.lookup_definition(ItemHash::new(10)).unwrap(),
+        Resolution::Unique(next.definitions.definitions[0].clone())
+    );
+    next.checked_at = Timestamp::new(999);
+    let refreshed = store.replace_definitions(next.clone()).unwrap();
+    assert_eq!(refreshed.revision, metadata.revision);
+    assert_eq!(refreshed.checked_at, next.checked_at);
+    next.definitions.definitions[0].does_postmaster_pull_have_side_effects = Some(true);
+    let changed = store.replace_definitions(next).unwrap();
+    assert_eq!(changed.revision.value(), refreshed.revision.value() + 1);
+}
+
+#[test]
+fn qualified_metadata_v18_all_publication_paths_and_identity() {
+    use destiny_core::ports::WorldDefinitionRepository;
+    for path in 0..3 {
+        for changed_catalog in [false, true] {
+            let mut store = SqliteStore::open_in_memory().unwrap();
+            let world = bridge_world();
+            let mut next = replacement("v1", base_manifest().definitions);
+            let publish = |store: &mut SqliteStore, next: DefinitionReplacementInput| match path {
+                0 => store.replace_definitions(next),
+                1 => store
+                    .replace_definitions_with_descriptions(next, world.item_descriptions.clone()),
+                _ => store.publish_manifest(next, world.clone()),
+            };
+            let mut metadata = publish(&mut store, next.clone()).unwrap();
+            store
+                .connection()
+                .execute_batch(
+                    "INSERT INTO active_profile VALUES(1,'123','3');
+                 INSERT INTO items VALUES('instance',10,'vault',NULL,NULL,1,0,0,NULL);
+                 INSERT INTO item_perks VALUES('instance',0,7,1,1);
+                 INSERT INTO item_plugs VALUES('instance',0,8);
+                 INSERT INTO item_stats VALUES('instance',9,-1);
+                 INSERT INTO item_available_plugs VALUES('instance',0,0,10);
+                 INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,10,2);
+                 INSERT INTO stacks VALUES(1,'profile_inventory',NULL,8,10,2);
+                 INSERT INTO stacks VALUES(2,'profile_currencies',NULL,9,10,0);
+                 INSERT INTO inventory_coverage VALUES(1,'available');
+                 INSERT INTO sync_metadata VALUES('profile_inventory','100','profile','4','v1');",
+                )
+                .unwrap();
+            let inventory = |store: &SqliteStore| {
+                bridge_rows(store)
+                    .into_iter()
+                    .filter(|(table, _)| {
+                        [
+                            "active_profile",
+                            "items",
+                            "item_perks",
+                            "item_plugs",
+                            "item_stats",
+                            "item_available_plugs",
+                            "stacks",
+                            "inventory_coverage",
+                        ]
+                        .contains(&table.as_str())
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let before = inventory(&store);
+            // Each successive value changes exactly one metadata field. The
+            // final unknown record also proves known -> unknown is content.
+            for case in 0..13 {
+                let definition = &mut next.definitions.definitions[0];
+                if changed_catalog {
+                    definition.name = format!("Replacement {case}");
+                }
+                match case {
+                    0 => definition.does_postmaster_pull_have_side_effects = Some(false),
+                    1 => definition.does_postmaster_pull_have_side_effects = Some(true),
+                    2 => definition.is_instance_item = Some(false),
+                    3 => definition.is_instance_item = Some(true),
+                    4 => definition.max_stack_size = Some(i32::MIN),
+                    5 => definition.max_stack_size = Some(-1),
+                    6 => definition.max_stack_size = Some(0),
+                    7 => definition.max_stack_size = Some(1),
+                    8 => definition.max_stack_size = Some(i32::MAX),
+                    9 => definition.stack_unique_label = Some(String::new()),
+                    10 => definition.stack_unique_label = Some(" Exact Label ".into()),
+                    11 => definition.stack_unique_label = Some("Exact Label".into()),
+                    _ => {
+                        definition.does_postmaster_pull_have_side_effects = None;
+                        definition.is_instance_item = None;
+                        definition.max_stack_size = None;
+                        definition.stack_unique_label = None;
+                    }
+                }
+                next.checked_at = Timestamp::new(300 + case);
+                let changed = publish(&mut store, next.clone()).unwrap();
+                assert_eq!(changed.revision.value(), metadata.revision.value() + 1);
+                assert_eq!(
+                    store.lookup_definition(ItemHash::new(10)).unwrap(),
+                    Resolution::Unique(next.definitions.definitions[0].clone())
+                );
+                assert_eq!(
+                    inventory(&store),
+                    before,
+                    "metadata does not relabel or erase observations"
+                );
+                assert_eq!(
+                    store
+                        .connection()
+                        .query_row(
+                            "SELECT revision FROM sync_metadata WHERE dataset='profile_inventory'",
+                            [],
+                            |row| row.get::<_, String>(0)
+                        )
+                        .unwrap(),
+                    "4"
+                );
+                let catalog_before = bridge_rows(&store);
+                next.checked_at = Timestamp::new(500 + case);
+                metadata = publish(&mut store, next.clone()).unwrap();
+                assert_eq!(metadata.revision, changed.revision);
+                assert_eq!(metadata.checked_at, next.checked_at);
+                let without_freshness = |rows: Vec<(String, Vec<Vec<rusqlite::types::Value>>)>| {
+                    rows.into_iter()
+                        .filter(|(table, _)| table != "sync_metadata")
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    without_freshness(bridge_rows(&store)),
+                    without_freshness(catalog_before)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn qualified_metadata_v18_failed_publication_and_corruption_are_atomic() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let prior = replacement("v1", base_manifest().definitions);
+    store.replace_definitions(prior.clone()).unwrap();
+    store
+        .connection()
+        .execute_batch(
+            "CREATE TRIGGER fail_metadata BEFORE INSERT ON definitions
+         WHEN NEW.hash=20 AND NEW.is_instance_item=0
+         BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END;",
+        )
+        .unwrap();
+    let before = bridge_rows(&store);
+    let mut next = prior.clone();
+    next.definitions.definitions[0].max_stack_size = Some(i32::MAX);
+    next.definitions.definitions[1].is_instance_item = Some(false);
+    assert_eq!(store.replace_definitions(next), Err(storage_error()));
+    assert_eq!(
+        bridge_rows(&store),
+        before,
+        "rollback even after first new row inserted"
+    );
+
+    // Constraint bypass models corrupt on-disk values; both single-record and
+    // catalog identity reads must fail rather than refresh or reinterpret them.
+    store
+        .connection()
+        .pragma_update(None, "ignore_check_constraints", 1)
+        .unwrap();
+    for (column, value) in [
+        ("does_postmaster_pull_have_side_effects", -1_i64),
+        ("does_postmaster_pull_have_side_effects", 2),
+        ("is_instance_item", -1),
+        ("is_instance_item", 2),
+        ("max_stack_size", i64::from(i32::MIN) - 1),
+        ("max_stack_size", i64::from(i32::MAX) + 1),
+    ] {
+        store
+            .connection()
+            .execute(
+                &format!("UPDATE definitions SET {column}=?1 WHERE hash=10"),
+                [value],
+            )
+            .unwrap();
+        let corrupt = bridge_rows(&store);
+        assert_eq!(
+            store.lookup_definition(ItemHash::new(10)),
+            Err(storage_error())
+        );
+        assert_eq!(
+            store.replace_definitions(prior.clone()),
+            Err(storage_error())
+        );
+        assert_eq!(bridge_rows(&store), corrupt);
+        store
+            .connection()
+            .execute(
+                &format!("UPDATE definitions SET {column}=NULL WHERE hash=10"),
+                [],
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn qualified_metadata_v18_migration_preserves_all_rows_and_guards_downgrade() {
+    use destiny_core::ports::WorldDefinitionRepository;
+    use rusqlite::types::Value;
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(17).unwrap();
+    let prior = replacement("v1", base_manifest().definitions);
+    store
+        .publish_manifest(prior.clone(), bridge_world())
+        .unwrap();
+    store
+        .connection()
+        .execute_batch(
+            "INSERT INTO active_profile VALUES(1,'123','3');
+         INSERT INTO characters(character_id,class_name) VALUES('owner','Hunter');
+         INSERT INTO items VALUES('instance',10,'postmaster','owner',NULL,1,0,0,NULL);
+         INSERT INTO item_perks VALUES('instance',0,7,1,1);
+         INSERT INTO item_plugs VALUES('instance',0,8);
+         INSERT INTO item_stats VALUES('instance',9,-1);
+         INSERT INTO item_available_plugs VALUES('instance',0,0,10);
+         INSERT INTO stacks VALUES(0,'postmaster','owner',8,10,2);
+         INSERT INTO stacks VALUES(1,'postmaster','owner',8,10,2);
+         INSERT INTO stacks VALUES(2,'profile_currencies',NULL,9,10,0);
+         INSERT INTO inventory_coverage VALUES(1,'available');
+         INSERT INTO sync_metadata VALUES('profile_inventory','100','profile','4','v1');",
+        )
+        .unwrap();
+    let schema = |store: &SqliteStore| {
+        store
+            .connection()
+            .prepare("SELECT type,name,sql FROM sqlite_schema ORDER BY type,name")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let check_fks = |store: &SqliteStore| {
+        assert_eq!(
+            store
+                .connection()
+                .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert!(
+            !store
+                .connection()
+                .prepare("PRAGMA foreign_key_check")
+                .unwrap()
+                .exists([])
+                .unwrap()
+        );
+    };
+    let legacy_rows = bridge_rows(&store);
+    let legacy_schema = schema(&store);
+    check_fks(&store);
+    store.migrate_to(18).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 18);
+    check_fks(&store);
+    let mut migrated = bridge_rows(&store);
+    for (table, rows) in &mut migrated {
+        if table == "definitions" {
+            for row in rows {
+                let fields = row.split_off(row.len() - 4);
+                assert_eq!(fields, vec![Value::Null; 4]);
+            }
+        }
+    }
+    assert_eq!(migrated, legacy_rows);
+    assert_eq!(
+        store.lookup_definition(ItemHash::new(10)).unwrap(),
+        Resolution::Unique(prior.definitions.definitions[0].clone())
+    );
+    // No schema objects except the additive definition declaration change.
+    let other_schema = |rows: Vec<(String, String, Option<String>)>| {
+        rows.into_iter()
+            .filter(|(_, name, _)| name != "definitions")
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        other_schema(schema(&store)),
+        other_schema(legacy_schema.clone())
+    );
+    for (column, value) in [
+        ("does_postmaster_pull_have_side_effects", Value::Integer(0)),
+        ("does_postmaster_pull_have_side_effects", Value::Integer(1)),
+        ("is_instance_item", Value::Integer(0)),
+        ("is_instance_item", Value::Integer(1)),
+        ("max_stack_size", Value::Integer(i64::from(i32::MIN))),
+        ("max_stack_size", Value::Integer(-1)),
+        ("max_stack_size", Value::Integer(0)),
+        ("max_stack_size", Value::Integer(i64::from(i32::MAX))),
+        ("stack_unique_label", Value::Text(String::new())),
+        ("stack_unique_label", Value::Text(" \0\n ".into())),
+    ] {
+        store
+            .connection()
+            .execute(
+                &format!("UPDATE definitions SET {column}=?1 WHERE hash=10"),
+                [value],
+            )
+            .unwrap();
+        let rows_before = bridge_rows(&store);
+        let schema_before = schema(&store);
+        assert_eq!(store.migrate_to(17), Err(storage_error()));
+        assert_eq!(store.schema_version().unwrap(), 18);
+        assert_eq!(bridge_rows(&store), rows_before);
+        assert_eq!(schema(&store), schema_before);
+        check_fks(&store);
+        store
+            .connection()
+            .execute(
+                &format!("UPDATE definitions SET {column}=NULL WHERE hash=10"),
+                [],
+            )
+            .unwrap();
+    }
+    store.migrate_to(17).unwrap();
+    assert_eq!(store.schema_version().unwrap(), 17);
+    assert_eq!(bridge_rows(&store), legacy_rows);
+    assert_eq!(schema(&store), legacy_schema);
+    check_fks(&store);
+    // The v17 coverage/zero guard remains authoritative after a safe v18 down.
+    assert_eq!(store.migrate_to(16), Err(storage_error()));
+    assert_eq!(store.schema_version().unwrap(), 17);
+    assert_eq!(bridge_rows(&store), legacy_rows);
+    store.migrate_to(18).unwrap();
+    check_fks(&store);
 }
 
 fn bridge_world() -> destiny_core::WorldDefinitionsAcquisition {
