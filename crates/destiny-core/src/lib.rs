@@ -19,6 +19,8 @@ pub mod query;
 pub use ports::PublicMilestonesGateway;
 pub use public_milestones::{PublicMilestone, PublicMilestoneActivity, PublicMilestonesSnapshot};
 pub mod redact;
+pub mod stacks;
+pub use stacks::{StackContainer, StackObservation};
 pub mod state;
 pub mod uri_handler;
 pub mod weekly_profile;
