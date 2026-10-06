@@ -54,6 +54,7 @@ fn snapshot(equipped: bool, on_target: bool, ambiguous: bool) -> InventorySnapsh
         items.push(item("126", 100, ItemLocation::Vault, false));
     }
     InventorySnapshotInput {
+        profile_currencies_coverage: Default::default(),
         stacks: Vec::new(),
         membership_id: MembershipId::new("789"),
         membership_type: MembershipType::new(3),

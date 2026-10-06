@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 16;
+pub(crate) const LATEST_VERSION: u32 = 17;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 16] = [
+const MIGRATIONS: [Migration; 17] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -134,7 +134,66 @@ const MIGRATIONS: [Migration; 16] = [
         up: SCHEMA_V16_UP,
         down: SCHEMA_V16_DOWN,
     },
+    Migration {
+        version: 17,
+        up: SCHEMA_V17_UP,
+        down: SCHEMA_V17_DOWN,
+    },
 ];
+
+// Rebuild only stacks: ordinals, multiplicity and owner foreign keys survive.
+// Missing coverage is deliberately NotObserved for migrated legacy snapshots.
+const SCHEMA_V17_UP: &str = r#"
+CREATE TEMP TABLE saved_stacks AS SELECT * FROM stacks;
+DROP TABLE stacks;
+CREATE TABLE stacks (
+    ordinal INTEGER NOT NULL PRIMARY KEY CHECK (typeof(ordinal) = 'integer' AND ordinal >= 0),
+    container TEXT NOT NULL CHECK (container IN ('profile_inventory', 'profile_currencies', 'character_inventory', 'postmaster')),
+    owner TEXT REFERENCES characters(character_id) ON DELETE RESTRICT,
+    bucket_hash INTEGER NOT NULL CHECK (typeof(bucket_hash) = 'integer' AND bucket_hash BETWEEN 0 AND 4294967295),
+    item_hash INTEGER NOT NULL CHECK (typeof(item_hash) = 'integer' AND item_hash BETWEEN 0 AND 4294967295),
+    quantity INTEGER NOT NULL CHECK (typeof(quantity) = 'integer' AND quantity BETWEEN 0 AND 2147483647 AND (quantity > 0 OR container = 'profile_currencies')),
+    CHECK (
+        (container IN ('profile_inventory', 'profile_currencies') AND owner IS NULL)
+        OR (container IN ('character_inventory', 'postmaster') AND owner IS NOT NULL)
+    )
+) STRICT;
+INSERT INTO stacks SELECT * FROM saved_stacks;
+DROP TABLE saved_stacks;
+CREATE TABLE inventory_coverage (
+    id INTEGER NOT NULL PRIMARY KEY CHECK (id = 1),
+    profile_currencies TEXT NOT NULL CHECK (profile_currencies IN ('not_observed', 'unavailable', 'available'))
+) STRICT;
+"#;
+
+// Guard before permanent mutations; the step transaction also protects against
+// constraint failures while restoring representable rows. Known qualification
+// cannot be silently discarded, even when there are no currency rows.
+const SCHEMA_V17_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN
+    EXISTS (SELECT 1 FROM stacks WHERE quantity = 0)
+    OR EXISTS (SELECT 1 FROM inventory_coverage WHERE id != 1 OR profile_currencies != 'not_observed')
+    THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+CREATE TEMP TABLE saved_stacks AS SELECT * FROM stacks;
+DROP TABLE stacks;
+CREATE TABLE stacks (
+    ordinal INTEGER NOT NULL PRIMARY KEY CHECK (typeof(ordinal) = 'integer' AND ordinal >= 0),
+    container TEXT NOT NULL CHECK (container IN ('profile_inventory', 'profile_currencies', 'character_inventory', 'postmaster')),
+    owner TEXT REFERENCES characters(character_id) ON DELETE RESTRICT,
+    bucket_hash INTEGER NOT NULL CHECK (typeof(bucket_hash) = 'integer' AND bucket_hash BETWEEN 0 AND 4294967295),
+    item_hash INTEGER NOT NULL CHECK (typeof(item_hash) = 'integer' AND item_hash BETWEEN 0 AND 4294967295),
+    quantity INTEGER NOT NULL CHECK (typeof(quantity) = 'integer' AND quantity BETWEEN 1 AND 2147483647),
+    CHECK (
+        (container IN ('profile_inventory', 'profile_currencies') AND owner IS NULL)
+        OR (container IN ('character_inventory', 'postmaster') AND owner IS NOT NULL)
+    )
+) STRICT;
+INSERT INTO stacks SELECT * FROM saved_stacks;
+DROP TABLE saved_stacks;
+DROP TABLE inventory_coverage;
+"#;
 
 // Foreign keys stay enabled. Back up every cascading child before dropping
 // items, and restore against the same parent name (never rename the old parent).

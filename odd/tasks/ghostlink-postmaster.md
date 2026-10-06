@@ -51,7 +51,11 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 - Non-instanced `itemId` wire convention: omitted versus `"0"`.
 - Partial-pull and duplicate-hash selection semantics for `stackSize`.
-- Postmaster bucket identification: do not hard-code an unverified hash.
+- Postmaster bucket identification RESOLVED from public official Manifest:
+  `215593132` is Lost Items, location4, itemCount21, fifo=true,
+  hasTransferDestination=false. Public Manifest succeeded without credentials.
+  Definition source:
+  <https://www.bungie.net/common/destiny2_content/json/en/DestinyInventoryBucketDefinition-a8ba855a-93c7-4014-8f2e-d92357fdfb42.json>
 - Currency/material destination coverage: existing components 102/201 omit 103.
   Official DestinyProfileResponse confirms profileCurrencies is
   SingleComponentResponseOfDestinyInventoryComponent (component 103), while
@@ -79,10 +83,16 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Correct character classification using verified location enum; preserve
   non-instanced quantity/container/runtime bucket in components 102/201;
   synthetic sanitized fixture journeys and fail-closed invalid ownership.
-- [ ] **GPM-004b — Currency acquisition and coverage evidence.** Request
-  component 103, decode profileCurrencies as its distinct inventory source,
-  distinguish missing coverage from empty holdings, avoid double-counting and
-  confirm bucket-based classification before claiming complete coverage.
+- [x] **GPM-004b1 — Persist currency coverage and zero balances.** Separate
+  NotObserved/Unavailable/Available coverage from holdings and preserve it through
+  snapshots/revisions/SQLite v17. Zero quantities allowed ONLY for profile currency
+  balances; physical stacks remain positive. Legacy snapshots default NotObserved;
+  no destructive downgrade of new information.
+- [ ] **GPM-004b2 — Acquire currencies and classify verified buckets.**
+  Request103, decode profileCurrencies separately with explicit availability;
+  normal gear reads tolerate genuinely unavailable optional currency data, not
+  malformed currency records. Use officially verified Lost Items bucket for
+  owner-aware classification; never sum overlapping source observations.
 - [ ] **GPM-005 — Expose Postmaster reads.** CLI/MCP search or dedicated
   listing with owner/location parity, stack quantities and honest coverage;
   docs and skill alongside tests.
@@ -130,7 +140,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   (snapshot contract plus fail-closed durable bridge) and GPM-003b (one combined
   v16 migration and Postmaster ownership). GPM-003a is COMPLETE;
   GPM-003b is COMPLETE (worker checks and native assessment);
-  GPM-004a is COMPLETE; GPM-004b is IN PROGRESS (coverage/contract research).
+  GPM-004a and GPM-004b1 are COMPLETE;
+  GPM-004b2 is IN PROGRESS (currency acquisition and bucket classification).
 - GPM-003a commit `1bca7d1` (321 additions / 8 deletions, including tests).
   Worker `muwy92h2-5-3djs`: completed snapshot stack fields, multiset
   equality/owner validation, fake preservation, mechanical literal propagation,
@@ -158,7 +169,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   candidate not consumed. reviewDue=true (slice_budget_reached); no native review
   initiated. Exact provider continuation (informational, not executed):
   `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
-- GPM-004a worker `muwze6zb-8-27zq`: keeps missing/null-ID inventory stacks,
+- GPM-004a commit `f9d6a48`.
+  Worker `muwze6zb-8-27zq`: keeps missing/null-ID inventory stacks,
   classifies explicit character location4 as Postmaster(owner), rejects equipped
   or unowned Postmaster, preserves omitted character-location compatibility.
   RED: discarded stacks and wrong location; GREEN: 125 focused tests and 1,511
@@ -169,10 +181,35 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   stands, independentVerifier=false. RDD off, outcome unknown, not consumed;
   reviewDue=true (slice_budget_reached). Exact continuation (not executed):
   `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
-- GPM-004b must resolve currency missing-versus-empty coverage and bucket-only
-  Postmaster classification before complete-support claims. Literal instance
-  string `"0"` still follows the existing instance parser; outgoing non-instance
-  pull convention remains a separate unresolved contract gate.
+- GPM-004b exploration had no public HTTP tools; parent retrieved official
+  Manifest/OpenAPI and pinned secondary DIM source at
+  `d7c02e5cf9ba19e750bc626f497a7a069be23b08`. Bucket proof is primary above.
+  Component wrapper privacy Private is not itself missing data; unavailable
+  wrappers cannot become empty holdings. Preserve availability durably because
+  legacy/incomplete snapshots remain readable after restart.
+- GPM-004b design: zero currency balances are observations, not physical stacks;
+  preserve them with scoped domain validation and v17 (do not rewrite committed
+  v16). Coverage enum is per-snapshot, included in equality and readback. Keep
+  ordinary gear reads available when optional currencies are unavailable, while
+  stronger currency/pull claims require Available fresh coverage.
+- GPM-004b1 worker `mux008qq-a-wocy`: ProfileCurrenciesCoverage
+  NotObserved/Unavailable/Available on both snapshots, cloning/equality/fakes and
+  SQLite17. Currency-only zero balances, physical stacks remain positive; known
+  coverage or zero balances prevent destructive downgrade. RED: rejected zero,
+  missing field/enum, unsupported SQLite roundtrip; GREEN: 16 core tests, 1 fake
+  coverage test, 128 SQLite tests, 1,505 / 1,522 workspace tests. fmt/clippy/diff
+  clean. Initial wrong feature and test FK setup corrected before final pass.
+  ASSESS medium (29 paths / 763 diff lines), writerSelfVerification=true,
+  independentVerifier=false; RDD off, outcome unknown, not consumed. reviewDue
+  slice_budget_reached, no native review initiated. Exact continuation:
+  `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
+- DIM (secondary, not an official guarantee) uses runtime buckets for Postmaster
+  and sends item.id (normalized to '0' for noninstances), hash and amount in
+  PullFromPostmaster; source files bungie-api/destiny2-api.ts:192-203 and
+  inventory/store/d2-item-factory.ts:359-371,523-535 at that pinned commit.
+  Partial/duplicate stack addressing still requires conservative treatment.
+  DIM also checks doesPostmasterPullHaveSideEffects; verify the official field
+  and refuse unintended redemption/side effects before enabling pull actions.
 - Migration hazard: dropping/rebuilding `items` can cascade-delete item_perks,
   item_plugs, item_stats and item_available_plugs. Foreign keys are enabled and
   the runner is already in a transaction; foreign_keys=OFF inside migration SQL

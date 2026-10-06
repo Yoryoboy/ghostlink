@@ -12,6 +12,7 @@ fn stack(container: StackContainer, hash: i64, bucket: i64, quantity: i64) -> St
 
 fn input() -> InventorySnapshotInput {
     InventorySnapshotInput {
+        profile_currencies_coverage: ProfileCurrenciesCoverage::Available,
         stacks: vec![
             stack(StackContainer::ProfileInventory, 7, 8, 2),
             stack(StackContainer::ProfileCurrencies, 7, 8, 3),
@@ -106,6 +107,7 @@ fn postmaster_requires_owner_and_refuses_transfer_endpoints() {
 fn stack_snapshot_metadata_conversion_preserves_observations() {
     let input = input();
     let snapshot = InventorySnapshot {
+        profile_currencies_coverage: input.profile_currencies_coverage,
         stacks: input.stacks.clone(),
         plug_set_entries: input.plug_set_entries.clone(),
         metadata: SnapshotMetadata {
@@ -175,4 +177,29 @@ fn stack_snapshot_owners_must_belong_to_the_projection() {
     }
     candidate.characters.push(candidate.characters[0].clone());
     assert!(!candidate.is_structurally_valid());
+}
+
+#[test]
+fn coverage_is_explicit_structural_and_revision_content() {
+    let mut unknown = input();
+    unknown.stacks.clear();
+    unknown.profile_currencies_coverage = ProfileCurrenciesCoverage::NotObserved;
+    let mut available = unknown.clone();
+    available.profile_currencies_coverage = ProfileCurrenciesCoverage::Available;
+    let mut unavailable = unknown.clone();
+    unavailable.profile_currencies_coverage = ProfileCurrenciesCoverage::Unavailable;
+    for candidate in [&unknown, &available, &unavailable] {
+        assert!(candidate.is_structurally_valid());
+    }
+    assert!(!unknown.content_eq(&available));
+    assert!(!available.content_eq(&unavailable));
+    assert!(!unknown.content_eq(&unavailable));
+    for coverage in [
+        ProfileCurrenciesCoverage::NotObserved,
+        ProfileCurrenciesCoverage::Unavailable,
+    ] {
+        let mut contradictory = input();
+        contradictory.profile_currencies_coverage = coverage;
+        assert!(!contradictory.is_structurally_valid());
+    }
 }

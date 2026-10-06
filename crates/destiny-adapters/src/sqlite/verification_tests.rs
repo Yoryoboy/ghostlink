@@ -141,6 +141,7 @@ fn profile(
     checked_at: u64,
 ) -> InventorySnapshotInput {
     InventorySnapshotInput {
+        profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
         stacks: Vec::new(),
         plug_set_entries: Vec::new(),
         membership_id: MembershipId::new(membership_id),

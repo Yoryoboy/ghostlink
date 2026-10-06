@@ -47,8 +47,8 @@ use destiny_core::{
     AppError, BucketHash, Character, CharacterId, Dataset, DefinitionVersion, ErrorCategory,
     InventoryRepository, InventorySnapshot, InventorySnapshotInput, ItemHash, ItemInstance,
     ItemLocation, MembershipId, MembershipType, PerkHash, PerkSummary, PlugSetEntry, PlugSetScope,
-    PlugSummary, SnapshotMetadata, SourceMarker, StackContainer, StackObservation, SyncMetadata,
-    SyncRevision, Timestamp,
+    PlugSummary, ProfileCurrenciesCoverage, SnapshotMetadata, SourceMarker, StackContainer,
+    StackObservation, SyncMetadata, SyncRevision, Timestamp,
 };
 use rusqlite::{Connection, Error as SqlError, TransactionBehavior, params};
 use std::collections::HashSet;
@@ -133,6 +133,7 @@ impl InventoryRepository for SqliteStore {
         transaction.commit().map_err(|_| storage_failure())?;
 
         Ok(InventorySnapshot {
+            profile_currencies_coverage: ordered.profile_currencies_coverage,
             stacks: ordered.stacks,
             plug_set_entries: ordered.plug_set_entries,
             metadata: SnapshotMetadata {
@@ -184,6 +185,8 @@ fn read_projection(connection: &Connection) -> Result<Option<InventorySnapshot>,
             Ok(None)
         }
         (Some(metadata), Some((membership_id, membership_type))) => {
+            let profile_currencies_coverage =
+                read_coverage(connection)?.unwrap_or(ProfileCurrenciesCoverage::NotObserved);
             let mut characters = read_characters(connection)?;
             let mut items = read_items(connection)?;
 
@@ -205,8 +208,17 @@ fn read_projection(connection: &Connection) -> Result<Option<InventorySnapshot>,
             characters.sort_by(|left, right| left.id.cmp(&right.id));
             items.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
 
+            let stacks = read_stacks(connection, &characters)?;
+            if profile_currencies_coverage != ProfileCurrenciesCoverage::Available
+                && stacks
+                    .iter()
+                    .any(|stack| stack.container() == &StackContainer::ProfileCurrencies)
+            {
+                return Err(storage_failure());
+            }
             Ok(Some(InventorySnapshot {
-                stacks: read_stacks(connection, &characters)?,
+                profile_currencies_coverage,
+                stacks,
                 plug_set_entries: read_subclass_options(connection, &characters)?,
                 metadata: SnapshotMetadata {
                     membership_id,
@@ -222,6 +234,33 @@ fn read_projection(connection: &Connection) -> Result<Option<InventorySnapshot>,
         }
         _ => Err(storage_failure()),
     }
+}
+
+/// Missing markers are legacy NotObserved, never evidence of empty holdings.
+/// Validate every row rather than filtering by id and hiding corrupt markers.
+fn read_coverage(connection: &Connection) -> Result<Option<ProfileCurrenciesCoverage>, AppError> {
+    let mut statement = connection
+        .prepare("SELECT id, profile_currencies FROM inventory_coverage")
+        .map_err(|_| storage_failure())?;
+    let mut rows = statement.query([]).map_err(|_| storage_failure())?;
+    let Some(row) = rows.next().map_err(|_| storage_failure())? else {
+        return Ok(None);
+    };
+    let id: i64 = row.get(0).map_err(|_| storage_failure())?;
+    let value: String = row.get(1).map_err(|_| storage_failure())?;
+    if id != 1 {
+        return Err(storage_failure());
+    }
+    let coverage = match value.as_str() {
+        "not_observed" => ProfileCurrenciesCoverage::NotObserved,
+        "unavailable" => ProfileCurrenciesCoverage::Unavailable,
+        "available" => ProfileCurrenciesCoverage::Available,
+        _ => return Err(storage_failure()),
+    };
+    if rows.next().map_err(|_| storage_failure())?.is_some() {
+        return Err(storage_failure());
+    }
+    Ok(Some(coverage))
 }
 
 /// Reads the single committed `profile_inventory` metadata row, if present.
@@ -342,7 +381,13 @@ fn projection_rows_exist(connection: &Connection) -> Result<bool, AppError> {
     let stacks: i64 = connection
         .query_row("SELECT count(*) FROM stacks", [], |row| row.get(0))
         .map_err(|_| storage_failure())?;
-    Ok(perks > 0 || plugs > 0 || stats > 0 || available > 0 || options > 0 || stacks > 0)
+    Ok(perks > 0
+        || plugs > 0
+        || stats > 0
+        || available > 0
+        || options > 0
+        || stacks > 0
+        || read_coverage(connection)?.is_some())
 }
 
 /// Reconstruct observations through their validated constructor, preserving multiplicity.
@@ -850,6 +895,19 @@ fn replace_projection(
             )
             .map_err(|_| storage_failure())?;
     }
+
+    let coverage = match input.profile_currencies_coverage {
+        ProfileCurrenciesCoverage::NotObserved => "not_observed",
+        ProfileCurrenciesCoverage::Unavailable => "unavailable",
+        ProfileCurrenciesCoverage::Available => "available",
+    };
+    connection
+        .execute(
+            "INSERT INTO inventory_coverage(id, profile_currencies) VALUES(1, ?1) \
+         ON CONFLICT(id) DO UPDATE SET profile_currencies = excluded.profile_currencies",
+            [coverage],
+        )
+        .map_err(|_| storage_failure())?;
 
     for (ordinal, stack) in input.stacks.iter().enumerate() {
         let (container, owner) = match stack.container() {

@@ -53,6 +53,7 @@ fn stack_snapshot_sqlite_roundtrips_duplicates_and_revision() {
 
     let mut empty_store = SqliteStore::open_in_memory().unwrap();
     let mut input = full_input();
+    input.profile_currencies_coverage = destiny_core::ProfileCurrenciesCoverage::Available;
     input.stacks.push(
         StackObservation::new(
             ItemHash::new(7),
@@ -76,6 +77,7 @@ fn postmaster_and_stacks_roundtrip_filter_and_atomic_safety() {
     let mut store = SqliteStore::open_in_memory().unwrap();
     let mut input = full_input();
     input.items[2].location = ItemLocation::Postmaster(input.characters[0].id.clone());
+    input.profile_currencies_coverage = destiny_core::ProfileCurrenciesCoverage::Available;
     for container in [
         StackContainer::ProfileInventory,
         StackContainer::ProfileCurrencies,
@@ -668,6 +670,7 @@ fn storage_error() -> AppError {
 /// bounds, and an empty list.
 fn full_input() -> InventorySnapshotInput {
     InventorySnapshotInput {
+        profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
         stacks: Vec::new(),
         plug_set_entries: Vec::new(),
         membership_id: MembershipId::new("membership-1"),
@@ -1994,5 +1997,218 @@ fn errors_and_debug_never_leak_stored_values() {
         store.load_current().expect("read projection"),
         committed,
         "a rejected replacement must preserve the committed projection"
+    );
+}
+
+#[test]
+fn currency_zero_and_coverage_sqlite_roundtrip() {
+    use destiny_core::{
+        BucketHash, ProfileCurrenciesCoverage as Coverage, StackContainer, StackObservation,
+    };
+    let temp = TempDatabase::new();
+    let mut store = SqliteStore::open(temp.path()).unwrap();
+    let mut input = full_input();
+    input.profile_currencies_coverage = Coverage::Available;
+    input.stacks.push(
+        StackObservation::new(
+            ItemHash::new(7),
+            BucketHash::new(8),
+            0,
+            StackContainer::ProfileCurrencies,
+        )
+        .unwrap(),
+    );
+    input.stacks.push(input.stacks[0].clone());
+    let snapshot = store.replace_current(input).unwrap();
+    assert_eq!(snapshot.profile_currencies_coverage, Coverage::Available);
+    assert_eq!(snapshot.stacks.len(), 2);
+    assert_eq!(store.load_current().unwrap(), Some(snapshot.clone()));
+    drop(store);
+    let reopened = SqliteStore::open(temp.path()).unwrap();
+    assert_eq!(reopened.load_current().unwrap(), Some(snapshot));
+}
+
+#[test]
+fn currency_coverage_states_revision_restart_and_rollback() {
+    use destiny_core::ProfileCurrenciesCoverage as Coverage;
+    let temp = TempDatabase::new();
+    let mut last_revision = 0;
+    for coverage in [
+        Coverage::NotObserved,
+        Coverage::Unavailable,
+        Coverage::Available,
+    ] {
+        let snapshot = {
+            let mut store = SqliteStore::open(temp.path()).unwrap();
+            let mut input = full_input();
+            input.profile_currencies_coverage = coverage;
+            let snapshot = store.replace_current(input).unwrap();
+            assert_eq!(snapshot.metadata.revision.value(), last_revision + 1);
+            let mut refreshed = InventorySnapshotInput::with_metadata(&snapshot);
+            refreshed.checked_at = Timestamp::new(snapshot.metadata.checked_at.seconds() + 1);
+            let same = store.replace_current(refreshed).unwrap();
+            assert_eq!(same.metadata.revision, snapshot.metadata.revision);
+            last_revision = snapshot.metadata.revision.value();
+            same
+        };
+        let mut store = SqliteStore::open(temp.path()).unwrap();
+        assert_eq!(store.load_current().unwrap(), Some(snapshot.clone()));
+        store
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER refuse_metadata BEFORE UPDATE ON sync_metadata
+            BEGIN SELECT RAISE(ABORT, 'test failure'); END;",
+            )
+            .unwrap();
+        let mut changed = InventorySnapshotInput::with_metadata(&snapshot);
+        changed.profile_currencies_coverage = if coverage == Coverage::Available {
+            Coverage::Unavailable
+        } else {
+            Coverage::Available
+        };
+        assert_eq!(
+            store.replace_current(changed).unwrap_err().category(),
+            ErrorCategory::LocalStorage
+        );
+        assert_eq!(store.load_current().unwrap(), Some(snapshot));
+        store
+            .connection()
+            .execute_batch("DROP TRIGGER refuse_metadata")
+            .unwrap();
+    }
+}
+
+#[test]
+fn currency_marker_orphans_corruption_and_contradictions_fail_closed() {
+    use destiny_core::ProfileCurrenciesCoverage as Coverage;
+    for corrupt in [
+        "UPDATE inventory_coverage SET profile_currencies = 'invalid'",
+        "UPDATE inventory_coverage SET id = 2",
+        "INSERT INTO inventory_coverage VALUES(2,'available')",
+        "INSERT INTO stacks VALUES(0,'profile_currencies',NULL,8,7,1)",
+    ] {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let original = store.replace_current(full_input()).unwrap();
+        store
+            .connection()
+            .execute_batch("PRAGMA ignore_check_constraints = ON")
+            .unwrap();
+        store.connection().execute_batch(corrupt).unwrap();
+        store
+            .connection()
+            .execute_batch("PRAGMA ignore_check_constraints = OFF")
+            .unwrap();
+        assert_eq!(
+            store.load_current().unwrap_err().category(),
+            ErrorCategory::LocalStorage,
+            "{corrupt}"
+        );
+        assert_eq!(
+            store
+                .replace_current(InventorySnapshotInput::with_metadata(&original))
+                .unwrap_err()
+                .category(),
+            ErrorCategory::LocalStorage
+        );
+    }
+    for coverage in ["not_observed", "unavailable", "available"] {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        store
+            .connection()
+            .execute("INSERT INTO inventory_coverage VALUES(1,?1)", [coverage])
+            .unwrap();
+        assert_eq!(
+            store.load_current().unwrap_err().category(),
+            ErrorCategory::LocalStorage
+        );
+        assert_eq!(
+            store.replace_current(full_input()).unwrap_err().category(),
+            ErrorCategory::LocalStorage
+        );
+    }
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let snapshot = store.replace_current(full_input()).unwrap();
+    store
+        .connection()
+        .execute("DELETE FROM inventory_coverage", [])
+        .unwrap();
+    assert_eq!(store.load_current().unwrap(), Some(snapshot));
+    // Legacy positive currency rows do not imply availability, even after migration.
+    store.migrate_to(16).unwrap();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO stacks VALUES(0,'profile_currencies',NULL,8,7,1)",
+            [],
+        )
+        .unwrap();
+    store.migrate_to(17).unwrap();
+    assert_eq!(
+        store.load_current().unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    let mut available = full_input();
+    available.profile_currencies_coverage = Coverage::Available;
+    assert_eq!(
+        store.replace_current(available).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+}
+
+#[test]
+fn currency_coverage_structural_rejection_and_balance_revision() {
+    use destiny_core::{
+        BucketHash, ProfileCurrenciesCoverage as Coverage, StackContainer, StackObservation,
+    };
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let original = store.replace_current(full_input()).unwrap();
+    let balance = |quantity| {
+        StackObservation::new(
+            ItemHash::new(7),
+            BucketHash::new(8),
+            quantity,
+            StackContainer::ProfileCurrencies,
+        )
+        .unwrap()
+    };
+    for coverage in [Coverage::NotObserved, Coverage::Unavailable] {
+        let mut invalid = full_input();
+        invalid.profile_currencies_coverage = coverage;
+        invalid.stacks.push(balance(0));
+        assert_eq!(
+            store.replace_current(invalid).unwrap_err().category(),
+            ErrorCategory::ProviderValidation
+        );
+        assert_eq!(store.load_current().unwrap(), Some(original.clone()));
+    }
+    let mut input = full_input();
+    input.profile_currencies_coverage = Coverage::Available;
+    let empty = store.replace_current(input.clone()).unwrap();
+    assert_eq!(
+        empty.metadata.revision.value(),
+        original.metadata.revision.value() + 1
+    );
+    input.stacks.push(balance(0));
+    let zero = store.replace_current(input.clone()).unwrap();
+    assert_eq!(
+        zero.metadata.revision.value(),
+        empty.metadata.revision.value() + 1
+    );
+    input.stacks[0] = balance(1);
+    let positive = store.replace_current(input.clone()).unwrap();
+    assert_eq!(
+        positive.metadata.revision.value(),
+        zero.metadata.revision.value() + 1
+    );
+    input.stacks.push(balance(1));
+    let duplicate = store.replace_current(input.clone()).unwrap();
+    assert_eq!(
+        duplicate.metadata.revision.value(),
+        positive.metadata.revision.value() + 1
+    );
+    input.stacks.reverse();
+    assert_eq!(
+        store.replace_current(input).unwrap().metadata.revision,
+        duplicate.metadata.revision
     );
 }

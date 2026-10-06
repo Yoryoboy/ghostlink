@@ -2514,6 +2514,7 @@ mod tests {
     ) -> InventorySnapshotInput {
         let membership = membership();
         InventorySnapshotInput {
+            profile_currencies_coverage: Default::default(),
             stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_id: membership.membership_id().clone(),

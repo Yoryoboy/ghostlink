@@ -582,6 +582,7 @@ impl InMemoryInventoryRepository {
             },
             characters: input.characters.clone(),
             items: input.items.clone(),
+            profile_currencies_coverage: input.profile_currencies_coverage,
             stacks: input.stacks.clone(),
             plug_set_entries: input.plug_set_entries.clone(),
         };
@@ -655,6 +656,7 @@ impl InventoryRepository for InMemoryInventoryRepository {
             },
             characters: input.characters,
             items: input.items,
+            profile_currencies_coverage: input.profile_currencies_coverage,
             stacks: input.stacks,
             plug_set_entries: input.plug_set_entries,
         };
@@ -1406,8 +1408,39 @@ mod tests {
 
     type RevisionMutation = (&'static str, fn(&mut InventorySnapshotInput));
 
+    #[test]
+    fn currency_coverage_fake_preserves_empty_states_and_revisions() {
+        use destiny_core::ProfileCurrenciesCoverage as Coverage;
+        let mut repository = InMemoryInventoryRepository::default();
+        let mut last = 0;
+        for coverage in [
+            Coverage::NotObserved,
+            Coverage::Unavailable,
+            Coverage::Available,
+        ] {
+            let mut candidate = input(1);
+            candidate.profile_currencies_coverage = coverage;
+            let snapshot = repository.replace_current(candidate).unwrap();
+            assert_eq!(snapshot.profile_currencies_coverage, coverage);
+            assert_eq!(snapshot.metadata.revision.value(), last + 1);
+            last = snapshot.metadata.revision.value();
+            assert_eq!(repository.load_current().unwrap(), Some(snapshot.clone()));
+            let mut refreshed = InventorySnapshotInput::with_metadata(&snapshot);
+            refreshed.checked_at = Timestamp::new(999);
+            assert_eq!(
+                repository
+                    .replace_current(refreshed)
+                    .unwrap()
+                    .metadata
+                    .revision,
+                snapshot.metadata.revision
+            );
+        }
+    }
+
     fn input(quantity: u32) -> InventorySnapshotInput {
         InventorySnapshotInput {
+            profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
             stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_id: MembershipId::new("membership"),
@@ -1434,6 +1467,7 @@ mod tests {
 
     fn multi_input() -> InventorySnapshotInput {
         InventorySnapshotInput {
+            profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
             stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_id: MembershipId::new("membership"),
@@ -2931,6 +2965,7 @@ mod tests {
     #[test]
     fn search_repository_seeds_from_a_committed_snapshot() {
         let snapshot = InventorySnapshot {
+            profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
             stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             metadata: SnapshotMetadata {

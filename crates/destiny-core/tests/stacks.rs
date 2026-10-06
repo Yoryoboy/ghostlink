@@ -172,3 +172,26 @@ fn identical_rows_have_no_synthetic_identity_and_owner_debug_remains_redacted() 
     assert!(!debug.contains("instance_id"));
     assert!(!debug.contains("stack_id"));
 }
+
+#[test]
+fn currency_balances_allow_zero_but_physical_stacks_do_not() {
+    assert_eq!(stack(StackContainer::ProfileCurrencies, 0).quantity(), 0);
+    for container in [
+        StackContainer::ProfileInventory,
+        StackContainer::CharacterInventory(CharacterId::new("123")),
+        StackContainer::Postmaster(CharacterId::new("123")),
+    ] {
+        assert!(StackObservation::new(ItemHash::new(1), BucketHash::new(2), 0, container).is_err());
+    }
+    for quantity in [-1, i64::MIN, i64::from(i32::MAX) + 1, i64::MAX] {
+        let error = StackObservation::new(
+            ItemHash::new(1),
+            BucketHash::new(2),
+            quantity,
+            StackContainer::ProfileCurrencies,
+        )
+        .unwrap_err();
+        assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+        assert_eq!(error.to_string(), "the provider rejected the request");
+    }
+}

@@ -176,6 +176,7 @@ fn seeded(stats: Vec<StatDefinition>) -> (SqliteStore, InMemorySearchRepository)
     fake.set_instances(instances.clone());
     store
         .replace_current(InventorySnapshotInput {
+            profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
             stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_id: MembershipId::new("123"),

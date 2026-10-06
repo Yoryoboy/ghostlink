@@ -108,6 +108,8 @@ pub trait PlanIdGenerator {
 /// change.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySnapshotInput {
+    /// Explicit profile currency qualification, independent of holdings.
+    pub profile_currencies_coverage: crate::ProfileCurrenciesCoverage,
     pub stacks: Vec<crate::StackObservation>,
     pub plug_set_entries: Vec<crate::domain::PlugSetEntry>,
     pub membership_id: MembershipId,
@@ -129,6 +131,7 @@ impl InventorySnapshotInput {
             source: snapshot.metadata.source,
             characters: snapshot.characters.clone(),
             items: snapshot.items.clone(),
+            profile_currencies_coverage: snapshot.profile_currencies_coverage,
             stacks: snapshot.stacks.clone(),
             plug_set_entries: snapshot.plug_set_entries.clone(),
         }
@@ -159,6 +162,7 @@ impl InventorySnapshotInput {
         if self.membership_id != other.membership_id
             || self.membership_type != other.membership_type
             || self.definition_version != other.definition_version
+            || self.profile_currencies_coverage != other.profile_currencies_coverage
             || self.characters.len() != other.characters.len()
             || self.items.len() != other.items.len()
         {
@@ -211,7 +215,8 @@ impl InventorySnapshotInput {
     /// must be canonical decimal identifiers referencing this projection.
     /// Character inventory and Postmaster stack owners must reference characters
     /// in this projection. Profile stack containers have no owner; duplicate
-    /// observations are valid and are never deduplicated.
+    /// observations are valid and are never deduplicated. Currency rows require
+    /// Available coverage; Available with no currency rows is valid.
     pub fn is_structurally_valid(&self) -> bool {
         let mut character_ids = HashSet::with_capacity(self.characters.len());
         for character in &self.characters {
@@ -228,8 +233,14 @@ impl InventorySnapshotInput {
                         return false;
                     }
                 }
-                crate::StackContainer::ProfileInventory
-                | crate::StackContainer::ProfileCurrencies => {}
+                crate::StackContainer::ProfileCurrencies => {
+                    if self.profile_currencies_coverage
+                        != crate::ProfileCurrenciesCoverage::Available
+                    {
+                        return false;
+                    }
+                }
+                crate::StackContainer::ProfileInventory => {}
             }
         }
 

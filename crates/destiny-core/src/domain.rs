@@ -734,6 +734,8 @@ pub struct PlugSetEntry {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySnapshot {
+    /// Explicit profile currency qualification, independent of holdings.
+    pub profile_currencies_coverage: crate::ProfileCurrenciesCoverage,
     pub stacks: Vec<crate::StackObservation>,
     pub plug_set_entries: Vec<PlugSetEntry>,
     pub metadata: SnapshotMetadata,
@@ -849,6 +851,7 @@ mod tests {
     #[test]
     fn snapshot_records_are_normalized_and_provider_neutral() {
         let snapshot = InventorySnapshot {
+            profile_currencies_coverage: crate::ProfileCurrenciesCoverage::NotObserved,
             stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             metadata: SnapshotMetadata {

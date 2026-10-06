@@ -286,6 +286,7 @@ pub fn decode_profile(
     });
 
     let snapshot = InventorySnapshotInput {
+        profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
         stacks,
         plug_set_entries: decode_plug_sets(response, &character_ids)?,
         membership_id: membership.membership_id().clone(),
@@ -1516,6 +1517,7 @@ mod tests {
         let snapshot = decode(FIXTURE).expect("complete fixture");
 
         let expected = InventorySnapshotInput {
+            profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
             stacks: vec![
                 destiny_core::StackObservation::new(
                     ItemHash::new(1004),

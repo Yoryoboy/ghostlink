@@ -902,6 +902,7 @@ mod tests {
 
         fn inventory_input(membership: &DestinyMembership) -> InventorySnapshotInput {
             InventorySnapshotInput {
+                profile_currencies_coverage: Default::default(),
                 stacks: Vec::new(),
                 plug_set_entries: Vec::new(),
                 membership_id: membership.membership_id().clone(),

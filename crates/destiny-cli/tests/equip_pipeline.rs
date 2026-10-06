@@ -34,6 +34,7 @@ fn membership() -> DestinyMembership {
 
 fn snapshot(location: ItemLocation, equipped: bool) -> InventorySnapshotInput {
     InventorySnapshotInput {
+        profile_currencies_coverage: Default::default(),
         stacks: Vec::new(),
         membership_id: MembershipId::new("789"),
         membership_type: MembershipType::new(3),

@@ -12,6 +12,19 @@
 
 use crate::{AppError, BucketHash, CharacterId, ErrorCategory, ItemHash};
 
+/// Explicit qualification of the profile currency source in one snapshot.
+/// Holdings never imply availability; an available source may be observed-empty.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ProfileCurrenciesCoverage {
+    /// Legacy snapshot or acquisition that never observed this component.
+    #[default]
+    NotObserved,
+    /// The component was observed but its data was unavailable.
+    Unavailable,
+    /// The component supplied data, including an empty set of balances.
+    Available,
+}
+
 /// Source/container context for a non-instanced observation.
 ///
 /// Character inventory and Postmaster require an owner structurally; profile
@@ -59,7 +72,8 @@ impl StackObservation {
     /// Validates the provider-width numeric fields without changing existing
     /// hash constructors. Hashes accept the full unsigned 32-bit range,
     /// including zero; the canonical hash types do not reserve zero.
-    /// Quantity must be in `1..=i32::MAX`. The wider input prevents narrowing an
+    /// Physical quantities must be in `1..=i32::MAX`; profile currency balances
+    /// additionally allow zero. The wider input prevents narrowing an
     /// overflowing quantity before validation. Invalid input yields a sanitized
     /// [`ErrorCategory::ProviderValidation`] error, with no payload values.
     /// Ownership uses canonical [`CharacterId`] semantics unchanged.
@@ -69,9 +83,14 @@ impl StackObservation {
         quantity: i64,
         container: StackContainer,
     ) -> Result<Self, AppError> {
+        let minimum = if container == StackContainer::ProfileCurrencies {
+            0
+        } else {
+            1
+        };
         if u32::try_from(item_hash.value()).is_err()
             || u32::try_from(bucket_hash.value()).is_err()
-            || !(1..=i64::from(i32::MAX)).contains(&quantity)
+            || !(minimum..=i64::from(i32::MAX)).contains(&quantity)
         {
             return Err(AppError::new(ErrorCategory::ProviderValidation));
         }
@@ -93,7 +112,8 @@ impl StackObservation {
         self.bucket_hash
     }
 
-    /// Positive stack size representable by the provider's signed 32-bit field.
+    /// Signed int32 balance (possibly zero) for profile currencies, or positive
+    /// physical stack size for all other containers.
     pub const fn quantity(&self) -> i32 {
         self.quantity
     }
