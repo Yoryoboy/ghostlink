@@ -176,8 +176,30 @@ deliver as chained PRs.
   tests 4/4, workspace tests 1,472 passed / 0 failed, diff check (exit 0).
   Commit evidence: see git log for
   `docs(calendar): document weekly rotation predictions`.
-- [ ] **WRC-007 — Live validation.** Run against today's reset
+- [x] **WRC-007 — Live validation.** Run against today's reset
   (2026-10-06 17:00 UTC) and compare with in-game/Kyber data.
+  User confirmed all four rotations directly in-game. Existing branch binary
+  `target/debug/ghostlink weekly-reset --json` executed at
+  2026-10-06T17:07:24Z, exit 0, empty stderr, no rebuild. Window:
+  2026-10-06T17:00:00Z -> 2026-10-13T17:00:00Z; `current_week: true`.
+  All predictions match the user's observation: Salvation's Edge + Vault of
+  Glass; Pit of Heresy + Warlord's Ruin; Calus + Consecrated Mind;
+  The Arms Dealer. Live milestones returned the current reset window but
+  do not independently identify the featured rotations; the game is the
+  ground truth, not mere presence in the milestone list. Capture:
+  `/tmp/ghostlink-weekly-reset.brAxif/stdout.json` (temporary evidence).
+  This validates this reset only, not universal prediction accuracy or
+  dungeon slot 5. Commit evidence: this delivery tracker commit.
+
+## Delivery
+- Approved issue: https://github.com/Yoryoboy/ghostlink/issues/56.
+- User authorized commit, push, PR creation and merge after required CI.
+- Strategy: stacked-to-main, selected by the user. Five cohesive slices:
+  data/core, embedded parser, CLI, MCP, docs. Core/parser/CLI exceed the
+  advisory 400-line budget; tests stay with their behavior. No repository
+  size-exception policy exists; no size-exception label is applied.
+- Each slice must pass Ubuntu, Windows and broker CI before merge.
+- Reference #56 in slices 1-4; close it only with slice 5.
 
 ## Follow-ups
 - Warn when the current-week prediction disagrees with live observation
