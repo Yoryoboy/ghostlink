@@ -1261,6 +1261,8 @@ pub fn loadouts_output(result: &destiny_app::LoadoutsResult) -> crate::schema::G
                                         plug_hash: plug.plug_hash.value(),
                                         name: plug.name.clone(),
                                         description: plug.description.clone(),
+                                        clarity: plug.clarity.clone(),
+                                        clarity_match: plug.clarity_match.clone(),
                                         empty: plug.empty,
                                         subclass_kind: plug.subclass_kind.map(|kind| match kind {
                                             destiny_app::SubclassPlugKind::Super => {
@@ -1336,6 +1338,8 @@ pub fn artifact_output(result: &destiny_app::ArtifactResult) -> crate::schema::G
                                 plug_hash: slot.plug_hash.value(),
                                 name: slot.name.clone(),
                                 description: slot.description.clone(),
+                                clarity: slot.clarity.clone(),
+                                clarity_match: slot.clarity_match.clone(),
                                 empty: slot.empty,
                             })
                             .collect(),
@@ -1440,6 +1444,8 @@ pub fn subclass_options_output(
                                         plug_hash: option.plug_hash.value(),
                                         name: option.name.clone(),
                                         description: option.description.clone(),
+                                        clarity: option.clarity.clone(),
+                                        clarity_match: option.clarity_match.clone(),
                                         status: match option.status {
                                             destiny_app::OptionStatus::Unlocked => {
                                                 OptionStatusView::Unlocked
@@ -1528,6 +1534,8 @@ pub fn subclass_output(result: &destiny_app::SubclassResult) -> crate::schema::G
                                 plug_hash: slot.plug_hash.value(),
                                 name: slot.name.clone(),
                                 description: slot.description.clone(),
+                                clarity: slot.clarity.clone(),
+                                clarity_match: slot.clarity_match.clone(),
                                 empty: slot.empty,
                             })
                             .collect(),
@@ -1689,6 +1697,8 @@ pub fn inspect_item_output(
                         hash: plug.hash.value(),
                         name: plug.name.clone(),
                         description: plug.description.clone(),
+                        clarity: plug.clarity.clone(),
+                        clarity_match: plug.clarity_match.clone(),
                         role: match plug.role {
                             Role::Intrinsic => View::Intrinsic,
                             Role::Perk => View::Perk,

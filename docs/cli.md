@@ -394,6 +394,17 @@ plug, including aspects and fragments; multiline text is preserved. The same
 layout applies to artifact, loadout, subclass-option and inspection descriptions.
 Empty sockets remain explicit; unlocked options are not included.
 
+On subclass slots, subclass options, artifact slots, loadout plugs and inspect
+`plug_details`, optional `clarity` adds community research by
+[Clarity](https://d2clarity.com) next to the official `description`. Stored text
+is shown verbatim in JSON, including whitespace and newlines; absent insights
+are omitted. Exact hashes and unambiguous same-name, same-enhancement matches
+have no marker. An enhanced/base fallback adds `clarity_match: "variant"`;
+ambiguous differing texts are never guessed (a parent-item match is preferred
+when known). Human output places `Clarity:` beneath the description, or
+`Clarity (variant):` for a fallback, with indented text. It follows the same
+single/multiple-plug layout and `--locked`/`--detail` visibility rules.
+
 Official descriptions prefer the item's own valid tooltip. When absent or invalid,
 sync joins its displayable sandbox perk effects in reference order, deduplicating
 identical text with a blank line between effects. Missing references are ignored;
@@ -445,7 +456,7 @@ the same enrichment as search hits. Raw perk component state is separate under
 `perk states:`. CLI JSON exposes `perk_names`, `mod_names`, `mods` (the same
 names as `mod_names`), `archetype`, `available_perks`, `available_mods` and
 `stats` (`{name, value}` entries), alongside the definition and instance state.
-Inspection also adds `plug_details`: `{hash, name, role, description?}` entries.
+Inspection also adds `plug_details`: `{hash, name, role, description?, clarity?, clarity_match?}` entries.
 Roles are `intrinsic`, `perk`, `mod`, `available_perk`, `available_mod` and
 `archetype`. Every resolved socketed plug with category `intrinsics` appears as
 `intrinsic` for weapons and armor, instead of a `perk` detail for that plug.

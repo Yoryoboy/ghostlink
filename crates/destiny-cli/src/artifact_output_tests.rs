@@ -22,12 +22,16 @@ fn fixture() -> ArtifactResult {
                             plug_hash: ItemHash::new(40),
                             name: Some("Perk 1".into()),
                             description: None,
+                            clarity: None,
+                            clarity_match: None,
                             empty: false,
                         },
                         destiny_app::ArtifactSlot {
                             plug_hash: ItemHash::new(47),
                             name: Some("Empty Artifact Mod".into()),
                             description: None,
+                            clarity: None,
+                            clarity_match: None,
                             empty: true,
                         },
                     ],
@@ -64,6 +68,48 @@ fn artifact_description_is_optional_and_visible_in_text_and_json() {
     assert!(
         artifact_json(&fixture())["characters"][0]["equipped"]["slots"][0]
             .get("description")
+            .is_none()
+    );
+}
+
+#[test]
+fn artifact_clarity_verbatim_and_variant_human_blocks() {
+    let mut result = fixture();
+    let slots = &mut result.characters[0].equipped.as_mut().unwrap().slots;
+    slots[0].description = Some("Official".into());
+    slots[0].clarity = Some("  Research\nSecond\n".into());
+    slots[0].clarity_match = Some("variant".into());
+    assert_eq!(
+        artifact_json(&result)["characters"][0]["equipped"]["slots"][0]["clarity"],
+        "  Research\nSecond\n"
+    );
+    assert_eq!(
+        artifact_json(&result)["characters"][0]["equipped"]["slots"][0]["clarity_match"],
+        "variant"
+    );
+    assert!(render_artifact(OutputMode::Human, &result).contains(
+        "    Perk 1:\n      Official\n      Clarity (variant):\n          Research\n        Second"
+    ));
+    result.characters[0]
+        .equipped
+        .as_mut()
+        .unwrap()
+        .slots
+        .truncate(1);
+    assert!(
+        render_artifact(OutputMode::Human, &result)
+            .contains("    Official\n    Clarity (variant):\n        Research\n      Second")
+    );
+    assert!(!render_artifact(OutputMode::Human, &result).contains("    Perk 1:"));
+    let absent = artifact_json(&fixture());
+    assert!(
+        absent["characters"][0]["equipped"]["slots"][0]
+            .get("clarity")
+            .is_none()
+    );
+    assert!(
+        absent["characters"][0]["equipped"]["slots"][0]
+            .get("clarity_match")
             .is_none()
     );
 }

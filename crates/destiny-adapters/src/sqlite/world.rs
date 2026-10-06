@@ -80,6 +80,18 @@ macro_rules! lookup {
 }
 
 impl WorldDefinitionRepository for SqliteStore {
+    fn lookup_clarity_by_hash(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_core::ClarityInsight>, AppError> {
+        destiny_core::ClarityRepository::clarity_by_hash(self, hash)
+    }
+    fn lookup_clarity_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Vec<destiny_core::ClarityInsight>, AppError> {
+        destiny_core::ClarityRepository::clarity_by_name(self, name)
+    }
     fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
         let text: Option<String> = self
             .connection()

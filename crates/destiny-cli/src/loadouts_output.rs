@@ -13,10 +13,10 @@ pub fn loadouts_json(result: &LoadoutsResult) -> Value {
                 "instance_id": item.instance_id.as_str(), "item_hash": item.item_hash.map(|hash| hash.value()),
                 "name": item.name, "item_type": item.item_type, "bucket_hash": item.bucket_hash,
                 "missing": item.missing,
-                "plugs": item.plugs.iter().map(|plug| super::with_description(json!({
+                "plugs": item.plugs.iter().map(|plug| super::with_insights(json!({
                     "socket_index": plug.socket_index, "plug_hash": plug.plug_hash.value(),
                     "name": plug.name, "subclass_kind": plug.subclass_kind.map(kind_json), "empty": plug.empty,
-                }), plug.description.as_deref())).collect::<Vec<_>>(),
+                }), plug.description.as_deref(), plug.clarity.as_deref(), plug.clarity_match.as_deref())).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
     })).collect::<Vec<_>>()})
@@ -144,11 +144,13 @@ pub fn render_loadouts(mode: super::OutputMode, result: &LoadoutsResult, detail:
                 if !detail && matches!(item.bucket_hash, Some(3284755031 | 1506418338)) {
                     let multiple = item.plugs.iter().filter(|plug| !plug.empty).count() > 1;
                     for plug in item.plugs.iter().filter(|plug| !plug.empty) {
-                        super::push_description(
+                        super::push_insights(
                             &mut lines,
                             8,
                             super::description_label(multiple, plug.name.as_deref()),
                             plug.description.as_deref(),
+                            plug.clarity.as_deref(),
+                            plug.clarity_match.as_deref(),
                         );
                     }
                 }
@@ -169,11 +171,13 @@ pub fn render_loadouts(mode: super::OutputMode, result: &LoadoutsResult, detail:
                     lines.push(format!("      {}{item_type}{suffix}", item_name(item)));
                     let multiple = item.plugs.iter().filter(|plug| !plug.empty).count() > 1;
                     for plug in item.plugs.iter().filter(|plug| !plug.empty) {
-                        super::push_description(
+                        super::push_insights(
                             &mut lines,
                             8,
                             super::description_label(multiple, plug.name.as_deref()),
                             plug.description.as_deref(),
+                            plug.clarity.as_deref(),
+                            plug.clarity_match.as_deref(),
                         );
                     }
                 }

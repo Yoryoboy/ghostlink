@@ -32,6 +32,32 @@ fn loadout_descriptions_are_optional_and_follow_detail_visibility() {
     }
 }
 
+#[test]
+fn loadout_clarity_follows_detail_visibility() {
+    let mut result = fixture();
+    let items = &mut result.characters[0].loadouts[0].items;
+    items[0].plugs[0].clarity = Some("Weapon research".into());
+    items[0].plugs[0].clarity_match = Some("variant".into());
+    items[2].plugs[0].clarity = Some("Fragment research".into());
+    let summary = render_loadouts(OutputMode::Human, &result, false);
+    assert!(!summary.contains("Weapon research"));
+    assert!(summary.contains("        F1:\n          Clarity:\n            Fragment research"));
+    let detail = render_loadouts(OutputMode::Human, &result, true);
+    assert!(detail.contains(
+        "        Countermass:\n          Clarity (variant):\n            Weapon research"
+    ));
+    let json = loadouts_json(&result);
+    assert_eq!(
+        json["characters"][0]["loadouts"][0]["items"][0]["plugs"][0]["clarity"],
+        "Weapon research"
+    );
+    assert!(
+        json["characters"][0]["loadouts"][0]["items"][0]["plugs"][1]
+            .get("clarity")
+            .is_none()
+    );
+}
+
 fn fixture() -> LoadoutsResult {
     let item = |id: &str, hash, name: &str, bucket, item_type: &str, plugs| LoadoutItemView {
         instance_id: ItemInstanceId::new(id),
@@ -47,6 +73,8 @@ fn fixture() -> LoadoutsResult {
         plug_hash: ItemHash::new(hash),
         name: name.map(str::to_owned),
         description: None,
+        clarity: None,
+        clarity_match: None,
         subclass_kind: kind,
         empty,
     };

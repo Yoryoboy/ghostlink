@@ -27,16 +27,35 @@ use output::OutputMode;
 fn sanitize(value: &str) -> String {
     value.to_owned()
 }
-fn with_description(mut value: serde_json::Value, description: Option<&str>) -> serde_json::Value {
+fn with_insights(
+    mut value: serde_json::Value,
+    description: Option<&str>,
+    clarity: Option<&str>,
+    clarity_match: Option<&str>,
+) -> serde_json::Value {
     if let Some(description) = description {
         value["description"] = serde_json::json!(description);
+    }
+    if let Some(clarity) = clarity {
+        value["clarity"] = serde_json::json!(clarity);
+        if let Some(marker) = clarity_match {
+            value["clarity_match"] = serde_json::json!(marker);
+        }
     }
     value
 }
 fn description_label(multiple: bool, name: Option<&str>) -> Option<&str> {
     multiple.then_some(name.unwrap_or("unknown"))
 }
-fn push_description(_: &mut Vec<String>, _: usize, _: Option<&str>, _: Option<&str>) {}
+fn push_insights(
+    _: &mut Vec<String>,
+    _: usize,
+    _: Option<&str>,
+    _: Option<&str>,
+    _: Option<&str>,
+    _: Option<&str>,
+) {
+}
 const SUBCLASS_LABELS: &[(destiny_app::SubclassPlugKind, &str)] = &[];
 #[allow(dead_code)]
 #[path = "../../destiny-cli/src/loadouts_output.rs"]
@@ -85,6 +104,8 @@ fn loadouts_cli_mcp_json_parity() {
                                 name: Some(format!("Plug {i}")),
                                 description: (i == 1)
                                     .then(|| "Official tooltip.\nSecond line.".into()),
+                                clarity: (i < 2).then(|| "  Research\nSecond\n".into()),
+                                clarity_match: (i == 1).then(|| "variant".into()),
                                 subclass_kind: Some(kind),
                                 empty: i == 0,
                             })
@@ -102,6 +123,8 @@ fn loadouts_cli_mcp_json_parity() {
                                 plug_hash: ItemHash::new(999),
                                 name: None,
                                 description: None,
+                                clarity: None,
+                                clarity_match: None,
                                 subclass_kind: None,
                                 empty: false,
                             }],
@@ -118,6 +141,13 @@ fn loadouts_cli_mcp_json_parity() {
     };
     for case in 0..4 {
         let cli = cli_loadouts_output::loadouts_json(&result);
+        if case == 0 {
+            let plugs = &cli["characters"][0]["loadouts"][0]["items"][0]["plugs"];
+            assert_eq!(plugs[0]["clarity"], "  Research\nSecond\n");
+            assert!(plugs[0].get("clarity_match").is_none());
+            assert_eq!(plugs[1]["clarity_match"], "variant");
+            assert!(plugs[2].get("clarity").is_none());
+        }
         let mcp = destiny_mcp::service::loadouts_output(&result).into_call_tool_result();
         assert_eq!(mcp.structured_content.unwrap(), cli);
         match case {
@@ -221,12 +251,16 @@ fn artifact_cli_mcp_json_parity() {
                             plug_hash: ItemHash::new(40),
                             name: Some("Perk".into()),
                             description: Some("Official artifact tooltip.".into()),
+                            clarity: Some("  Research\nSecond\n".into()),
+                            clarity_match: Some("variant".into()),
                             empty: false,
                         },
                         destiny_app::ArtifactSlot {
                             plug_hash: ItemHash::new(47),
                             name: Some("Empty Artifact Mod".into()),
                             description: None,
+                            clarity: None,
+                            clarity_match: None,
                             empty: true,
                         },
                     ],
@@ -241,6 +275,12 @@ fn artifact_cli_mcp_json_parity() {
     };
     for case in 0..3 {
         let cli = cli_artifact_output::artifact_json(&result);
+        if case == 0 {
+            let slots = &cli["characters"][0]["equipped"]["slots"];
+            assert_eq!(slots[0]["clarity"], "  Research\nSecond\n");
+            assert_eq!(slots[0]["clarity_match"], "variant");
+            assert!(slots[1].get("clarity").is_none());
+        }
         let mcp = destiny_mcp::service::artifact_output(&result).into_call_tool_result();
         assert_eq!(mcp.structured_content.unwrap(), cli);
         result.points = None;
@@ -352,6 +392,8 @@ fn subclass_cli_mcp_json_parity() {
                         plug_hash: ItemHash::new(i as i64),
                         name: (i != 0).then(|| format!("Plug {i}")),
                         description: (i == 1).then(|| "Official subclass tooltip.".into()),
+                        clarity: (i < 2).then(|| "  Research\nSecond\n".into()),
+                        clarity_match: (i == 1).then(|| "variant".into()),
                         empty: i == 8,
                     })
                     .collect(),
@@ -366,6 +408,13 @@ fn subclass_cli_mcp_json_parity() {
     };
     for _ in 0..2 {
         let cli = cli_subclass_output::subclass_json(&result);
+        if !result.characters.is_empty() {
+            let slots = &cli["characters"][0]["subclass"]["slots"];
+            assert_eq!(slots[0]["clarity"], "  Research\nSecond\n");
+            assert!(slots[0].get("clarity_match").is_none());
+            assert_eq!(slots[1]["clarity_match"], "variant");
+            assert!(slots[2].get("clarity").is_none());
+        }
         let mcp = destiny_mcp::service::subclass_output(&result).into_call_tool_result();
         assert_eq!(mcp.structured_content.unwrap(), cli);
         result.characters.clear();
@@ -490,6 +539,8 @@ fn subclass_options_cli_mcp_json_and_filter_parity() {
                                     name: (i != 1).then(|| "Option".into()),
                                     description: (i == 0)
                                         .then(|| "Official option tooltip.".into()),
+                                    clarity: (i < 2).then(|| "  Research\nSecond\n".into()),
+                                    clarity_match: (i == 1).then(|| "variant".into()),
                                     status,
                                     can_insert: i == 0,
                                     enabled: i != 1,
@@ -507,6 +558,12 @@ fn subclass_options_cli_mcp_json_and_filter_parity() {
                     },
                 ],
             };
+            let cli_json = cli_subclass_options_output::subclass_options_json(&result);
+            let options = &cli_json["characters"][0]["elements"][0]["groups"][0]["options"];
+            assert_eq!(options[0]["clarity"], "  Research\nSecond\n");
+            assert!(options[0].get("clarity_match").is_none());
+            assert_eq!(options[1]["clarity_match"], "variant");
+            assert!(options[2].get("clarity").is_none());
             assert_eq!(
                 destiny_mcp::service::subclass_options_output(&result)
                     .into_call_tool_result()

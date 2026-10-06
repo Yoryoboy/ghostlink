@@ -20,14 +20,14 @@ pub fn subclass_options_json(result: &SubclassOptionsResult) -> Value {
                         Melee => "melee", Grenade => "grenade", Aspect => "aspect",
                         Fragment => "fragment", Transcendence => "transcendence",
                     },
-                    "options": group.options.iter().map(|option| super::with_description(json!({
+                    "options": group.options.iter().map(|option| super::with_insights(json!({
                         "plug_hash": option.plug_hash.value(), "name": option.name,
                         "status": match option.status {
                             OptionStatus::Unlocked => "unlocked", OptionStatus::Locked => "locked",
                             OptionStatus::Unknown => "unknown",
                         },
                         "can_insert": option.can_insert, "enabled": option.enabled,
-                    }), option.description.as_deref())).collect::<Vec<_>>()
+                    }), option.description.as_deref(), option.clarity.as_deref(), option.clarity_match.as_deref())).collect::<Vec<_>>()
                 })).collect::<Vec<_>>()
             })).collect::<Vec<_>>()
         })).collect::<Vec<_>>()
@@ -87,11 +87,13 @@ pub fn render_subclass_options(
                         .flat_map(|group| &group.options)
                         .filter(|option| !locked || option.status == OptionStatus::Locked)
                     {
-                        super::push_description(
+                        super::push_insights(
                             &mut groups,
                             6,
                             super::description_label(names.len() > 1, option.name.as_deref()),
                             option.description.as_deref(),
+                            option.clarity.as_deref(),
+                            option.clarity_match.as_deref(),
                         );
                     }
                 }

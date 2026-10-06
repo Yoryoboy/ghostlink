@@ -156,6 +156,18 @@ fn migration_and_atomic_publish() {
         .unwrap();
     assert_eq!(store.clarity_by_hash(1).unwrap(), Some(entry.clone()));
     assert_eq!(store.clarity_by_name("Perk").unwrap(), vec![entry.clone()]);
+    // Query enrichment must reach the same separate catalog as sync publication.
+    use destiny_core::ports::WorldDefinitionRepository;
+    assert_eq!(
+        store.lookup_clarity_by_hash(1).unwrap(),
+        Some(entry.clone())
+    );
+    assert_eq!(
+        store.lookup_clarity_by_name("Perk").unwrap(),
+        vec![entry.clone()]
+    );
+    assert_eq!(store.lookup_clarity_by_hash(99).unwrap(), None);
+    assert!(store.lookup_clarity_by_name("perk").unwrap().is_empty());
     assert!(
         store
             .publish_clarity("new", &[entry.clone(), entry.clone()], Timestamp::new(11))

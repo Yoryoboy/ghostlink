@@ -2,7 +2,7 @@
 
 pub mod clarity;
 pub use clarity::{ClaritySyncReport, ManifestAndClarityReport};
-pub use destiny_core::ClarityRepository;
+pub use destiny_core::{ClarityInsight, ClarityRepository};
 pub mod loadouts;
 pub use destiny_core::{LoadoutGateway, LoadoutSnapshot};
 pub use loadouts::{

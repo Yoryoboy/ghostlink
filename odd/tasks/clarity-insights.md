@@ -49,12 +49,65 @@ Source: <https://github.com/Database-Clarity/Live-Clarity-Database>
 
 - [x] 1. PR A — data: fixed-URL transport, decode, v15 storage, sync inside
       `sync-manifest` with isolated failure; README Credits.
-- [ ] 2. PR B — exposure: `clarity` field on five surfaces with matching rule
+- [x] 2. PR B — exposure: `clarity` field on five surfaces with matching rule
       and variant marking; CLI JSON/human, MCP, parity tests.
 - [ ] 3. PR C — agents: docs and skill rule to cite Clarity.
 - [ ] 4. Live check after each PR on a copy of the real DB.
 
+## Current state
+
+Resumed after the user-requested reboot. PR A is committed locally as
+`8b18b98`; PR B remains uncommitted on `feature/clarity-exposure` (25 files,
+906 changed lines). PR B writer reported fmt/clippy/tests passing (1,439
+passed). Parent readback and live checks are pending. PR A/B have not been
+pushed. Read-only review confirmed a blocker: name fallback compares only
+enhancement, not semantic kind. Correct within PR B with cross-category RED/GREEN
+coverage and a conservative mapping; preserve exact-hash matches. Renderer
+indentation was confirmed intentional verbatim source whitespace. Live results
+from the pre-fix binary are provisional; rerun affected checks after correction.
+Native assessment: RDD off, medium risk, large writer; no mandatory
+independent verifier. User-requested live acceptance checks will still run
+on a copied database, without changing the installed binary or real DB.
+
 ## Evidence log
+
+- PR B post-correction acceptance passed: release build and focused tests
+  exit 0 (MCP parity 9, inspection 5, core matching 12, app cache 4). All
+  14 live CLI reruns exit 0; expected targets and verbatim text preserved.
+  Loadouts 108 to 107, variants 3 to 2: only unsafe enhanced Radar Tuner
+  weapon-mod name fallback was removed. Actual MCP six read calls succeed;
+  four full envelopes equal and inspection plug_details/enriched name arrays
+  equal. Full inspection envelope differs in raw `instance.perks.perk_hash`:
+  confirmed pre-existing at base `8b18b98` (CLI output.rs:1204-1208 omits,
+  MCP service.rs:1983-1986/schema.rs:846-850 emits). No unrelated repair.
+  Positive artifact live match unavailable; omission verified. Original full
+  suite passed before correction; focused core/app/MCP checks rerun afterward.
+  Native RDD switch remains off; native assessment medium/large writer.
+
+- PR B correction completed (uncommitted): semantic-kind filtering now
+  precedes enhancement/parent/ambiguity preferences; exact hashes unchanged.
+  Unsupported vocabulary omits name fallback. Two cross-category assertion
+  regressions observed RED then GREEN; core library 130/app library 370
+  tests passed, fmt and focused clippy passed. Initial app test command
+  failed because `test-support` was missing; corrected feature invocation
+  passed. Existing domain groups weapon frames/perks/traits together.
+  Post-fix live verifier resumed; acceptance and commit remain pending.
+
+- PR B pre-correction live verification (provisional): release build exit 0;
+  14 live CLI commands exit 0 on copied DB. All 1,756 stored rows exactly
+  equal upstream English text/name/kind/item metadata, no missing/extra rows.
+  Emitted insight counts: Eyasluna 8 (enhanced Unburied Treasure variant),
+  Orpheus Rig 1 (Uncanny Arrows intrinsic), subclass 10, Prismatic Hunter
+  options 29 (Ascension/Threaded Specter unmarked name fallback), loadouts
+  108. Every emitted text and human block matches verbatim source plus
+  presentation indentation. Artifact has 0 insights: seven nonempty live
+  perks have no catalog hash/name match, 17 slots empty; positive artifact
+  live coverage unavailable. Real MCP stdio initialization/discovery and six
+  read calls succeeded; CLI/MCP envelopes equal for four surfaces and
+  plug_details equal for both inspections. Process exit 0, stderr empty.
+  Focused parity tests: 9 passed; inspection tests: 5 passed. Logs/reports:
+  `/tmp/ghostlink-clarity-acceptance.nICyXIyp/`. Post-correction rebuild and
+  affected live/test reruns remain pending; verifier holds while writer edits.
 - PR A — `clarity_insights` + singleton `clarity_metadata` (schema v15),
   fixed-URL transport (Bungie allowlist untouched), verbatim decode with exact
   raw version token, Manifest-first orchestration in explicit `sync-manifest`
