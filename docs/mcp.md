@@ -112,10 +112,18 @@ Subclass slots, subclass options, artifact slots, loadout plugs and inspect
 `plug_details` also include optional `clarity`: community research by
 [Clarity](https://d2clarity.com), shown verbatim, including whitespace and
 newlines. CLI JSON and MCP expose identical plug fields. Missing insights are
-omitted. Exact-hash and unambiguous same-name, same-enhancement matches have no
-marker; an enhanced/base fallback adds `clarity_match: "variant"`. Parent-item
-matches are preferred when known, and ambiguous differing texts are never
-guessed. Official `description` remains independent and unchanged.
+omitted. Exact hashes win; name fallback is restricted to the same semantic
+plug kind, and unsupported kinds omit name fallback (exact hashes still work).
+Unambiguous same-name, same-enhancement matches have no marker; an enhanced/base
+fallback adds `clarity_match: "variant"`. Parent-item matches are preferred when
+known, and ambiguous differing texts are never guessed. Official `description`
+remains independent and unchanged.
+
+When explaining effects, distinguish the official Bungie tooltip (`description`)
+from community research (`clarity`), and cite Clarity when using its numbers.
+Never invent values absent from both fields; missing `clarity` does not mean no
+effect. Explicitly qualify variant text as an enhanced/base fallback, not exact
+values for that variant, and never infer improved numbers.
 
 Definition versions are automatic: MCP uses the Manifest stored in SQLite;
 `DESTINY_DEFINITION_VERSION` is only an optional backward-compatible override.
