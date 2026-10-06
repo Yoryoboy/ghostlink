@@ -293,9 +293,9 @@ fn dispatch_locked(
             }
         }
         crate::schema::WEEKLY_RESET_TOOL => {
-            let _: crate::schema::WeeklyResetArgs = deserialize(arguments)?;
+            let args: crate::schema::WeeklyResetArgs = deserialize(arguments)?;
             Ok(guard
-                .weekly_reset()
+                .weekly_reset(&args)
                 .map_or_else(tool_error, |output| output.into_call_tool_result()))
         }
         _ => Err(unknown_tool()),
