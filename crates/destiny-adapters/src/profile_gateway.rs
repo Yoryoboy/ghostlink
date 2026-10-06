@@ -24,7 +24,7 @@
 //!   re-validates the injected clock against the credential expiry immediately
 //!   before every attempted HTTP call, performs one bounded read whose retry
 //!   scope follows the per-call sync reason, and delegates decoding to the pure
-//!   [`decode_effective_membership`] and [`decode_profile`] functions.
+//!   [`decode_effective_membership`] and [`decode_profile_with_observations`] functions.
 //!
 //! The gateway holds only redacted secrets and never renders a credential,
 //! token, API key, or raw provider payload: every failure is a sanitized
@@ -68,7 +68,7 @@ use std::fmt;
 use std::io::Read;
 use std::time::Duration;
 
-use crate::profile::decode_profile;
+use crate::profile::decode_profile_with_observations;
 
 /// The only success code Bungie returns for a fulfilled request.
 const SUCCESS_ERROR_CODE: u64 = 1;
@@ -1171,15 +1171,25 @@ where
         membership: &DestinyMembership,
         scope: ReadRetryScope,
     ) -> Result<InventorySnapshotInput, AppError> {
+        self.acquire_inventory_with_scope(membership, scope)
+            .map(|pair| pair.into_parts().0)
+    }
+
+    fn acquire_inventory_with_scope(
+        &mut self,
+        membership: &DestinyMembership,
+        scope: ReadRetryScope,
+    ) -> Result<destiny_core::ProfileAcquisition, AppError> {
         let url = profile_endpoint(membership);
         let (bytes, observed_at) =
             self.read_with_live_credential(&url, PROFILE_RESPONSE_LIMIT, scope)?;
-        let mut candidate = decode_profile(
+        let (mut candidate, observations) = decode_profile_with_observations(
             &bytes,
             membership,
             self.definition_version.clone(),
             observed_at,
-        )?;
+        )?
+        .into_parts();
         // Unlike legacy pure decoding, this authenticated request explicitly
         // asks for 103. Its omission is unavailable coverage, not unobserved.
         if candidate.profile_currencies_coverage
@@ -1188,10 +1198,7 @@ where
             candidate.profile_currencies_coverage =
                 destiny_core::ProfileCurrenciesCoverage::Unavailable;
         }
-        if !candidate.is_structurally_valid() {
-            return Err(AppError::new(ErrorCategory::ProviderValidation));
-        }
-        Ok(candidate)
+        destiny_core::ProfileAcquisition::new(candidate, observations)
     }
 }
 
@@ -1280,6 +1287,14 @@ where
         reason: ProfileSyncReason,
     ) -> Result<DestinyMembership, AppError> {
         self.resolve_membership_with_scope(ReadRetryScope::for_profile_reason(reason))
+    }
+
+    fn load_inventory_with_observations_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<destiny_core::ProfileAcquisition, AppError> {
+        self.acquire_inventory_with_scope(membership, ReadRetryScope::for_profile_reason(reason))
     }
 
     fn load_inventory_scoped(
@@ -2256,6 +2271,163 @@ mod tests {
             delay.clone(),
         ));
         (gateway, delay)
+    }
+
+    fn observed_fixture() -> Vec<u8> {
+        let mut value: Value = serde_json::from_slice(FIXTURE).unwrap();
+        let response = value["Response"].as_object_mut().unwrap();
+        for row in response["profileInventory"]["data"]["items"]
+            .as_array_mut()
+            .unwrap()
+        {
+            if row["itemInstanceId"].is_string() {
+                row["bucketHash"] = json!(456);
+            }
+        }
+        for group in ["characterInventories", "characterEquipment"] {
+            for owner in response[group]["data"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                for row in owner["items"].as_array_mut().unwrap() {
+                    if row["itemInstanceId"].is_string() {
+                        row["bucketHash"] = json!(456);
+                    }
+                }
+            }
+        }
+        serde_json::to_vec(&value).unwrap()
+    }
+
+    #[test]
+    fn observation_gateway_pairs_one_response_and_resolves_definitions_once() {
+        let bytes = observed_fixture();
+        let calls = Arc::new(Mutex::new(0));
+        let recorded_calls = calls.clone();
+        let mut gateway = gateway(
+            vec![Ok(json_response_bytes(200, &bytes))],
+            GATEWAY_NOW,
+            GATEWAY_EXPIRES_AT,
+        )
+        .with_definition_version_resolver(move || {
+            *recorded_calls.lock().unwrap() += 1;
+            Ok(DefinitionVersion::new(DEFINITION_VERSION))
+        });
+        let pair = gateway
+            .load_inventory_with_observations_scoped(&selected(), ProfileSyncReason::Ordinary)
+            .unwrap();
+        assert_eq!(pair.observations().unwrap().len(), 6);
+        assert!(
+            pair.observations()
+                .unwrap()
+                .iter()
+                .all(|row| row.bucket_hash().value() == 456)
+        );
+        let mut expected = crate::decode_profile(
+            &bytes,
+            &selected(),
+            DefinitionVersion::new(DEFINITION_VERSION),
+            Timestamp::new(GATEWAY_NOW),
+        )
+        .unwrap();
+        expected.profile_currencies_coverage = destiny_core::ProfileCurrenciesCoverage::Unavailable;
+        assert_eq!(pair.input(), &expected);
+        assert_eq!(gateway.transport().recorded().len(), 1);
+        assert_eq!(*calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn observation_gateway_reason_scope_and_successful_attempt_timestamp() {
+        let bytes = observed_fixture();
+        for reason in [ProfileSyncReason::Preflight, ProfileSyncReason::PostAction] {
+            let (mut gateway, delay) = retrying_gateway(vec![
+                Ok(json_response(503, "unavailable")),
+                Ok(json_response_bytes(200, &bytes)),
+            ]);
+            let error = gateway
+                .load_inventory_with_observations_scoped(&selected(), reason)
+                .unwrap_err();
+            assert_eq!(error.category(), ErrorCategory::ProviderUnavailable);
+            assert_eq!(gateway.transport().recorded().len(), 1);
+            assert!(delay.waits().is_empty());
+        }
+        let (mut gateway, delay) = step_gateway(
+            vec![
+                Ok(json_response(503, "unavailable")),
+                Ok(json_response_bytes(200, &bytes)),
+            ],
+            [Timestamp::new(GATEWAY_NOW), Timestamp::new(GATEWAY_NOW + 1)],
+            GATEWAY_EXPIRES_AT,
+        );
+        let pair = gateway
+            .load_inventory_with_observations_scoped(&selected(), ProfileSyncReason::Ordinary)
+            .unwrap();
+        assert_eq!(pair.input().checked_at, Timestamp::new(GATEWAY_NOW + 1));
+        assert_eq!(pair.observations().unwrap().len(), 6);
+        assert_eq!(gateway.transport().recorded().len(), 2);
+        assert_eq!(delay.waits(), vec![Duration::from_millis(10)]);
+        let (mut gateway, _) = step_gateway(
+            vec![
+                Ok(json_response(503, "unavailable")),
+                Ok(json_response_bytes(200, &bytes)),
+            ],
+            [
+                Timestamp::new(GATEWAY_NOW),
+                Timestamp::new(GATEWAY_EXPIRES_AT),
+            ],
+            GATEWAY_EXPIRES_AT,
+        );
+        assert_eq!(
+            gateway
+                .load_inventory_with_observations_scoped(&selected(), ProfileSyncReason::Ordinary)
+                .unwrap_err()
+                .category(),
+            ErrorCategory::ProviderAuthentication
+        );
+        assert_eq!(gateway.transport().recorded().len(), 1);
+    }
+
+    #[test]
+    fn observation_gateway_currency_coverage_and_legacy_omission() {
+        for (wrapper, expected) in [
+            (None, destiny_core::ProfileCurrenciesCoverage::Unavailable),
+            (
+                Some(Value::Null),
+                destiny_core::ProfileCurrenciesCoverage::Unavailable,
+            ),
+            (
+                Some(json!({"privacy": 2, "data": {"items": []}})),
+                destiny_core::ProfileCurrenciesCoverage::Available,
+            ),
+        ] {
+            let mut value: Value = serde_json::from_slice(&observed_fixture()).unwrap();
+            if let Some(wrapper) = wrapper {
+                value["Response"]["profileCurrencies"] = wrapper;
+            }
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let mut gateway = gateway(
+                vec![Ok(json_response_bytes(200, &bytes))],
+                GATEWAY_NOW,
+                GATEWAY_EXPIRES_AT,
+            );
+            let pair = gateway
+                .load_inventory_with_observations_scoped(&selected(), ProfileSyncReason::Preflight)
+                .unwrap();
+            assert_eq!(pair.input().profile_currencies_coverage, expected);
+            assert_eq!(pair.observations().unwrap().len(), 6);
+            assert_eq!(gateway.transport().recorded().len(), 1);
+        }
+        let mut gateway = gateway(
+            vec![Ok(json_response_bytes(200, FIXTURE))],
+            GATEWAY_NOW,
+            GATEWAY_EXPIRES_AT,
+        );
+        let pair = gateway
+            .load_inventory_with_observations_scoped(&selected(), ProfileSyncReason::PostAction)
+            .unwrap();
+        assert!(pair.observations().is_none());
+        assert_eq!(pair.input().items.len(), 6);
     }
 
     #[test]

@@ -64,9 +64,9 @@
 
 use destiny_core::{
     AppError, BucketHash, Character, CharacterId, DefinitionVersion, DestinyMembership,
-    ErrorCategory, InventorySnapshotInput, ItemHash, ItemInstance, ItemInstanceId, ItemLocation,
-    PerkHash, PerkSummary, PlugSummary, SourceMarker, StackContainer, StackObservation,
-    StatSummary, Timestamp,
+    ErrorCategory, InstancedBucketObservation, InventorySnapshotInput, ItemHash, ItemInstance,
+    ItemInstanceId, ItemLocation, PerkHash, PerkSummary, PlugSummary, ProfileAcquisition,
+    SourceMarker, StackContainer, StackObservation, StatSummary, Timestamp,
 };
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
@@ -182,6 +182,20 @@ pub fn decode_profile(
     definition_version: DefinitionVersion,
     checked_at: Timestamp,
 ) -> Result<InventorySnapshotInput, AppError> {
+    decode_profile_with_observations(bytes, membership, definition_version, checked_at)
+        .map(|pair| pair.into_parts().0)
+}
+
+/// Decodes the same candidate with complete actual runtime bucket observations.
+/// Omitted instanced buckets make the entire observation set unavailable without
+/// changing the input. Present malformed buckets (including null) fail closed.
+/// This structural association confers no freshness or action authority.
+pub fn decode_profile_with_observations(
+    bytes: &[u8],
+    membership: &DestinyMembership,
+    definition_version: DefinitionVersion,
+    checked_at: Timestamp,
+) -> Result<ProfileAcquisition, AppError> {
     let UniqueValue(value) = serde_json::from_slice(bytes).map_err(|_| provider_validation())?;
     let root = value.as_object().ok_or_else(provider_validation)?;
 
@@ -248,6 +262,7 @@ pub fn decode_profile(
     let mut seen = HashSet::with_capacity(raw_items.len());
     let mut items = Vec::with_capacity(raw_items.len());
     let mut stacks = Vec::new();
+    let mut observations = Some(Vec::with_capacity(raw_items.len()));
     for row in raw_items {
         let raw = match row {
             RawItem::Stack(stack) => {
@@ -276,6 +291,15 @@ pub fn decode_profile(
         let plugs = decode_plugs(sockets, &raw.instance_id)?;
         let stats = decode_stats(stats, &raw.instance_id)?;
 
+        match (raw.runtime_bucket, &mut observations) {
+            (Some(bucket), Some(rows)) => rows.push(InstancedBucketObservation::new(
+                ItemInstanceId::new(raw.instance_id.clone()),
+                BucketHash::new(i64::from(bucket)),
+                raw.location.clone(),
+            )?),
+            (None, _) => observations = None,
+            _ => {}
+        }
         items.push(ItemInstance {
             available_plugs: decode_available_plugs(reusable, &raw.instance_id)?,
             instance_id: ItemInstanceId::new(raw.instance_id),
@@ -312,11 +336,7 @@ pub fn decode_profile(
         items,
     };
 
-    if snapshot.is_structurally_valid() {
-        Ok(snapshot)
-    } else {
-        Err(provider_validation())
-    }
+    ProfileAcquisition::new(snapshot, observations)
 }
 
 /// Optional owner-only components can be absent or withheld for privacy.
@@ -514,6 +534,8 @@ struct RawInstance {
     quantity: u32,
     locked: bool,
     location: ItemLocation,
+    /// Validated actual bucket, never inferred from item definitions.
+    runtime_bucket: Option<u32>,
     /// The equipment status implied by the component the item arrived in.
     equipped: bool,
 }
@@ -846,6 +868,7 @@ fn decode_item(value: &Value, origin: ItemOrigin<'_>) -> Result<RawItem, AppErro
         quantity,
         locked,
         location,
+        runtime_bucket,
         equipped,
     }))
 }
@@ -1088,6 +1111,214 @@ mod tests {
             DefinitionVersion::new(DEFINITION_VERSION),
             Timestamp::new(CHECKED_AT),
         )
+    }
+
+    fn observed(bytes: &[u8]) -> Result<destiny_core::ProfileAcquisition, AppError> {
+        super::decode_profile_with_observations(
+            bytes,
+            &membership(),
+            DefinitionVersion::new(DEFINITION_VERSION),
+            Timestamp::new(CHECKED_AT),
+        )
+    }
+
+    fn bucket_fixture() -> Value {
+        let mut value = fixture_value();
+        let response = value["Response"].as_object_mut().unwrap();
+        for row in response["profileInventory"]["data"]["items"]
+            .as_array_mut()
+            .unwrap()
+        {
+            if row["itemInstanceId"].is_string() {
+                row["bucketHash"] = json!(123);
+            }
+        }
+        for group in ["characterInventories", "characterEquipment"] {
+            for owner in response[group]["data"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                for row in owner["items"].as_array_mut().unwrap() {
+                    if row["itemInstanceId"].is_string() {
+                        row["bucketHash"] = json!(123);
+                    }
+                }
+            }
+        }
+        value
+    }
+
+    #[test]
+    fn observation_decoder_complete_actual_buckets_preserves_input() {
+        let mut value = bucket_fixture();
+        // Equal definition hashes must not collapse distinct runtime instances.
+        value["Response"]["profileInventory"]["data"]["items"][1]["itemHash"] = json!(1001);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let pair = observed(&bytes).unwrap();
+        assert_eq!(pair.input(), &decode(&bytes).unwrap());
+        let rows = pair.observations().unwrap();
+        assert_eq!(rows.len(), 6);
+        for item in &pair.input().items {
+            let row = rows
+                .iter()
+                .find(|row| row.instance_id() == &item.instance_id)
+                .unwrap();
+            assert_eq!(row.location(), &item.location);
+            assert_eq!(row.bucket_hash().value(), 123);
+        }
+    }
+
+    #[test]
+    fn observation_decoder_missing_discards_partial_proof_and_zero_is_complete() {
+        let mut value = bucket_fixture();
+        value["Response"]["profileCurrencies"] = json!({"privacy": 2, "data": {"items": [
+            {"itemHash": 900, "bucketHash": 99, "quantity": 0},
+            {"itemHash": 900, "bucketHash": 99, "quantity": 0}
+        ]}});
+        value["Response"]["profileInventory"]["data"]["items"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("bucketHash");
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let pair = observed(&bytes).unwrap();
+        assert!(pair.observations().is_none());
+        assert_eq!(pair.input(), &decode(&bytes).unwrap());
+        assert_eq!(pair.input().stacks.len(), 5);
+        let response = value["Response"].as_object_mut().unwrap();
+        response["profileInventory"]["data"]["items"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|row| !row["itemInstanceId"].is_string());
+        for group in ["characterInventories", "characterEquipment"] {
+            for owner in response[group]["data"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                owner["items"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|row| !row["itemInstanceId"].is_string());
+            }
+        }
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let pair = observed(&bytes).unwrap();
+        assert_eq!(pair.input(), &decode(&bytes).unwrap());
+        assert!(pair.input().items.is_empty());
+        assert_eq!(pair.observations(), Some([].as_slice()));
+        assert_eq!(pair.input().stacks.len(), 5);
+    }
+
+    #[test]
+    fn observation_decoder_bucket_width_types_and_duplicate_keys_fail_atomically() {
+        for invalid in [
+            Value::Null,
+            json!(-1),
+            json!(4294967296_u64),
+            json!(1.5),
+            json!(true),
+            json!("123"),
+            json!([]),
+            json!({}),
+        ] {
+            let mut value = bucket_fixture();
+            value["Response"]["profileInventory"]["data"]["items"][0]["bucketHash"] = invalid;
+            let bytes = serde_json::to_vec(&value).unwrap();
+            assert_eq!(
+                observed(&bytes).unwrap_err().category(),
+                ErrorCategory::ProviderValidation
+            );
+            assert_validation(decode(&bytes));
+        }
+        let bytes = serde_json::to_vec(&bucket_fixture()).unwrap();
+        let duplicate = String::from_utf8(bytes).unwrap().replacen(
+            "\"bucketHash\":123",
+            "\"bucketHash\":123,\"bucketHash\":123",
+            1,
+        );
+        assert_validation(decode(duplicate.as_bytes()));
+        assert_eq!(
+            observed(duplicate.as_bytes()).unwrap_err().category(),
+            ErrorCategory::ProviderValidation
+        );
+        for bucket in [0_u32, u32::MAX] {
+            let mut value = bucket_fixture();
+            value["Response"]["profileInventory"]["data"]["items"][0]["bucketHash"] = json!(bucket);
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let pair = observed(&bytes).unwrap();
+            assert_eq!(pair.input(), &decode(&bytes).unwrap());
+            let row = pair
+                .observations()
+                .unwrap()
+                .iter()
+                .find(|row| row.instance_id().as_str() == "700000000000000001")
+                .unwrap();
+            assert_eq!(row.bucket_hash().value(), i64::from(bucket));
+        }
+    }
+
+    #[test]
+    fn observation_decoder_owned_postmaster_and_bad_joins() {
+        let mut value = bucket_fixture();
+        value["Response"]["characterInventories"]["data"]["900000000000000001"]["items"][0]["bucketHash"] =
+            json!(super::LOST_ITEMS_BUCKET_HASH);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let pair = observed(&bytes).unwrap();
+        let row = pair
+            .observations()
+            .unwrap()
+            .iter()
+            .find(|row| row.instance_id().as_str() == "700000000000000004")
+            .unwrap();
+        assert_eq!(
+            row.location(),
+            &ItemLocation::Postmaster(CharacterId::new("900000000000000001"))
+        );
+        assert_eq!(pair.input(), &decode(&bytes).unwrap());
+        for bad_owner in [false, true] {
+            let mut value = bucket_fixture();
+            if bad_owner {
+                let owners = value["Response"]["characterInventories"]["data"]
+                    .as_object_mut()
+                    .unwrap();
+                let items = owners.remove("900000000000000001").unwrap();
+                owners.insert("999".to_owned(), items);
+            } else {
+                value["Response"]["profileInventory"]["data"]["items"][1]["itemInstanceId"] =
+                    json!("700000000000000001");
+            }
+            let bytes = serde_json::to_vec(&value).unwrap();
+            assert_validation(decode(&bytes));
+            assert_eq!(
+                observed(&bytes).unwrap_err().category(),
+                ErrorCategory::ProviderValidation
+            );
+        }
+        for component in [
+            "characters",
+            "profileInventory",
+            "characterInventories",
+            "characterEquipment",
+        ] {
+            let mut value = bucket_fixture();
+            value["Response"][component]["disabled"] = json!(true);
+            let bytes = serde_json::to_vec(&value).unwrap();
+            assert_validation(decode(&bytes));
+            assert_eq!(
+                observed(&bytes).unwrap_err().category(),
+                ErrorCategory::ProviderValidation
+            );
+        }
+        let mut value = bucket_fixture();
+        value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"] =
+            Value::Null;
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert_validation(decode(&bytes));
+        assert_eq!(
+            observed(&bytes).unwrap_err().category(),
+            ErrorCategory::ProviderValidation
+        );
     }
 
     #[test]

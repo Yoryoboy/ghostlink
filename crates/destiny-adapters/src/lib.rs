@@ -44,7 +44,7 @@ pub use oauth::{
     HeadlessBrowserAuthorization, LoopbackCallbackReceiver, SshTarget, SystemCommandLauncher,
     authorization_url, browser_command,
 };
-pub use profile::decode_profile;
+pub use profile::{decode_profile, decode_profile_with_observations};
 pub use profile_gateway::{
     BungieProfileGateway, HttpProfileTransport, MEMBERSHIP_ENDPOINT, MEMBERSHIP_RESPONSE_LIMIT,
     PROFILE_ORIGIN, PROFILE_RESPONSE_LIMIT, ProfileApiKey, ProfileBearerToken, ProfileHttpRequest,

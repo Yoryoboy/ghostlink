@@ -133,7 +133,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   actual-bucket observations. Exact ID/owner/location correspondence and uint32
   validation; default scoped gateway method delegates once and marks unavailable.
   No default definition-bucket substitution, publication or action dispatch.
-- [ ] **GPM-008a2 — Acquire instanced runtime buckets.** Scoped decoder/gateway
+- [x] **GPM-008a2 — Acquire instanced runtime buckets.** Scoped decoder/gateway
   observations, retain omitted evidence as unavailable; existing reads compatible.
   Exact source surfaces: adapters/src/profile.rs, profile_gateway.rs and export-only
   lib.rs. Tests stay in existing nested modules; fixtures mutate in memory only.
@@ -147,6 +147,20 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   successful replace_current alongside THAT returned snapshot, never an unrelated
   reload. No proof on freshness skips/failure. Ephemeral buckets do not advance
   inventory revision: planning/execution reacquire and compare proof fingerprints.
+  Scout `mux9qcie-14-kxib` mapped additive sync_with_observations outcome:
+  SkippedFresh(metadata) versus Refreshed(private PublishedProfileAcquisition).
+  Keep ordinary sync on the legacy scoped loader for ordering/override compatibility;
+  share orchestration but select acquisition route, no extra resolve/load/retry.
+  New route preserves post-filter candidate, compares returned snapshot via
+  InventorySnapshotInput::with_metadata and full content_eq, plus exact checked_at
+  and source/Profile provenance (excluded from content_eq). Revalidate complete
+  observations against returned input. No public/default published-proof constructor.
+  Returned mismatch suppresses proof but cannot roll back already-successful
+  malicious repository publication. Exact app surfaces: src/sync.rs, export-only
+  src/lib.rs, narrow src/test_support.rs; actual journey test is
+  crates/destiny-adapters/tests/profile_sync_journey.rs, not app/tests.
+  Canonicalization/no-op metadata and changed bucket with unchanged revision need
+  coverage; zero post-write unrelated load_current calls for proof. No writer yet.
 - [ ] **GPM-008b — Qualify equipment capacity policy.** Current public Manifest
   index, exact supported bucket policy/provenance and definition-version binding;
   missing/changed/unqualified evidence closes the proof. Scope still to map fully.
@@ -195,8 +209,30 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
+- GPM-008a2 COMPLETE: retain actual buckets from a single scoped profile
+  acquisition using shared normalization; exact three adapter surfaces above.
+  Work-unit commit follows writer checks and native risk assessment.
+  Test-first, no core/sync/SQLite/runtime-action changes. Explicit null/present
+  malformed buckets stay rejected; omitted buckets give unavailable evidence.
+  Writer `mux9p7td-13-u1ap` COMPLETE: decode_profile_with_observations and
+  production scoped override share one UniqueValue parse/acquisition. Accepted
+  raw records retain actual bucket and normalized owner/location; omission makes
+  whole proof unavailable. Authenticated currency adjustment precedes pairing.
+  Observed RED missing decoder API and default gateway None; GREEN seven tests.
+  Checks: 4 observation decoder/3 gateway/50 profile/78 profile gateway/9 currency/
+  11 Postmaster/6 core contract; 1,582 default / 1,600 all-features offline tests,
+  fmt/clippy/diff pass. Initial enum names/format errors fixed; zero-match core
+  filter corrected to explicit test target. No live validation or out-of-scope edit.
+  Parent source read confirms shared single parse/acquisition and unchanged scopes.
+  ASSESS medium: 4 paths/460 diff lines, runtime large writer profile; writer
+  self-verification stands, independentVerifier=false. RDD off, outcome unknown,
+  candidate not consumed; reviewDue=slice_budget_reached. Exact native continuation
+  (informational, not executed):
+  `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
+  No native approval, capacity or runtime action binding. Read-only sync scout
+  complete; publication unit follows this verified closure.
 - GPM-008a1 COMPLETE (independently verified): core fresh runtime bucket
-  acquisition contract only. Local work-unit commit follows the final PASS.
+  acquisition contract only. Work-unit commit: `e68233b`.
   Parent-approved source surfaces: core/src/profile_observations.rs, ports.rs,
   lib.rs and tests/profile_observations.rs. No adapter, sync, SQLite or dispatch
   writes in this unit. Deterministic test-first and self-verification required;
