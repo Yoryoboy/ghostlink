@@ -148,8 +148,22 @@ deliver as chained PRs.
   2026-10-06 -> previous week, 2026-10-07 -> week of 2026-10-07 03:00 +10:00.
   Commit evidence: see git log for
   `feat(cli): predict weekly rotations for any date`.
-- [ ] **WRC-005 — MCP.** Optional `date` argument, schema, stdio tests,
+- [x] **WRC-005 — MCP.** Optional `date` argument, schema, stdio tests,
   offline fixture.
+  Result: `weekly_reset` accepts optional `date` (`YYYY-MM-DD`, UTC end of
+  day, documented in the schema); the description says calendar values are
+  community-derived predictions and milestones are observed for the current
+  week only; output schema gains `current_week`, `calendar`,
+  `milestones_source` (additive). Invalid dates return typed
+  `provider_validation`; unknown arguments stay -32602. UTC resolver
+  composed in `main.rs`; `service.rs` stays adapter-free. Delegated writer,
+  test-first: RED exit 101 (dated call rejected -32602, schema lacked
+  `date`); GREEN stdio contract with zero milestones requests for
+  non-current and pre-coverage dates, two for the two current-week calls,
+  UTC unit test 2026-10-06 -> week starting 2026-10-06T17:00Z. Checks: fmt,
+  build, workspace tests 1,472 passed / 0 failed, clippy `-D warnings`,
+  diff check (all exit 0). Commit evidence: see git log for
+  `feat(mcp): accept a date for weekly_reset predictions`.
 - [ ] **WRC-006 — Docs and skill.** CLI/MCP docs, README credit to
   ShatteredVault, skill guidance (predictions vs observations).
 - [ ] **WRC-007 — Live validation.** Run against today's reset

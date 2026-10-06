@@ -208,6 +208,16 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn utc_date_resolves_to_tuesdays_reset_week() {
+        let calendar = embedded_calendar().unwrap();
+        let requested = instant_for_utc_date("2026-10-06").unwrap();
+        assert_eq!(
+            calendar.week_at(requested).unwrap().window.start,
+            instant("2026-10-06T17:00:00Z")
+        );
+    }
+
+    #[test]
     fn strict_calendar_date_uses_end_of_utc_day() {
         assert_eq!(
             instant_for_utc_date("2026-10-06").unwrap(),

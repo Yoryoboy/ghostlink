@@ -175,12 +175,23 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         read_service,
     );
     let read_service = destiny_mcp::service::WeeklyReadService::new(
-        destiny_app::weekly_reset::WeeklyResetService::new(PublicGateway, weekly_repository()),
+        destiny_app::weekly_reset::WeeklyResetService::new(
+            CountingPublicGateway(0),
+            weekly_repository(),
+        ),
         read_service,
         |t| destiny_adapters::format_reset_timestamp(t, false),
         destiny_adapters::calendar::embedded_calendar().expect("embedded fixture calendar"),
         // The calendar needs a representable full week; NOW is near the Unix epoch.
         FakeClock::fixed(Timestamp::new(1_791_306_000)),
+        |value| {
+            destiny_adapters::calendar::instant_for_utc_date(value).map_err(|_| {
+                destiny_mcp::McpError::from(AppError::invalid_argument(
+                    "date",
+                    "expected YYYY-MM-DD (a representable UTC calendar date)",
+                ))
+            })
+        },
     );
     let read_service = destiny_mcp::service::ArtifactReadService::new(
         FixtureArtifact,
@@ -268,6 +279,22 @@ impl destiny_app::WeeklyProfileGateway for PersonalGateway {
     }
 }
 struct PublicGateway;
+
+/// Report calls on stderr so stdio tests can verify the gateway was skipped.
+struct CountingPublicGateway(usize);
+impl destiny_app::PublicMilestonesGateway for CountingPublicGateway {
+    fn load_public_milestones(
+        &mut self,
+    ) -> Result<destiny_app::PublicMilestonesSnapshot, AppError> {
+        self.0 += 1;
+        PublicGateway.load_public_milestones()
+    }
+}
+impl Drop for CountingPublicGateway {
+    fn drop(&mut self) {
+        eprintln!("weekly milestones requests: {}", self.0);
+    }
+}
 
 impl destiny_app::PublicMilestonesGateway for PublicGateway {
     fn load_public_milestones(

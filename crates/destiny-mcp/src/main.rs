@@ -285,6 +285,14 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         |t| destiny_adapters::format_reset_timestamp(t, false),
         weekly.1,
         SystemClock::new(),
+        |value| {
+            destiny_adapters::calendar::instant_for_utc_date(value).map_err(|_| {
+                crate::McpError::from(AppError::invalid_argument(
+                    "date",
+                    "expected YYYY-MM-DD (a representable UTC calendar date)",
+                ))
+            })
+        },
     );
 
     let read_service = crate::service::ArtifactReadService::new(

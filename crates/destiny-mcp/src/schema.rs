@@ -57,7 +57,7 @@ pub const GET_LOADOUTS_TOOL: &str = "get_loadouts";
 /// Stable tool name for the single semantic mutation.
 pub const MOVE_ITEM_TOOL: &str = "move_item";
 
-/// Stable tool name for the credential-free public rotation.
+/// Stable tool name for weekly predictions and current public milestones.
 pub const WEEKLY_RESET_TOOL: &str = "weekly_reset";
 pub const WEEKLY_TOOL: &str = "weekly";
 
@@ -133,7 +133,7 @@ pub fn tool_specs() -> Vec<Tool> {
         .with_output_schema::<GetLoadoutsOutput>(),
         Tool::new(
             WEEKLY_RESET_TOOL,
-            "Read the current week's public rotation without account credentials. Run `ghostlink sync-manifest` first to load the required definitions.",
+            "Predict weekly calendar values from a community-derived rotation. Live milestones are observed data for the current week only. Requires login and `ghostlink sync-manifest` to load the required definitions. Dates use UTC, not the server's local zone.",
             JsonObject::new(),
         )
         .with_input_schema::<WeeklyResetArgs>()
@@ -201,10 +201,15 @@ pub fn equip_item_tool() -> Tool {
 #[serde(deny_unknown_fields)]
 pub struct ListCharactersArgs {}
 
-/// `weekly_reset` accepts no arguments.
+/// `weekly_reset` optionally selects a UTC calendar date.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct WeeklyResetArgs {}
+pub struct WeeklyResetArgs {
+    /// YYYY-MM-DD: the weekly period in effect at the end of that UTC day; omit for the current week.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 10, max = 10), regex(pattern = r"^\d{4}-\d{2}-\d{2}$"))]
+    pub date: Option<String>,
+}
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -339,8 +344,48 @@ impl WeeklyOutput {
 #[serde(tag = "kind", rename = "weekly_reset")]
 pub struct WeeklyResetOutput {
     pub definition_version: String,
+    pub current_week: bool,
+    pub calendar: WeeklyCalendarView,
+    pub milestones_source: String,
     #[schemars(length(max = 64))]
     pub milestones: Vec<WeeklyMilestoneView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct WeeklyCalendarView {
+    pub source: String,
+    /// RFC3339 UTC start of the resolved weekly period.
+    pub start: Option<String>,
+    /// RFC3339 UTC end of the resolved weekly period (exclusive).
+    pub end: Option<String>,
+    pub rotations: Vec<WeeklyRotationView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct WeeklyRotationView {
+    pub key: String,
+    pub title: String,
+    #[serde(flatten)]
+    pub outcome: WeeklyRotationOutcomeView,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum WeeklyRotationOutcomeView {
+    Predicted {
+        activities: Vec<CalendarActivityView>,
+    },
+    NoData {
+        activities: Vec<CalendarActivityView>,
+        coverage_start: Option<String>,
+        coverage_note: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct CalendarActivityView {
+    pub name: String,
+    pub hash: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
