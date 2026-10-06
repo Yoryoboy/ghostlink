@@ -122,8 +122,12 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   evidence, explicit stack ambiguity/capacity rules, request fixtures. Non-instance
   itemId, partial/duplicate selection and per-material coverage remain unresolved;
   this task is not complete just because a limited instanced slice is possible.
-- [ ] **GPM-007 — Dedicated pull adapter.** Core request/gateway and strict
-  endpoint adapter, sanitized outcomes, one dispatch and encoding tests.
+- [x] **GPM-007a — Instanced pull core contract.** Genuine positive int64
+  IDs, uint32 reference hash, representable membership type, fixed quantity one;
+  immutable request and one-shot gateway/outcomes. No anonymous stack request.
+- [ ] **GPM-007b — Instanced pull adapter.** Dedicated exact allowlisted
+  endpoint, both hash/real ID, credential/dispatch bounds, sanitized outcomes and
+  explicit uncertainty; no inherited transfer-specific refusal assumptions.
 - [ ] **GPM-008 — Verified pull service.** Owned instance/stack selection,
   membership/revision preflight, bounded quantity, conservative post-action
   evidence, no retry and provider-lag tests.
@@ -395,6 +399,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   SQLite files: additive nullable fields, true single/catalog readback and content
   identity, transactional publication, migration preservation and guarded downgrade.
   No source writes outside those files or pull action changes are authorized.
+  GPM-006a2 commit `6d3d8e4`.
   COMPLETE: v18 nullable additive columns; single/catalog exact Option readback,
   strict 0/1 boolean decoding, metadata content identity; ordinary/description/world
   publication supported. Pre-v18 known metadata refusal preserved, including 66
@@ -411,6 +416,40 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
   Temporary v17 publication block is lifted on v18; no pull eligibility/service,
   live-provider correctness or native approval claimed.
+  Targeted public searches for official non-instanced/stackSize/partial Postmaster
+  discussion returned no primary evidence resolving the remaining wire gates.
+  Sources checked: generated operation/request schemas and official Postmaster
+  Actions wiki; DIM's zero-ID convention remains secondary only. Further code
+  cannot create that missing provider contract. A bounded instanced subset can
+  be developed without closing full-stack support. User selected continuing with
+  identified equipment only while stacks remain blocked (interactive choice
+  continue_instanced_subset). This is staged implementation, not a scope reduction
+  or full-feature completion. No live account operations were authorized.
+  Scout `mux7ycdi-p-vx43` mapped core request/gateway and hardened adapter.
+  Existing opaque IDs/transfer canonical helper permit zero or oversized strings,
+  so the new instanced request validates canonical positive signed-int64 IDs itself.
+  Quantity fixed one; hash uint32 (including zero), membership type signed-int32
+  representability. Ownership remains fresh service proof, not syntax validation.
+  Split GPM-007 into core contract then adapter units; no shared-action refactor.
+  Existing transfer refusals do not prove pull-specific semantics. Unknown or
+  post-dispatch ambiguous errors cannot become deterministic non-application.
+  Capacity remains a later service prerequisite; maxStackSize does not establish
+  destination bucket capacity. No service/frontend actions yet.
+  GPM-007a worker `mux81k5v-q-e1dw` implementing only core instanced_pull.rs,
+  ports trait and lib exports: immutable request, representability tests and
+  honest acknowledgement/refusal/uncertainty. Adapter is the next unit.
+  Implementation COMPLETE: request private fields/read-only accessors/fixed1,
+  seven tests and five compile-fail docs. RED E0432; GREEN 7 focused, 159 core,
+  1,556 default / 1,574 all-features offline tests, zero failed/ignored; fmt/clippy
+  and diff/new-file whitespace passed after formatting correction. Core trait
+  fake only, no transport/provider proof. ASSESS unassessable due untracked module;
+  high-risk independent-verifier required. Verifier `mux87zkx-r-7x6l` PASS,
+  no blocking counterexample. Explicitly read all 301 untracked lines; 7 focused,
+  159 core including six total doctests, 1,556 default / 1,574 all-features tests,
+  fmt/clippy/diff and whitespace passed. Candidate/tracker/lockfile checksums
+  unchanged. Compile-fail examples use valid exports and intended restrictions.
+  Syntax does not prove provider identity; fresh eligibility/capacity/service remain
+  future. RDD/native approval unknown; core seam only, not transport proof.
 - GPM-005b scope scout `mux1d2co-f-c4dl`: only QueryService and CLI
   runner RecordingService implement QueryOperations. Add required object-safe
   postmaster method and true forwarding; no fallback stub or MCP changes needed.

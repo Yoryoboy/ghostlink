@@ -11,6 +11,8 @@ pub mod auth;
 pub mod domain;
 pub mod error;
 pub mod ids;
+pub mod instanced_pull;
+pub use instanced_pull::{InstancedPullOutcome, InstancedPullRejection, InstancedPullRequest};
 pub mod mutation;
 pub mod name_matching;
 pub mod ports;
@@ -62,11 +64,11 @@ pub use ports::{
     AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,
     CredentialSource, CredentialStore, DefinitionReplacementInput, DefinitionRepository,
     DestinyMembership, EquipGateway, EquipItemRequest, EquipOutcome, EquipRejection,
-    InventoryRepository, InventorySnapshotInput, LockGateway, LockOutcome, LockRejection,
-    ManifestAcquisition, ManifestDefinitionCandidate, ManifestDefinitions, ManifestGateway,
-    PlanIdGenerator, ProfileGateway, PublicTokenExchange, SearchRepository, SecureRandom,
-    SetLockStateRequest, StatDefinitionRepository, StaticCredentialSource, TokenRefresh,
-    TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
+    InstancedPullGateway, InventoryRepository, InventorySnapshotInput, LockGateway, LockOutcome,
+    LockRejection, ManifestAcquisition, ManifestDefinitionCandidate, ManifestDefinitions,
+    ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange, SearchRepository,
+    SecureRandom, SetLockStateRequest, StatDefinitionRepository, StaticCredentialSource,
+    TokenRefresh, TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
 };
 pub use query::{
     ARTIFACT_BUCKET_HASH, CharacterListResult, CharacterSubclass, CharacterSubclassOptions,

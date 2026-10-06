@@ -1023,6 +1023,30 @@ pub trait TransferGateway {
     fn transfer(&mut self, request: &TransferRequest) -> Result<TransferOutcome, AppError>;
 }
 
+/// Performs exactly one instanced Postmaster pull attempt, under fresh preflight.
+///
+/// No sequencing, batching, retries, rollback or post-condition verification.
+/// Request syntax alone is not action authorization: the future service must
+/// freshly prove provider identity, ownership, Postmaster location and eligibility.
+/// No credentials, raw provider payloads or provider messages cross this seam.
+///
+/// `Err(AppError)` is reserved for failures before dispatch. A received auth
+/// refusal is `Ok(InstancedPullOutcome::AuthenticationRefused)`. Post-dispatch
+/// ambiguity, including unknown HTTP 5xx without independent non-application
+/// proof, must be `Ok(InstancedPullOutcome::Uncertain)`, never a clean error or
+/// deterministic transient refusal. Acknowledgement is not observed recovery;
+/// no outcome authorizes automatic retry.
+///
+/// [`InstancedPullOutcome::AuthenticationRefused`]: crate::InstancedPullOutcome::AuthenticationRefused
+/// [`InstancedPullOutcome::Uncertain`]: crate::InstancedPullOutcome::Uncertain
+pub trait InstancedPullGateway {
+    /// Issues one request and returns only sanitized evidence of that attempt.
+    fn pull(
+        &mut self,
+        request: &crate::InstancedPullRequest,
+    ) -> Result<crate::InstancedPullOutcome, AppError>;
+}
+
 /// A validated, provider-neutral intent to equip one concrete item on a character.
 /// Identifier syntax is adapter-owned; empty opaque identifiers are refused here.
 #[derive(Clone, Debug, Eq, PartialEq)]
