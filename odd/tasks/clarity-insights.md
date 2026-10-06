@@ -51,25 +51,38 @@ Source: <https://github.com/Database-Clarity/Live-Clarity-Database>
       `sync-manifest` with isolated failure; README Credits.
 - [x] 2. PR B — exposure: `clarity` field on five surfaces with matching rule
       and variant marking; CLI JSON/human, MCP, parity tests.
-- [ ] 3. PR C — agents: docs and skill rule to cite Clarity.
-- [ ] 4. Live check after each PR on a copy of the real DB.
+- [x] 3. PR C — agents: docs and skill rule to cite Clarity.
+- [ ] 4. Deliver chained PRs after checks: A/B copied-DB live checks passed;
+      C structural docs checks passed (runtime N/A). Publishing/CI pending.
 
 ## Current state
 
-Resumed after the user-requested reboot. PR A is committed locally as
-`8b18b98`; PR B remains uncommitted on `feature/clarity-exposure` (25 files,
-906 changed lines). PR B writer reported fmt/clippy/tests passing (1,439
-passed). Parent readback and live checks are pending. PR A/B have not been
-pushed. Read-only review confirmed a blocker: name fallback compares only
-enhancement, not semantic kind. Correct within PR B with cross-category RED/GREEN
-coverage and a conservative mapping; preserve exact-hash matches. Renderer
-indentation was confirmed intentional verbatim source whitespace. Live results
-from the pre-fix binary are provisional; rerun affected checks after correction.
-Native assessment: RDD off, medium risk, large writer; no mandatory
-independent verifier. User-requested live acceptance checks will still run
-on a copied database, without changing the installed binary or real DB.
+PR A committed `8b18b98`; PR B committed `a5b30ab` after corrected live
+acceptance; PR C committed `fe438a7` after documentation checks. All remain
+local, not pushed. Delivery preparation in progress on
+`feature/clarity-agent-guidance`, stacked on PR B. Native RDD remains off.
+All live checks used a copied DB; installed binaries and real DB unchanged.
+
+Delivery chain: A data -> B five-surface exposure -> C agent guidance.
+Changed-line budgets: A 959, B 1,240, C 76 (including task evidence).
+Single slicing pass completed: A could split into three infrastructure units;
+B could split into four units but the matching foundation alone remains about
+550-650 lines. Preserve A/B/C is recommended, but the owner explicitly accepted the size exception for A/B via the
+`keep_three_size_exception` selection. Publish the existing three-slice chain. Alternative
+chain would grow to eight PRs; intermediate rewritten bases are not verified.
+Repository has no issues or PR template. Native workflows do not validate
+approved issue/type labels/branch regex; README requests issue discussion for
+large changes. Gentle AI skill-specific policy is not native Ghostlink CI. Only pre-existing
+inspection raw perk-hash parity difference remains a separate followup.
 
 ## Evidence log
+
+- PR C: skill v1.2 adds Clarity source attribution, no invented numbers,
+  variant-value safeguards and five optional surfaces. CLI/MCP docs match
+  semantic fallback restrictions and remove stale exposure claim. Passive
+  documentation has no meaningful RED/runtime check; frontmatter, 11 local
+  references, safety/attribution assertions and diff whitespace checks passed.
+  Automatic Markdown checks clean; anchors not separately validated.
 
 - PR B post-correction acceptance passed: release build and focused tests
   exit 0 (MCP parity 9, inspection 5, core matching 12, app cache 4). All

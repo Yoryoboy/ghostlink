@@ -4,7 +4,7 @@ description: "Trigger: Destiny 2, D2 inventory, vault, weapon perks, armor stats
 license: MIT OR Apache-2.0
 metadata:
   author: "Yoryoboy"
-  version: "1.1"
+  version: "1.2"
 ---
 
 ## Activation Contract
@@ -25,7 +25,8 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - Never try to free inventory space, unequip elsewhere, or change plugs; the CLI refuses these by design.
 - Run `ghostlink login` only when the user asks or after exit 10/11; it needs a human to authorize in a browser and waits for the callback.
 - `ghostlink handler install` and `ghostlink handler uninstall` change the user's desktop configuration; run them only when the user asks. `ghostlink handler status` is read-only.
-- Perk, mod, aspect, fragment and ability effects come only from `description` fields in command output (official Bungie tooltip text). It is qualitative: never add numbers, percentages or durations the output does not contain; say the exact value is not available.
+- Explain perk, mod, aspect, fragment and ability effects only from output `description` (official Bungie tooltip) and optional `clarity` (community research). Attribute community numbers to Clarity; never invent numbers, percentages or durations absent from both fields. If neither gives an exact value, say it is unavailable.
+- Missing `clarity` is not evidence of no effect. For `clarity_match: "variant"`, explicitly qualify the text as an enhanced/base fallback, not exact values for the inspected variant; never infer improved numbers.
 
 ## Decision Gates
 
@@ -50,7 +51,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 
 ## Descriptions
 
-- `ghostlink subclass`, `ghostlink subclass-options`, `ghostlink artifact` and `ghostlink loadouts` add an optional `description` next to each plug name. `ghostlink inspect-item` adds `plug_details` (`hash`, `name`, `role`, optional `description`). A missing `description` means none is known.
+- Five plug surfaces expose optional official `description` and community `clarity`: subclass slots, subclass options, artifact slots, loadout plugs and inspect `plug_details` (`hash`, `name`, `role`, optional `description`, `clarity`, `clarity_match`). Missing fields mean no text is available, not no effect.
 - `ghostlink search-inventory` returns names only. To explain perks, search first, then inspect the chosen instance.
 - Descriptions exist only for plugs present in the user's items, subclass or subclass options; there is no lookup for arbitrary perk names.
 

@@ -334,8 +334,7 @@ ghostlink sync-manifest          # or: ghostlink --json sync-manifest
   skipped entry counts (JSON: a `clarity` object with `status`, `version`,
   `entries_stored`, `entries_skipped`). Clarity failures leave both the published
   Manifest and previous insights intact and never change the Manifest exit code.
-  Automatic CLI sync reports Clarity status on stderr; item outputs do not yet
-  expose these insights.
+  Automatic CLI sync reports Clarity status on stderr.
 - Opening the database applies supported schema migrations automatically;
   older binaries can refuse a newer database. After an upgrade that adds catalog
   attributes, run `sync-manifest` to populate them even if the version is unchanged.
@@ -398,12 +397,20 @@ On subclass slots, subclass options, artifact slots, loadout plugs and inspect
 `plug_details`, optional `clarity` adds community research by
 [Clarity](https://d2clarity.com) next to the official `description`. Stored text
 is shown verbatim in JSON, including whitespace and newlines; absent insights
-are omitted. Exact hashes and unambiguous same-name, same-enhancement matches
-have no marker. An enhanced/base fallback adds `clarity_match: "variant"`;
-ambiguous differing texts are never guessed (a parent-item match is preferred
-when known). Human output places `Clarity:` beneath the description, or
-`Clarity (variant):` for a fallback, with indented text. It follows the same
-single/multiple-plug layout and `--locked`/`--detail` visibility rules.
+are omitted. Exact hashes win; name fallback is restricted to the same semantic
+plug kind, and unsupported kinds omit name fallback (exact hashes still work).
+Unambiguous same-name, same-enhancement matches have no marker. An enhanced/base
+fallback adds `clarity_match: "variant"`; ambiguous differing texts are never
+guessed (a parent-item match is preferred when known). Human output places
+`Clarity:` beneath the description, or `Clarity (variant):` for a fallback,
+with indented text. It follows the same single/multiple-plug layout and
+`--locked`/`--detail` visibility rules.
+
+When explaining effects, distinguish the official Bungie tooltip (`description`)
+from community research (`clarity`), and cite Clarity when using its numbers.
+Never invent values absent from both fields; missing `clarity` does not mean no
+effect. Explicitly qualify variant text as an enhanced/base fallback, not exact
+values for that variant, and never infer improved numbers.
 
 Official descriptions prefer the item's own valid tooltip. When absent or invalid,
 sync joins its displayable sandbox perk effects in reference order, deduplicating
