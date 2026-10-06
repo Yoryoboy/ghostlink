@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 14;
+pub(crate) const LATEST_VERSION: u32 = 15;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 14] = [
+const MIGRATIONS: [Migration; 15] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -124,7 +124,34 @@ const MIGRATIONS: [Migration; 14] = [
         up: SCHEMA_V14_UP,
         down: SCHEMA_V14_DOWN,
     },
+    Migration {
+        version: 15,
+        up: SCHEMA_V15_UP,
+        down: SCHEMA_V15_DOWN,
+    },
 ];
+
+const SCHEMA_V15_UP: &str = r#"
+CREATE TABLE clarity_insights (
+    hash INTEGER PRIMARY KEY CHECK (hash BETWEEN 0 AND 4294967295),
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    item_hash INTEGER CHECK (item_hash BETWEEN 0 AND 4294967295),
+    item_name TEXT,
+    text TEXT NOT NULL
+) STRICT;
+CREATE INDEX clarity_insights_name ON clarity_insights(name);
+CREATE TABLE clarity_metadata (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    version TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+) STRICT;
+"#;
+const SCHEMA_V15_DOWN: &str = r#"
+DROP TABLE clarity_metadata;
+DROP TABLE clarity_insights;
+"#;
 
 // Existing caches must republish even when the upstream version is unchanged.
 const SCHEMA_V14_UP: &str = r#"

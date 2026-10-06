@@ -327,7 +327,15 @@ ghostlink sync-manifest          # or: ghostlink --json sync-manifest
   redacted are skipped and counted.
 - Re-running it fetches only the small Manifest index; when the live version
   equals the stored one and all four catalogs are populated it reports
-  `unchanged` and downloads nothing. Run it again after a Destiny patch.
+  `unchanged` and downloads no Manifest components. Run it again after a Destiny patch.
+- After the Manifest succeeds, the same sync path checks Clarity's community
+  perk-data version, downloading descriptions only when that version changes.
+  The report adds `clarity: updated|unchanged|unavailable`, version, stored and
+  skipped entry counts (JSON: a `clarity` object with `status`, `version`,
+  `entries_stored`, `entries_skipped`). Clarity failures leave both the published
+  Manifest and previous insights intact and never change the Manifest exit code.
+  Automatic CLI sync reports Clarity status on stderr; item outputs do not yet
+  expose these insights.
 - Opening the database applies supported schema migrations automatically;
   older binaries can refuse a newer database. After an upgrade that adds catalog
   attributes, run `sync-manifest` to populate them even if the version is unchanged.

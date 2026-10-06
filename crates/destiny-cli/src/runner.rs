@@ -586,8 +586,12 @@ pub fn run_manifest<M: crate::runtime::ManifestFactory>(
     factory: &mut M,
     mode: OutputMode,
 ) -> ProcessOutput {
-    match factory.sync() {
-        Ok(report) => ProcessOutput::success(crate::output::render_manifest(mode, &report)),
+    match factory.sync_with_clarity() {
+        Ok(report) => ProcessOutput::success(crate::output::render_manifest_with_clarity(
+            mode,
+            &report.manifest,
+            &report.clarity,
+        )),
         Err(error) => ProcessOutput::failure(mode, error),
     }
 }

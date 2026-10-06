@@ -1,5 +1,7 @@
 //! Provider- and transport-free domain contracts.
 
+pub use clarity::*;
+pub mod clarity;
 pub mod loadout;
 pub use loadout::*;
 pub mod agents;

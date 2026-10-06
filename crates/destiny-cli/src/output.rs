@@ -413,6 +413,29 @@ mod profile_sync_tests {
 }
 
 /// Renders the public version label and counts, never definition payloads.
+pub fn render_manifest_with_clarity(
+    mode: OutputMode,
+    report: &destiny_app::ManifestSyncReport,
+    clarity: &destiny_app::ClaritySyncReport,
+) -> String {
+    let manifest = render_manifest(mode, report);
+    match mode {
+        OutputMode::Human => format!(
+            "{manifest}\nclarity: {}\nclarity_version: {}\nclarity_entries_stored: {}\nclarity_entries_skipped: {}",
+            clarity.status,
+            sanitize(clarity.version.as_deref().unwrap_or("unavailable")),
+            clarity.entries_stored,
+            clarity.entries_skipped
+        ),
+        OutputMode::Json => {
+            let mut value: serde_json::Value =
+                serde_json::from_str(&manifest).expect("Manifest renderer emits JSON");
+            value["clarity"] = json!({"status": clarity.status, "version": clarity.version, "entries_stored": clarity.entries_stored, "entries_skipped": clarity.entries_skipped});
+            value.to_string()
+        }
+    }
+}
+
 pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncReport) -> String {
     use destiny_app::ManifestSyncReport;
     let (status, version, count, skipped, world_counts, world_skipped, stat_count, stat_skipped) =
