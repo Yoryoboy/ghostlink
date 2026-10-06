@@ -40,6 +40,8 @@ pub struct LoadoutPlugView {
     pub plug_hash: ItemHash,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub clarity: Option<String>,
+    pub clarity_match: Option<String>,
     pub subclass_kind: Option<SubclassPlugKind>,
     pub empty: bool,
 }
@@ -125,6 +127,7 @@ where
             .iter()
             .map(|item| (&item.instance_id, item))
             .collect();
+        let mut clarity_cache = crate::clarity::ClarityCache::default();
         let mut output = Vec::with_capacity(characters.len());
         for character in characters {
             let mut loadouts = Vec::new();
@@ -147,7 +150,17 @@ where
                             if definition.as_ref().is_some_and(is_cosmetic_plug) {
                                 continue;
                             }
+                            let (clarity, clarity_match) = match &definition {
+                                Some(plug) => clarity_cache.resolve(
+                                    repository,
+                                    plug,
+                                    instance.map(|instance| instance.item_hash),
+                                )?,
+                                None => (None, None),
+                            };
                             plugs.push(LoadoutPlugView {
+                                clarity,
+                                clarity_match,
                                 socket_index: plug.socket_index,
                                 plug_hash: plug.plug_hash,
                                 subclass_kind: definition
@@ -310,6 +323,16 @@ mod tests {
         }
     }
     impl WorldDefinitionRepository for Repository {
+        fn lookup_clarity_by_hash(&self, hash: u32) -> Result<Option<ClarityInsight>, AppError> {
+            Ok((hash == 10).then(|| ClarityInsight {
+                hash,
+                name: "Aspect".into(),
+                kind: "Subclass Aspect".into(),
+                item_hash: None,
+                item_name: None,
+                text: "  Community research.\nSecond line.\n".into(),
+            }))
+        }
         fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
             if self.description_error {
                 return Err(AppError::new(ErrorCategory::LocalStorage));
@@ -559,6 +582,13 @@ mod tests {
             plugs[0].description.as_deref(),
             Some("Official aspect tooltip.")
         );
+        assert_eq!(
+            plugs[0].clarity.as_deref(),
+            Some("  Community research.\nSecond line.\n")
+        );
+        assert_eq!(plugs[0].clarity_match, None);
+        assert_eq!(plugs[1].clarity, None);
+        assert_eq!(plugs[2].clarity, None);
         assert_eq!(plugs[1].description, None);
         assert_eq!(plugs[2].description, None);
         assert!(plugs[1].empty);

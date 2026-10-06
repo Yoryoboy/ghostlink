@@ -554,6 +554,18 @@ impl destiny_app::StatDefinitionRepository for SharedRepository {
 }
 
 impl destiny_app::WorldDefinitionRepository for SharedRepository {
+    fn lookup_clarity_by_hash(
+        &self,
+        hash: u32,
+    ) -> Result<Option<destiny_app::ClarityInsight>, AppError> {
+        self.lock()?.lookup_clarity_by_hash(hash)
+    }
+    fn lookup_clarity_by_name(
+        &self,
+        name: &str,
+    ) -> Result<Vec<destiny_app::ClarityInsight>, AppError> {
+        self.lock()?.lookup_clarity_by_name(name)
+    }
     fn lookup_item_description(
         &self,
         hash: destiny_app::ItemHash,

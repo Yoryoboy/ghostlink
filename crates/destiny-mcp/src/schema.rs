@@ -596,6 +596,10 @@ pub struct ArtifactSlotView {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarity_match: Option<String>,
     pub empty: bool,
 }
 
@@ -655,6 +659,10 @@ pub struct LoadoutPlugView {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarity_match: Option<String>,
     pub subclass_kind: Option<SubclassPlugKindView>,
     pub empty: bool,
 }
@@ -728,6 +736,10 @@ pub struct SubclassOptionView {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarity_match: Option<String>,
     pub status: OptionStatusView,
     pub can_insert: bool,
     pub enabled: bool,
@@ -769,6 +781,10 @@ pub struct SubclassSlotView {
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarity_match: Option<String>,
     pub empty: bool,
 }
 
@@ -986,6 +1002,10 @@ pub struct InspectionPlugView {
     pub role: InspectionPlugRoleView,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clarity_match: Option<String>,
 }
 
 /// A found inspection: one exact definition beside one concrete instance.

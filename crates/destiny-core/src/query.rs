@@ -889,6 +889,8 @@ pub struct SubclassOption {
     pub plug_hash: ItemHash,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub clarity: Option<String>,
+    pub clarity_match: Option<String>,
     pub status: OptionStatus,
     pub can_insert: bool,
     pub enabled: bool,
@@ -931,6 +933,8 @@ pub struct SubclassSlot {
     pub plug_hash: ItemHash,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub clarity: Option<String>,
+    pub clarity_match: Option<String>,
     pub empty: bool,
 }
 
@@ -1008,6 +1012,8 @@ pub struct InspectionPlug {
     pub name: String,
     pub role: InspectionPlugRole,
     pub description: Option<String>,
+    pub clarity: Option<String>,
+    pub clarity_match: Option<String>,
 }
 
 /// Inspection-only roles; alternatives exclude names already equipped.

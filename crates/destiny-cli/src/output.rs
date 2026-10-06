@@ -34,6 +34,43 @@ mod subclass_tests {
     };
 
     #[test]
+    fn subclass_clarity_is_verbatim_and_labeled() {
+        let mut result = fixture();
+        let slot = &mut result.characters[0].subclass.as_mut().unwrap().slots[0];
+        slot.clarity = Some("  Research\nSecond\n".into());
+        slot.clarity_match = Some("variant".into());
+        let json = subclass_json(&result);
+        assert_eq!(
+            json["characters"][0]["subclass"]["slots"][0]["clarity"],
+            "  Research\nSecond\n"
+        );
+        assert_eq!(
+            json["characters"][0]["subclass"]["slots"][0]["clarity_match"],
+            "variant"
+        );
+        assert!(
+            json["characters"][0]["subclass"]["slots"][1]
+                .get("clarity")
+                .is_none()
+        );
+        let human = render_subclasses(OutputMode::Human, &result);
+        assert!(
+            human.contains(
+                "    Plug 0:\n      Clarity (variant):\n          Research\n        Second"
+            )
+        );
+        result.characters[0]
+            .subclass
+            .as_mut()
+            .unwrap()
+            .slots
+            .truncate(1);
+        let single = render_subclasses(OutputMode::Human, &result);
+        assert!(single.contains("    Clarity (variant):\n        Research\n      Second"));
+        assert!(!single.contains("    Plug 0:"));
+    }
+
+    #[test]
     fn subclass_descriptions_are_additive_and_readable() {
         let mut result = fixture();
         let slot = &mut result.characters[0].subclass.as_mut().unwrap().slots[0];
@@ -105,6 +142,8 @@ mod subclass_tests {
                             plug_hash: ItemHash::new(i as i64),
                             name: Some(format!("Plug {i}")),
                             description: None,
+                            clarity: None,
+                            clarity_match: None,
                             empty: i == 7,
                         })
                         .collect(),
@@ -165,6 +204,50 @@ fn with_description(mut value: Value, description: Option<&str>) -> Value {
         value["description"] = json!(description);
     }
     value
+}
+
+fn with_insights(
+    value: Value,
+    description: Option<&str>,
+    clarity: Option<&str>,
+    clarity_match: Option<&str>,
+) -> Value {
+    let mut value = with_description(value, description);
+    if let Some(clarity) = clarity {
+        value["clarity"] = json!(clarity);
+        if let Some(marker) = clarity_match {
+            value["clarity_match"] = json!(marker);
+        }
+    }
+    value
+}
+
+fn push_insights(
+    lines: &mut Vec<String>,
+    indent: usize,
+    name: Option<&str>,
+    description: Option<&str>,
+    clarity: Option<&str>,
+    clarity_match: Option<&str>,
+) {
+    push_description(lines, indent, name, description);
+    if let Some(clarity) = clarity {
+        if description.is_none()
+            && let Some(name) = name
+        {
+            lines.push(format!("{}{}:", " ".repeat(indent), sanitize(name)));
+        }
+        let text_indent = indent + if name.is_some() { 2 } else { 0 };
+        let label = if clarity_match == Some("variant") {
+            "Clarity (variant):"
+        } else {
+            "Clarity:"
+        };
+        lines.push(format!("{}{label}", " ".repeat(text_indent)));
+        for line in clarity.lines() {
+            lines.push(format!("{}{}", " ".repeat(text_indent + 2), sanitize(line)));
+        }
+    }
 }
 
 fn description_label(multiple: bool, name: Option<&str>) -> Option<&str> {
@@ -252,11 +335,13 @@ pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult)
                                 .iter()
                                 .filter(|slot| slot.kind == kind && !slot.empty)
                             {
-                                push_description(
+                                push_insights(
                                     &mut lines,
                                     4,
                                     description_label(names.len() > 1, slot.name.as_deref()),
                                     slot.description.as_deref(),
+                                    slot.clarity.as_deref(),
+                                    slot.clarity_match.as_deref(),
                                 );
                             }
                         }
@@ -332,11 +417,13 @@ pub fn render_artifact(mode: OutputMode, result: &destiny_app::ArtifactResult) -
                 .join(", ");
             lines.push(format!("  Perks: {perks}"));
             for slot in equipped.slots.iter().filter(|slot| !slot.empty) {
-                push_description(
+                push_insights(
                     &mut lines,
                     4,
                     description_label(multiple, slot.name.as_deref()),
                     slot.description.as_deref(),
+                    slot.clarity.as_deref(),
+                    slot.clarity_match.as_deref(),
                 );
             }
         } else {
@@ -851,11 +938,13 @@ fn inspection_human(inspection: &ItemInspection) -> String {
             .iter()
             .filter(|plug| plug.role == role)
         {
-            push_description(
+            push_insights(
                 &mut lines,
                 4,
                 description_label(names.len() > 1, Some(&plug.name)),
                 plug.description.as_deref(),
+                plug.clarity.as_deref(),
+                plug.clarity_match.as_deref(),
             );
         }
     }
@@ -866,7 +955,14 @@ fn inspection_human(inspection: &ItemInspection) -> String {
             .iter()
             .filter(|plug| plug.role == destiny_app::InspectionPlugRole::Archetype)
         {
-            push_description(&mut lines, 4, None, plug.description.as_deref());
+            push_insights(
+                &mut lines,
+                4,
+                None,
+                plug.description.as_deref(),
+                plug.clarity.as_deref(),
+                plug.clarity_match.as_deref(),
+            );
         }
     }
     if !inspection.stats.is_empty() {
@@ -964,9 +1060,11 @@ fn inspection_json(inspection: &ItemInspection) -> String {
         "metadata": metadata_json(&inspection.metadata),
     });
     if !inspection.plug_details.is_empty() {
-        value["plug_details"] = json!(inspection.plug_details.iter().map(|plug| with_description(
+        value["plug_details"] = json!(inspection.plug_details.iter().map(|plug| with_insights(
             json!({"hash": plug.hash.value(), "name": plug.name, "role": plug.role.as_str()}),
             plug.description.as_deref(),
+            plug.clarity.as_deref(),
+            plug.clarity_match.as_deref(),
         )).collect::<Vec<_>>());
     }
     value.to_string()
@@ -1953,12 +2051,16 @@ mod tests {
                 name: "Rampage".into(),
                 role: destiny_app::InspectionPlugRole::Perk,
                 description: Some("Official tooltip.\nSecond line.".into()),
+                clarity: None,
+                clarity_match: None,
             },
             destiny_app::InspectionPlug {
                 hash: ItemHash::new(61),
                 name: "Barrel".into(),
                 role: destiny_app::InspectionPlugRole::Perk,
                 description: None,
+                clarity: None,
+                clarity_match: None,
             },
         ];
         inspected

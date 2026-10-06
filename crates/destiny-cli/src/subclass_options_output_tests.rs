@@ -13,6 +13,8 @@ fn fixture() -> SubclassOptionsResult {
             plug_hash: ItemHash::new(i as i64),
             name: (i != 1).then(|| format!("Plug {i}")),
             description: None,
+            clarity: None,
+            clarity_match: None,
             status,
             can_insert: i == 0,
             enabled: i != 1,
@@ -78,6 +80,25 @@ fn option_descriptions_follow_human_locked_filter_and_json_keeps_all() {
 }
 
 #[test]
+fn option_clarity_obeys_locked_filter() {
+    let mut result = fixture();
+    let option = &mut result.characters[0].elements[0].groups[0].options[0];
+    option.clarity = Some("  Research\nSecond\n".into());
+    option.clarity_match = Some("variant".into());
+    assert!(
+        render_subclass_options(OutputMode::Human, &result, false).contains(
+            "      Plug 0:\n        Clarity (variant):\n            Research\n          Second"
+        )
+    );
+    assert!(!render_subclass_options(OutputMode::Human, &result, true).contains("Research"));
+    let json = subclass_options_json(&result);
+    let options = &json["characters"][0]["elements"][0]["groups"][0]["options"];
+    assert_eq!(options[0]["clarity"], "  Research\nSecond\n");
+    assert_eq!(options[0]["clarity_match"], "variant");
+    assert!(options[1].get("clarity").is_none());
+}
+
+#[test]
 fn subclass_options_text_explains_status_and_filters_locked() {
     assert_eq!(
         render_subclass_options(OutputMode::Human, &fixture(), false),
@@ -122,6 +143,8 @@ fn subclass_options_shared_labels_fallbacks_and_sanitization() {
         plug_hash: ItemHash::new(9),
         name: Some("Name\nInjected".into()),
         description: None,
+        clarity: None,
+        clarity_match: None,
         status: OptionStatus::Unlocked,
         can_insert: true,
         enabled: true,

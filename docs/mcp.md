@@ -108,6 +108,15 @@ plug includes optional `description` (official Manifest tooltip), omitted when
 unavailable; cosmetic filtering is unchanged. Descriptions preserve multiline
 text across all four tools.
 
+Subclass slots, subclass options, artifact slots, loadout plugs and inspect
+`plug_details` also include optional `clarity`: community research by
+[Clarity](https://d2clarity.com), shown verbatim, including whitespace and
+newlines. CLI JSON and MCP expose identical plug fields. Missing insights are
+omitted. Exact-hash and unambiguous same-name, same-enhancement matches have no
+marker; an enhanced/base fallback adds `clarity_match: "variant"`. Parent-item
+matches are preferred when known, and ambiguous differing texts are never
+guessed. Official `description` remains independent and unchanged.
+
 Definition versions are automatic: MCP uses the Manifest stored in SQLite;
 `DESTINY_DEFINITION_VERSION` is only an optional backward-compatible override.
 MCP never downloads a Manifest inside a tool call (downloads can exceed client
@@ -121,7 +130,8 @@ without restarting.
 `perk_names`, `mod_names`, `mods`, `archetype`, `available_perks`,
 `available_mods` and `stats`, alongside the definition, instance and metadata.
 It also adds `plug_details` entries with `hash`, `name`, `role` and optional
-official `description` (multiline text preserved). Roles are `intrinsic`,
+official `description`, community `clarity` and `clarity_match` (multiline text
+preserved). Roles are `intrinsic`,
 `perk`, `mod`, `available_perk`, `available_mod` and `archetype`. Every resolved
 socketed plug with category `intrinsics` appears as `intrinsic` for weapons and
 armor, instead of a `perk` detail for that plug. Other details come from the

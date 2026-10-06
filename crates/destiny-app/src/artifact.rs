@@ -37,6 +37,8 @@ pub struct ArtifactSlot {
     pub plug_hash: ItemHash,
     pub name: Option<String>,
     pub description: Option<String>,
+    pub clarity: Option<String>,
+    pub clarity_match: Option<String>,
     pub empty: bool,
 }
 /// Sibling read contract, like the separately composed weekly service.
@@ -123,6 +125,7 @@ where
             progress_to_next_level: profile.progress_to_next_level,
             next_level_at: profile.next_level_at,
         });
+        let mut clarity_cache = crate::clarity::ClarityCache::default();
         let mut output = Vec::with_capacity(characters.len());
         for character in characters {
             let mut equipped = None;
@@ -156,7 +159,11 @@ where
                     if definition.plug_category.as_deref() != Some("artifact_perks") {
                         continue;
                     }
+                    let (clarity, clarity_match) =
+                        clarity_cache.resolve(repository, &definition, Some(instance.item_hash))?;
                     slots.push(ArtifactSlot {
+                        clarity,
+                        clarity_match,
                         plug_hash: plug.plug_hash,
                         empty: definition.name.starts_with("Empty "),
                         name: Some(definition.name),

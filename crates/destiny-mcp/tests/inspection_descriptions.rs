@@ -25,6 +25,8 @@ fn inspection() -> ItemInspection {
             name: name.into(),
             role,
             description: (i != 1).then(|| "Official tooltip.\nSecond line.".into()),
+            clarity: None,
+            clarity_match: None,
         })
         .collect(),
         definition: ItemDefinition {
@@ -90,6 +92,8 @@ fn with_intrinsic() -> ItemInspection {
             name: "Uncanny\u{1b} Arrows".into(),
             role: InspectionPlugRole::Intrinsic,
             description: Some("Official\u{1b} intrinsic.\nSecond line.".into()),
+            clarity: None,
+            clarity_match: None,
         },
     );
     inspected
@@ -112,6 +116,8 @@ fn inspection_intrinsic_human_single_and_multiple() {
             name: "Another intrinsic".into(),
             role: InspectionPlugRole::Intrinsic,
             description: None,
+            clarity: None,
+            clarity_match: None,
         },
     );
     let human = render_inspection(OutputMode::Human, &inspected);
@@ -160,6 +166,52 @@ fn inspection_descriptions_cli_mcp_parity() {
         for field in ["definition", "metadata"] {
             for (key, value) in cli[field].as_object().unwrap() {
                 assert_eq!(value, &mcp[field][key], "{field}.{key}");
+            }
+        }
+    }
+}
+
+#[test]
+fn inspection_clarity_cli_mcp_parity_and_human_all_roles() {
+    let mut inspected = with_intrinsic();
+    for present in [false, true] {
+        for (index, plug) in inspected.plug_details.iter_mut().enumerate() {
+            plug.clarity = present.then(|| "  Research\u{1b}\nSecond\n".into());
+            plug.clarity_match = (present && index == 0).then(|| "variant".into());
+        }
+        let cli: Value =
+            serde_json::from_str(&render_inspection(OutputMode::Json, &inspected)).unwrap();
+        let mcp = serde_json::to_value(
+            inspect_item_output(&Resolution::Unique(inspected.clone())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cli["plug_details"], mcp["plug_details"]);
+        if present {
+            assert_eq!(
+                cli["plug_details"][0]["clarity"],
+                "  Research\u{1b}\nSecond\n"
+            );
+            assert_eq!(cli["plug_details"][0]["clarity_match"], "variant");
+            assert!(cli["plug_details"][1].get("clarity_match").is_none());
+            let human = render_inspection(OutputMode::Human, &inspected);
+            assert!(human.contains("    Clarity (variant):\n        Research?\n      Second"));
+            assert_eq!(human.matches("Clarity:").count(), 5);
+            assert!(!human.contains('\u{1b}'));
+            assert!(!human.contains("    Uncanny? Arrows:"));
+            inspected.plug_details.push(InspectionPlug {
+                hash: ItemHash::new(999),
+                name: "Other".into(),
+                role: InspectionPlugRole::Intrinsic,
+                description: None,
+                clarity: Some("Other research".into()),
+                clarity_match: None,
+            });
+            let human = render_inspection(OutputMode::Human, &inspected);
+            assert!(human.contains("    Other:\n      Clarity:\n        Other research"));
+        } else {
+            for plug in cli["plug_details"].as_array().unwrap() {
+                assert!(plug.get("clarity").is_none());
+                assert!(plug.get("clarity_match").is_none());
             }
         }
     }

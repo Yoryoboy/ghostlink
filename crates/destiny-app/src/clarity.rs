@@ -1,6 +1,57 @@
 //! Isolated community-data synchronization after successful Manifest sync.
 use destiny_core::{AppError, ClarityGateway, ClarityRepository, Timestamp};
 
+/// Request-local cache of catalog reads, including misses. Matching stays parent-specific.
+#[derive(Default)]
+pub(crate) struct ClarityCache {
+    hashes: std::collections::HashMap<u32, Option<destiny_core::ClarityInsight>>,
+    names: std::collections::HashMap<String, Vec<destiny_core::ClarityInsight>>,
+}
+
+impl ClarityCache {
+    pub(crate) fn resolve(
+        &mut self,
+        repository: &impl destiny_core::ports::WorldDefinitionRepository,
+        plug: &destiny_core::ItemDefinition,
+        parent: Option<destiny_core::ItemHash>,
+    ) -> Result<(Option<String>, Option<String>), AppError> {
+        let Ok(hash) = u32::try_from(plug.hash.value()) else {
+            return Ok((None, None));
+        };
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.hashes.entry(hash) {
+            entry.insert(repository.lookup_clarity_by_hash(hash)?);
+        }
+        let entries = if let Some(exact) = &self.hashes[&hash] {
+            std::slice::from_ref(exact)
+        } else {
+            if !self.names.contains_key(&plug.name) {
+                self.names.insert(
+                    plug.name.clone(),
+                    repository.lookup_clarity_by_name(&plug.name)?,
+                );
+            }
+            &self.names[&plug.name]
+        };
+        let matched = destiny_core::clarity::match_clarity(
+            hash,
+            &plug.name,
+            plug.item_type.as_deref(),
+            plug.plug_category
+                .as_deref()
+                .map(destiny_core::domain::classify_plug),
+            parent.and_then(|hash| u32::try_from(hash.value()).ok()),
+            entries,
+        );
+        Ok(match matched {
+            Some(matched) => (
+                Some(matched.text),
+                matched.variant.then(|| "variant".into()),
+            ),
+            None => (None, None),
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClaritySyncReport {
     pub status: &'static str,

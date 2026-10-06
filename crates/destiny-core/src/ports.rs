@@ -330,6 +330,16 @@ pub trait DefinitionCatalogRepository: DefinitionRepository {
 /// Counts are ordered milestone, activity, activity modifier. Failed publication
 /// leaves every catalog and the shared Manifest metadata unchanged.
 pub trait WorldDefinitionRepository: DefinitionRepository {
+    /// Optional community catalog read, backed by the separate Clarity repository.
+    fn lookup_clarity_by_hash(
+        &self,
+        _hash: u32,
+    ) -> Result<Option<crate::ClarityInsight>, AppError> {
+        Ok(None)
+    }
+    fn lookup_clarity_by_name(&self, _name: &str) -> Result<Vec<crate::ClarityInsight>, AppError> {
+        Ok(Vec::new())
+    }
     /// Reads the official inventory tooltip without changing item identity.
     fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError>;
     fn lookup_milestone(&self, hash: u32) -> Result<Option<crate::MilestoneDefinition>, AppError>;

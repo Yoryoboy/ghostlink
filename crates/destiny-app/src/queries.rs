@@ -161,6 +161,7 @@ impl InstanceEnrichment {
         selected.sort_by_key(|(_, role)| *role != Role::Intrinsic);
         let mut seen = std::collections::HashSet::new();
         let mut descriptions = std::collections::HashMap::new();
+        let mut clarity_cache = crate::clarity::ClarityCache::default();
         let mut details = Vec::new();
         for (plug, role) in selected {
             if !seen.insert((plug.hash, role)) {
@@ -170,7 +171,11 @@ impl InstanceEnrichment {
             {
                 entry.insert(repository.lookup_item_description(plug.hash)?);
             }
+            let (clarity, clarity_match) =
+                clarity_cache.resolve(repository, plug, Some(hit.definition.hash))?;
             details.push(InspectionPlug {
+                clarity,
+                clarity_match,
                 hash: plug.hash,
                 name: plug.name.clone(),
                 role,
@@ -355,6 +360,7 @@ where
             None => snapshot.characters,
         };
         let mut output = Vec::with_capacity(characters.len());
+        let mut clarity_cache = crate::clarity::ClarityCache::default();
         let mut enrichment = InstanceEnrichment::default();
         for character in characters {
             let mut subclass = None;
@@ -379,16 +385,25 @@ where
                     .filter_map(|plug| {
                         let kind =
                             destiny_core::classify_subclass_plug(plug.plug_category.as_deref()?)?;
-                        Some(self.repository().lookup_item_description(plug.hash).map(
-                            |description| destiny_core::SubclassSlot {
+                        Some((|| {
+                            let description =
+                                self.repository().lookup_item_description(plug.hash)?;
+                            let (clarity, clarity_match) = clarity_cache.resolve(
+                                self.repository(),
+                                &plug,
+                                Some(instance.item_hash),
+                            )?;
+                            Ok(destiny_core::SubclassSlot {
                                 kind,
                                 plug_hash: plug.hash,
                                 empty: plug.name.starts_with("Empty ")
                                     && plug.name.ends_with(" Socket"),
                                 description,
+                                clarity,
+                                clarity_match,
                                 name: Some(plug.name),
-                            },
-                        ))
+                            })
+                        })())
                     })
                     .collect::<Result<Vec<_>, AppError>>()?;
                 subclass = Some(destiny_core::SubclassConfig {
@@ -459,6 +474,7 @@ where
             None => snapshot.characters.clone(),
         };
         let mut enrichment = InstanceEnrichment::default();
+        let mut clarity_cache = crate::clarity::ClarityCache::default();
         let mut output = Vec::new();
         for character in characters {
             let class = character.class.as_deref();
@@ -499,10 +515,14 @@ where
                     } else {
                         OptionStatus::Locked
                     };
+                    let (clarity, clarity_match) =
+                        clarity_cache.resolve(self.repository(), &definition, None)?;
                     grouped.push((
                         plug_element,
                         kind,
                         SubclassOption {
+                            clarity,
+                            clarity_match,
                             plug_hash: hash,
                             name: Some(definition.name),
                             description: self.repository().lookup_item_description(hash)?,
@@ -954,6 +974,7 @@ mod tests {
         inventory: InMemoryInventoryRepository,
         search: InMemorySearchRepository,
         definitions: InMemoryDefinitionRepository,
+        clarity_entries: Vec<destiny_core::ClarityInsight>,
         calls: RefCell<Vec<&'static str>>,
     }
 
@@ -964,6 +985,7 @@ mod tests {
                 inventory: InMemoryInventoryRepository::new(),
                 search: InMemorySearchRepository::with_definitions(definitions.clone()),
                 definitions: InMemoryDefinitionRepository::new(version, definitions),
+                clarity_entries: Vec::new(),
                 calls: RefCell::new(Vec::new()),
             }
         }
@@ -1091,6 +1113,38 @@ mod tests {
     }
 
     impl destiny_core::ports::WorldDefinitionRepository for CompositeRepository {
+        fn lookup_clarity_by_name(
+            &self,
+            name: &str,
+        ) -> Result<Vec<destiny_core::ClarityInsight>, AppError> {
+            self.record("lookup_clarity_by_name");
+            Ok(self
+                .clarity_entries
+                .iter()
+                .filter(|entry| entry.name == name)
+                .cloned()
+                .collect())
+        }
+        fn lookup_clarity_by_hash(
+            &self,
+            hash: u32,
+        ) -> Result<Option<destiny_core::ClarityInsight>, AppError> {
+            self.record("lookup_clarity_by_hash");
+            if let Some(entry) = self.clarity_entries.iter().find(|entry| entry.hash == hash) {
+                return Ok(Some(entry.clone()));
+            }
+            Ok(self
+                .definitions
+                .lookup_item_description(ItemHash::new(i64::from(hash)))?
+                .map(|_| destiny_core::ClarityInsight {
+                    hash,
+                    name: "Community plug".into(),
+                    kind: "Weapon Trait".into(),
+                    item_hash: None,
+                    item_name: None,
+                    text: "  Community research.\nSecond line.\n".into(),
+                }))
+        }
         fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
             self.definitions.lookup_item_description(hash)
         }
@@ -1149,6 +1203,182 @@ mod tests {
         fn stat_definition_count(&self) -> Result<usize, AppError> {
             self.definitions.stat_definition_count()
         }
+    }
+
+    #[test]
+    fn clarity_cache_rejects_cross_category_name_fallback() {
+        let repository = CompositeRepository {
+            clarity_entries: vec![destiny_core::ClarityInsight {
+                hash: 1,
+                name: "Ascension".into(),
+                kind: "Weapon Trait".into(),
+                item_hash: None,
+                item_name: None,
+                text: "Unrelated".into(),
+            }],
+            ..CompositeRepository::default()
+        };
+        let mut plug = definition(
+            2835214901,
+            "Ascension",
+            Some("Arc Aspect | Light Ability"),
+            vec![],
+        );
+        plug.plug_category = Some("hunter.prism.aspects".into());
+        assert_eq!(
+            crate::clarity::ClarityCache::default()
+                .resolve(&repository, &plug, None)
+                .unwrap(),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn clarity_cache_unrelated_kind_cannot_create_ambiguity() {
+        let repository = CompositeRepository {
+            clarity_entries: [("Subclass Aspect", "Aspect"), ("Weapon Trait", "Unrelated")]
+                .into_iter()
+                .enumerate()
+                .map(|(i, (kind, text))| destiny_core::ClarityInsight {
+                    hash: i as u32 + 1,
+                    name: "Ascension".into(),
+                    kind: kind.into(),
+                    item_hash: None,
+                    item_name: None,
+                    text: text.into(),
+                })
+                .collect(),
+            ..CompositeRepository::default()
+        };
+        let mut plug = definition(
+            2835214901,
+            "Ascension",
+            Some("Arc Aspect | Light Ability"),
+            vec![],
+        );
+        plug.plug_category = Some("hunter.prism.aspects".into());
+        assert_eq!(
+            crate::clarity::ClarityCache::default()
+                .resolve(&repository, &plug, None)
+                .unwrap(),
+            (Some("Aspect".into()), None)
+        );
+    }
+
+    #[test]
+    fn clarity_cache_preserves_semantic_variants_and_fails_closed() {
+        let repository = CompositeRepository {
+            clarity_entries: [
+                ("Weapon Trait", "Base"),
+                ("Weapon Trait Enhanced", "Enhanced"),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (kind, text))| destiny_core::ClarityInsight {
+                hash: i as u32 + 1,
+                name: "Plug".into(),
+                kind: kind.into(),
+                item_hash: None,
+                item_name: None,
+                text: text.into(),
+            })
+            .collect(),
+            ..CompositeRepository::default()
+        };
+        let mut cache = crate::clarity::ClarityCache::default();
+        let mut plug = definition(99, "Plug", Some("Origin Trait"), vec![]);
+        plug.plug_category = Some("origins".into());
+        assert_eq!(
+            cache.resolve(&repository, &plug, None).unwrap(),
+            (Some("Base".into()), None)
+        );
+        plug.item_type = Some("Enhanced Origin Trait".into());
+        assert_eq!(
+            cache.resolve(&repository, &plug, None).unwrap(),
+            (Some("Enhanced".into()), None)
+        );
+        for category in [None, Some("unknown"), Some("hunter.prism.aspects")] {
+            plug.plug_category = category.map(str::to_owned);
+            assert_eq!(
+                cache.resolve(&repository, &plug, None).unwrap(),
+                (None, None)
+            );
+        }
+        plug.hash = ItemHash::new(1);
+        assert_eq!(
+            cache.resolve(&repository, &plug, None).unwrap(),
+            (Some("Base".into()), None)
+        );
+    }
+
+    #[test]
+    fn clarity_cache_bounds_reads_without_caching_parent_specific_results() {
+        let repository = CompositeRepository {
+            clarity_entries: [("A", 10), ("B", 20)]
+                .into_iter()
+                .enumerate()
+                .map(|(i, (text, parent))| destiny_core::ClarityInsight {
+                    hash: i as u32 + 1,
+                    name: "Plug".into(),
+                    kind: "Weapon Trait".into(),
+                    item_hash: Some(parent),
+                    item_name: None,
+                    text: text.into(),
+                })
+                .collect(),
+            ..CompositeRepository::default()
+        };
+        let mut cache = crate::clarity::ClarityCache::default();
+        let mut plug = definition(99, "Plug", Some("Enhanced Origin Trait"), vec![]);
+        plug.plug_category = Some("origins".into());
+        for _ in 0..3 {
+            for (parent, expected) in [(10, Some("A")), (20, Some("B")), (30, None)] {
+                let (text, marker) = cache
+                    .resolve(&repository, &plug, Some(ItemHash::new(parent)))
+                    .unwrap();
+                assert_eq!(text.as_deref(), expected);
+                assert_eq!(marker.as_deref(), expected.map(|_| "variant"));
+            }
+        }
+        plug.hash = ItemHash::new(100);
+        cache.resolve(&repository, &plug, None).unwrap();
+        assert_eq!(
+            repository.recorded_calls(),
+            [
+                "lookup_clarity_by_hash",
+                "lookup_clarity_by_name",
+                "lookup_clarity_by_hash"
+            ]
+        );
+        // Exact hits never query names, and misses are cached too.
+        plug.hash = ItemHash::new(1);
+        for _ in 0..3 {
+            cache.resolve(&repository, &plug, None).unwrap();
+        }
+        plug.hash = ItemHash::new(200);
+        plug.name = "Missing".into();
+        for _ in 0..3 {
+            assert_eq!(
+                cache.resolve(&repository, &plug, None).unwrap(),
+                (None, None)
+            );
+        }
+        assert_eq!(
+            repository
+                .recorded_calls()
+                .iter()
+                .filter(|&&call| call == "lookup_clarity_by_hash")
+                .count(),
+            4
+        );
+        assert_eq!(
+            repository
+                .recorded_calls()
+                .iter()
+                .filter(|&&call| call == "lookup_clarity_by_name")
+                .count(),
+            2
+        );
     }
 
     /// A read-only spy over the fake gateway the sync service owns by value.
@@ -1430,6 +1660,12 @@ mod tests {
             Some("Official artifact tooltip.")
         );
         assert_eq!(equipped.slots[1].description, None);
+        assert_eq!(
+            equipped.slots[0].clarity.as_deref(),
+            Some("  Community research.\nSecond line.\n")
+        );
+        assert_eq!(equipped.slots[0].clarity_match, None);
+        assert_eq!(equipped.slots[1].clarity, None);
         assert!(equipped.slots[..7].iter().all(|slot| !slot.empty));
         assert!(equipped.slots[7].empty);
         assert_eq!(
@@ -1694,6 +1930,12 @@ mod tests {
             Some("Official option tooltip.")
         );
         assert_eq!(supers[1].description, None);
+        assert_eq!(
+            supers[0].clarity.as_deref(),
+            Some("  Community research.\nSecond line.\n")
+        );
+        assert_eq!(supers[0].clarity_match, None);
+        assert_eq!(supers[1].clarity, None);
         assert!(supers[0].can_insert && supers[0].enabled);
         assert_eq!(supers[0].status, OptionStatus::Unlocked);
         assert_eq!(hunter.elements.last().unwrap().groups[0].options.len(), 1);
@@ -1849,6 +2091,12 @@ mod tests {
             Some("Official super tooltip.")
         );
         assert_eq!(config.slots[1].description, None);
+        assert_eq!(
+            config.slots[0].clarity.as_deref(),
+            Some("  Community research.\nSecond line.\n")
+        );
+        assert_eq!(config.slots[0].clarity_match, None);
+        assert_eq!(config.slots[1].clarity, None);
         for (slot, (hash, name, _, kind)) in config.slots.iter().zip(cases) {
             assert_eq!(slot.kind, kind);
             assert_eq!(slot.plug_hash, ItemHash::new(hash));
@@ -2008,6 +2256,12 @@ mod tests {
         assert_eq!(inspected.plug_details.len(), 3);
         assert_eq!(inspected.plug_details[0].hash, ItemHash::new(61));
         assert_eq!(inspected.plug_details[0].description, None);
+        assert_eq!(inspected.plug_details[0].clarity, None);
+        assert_eq!(
+            inspected.plug_details[1].clarity.as_deref(),
+            Some("  Community research.\nSecond line.\n")
+        );
+        assert_eq!(inspected.plug_details[1].clarity_match, None);
         assert_eq!(
             inspected.plug_details[1].description.as_deref(),
             Some("Official rampage tooltip.\nSecond line.")
