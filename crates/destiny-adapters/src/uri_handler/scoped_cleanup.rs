@@ -466,6 +466,8 @@ fn guarded_replace(
                 return Err("temporary file replaced".to_owned());
             }
         }
+        #[cfg(not(unix))]
+        let _ = at_path;
         fs::rename(&temporary, path).map_err(|e| e.to_string())
     })();
     result.map_err(|e| {
