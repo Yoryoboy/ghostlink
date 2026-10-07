@@ -32,6 +32,7 @@ pub mod queries;
 pub mod session;
 pub mod setup;
 pub mod sync;
+pub use sync::{ProfileSyncWithObservationsOutcome, PublishedProfileAcquisition};
 pub mod uri_handler;
 pub mod weekly_personal;
 pub mod weekly_projection;

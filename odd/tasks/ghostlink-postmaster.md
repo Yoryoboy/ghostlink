@@ -209,9 +209,15 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
+- GPM-008a3 IN PROGRESS: successful-publication evidence outcome with same
+  returned snapshot and full filtered-candidate correspondence. Exact four mapped
+  app/journey surfaces; ordinary legacy loader compatibility and zero post-write
+  reload for proof. No policy/service dispatch or durable buckets in this unit.
+  Writer `muxa5mzh-15-272e` active; no other source writer. Tests include real
+  in-memory SQLite journey plus isolated returned-snapshot mismatch controls.
 - GPM-008a2 COMPLETE: retain actual buckets from a single scoped profile
   acquisition using shared normalization; exact three adapter surfaces above.
-  Work-unit commit follows writer checks and native risk assessment.
+  Work-unit commit: `5c113f0`.
   Test-first, no core/sync/SQLite/runtime-action changes. Explicit null/present
   malformed buckets stay rejected; omitted buckets give unavailable evidence.
   Writer `mux9p7td-13-u1ap` COMPLETE: decode_profile_with_observations and

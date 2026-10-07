@@ -5,8 +5,8 @@
 //! `ProfileGateway` for one complete normalized candidate when a refresh is
 //! warranted, verifies that the candidate belongs to the membership it resolved,
 //! and commits it atomically. It never retains or surfaces raw payloads, upstream
-//! messages, credential material, or membership identifiers; failures stay
-//! sanitized [`AppError`] categories.
+//! messages, or credential material. Failures stay sanitized [`AppError`]
+//! categories without membership identifiers; successful snapshots retain identity.
 //!
 //! The caller supplies all policy input: the sync `reason`, the freshness
 //! `policy`, and the explicit `now` timestamp. The service reads no ambient
@@ -16,8 +16,93 @@
 
 use destiny_core::{
     AppError, Dataset, ErrorCategory, FreshnessInput, FreshnessPolicy, FreshnessStatus,
-    InventoryRepository, ProfileGateway, ProfileSyncOutcome, ProfileSyncReason, Timestamp,
+    InstancedBucketObservation, InventoryRepository, InventorySnapshot, InventorySnapshotInput,
+    ProfileAcquisition, ProfileGateway, ProfileSyncOutcome, ProfileSyncReason, SnapshotMetadata,
+    SourceMarker, Timestamp,
 };
+
+/// A successful publication return paired with its ephemeral acquisition observations.
+///
+/// This association does NOT establish authentication, causality, capacity, action
+/// authority, durability of runtime buckets, or perpetual freshness. Planning AND
+/// execution must reacquire; an unchanged revision cannot authorize proof reuse.
+/// `None` means unavailable; `Some([])` means available and complete with zero instances.
+/// Only sync can construct this type, after validating the exact publication return.
+///
+/// ```compile_fail
+/// use destiny_app::sync::PublishedProfileAcquisition;
+/// fn mutate(pair: &mut PublishedProfileAcquisition) {
+///     pair.snapshot().items.clear();
+/// }
+/// ```
+/// ```compile_fail
+/// use destiny_app::{InventorySnapshot, InventorySnapshotInput};
+/// use destiny_app::sync::PublishedProfileAcquisition;
+/// fn fabricate(candidate: &InventorySnapshotInput, snapshot: InventorySnapshot) {
+///     let _ = PublishedProfileAcquisition::new(candidate, snapshot, None);
+/// }
+/// ```
+#[derive(Debug, Eq, PartialEq)]
+pub struct PublishedProfileAcquisition {
+    snapshot: InventorySnapshot,
+    observations: Option<Vec<InstancedBucketObservation>>,
+}
+
+impl PublishedProfileAcquisition {
+    fn new(
+        candidate: &InventorySnapshotInput,
+        snapshot: InventorySnapshot,
+        observations: Option<Vec<InstancedBucketObservation>>,
+    ) -> Result<Self, AppError> {
+        let returned = InventorySnapshotInput::with_metadata(&snapshot);
+        // content_eq deliberately excludes time and source. Check both exactly,
+        // and require the dataset's source independently of candidate equality.
+        if !returned.is_structurally_valid()
+            || !candidate.content_eq(&returned)
+            || candidate.checked_at != returned.checked_at
+            || candidate.source != returned.source
+            || returned.source != SourceMarker::Profile
+        {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        let (_, observations) = ProfileAcquisition::new(returned, observations)?.into_parts();
+        Ok(Self {
+            snapshot,
+            observations,
+        })
+    }
+
+    pub fn snapshot(&self) -> &InventorySnapshot {
+        &self.snapshot
+    }
+
+    pub fn observations(&self) -> Option<&[InstancedBucketObservation]> {
+        self.observations.as_deref()
+    }
+
+    /// Consumes and explicitly ends pairing; neither part grants action authority.
+    pub fn into_parts(self) -> (InventorySnapshot, Option<Vec<InstancedBucketObservation>>) {
+        (self.snapshot, self.observations)
+    }
+}
+
+/// Fresh skips carry metadata, never a fabricated unavailable publication pair.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ProfileSyncWithObservationsOutcome {
+    SkippedFresh { metadata: SnapshotMetadata },
+    Refreshed(PublishedProfileAcquisition),
+}
+
+// Ordinary publication intentionally does not construct or validate a core pair:
+// the legacy loader/filter/lookup-error ordering is part of its existing contract.
+enum SyncPublication {
+    Legacy(InventorySnapshot),
+    Observed(PublishedProfileAcquisition),
+}
+enum SyncDecision {
+    SkippedFresh(SnapshotMetadata),
+    Refreshed(SyncPublication),
+}
 
 /// Orchestrates one offline profile synchronization decision.
 ///
@@ -103,7 +188,7 @@ where
     /// explicit `now` timestamp; the service never reads an ambient clock. The
     /// committed projection is evaluated first, and an `Ordinary` request over a
     /// fresh projection returns [`ProfileSyncOutcome::SkippedFresh`] without
-    /// calling the gateway or touching the repository. Otherwise the gateway
+    /// calling the gateway or publishing a replacement. Otherwise the gateway
     /// resolves the membership and loads one complete candidate, the candidate
     /// is verified against that membership, and the verified candidate is
     /// committed through the repository, which owns revision retention and
@@ -125,6 +210,47 @@ where
         policy: FreshnessPolicy,
         now: Timestamp,
     ) -> Result<ProfileSyncOutcome, AppError> {
+        match self.sync_inner(reason, policy, now, false)? {
+            SyncDecision::SkippedFresh(metadata) => {
+                Ok(ProfileSyncOutcome::SkippedFresh { metadata })
+            }
+            SyncDecision::Refreshed(SyncPublication::Legacy(snapshot)) => {
+                Ok(ProfileSyncOutcome::Refreshed {
+                    metadata: snapshot.metadata,
+                })
+            }
+            SyncDecision::Refreshed(SyncPublication::Observed(_)) => unreachable!("legacy route"),
+        }
+    }
+
+    /// Acquires ephemeral observations and releases them only after successful
+    /// publication, associated with exactly the returned snapshot. No reload,
+    /// retry, bucket persistence, or revision-based authority is introduced.
+    /// A mismatched successful repository return is rejected, not rolled back.
+    pub fn sync_with_observations(
+        &mut self,
+        reason: ProfileSyncReason,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<ProfileSyncWithObservationsOutcome, AppError> {
+        match self.sync_inner(reason, policy, now, true)? {
+            SyncDecision::SkippedFresh(metadata) => {
+                Ok(ProfileSyncWithObservationsOutcome::SkippedFresh { metadata })
+            }
+            SyncDecision::Refreshed(SyncPublication::Observed(pair)) => {
+                Ok(ProfileSyncWithObservationsOutcome::Refreshed(pair))
+            }
+            SyncDecision::Refreshed(SyncPublication::Legacy(_)) => unreachable!("observed route"),
+        }
+    }
+
+    fn sync_inner(
+        &mut self,
+        reason: ProfileSyncReason,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+        with_observations: bool,
+    ) -> Result<SyncDecision, AppError> {
         let committed = self.repository.load_current()?;
         let status = FreshnessInput {
             dataset: Dataset::ProfileInventory,
@@ -142,14 +268,21 @@ where
             // implies the snapshot is present; moving its metadata avoids
             // cloning the projection. No gateway call and no mutation happen.
             if let Some(snapshot) = committed {
-                return Ok(ProfileSyncOutcome::SkippedFresh {
-                    metadata: snapshot.metadata,
-                });
+                return Ok(SyncDecision::SkippedFresh(snapshot.metadata));
             }
         }
 
         let membership = self.gateway.resolve_membership_scoped(reason)?;
-        let mut candidate = self.gateway.load_inventory_scoped(&membership, reason)?;
+        let (mut candidate, observations) = if with_observations {
+            self.gateway
+                .load_inventory_with_observations_scoped(&membership, reason)?
+                .into_parts()
+        } else {
+            (
+                self.gateway.load_inventory_scoped(&membership, reason)?,
+                None,
+            )
+        };
         // The candidate must belong to the membership it was resolved for, so a
         // mismatched or partial provider response can never be published.
         if candidate.membership_id != *membership.membership_id()
@@ -205,10 +338,19 @@ where
         candidate
             .plug_set_entries
             .retain(|entry| subclass_options.contains(&entry.plug_hash));
+        // Preserve only the observed route's POST-FILTER candidate. Ordinary
+        // success still moves its input without cloning a projection.
+        let expected = with_observations.then(|| candidate.clone());
         let snapshot = self.repository.replace_current(candidate)?;
-        Ok(ProfileSyncOutcome::Refreshed {
-            metadata: snapshot.metadata,
-        })
+        let publication = match expected {
+            Some(candidate) => SyncPublication::Observed(PublishedProfileAcquisition::new(
+                &candidate,
+                snapshot,
+                observations,
+            )?),
+            None => SyncPublication::Legacy(snapshot),
+        };
+        Ok(SyncDecision::Refreshed(publication))
     }
 }
 
@@ -312,6 +454,487 @@ mod tests {
             }
         }
 
+        // This seam supplies validated acquisitions, never bypassing the core pair.
+        struct ObservationGateway {
+            acquisition: Option<destiny_core::ProfileAcquisition>,
+            calls: Rc<RefCell<Vec<ProfileSyncReason>>>,
+        }
+
+        impl ProfileGateway for ObservationGateway {
+            fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
+                panic!("scoped resolver required")
+            }
+            fn load_inventory(
+                &mut self,
+                _: &DestinyMembership,
+            ) -> Result<InventorySnapshotInput, AppError> {
+                panic!("observation route must not call legacy loader")
+            }
+            fn resolve_membership_scoped(
+                &mut self,
+                reason: ProfileSyncReason,
+            ) -> Result<DestinyMembership, AppError> {
+                self.calls.borrow_mut().push(reason);
+                Ok(membership())
+            }
+            fn load_inventory_with_observations_scoped(
+                &mut self,
+                requested: &DestinyMembership,
+                reason: ProfileSyncReason,
+            ) -> Result<destiny_core::ProfileAcquisition, AppError> {
+                assert_eq!(requested, &membership());
+                self.calls.borrow_mut().push(reason);
+                Ok(self.acquisition.take().expect("one acquisition"))
+            }
+        }
+
+        fn acquisition(
+            input: InventorySnapshotInput,
+            bucket: i64,
+        ) -> destiny_core::ProfileAcquisition {
+            let rows = input
+                .items
+                .iter()
+                .map(|item| {
+                    destiny_core::InstancedBucketObservation::new(
+                        item.instance_id.clone(),
+                        destiny_core::BucketHash::new(bucket),
+                        item.location.clone(),
+                    )
+                    .unwrap()
+                })
+                .collect();
+            destiny_core::ProfileAcquisition::new(input, Some(rows)).unwrap()
+        }
+
+        fn observed_gateway(
+            input: InventorySnapshotInput,
+        ) -> (ObservationGateway, Rc<RefCell<Vec<ProfileSyncReason>>>) {
+            let calls = Rc::new(RefCell::new(Vec::new()));
+            (
+                ObservationGateway {
+                    acquisition: Some(acquisition(input, 99)),
+                    calls: Rc::clone(&calls),
+                },
+                calls,
+            )
+        }
+
+        #[test]
+        fn observations_skip_is_not_an_unavailable_publication() {
+            use crate::sync::ProfileSyncWithObservationsOutcome;
+            let shared = gateway();
+            let mut service = harness(&shared, Some(fresh_seed(&membership())));
+            assert!(matches!(
+                service
+                    .sync_with_observations(ProfileSyncReason::Ordinary, TTL, NOW)
+                    .unwrap(),
+                ProfileSyncWithObservationsOutcome::SkippedFresh { .. }
+            ));
+            assert_eq!(shared.borrow().membership_calls(), 0);
+            assert_eq!(shared.borrow().inventory_calls(), 0);
+            shared.borrow_mut().queue_membership(Ok(membership()));
+            shared
+                .borrow_mut()
+                .queue_inventory(Ok(inventory(&membership(), NOW, 1)));
+            let ProfileSyncWithObservationsOutcome::Refreshed(pair) = service
+                .sync_with_observations(ProfileSyncReason::Forced, TTL, NOW)
+                .unwrap()
+            else {
+                panic!("refresh required")
+            };
+            assert!(pair.observations().is_none());
+            assert_eq!(pair.snapshot().metadata.checked_at, NOW);
+            assert_eq!(shared.borrow().membership_calls(), 1);
+            assert_eq!(shared.borrow().inventory_calls(), 1);
+        }
+
+        #[test]
+        fn observations_complete_empty_and_forced_reasons_use_one_scoped_read() {
+            use crate::sync::ProfileSyncWithObservationsOutcome;
+            for reason in [ProfileSyncReason::Preflight, ProfileSyncReason::PostAction] {
+                let mut input = inventory(&membership(), NOW, 1);
+                input.items.clear();
+                let (gateway, calls) = observed_gateway(input);
+                let mut repository = InMemoryInventoryRepository::new();
+                repository
+                    .replace_current(fresh_seed(&membership()))
+                    .unwrap();
+                let mut service = ProfileSyncService::new(gateway, repository);
+                let ProfileSyncWithObservationsOutcome::Refreshed(pair) =
+                    service.sync_with_observations(reason, TTL, NOW).unwrap()
+                else {
+                    panic!("forced refresh required")
+                };
+                assert_eq!(pair.observations(), Some([].as_slice()));
+                assert_eq!(*calls.borrow(), [reason, reason]);
+                let (snapshot, observations) = pair.into_parts();
+                assert!(snapshot.items.is_empty());
+                assert_eq!(observations, Some(vec![]));
+            }
+        }
+
+        // Deliberately dishonest publication returns test the release boundary.
+        // The backing write has succeeded: rejection does NOT promise rollback.
+        struct ReturnedSnapshotRepository {
+            backing: InMemoryInventoryRepository,
+            alter: fn(&mut InventorySnapshot),
+            loads: std::cell::Cell<usize>,
+            writes: usize,
+            fail: bool,
+        }
+        impl InventoryRepository for ReturnedSnapshotRepository {
+            fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
+                self.loads.set(self.loads.get() + 1);
+                let mut snapshot = self.backing.load_current()?;
+                // A post-write reload would contaminate the association.
+                if self.writes > 0
+                    && let Some(snapshot) = &mut snapshot
+                {
+                    snapshot.items.clear();
+                }
+                Ok(snapshot)
+            }
+            fn replace_current(
+                &mut self,
+                input: InventorySnapshotInput,
+            ) -> Result<InventorySnapshot, AppError> {
+                self.writes += 1;
+                if self.fail {
+                    return Err(AppError::new(ErrorCategory::LocalStorage));
+                }
+                let mut snapshot = self.backing.replace_current(input)?;
+                (self.alter)(&mut snapshot);
+                Ok(snapshot)
+            }
+        }
+        fn returned_repository(alter: fn(&mut InventorySnapshot)) -> ReturnedSnapshotRepository {
+            ReturnedSnapshotRepository {
+                backing: InMemoryInventoryRepository::new(),
+                alter,
+                loads: std::cell::Cell::new(0),
+                writes: 0,
+                fail: false,
+            }
+        }
+
+        #[test]
+        fn observations_require_full_publication_content_and_exact_metadata() {
+            let alterations: [fn(&mut InventorySnapshot); 20] = [
+                |s| s.items[0].item_hash = ItemHash::new(8),
+                |s| s.items[0].quantity += 1,
+                |s| s.items[0].equipped = true,
+                |s| s.items[0].locked = true,
+                |s| s.items[0].power = Some(1),
+                |s| {
+                    s.items[0].perks.push(destiny_core::PerkSummary {
+                        perk_hash: destiny_core::PerkHash::new(60),
+                        active: true,
+                        visible: true,
+                    })
+                },
+                |s| {
+                    s.items[0].stats.push(destiny_core::StatSummary {
+                        stat_hash: 61,
+                        value: 1,
+                    })
+                },
+                |s| {
+                    s.items[0].plugs.push(destiny_core::PlugSummary {
+                        plug_hash: ItemHash::new(62),
+                        enabled: true,
+                    })
+                },
+                |s| {
+                    s.items[0]
+                        .available_plugs
+                        .push(destiny_core::AvailablePlug {
+                            socket_index: 0,
+                            plug_hash: ItemHash::new(63),
+                        })
+                },
+                |s| {
+                    s.stacks.pop();
+                },
+                |s| {
+                    s.stacks[0] = destiny_core::StackObservation::new(
+                        ItemHash::new(50),
+                        destiny_core::BucketHash::new(51),
+                        1,
+                        destiny_core::StackContainer::ProfileCurrencies,
+                    )
+                    .unwrap();
+                },
+                |s| {
+                    s.profile_currencies_coverage =
+                        destiny_core::ProfileCurrenciesCoverage::Unavailable
+                },
+                |s| s.metadata.definition_version = DefinitionVersion::new("other"),
+                |s| s.metadata.membership_id = MembershipId::new("4611686018484639000"),
+                |s| s.metadata.membership_type = MembershipType::new(1),
+                |s| s.metadata.checked_at = Timestamp::new(NOW.seconds() + 1),
+                |s| s.metadata.source = SourceMarker::Manifest,
+                |s| s.characters[0].name = Some("changed".into()),
+                |s| s.items[0].location = ItemLocation::Postmaster(s.characters[0].id.clone()),
+                |s| {
+                    s.plug_set_entries.push(destiny_core::domain::PlugSetEntry {
+                        scope: destiny_core::domain::PlugSetScope::Profile,
+                        plug_hash: ItemHash::new(64),
+                        can_insert: true,
+                        enabled: true,
+                    })
+                },
+            ];
+            let mut input = inventory(&membership(), NOW, 1);
+            input.characters.push(destiny_core::Character {
+                id: "900000000000000001".into(),
+                name: None,
+                class: None,
+                race: None,
+                gender: None,
+                light: None,
+                date_last_played: None,
+            });
+            input.profile_currencies_coverage = destiny_core::ProfileCurrenciesCoverage::Available;
+            let currency = destiny_core::StackObservation::new(
+                ItemHash::new(50),
+                destiny_core::BucketHash::new(51),
+                0,
+                destiny_core::StackContainer::ProfileCurrencies,
+            )
+            .unwrap();
+            input.stacks = vec![currency.clone(), currency];
+            // The exact complete control succeeds before each isolated one-field
+            // alteration is tested against a fresh repository and acquisition.
+            let (gateway, _) = observed_gateway(input.clone());
+            let mut control = ProfileSyncService::new(gateway, returned_repository(|_| {}));
+            let crate::sync::ProfileSyncWithObservationsOutcome::Refreshed(pair) = control
+                .sync_with_observations(ProfileSyncReason::Forced, TTL, NOW)
+                .unwrap()
+            else {
+                panic!("valid control must publish")
+            };
+            assert_eq!(pair.snapshot().stacks, input.stacks);
+            assert_eq!(pair.observations().unwrap().len(), 1);
+            for alter in alterations {
+                let (gateway, _) = observed_gateway(input.clone());
+                let mut service = ProfileSyncService::new(gateway, returned_repository(alter));
+                let error = service
+                    .sync_with_observations(ProfileSyncReason::Forced, TTL, NOW)
+                    .expect_err("no proof for a different publication");
+                assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+                assert_eq!(service.repository().writes, 1);
+                assert_eq!(
+                    service.repository().loads.get(),
+                    1,
+                    "only initial freshness read"
+                );
+                assert!(
+                    service
+                        .repository()
+                        .backing
+                        .load_current()
+                        .unwrap()
+                        .is_some(),
+                    "no rollback claim for malicious successful publication"
+                );
+            }
+        }
+
+        #[test]
+        fn observations_use_returned_canonical_snapshot_without_post_write_reload() {
+            use crate::sync::ProfileSyncWithObservationsOutcome;
+            let mut input = inventory(&membership(), NOW, 1);
+            let mut second = input.items[0].clone();
+            second.instance_id = "instance-0".into();
+            input.items.push(second);
+            let (gateway, _) = observed_gateway(input);
+            let mut service = ProfileSyncService::new(gateway, returned_repository(|_| {}));
+            let ProfileSyncWithObservationsOutcome::Refreshed(pair) = service
+                .sync_with_observations(ProfileSyncReason::Forced, TTL, NOW)
+                .unwrap()
+            else {
+                panic!("refresh required")
+            };
+            assert_eq!(
+                pair.snapshot(),
+                &service
+                    .repository()
+                    .backing
+                    .load_current()
+                    .unwrap()
+                    .unwrap()
+            );
+            assert_eq!(pair.snapshot().items[0].instance_id.as_str(), "instance-0");
+            assert_eq!(pair.observations().unwrap().len(), 2);
+            assert_eq!(service.repository().loads.get(), 1);
+            assert_eq!(service.repository().writes, 1);
+        }
+
+        #[test]
+        fn observations_publication_error_and_requested_membership_reject_without_proof() {
+            let (gateway, _) = observed_gateway(inventory(&membership(), NOW, 1));
+            let mut repository = returned_repository(|_| {});
+            repository.fail = true;
+            let mut service = ProfileSyncService::new(gateway, repository);
+            assert_eq!(
+                service
+                    .sync_with_observations(ProfileSyncReason::Forced, TTL, NOW)
+                    .unwrap_err()
+                    .category(),
+                ErrorCategory::LocalStorage
+            );
+            assert_eq!(service.repository().writes, 1);
+            assert!(
+                service
+                    .repository()
+                    .backing
+                    .load_current()
+                    .unwrap()
+                    .is_none()
+            );
+            for other in [
+                membership_with("4611686018484639000", 3),
+                membership_with("4611686018484639825", 1),
+            ] {
+                let (gateway, _) = observed_gateway(inventory(&other, NOW, 1));
+                let mut service = ProfileSyncService::new(gateway, returned_repository(|_| {}));
+                assert_eq!(
+                    service
+                        .sync_with_observations(ProfileSyncReason::Forced, TTL, NOW)
+                        .unwrap_err()
+                        .category(),
+                    ErrorCategory::ProviderValidation
+                );
+                assert_eq!(service.repository().writes, 0);
+            }
+        }
+
+        #[test]
+        fn observations_reacquired_at_same_revision_then_inventory_change_advances() {
+            use crate::sync::ProfileSyncWithObservationsOutcome;
+            let (gateway, calls) = observed_gateway(inventory(&membership(), NOW, 1));
+            let mut service = ProfileSyncService::new(gateway, InMemoryInventoryRepository::new());
+            for (offset, quantity, bucket, revision) in
+                [(0, 1, 99, 1), (1, 1, 100, 1), (2, 2, 100, 2)]
+            {
+                let checked_at = Timestamp::new(NOW.seconds() + offset);
+                service.gateway.acquisition = Some(acquisition(
+                    inventory(&membership(), checked_at, quantity),
+                    bucket,
+                ));
+                let ProfileSyncWithObservationsOutcome::Refreshed(pair) = service
+                    .sync_with_observations(ProfileSyncReason::Preflight, TTL, checked_at)
+                    .unwrap()
+                else {
+                    panic!("refresh required")
+                };
+                assert_eq!(pair.snapshot().metadata.checked_at, checked_at);
+                assert_eq!(pair.snapshot().metadata.revision.value(), revision);
+                assert_eq!(
+                    pair.observations().unwrap()[0].bucket_hash().value(),
+                    bucket
+                );
+                assert_eq!(
+                    pair.snapshot(),
+                    &service.repository().load_current().unwrap().unwrap()
+                );
+            }
+            assert_eq!(calls.borrow().len(), 6);
+        }
+
+        #[test]
+        fn observation_owner_rejection_precedes_write() {
+            let shared = gateway();
+            shared.borrow_mut().queue_membership(Ok(membership()));
+            let mut dangling = inventory(&membership(), NOW, 1);
+            dangling.items[0].location = ItemLocation::Postmaster("missing-owner".into());
+            shared.borrow_mut().queue_inventory(Ok(dangling));
+            let mut service = ProfileSyncService::new(
+                SharedGateway(Rc::clone(&shared)),
+                returned_repository(|_| {}),
+            );
+            assert_eq!(
+                service
+                    .sync_with_observations(ProfileSyncReason::Forced, TTL, NOW)
+                    .unwrap_err()
+                    .category(),
+                ErrorCategory::ProviderValidation
+            );
+            assert_eq!(service.repository().writes, 0);
+            assert_eq!(shared.borrow().inventory_calls(), 1);
+        }
+
+        #[test]
+        fn ordinary_uses_legacy_scoped_override_without_early_pair_validation() {
+            struct LegacyOnly;
+            impl ProfileGateway for LegacyOnly {
+                fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
+                    panic!("scoped override required")
+                }
+                fn load_inventory(
+                    &mut self,
+                    _: &DestinyMembership,
+                ) -> Result<InventorySnapshotInput, AppError> {
+                    panic!("scoped override required")
+                }
+                fn resolve_membership_scoped(
+                    &mut self,
+                    reason: ProfileSyncReason,
+                ) -> Result<DestinyMembership, AppError> {
+                    assert_eq!(reason, ProfileSyncReason::Preflight);
+                    Ok(membership())
+                }
+                fn load_inventory_scoped(
+                    &mut self,
+                    requested: &DestinyMembership,
+                    reason: ProfileSyncReason,
+                ) -> Result<InventorySnapshotInput, AppError> {
+                    assert_eq!(requested, &membership());
+                    assert_eq!(reason, ProfileSyncReason::Preflight);
+                    let mut input = inventory(requested, NOW, 1);
+                    // Invalid before filtering, valid afterwards. Routing through
+                    // the new default constructor would reject this too early.
+                    input.items[0].plugs.push(destiny_core::PlugSummary {
+                        plug_hash: ItemHash::new(60),
+                        enabled: false,
+                    });
+                    Ok(input)
+                }
+                fn load_inventory_with_observations_scoped(
+                    &mut self,
+                    _: &DestinyMembership,
+                    _: ProfileSyncReason,
+                ) -> Result<destiny_core::ProfileAcquisition, AppError> {
+                    panic!("ordinary must not reroute through observation override")
+                }
+            }
+            let mut service =
+                ProfileSyncService::new(LegacyOnly, InMemoryInventoryRepository::new());
+            // Lookup errors still precede structural rejection on the legacy
+            // path; the new default acquisition wrapper would reverse that.
+            service.lookup_plug = |_, _| Err(AppError::new(ErrorCategory::LocalStorage));
+            assert_eq!(
+                service
+                    .sync(ProfileSyncReason::Preflight, TTL, NOW)
+                    .unwrap_err()
+                    .category(),
+                ErrorCategory::LocalStorage
+            );
+            service.lookup_plug = |_, _| Ok(destiny_core::Resolution::Missing);
+            assert!(
+                service
+                    .sync(ProfileSyncReason::Preflight, TTL, NOW)
+                    .unwrap()
+                    .refreshed()
+            );
+            assert!(
+                service.repository().load_current().unwrap().unwrap().items[0]
+                    .plugs
+                    .is_empty()
+            );
+        }
+
         fn committed_snapshot(service: &Service) -> InventorySnapshot {
             service
                 .repository()
@@ -401,6 +1024,7 @@ mod tests {
             };
             let resolved = membership();
             let shared = gateway();
+            let mut observed_inputs = Vec::new();
             for cosmetic in [61, 64] {
                 let mut candidate = inventory(&resolved, NOW, 1);
                 candidate.items[0].available_plugs = [60, cosmetic, 65, 66, 62, 63]
@@ -418,6 +1042,7 @@ mod tests {
                     })
                     .collect();
                 shared.borrow_mut().queue_membership(Ok(resolved.clone()));
+                observed_inputs.push(candidate.clone());
                 shared.borrow_mut().queue_inventory(Ok(candidate));
             }
             let mut service =
@@ -440,6 +1065,28 @@ mod tests {
                         .map(|plug| plug.plug_hash.value())
                         .collect::<Vec<_>>(),
                     [60, 65, 62]
+                );
+            }
+            // Available runtime observations survive filtering, and comparison
+            // uses the filtered candidate rather than the raw acquisition.
+            let (_, repository) = service.into_parts();
+            let (mut gateway, _) = observed_gateway(observed_inputs[0].clone());
+            gateway.acquisition = None;
+            let mut service = ProfileSyncService::new_with_definitions(gateway, repository);
+            for (index, input) in observed_inputs.into_iter().enumerate() {
+                service.gateway.acquisition = Some(acquisition(input, 99 + index as i64));
+                let crate::sync::ProfileSyncWithObservationsOutcome::Refreshed(pair) = service
+                    .sync_with_observations(ProfileSyncReason::Forced, TTL, NOW)
+                    .unwrap()
+                else {
+                    panic!("refresh required")
+                };
+                assert_eq!(pair.snapshot().metadata.revision.value(), 1);
+                assert_eq!(pair.observations().unwrap().len(), 1);
+                assert_eq!(pair.snapshot().items[0].available_plugs.len(), 3);
+                assert_eq!(
+                    pair.snapshot(),
+                    &service.repository().load_current().unwrap().unwrap()
                 );
             }
         }
