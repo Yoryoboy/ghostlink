@@ -232,7 +232,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   inherent method; app fake gets separate evidence queue/counter); observation-
   aware profile fake and queued pull-outcome fake. Surfaces: core ports.rs,
   adapters manifest.rs, app test_support.rs.
-- [ ] **GPM-008d — Opaque pull planning and eligibility.** New app module
+- [x] **GPM-008d — Opaque pull planning and eligibility.** New app module
   instanced_pull.rs (+ tests), lib exports. Forced fresh acquisition, owned
   Postmaster(owner) selection, definition gates (explicit false side-effect flag,
   instanced kind, supported normal bucket, definition version == published),
@@ -262,7 +262,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
-- GPM-008d VERIFIED, awaiting local commit: forced Preflight planning from the
+- GPM-008d COMPLETE — work-unit commit `65ad8d1`: forced Preflight planning from the
   successful publication pair, exact owned Postmaster selection, version-bound
   definition safety gates, qualified capacity and private non-Clone plan with
   eligibility fingerprint. Worker RED missing planning API; GREEN seven tests.
