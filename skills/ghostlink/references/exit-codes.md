@@ -5,8 +5,10 @@ one object on stderr. (`ghostlink login` also prints an `authorizing`
 instruction object on stdout before waiting.) The failure object is either:
 
 - `{"error":{"code":"...","message":"..."}}` for every command, including
-  `move` / `equip` / `lock` / `unlock` argument, configuration and authorization failures; or
-- a mutation result with `status` and `reason`, after argument validation.
+  `pull` / `move` / `equip` / `lock` / `unlock` argument, configuration and authorization failures; or
+- a mutation result with `status` and `reason`, after argument validation; or
+- `kind: "instanced_pull"` with independent `disposition`, `receipt`, `failure`
+  and ordered `observations` for pull planning/execution evidence.
 
 ## Error codes
 
@@ -28,6 +30,28 @@ instruction object on stdout before waiting.) The failure object is either:
 | 42 | `verification_failed` | Run `ghostlink sync`, inspect the item, report. |
 | 50–52 | `credential_store_unavailable` / `local_storage` / `configuration_error` | Local setup problem; report to the user. |
 | 70 | `internal_error` | Report and stop. |
+
+## Pull `disposition` (CLI genuine-instance equipment only)
+
+| `disposition` | Exit | Agent action |
+|---|---:|---|
+| `verified` | 0 | Report exact arrival separately from the received receipt; observation is not causal proof. |
+| `not_yet_observed` | 43 | Acknowledged but no verified arrival; do not claim application. Check later with sync/inspect, never blindly repeat. |
+| `uncertain` | 42 | Report all ordered classifications AND failures, then sync/inspect. Arrival plus timestamp failure remains unverified. |
+| `refused` | varies | Report `failure` or received refusal and any arrival separately; do not work around or retry. |
+
+Refusal defaults to 40. Received authentication refusal is 11, transient refusal
+21. Planning missing target is 32, ambiguity 31, missing definition 33; preflight
+drift/expiry is 30. Typed infrastructure errors use the category table above.
+Pre-action failures have no receipt or post-action observations. Confirmed refusal
+remains refused even if arrival is observed. All nonzero results stay on stderr
+as complete structured evidence, not a generic error replacing that evidence.
+
+Pull accepts only a canonical positive int64 instance ID, not names, hashes,
+quantity, destination overrides or anonymous stacks. Requires authenticated
+membership and freshly eligible original Postmaster ownership, stored definitions
+and fresh pinned Manifest capacity qualification. No full-stack/live-readiness
+claim and no MCP pull tool yet.
 
 ## Move `status`
 

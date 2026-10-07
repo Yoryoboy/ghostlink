@@ -164,7 +164,7 @@ the sanitized stderr/exit contract and leave stdout empty.
 Currency coverage is `not_observed`, `unavailable` or `available` and qualifies
 only profile currency component 103. Even `available` currencies or an empty
 group do not prove Postmaster completeness or live holdings. Anonymous stack
-rows have no stable pull selector. This command exposes no pull feature.
+rows have no stable pull selector. This read command never pulls an item.
 
 ### Explicit profile sync
 
@@ -603,6 +603,51 @@ and rejected with `--json`):
   provider or repository request. Exit codes follow the stable matrix in
   `odd/tasks/destiny-cli-read-journey.md`.
 
+
+## Pull one Postmaster equipment instance
+
+```sh
+ghostlink pull 700000000000000001 --json
+```
+
+`ITEM` must be a genuine canonical positive int64 instance ID (1 through
+9223372036854775807), obtained from the Postmaster `instances` array. Names,
+hashes, leading zeros, anonymous stacks, quantity, destination and owner arguments
+are not accepted. Requires login with `MoveEquipDestinyItems` authorization and
+qualified stored Manifest definitions; run `ghostlink sync-manifest` explicitly
+if missing. Membership comes from authentication, and the destination is the
+freshly observed original Postmaster owner's character inventory.
+
+One invocation forces fresh planning and preflight, checks explicit non-destructive
+instanced-equipment metadata and target-bucket capacity, then dispatches at most
+one action. The pinned audited capacity policy must match the freshly fetched
+public Manifest index version and bucket artifact; changed or missing evidence
+refuses the proof. No freeing space, redemption, redispatch, reminting or rollback.
+After a received receipt, at most three forced observations run, with two seconds
+between attempts, stopping at the first valid arrival or integrity/time failure.
+
+JSON reuses the shared `kind: "instanced_pull"` projection: independent
+`disposition`, `receipt`, `dispatch`, `failure`, `plan_id` and ordered
+`observations`. Each observation retains classification AND failure, publication
+metadata and selected target/bucket evidence. A timestamp failure may coexist
+with `verified_arrival` without proving success. Confirmed refusal remains
+`refused` even with arrival. Typed pre-action failures have null receipt and no
+observations; no acknowledgement alone is success.
+
+| Disposition | Exit | Meaning |
+| --- | ---: | --- |
+| `verified` | 0 | Exact instance observed at the owner's character in the normal destination bucket. |
+| `not_yet_observed` | 43 | Acknowledged but arrival not yet observed; not proof of application. |
+| `uncertain` | 42 | Unverified or invalid observation evidence. |
+| `refused` | varies | Eligibility/preflight refusal or received refusal; 40 by default, auth 11, transient 21, typed infrastructure category exits. |
+
+Only verified output goes to stdout; every other structured outcome goes to
+stderr with a nonzero exit. Never blindly retry: sync, inspect the instance and
+reassess explicit intent first. One invocation owns local inventory publication
+and definition use throughout the pipeline, not game or other-process activity.
+Observed arrival is neither causal proof nor an atomic guarantee. Anonymous
+stacks remain contract-gated; this is not full Postmaster support or a live-readiness
+claim. MCP pull is not available yet.
 
 ## Move one item
 

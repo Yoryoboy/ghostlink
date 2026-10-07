@@ -370,6 +370,10 @@ where
             })
         });
     }
+    if let Command::Pull(arguments) = &cli.command {
+        // One composition only: never retry/remint a pull after any outcome.
+        return dispatch_pull(arguments, mode, crate::runtime::compose_pull);
+    }
     if let Command::Lock(arguments) | Command::Unlock(arguments) = &cli.command {
         if let Err(error) = arguments.validate() {
             return ProcessOutput::failure(mode, error);
@@ -572,6 +576,65 @@ fn with_definitions<M: crate::runtime::ManifestFactory>(
     match ensure_definitions(factory) {
         Ok(()) => operation(),
         Err(error) => ProcessOutput::failure(mode, error),
+    }
+}
+
+/// Injectable parser-to-runner pull boundary. Invalid IDs never construct a
+/// runtime or consult authenticated context. Production uses this same dispatch.
+pub fn run_pull_with<I, T, F>(args: I, operation: F) -> ProcessOutput
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+    F: FnOnce(destiny_app::ItemInstanceId) -> Result<crate::pull_output::PullOutput, CliError>,
+{
+    let cli = match parse_process(args) {
+        Ok(cli) => cli,
+        Err(output) => return output,
+    };
+    let mode = cli.output_mode();
+    match cli.command {
+        Command::Pull(arguments) => dispatch_pull(&arguments, mode, operation),
+        _ => ProcessOutput::failure(
+            mode,
+            CliError::from_category(ErrorCategory::UnsupportedOperation),
+        ),
+    }
+}
+fn dispatch_pull<F>(
+    arguments: &crate::command::PullArgs,
+    mode: OutputMode,
+    operation: F,
+) -> ProcessOutput
+where
+    F: FnOnce(destiny_app::ItemInstanceId) -> Result<crate::pull_output::PullOutput, CliError>,
+{
+    let item = match arguments.instance_id() {
+        Ok(item) => item,
+        Err(error) => return ProcessOutput::failure(mode, error),
+    };
+    match operation(item) {
+        Ok(output) => pull_process_output(mode, &output),
+        Err(error) => ProcessOutput::failure(mode, error),
+    }
+}
+/// Only Verified goes to stdout with exit zero. All other structured evidence
+/// remains intact on stderr, following existing mutation JSON semantics.
+pub fn pull_process_output(
+    mode: OutputMode,
+    output: &crate::pull_output::PullOutput,
+) -> ProcessOutput {
+    let body = match mode {
+        OutputMode::Human => output.render_text(),
+        OutputMode::Json => output.json().to_string(),
+    };
+    if output.exit_code() == SUCCESS_EXIT_CODE {
+        ProcessOutput::success(body)
+    } else {
+        ProcessOutput {
+            stdout: String::new(),
+            stderr: format!("{body}\n"),
+            exit_code: output.exit_code(),
+        }
     }
 }
 

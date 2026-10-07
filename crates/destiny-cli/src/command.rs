@@ -151,7 +151,8 @@ impl Cli {
             // A `login` command line carries no read, and the hidden `callback`
             // handler is not a read either, so both report the stable
             // unsupported-operation outcome instead of guessing at a read.
-            Command::Equip(_)
+            Command::Pull(_)
+            | Command::Equip(_)
             | Command::Move(_)
             | Command::Lock(_)
             | Command::Unlock(_)
@@ -217,6 +218,11 @@ pub enum Command {
     /// Move one item to an explicit character or Vault, then refresh and verify.
     #[command(name = "move")]
     Move(MoveArgs),
+    /// Pull one genuine Postmaster equipment instance into its owner's inventory.
+    #[command(
+        long_about = "Pull one genuine Postmaster equipment instance using a canonical positive int64 instance ID only. Requires login and qualified stored Manifest definitions. Names, hashes, anonymous stacks, quantity and destination arguments are unsupported. Only verified arrival succeeds; pending, uncertain and refused outcomes are nonzero. Observations are not causal or atomic guarantees."
+    )]
+    Pull(PullArgs),
     /// Lock one explicitly selected owned item, then refresh and verify.
     Lock(LockArgs),
     /// Unlock one explicitly selected owned item, then refresh and verify.
@@ -770,6 +776,30 @@ impl LockArgs {
         validate_identity(&self.item, "ITEM")?;
         destiny_app::ItemSelector::semantic(&self.item).map_err(CliError::from)?;
         Ok(())
+    }
+}
+
+/// One genuine positive signed-int64 instance ID, never a name or stack selector.
+#[derive(Debug, Args)]
+pub struct PullArgs {
+    /// Canonical positive int64 instance ID for Postmaster equipment only.
+    #[arg(value_name = "ITEM")]
+    pub item: String,
+}
+impl PullArgs {
+    /// Validate before any configuration, authentication or service acquisition.
+    pub fn instance_id(&self) -> Result<ItemInstanceId, CliError> {
+        if self.item.is_empty() || self.item.len() > 19 {
+            return Err(CliError::invalid_request());
+        }
+        let value = self
+            .item
+            .parse::<i64>()
+            .map_err(|_| CliError::invalid_request())?;
+        if value <= 0 || value.to_string() != self.item {
+            return Err(CliError::invalid_request());
+        }
+        Ok(ItemInstanceId::new(self.item.clone()))
     }
 }
 

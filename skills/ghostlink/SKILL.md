@@ -1,6 +1,6 @@
 ---
 name: ghostlink
-description: "Trigger: Destiny 2, D2 inventory, vault, weapon perks, armor stats, builds, weekly reset, loadouts, subclass, move item, equip item, lock item, unlock item. Prefer Ghostlink MCP tools; use the ghostlink CLI safely when needed."
+description: "Trigger: Destiny 2, D2 inventory, vault, weapon perks, armor stats, builds, weekly reset, loadouts, subclass, Postmaster, pull item, move item, equip item, lock item, unlock item. Prefer Ghostlink MCP tools; use the ghostlink CLI safely when needed."
 license: MIT OR Apache-2.0
 metadata:
   author: "Yoryoboy"
@@ -22,7 +22,8 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - Never guess an item or character. Resolve ambiguity with a read command or ask the user.
 - `ghostlink move` and `ghostlink equip` are CLI game mutations. Run them only with explicit user intent for this item and destination. Move requires exactly one explicit character or Vault destination; equip requires a character. Never select defaults.
 - `ghostlink lock` and `ghostlink unlock` require explicit user intent for this item and requested state; MCP `set_lock_state` requires the same intent. Already satisfied is a verified no-op. Vault items use one owned character for the provider call, not a destination selection.
-- Never blindly retry `move`, `equip`, `lock` or `unlock`, including after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report. Exit 43 means applied but pending provider refresh: check later, do not repeat the mutation.
+- `ghostlink pull` requires explicit user intent for one genuine Postmaster equipment instance ID only. Destination is its freshly observed owner, never an arbitrary character. Names, hashes, stacks and quantity are unsupported; requires login and qualified stored definitions.
+- Never blindly retry `pull`, `move`, `equip`, `lock` or `unlock`, including after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report. For pull, exit 43 means arrival not yet observed; application is not confirmed. For move, equip, lock and unlock, exit 43 means applied but pending provider refresh. In either case, check later, do not repeat the mutation.
 - Move already at its destination during planning is refused (exit 40), not a verified no-op. Report it without working around the refusal.
 - Never try to free inventory space, unequip elsewhere, or change plugs; the CLI refuses these by design.
 - Run `ghostlink login` only when the user asks or after exit 10/11; it needs a human to authorize in a browser and waits for the callback.
@@ -37,7 +38,8 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Which characters exist, their IDs and light | `ghostlink list-characters` |
 | Find owned items by name, type, perk, mod, stat, slot | `ghostlink search-inventory` |
 | Full detail of one owned item, including what each perk and mod does | `ghostlink inspect-item` (the `instance` ID from search hits, never the definition `hash`) |
-| Committed Postmaster instances and anonymous stacks (no pull) | MCP `get_postmaster`; fallback `ghostlink postmaster` |
+| Committed Postmaster instances and anonymous stacks (read only) | MCP `get_postmaster`; fallback `ghostlink postmaster` |
+| Recover one genuine Postmaster equipment instance to its owner | `ghostlink pull` (CLI only) |
 | Current subclass setup and what each equipped plug does | `ghostlink subclass` |
 | Unlockable supers, aspects, fragments | `ghostlink subclass-options` |
 | Artifact points and active perks | `ghostlink artifact` |
@@ -70,7 +72,22 @@ use a stack row as a stable pull selector. Stack `bucket_hash` is the actual run
 bucket; instances have no inferred bucket. Nullable names fall back to hashes.
 `profile_currencies_coverage` qualifies component 103 only: `available` does not
 mean complete Postmaster coverage. Report committed observations, not guaranteed
-live holdings. There is no pull feature in either read surface.
+live holdings. Neither read surface pulls items.
+
+For explicit recovery intent, use `ghostlink pull 700000000000000001 --json`
+with the real `instance_id` from the instances array, never a hash or stack row.
+The ID must be canonical positive int64, without leading zeros. Fresh planning
+and preflight qualify non-destructive equipment and pinned target-bucket capacity
+against a freshly fetched public Manifest index; unknown or changed evidence
+refuses. One action maximum, at most three post-action observations, two seconds
+between attempts, no redispatch or rollback. Only `disposition: "verified"`
+succeeds. Report receipt separately from arrival, and retain every observation's
+classification AND failure. Acknowledgement alone is not application proof;
+arrival with a timestamp failure is not success. Refusal stays refused even if
+arrival is observed. Exit 43 for pull means not yet observed, not confirmed
+application. Caller-local serialization does not cover other processes or game
+activity, and observation is not causal or atomic proof. Anonymous stacks remain
+contract-gated, live checks are pending, and no MCP pull tool is available yet.
 
 ## Descriptions
 
@@ -83,14 +100,15 @@ live holdings. There is no pull feature in either read surface.
 1. Pick the command from the table; check its `--help` if not yet seen.
 2. Run it with `--json`. Reads refresh a stale profile automatically; use `ghostlink sync` only to force freshness.
 3. On exit 0, answer from the JSON. Mention `metadata.checked_at` when freshness matters.
-4. On non-zero exit, parse stderr. An object with `status` is a move, equip, lock or unlock result: read `status` and `reason`. Otherwise read `error.code`. Then follow `references/exit-codes.md`.
-5. For mutations, quote the resolved item and destination (move/equip) or requested lock state (lock/unlock) back to the user if inferred from earlier conversation; obtain explicit intent before acting.
+4. On non-zero exit, parse stderr. An object with `status` is a move, equip, lock or unlock result: read `status` and `reason`. For `kind: "instanced_pull"`, read `disposition`, independent `receipt`, `failure` and all ordered `observations`. Otherwise read `error.code`. Then follow `references/exit-codes.md`.
+5. For mutations, quote the resolved item and destination (move/equip) or requested lock state (lock/unlock) back to the user if inferred from earlier conversation; obtain explicit intent before acting. For pull, confirm the exact genuine instance ID and its observed Postmaster owner.
 
 ## Output Contract
 
 - State facts only from command output; say when a result is empty instead of inventing items.
 - For move or equip, report `status`, each step, and `reason`; never claim rollback after partial progress. Move verifies location, equip verifies location and equipped state. Exit 43 is applied but not yet visible: tell the user to check again later; it is not verified success.
 - For lock/unlock, report `status`, requested `locked`, `attempt`, `observed` and `reason`. Only verified success/no-op proves the lock state. Exit 41/42/43 is not verified success; never blindly retry.
+- For pull, report `disposition`, `receipt`, `failure` and all ordered observation classifications and failures. Only verified arrival is success; pending, uncertain and refused are nonzero. Never interpret a receipt as proof or blindly repeat the action.
 - Never echo tokens, membership IDs, or raw provider errors.
 
 ## References
