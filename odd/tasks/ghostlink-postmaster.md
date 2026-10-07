@@ -251,7 +251,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   This adds coverage for existing behavior, so a failing production RED is not
   presumed or fabricated; record actual first-run and focused-check results.
   User explicitly authorized the verified local work-unit commit `5db5f02`.
-- [ ] **GPM-008f — Bounded observation and honest terminal outcomes.**
+- [x] **GPM-008f — Bounded observation and honest terminal outcomes.**
   Verified / not yet observed / uncertain / refused with attempt evidence; lag,
   wrong owner/bucket, missing target, unavailable observations, refresh failure.
   Implementation map complete; user selected preserving confirmed refusals
@@ -261,12 +261,12 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Private pure classification over the published acquisition pair; retain target
   metadata/actual buckets and explicit absent/unavailable/drift reasons. No new
   public dispatch path. Deterministic classifier tests alongside behavior.
-- [ ] **GPM-008f2 — Bounded verified execution and facade (IN PROGRESS).**
+- [x] **GPM-008f2 — Bounded verified execution and facade.**
   Consume the plan, call dispatch once, retain exact gateway outcome and all
   ordered observations. At most three forced PostAction acquisitions, existing
   RetryDelay pacing of two seconds only between attempts; never redispatch.
   Additive app exports only after safe execution is integrated and checked.
-- [ ] **GPM-009 — CLI/MCP pull exposure.** Thin adapters, pipeline/stdio
+- [ ] **GPM-009 — CLI/MCP pull exposure (IN PROGRESS).** Thin adapters, pipeline/stdio
   coverage, docs, skill and exact outcome/exit semantics.
 - [ ] **GPM-010 — Close technical verification and record live gaps.**
   Functional checks, assessment/required independent verification, commits,
@@ -285,19 +285,58 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
-- GPM-008f2 IN PROGRESS — one bounded writer on app instanced_pull.rs,
-  instanced_pull/tests.rs and additive lib.rs exports only. Integrate the private
-  classifier with consumed-plan execution, preserve receipts/all attempts and
-  cap forced PostAction observations at three, two-second waits only between.
-  No runtime/CLI/MCP/shared-fake edits. Gateway Err has no PostAction expense.
-  Continue bounded attempts through lag/non-arrival/unavailable observations or
-  refresh errors; fail closed and stop on clock/backwards-time or published
-  identity/hash/version drift. Preserve the failing attempt and previous evidence.
-  Final disposition uses the last observation, not earlier favourable evidence;
-  stop first exact arrival, but confirmed receipt refusal remains Refused.
-  Plan expiry gates dispatch only, never expires already-dispatched evidence.
-  Existing infallible RetryDelay cannot fail and is reused without new ports.
-  Run focused/app/default/all-features plus workspace suites/clippy at closure.
+- GPM-009 IN PROGRESS — read-only integration/runtime-serialization map next.
+  GPM-008f is complete for genuine-ID equipment only; anonymous stack contracts
+  remain gated under GPM-006. No full Postmaster/live-readiness claim.
+  Map existing CLI/MCP composition, shared outcome presentation and locking
+  before deriving exact writer surfaces. No 009 source edits yet.
+- GPM-008f2 COMPLETE — scoped local work-unit commit
+  `39c424a20d883f3642356183a52b68dd1716509b`, 1,187 source diff lines across
+  app instanced_pull.rs/tests.rs and additive lib.rs exports (841 test additions).
+  Consumed non-Clone plan, private preflight, one gateway call maximum. Gateway
+  Err is pre-dispatch-only and incurs no observation expense. At most three
+  forced PostAction acquisitions; existing infallible RetryDelay waits exactly
+  two seconds only between attempts. Stop first valid arrival or integrity/
+  clock failure; retain dispatch, exact receipt, timestamps and ALL attempts.
+  Final disposition derives from the last valid attempt/failure, not old proof.
+  Confirmed refusals stay Refused even after arrival; Ack/Uncertain may become
+  Verified only with exact valid published-pair evidence. Plan expiry gates
+  dispatch, not already-dispatched observation. Selected-target getters expose
+  no whole inventory/socket payload. No causal/atomic guarantee; caller-local
+  inventory-publication/definition-use serialization is still required.
+  Writer `muyeomxv-3-0ryt` observed initial missing-API/import compile RED (two
+  errors, exit 101), not assertion RED, then 35 focused/7 doctests. Corrected
+  clock-fixture/counter assertions and large-result-error clippy (boxed failure
+  evidence); every final initial closure command passed. Reported partial
+  conservatively because intermediate failures occurred; none remained open.
+  Initial app 231/448 all-features, workspace 1,652/1,670 all-features, fmt and
+  app/workspace default/all-feature clippy all passed.
+  Independent verifier `muyf3omf-4-t3c5` found one medium blocker: another
+  character's Postmaster was misclassified as StillInPostmaster/NotYetObserved
+  after Ack. No false Verified demonstrated. Correction `muyfaf87-5-u9kx`:
+  three-line owner guard plus 183 regression/timestamp coverage lines.
+  Actual assertion RED 35 passed/two failed, exit 101; minimal GREEN 37 then 38.
+  Other-owner Postmaster is WrongCharacterOwner/Uncertain; original-owner Ack
+  remains NotYetObserved; all confirmed refusals remain Refused. Two timestamp
+  boundary cases retain classified arrival pairs PLUS failure and ordered prior
+  evidence without Verified. No fabricated timestamp RED. Final correction
+  checks PASS: 38 focused/7 doctests, 234 app default/451 all-features, fmt,
+  app all-target/all-feature clippy and diff. Workspace totals above remain
+  historical pre-correction evidence, not rerun; GPM-010 will recheck closure.
+  Independent final recheck `muyffskb-6-pvy7` PASS: 38 focused/7 doctests,
+  fmt/diff and source hashes unchanged; previous blocker resolved, no remaining
+  targeted blocker. Authorized offline exact-doctest rustc replay proved solely
+  E0382 (reused moved plan), no import/bound/artifact error; not repeated after
+  unchanged-API correction.
+  ASSESS medium (4 paths/1,230 lines including tracker before closure), runtime
+  large writer; RDD off/unknown/not consumed, independentVerifier=false,
+  reviewDue slice_budget_reached. Extra independent check added for public
+  action/timestamp boundary. Native continuation (informational, not executed):
+  `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
+  Parent source/regression readback, rerun diff check and verified source hashes/
+  expected branch/HEAD/empty-index guards passed before staging only three app
+  source paths. RDD freshly off. No runtime binding, live calls, native review
+  approval, publishing or stack support claimed; those remain later work.
 - GPM-008f1 COMPLETE — work-unit commit
   `1f6af5e40e67c35489d761a660dc91e51a0f98d6` (264 source diff lines).
   Writer `muyec2nt-2-9csc`: private PullArrival/PullObservation and pure classifier
