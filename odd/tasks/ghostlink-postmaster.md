@@ -266,8 +266,45 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   ordered observations. At most three forced PostAction acquisitions, existing
   RetryDelay pacing of two seconds only between attempts; never redispatch.
   Additive app exports only after safe execution is integrated and checked.
-- [ ] **GPM-009 — CLI/MCP pull exposure (IN PROGRESS).** Thin adapters, pipeline/stdio
-  coverage, docs, skill and exact outcome/exit semantics.
+- [ ] **GPM-009 — CLI/MCP pull exposure.** Parent milestone; complete only
+  after all integration units, pipeline/stdio coverage, docs/skill and exact
+  outcome/exit semantics are verified and locally committed.
+- [ ] **GPM-009a — Preserve shared MCP acquisition evidence (IN PROGRESS).**
+  Forward observation-aware scoped acquisitions unchanged through the existing
+  SharedGateway. Add ProfileAcquisition facade export only if required.
+  Test exact Preflight/PostAction reasons, one inner acquisition, available and
+  unavailable bucket evidence with fallback reads unreachable. Prove definition
+  and inventory publication visibility across cloned SharedRepository handles
+  using in-memory SQLite. No unused composition, new store/guard, public command
+  or direct-core MCP dependency. Allowed source surfaces: app/src/lib.rs and
+  mcp/src/main.rs under crates/destiny-*. Estimate 70–150 changed lines; tests
+  remain with behavior, not a strict limit. Route: gentle-ai-worker, two-file
+  write/preparation trigger; focused self-checks, native ASSESS and routed
+  verification before a scoped local work-unit commit.
+- [ ] **GPM-009b — Shared pull result presentation.** Use destiny-output
+  architecture with src/instanced_pull.rs, lib.rs and app facade exports only as
+  needed. Preserve receipt, disposition, ordered classifications AND failures,
+  selected IDs/hash/owner/buckets/publication metadata/timestamps independently.
+  Sanitize typed pre-dispatch/planning/gateway failures; no whole snapshot or
+  credentials. Focused serialization tests; estimate 250–400 lines. Delegated
+  writer for multi-file unit; ASSESS/verification/commit before CLI integration.
+- [ ] **GPM-009c — CLI genuine-instance pull.** Add ghostlink pull ITEM with
+  canonical positive int64 instance ID only; no names/hash/quantity/destination.
+  Authenticated membership and fresh eligibility derive membership/owner.
+  One invocation-owned store for sync and definitions, not two independent
+  handles. Pending/uncertain/refused are nonzero; only Verified succeeds.
+  command/runner/runtime/lib, pull/pull_output and pull_pipeline tests, docs/cli
+  and ghostlink skill/exit-code reference stay together. Estimate 250–450 lines;
+  delegated bounded writer, pipeline/help/skill checks, ASSESS/verification/commit.
+- [ ] **GPM-009d — MCP genuine-instance pull.** Add pull_item with closed ID-only
+  schema through an additive mutation wrapper, shared output and production
+  shared gateway/repository composition. Reuse existing operation guard.
+  Update offline fixture observation acquisition, discovery counts/read-only
+  exclusions; deterministic integration/stdio/parity tests and docs/mcp/skill.
+  service/schema/server/main/lib, offline_fixture, tests/pull.rs/tests/stdio.rs.
+  Estimate 400–650 lines for one coherent transport feature with its tests/docs;
+  never omit coverage or compress readability to meet an advisory line budget.
+  Delegated bounded writer, ASSESS/verification/commit before final GPM-010.
 - [ ] **GPM-010 — Close technical verification and record live gaps.**
   Functional checks, assessment/required independent verification, commits,
   pending owner-run checks and readiness for Loadouts.
@@ -285,11 +322,27 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
-- GPM-009 IN PROGRESS — read-only integration/runtime-serialization map next.
-  GPM-008f is complete for genuine-ID equipment only; anonymous stack contracts
-  remain gated under GPM-006. No full Postmaster/live-readiness claim.
-  Map existing CLI/MCP composition, shared outcome presentation and locking
-  before deriving exact writer surfaces. No 009 source edits yet.
+- GPM-009 mapped by read-only scout `muyfk9g9-7-zepk`; GPM-009a IN PROGRESS.
+  Settled map: server.rs139–146/216–242 acquires the same operation Arc inside
+  direct/blocking dispatch and holds it across complete read/mutation calls.
+  Existing rc002 guard-lifetime and equip serialization regressions apply.
+  Production main.rs82–87 composes one stdio server; 274–330 clones shared
+  gateway/repository handles. SharedRepository501–529/635–652 uses one SQLite
+  connection for inventory and definitions; per-call lock is not operation
+  boundary. No production background publisher/bypass found. Lazy-version and
+  personal/weekly connections still execute under server guard; public weekly
+  is definition-read-only. External processes/game activity remain excluded
+  from local serialization guarantee; WAL is not a remote-action-wide lock.
+  Parent spot check confirms SharedGateway465–491 lacks observation-aware
+  forwarding; this is the prerequisite evidence-loss seam. Reuse existing store
+  clones for eventual pull definitions. Do not construct an unused pull service
+  or unused clones in 009a; attach composition with 009d.
+  No public exposure yet. GPM-008f complete for genuine-ID equipment only;
+  anonymous stacks remain GPM-006 gated and owner-run checks remain GPM-010
+  pending. No full Postmaster/live-readiness claim.
+  Full task mirror is submitted under odd/ghostlink-postmaster/tasks (6504).
+  Engram readback truncates near 50,000 characters; matching prefix checked,
+  tail readback unavailable. Local full file remains recoverable authority.
 - GPM-008f2 COMPLETE — scoped local work-unit commit
   `39c424a20d883f3642356183a52b68dd1716509b`, 1,187 source diff lines across
   app instanced_pull.rs/tests.rs and additive lib.rs exports (841 test additions).
