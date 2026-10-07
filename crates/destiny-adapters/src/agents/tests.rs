@@ -380,8 +380,10 @@ fn scoped_opencode_requires_exact_install_and_preserves_shared_fields_and_backup
         let files = fixture();
         let exe = files.home.join("bin/destiny-mcp");
         let path = files.home.join(".config/opencode/opencode.json");
+        // Splice the path as a JSON string: Windows backslashes must be escaped.
+        let exe_json = serde_json::to_string(exe.to_str().unwrap()).unwrap();
         let entry: Value =
-            serde_json::from_str(&entry.to_string().replace("EXE", exe.to_str().unwrap())).unwrap();
+            serde_json::from_str(&entry.to_string().replace("\"EXE\"", &exe_json)).unwrap();
         let exact = entry["type"] == "local" && entry["command"] == json!([exe]);
         let original =
             json!({"theme":"dark","mcp":{"ghostlink":entry,"other":{"enabled":false}}}).to_string();
