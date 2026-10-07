@@ -6,6 +6,847 @@ use crate::test_support::{
 use destiny_core::*;
 use std::{cell::Cell, rc::Rc};
 
+#[derive(Default)]
+struct RecordingDelay(Vec<std::time::Duration>);
+impl destiny_core::ports::RetryDelay for RecordingDelay {
+    fn wait(&mut self, duration: std::time::Duration) {
+        self.0.push(duration);
+    }
+}
+
+fn queue_post(s: &mut Service, location: Option<ItemLocation>, observed: bool) {
+    let mut next = input();
+    next.items = location
+        .map(|location| item("1", location))
+        .into_iter()
+        .collect();
+    queue_observation(s.sync.gateway_mut(), next, observed.then_some(BUCKET));
+}
+
+fn queue_observation(
+    gateway: &mut QueuedProfileGateway,
+    input: InventorySnapshotInput,
+    bucket: Option<i64>,
+) {
+    let rows = bucket.map(|bucket| {
+        input
+            .items
+            .iter()
+            .map(|i| {
+                InstancedBucketObservation::new(
+                    i.instance_id.clone(),
+                    BucketHash::new(bucket),
+                    i.location.clone(),
+                )
+                .unwrap()
+            })
+            .collect()
+    });
+    gateway.queue_membership(Ok(DestinyMembership::new(
+        input.membership_type,
+        input.membership_id.clone(),
+    )
+    .unwrap()));
+    gateway.queue_acquisition(Ok(ProfileAcquisition::new(input, rows).unwrap()));
+}
+
+fn armed_execution() -> (Service, InstancedPullPlan) {
+    let mut s = service(input(), vec![definition()], "v1", true, evidence());
+    let p = plan(&mut s, &request()).unwrap();
+    queue_preflight(&mut s, input(), true);
+    (s, p)
+}
+
+fn execute(
+    s: &mut Service,
+    p: InstancedPullPlan,
+    receipt: InstancedPullOutcome,
+) -> InstancedPullExecutionOutcome {
+    let mut gateway = QueuedInstancedPullGateway::new();
+    gateway.queue(Ok(receipt));
+    let mut delay = RecordingDelay::default();
+    let outcome = s
+        .execute_verified(
+            p,
+            &mut gateway,
+            &mut delay,
+            FreshnessPolicy { ttl_seconds: 60 },
+        )
+        .unwrap();
+    assert_eq!(gateway.calls(), 1);
+    assert_eq!(gateway.requests().len(), 1);
+    assert_eq!(outcome.gateway_outcome(), &receipt);
+    assert_eq!(
+        delay.0,
+        vec![std::time::Duration::from_secs(2); outcome.observations().len() - 1]
+    );
+    assert_eq!(s.manifest.capacity_evidence_calls(), 2);
+    assert_eq!(
+        s.sync
+            .gateway_mut()
+            .requested_reasons()
+            .iter()
+            .filter(|reason| **reason == ProfileSyncReason::PostAction)
+            .count(),
+        outcome.observations().len()
+    );
+    outcome
+}
+
+#[test]
+fn all_receipts_retain_arrival_without_upgrading_confirmed_refusal() {
+    for receipt in [
+        InstancedPullOutcome::Acknowledged,
+        InstancedPullOutcome::Uncertain,
+        InstancedPullOutcome::Rejected(InstancedPullRejection::InvalidRequest),
+        InstancedPullOutcome::AuthenticationRefused,
+        InstancedPullOutcome::Transient,
+    ] {
+        let (mut s, p) = armed_execution();
+        queue_post(
+            &mut s,
+            Some(ItemLocation::Character(CharacterId::new("2"))),
+            true,
+        );
+        let refused = !matches!(
+            receipt,
+            InstancedPullOutcome::Acknowledged | InstancedPullOutcome::Uncertain
+        );
+        let outcome = execute(&mut s, p, receipt);
+        assert_eq!(
+            outcome.disposition(),
+            if refused {
+                PullDisposition::Refused
+            } else {
+                PullDisposition::Verified
+            }
+        );
+        let observed = outcome.observations()[0].observation().unwrap();
+        assert_eq!(observed.classification(), PullArrival::VerifiedArrival);
+        assert_eq!(observed.target_id(), Some(&ItemInstanceId::new("1")));
+        assert_eq!(observed.target_hash(), Some(ItemHash::new(7)));
+        assert_eq!(
+            observed.target_actual_bucket(),
+            Some(BucketHash::new(BUCKET))
+        );
+        assert_eq!(outcome.dispatch().preflight_at(), Timestamp::new(100));
+        assert_eq!(outcome.dispatch().dispatch_at(), Timestamp::new(100));
+        assert_eq!(outcome.context().membership(), &membership());
+    }
+}
+
+#[test]
+fn bounded_nonarrival_uses_last_observation_and_never_stale_fallback() {
+    for case in 0..6 {
+        let (mut s, p) = armed_execution();
+        queue_post(
+            &mut s,
+            Some(ItemLocation::Postmaster(CharacterId::new("2"))),
+            true,
+        );
+        queue_post(
+            &mut s,
+            Some(ItemLocation::Postmaster(CharacterId::new("2"))),
+            true,
+        );
+        let mut next = input();
+        let (location, bucket, expected) = match case {
+            0 | 5 => (
+                Some(ItemLocation::Postmaster(CharacterId::new("2"))),
+                Some(215593132),
+                PullArrival::StillInPostmaster,
+            ),
+            1 => (
+                Some(ItemLocation::Character(CharacterId::new("3"))),
+                Some(BUCKET),
+                PullArrival::WrongCharacterOwner,
+            ),
+            2 => (
+                Some(ItemLocation::Character(CharacterId::new("2"))),
+                Some(215593132),
+                PullArrival::WrongActualBucket,
+            ),
+            3 => (None, Some(BUCKET), PullArrival::TargetMissing),
+            _ => (
+                Some(ItemLocation::Character(CharacterId::new("2"))),
+                None,
+                PullArrival::ObservationsUnavailable,
+            ),
+        };
+        next.characters.push(Character {
+            id: CharacterId::new("3"),
+            ..next.characters[0].clone()
+        });
+        next.items = location
+            .map(|location| item("1", location))
+            .into_iter()
+            .collect();
+        queue_observation(s.sync.gateway_mut(), next, bucket);
+        let outcome = execute(
+            &mut s,
+            p,
+            if case == 5 {
+                InstancedPullOutcome::Uncertain
+            } else {
+                InstancedPullOutcome::Acknowledged
+            },
+        );
+        assert_eq!(outcome.observations().len(), 3);
+        assert_eq!(
+            outcome.disposition(),
+            if case == 0 {
+                PullDisposition::NotYetObserved
+            } else {
+                PullDisposition::Uncertain
+            }
+        );
+        let last = outcome.observations()[2].observation().unwrap();
+        assert_eq!(last.classification(), expected);
+        assert_eq!(last.target_id().is_none(), case == 3);
+        assert_eq!(last.actual_buckets_available(), case != 4);
+        assert_eq!(last.metadata().checked_at, Timestamp::new(100));
+    }
+}
+
+#[test]
+fn nonarrival_and_unavailable_pairs_continue_until_valid_arrival() {
+    for case in 0..4 {
+        let (mut s, p) = armed_execution();
+        let mut next = input();
+        let (location, bucket, expected) = match case {
+            0 => (
+                Some(ItemLocation::Character(CharacterId::new("3"))),
+                Some(BUCKET),
+                PullArrival::WrongCharacterOwner,
+            ),
+            1 => (
+                Some(ItemLocation::Character(CharacterId::new("2"))),
+                Some(215593132),
+                PullArrival::WrongActualBucket,
+            ),
+            2 => (None, Some(BUCKET), PullArrival::TargetMissing),
+            _ => (
+                Some(ItemLocation::Character(CharacterId::new("2"))),
+                None,
+                PullArrival::ObservationsUnavailable,
+            ),
+        };
+        next.characters.push(Character {
+            id: CharacterId::new("3"),
+            ..next.characters[0].clone()
+        });
+        next.items = location
+            .map(|location| item("1", location))
+            .into_iter()
+            .collect();
+        queue_observation(s.sync.gateway_mut(), next, bucket);
+        queue_post(
+            &mut s,
+            Some(ItemLocation::Character(CharacterId::new("2"))),
+            true,
+        );
+        let outcome = execute(&mut s, p, InstancedPullOutcome::Uncertain);
+        assert_eq!(outcome.disposition(), PullDisposition::Verified);
+        assert_eq!(outcome.observations().len(), 2);
+        assert_eq!(
+            outcome.observations()[0]
+                .observation()
+                .unwrap()
+                .classification(),
+            expected
+        );
+        assert_eq!(
+            outcome.observations()[1]
+                .observation()
+                .unwrap()
+                .classification(),
+            PullArrival::VerifiedArrival
+        );
+    }
+}
+
+#[test]
+fn confirmed_refusals_remain_refused_through_refresh_failures() {
+    for receipt in [
+        InstancedPullOutcome::Rejected(InstancedPullRejection::InvalidRequest),
+        InstancedPullOutcome::AuthenticationRefused,
+        InstancedPullOutcome::Transient,
+    ] {
+        let (mut s, p) = armed_execution();
+        queue_post(
+            &mut s,
+            Some(ItemLocation::Postmaster(CharacterId::new("2"))),
+            true,
+        );
+        for _ in 0..2 {
+            s.sync.gateway_mut().queue_membership(Ok(membership()));
+            s.sync
+                .gateway_mut()
+                .queue_acquisition(Err(AppError::new(ErrorCategory::ProviderUnavailable)));
+        }
+        let outcome = execute(&mut s, p, receipt);
+        assert_eq!(outcome.disposition(), PullDisposition::Refused);
+        assert_eq!(outcome.observations().len(), 3);
+        assert!(outcome.observations()[2].failure().is_some());
+    }
+}
+
+#[test]
+fn refresh_failure_is_retained_then_arrival_or_final_failure_controls_outcome() {
+    let error = AppError::new(ErrorCategory::ProviderUnavailable);
+    for recover in [false, true] {
+        let (mut s, p) = armed_execution();
+        queue_post(
+            &mut s,
+            Some(ItemLocation::Postmaster(CharacterId::new("2"))),
+            true,
+        );
+        s.sync.gateway_mut().queue_membership(Ok(membership()));
+        s.sync.gateway_mut().queue_acquisition(Err(error.clone()));
+        if recover {
+            queue_post(
+                &mut s,
+                Some(ItemLocation::Character(CharacterId::new("2"))),
+                true,
+            );
+        } else {
+            s.sync.gateway_mut().queue_membership(Ok(membership()));
+            s.sync.gateway_mut().queue_acquisition(Err(error.clone()));
+        }
+        let outcome = execute(&mut s, p, InstancedPullOutcome::Acknowledged);
+        assert_eq!(outcome.observations().len(), 3);
+        assert_eq!(
+            outcome.observations()[0]
+                .observation()
+                .unwrap()
+                .classification(),
+            PullArrival::StillInPostmaster
+        );
+        assert_eq!(
+            outcome.observations()[1].failure(),
+            Some(&PullObservationFailure::Refresh(error.clone()))
+        );
+        assert_eq!(
+            outcome.disposition(),
+            if recover {
+                PullDisposition::Verified
+            } else {
+                PullDisposition::Uncertain
+            }
+        );
+        if !recover {
+            assert_eq!(
+                outcome.observations()[2].failure(),
+                Some(&PullObservationFailure::Refresh(error.clone()))
+            );
+        }
+    }
+}
+
+#[test]
+fn published_identity_drift_stops_and_preserves_pair_and_prior_attempt() {
+    for case in 0..4 {
+        let (mut s, p) = armed_execution();
+        queue_post(
+            &mut s,
+            Some(ItemLocation::Postmaster(CharacterId::new("2"))),
+            true,
+        );
+        let mut next = input();
+        let expected = match case {
+            0 => {
+                next.membership_id = MembershipId::new("456");
+                PullArrival::MembershipMismatch
+            }
+            1 => {
+                next.membership_type = MembershipType::new(2);
+                PullArrival::MembershipMismatch
+            }
+            2 => {
+                next.definition_version = DefinitionVersion::new("v2");
+                PullArrival::DefinitionVersionDrift
+            }
+            _ => {
+                next.items[0].item_hash = ItemHash::new(8);
+                PullArrival::HashDrift
+            }
+        };
+        queue_observation(s.sync.gateway_mut(), next, Some(215593132));
+        let outcome = execute(&mut s, p, InstancedPullOutcome::Acknowledged);
+        assert_eq!(outcome.disposition(), PullDisposition::Uncertain);
+        assert_eq!(outcome.observations().len(), 2);
+        let last = outcome.observations()[1].observation().unwrap();
+        assert_eq!(last.classification(), expected);
+        assert_eq!(last.target_id(), Some(&ItemInstanceId::new("1")));
+        assert_eq!(
+            last.target_actual_bucket(),
+            Some(BucketHash::new(215593132))
+        );
+        assert_eq!(
+            outcome.observations()[0]
+                .observation()
+                .unwrap()
+                .classification(),
+            PullArrival::StillInPostmaster
+        );
+    }
+}
+
+#[test]
+fn predispatch_and_gateway_errors_have_no_observation_expense() {
+    let error = AppError::new(ErrorCategory::ProviderUnavailable);
+    for expired in [false, true] {
+        let (mut s, p) = armed_execution();
+        let id = p.id().clone();
+        if expired {
+            s.clock = FakeClock::fixed(p.expires_at());
+        }
+        let mut gateway = QueuedInstancedPullGateway::new();
+        gateway.queue(Err(error.clone()));
+        let mut delay = RecordingDelay::default();
+        let failure = s
+            .execute_verified(
+                p,
+                &mut gateway,
+                &mut delay,
+                FreshnessPolicy { ttl_seconds: 60 },
+            )
+            .unwrap_err();
+        assert_eq!(failure.plan_id(), &id);
+        if expired {
+            assert_eq!(
+                failure.reason(),
+                &InstancedPullExecutionFailureReason::PreDispatch(PreDispatchError::Expired)
+            );
+        } else {
+            let InstancedPullExecutionFailureReason::Gateway(attempt) = failure.reason() else {
+                panic!("gateway evidence missing")
+            };
+            assert_eq!(attempt.gateway_result(), &Err(error.clone()));
+            assert_eq!(attempt.dispatch_at(), Timestamp::new(100));
+            assert_eq!(attempt.context().item(), &ItemInstanceId::new("1"));
+        }
+        assert_eq!(gateway.calls(), usize::from(!expired));
+        assert!(delay.0.is_empty());
+        assert!(
+            !s.sync
+                .gateway_mut()
+                .requested_reasons()
+                .contains(&ProfileSyncReason::PostAction)
+        );
+    }
+}
+
+#[test]
+fn verified_execution_stops_at_first_arrival_with_bounded_pacing() {
+    for arrival in 1..=3 {
+        let mut s = service(input(), vec![definition()], "v1", true, evidence());
+        let p = plan(&mut s, &request()).unwrap();
+        let id = p.id().clone();
+        queue_preflight(&mut s, input(), true);
+        for _ in 1..arrival {
+            queue_post(
+                &mut s,
+                Some(ItemLocation::Postmaster(CharacterId::new("2"))),
+                true,
+            );
+        }
+        queue_post(
+            &mut s,
+            Some(ItemLocation::Character(CharacterId::new("2"))),
+            true,
+        );
+        let mut gateway = QueuedInstancedPullGateway::new();
+        gateway.queue(Ok(InstancedPullOutcome::Acknowledged));
+        let mut delay = RecordingDelay::default();
+        let outcome = s
+            .execute_verified(
+                p,
+                &mut gateway,
+                &mut delay,
+                FreshnessPolicy { ttl_seconds: 60 },
+            )
+            .unwrap();
+        assert_eq!(outcome.disposition(), PullDisposition::Verified);
+        assert_eq!(outcome.plan_id(), &id);
+        assert_eq!(
+            outcome.gateway_outcome(),
+            &InstancedPullOutcome::Acknowledged
+        );
+        assert_eq!(outcome.observations().len(), arrival);
+        assert_eq!(
+            outcome
+                .observations()
+                .last()
+                .unwrap()
+                .observation()
+                .unwrap()
+                .classification(),
+            PullArrival::VerifiedArrival
+        );
+        assert_eq!(
+            delay.0,
+            vec![std::time::Duration::from_secs(2); arrival - 1]
+        );
+        assert_eq!(gateway.calls(), 1);
+        assert_eq!(
+            s.sync.gateway_mut().requested_reasons(),
+            &[
+                vec![ProfileSyncReason::Preflight; 2],
+                vec![ProfileSyncReason::PostAction; arrival]
+            ]
+            .concat()
+        );
+    }
+}
+
+#[test]
+fn backwards_publication_timestamp_keeps_pair_but_cannot_verify_arrival() {
+    let (mut s, p) = armed_execution();
+    let mut next = input();
+    next.checked_at = Timestamp::new(99);
+    next.items[0].location = ItemLocation::Character(CharacterId::new("2"));
+    queue_observation(s.sync.gateway_mut(), next, Some(BUCKET));
+    let outcome = execute(&mut s, p, InstancedPullOutcome::Acknowledged);
+    assert_eq!(outcome.disposition(), PullDisposition::Uncertain);
+    assert_eq!(outcome.observations().len(), 1);
+    let attempt = outcome.observations().first().unwrap();
+    assert_eq!(
+        attempt.failure(),
+        Some(&PullObservationFailure::BackwardsClock)
+    );
+    assert_eq!(
+        attempt.observation().unwrap().classification(),
+        PullArrival::VerifiedArrival
+    );
+    assert_eq!(
+        attempt.observation().unwrap().metadata().checked_at,
+        Timestamp::new(99)
+    );
+}
+
+struct ScriptClock(std::cell::RefCell<std::collections::VecDeque<Result<Timestamp, AppError>>>);
+impl Clock for ScriptClock {
+    fn now(&self) -> Result<Timestamp, AppError> {
+        self.0
+            .borrow_mut()
+            .pop_front()
+            .expect("unexpected clock read")
+    }
+}
+
+#[test]
+fn observation_clock_faults_preserve_dispatch_and_previous_evidence() {
+    for first in [false, true] {
+        for backwards in [false, true] {
+            let (mut s, p) = armed_execution();
+            if !first {
+                let mut next = input();
+                next.checked_at = Timestamp::new(110);
+                queue_observation(s.sync.gateway_mut(), next, Some(215593132));
+            }
+            let error = AppError::new(ErrorCategory::ClockOverflow);
+            let mut times = vec![Ok(Timestamp::new(100)), Ok(Timestamp::new(100))];
+            if !first {
+                times.push(Ok(Timestamp::new(110)));
+            }
+            times.push(if backwards {
+                Ok(Timestamp::new(if first { 99 } else { 109 }))
+            } else {
+                Err(error.clone())
+            });
+            let mut service = InstancedPullService::new(
+                s.sync,
+                s.definitions,
+                s.manifest,
+                s.policy,
+                ScriptClock(std::cell::RefCell::new(times.into())),
+                s.plan_ids,
+            );
+            let mut gateway = QueuedInstancedPullGateway::new();
+            gateway.queue(Ok(InstancedPullOutcome::Acknowledged));
+            let mut delay = RecordingDelay::default();
+            let outcome = service
+                .execute_verified(
+                    p,
+                    &mut gateway,
+                    &mut delay,
+                    FreshnessPolicy { ttl_seconds: 60 },
+                )
+                .unwrap();
+            assert_eq!(outcome.disposition(), PullDisposition::Uncertain);
+            assert_eq!(
+                outcome.gateway_outcome(),
+                &InstancedPullOutcome::Acknowledged
+            );
+            assert_eq!(outcome.dispatch().dispatch_at(), Timestamp::new(100));
+            assert_eq!(outcome.observations().len(), if first { 1 } else { 2 });
+            let last = outcome.observations().last().unwrap();
+            assert_eq!(
+                last.failure(),
+                Some(&if backwards {
+                    PullObservationFailure::BackwardsClock
+                } else {
+                    PullObservationFailure::Clock(error)
+                })
+            );
+            assert_eq!(
+                last.checked_at(),
+                backwards.then_some(Timestamp::new(if first { 99 } else { 109 }))
+            );
+            if !first {
+                assert_eq!(
+                    outcome.observations()[0].checked_at(),
+                    Some(Timestamp::new(110))
+                );
+                assert_eq!(
+                    outcome.observations()[0]
+                        .observation()
+                        .unwrap()
+                        .metadata()
+                        .checked_at,
+                    Timestamp::new(110)
+                );
+            }
+            assert_eq!(
+                delay.0,
+                vec![std::time::Duration::from_secs(2); usize::from(!first)]
+            );
+            assert_eq!(gateway.calls(), 1);
+            assert_eq!(
+                service.sync.gateway_mut().observed_acquisition_calls(),
+                2 + usize::from(!first)
+            );
+        }
+    }
+}
+
+#[test]
+fn arrival_after_plan_expiry_is_valid_observation_not_dispatch_authority() {
+    let (mut s, p) = armed_execution();
+    let expiry = p.expires_at();
+    let mut next = input();
+    next.items[0].location = ItemLocation::Character(CharacterId::new("2"));
+    next.checked_at = Timestamp::new(expiry.seconds() + 1);
+    queue_observation(s.sync.gateway_mut(), next, Some(BUCKET));
+    let mut service = InstancedPullService::new(
+        s.sync,
+        s.definitions,
+        s.manifest,
+        s.policy,
+        ScriptClock(std::cell::RefCell::new(
+            vec![
+                Ok(Timestamp::new(100)),
+                Ok(Timestamp::new(100)),
+                Ok(Timestamp::new(expiry.seconds() + 1)),
+            ]
+            .into(),
+        )),
+        s.plan_ids,
+    );
+    let mut gateway = QueuedInstancedPullGateway::new();
+    gateway.queue(Ok(InstancedPullOutcome::Uncertain));
+    let mut delay = RecordingDelay::default();
+    let outcome = service
+        .execute_verified(
+            p,
+            &mut gateway,
+            &mut delay,
+            FreshnessPolicy { ttl_seconds: 60 },
+        )
+        .unwrap();
+    assert_eq!(outcome.disposition(), PullDisposition::Verified);
+    assert_eq!(
+        outcome.observations()[0].checked_at(),
+        Some(Timestamp::new(expiry.seconds() + 1))
+    );
+    assert_eq!(gateway.calls(), 1);
+    assert!(delay.0.is_empty());
+}
+
+#[test]
+fn publication_time_boundaries_retain_pairs_and_stop_without_verification() {
+    for regresses_previous_pair in [false, true] {
+        let (mut s, p) = armed_execution();
+        let mut times = vec![Ok(Timestamp::new(100)), Ok(Timestamp::new(100))];
+        if regresses_previous_pair {
+            let mut earlier = input();
+            earlier.checked_at = Timestamp::new(120);
+            queue_observation(s.sync.gateway_mut(), earlier, Some(215593132));
+            times.push(Ok(Timestamp::new(110)));
+        }
+        let caller_time = Timestamp::new(if regresses_previous_pair { 130 } else { 120 });
+        let publication_time = Timestamp::new(if regresses_previous_pair { 115 } else { 110 });
+        let mut arrived = input();
+        arrived.checked_at = publication_time;
+        arrived.items[0].location = ItemLocation::Character(CharacterId::new("2"));
+        queue_observation(s.sync.gateway_mut(), arrived, Some(BUCKET));
+        times.push(Ok(caller_time));
+        let mut service = InstancedPullService::new(
+            s.sync,
+            s.definitions,
+            s.manifest,
+            s.policy,
+            ScriptClock(std::cell::RefCell::new(times.into())),
+            s.plan_ids,
+        );
+        let mut gateway = QueuedInstancedPullGateway::new();
+        gateway.queue(Ok(InstancedPullOutcome::Acknowledged));
+        let mut delay = RecordingDelay::default();
+        let outcome = service
+            .execute_verified(
+                p,
+                &mut gateway,
+                &mut delay,
+                FreshnessPolicy { ttl_seconds: 60 },
+            )
+            .unwrap();
+        assert_eq!(outcome.disposition(), PullDisposition::Uncertain);
+        assert_eq!(
+            outcome.gateway_outcome(),
+            &InstancedPullOutcome::Acknowledged
+        );
+        assert_eq!(outcome.dispatch().dispatch_at(), Timestamp::new(100));
+        assert!(publication_time > outcome.dispatch().dispatch_at());
+        assert!(publication_time < caller_time);
+        assert_eq!(
+            outcome.observations().len(),
+            1 + usize::from(regresses_previous_pair)
+        );
+        if regresses_previous_pair {
+            let earlier = &outcome.observations()[0];
+            assert_eq!(earlier.checked_at(), Some(Timestamp::new(110)));
+            assert!(earlier.failure().is_none());
+            let observed = earlier.observation().unwrap();
+            assert_eq!(observed.metadata().checked_at, Timestamp::new(120));
+            assert_eq!(observed.classification(), PullArrival::StillInPostmaster);
+            assert!(publication_time < observed.metadata().checked_at);
+        }
+        let last = outcome.observations().last().unwrap();
+        assert_eq!(last.checked_at(), Some(caller_time));
+        assert_eq!(
+            last.failure(),
+            Some(&PullObservationFailure::BackwardsClock)
+        );
+        let observed = last.observation().unwrap();
+        assert_eq!(observed.metadata().checked_at, publication_time);
+        assert_eq!(observed.classification(), PullArrival::VerifiedArrival);
+        assert_eq!(observed.target_id(), Some(&ItemInstanceId::new("1")));
+        assert_eq!(observed.target_hash(), Some(ItemHash::new(7)));
+        assert_eq!(
+            observed.target_actual_bucket(),
+            Some(BucketHash::new(BUCKET))
+        );
+        assert_eq!(gateway.calls(), 1);
+        assert_eq!(gateway.requests().len(), 1);
+        assert_eq!(
+            delay.0,
+            vec![std::time::Duration::from_secs(2); usize::from(regresses_previous_pair)]
+        );
+        assert_eq!(
+            service.sync.gateway_mut().observed_acquisition_calls(),
+            3 + usize::from(regresses_previous_pair)
+        );
+        assert_eq!(
+            service.sync.gateway_mut().requested_reasons(),
+            &[
+                vec![ProfileSyncReason::Preflight; 2],
+                vec![ProfileSyncReason::PostAction; 1 + usize::from(regresses_previous_pair)]
+            ]
+            .concat()
+        );
+    }
+}
+
+fn postmaster_observation(owner: &str) -> InventorySnapshotInput {
+    let mut next = input();
+    next.characters.push(Character {
+        id: CharacterId::new("3"),
+        ..next.characters[0].clone()
+    });
+    next.items[0].location = ItemLocation::Postmaster(CharacterId::new(owner));
+    next
+}
+
+#[test]
+fn postmaster_classification_remains_bound_to_original_owner() {
+    for owner in ["2", "3"] {
+        let pair = published_observation(postmaster_observation(owner), Some(215593132), None);
+        let observed = classify_pull_observation(&observation_context(), pair);
+        assert_eq!(
+            observed.classification(),
+            if owner == "2" {
+                PullArrival::StillInPostmaster
+            } else {
+                PullArrival::WrongCharacterOwner
+            }
+        );
+        assert_eq!(observed.target_id(), Some(&ItemInstanceId::new("1")));
+        assert_eq!(observed.target_hash(), Some(ItemHash::new(7)));
+        assert_eq!(
+            observed.target_location(),
+            Some(&ItemLocation::Postmaster(CharacterId::new(owner)))
+        );
+        assert_eq!(
+            observed.target_actual_bucket(),
+            Some(BucketHash::new(215593132))
+        );
+    }
+}
+
+#[test]
+fn other_postmaster_owner_is_uncertain_without_rebinding_or_overriding_refusal() {
+    for owner in ["2", "3"] {
+        for receipt in [
+            InstancedPullOutcome::Acknowledged,
+            InstancedPullOutcome::Rejected(InstancedPullRejection::InvalidRequest),
+            InstancedPullOutcome::AuthenticationRefused,
+            InstancedPullOutcome::Transient,
+        ] {
+            let (mut s, p) = armed_execution();
+            for _ in 0..3 {
+                queue_observation(
+                    s.sync.gateway_mut(),
+                    postmaster_observation(owner),
+                    Some(215593132),
+                );
+            }
+            let outcome = execute(&mut s, p, receipt);
+            let expected = if receipt != InstancedPullOutcome::Acknowledged {
+                PullDisposition::Refused
+            } else if owner == "2" {
+                PullDisposition::NotYetObserved
+            } else {
+                PullDisposition::Uncertain
+            };
+            assert_eq!(outcome.disposition(), expected);
+            assert_ne!(outcome.disposition(), PullDisposition::Verified);
+            assert_eq!(outcome.context().owner(), &CharacterId::new("2"));
+            assert_eq!(outcome.observations().len(), 3);
+            for attempt in outcome.observations() {
+                assert!(attempt.failure().is_none());
+                let observed = attempt.observation().unwrap();
+                assert_eq!(
+                    observed.classification(),
+                    if owner == "2" {
+                        PullArrival::StillInPostmaster
+                    } else {
+                        PullArrival::WrongCharacterOwner
+                    }
+                );
+                assert_eq!(
+                    observed.target_location(),
+                    Some(&ItemLocation::Postmaster(CharacterId::new(owner)))
+                );
+                assert_eq!(
+                    observed.target_actual_bucket(),
+                    Some(BucketHash::new(215593132))
+                );
+            }
+        }
+    }
+}
+
 const BUCKET: i64 = 1498876634;
 fn membership() -> DestinyMembership {
     DestinyMembership::new(MembershipType::new(3), MembershipId::new("123")).unwrap()

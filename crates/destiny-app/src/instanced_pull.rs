@@ -1,7 +1,8 @@
-//! Fresh, planning-only eligibility for instanced Postmaster recovery.
-//! No dispatch or post-action observation is exposed by this module.
+//! Fresh instanced Postmaster planning and consumed-plan verified execution.
+//! Published observations are not causal or atomic application guarantees.
 
 use crate::{ProfileSyncService, ProfileSyncWithObservationsOutcome, PublishedProfileAcquisition};
+use destiny_core::ports::RetryDelay;
 use destiny_core::{
     AppError, BucketHash, CapacityRefusal, CharacterId, Clock, DefinitionRepository,
     DefinitionVersion, DestinyMembership, EquipmentCapacityEvidence, EquipmentCapacityPolicy,
@@ -11,6 +12,7 @@ use destiny_core::{
     PlanLifetime, ProfileAcquisition, ProfileGateway, ProfileSyncReason, Resolution,
     SnapshotMetadata, SyncRevision, Timestamp,
 };
+use std::time::Duration;
 
 /// Select one genuine instance. Destination is its freshly observed Postmaster owner.
 #[derive(Debug, Eq, PartialEq)]
@@ -72,8 +74,8 @@ struct EligibilityFingerprint {
     occupants: Vec<ItemInstanceId>,
 }
 
-/// Opaque bounded intent, NOT dispatch authority. The future executor must take
-/// this plan by value on every path and reacquire/reprove eligibility. There is
+/// Opaque bounded intent, NOT dispatch authority. Execution takes
+/// this plan by value on every path and reacquires/reproves eligibility. There is
 /// no borrowed-plan ticket authorization, cloning, or reminting API.
 ///
 /// ```compile_fail
@@ -145,17 +147,15 @@ impl InstancedPullPlan {
     }
 }
 
-// GPM-008f will consume terminal evidence, not reusable plan authority.
-#[allow(dead_code)]
 #[derive(Debug, Eq, PartialEq)]
-struct PullAttempt {
+pub struct PullAttempt {
     context: PullContext,
     preflight_at: Timestamp,
     dispatch_at: Timestamp,
     outcome: Result<InstancedPullOutcome, AppError>,
 }
 #[derive(Debug, Eq, PartialEq)]
-struct PullContext {
+pub struct PullContext {
     membership: DestinyMembership,
     item: ItemInstanceId,
     item_hash: ItemHash,
@@ -164,11 +164,10 @@ struct PullContext {
     definition_version: DefinitionVersion,
     revision: SyncRevision,
 }
-// GPM-008f2 will retain these observations separately from gateway receipts.
-// VerifiedArrival describes a published observation, never causal application.
-#[allow(dead_code)] // Private classifier result until the bounded executor uses it.
-#[derive(Debug, Eq, PartialEq)]
-enum PullArrival {
+// VerifiedArrival describes a published location, never causal application.
+// Attempt-level timestamp failures still invalidate this location evidence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PullArrival {
     VerifiedArrival,
     MembershipMismatch,
     DefinitionVersionDrift,
@@ -182,9 +181,8 @@ enum PullArrival {
     UnknownLocation,
 }
 
-#[allow(dead_code)] // Private evidence seam for GPM-008f2, not dispatch authority.
 #[derive(Debug, Eq, PartialEq)]
-struct PullObservation {
+pub struct PullObservation {
     metadata: SnapshotMetadata,
     // None means absent: do not forge observed identity from planned identity.
     target: Option<ItemInstance>,
@@ -198,8 +196,7 @@ struct PullObservation {
 /// observations when available; no reload, definition lookup or capacity reproof.
 /// Revision equality is deliberately irrelevant. Caller serialization is still
 /// required: this observation does not protect against later publications or
-/// external game activity. Receipt refusal resolution belongs to GPM-008f2.
-#[allow(dead_code)] // Internal future executor seam; intentionally not exported.
+/// external game activity. The executor separately resolves receipt refusals.
 fn classify_pull_observation(
     context: &PullContext,
     pair: PublishedProfileAcquisition,
@@ -240,6 +237,9 @@ fn classify_pull_observation(
                 PullArrival::WrongActualBucket
             }
             ItemLocation::Character(_) => PullArrival::VerifiedArrival,
+            ItemLocation::Postmaster(owner) if owner != &context.owner => {
+                PullArrival::WrongCharacterOwner
+            }
             ItemLocation::Postmaster(_) => PullArrival::StillInPostmaster,
             ItemLocation::Vault => PullArrival::Elsewhere,
             ItemLocation::Other(_) => PullArrival::UnknownLocation,
@@ -253,13 +253,171 @@ fn classify_pull_observation(
     }
 }
 
+impl PullContext {
+    pub fn membership(&self) -> &DestinyMembership {
+        &self.membership
+    }
+    pub fn item(&self) -> &ItemInstanceId {
+        &self.item
+    }
+    pub fn item_hash(&self) -> ItemHash {
+        self.item_hash
+    }
+    pub fn owner(&self) -> &CharacterId {
+        &self.owner
+    }
+    pub fn destination_bucket(&self) -> BucketHash {
+        self.destination_bucket
+    }
+    pub fn definition_version(&self) -> &DefinitionVersion {
+        &self.definition_version
+    }
+    pub fn revision(&self) -> SyncRevision {
+        self.revision
+    }
+}
+impl PullAttempt {
+    pub fn context(&self) -> &PullContext {
+        &self.context
+    }
+    pub fn preflight_at(&self) -> Timestamp {
+        self.preflight_at
+    }
+    pub fn dispatch_at(&self) -> Timestamp {
+        self.dispatch_at
+    }
+    pub fn gateway_result(&self) -> &Result<InstancedPullOutcome, AppError> {
+        &self.outcome
+    }
+}
+impl PullObservation {
+    pub fn metadata(&self) -> &SnapshotMetadata {
+        &self.metadata
+    }
+    pub fn classification(&self) -> PullArrival {
+        self.classification
+    }
+    pub fn target_id(&self) -> Option<&ItemInstanceId> {
+        self.target.as_ref().map(|item| &item.instance_id)
+    }
+    pub fn target_hash(&self) -> Option<ItemHash> {
+        self.target.as_ref().map(|item| item.item_hash)
+    }
+    pub fn target_location(&self) -> Option<&ItemLocation> {
+        self.target.as_ref().map(|item| &item.location)
+    }
+    pub fn actual_buckets_available(&self) -> bool {
+        self.observations.is_some()
+    }
+    pub fn target_actual_bucket(&self) -> Option<BucketHash> {
+        let target = self.target.as_ref()?;
+        self.observations
+            .as_ref()?
+            .iter()
+            .find(|row| row.instance_id() == &target.instance_id)
+            .map(|row| row.bucket_hash())
+    }
+}
+
+/// Honest terminal disposition; even observed arrival cannot override refusal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PullDisposition {
+    Verified,
+    NotYetObserved,
+    Uncertain,
+    Refused,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum PullObservationFailure {
+    Clock(AppError),
+    BackwardsClock,
+    Refresh(AppError),
+    SkippedFresh,
+}
+
+/// One ordered observation attempt. A clock failure has no invented timestamp.
+/// Check `failure()` even when `observation()` exists: a backwards publication
+/// timestamp preserves the pair but invalidates its otherwise exact arrival.
+#[derive(Debug, Eq, PartialEq)]
+pub struct PullObservationAttempt {
+    checked_at: Option<Timestamp>,
+    result: Result<PullObservation, PullObservationFailure>,
+    // A publication time fault retains the pair as well as the failure.
+    publication_failure: Option<PullObservationFailure>,
+}
+impl PullObservationAttempt {
+    pub fn checked_at(&self) -> Option<Timestamp> {
+        self.checked_at
+    }
+    pub fn observation(&self) -> Option<&PullObservation> {
+        self.result.as_ref().ok()
+    }
+    pub fn failure(&self) -> Option<&PullObservationFailure> {
+        self.publication_failure
+            .as_ref()
+            .or_else(|| self.result.as_ref().err())
+    }
+}
+
+/// Evidence from a received gateway outcome, retained even after local failures.
+#[derive(Debug, Eq, PartialEq)]
+pub struct InstancedPullExecutionOutcome {
+    plan_id: PlanId,
+    dispatch: PullAttempt,
+    observations: Vec<PullObservationAttempt>,
+    disposition: PullDisposition,
+}
+impl InstancedPullExecutionOutcome {
+    pub fn plan_id(&self) -> &PlanId {
+        &self.plan_id
+    }
+    pub fn dispatch(&self) -> &PullAttempt {
+        &self.dispatch
+    }
+    pub fn context(&self) -> &PullContext {
+        self.dispatch.context()
+    }
+    pub fn gateway_outcome(&self) -> &InstancedPullOutcome {
+        self.dispatch
+            .outcome
+            .as_ref()
+            .expect("received outcome required")
+    }
+    pub fn observations(&self) -> &[PullObservationAttempt] {
+        &self.observations
+    }
+    pub fn disposition(&self) -> PullDisposition {
+        self.disposition
+    }
+}
+
+/// Before-dispatch failures never incur PostAction acquisitions or waits.
+#[derive(Debug, Eq, PartialEq)]
+pub enum InstancedPullExecutionFailureReason {
+    PreDispatch(PreDispatchError),
+    Gateway(Box<PullAttempt>),
+}
+#[derive(Debug, Eq, PartialEq)]
+pub struct InstancedPullExecutionFailure {
+    plan_id: PlanId,
+    reason: InstancedPullExecutionFailureReason,
+}
+impl InstancedPullExecutionFailure {
+    pub fn plan_id(&self) -> &PlanId {
+        &self.plan_id
+    }
+    pub fn reason(&self) -> &InstancedPullExecutionFailureReason {
+        &self.reason
+    }
+}
+
 struct Eligibility {
     context: PullContext,
     fingerprint: EligibilityFingerprint,
 }
-#[allow(dead_code)] // Private until GPM-008f adds the verified executor.
 #[derive(Debug, Eq, PartialEq)]
-enum PreDispatchError {
+pub enum PreDispatchError {
     Eligibility(InstancedPullPlanningError),
     Expired,
     BackwardsClock,
@@ -356,6 +514,142 @@ where
             definition_version: context.definition_version,
             revision: context.revision,
             fingerprint: eligibility.fingerprint,
+        })
+    }
+
+    /// Consume a plan exactly once, reacquire preflight proof, dispatch at most
+    /// once and observe at most three forced successful-publication pairs.
+    /// No action retry, reminting, stale fallback or rollback is performed.
+    /// Callers must serialize local inventory publication and definition use
+    /// through execution; these observations are not causal or atomic proof
+    /// against other clients or game activity. Plan expiry gates dispatch only.
+    /// The gateway contract requires Err to mean failure before dispatch; it
+    /// incurs no PostAction expense. Any received outcome is retained even when
+    /// subsequent clocks or publications fail. Confirmed refusal always wins
+    /// over arrival evidence; acknowledgement alone never proves recovery.
+    ///
+    /// ```compile_fail
+    /// use destiny_app::{InstancedPullService, InstancedPullPlan};
+    /// use destiny_core::*;
+    /// use destiny_core::ports::RetryDelay;
+    /// fn replay<G: ProfileGateway, R: InventoryRepository, D: DefinitionRepository,
+    /// M: ManifestGateway, C: Clock, P: PlanIdGenerator, T: InstancedPullGateway,
+    /// W: RetryDelay>(s: &mut InstancedPullService<G,R,D,M,C,P>,
+    /// plan: InstancedPullPlan, gateway: &mut T, delay: &mut W, freshness: FreshnessPolicy) {
+    ///     s.execute_verified(plan, gateway, delay, freshness);
+    ///     s.execute_verified(plan, gateway, delay, freshness);
+    /// }
+    /// ```
+    pub fn execute_verified<T: InstancedPullGateway, W: RetryDelay>(
+        &mut self,
+        plan: InstancedPullPlan,
+        gateway: &mut T,
+        delay: &mut W,
+        freshness: FreshnessPolicy,
+    ) -> Result<InstancedPullExecutionOutcome, InstancedPullExecutionFailure> {
+        let plan_id = plan.id.clone();
+        let dispatch = self
+            .preflight_dispatch(plan, gateway, freshness)
+            .map_err(|error| InstancedPullExecutionFailure {
+                plan_id: plan_id.clone(),
+                reason: InstancedPullExecutionFailureReason::PreDispatch(error),
+            })?;
+        let receipt = match &dispatch.outcome {
+            Ok(receipt) => receipt,
+            Err(_) => {
+                return Err(InstancedPullExecutionFailure {
+                    plan_id,
+                    reason: InstancedPullExecutionFailureReason::Gateway(Box::new(dispatch)),
+                });
+            }
+        };
+        let refused = matches!(
+            receipt,
+            InstancedPullOutcome::Rejected(_)
+                | InstancedPullOutcome::AuthenticationRefused
+                | InstancedPullOutcome::Transient
+        );
+        let acknowledged = matches!(receipt, InstancedPullOutcome::Acknowledged);
+        let mut observations = Vec::with_capacity(3);
+        let mut previous = dispatch.dispatch_at;
+        for index in 0..3 {
+            if index > 0 {
+                delay.wait(Duration::from_secs(2));
+            }
+            let now = match self.clock.now() {
+                Ok(now) => now,
+                Err(error) => {
+                    observations.push(PullObservationAttempt {
+                        checked_at: None,
+                        result: Err(PullObservationFailure::Clock(error)),
+                        publication_failure: None,
+                    });
+                    break;
+                }
+            };
+            if now < previous {
+                observations.push(PullObservationAttempt {
+                    checked_at: Some(now),
+                    result: Err(PullObservationFailure::BackwardsClock),
+                    publication_failure: None,
+                });
+                break;
+            }
+            previous = now;
+            let result = match self.sync.sync_with_observations(
+                ProfileSyncReason::PostAction,
+                freshness,
+                now,
+            ) {
+                Ok(ProfileSyncWithObservationsOutcome::Refreshed(pair)) => {
+                    Ok(classify_pull_observation(&dispatch.context, pair))
+                }
+                Ok(ProfileSyncWithObservationsOutcome::SkippedFresh { .. }) => {
+                    Err(PullObservationFailure::SkippedFresh)
+                }
+                Err(error) => Err(PullObservationFailure::Refresh(error)),
+            };
+            let publication_failure = match &result {
+                Ok(observation) if observation.metadata.checked_at < previous => {
+                    Some(PullObservationFailure::BackwardsClock)
+                }
+                Ok(observation) => {
+                    previous = observation.metadata.checked_at;
+                    None
+                }
+                Err(_) => None,
+            };
+            let stop = publication_failure.is_some()
+                || matches!(&result, Ok(observation) if matches!(observation.classification,
+                PullArrival::VerifiedArrival | PullArrival::MembershipMismatch | PullArrival::DefinitionVersionDrift | PullArrival::HashDrift));
+            observations.push(PullObservationAttempt {
+                checked_at: Some(now),
+                result,
+                publication_failure,
+            });
+            if stop {
+                break;
+            }
+        }
+        let last = observations
+            .last()
+            .filter(|attempt| attempt.failure().is_none())
+            .and_then(PullObservationAttempt::observation)
+            .map(PullObservation::classification);
+        let disposition = if refused {
+            PullDisposition::Refused
+        } else if last == Some(PullArrival::VerifiedArrival) {
+            PullDisposition::Verified
+        } else if acknowledged && last == Some(PullArrival::StillInPostmaster) {
+            PullDisposition::NotYetObserved
+        } else {
+            PullDisposition::Uncertain
+        };
+        Ok(InstancedPullExecutionOutcome {
+            plan_id,
+            dispatch,
+            observations,
+            disposition,
         })
     }
 
@@ -465,8 +759,8 @@ where
     }
     /// Consumes intent on every path, never remints or retries. Caller must
     /// serialize local publications through dispatch; these checks cannot be
-    /// atomic against other clients or game activity. No post-action proof yet.
-    #[allow(dead_code)] // Private future GPM-008f seam, deliberately not exported.
+    /// atomic against other clients or game activity. Observations follow only
+    /// in the public consumed-plan executor.
     fn preflight_dispatch<T: InstancedPullGateway>(
         &mut self,
         plan: InstancedPullPlan,

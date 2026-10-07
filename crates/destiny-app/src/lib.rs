@@ -22,8 +22,11 @@ mod config;
 mod defaults;
 pub mod instanced_pull;
 pub use instanced_pull::{
-    InstancedPullPlan, InstancedPullPlanRequest, InstancedPullPlanningError, InstancedPullRefusal,
-    InstancedPullService,
+    InstancedPullExecutionFailure, InstancedPullExecutionFailureReason,
+    InstancedPullExecutionOutcome, InstancedPullPlan, InstancedPullPlanRequest,
+    InstancedPullPlanningError, InstancedPullRefusal, InstancedPullService, PreDispatchError,
+    PullArrival, PullAttempt, PullContext, PullDisposition, PullObservation,
+    PullObservationAttempt, PullObservationFailure,
 };
 pub mod lock;
 pub mod manifest;
@@ -68,10 +71,10 @@ pub use config::{
 // root load a credential; it adds no behavior and no new abstraction.
 pub use destiny_core::domain::ItemSlot;
 pub use destiny_core::name_matching;
-pub use destiny_core::ports::StatDefinitionRepository;
 pub use destiny_core::ports::{
     DefinitionCatalogRepository, ManifestIndex, WorldDefinitionRepository,
 };
+pub use destiny_core::ports::{RetryDelay, StatDefinitionRepository};
 pub use destiny_core::query::{InspectionPlug, InspectionPlugRole, LocationFilter, MAX_NAME_TERMS};
 pub use destiny_core::{
     AccessCredential, AccessCredentialMetadata, AppError, BucketHash, Character, CharacterId,
@@ -107,6 +110,7 @@ pub use destiny_core::{
     EquipGateway, EquipItemRequest, EquipOutcome, EquipPlan, EquipPreflight, EquipRejection,
     EquipRequest,
 };
+pub use destiny_core::{InstancedPullGateway, InstancedPullOutcome, InstancedPullRejection};
 pub use destiny_core::{MAX_STAT_CONDITIONS, NamedStat, StatCondition, StatOp};
 pub use destiny_core::{ManifestAcquisition, ManifestDefinitions, ManifestGateway};
 pub use manifest::{ManifestService, ManifestSyncReport, normalize_manifest};
