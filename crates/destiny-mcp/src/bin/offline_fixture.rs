@@ -154,6 +154,39 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         ),
         DeterministicPlanIds::starting_at(1),
     );
+    let mut manifest = destiny_app::test_support::QueuedManifestGateway::new();
+    for _ in 0..2 {
+        manifest.queue_capacity_evidence(Ok(destiny_app::EquipmentCapacityEvidence::new(
+            fixture_version(),
+            destiny_adapters::equipment_capacity_policy::PINNED_EQUIPMENT_BUCKET_PATH,
+        )
+        .unwrap()));
+    }
+    let pull = destiny_mcp::service::InstancedPullToolService::new(
+        WorldGateway {
+            membership: membership(),
+            world: Arc::clone(&world),
+        },
+        destiny_app::InstancedPullService::new(
+            ProfileSyncService::new(
+                WorldGateway {
+                    membership: membership(),
+                    world: Arc::clone(&world),
+                },
+                FixtureRepository::seeded(&characters(), &scenario.seed_items()),
+            ),
+            InMemoryDefinitionRepository::new(fixture_version(), fixture_definitions()),
+            manifest,
+            destiny_adapters::pinned_equipment_capacity_policy(),
+            FakeClock::fixed(NOW),
+            DeterministicPlanIds::starting_at(1),
+        ),
+        WorldPullGateway {
+            world: Arc::clone(&world),
+        },
+        FixturePullDelay,
+        TTL,
+    );
     let mutation_service = ComposedMutationService::new(
         mutations,
         WorldTransferGateway {
@@ -167,7 +200,8 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
     .with_equip(WorldEquipGateway {
         world: Arc::clone(&world),
     })
-    .with_lock(WorldLockGateway { world });
+    .with_lock(WorldLockGateway { world })
+    .with_pull(pull);
 
     let read_service = destiny_mcp::service::PersonalWeeklyReadService::new(
         destiny_app::WeeklyPersonalService::new(
@@ -459,6 +493,32 @@ impl ProfileGateway for WorldGateway {
         Ok(self.membership.clone())
     }
 
+    fn load_inventory_with_observations_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        _reason: destiny_app::ProfileSyncReason,
+    ) -> Result<destiny_app::ProfileAcquisition, AppError> {
+        let input = self.load_inventory(membership)?;
+        let rows = input
+            .items
+            .iter()
+            .map(|item| {
+                destiny_app::InstancedBucketObservation::new(
+                    item.instance_id.clone(),
+                    destiny_app::BucketHash::new(
+                        if matches!(item.location, ItemLocation::Postmaster(_)) {
+                            215593132
+                        } else {
+                            1498876634
+                        },
+                    ),
+                    item.location.clone(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        destiny_app::ProfileAcquisition::new(input, Some(rows))
+    }
+
     fn load_inventory(
         &mut self,
         membership: &DestinyMembership,
@@ -493,6 +553,40 @@ impl ProfileGateway for WorldGateway {
             ));
         }
         Ok(world.snapshot_input())
+    }
+}
+
+struct FixturePullDelay;
+impl destiny_app::RetryDelay for FixturePullDelay {
+    fn wait(&mut self, duration: std::time::Duration) {
+        assert_eq!(duration, std::time::Duration::from_secs(2));
+    }
+}
+struct WorldPullGateway {
+    world: Arc<Mutex<FixtureWorld>>,
+}
+impl destiny_app::InstancedPullGateway for WorldPullGateway {
+    fn pull(
+        &mut self,
+        request: &destiny_app::InstancedPullRequest,
+    ) -> Result<destiny_app::InstancedPullOutcome, AppError> {
+        let scenario = std::env::var(SCENARIO_ENV).unwrap_or_default();
+        if scenario == "pull-gateway-error" {
+            return Err(AppError::new(ErrorCategory::ProviderUnavailable));
+        }
+        if scenario != "pull-pending" && scenario != "pull-uncertain" {
+            self.world.lock().expect("fixture world").apply(
+                request.item(),
+                &ItemLocation::Character(request.character().clone()),
+            );
+        }
+        Ok(match scenario.as_str() {
+            "pull-refused-arrival" => destiny_app::InstancedPullOutcome::Rejected(
+                destiny_app::InstancedPullRejection::InvalidRequest,
+            ),
+            "pull-uncertain" => destiny_app::InstancedPullOutcome::Uncertain,
+            _ => destiny_app::InstancedPullOutcome::Acknowledged,
+        })
     }
 }
 
@@ -637,7 +731,7 @@ struct FixtureRepository {
 impl FixtureRepository {
     /// Seeds one committed projection for the supplied characters and items.
     fn seeded(characters: &[Character], items: &[ItemInstance]) -> Self {
-        let version = DefinitionVersion::new(DEFINITION_VERSION);
+        let version = fixture_version();
         let definitions = fixture_definitions();
         let mut repository = Self {
             inventory: InMemoryInventoryRepository::new(),
@@ -831,7 +925,7 @@ fn snapshot_input(characters: &[Character], items: &[ItemInstance]) -> Inventory
         plug_set_entries: Vec::new(),
         membership_id: membership.membership_id().clone(),
         membership_type: membership.membership_type(),
-        definition_version: DefinitionVersion::new(DEFINITION_VERSION),
+        definition_version: fixture_version(),
         checked_at: NOW,
         source: SourceMarker::Profile,
         characters: characters.to_vec(),
@@ -840,6 +934,9 @@ fn snapshot_input(characters: &[Character], items: &[ItemInstance]) -> Inventory
 }
 
 fn characters() -> Vec<Character> {
+    if pull_scenario() {
+        return vec![character("2")];
+    }
     if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("empty-characters") {
         return vec![];
     }
@@ -856,7 +953,27 @@ fn postmaster_scenario() -> bool {
         .is_some_and(|s| s.starts_with("postmaster-"))
 }
 
+fn pull_scenario() -> bool {
+    std::env::var(SCENARIO_ENV)
+        .ok()
+        .is_some_and(|s| s.starts_with("pull-"))
+}
+fn fixture_version() -> DefinitionVersion {
+    DefinitionVersion::new(if pull_scenario() {
+        destiny_adapters::equipment_capacity_policy::PINNED_EQUIPMENT_CAPACITY_VERSION
+    } else {
+        DEFINITION_VERSION
+    })
+}
 fn base_items() -> Vec<ItemInstance> {
+    if pull_scenario() {
+        return vec![instance(
+            "123",
+            1,
+            ItemLocation::Postmaster(CharacterId::new("2")),
+            vec![],
+        )];
+    }
     if postmaster_scenario() {
         return vec![instance(
             "postmaster-gear",
@@ -924,6 +1041,13 @@ fn set_location(items: &mut [ItemInstance], instance_id: &str, location: ItemLoc
 }
 
 fn fixture_definitions() -> Vec<ItemDefinition> {
+    if pull_scenario() {
+        let mut item = definition(1, "PRIVATE_PULL_NAME");
+        item.does_postmaster_pull_have_side_effects = Some(false);
+        item.is_instance_item = Some(true);
+        item.bucket_hash = Some(destiny_app::BucketHash::new(1498876634));
+        return vec![item];
+    }
     if postmaster_scenario() {
         return vec![
             definition(1, "Gjallarhorn"),
@@ -984,7 +1108,7 @@ fn definition(hash: i64, name: &str) -> ItemDefinition {
         class_type: None,
         plug_category: None,
         tags: Vec::new(),
-        version: DefinitionVersion::new(DEFINITION_VERSION),
+        version: fixture_version(),
     }
 }
 

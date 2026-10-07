@@ -60,7 +60,7 @@ const READ_ONLY_INSTRUCTIONS: &str =
 /// The text must not claim the server is read-only: composing the seam adds the
 /// single intent-authorized `move_item` mutation, so the advertised capability
 /// has to match the discovery set.
-const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item`, `equip_item`, and `set_lock_state` mutations.";
+const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item`, `equip_item`, and `set_lock_state`, and `pull_item` mutations.";
 
 /// The tools-only RMCP server over one shared read service and an optional
 /// mutation seam.
@@ -121,6 +121,7 @@ impl ReadToolServer {
             tools.push(move_item_tool());
             tools.push(crate::schema::equip_item_tool());
             tools.push(crate::schema::set_lock_state_tool());
+            tools.push(crate::schema::pull_item_tool());
         }
         ListToolsResult {
             tools,
@@ -151,6 +152,7 @@ impl ReadToolServer {
         if name == MOVE_ITEM_TOOL
             || name == crate::schema::EQUIP_ITEM_TOOL
             || name == crate::schema::SET_LOCK_STATE_TOOL
+            || name == crate::schema::PULL_ITEM_TOOL
         {
             self.mutation.as_ref()
         } else {
@@ -380,6 +382,18 @@ fn dispatch_mutation_locked(
     name: &str,
     arguments: JsonObject,
 ) -> Result<CallToolResult, ErrorData> {
+    if name == crate::schema::PULL_ITEM_TOOL {
+        let args: crate::schema::PullItemArgs = deserialize(arguments)?;
+        if let Err(error) = args.instance_id() {
+            return Ok(error.into_call_tool_result());
+        }
+        let mut guard = mutation.lock().map_err(|_| internal_error())?;
+        return Ok(guard.pull_item(&args).map_or_else(tool_error, |output| {
+            let mut result = CallToolResult::structured(output.json());
+            result.is_error = Some(!output.is_success());
+            result
+        }));
+    }
     if name == crate::schema::SET_LOCK_STATE_TOOL {
         let args: crate::schema::SetLockStateArgs = deserialize(arguments)?;
         if let Err(error) = args.validate() {
@@ -830,6 +844,23 @@ mod tests {
                 .dispatch(LIST_CHARACTERS_TOOL, Default::default())
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn pull_discovery_is_closed_id_only_and_mutation_only() {
+        let (configured, _, _) = mutation_server(RecordingService::new());
+        let tool = configured
+            .discover_tools()
+            .tools
+            .into_iter()
+            .find(|tool| tool.name == "pull_item")
+            .expect("configured server exposes pull_item");
+        let schema = tool.schema_as_json_value();
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["item"]));
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 1);
+        let (readonly, _) = server(RecordingService::new());
+        assert!(readonly.get_tool("pull_item").is_none());
     }
 
     #[test]

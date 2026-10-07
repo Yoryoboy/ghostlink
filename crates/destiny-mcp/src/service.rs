@@ -763,6 +763,12 @@ pub struct MoveItemRequest {
 /// bounded MCP projections defined in [`crate::schema`]; a failure is a stable
 /// sanitized [`McpError`].
 pub trait MutationToolService {
+    fn pull_item(
+        &mut self,
+        _request: &crate::schema::PullItemArgs,
+    ) -> Result<destiny_output::instanced_pull::InstancedPullOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
     fn set_lock_state(
         &mut self,
         _request: &crate::schema::SetLockStateArgs,
@@ -934,6 +940,118 @@ pub struct LockMutationService<G, R, P, C, T, E, L> {
     inner: EquipMutationService<G, R, P, C, T, E>,
     lock: L,
 }
+impl<G, R, P, C, T, E, L> LockMutationService<G, R, P, C, T, E, L> {
+    /// Adds pull without changing existing constructor contracts or publication locks.
+    pub fn with_pull<U>(self, pull: U) -> PullMutationService<Self, U> {
+        PullMutationService { inner: self, pull }
+    }
+}
+
+/// An additive action decorator; all other mutations retain their existing behavior.
+pub struct PullMutationService<I, U> {
+    inner: I,
+    pull: U,
+}
+impl<I: MutationToolService, U: MutationToolService> MutationToolService
+    for PullMutationService<I, U>
+{
+    fn pull_item(
+        &mut self,
+        args: &crate::schema::PullItemArgs,
+    ) -> Result<destiny_output::instanced_pull::InstancedPullOutput, McpError> {
+        self.pull.pull_item(args)
+    }
+    fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+        self.inner.move_item(request)
+    }
+    fn equip_item(
+        &mut self,
+        args: &crate::schema::EquipItemArgs,
+    ) -> Result<destiny_output::equip::EquipOutput, McpError> {
+        self.inner.equip_item(args)
+    }
+    fn set_lock_state(
+        &mut self,
+        args: &crate::schema::SetLockStateArgs,
+    ) -> Result<destiny_output::lock::LockOutput, McpError> {
+        self.inner.set_lock_state(args)
+    }
+}
+
+/// Owns the authenticated membership resolver and shared verified-pull pipeline.
+/// The server's existing outer guard must span this entire synchronous invocation.
+pub struct InstancedPullToolService<G, R, D, M, C, P, T, W> {
+    membership: G,
+    service: destiny_app::InstancedPullService<G, R, D, M, C, P>,
+    gateway: T,
+    delay: W,
+    freshness: FreshnessPolicy,
+}
+impl<G, R, D, M, C, P, T, W> InstancedPullToolService<G, R, D, M, C, P, T, W> {
+    pub fn new(
+        membership: G,
+        service: destiny_app::InstancedPullService<G, R, D, M, C, P>,
+        gateway: T,
+        delay: W,
+        freshness: FreshnessPolicy,
+    ) -> Self {
+        Self {
+            membership,
+            service,
+            gateway,
+            delay,
+            freshness,
+        }
+    }
+}
+impl<G, R, D, M, C, P, T, W> MutationToolService
+    for InstancedPullToolService<G, R, D, M, C, P, T, W>
+where
+    G: ProfileGateway,
+    R: InventoryRepository,
+    D: DefinitionRepository,
+    M: destiny_app::ManifestGateway,
+    C: Clock,
+    P: PlanIdGenerator,
+    T: destiny_app::InstancedPullGateway,
+    W: destiny_app::RetryDelay,
+{
+    fn move_item(&mut self, _request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
+    fn pull_item(
+        &mut self,
+        args: &crate::schema::PullItemArgs,
+    ) -> Result<destiny_output::instanced_pull::InstancedPullOutput, McpError> {
+        use destiny_output::instanced_pull::InstancedPullOutput;
+        let item = args.instance_id()?;
+        // Invalid input cannot resolve credentials or perform any service work.
+        let membership = self
+            .membership
+            .resolve_membership()
+            .map_err(McpError::from)?;
+        let plan = match self.service.plan(
+            &destiny_app::InstancedPullPlanRequest { membership, item },
+            PlanLifetime::MAX,
+            self.freshness,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => return Ok(InstancedPullOutput::planning_failed(&error)),
+        };
+        Ok(
+            match self.service.execute_verified(
+                plan,
+                &mut self.gateway,
+                &mut self.delay,
+                self.freshness,
+            ) {
+                Ok(outcome) => InstancedPullOutput::from_outcome(&outcome),
+                Err(failure) => InstancedPullOutput::execution_failed(&failure),
+            },
+        )
+    }
+}
+
 impl<G, R, P, C, T, E, L> MutationToolService for LockMutationService<G, R, P, C, T, E, L>
 where
     G: ProfileGateway,

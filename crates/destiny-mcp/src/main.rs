@@ -144,13 +144,26 @@ fn compose_server<S: CredentialStore + Send + 'static>(
     let lock = destiny_adapters::lock::BungieLockGateway::new(
         destiny_adapters::lock::HttpLockTransport::new()?,
         SystemClock::new(),
-        transfer_source,
+        transfer_source.clone(),
         destiny_adapters::lock::LockApiKey::new(config.api_key().expose_secret())?,
     )?;
+    let pull = destiny_adapters::instanced_pull::BungieInstancedPullGateway::new(
+        destiny_adapters::instanced_pull::HttpInstancedPullTransport::new()?,
+        SystemClock::new(),
+        transfer_source,
+        destiny_adapters::instanced_pull::InstancedPullApiKey::new(
+            config.api_key().expose_secret(),
+        )?,
+    )?;
+    let manifest = destiny_adapters::manifest::BungieManifestGateway::new(
+        destiny_adapters::manifest::ManifestApiKey::new(config.api_key().expose_secret())?,
+        destiny_adapters::manifest::HttpManifestTransport::new()?,
+        SystemClock::new(),
+    );
     let repository = SqliteStore::open(config.database_path())?;
     Ok(assemble_server(
         profile_gateway,
-        (transfer, equip, lock),
+        (transfer, equip, lock, pull, manifest),
         repository,
         policy,
         weekly_service(config)?,
@@ -252,7 +265,23 @@ type MutationPorts<C> = (
         SystemClock,
         C,
     >,
+    destiny_adapters::instanced_pull::BungieInstancedPullGateway<
+        destiny_adapters::instanced_pull::HttpInstancedPullTransport,
+        SystemClock,
+        C,
+    >,
+    destiny_adapters::manifest::BungieManifestGateway<
+        destiny_adapters::manifest::HttpManifestTransport,
+        SystemClock,
+    >,
 );
+
+struct PullDelay;
+impl destiny_app::RetryDelay for PullDelay {
+    fn wait(&mut self, duration: std::time::Duration) {
+        std::thread::sleep(duration);
+    }
+}
 
 /// Wires the concrete adapters into one read-plus-mutation tool server.
 ///
@@ -310,6 +339,22 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         policy,
     );
 
+    // Inventory publication and definition use share the EXISTING SQLite handle.
+    // The concrete Manifest port fetches fresh policy qualification at plan/preflight.
+    let pull = crate::service::InstancedPullToolService::new(
+        gateway.clone(),
+        destiny_app::InstancedPullService::new(
+            ProfileSyncService::new_with_definitions(gateway.clone(), repository.clone()),
+            repository.clone(),
+            ports.4,
+            destiny_adapters::pinned_equipment_capacity_policy(),
+            SystemClock::new(),
+            SystemPlanIds::new(SystemClock::new()),
+        ),
+        ports.3,
+        PullDelay,
+        policy,
+    );
     let mutations = MutationService::new(
         ProfileSyncService::new_with_definitions(gateway, repository),
         SystemPlanIds::new(SystemClock::new()),
@@ -322,7 +367,8 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         PlanLifetime::MAX,
     )
     .with_equip(ports.1)
-    .with_lock(ports.2);
+    .with_lock(ports.2)
+    .with_pull(pull);
 
     // Every publishing read decorator and both mutations enter the same outer
     // operation boundary. Do not expose a second unguarded dispatch path for
@@ -1243,13 +1289,25 @@ mod tests {
         let lock = destiny_adapters::lock::BungieLockGateway::new(
             destiny_adapters::lock::HttpLockTransport::new().unwrap(),
             SystemClock::new(),
-            destiny_app::StaticCredentialSource::new(credential),
+            destiny_app::StaticCredentialSource::new(credential.clone()),
             destiny_adapters::lock::LockApiKey::new(API_KEY_SENTINEL).unwrap(),
         )
         .unwrap();
+        let pull = destiny_adapters::instanced_pull::BungieInstancedPullGateway::new(
+            destiny_adapters::instanced_pull::HttpInstancedPullTransport::new().unwrap(),
+            SystemClock::new(),
+            destiny_app::StaticCredentialSource::new(credential),
+            destiny_adapters::instanced_pull::InstancedPullApiKey::new(API_KEY_SENTINEL).unwrap(),
+        )
+        .unwrap();
+        let manifest = destiny_adapters::manifest::BungieManifestGateway::new(
+            destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL).unwrap(),
+            destiny_adapters::manifest::HttpManifestTransport::new().unwrap(),
+            SystemClock::new(),
+        );
         let server = assemble_server(
             profile_gateway,
-            (transfer, equip, lock),
+            (transfer, equip, lock, pull, manifest),
             store,
             FreshnessPolicy { ttl_seconds: 900 },
             destiny_app::weekly_reset::WeeklyResetService::new(
@@ -1280,7 +1338,8 @@ mod tests {
                 "get_subclass_options",
                 "move_item",
                 "equip_item",
-                "set_lock_state"
+                "set_lock_state",
+                "pull_item"
             ],
             "mutation must be default-enabled in the product composition"
         );

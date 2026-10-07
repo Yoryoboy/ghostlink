@@ -172,6 +172,34 @@ pub fn move_item_tool() -> Tool {
         .with_output_schema::<MoveItemOutput>()
 }
 
+pub const PULL_ITEM_TOOL: &str = "pull_item";
+
+/// One canonical genuine instance ID; every provider-bound value is derived.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PullItemArgs {
+    #[schemars(length(min = 1, max = 19), regex(pattern = "^[1-9][0-9]{0,18}$"))]
+    pub item: String,
+}
+impl PullItemArgs {
+    pub fn instance_id(&self) -> Result<destiny_app::ItemInstanceId, McpError> {
+        let invalid = || McpError::new(ErrorCategory::ProviderValidation);
+        if self.item.is_empty() || self.item.len() > 19 {
+            return Err(invalid());
+        }
+        let value = self.item.parse::<i64>().map_err(|_| invalid())?;
+        if value <= 0 || value.to_string() != self.item {
+            return Err(invalid());
+        }
+        Ok(destiny_app::ItemInstanceId::new(&self.item))
+    }
+}
+pub fn pull_item_tool() -> Tool {
+    Tool::new(PULL_ITEM_TOOL, "Pull one genuine Postmaster equipment instance into its freshly derived owner's inventory. Requires authentication, qualified definitions and fresh capacity proof. No names, hashes, stacks, quantity or destination. One action, bounded observation; only Verified succeeds. Never blindly retry unconfirmed outcomes. Observations are not causal or atomic guarantees.", JsonObject::new())
+        .with_input_schema::<PullItemArgs>()
+        .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
+}
+
 pub const EQUIP_ITEM_TOOL: &str = "equip_item";
 
 /// Both selectors are mandatory. An invocation authorizes exactly one intent.

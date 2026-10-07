@@ -378,7 +378,29 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   tenhashes/diffguardsPASS; staged ONLY authorizedtenfiles beforeworkunitcommit.
   No nativeapproval/live-readinessclaim. Fullworkspacechecksremain010.
 
-- GPM-009d IN PROGRESS — delegated bounded MCP writer, multi-file/preparation
+- GPM-009d PAUSED / EXPORT SURFACE DECLINED. Worker
+  `muyj7we0-g-1jr6` settled interaction_required. Partial5authorizedpaths,
+  +287/-11: MCPservice/schema/server/main/bin/offline_fixture; no commit.
+  SemanticdiscoveryRED0passed/1failed101 thenGREEN1/156filtered0; triangulation
+  unfinished. Offlinefeaturestdio compilefailed E0425: facade doesnotexport
+  InstancedPullRequest; zero stdiotests executed. Remainingclosurechecks NOTRUN;
+  integration/concurrency/docs/skill incomplete. DiffcheckPASS. No unlisted/
+  dependencies/lockfile/stage/live changes. SourceHEADb003f1a unchanged.
+  Human explicitly DECLINED the single additional export surface via exactUI.
+  crates/destiny-app/src/lib.rs reexport is NOT authorized. Further009d
+  implementation STOPPED; preserve existingpartialuncommitted5filecandidate.
+  No writerresume, newdependencies, directcoreedge, revert/deletion or sourcecommit.
+  010dependentclosure paused. Resume only after a new explicitscopegrant or
+  read-only discussion of an alternative; do not inferapprovalfromcontinuation.
+  No fixture compilation/fullMCPreadiness or taskclosure claim.
+- GPM-009d RESUMED — human granted option D: ONE test-only line
+  `pub use destiny_core::InstancedPullRequest;` in
+  crates/destiny-app/src/test_support.rs (feature test-support). Production
+  lib.rs re-export stays DECLINED. Fixture names the type via
+  destiny_app::test_support. Option B (queued gateway, PostAction arrival)
+  rejected: weaker stdio targeting proof. Resume original writer
+  `muyj7we0-g-1jr6` with this single added surface.
+- GPM-009d original route — delegated bounded MCP writer, multi-file/preparation
   trigger. Reuse serveroperationmutex and productiongateway/repositoryclones;
   additive mutationwrapper, sharedmapperJSON and closedcanonicalIDonlyschema.
   Compose freshconcreteManifestqualification/pinnedpolicy, existingOAuthgateway/
