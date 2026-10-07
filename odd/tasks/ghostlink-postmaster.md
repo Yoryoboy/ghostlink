@@ -191,7 +191,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   exports, manifest.rs crate-visible index helpers plus concrete-gateway fetch.
   No core ManifestIndex/port change (avoids literal blast radius); service port
   wiring belongs to GPM-008.
-- [ ] **GPM-008 — Verified pull service.** Owned instance/stack selection,
+- [x] **GPM-008 — Verified pull service (genuine-instance scope).** Stack
+  selection is deferred to GPM-006 and is not claimed here. Owned instance/stack selection,
   membership/revision preflight, bounded quantity, conservative post-action
   evidence, no retry and provider-lag tests.
   Read-only scouts found no equipment capacity policy. Official bucket schema
@@ -266,7 +267,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   ordered observations. At most three forced PostAction acquisitions, existing
   RetryDelay pacing of two seconds only between attempts; never redispatch.
   Additive app exports only after safe execution is integrated and checked.
-- [ ] **GPM-009 — CLI/MCP pull exposure.** Parent milestone; complete only
+- [x] **GPM-009 — CLI/MCP pull exposure.** Parent milestone; complete only
   after all integration units, pipeline/stdio coverage, docs/skill and exact
   outcome/exit semantics are verified and locally committed.
 - [x] **GPM-009a — Preserve shared MCP acquisition evidence.**
@@ -306,9 +307,16 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Estimate 400–650 lines for one coherent transport feature with its tests/docs;
   never omit coverage or compress readability to meet an advisory line budget.
   Delegated bounded writer, ASSESS/verification/commit before final GPM-010.
-- [ ] **GPM-010 — Close technical verification and record live gaps.**
+- [x] **GPM-010 — Close technical verification and record live gaps.**
   Functional checks, assessment/required independent verification, commits,
   pending owner-run checks and readiness for Loadouts.
+  Closed 2026-10-07: workspace fmt/clippy (default+all-features) and tests
+  1683/1702 PASS on aca89ae; RDD review approved (review-2497a32a9f4d7e12).
+  Pending owner-run live checks (never run by the agent): `ghostlink pull ITEM`
+  and MCP `pull_item` against a real Postmaster instance, provider-lag behavior
+  across the 3 bounded re-observations, and live tool discovery from the product
+  binary. Open technical gap: GPM-006 stack/non-instanced pulls stay gated.
+  Ready for Loadouts work for genuine-instance pulls.
 
 ## Verification and delivery
 
@@ -319,7 +327,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 - Approximate 400 changed lines per unit is advisory; preserve meaningful tests
   and clarity. Split by coherent behavior, never minify or omit evidence.
 - Reviewable local work-unit commits; delivery slices determined from actual
-  diffs. Push/PR/merge remain separate user decisions. RDD switch last read off.
+  diffs. Push/PR/merge remain separate user decisions. RDD switch currently on.
 
 ## Progress and next step
 
