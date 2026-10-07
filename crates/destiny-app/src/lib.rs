@@ -20,6 +20,11 @@ pub mod auth;
 pub mod auth_ux;
 mod config;
 mod defaults;
+pub mod instanced_pull;
+pub use instanced_pull::{
+    InstancedPullPlan, InstancedPullPlanRequest, InstancedPullPlanningError, InstancedPullRefusal,
+    InstancedPullService,
+};
 pub mod lock;
 pub mod manifest;
 pub mod mutation;

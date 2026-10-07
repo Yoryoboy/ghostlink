@@ -262,6 +262,21 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
+- GPM-008d VERIFIED, awaiting local commit: forced Preflight planning from the
+  successful publication pair, exact owned Postmaster selection, version-bound
+  definition safety gates, qualified capacity and private non-Clone plan with
+  eligibility fingerprint. Worker RED missing planning API; GREEN seven tests.
+  Independent verifier PASS; 1,621 default / 1,639 all-features offline workspace
+  tests, zero failures/ignored; fmt/clippy/diff clean. ASSESS unassessable due
+  untracked files; required independent-verifier plan satisfied, RDD off.
+  User authorized removing the vacuous disconnected-fake assertion and local
+  commit. Production unchanged; no meaningful behavior RED for test deletion.
+  Final independent recheck PASS: 7 planning tests, 4 app doctests, fmt, app
+  all-target/all-feature clippy, diff and new-file whitespace. Full workspace
+  suites not repeated after test-only deletion; previous results retained.
+  Preliminary no-index diff returned 1 for file difference, no whitespace errors;
+  explicit whitespace recheck passed. Historical RED not independently observed.
+  No GPM-008e implementation, dispatch or live account operation in this closure.
 - GPM-008c COMPLETE (writer verified; ASSESS medium 3 paths/295 lines, large
   runtime writer profile, independentVerifier=false, reviewDue under_budget).
   Required ManifestGateway::fetch_equipment_capacity_evidence; adapter trait impl
