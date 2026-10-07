@@ -236,6 +236,14 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString>,
 {
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    let cli = match parse_process(args.iter().cloned()) {
+        Ok(cli) => cli,
+        Err(output) => return output,
+    };
+    if let Command::Update(arguments) = &cli.command {
+        return crate::update::production(arguments, cli.output_mode());
+    }
     let mut read_factory = crate::runtime::production_runtime_factory();
     let mut login_factory = crate::login::ProductionLoginFactory::new();
     let mut manifest =
@@ -331,6 +339,9 @@ where
         Err(output) => return output,
     };
     let mode = cli.output_mode();
+    if let Command::Update(arguments) = &cli.command {
+        return crate::update::production(arguments, mode);
+    }
     if matches!(cli.command, Command::Help | Command::Setup) {
         use crate::setup::MarkerStore;
         use std::io::IsTerminal;

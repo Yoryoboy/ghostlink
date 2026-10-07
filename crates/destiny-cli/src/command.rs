@@ -151,6 +151,7 @@ impl Cli {
             | Command::Login(_)
             | Command::Agents(_)
             | Command::Setup
+            | Command::Update(_)
             | Command::Help
             | Command::Handler(_)
             | Command::Callback(_) => {
@@ -198,6 +199,8 @@ pub enum Command {
     Help,
     /// Interactively connect agents and optionally sign in to Bungie.
     Setup,
+    /// Run the official installation's sibling updater (Linux only).
+    Update(UpdateArgs),
     /// Inspect or explicitly install integrations for supported AI agents.
     Agents(AgentsArgs),
     /// Equip one item, transferring first when needed, then refresh and verify.
@@ -273,6 +276,14 @@ pub enum Command {
     /// authorization outcome, so exit success here is delivery, not authorization.
     #[command(name = "callback", hide = true)]
     Callback(CallbackArgs),
+}
+
+/// Arguments forwarded to the official standalone updater.
+#[derive(Debug, Args)]
+pub struct UpdateArgs {
+    /// Request a specific version instead of the latest stable release.
+    #[arg(long, value_name = "VERSION")]
+    pub version: Option<String>,
 }
 
 /// How the authorization page is presented to the human.

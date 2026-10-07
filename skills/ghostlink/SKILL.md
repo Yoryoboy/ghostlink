@@ -21,6 +21,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - Flags are not listed here. Before using a command for the first time in a session, run `ghostlink <cmd> --help`.
 - Never guess an item or character. Resolve ambiguity with a read command or ask the user.
 - `ghostlink equip` is the only CLI game mutation. Run it only when the user explicitly named both the item and the character for this action.
+- `ghostlink update` is an installation mutation, not a game action or read. Run it only with explicit user intent; never automatically retry a failed or uncertain lifecycle command.
 - Never retry `equip` after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report.
 - Never try to free inventory space, unequip elsewhere, or change plugs; the CLI refuses these by design.
 - Run `ghostlink login` only when the user asks or after exit 10/11; it needs a human to authorize in a browser and waits for the callback.
@@ -45,9 +46,17 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Item names or descriptions missing, or definitions outdated | `ghostlink sync-manifest` |
 | Equip an item on a character | `ghostlink equip` |
 | Authorize this machine | `ghostlink login` |
+| Explicitly update the Ghostlink installation | `ghostlink update` |
 | Browser callback never reaches login (Linux) | `ghostlink handler status` |
 
 `--character` accepts a class name (`hunter`, `titan`, `warlock`) on most commands, but `ghostlink search-inventory --character` requires the exact numeric character ID; get it from `ghostlink list-characters` first.
+
+## Installation Update
+
+- Supported only on Linux x86_64 GNU, using the validated official sibling updater. Unsupported installations refuse mutation; use the original installation method rather than work around validation.
+- Windows returns `unsupported_operation` without launching or deferring anything. Tell the user to close Ghostlink, stop `destiny-mcp`, and run the official sibling `.\ghostlink-update.exe` from its installation directory in a separate PowerShell session.
+- Update preserves configuration, data and credentials. Restart MCP hosts afterward to load `destiny-mcp`.
+- `status: updater_completed` means only the updater completed, not that a requested version was installed; `installed_version` is null. No atomic paired update or rollback is guaranteed. After failure or an uncertain outcome, inspect the installation first; never automatically retry.
 
 ## Descriptions
 
@@ -73,7 +82,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 ## Output Contract
 
 - State facts only from command output; say when a result is empty instead of inventing items.
-- For equip, report `status`, each step, and `reason`. Exit 43 is applied but not yet visible: tell the user to check again later; it is not verified success.
+- For equip, report `status`, each step, and `reason`. Equip exit 43 is applied but not yet visible: tell the user to check again later; it is not verified success. Update exit 43 instead means `lifecycle_busy`.
 - Never echo tokens, membership IDs, or raw provider errors.
 
 ## References

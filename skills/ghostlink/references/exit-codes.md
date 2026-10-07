@@ -30,6 +30,23 @@ instruction object on stdout before waiting.) The failure object is either:
 | 50–52 | `credential_store_unavailable` / `local_storage` / `configuration_error` | Local setup problem; report to the user. |
 | 70 | `internal_error` | Report and stop. |
 
+## Update outcomes
+
+`ghostlink update` is an installation mutation requiring explicit user intent.
+Exit 0 with `status: updater_completed` means the updater completed, not that a
+requested version was installed (`installed_version` is null). Configuration,
+data and credentials are preserved; restart MCP hosts afterward. Never
+automatically retry a failed or uncertain update.
+
+| Exit | `error.code` | Agent action for update |
+|---:|---|---|
+| 2 | `invalid_request` | Check the command and requested version against `--help`. |
+| 40 | `unsupported_installation` / `updater_missing` | Report the refusal; use the original installation method or official release installer, not a substitute updater from PATH. |
+| 40 | `unsupported_operation` | Windows refuses without launching or deferring anything. Ask the user to close Ghostlink, stop `destiny-mcp`, then run the official sibling `.\ghostlink-update.exe` from its installation directory in a separate PowerShell session. Other platforms outside Linux x86_64 GNU also refuse. |
+| 41 | `updater_failed` | Files may have changed. Inspect the installation first; report and do not automatically retry. No rollback is guaranteed. |
+| 43 | `lifecycle_busy` | Wait for the other lifecycle command or inspect unsafe lock files manually; never automatically delete foreign locks. This is distinct from equip's pending-provider-refresh exit 43. |
+| 51 | `local_storage` | Check installation ownership and permissions; no automatic elevation. |
+
 ## Equip `status`
 
 | `status` | Exit | Agent action |

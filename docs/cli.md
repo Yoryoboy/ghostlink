@@ -5,6 +5,74 @@ Install the `ghostlink` executable from a release; see the
 `cargo run -p ghostlink --bin ghostlink -- <command>` (the library is still named
 `destiny_cli`). See [configuration](configuration.md) for optional overrides.
 
+## Update
+
+```sh
+ghostlink update                       # updater defaults to latest stable
+ghostlink update --version 0.1.0        # request a specific release version
+ghostlink update --json
+```
+
+**Linux x86_64 GNU only.** This command validates the official installation and
+runs its sibling `ghostlink-update` directly, never an updater found on PATH.
+It needs no Bungie configuration, login, database initialization or keyring
+access, and does not elevate privileges. Configuration, data, credentials and
+agent registrations are not removed. Restart MCP hosts afterward so they load
+the new `destiny-mcp` executable.
+
+The supported receipt is cargo-dist **0.32.0**, `cargo-home` layout: products in
+`install_prefix/bin`, exactly `ghostlink` and `destiny-mcp`, no libraries or
+aliases, and the official GitHub source `Yoryoboy/ghostlink`. The running CLI
+must agree with that root. Symlinked paths, ambiguous paths, missing siblings,
+other layouts and receipts from other providers are refused. This is a local
+ownership check, not cryptographic authentication of the updater or protection
+against another local process replacing files after validation.
+
+Receipt lookup follows axoupdater 0.10.0: a Unicode
+`AXOUPDATER_CONFIG_WORKING_DIR` variable (even empty or `0`) selects the working
+directory; otherwise `AXOUPDATER_CONFIG_PATH` selects a **directory**. Without
+these, lookup tries the existing `XDG_CONFIG_HOME/ghostlink` directory, then
+`HOME/.config/ghostlink` (OS home fallback if HOME is unset). The first existing
+`ghostlink-receipt.json` is selected; invalid receipts do not trigger fallback.
+The child is pinned to that receipt. App-name/custom-installer and installer
+URL/directory overrides are scrubbed; `AXOUPDATER_GITHUB_TOKEN` remains allowed
+and is never printed. Installer PATH modifications are disabled for this update.
+Custom receipt lookup overrides do not change where the upstream installer
+writes its new receipt; check an overridden receipt before a later update.
+
+Success means **the updater completed**, not that a particular version was
+installed: a current installation may need no change. JSON emits one result
+object with `kind: update`, `status: updater_completed`, `requested_version`
+(null for latest), and `installed_version: null`. Child stdout/stderr are drained
+concurrently with at most 4 KiB retained per stream and never echoed, including
+on failure; truncation flags appear on success. No atomic paired replacement,
+rollback or unconditional integrity verification is promised. A failed updater
+may have changed files; inspect the installation before retrying.
+
+| Exit | Code | Meaning / action |
+|---|---|---|
+| 0 | updater_completed | Restart MCP hosts; check the CLI version if needed. |
+| 2 | invalid_request | Check the command or requested version. |
+| 40 | unsupported_installation / updater_missing / unsupported_operation | Use the original installation method or official release installer. |
+| 41 | updater_failed | Check connectivity, release availability and permissions; files may have changed. |
+| 43 | lifecycle_busy | Wait for the other lifecycle command; inspect unsafe lock files manually. |
+| 51 | local_storage | Check file ownership and permissions without automatic elevation. |
+
+A persistent `.ghostlink-lifecycle.lock` in the binary directory uses a kernel
+lock to serialize lifecycle commands for that installation. Process exit releases
+the lock; the file is not automatically deleted, including foreign lock files.
+Standalone updater invocations are outside this serialization.
+
+**Windows:** `ghostlink update` returns exit 40 without starting or deferring any
+process. Close Ghostlink, stop `destiny-mcp` in MCP hosts, then run the official
+`.\ghostlink-update.exe` (optionally `--version <VERSION>`) from its installation
+directory in a separate PowerShell session. If absent, use the official Windows
+release installer; restart MCP hosts afterward.
+
+For Cargo builds, rebuild/reinstall with Cargo. For package-manager installs,
+use that manager. For manual copies, obtain an official release or installer.
+A refusal does not claim to have detected which installation method you used.
+
 ## First-run setup
 
 Run `ghostlink` in an interactive terminal for the first-run wizard, or run

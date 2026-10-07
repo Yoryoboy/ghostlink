@@ -61,6 +61,26 @@ flags to `ghostlink <cmd> --help`. `crates/destiny-cli/tests/skill_drift.rs`
 fails when the skill names a missing command or flag, or omits a public
 command, so update the skill together with any CLI surface change.
 
+## Lifecycle update tests
+
+`installation.rs` validates the narrowly supported official cargo-home receipt;
+`update.rs` invokes only its validated sibling updater. The runner routes update
+before application runtime construction. Windows returns standalone instructions,
+never a helper launch. See [update](cli.md#update) for the receipt/exit contract.
+
+```sh
+cargo test -p ghostlink --test update
+cargo test -p ghostlink --test agents --test handler_parsing
+cargo fmt --all --check
+```
+
+Update tests use isolated temporary receipts, fake product files and shell
+updaters, not installed binaries, live releases or keyrings. They exercise version
+forwarding, bounded concurrent stream draining, refusal boundaries, receipt
+lookup/child environment, lock contention and panic-on-access runtime factories.
+Linux-only execution tests do not verify Windows runtime behavior or real release
+installation. Fixture directories are retained in the OS temporary directory.
+
 ## Baseline checks
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy, build, and the all-features
