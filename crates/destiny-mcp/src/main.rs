@@ -488,6 +488,15 @@ impl<G: ProfileGateway> ProfileGateway for SharedGateway<G> {
     ) -> Result<InventorySnapshotInput, AppError> {
         self.lock()?.load_inventory_scoped(membership, reason)
     }
+
+    fn load_inventory_with_observations_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<destiny_app::ProfileAcquisition, AppError> {
+        self.lock()?
+            .load_inventory_with_observations_scoped(membership, reason)
+    }
 }
 
 /// Shares one durable projection store between the read and mutation
@@ -890,6 +899,8 @@ mod tests {
         /// default, it would call them and the reason would be silently lost.
         struct RecordingGateway {
             reasons: Arc<Mutex<Vec<ProfileSyncReason>>>,
+            acquisition: Option<destiny_app::ProfileAcquisition>,
+            acquisitions: Vec<(DestinyMembership, ProfileSyncReason)>,
         }
 
         fn membership() -> DestinyMembership {
@@ -940,14 +951,29 @@ mod tests {
                 membership: &DestinyMembership,
                 reason: ProfileSyncReason,
             ) -> Result<InventorySnapshotInput, AppError> {
+                assert!(
+                    self.acquisition.is_none(),
+                    "observation read fell back to scoped inventory"
+                );
                 self.reasons.lock().expect("reason log").push(reason);
                 Ok(inventory_input(membership))
+            }
+
+            fn load_inventory_with_observations_scoped(
+                &mut self,
+                membership: &DestinyMembership,
+                reason: ProfileSyncReason,
+            ) -> Result<destiny_app::ProfileAcquisition, AppError> {
+                self.acquisitions.push((membership.clone(), reason));
+                Ok(self.acquisition.clone().expect("queued acquisition"))
             }
         }
 
         let reasons = Arc::new(Mutex::new(Vec::new()));
         let mut gateway = SharedGateway::new(RecordingGateway {
             reasons: Arc::clone(&reasons),
+            acquisition: None,
+            acquisitions: Vec::new(),
         });
         let membership = gateway
             .resolve_membership_scoped(ProfileSyncReason::Preflight)
@@ -960,6 +986,146 @@ mod tests {
             *reasons.lock().expect("reason log"),
             [ProfileSyncReason::Preflight, ProfileSyncReason::Ordinary],
             "the wrapper must forward the exact reason to the locked inner adapter"
+        );
+
+        let available = shared_profile_acquisition();
+        let unavailable = destiny_app::ProfileAcquisition::new(available.input().clone(), None)
+            .expect("unavailable evidence remains a valid acquisition");
+        for expected in [available, unavailable] {
+            gateway.lock().unwrap().acquisition = Some(expected.clone());
+            for reason in [ProfileSyncReason::Preflight, ProfileSyncReason::PostAction] {
+                let before = gateway.lock().unwrap().acquisitions.len();
+                let actual = gateway
+                    .load_inventory_with_observations_scoped(&membership, reason)
+                    .expect("observation-aware forwarding");
+                assert_eq!(
+                    actual, expected,
+                    "the entire paired acquisition must survive"
+                );
+                let inner = gateway.lock().unwrap();
+                assert_eq!(inner.acquisitions.len(), before + 1);
+                assert_eq!(
+                    inner.acquisitions.last(),
+                    Some(&(membership.clone(), reason))
+                );
+                assert_eq!(
+                    inner.reasons.lock().unwrap().len(),
+                    2,
+                    "no resolve or scoped fallback reads"
+                );
+            }
+        }
+    }
+
+    /// Use the existing sanitized profile fixture, supplying actual buckets for
+    /// every instance without changing its inventory, owners, stacks or metadata.
+    fn shared_profile_acquisition() -> destiny_app::ProfileAcquisition {
+        fn add_buckets(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    if map.get("itemInstanceId").is_some_and(|id| id.is_string()) {
+                        map.insert("bucketHash".into(), serde_json::json!(1498876634));
+                    }
+                    for child in map.values_mut() {
+                        add_buckets(child);
+                    }
+                }
+                serde_json::Value::Array(rows) => rows.iter_mut().for_each(add_buckets),
+                _ => {}
+            }
+        }
+        let mut value: serde_json::Value = serde_json::from_str(include_str!(
+            "../../destiny-adapters/tests/fixtures/profile-complete.json"
+        ))
+        .unwrap();
+        add_buckets(&mut value);
+        let membership = destiny_app::DestinyMembership::new(
+            destiny_app::MembershipType::new(3),
+            destiny_app::MembershipId::new("4611686018484639825"),
+        )
+        .unwrap();
+        let pair = destiny_adapters::decode_profile_with_observations(
+            &serde_json::to_vec(&value).unwrap(),
+            &membership,
+            destiny_app::DefinitionVersion::new("manifest-v1"),
+            Timestamp::new(1_724_000_000),
+        )
+        .unwrap();
+        let rows = pair
+            .observations()
+            .expect("complete actual bucket evidence");
+        assert!(!rows.is_empty());
+        assert_eq!(rows.len(), pair.input().items.len());
+        assert!(
+            rows.iter()
+                .any(|row| matches!(row.location(), destiny_app::ItemLocation::Character(_)))
+        );
+        assert!(
+            rows.iter()
+                .all(|row| row.bucket_hash() == destiny_app::BucketHash::new(1498876634))
+        );
+        pair
+    }
+
+    #[test]
+    fn shared_repository_inventory_replacement_is_visible_across_clones() {
+        use destiny_app::InventoryRepository;
+        let mut writer =
+            super::SharedRepository::new(super::SqliteStore::open_in_memory().unwrap());
+        let reader = writer.clone();
+        assert!(reader.load_current().unwrap().is_none());
+        let input = shared_profile_acquisition().into_parts().0;
+        let first = writer.replace_current(input.clone()).unwrap();
+        assert_eq!(reader.load_current().unwrap(), Some(first.clone()));
+        let mut changed = input;
+        changed.items[0].locked = !changed.items[0].locked;
+        changed.checked_at = Timestamp::new(1_724_000_001);
+        let second = writer.replace_current(changed).unwrap();
+        assert_ne!(second, first);
+        assert_eq!(reader.load_current().unwrap(), Some(second));
+    }
+
+    #[test]
+    fn shared_repository_definition_publication_is_visible_across_clones() {
+        use destiny_app::*;
+        let mut writer =
+            super::SharedRepository::new(super::SqliteStore::open_in_memory().unwrap());
+        let reader = writer.clone();
+        let definition = ItemDefinition {
+            hash: ItemHash::new(1001),
+            name: "Shared equipment".into(),
+            bucket_hash: Some(BucketHash::new(1498876634)),
+            does_postmaster_pull_have_side_effects: Some(false),
+            is_instance_item: Some(true),
+            max_stack_size: Some(1),
+            stack_unique_label: Some("".into()),
+            item_type: None,
+            tier: None,
+            element: None,
+            slot: None,
+            class_type: None,
+            plug_category: None,
+            tags: Vec::new(),
+            version: DefinitionVersion::new("manifest-v1"),
+        };
+        let metadata = writer
+            .replace_definitions(DefinitionReplacementInput {
+                definitions: ManifestDefinitions {
+                    version: definition.version.clone(),
+                    definitions: vec![definition.clone()],
+                },
+                checked_at: Timestamp::new(1_724_000_000),
+                source: SourceMarker::Manifest,
+            })
+            .unwrap();
+        assert_eq!(reader.current_metadata().unwrap(), Some(metadata));
+        assert_eq!(
+            reader.current_definition_version().unwrap(),
+            definition.version
+        );
+        assert_eq!(
+            reader.lookup_definition(definition.hash).unwrap(),
+            Resolution::Unique(definition)
         );
     }
 

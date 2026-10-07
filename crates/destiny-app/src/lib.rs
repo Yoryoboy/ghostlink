@@ -86,11 +86,11 @@ pub use destiny_core::{
     ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstance, ItemInstanceId,
     ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH,
     MAX_TAG_FILTERS, MembershipId, MembershipType, MoveEffects, MoveIntentAuthorization, MovePlan,
-    MoveRequest, PerkHash, PerkSummary, PlanId, PlanIdGenerator, PlanLifetime, ProfileGateway,
-    ProfileSyncOutcome, ProfileSyncReason, QueryMetadata, RefreshGrant, RefreshToken, Resolution,
-    SearchRepository, SearchTerm, SourceMarker, StaticCredentialSource, StepAction, StepOutcome,
-    SyncMetadata, SyncRevision, Timestamp, TokenRefresh, TransferGateway, TransferOutcome,
-    TransferRejection, TransferRequest,
+    MoveRequest, PerkHash, PerkSummary, PlanId, PlanIdGenerator, PlanLifetime, ProfileAcquisition,
+    ProfileGateway, ProfileSyncOutcome, ProfileSyncReason, QueryMetadata, RefreshGrant,
+    RefreshToken, Resolution, SearchRepository, SearchTerm, SourceMarker, StaticCredentialSource,
+    StepAction, StepOutcome, SyncMetadata, SyncRevision, Timestamp, TokenRefresh, TransferGateway,
+    TransferOutcome, TransferRejection, TransferRequest,
 };
 pub use destiny_core::{
     ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, MilestoneDefinition,
