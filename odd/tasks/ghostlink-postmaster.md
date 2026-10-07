@@ -281,7 +281,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   remain with behavior, not a strict limit. Route: gentle-ai-worker, two-file
   write/preparation trigger; focused self-checks, native ASSESS and routed
   verification before a scoped local work-unit commit.
-- [ ] **GPM-009b — Shared pull result presentation (IN PROGRESS).** Use destiny-output
+- [x] **GPM-009b — Shared pull result presentation.** Use destiny-output
   architecture with src/instanced_pull.rs, lib.rs and app facade exports only as
   needed. Human approved output/Cargo.toml solely for an existing-app test-support
   dev-dependency to exercise real public service outcomes. Preserve receipt, disposition, ordered classifications AND failures,
@@ -289,7 +289,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Sanitize typed pre-dispatch/planning/gateway failures; no whole snapshot or
   credentials. Focused serialization tests; estimate 250–400 lines. Delegated
   writer for multi-file unit; ASSESS/verification/commit before CLI integration.
-- [ ] **GPM-009c — CLI genuine-instance pull.** Add ghostlink pull ITEM with
+- [ ] **GPM-009c — CLI genuine-instance pull (IN PROGRESS).** Add ghostlink pull ITEM with
   canonical positive int64 instance ID only; no names/hash/quantity/destination.
   Authenticated membership and fresh eligibility derive membership/owner.
   One invocation-owned store for sync and definitions, not two independent
@@ -324,7 +324,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 ## Progress and next step
 
 - GPM-009 mapped by read-only scout `muyfk9g9-7-zepk`; GPM-009a COMPLETE,
-  GPM-009b IN PROGRESS. 009a work-unit `66c3addde367627158e3ab7ad812c0865f114b18`
+  GPM-009b COMPLETE; GPM-009c IN PROGRESS. 009a work-unit `66c3addde367627158e3ab7ad812c0865f114b18`
   (176 source diff lines; app facade export and MCP forwarding/regressions).
   Worker `muyg1hqg-8-ov4t`: semantic RED forbidden scoped fallback, 0 passed/
   1 failed exit101 after two test compile errors corrected; minimal GREEN1.
@@ -354,8 +354,46 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Dependent crates do not inherit app cfg(test); test-support feature enables
   existing public fakes. Normal production builds do not activate this feature
   via dev-dependency; tests and explicit all-features do.
-  Resume original writer with four exact allowed paths and refreshed test-first
-  and verification contract. No semantic RED/GREEN/closure checks yet.
+  Resumed writer continuation `muyh4f74-a-iul8` COMPLETE implementation; 009b
+  COMPLETE — work-unit `7634555a44b810fc31a1d0753664de89995933a5`. Four authorized paths,
+  834 additions/1 deletion; new826-line module includes about255 production
+  lines plus real-service fixtures/tests. Retain exhaustive mappings/readability
+  and coverage despite advisory250–400 estimate; no transport/executor expansion.
+  Semantic RED: service Verified but mapper is_success false,0passed/1failed101;
+  minimumGREEN1. Compile error wrong CapacityRefusal variant corrected. Intermediate
+  refactor7passed/1failed wrong acquisition-counter expectation fixed without
+  production behavior change. Final9real-service mapper tests PASS.
+  Writer closure PASS: output9, appinstanced38, app7doctests, fmt, outputall-target/
+  all-featureclippy, MCP+ghostlinkall-target/all-featurechecks, diff. New-file
+  whitespace checked; no-index1 means expected file difference/no diagnostics.
+  Parent production/manifest readback and allfour source hashes match. Authorized
+  intent-to-add normalized newfile for ASSESS without staging candidate content.
+  ASSESSmedium4paths835lines/runtimeLarge, writerSelfVerification=true and
+  independentVerifier=false; reviewDue=true/slice_budget_reached, nativeunknown/
+  unconsumed. FreshRDDoff. Exact informational continuation relayed, not executed:
+  `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
+  Additional bounded gentle-ai-verify route selected for real-service mapping/
+  enum/privacy fidelity because full826-line test/fixture diff exceeds parent
+  evidence budget. Read-only targeted checks, no redundant full workspace run.
+  Independent verifier `muyhx369-b-5yrq` PASS: actualmapper9,app7doctests,
+  defaultproductionoutputcheck,fmt/diff; all candidate/tracker/index/Cargo.lock
+  hashes unchanged. No demonstrated blocker/evidence loss/privacy leak/base-only
+  finding. Sourceevidence confirms receipt/disposition independence, classified
+  arrival+timestampfailure, ordered/null attempts and closed sanitized categories.
+  No historical RED/fullworkspace/clippy/transport rerun by verifier; writer
+  checks above remain the record. Codegraph resolved parent/appsindex; no init/
+  parent-index reuse, scoped source inspection fallback. Not native approval.
+  Parent final reported mapper9 rerun PASS, freshRDDoff, fourhashes/exactpaths/
+  branch/HEAD/empty-content-index/diff guards PASS before staging only sources.
+  009c next: delegated CLI writer, named multi-file/preparation trigger. Exact
+  command/runner/runtime/lib,pull/pull_output and newpull_pipeline tests; cli.md,
+  ghostlink skill and exit-codes reference. Existing composition's store ownership
+  seam must be resolved locally in runtime, not independently opened pull handles
+  or broad runtime refactor. Plan/pinnedManifestqualification/execute_verified,
+  authenticated membership/fresh owner, positive canonical int64 ID only.
+  Functional parser/help/invalid selection/fake-pipeline tests and JSON/text/exit
+  semantics/docs accompany behavior. Only Verified exitzero; no actual account
+  access during development. ASSESS/routedverification before scopedlocalcommit.
   Settled map: server.rs139–146/216–242 acquires the same operation Arc inside
   direct/blocking dispatch and holds it across complete read/mutation calls.
   Existing rc002 guard-lifetime and equip serialization regressions apply.
