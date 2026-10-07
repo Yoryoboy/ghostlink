@@ -789,7 +789,7 @@ pub fn decode_activity_types(
     decode_world_reader(bytes, MAX_COMPONENT_BYTES, 1000, project_activity_type)
 }
 
-fn decode_version(value: Option<&Value>) -> Result<DefinitionVersion, AppError> {
+pub(crate) fn decode_version(value: Option<&Value>) -> Result<DefinitionVersion, AppError> {
     let raw = value
         .and_then(Value::as_str)
         .ok_or_else(provider_validation)?;
@@ -806,7 +806,10 @@ fn decode_version(value: Option<&Value>) -> Result<DefinitionVersion, AppError> 
     Ok(DefinitionVersion::new(raw))
 }
 
-fn decode_component_path(response: &Map<String, Value>, kind: &str) -> Result<String, AppError> {
+pub(crate) fn decode_component_path(
+    response: &Map<String, Value>,
+    kind: &str,
+) -> Result<String, AppError> {
     let path = response
         .get("jsonWorldComponentContentPaths")
         .and_then(Value::as_object)
@@ -1301,6 +1304,24 @@ impl<T, C> BungieManifestGateway<T, C> {
 }
 
 impl<T: ManifestTransport, C: Clock> BungieManifestGateway<T, C> {
+    /// Fetches fresh index evidence at call time, never reusing a prior index.
+    /// Uses the existing bounded read-retry policy. This establishes observed
+    /// correspondence only, not authenticity beyond the existing transport or
+    /// atomicity with a later action.
+    pub fn fetch_equipment_capacity_evidence(
+        &mut self,
+    ) -> Result<destiny_core::EquipmentCapacityEvidence, AppError> {
+        let request = ManifestHttpRequest::new(MANIFEST_ENDPOINT, Some(&self.api_key));
+        let bytes = fetch_with_retry(
+            &mut self.transport,
+            &mut self.read_retry,
+            &self.clock,
+            &request,
+            MAX_INDEX_BYTES,
+        )?;
+        crate::equipment_capacity_policy::decode_equipment_capacity_evidence(&bytes)
+    }
+
     fn load_world_table<D: WorldKind>(
         &mut self,
         path: &str,
@@ -2561,6 +2582,77 @@ mod transport_tests {
             }
         })
         .to_string()
+    }
+
+    #[test]
+    fn gateway_equipment_capacity_evidence_is_fresh_and_uses_index_request() {
+        let body = json!({"ErrorCode":1,"Response":{"version":"observed-v1",
+            "jsonWorldComponentContentPaths":{"en":{"DestinyInventoryBucketDefinition":"/common/destiny2_content/buckets.json"}}}}).to_string();
+        let changed = body.replace("observed-v1", "observed-v2");
+        let mut gateway = BungieManifestGateway::new(
+            key(),
+            FakeTransport::with(vec![
+                Ok(json_response(index_body(
+                    "/common/destiny2_content/items.json",
+                ))),
+                Ok(json_response(body)),
+                Ok(json_response(changed)),
+            ]),
+            clock(),
+        );
+        gateway.fetch_index().unwrap();
+        assert_eq!(
+            gateway
+                .fetch_equipment_capacity_evidence()
+                .unwrap()
+                .definition_version()
+                .as_str(),
+            "observed-v1"
+        );
+        assert_eq!(
+            gateway
+                .fetch_equipment_capacity_evidence()
+                .unwrap()
+                .definition_version()
+                .as_str(),
+            "observed-v2"
+        );
+        let requests = &gateway.transport().requests;
+        assert_eq!(requests.len(), 3);
+        for request in requests {
+            assert_eq!(request.url, MANIFEST_ENDPOINT);
+            assert!(request.has_api_key);
+        }
+    }
+
+    #[test]
+    fn gateway_equipment_capacity_evidence_reuses_bounded_read_retry() {
+        let body = json!({"ErrorCode":1,"Response":{"version":"v1",
+            "jsonWorldComponentContentPaths":{"en":{"DestinyInventoryBucketDefinition":"/common/destiny2_content/buckets.json"}}}}).to_string();
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(status_response(503)),
+            Ok(json_response(body.clone())),
+        ]);
+        assert!(gateway.fetch_equipment_capacity_evidence().is_ok());
+        assert_eq!(gateway.transport().requests.len(), 2);
+        assert_eq!(delay.waits(), vec![Duration::from_millis(10)]);
+        // A decodable body announced over the cap isolates cap enforcement.
+        let oversized = ManifestHttpResponse::new(
+            200,
+            Some(super::MAX_INDEX_BYTES as u64 + 1),
+            Some("application/json".into()),
+            Box::new(Cursor::new(body.into_bytes())),
+        );
+        let mut gateway =
+            BungieManifestGateway::new(key(), FakeTransport::with(vec![Ok(oversized)]), clock());
+        assert_eq!(
+            gateway
+                .fetch_equipment_capacity_evidence()
+                .unwrap_err()
+                .category(),
+            ErrorCategory::ProviderValidation
+        );
+        assert_eq!(gateway.transport().requests.len(), 1);
     }
 
     fn component_body() -> String {

@@ -6,6 +6,7 @@ pub mod clarity;
 pub mod clock;
 pub mod credential_store;
 pub mod equip;
+pub mod equipment_capacity_policy;
 pub mod instanced_pull;
 pub mod loadout;
 pub mod lock;
@@ -27,6 +28,11 @@ pub use equip::{
     BungieEquipGateway, EQUIP_ENDPOINT, EQUIP_RESPONSE_LIMIT, EquipApiKey, EquipBearerToken,
     EquipHttpRequest, EquipHttpResponse, EquipTransport, EquipTransportError, HttpEquipTransport,
     is_allowed_equip_url,
+};
+pub use equipment_capacity_policy::{
+    EquipmentCapacityQualificationError, PINNED_EQUIPMENT_BUCKET_PATH, PINNED_EQUIPMENT_CAPACITY,
+    PINNED_EQUIPMENT_CAPACITY_VERSION, decode_equipment_capacity_evidence,
+    pinned_equipment_capacity_policy, qualify_pinned_equipment_capacity,
 };
 pub use instanced_pull::{
     BungieInstancedPullGateway, HttpInstancedPullTransport, INSTANCED_PULL_ENDPOINT,

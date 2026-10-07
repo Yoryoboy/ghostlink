@@ -161,7 +161,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   crates/destiny-adapters/tests/profile_sync_journey.rs, not app/tests.
   Canonicalization/no-op metadata and changed bucket with unchanged revision need
   coverage; zero post-write unrelated load_current calls for proof. No writer yet.
-- [ ] **GPM-008b — Qualify equipment capacity policy.** Current public Manifest
+- [x] **GPM-008b — Qualify equipment capacity policy.** Current public Manifest
   index, exact supported bucket policy/provenance and definition-version binding;
   missing/changed/unqualified evidence closes the proof. User decisions
   (interactive, after scout `capacity-policy` map): pinned audited policy checked
@@ -179,9 +179,18 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Fail closed on unavailable observations, version/artifact mismatch, unsupported
   or missing destination, stacks in bucket, overflow and occupancy >= capacity.
   Not dispatch authority or freshness certification.
-- [ ] **GPM-008b2 — Pinned policy and public index qualification adapter.**
+- [x] **GPM-008b2 — Pinned policy and public index qualification adapter.**
   Audited constants (version 244213.26.06.29.2000-1-bnet.65864, bucket artifact,
   capacity 10) plus fresh public index comparison via existing Manifest gateway.
+  Parent re-audit 2026-10-07 (public unauthenticated GET): index ErrorCode 1,
+  version 244213.26.06.29.2000-1-bnet.65864, en DestinyInventoryBucketDefinition
+  path exactly `/common/destiny2_content/json/en/DestinyInventoryBucketDefinition-a8ba855a-93c7-4014-8f2e-d92357fdfb42.json`.
+  Artifact: all eight equipment buckets itemCount 10, scope 0, location 1,
+  category 3, enabled, non-redacted, non-FIFO, hasTransferDestination true.
+  Surfaces: new adapters/src/equipment_capacity_policy.rs, adapters lib.rs
+  exports, manifest.rs crate-visible index helpers plus concrete-gateway fetch.
+  No core ManifestIndex/port change (avoids literal blast radius); service port
+  wiring belongs to GPM-008.
 - [ ] **GPM-008 — Verified pull service.** Owned instance/stack selection,
   membership/revision preflight, bounded quantity, conservative post-action
   evidence, no retry and provider-lag tests.
@@ -227,6 +236,22 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
+- GPM-008b2 COMPLETE (independently verified); GPM-008b therefore complete.
+  New adapters/src/equipment_capacity_policy.rs (207 lines): audited pinned
+  constants, pinned_equipment_capacity_policy through core constructor,
+  decode_equipment_capacity_evidence (strict envelope, only en bucket path
+  required), qualify_pinned_equipment_capacity with distinct Decode/Qualification
+  errors. manifest.rs: pub(crate) helper visibility plus concrete
+  BungieManifestGateway::fetch_equipment_capacity_evidence (fresh GET, same
+  endpoint/key/cap/retry, no cache); lib.rs exports. Worker RED 26 missing-API
+  errors; GREEN 4 policy/64 manifest/519 adapters lib; 1,608 default / 1,626
+  all-features, fmt/clippy/diff pass. ASSESS unassessable (untracked) so verifier
+  ran: PASS all six points. Non-blocking finding: oversize test used an empty
+  body (confounded by JSON failure). Parent fixed it with a decodable body over
+  the announced cap; mutation check (announced length None) made it FAIL, real
+  code PASS; 519 adapters lib, fmt, adapters clippy all-features, diff clean.
+  Correspondence only; no live authenticity/dispatch claim. Next: GPM-008
+  verified pull service (map scope first).
 - GPM-008b1 COMPLETE (independently verified): EquipmentCapacityPolicy,
   EquipmentCapacityEvidence, exact-match QualifiedEquipmentCapacityPolicy,
   private EquipmentCapacityProof and typed CapacityRefusal in new
