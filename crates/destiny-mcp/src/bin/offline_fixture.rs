@@ -336,7 +336,7 @@ fn weekly_repository() -> InMemoryDefinitionRepository {
     if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("definitions-unavailable") {
         return repository;
     }
-    let version = DefinitionVersion::new(DEFINITION_VERSION);
+    let version = fixture_version();
     repository
         .publish_manifest(
             DefinitionReplacementInput {
@@ -568,7 +568,7 @@ struct WorldPullGateway {
 impl destiny_app::InstancedPullGateway for WorldPullGateway {
     fn pull(
         &mut self,
-        request: &destiny_app::InstancedPullRequest,
+        request: &destiny_app::test_support::InstancedPullRequest,
     ) -> Result<destiny_app::InstancedPullOutcome, AppError> {
         let scenario = std::env::var(SCENARIO_ENV).unwrap_or_default();
         if scenario == "pull-gateway-error" {

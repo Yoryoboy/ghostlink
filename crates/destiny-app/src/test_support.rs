@@ -15,6 +15,9 @@ use destiny_core::{
 };
 use std::collections::{HashSet, VecDeque};
 
+/// Test-support-only re-export so offline fixture binaries can fake pulls.
+pub use destiny_core::InstancedPullRequest;
+
 /// One coherent sentinel set shared by every cross-boundary leak harness.
 ///
 /// The durable SQLite bytes and sidecars, the CLI runner and its process

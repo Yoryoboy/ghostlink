@@ -297,7 +297,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   command/runner/runtime/lib, pull/pull_output and pull_pipeline tests, docs/cli
   and ghostlink skill/exit-code reference stay together. Estimate 250–450 lines;
   delegated bounded writer, pipeline/help/skill checks, ASSESS/verification/commit.
-- [ ] **GPM-009d — MCP genuine-instance pull (IN PROGRESS).** Add pull_item with closed ID-only
+- [x] **GPM-009d — MCP genuine-instance pull.** Add pull_item with closed ID-only
   schema through an additive mutation wrapper, shared output and production
   shared gateway/repository composition. Reuse existing operation guard.
   Update offline fixture observation acquisition, discovery counts/read-only
@@ -323,6 +323,14 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
+- GPM-009d COMPLETE — test_support-only InstancedPullRequest re-export (option D);
+  production lib.rs export stays declined. Worker finished pull_item parity/
+  dispatch/stdio/mutex tests, discovery counts (14 tools), fixture startup fix,
+  docs/mcp.md and skill. Independent verify PASS: fmt, clippy default/all-features,
+  workspace tests 1683 default / 1702 all-features, diff check, manifests/lockfile
+  unchanged, isError unless Verified, operation mutex reused. Known caveat: the
+  JSON schema pattern bounds 1-19 digits but not the int64 maximum; runtime
+  validation rejects overflow before any I/O (accepted). Live account check pending.
 - GPM-009c COMPLETE — `bec28a8aff9d7cb79186229474ac2a6f98f4b974`. Writer
   `muyi7tq6-c-7fxq` implementation and corrected docs verified/committed. Baseline
   6d2065ca7ce5f81b9a54ed9a38bf998f6b2892cd; ten authorized paths,1130diff lines

@@ -22,7 +22,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - Never guess an item or character. Resolve ambiguity with a read command or ask the user.
 - `ghostlink move` and `ghostlink equip` are CLI game mutations. Run them only with explicit user intent for this item and destination. Move requires exactly one explicit character or Vault destination; equip requires a character. Never select defaults.
 - `ghostlink lock` and `ghostlink unlock` require explicit user intent for this item and requested state; MCP `set_lock_state` requires the same intent. Already satisfied is a verified no-op. Vault items use one owned character for the provider call, not a destination selection.
-- `ghostlink pull` requires explicit user intent for one genuine Postmaster equipment instance ID only. Destination is its freshly observed owner, never an arbitrary character. Names, hashes, stacks and quantity are unsupported; requires login and qualified stored definitions.
+- MCP `pull_item` and fallback `ghostlink pull` require explicit user intent for one genuine Postmaster equipment instance ID only. Destination is its freshly observed owner, never an arbitrary character. Names, hashes, stacks and quantity are unsupported; requires login and qualified stored definitions.
 - Never blindly retry `pull`, `move`, `equip`, `lock` or `unlock`, including after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report. For pull, exit 43 means arrival not yet observed; application is not confirmed. For move, equip, lock and unlock, exit 43 means applied but pending provider refresh. In either case, check later, do not repeat the mutation.
 - Move already at its destination during planning is refused (exit 40), not a verified no-op. Report it without working around the refusal.
 - Never try to free inventory space, unequip elsewhere, or change plugs; the CLI refuses these by design.
@@ -39,7 +39,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Find owned items by name, type, perk, mod, stat, slot | `ghostlink search-inventory` |
 | Full detail of one owned item, including what each perk and mod does | `ghostlink inspect-item` (the `instance` ID from search hits, never the definition `hash`) |
 | Committed Postmaster instances and anonymous stacks (read only) | MCP `get_postmaster`; fallback `ghostlink postmaster` |
-| Recover one genuine Postmaster equipment instance to its owner | `ghostlink pull` (CLI only) |
+| Recover one genuine Postmaster equipment instance to its owner | MCP `pull_item`; fallback `ghostlink pull` |
 | Current subclass setup and what each equipped plug does | `ghostlink subclass` |
 | Unlockable supers, aspects, fragments | `ghostlink subclass-options` |
 | Artifact points and active perks | `ghostlink artifact` |
@@ -74,8 +74,11 @@ bucket; instances have no inferred bucket. Nullable names fall back to hashes.
 mean complete Postmaster coverage. Report committed observations, not guaranteed
 live holdings. Neither read surface pulls items.
 
-For explicit recovery intent, use `ghostlink pull 700000000000000001 --json`
-with the real `instance_id` from the instances array, never a hash or stack row.
+For explicit recovery intent, prefer MCP `pull_item` with
+`{"item":"700000000000000001"}`; fallback:
+`ghostlink pull 700000000000000001 --json`. Use the real `instance_id` from
+the instances array, never a hash or stack row. MCP accepts only this required
+string field; no destination, character, membership, quantity or other fields.
 The ID must be canonical positive int64, without leading zeros. Fresh planning
 and preflight qualify non-destructive equipment and pinned target-bucket capacity
 against a freshly fetched public Manifest index; unknown or changed evidence
@@ -87,7 +90,10 @@ arrival with a timestamp failure is not success. Refusal stays refused even if
 arrival is observed. Exit 43 for pull means not yet observed, not confirmed
 application. Caller-local serialization does not cover other processes or game
 activity, and observation is not causal or atomic proof. Anonymous stacks remain
-contract-gated, live checks are pending, and no MCP pull tool is available yet.
+contract-gated and live checks are pending. MCP uses the same shared JSON and
+marks every disposition except `verified` with `isError=true`. `not_yet_observed`
+is not confirmed application. Never retry pending, uncertain or refused outcomes
+blindly; re-read later without dispatching another action.
 
 ## Descriptions
 

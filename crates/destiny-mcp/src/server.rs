@@ -847,6 +847,72 @@ mod tests {
     }
 
     #[test]
+    fn pull_dispatch_validates_before_seam_and_holds_existing_operation_guard() {
+        use std::sync::{TryLockError, mpsc};
+        const BOUND: Duration = Duration::from_secs(5);
+        struct PausedPull {
+            entered: mpsc::Sender<String>,
+            release: mpsc::Receiver<()>,
+        }
+        impl MutationToolService for PausedPull {
+            fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+                panic!("pull must not dispatch move")
+            }
+            fn pull_item(
+                &mut self,
+                request: &crate::schema::PullItemArgs,
+            ) -> Result<destiny_output::instanced_pull::InstancedPullOutput, McpError> {
+                self.entered.send(request.item.clone()).unwrap();
+                self.release.recv_timeout(BOUND).unwrap();
+                Err(McpError::new(ErrorCategory::ProviderUnavailable))
+            }
+        }
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = Arc::new(ReadToolServer::with_mutation(
+            Box::new(RecordingService::new()),
+            Box::new(PausedPull {
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        ));
+        for item in ["0", "01", "9223372036854775808"] {
+            let result = server
+                .dispatch("pull_item", args(json!({"item":item})))
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(structured(&result)["code"], "provider_validation");
+        }
+        assert!(entered_rx.try_recv().is_err());
+        let worker_server = server.clone();
+        let worker = std::thread::spawn(move || {
+            worker_server.dispatch("pull_item", args(json!({"item":"123"})))
+        });
+        assert_eq!(entered_rx.recv_timeout(BOUND).unwrap(), "123");
+        assert!(matches!(
+            server.operation.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+        release_tx.send(()).unwrap();
+        let result = worker.join().unwrap().unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(structured(&result)["code"], "provider_unavailable");
+        assert!(entered_rx.try_recv().is_err());
+        assert!(server.operation.try_lock().is_ok());
+    }
+
+    #[test]
+    fn legacy_mutation_fake_pull_default_fails_closed_without_moving() {
+        let (server, _, mutation) = mutation_server(RecordingService::new());
+        let result = server
+            .dispatch("pull_item", args(json!({"item":"123"})))
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(structured(&result)["code"], "configuration_error");
+        assert!(mutation.recorded().is_empty());
+    }
+
+    #[test]
     fn pull_discovery_is_closed_id_only_and_mutation_only() {
         let (configured, _, _) = mutation_server(RecordingService::new());
         let tool = configured
@@ -861,6 +927,10 @@ mod tests {
         assert_eq!(schema["properties"].as_object().unwrap().len(), 1);
         let (readonly, _) = server(RecordingService::new());
         assert!(readonly.get_tool("pull_item").is_none());
+        let error = readonly
+            .dispatch("pull_item", args(json!({"item":"123"})))
+            .expect_err("read-only construction must not dispatch pulls");
+        assert_eq!(error.code.0, -32601);
     }
 
     #[test]
@@ -1346,7 +1416,8 @@ mod tests {
                 "get_subclass_options",
                 MOVE_ITEM_TOOL,
                 crate::schema::EQUIP_ITEM_TOOL,
-                crate::schema::SET_LOCK_STATE_TOOL
+                crate::schema::SET_LOCK_STATE_TOOL,
+                crate::schema::PULL_ITEM_TOOL
             ]
         );
         let tool = server

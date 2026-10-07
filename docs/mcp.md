@@ -1,6 +1,6 @@
 # Ghostlink MCP server (`destiny-mcp`)
 
-`destiny-mcp` serves bounded read tools plus three default-enabled semantic
+`destiny-mcp` serves bounded read tools plus four default-enabled semantic
 mutations over the Model Context Protocol stdio transport:
 
 ```text
@@ -17,6 +17,7 @@ weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
 equip_item        transfer if necessary, equip on an explicit character, and verify
 set_lock_state    lock or unlock one explicitly selected owned item and verify
+pull_item         pull one genuine Postmaster equipment instance to its owner
 ```
 
 Mutation is composed by default in the product binary: its profile gateway and
@@ -126,6 +127,41 @@ Postmaster coverage. Currency coverage is `not_observed`, `unavailable` or
 A failed refresh returns a sanitized categorized MCP error, never stale holdings.
 Selector, storage and provider errors retain their shared application categories.
 
+## Pull one Postmaster equipment instance
+
+With explicit user intent, call:
+
+```json
+{"name":"pull_item","arguments":{"item":"700000000000000001"}}
+```
+
+`item` is the only field, required as a canonical positive int64 string
+(1–9223372036854775807, no leading zeros). Unknown fields, numeric JSON IDs,
+names, hashes, anonymous stacks, quantity and destination are unsupported.
+Invalid input is rejected before account/service work. Use the genuine
+`instance_id` from `get_postmaster.instances`, never a synthesized stack selector.
+
+One call resolves authenticated membership, freshly derives the Postmaster owner,
+qualifies non-destructive equipment with stored definitions and a freshly fetched
+public Manifest index, and proves pinned target-bucket capacity. Unknown or changed
+evidence refuses. It shares production gateway/repository clones and the existing
+operation guard with publishing reads and sibling mutations, not a separate store.
+No inventory clearing, arbitrary destination, preview, rollback or redispatch.
+
+`structuredContent` is the same shared JSON as `ghostlink pull --json`:
+`kind: "instanced_pull"`, `disposition`, `plan_id`, `dispatch`, independent
+`receipt` and `failure`, and ordered `observations`. Each observation retains its
+classification, failure and publication/target evidence separately. There is at
+most one action and three post-action observations, two seconds between attempts.
+Only `disposition: "verified"` has `isError=false`; `not_yet_observed`, `uncertain`
+and `refused` have `isError=true`. Acknowledgement is not application proof; even
+observed arrival cannot turn a refusal or timestamp failure into success.
+
+Never blindly retry an unconfirmed outcome. Re-read state later and report receipt
+separately from arrival. Local serialization excludes neither other processes nor
+game activity; observations are not causal or atomic guarantees. Anonymous-stack
+pulls remain contract-gated, and live account validation is still pending.
+
 ## Inventory search and inspection
 
 `search_inventory` accepts top-level `perk_names` and `mod_names` arrays in
@@ -231,7 +267,12 @@ fresh preflight, the minimum transfer calls, a post-action refresh, and
 destination verification with no second call. It also proves a repeated request
 fails closed without replay, an already-satisfied destination is a verified
 no-op, a changed preflight is a typed stale failure, a refused step is an honest
-partial execution, and stdout is protocol-only with no secret sentinel present:
+partial execution, and stdout is protocol-only with no secret sentinel present.
+Pull scenarios additionally prove canonical validation, deterministic actual-bucket
+arrival, receipt/disposition separation, pending/uncertain/refused outcomes and
+failure without redispatch. The fixture's separate seeded read store is not proof
+of production repository sharing:
+
 
 ```sh
 cargo test -p destiny-mcp --all-features --test stdio

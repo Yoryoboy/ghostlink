@@ -56,6 +56,78 @@ const MOVE_ITEM_TOOL: &str = "move_item";
 mod equip_support;
 
 #[tokio::test]
+async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
+    for (scenario, disposition, receipt) in [
+        ("pull-success", "verified", "acknowledged"),
+        ("pull-pending", "not_yet_observed", "acknowledged"),
+        ("pull-uncertain", "uncertain", "uncertain"),
+        ("pull-refused-arrival", "refused", "rejected"),
+    ] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let id = session.next_id();
+        let discovery = session.request(id, "tools/list", None).await;
+        let tools = discovery["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 14);
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "pull_item")
+            .unwrap();
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        assert_eq!(tool["annotations"]["readOnlyHint"], false);
+        assert_eq!(tool["annotations"]["idempotentHint"], false);
+        for args in [
+            json!({}),
+            json!({"item":123}),
+            json!({"item":"123","quantity":1}),
+        ] {
+            let response = session.call_tool("pull_item", args).await;
+            assert_eq!(response["error"]["code"], -32602);
+        }
+        for item in ["0", "01", "+123", "123\n", "Ace", "9223372036854775808"] {
+            let response = session.call_tool("pull_item", json!({"item":item})).await;
+            assert_eq!(response["result"]["isError"], true);
+            assert_eq!(structured(&response)["code"], "provider_validation");
+        }
+        let response = session.call_tool("pull_item", json!({"item":"123"})).await;
+        let output = structured(&response);
+        assert_eq!(output["kind"], "instanced_pull");
+        assert_eq!(output["disposition"], disposition, "{scenario}: {response}");
+        assert_eq!(output["receipt"]["kind"], receipt);
+        assert_eq!(response["result"]["isError"], disposition != "verified");
+        assert_eq!(output["dispatch"]["item"]["instance_id"], "123");
+        assert_eq!(output["dispatch"]["destination"]["character_id"], "2");
+        let observations = output["observations"].as_array().unwrap();
+        let arrived = matches!(scenario, "pull-success" | "pull-refused-arrival");
+        assert_eq!(observations.len(), if arrived { 1 } else { 3 });
+        assert_eq!(
+            observations[0]["classification"],
+            if arrived {
+                "verified_arrival"
+            } else {
+                "still_in_postmaster"
+            }
+        );
+        assert_eq!(
+            observations[0]["target"]["runtime_bucket"],
+            if arrived { 1498876634 } else { 215593132 }
+        );
+        if arrived {
+            let repeated = session.call_tool("pull_item", json!({"item":"123"})).await;
+            assert_eq!(repeated["result"]["isError"], true);
+            assert_eq!(structured(&repeated)["disposition"], "refused");
+            assert!(structured(&repeated)["dispatch"].is_null());
+        }
+        session.shutdown().await;
+    }
+    let mut session = FixtureSession::spawn(Some("pull-gateway-error")).await;
+    let response = session.call_tool("pull_item", json!({"item":"123"})).await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(structured(&response)["failure"]["stage"], "gateway");
+    assert!(structured(&response)["receipt"].is_null());
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn postmaster_stdio_committed_service_journey_and_refusals() {
     for (scenario, coverage) in [
         ("postmaster-not-observed", "not_observed"),
@@ -690,7 +762,8 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             "get_subclass_options",
             MOVE_ITEM_TOOL,
             "equip_item",
-            "set_lock_state"
+            "set_lock_state",
+            "pull_item"
         ],
         "the product-equivalent server discovers all reads plus move_item and equip_item"
     );

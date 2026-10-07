@@ -370,7 +370,7 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     .with_lock(ports.2)
     .with_pull(pull);
 
-    // Every publishing read decorator and both mutations enter the same outer
+    // Every publishing read decorator and all mutations enter the same outer
     // operation boundary. Do not expose a second unguarded dispatch path for
     // these shared repositories: revision comparison alone is not exclusion.
     ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
