@@ -191,6 +191,172 @@ fn queue_preflight(s: &mut Service, input: InventorySnapshotInput, observed: boo
     s.manifest.queue_capacity_evidence(evidence());
 }
 
+fn observation_context() -> PullContext {
+    PullContext {
+        membership: membership(),
+        item: ItemInstanceId::new("1"),
+        item_hash: ItemHash::new(7),
+        owner: CharacterId::new("2"),
+        destination_bucket: BucketHash::new(BUCKET),
+        definition_version: DefinitionVersion::new("v1"),
+        revision: SyncRevision::new(1),
+    }
+}
+
+// Use the real sync/publication boundary, not a fabricated published proof.
+fn published_observation(
+    input: InventorySnapshotInput,
+    bucket: Option<i64>,
+    previous: Option<InventorySnapshotInput>,
+) -> PublishedProfileAcquisition {
+    let observations = bucket.map(|bucket| {
+        input
+            .items
+            .iter()
+            .map(|item| {
+                InstancedBucketObservation::new(
+                    item.instance_id.clone(),
+                    BucketHash::new(bucket),
+                    item.location.clone(),
+                )
+                .unwrap()
+            })
+            .collect()
+    });
+    let mut gateway = QueuedProfileGateway::new();
+    gateway.queue_membership(Ok(DestinyMembership::new(
+        input.membership_type,
+        input.membership_id.clone(),
+    )
+    .unwrap()));
+    gateway.queue_acquisition(Ok(ProfileAcquisition::new(input, observations).unwrap()));
+    let mut repository = InMemoryInventoryRepository::new();
+    if let Some(previous) = previous {
+        repository.replace_current(previous).unwrap();
+    }
+    let mut sync = ProfileSyncService::new(gateway, repository);
+    let result = sync
+        .sync_with_observations(
+            ProfileSyncReason::PostAction,
+            FreshnessPolicy { ttl_seconds: 60 },
+            Timestamp::new(110),
+        )
+        .unwrap();
+    assert_eq!(sync.gateway_mut().observed_acquisition_calls(), 1);
+    assert_eq!(
+        sync.gateway_mut().requested_reasons(),
+        &[ProfileSyncReason::PostAction]
+    );
+    match result {
+        ProfileSyncWithObservationsOutcome::Refreshed(pair) => pair,
+        ProfileSyncWithObservationsOutcome::SkippedFresh { .. } => panic!("forced observation"),
+    }
+}
+
+#[test]
+fn arrival_requires_exact_published_identity_owner_and_actual_bucket() {
+    let mut arrived = input();
+    arrived.items[0].location = ItemLocation::Character(CharacterId::new("2"));
+    let pair = published_observation(arrived, Some(BUCKET), None);
+    let metadata = pair.snapshot().metadata.clone();
+    let target = pair.snapshot().items[0].clone();
+    let observations = pair.observations().unwrap().to_vec();
+    let evidence = classify_pull_observation(&observation_context(), pair);
+    assert_eq!(evidence.classification, PullArrival::VerifiedArrival);
+    assert_eq!(evidence.metadata, metadata);
+    assert_eq!(evidence.target, Some(target));
+    assert_eq!(evidence.observations, Some(observations));
+}
+
+#[test]
+fn arrival_revision_is_neither_a_requirement_nor_causal_proof() {
+    let mut arrived = input();
+    arrived.items[0].location = ItemLocation::Character(CharacterId::new("2"));
+    for previous in [arrived.clone(), input()] {
+        let pair = published_observation(arrived.clone(), Some(BUCKET), Some(previous.clone()));
+        let revision = pair.snapshot().metadata.revision;
+        assert_eq!(
+            revision,
+            SyncRevision::new(if previous == arrived { 1 } else { 2 })
+        );
+        let evidence = classify_pull_observation(&observation_context(), pair);
+        assert_eq!(evidence.classification, PullArrival::VerifiedArrival);
+        assert_eq!(evidence.metadata.revision, revision);
+    }
+    for previous in [input(), arrived] {
+        let pair = published_observation(input(), Some(215593132), Some(previous));
+        assert_eq!(
+            classify_pull_observation(&observation_context(), pair).classification,
+            PullArrival::StillInPostmaster
+        );
+    }
+}
+
+#[test]
+fn non_arrivals_preserve_publication_and_observed_target_facts() {
+    let mut arrived = input();
+    arrived.items[0].location = ItemLocation::Character(CharacterId::new("2"));
+    let mut wrong_owner = arrived.clone();
+    let mut second_character = wrong_owner.characters[0].clone();
+    second_character.id = CharacterId::new("3");
+    wrong_owner.characters.push(second_character);
+    wrong_owner.items[0].location = ItemLocation::Character(CharacterId::new("3"));
+    let mut vault = arrived.clone();
+    vault.items[0].location = ItemLocation::Vault;
+    let mut other = arrived.clone();
+    other.items[0].location = ItemLocation::other("unknown-runtime-location");
+    let mut missing = arrived.clone();
+    missing.items.clear();
+    let mut unrelated = arrived.clone();
+    unrelated.items[0].instance_id = ItemInstanceId::new("9");
+    let mut membership_id = arrived.clone();
+    membership_id.membership_id = MembershipId::new("456");
+    let mut membership_type = arrived.clone();
+    membership_type.membership_type = MembershipType::new(2);
+    let mut hash = arrived.clone();
+    hash.items[0].item_hash = ItemHash::new(8);
+    let mut version = arrived.clone();
+    version.definition_version = DefinitionVersion::new("v2");
+    for (input, bucket, expected) in [
+        (input(), Some(215593132), PullArrival::StillInPostmaster),
+        (wrong_owner, Some(BUCKET), PullArrival::WrongCharacterOwner),
+        (
+            arrived.clone(),
+            Some(215593132),
+            PullArrival::WrongActualBucket,
+        ),
+        (vault, Some(BUCKET), PullArrival::Elsewhere),
+        (other, Some(BUCKET), PullArrival::UnknownLocation),
+        (missing.clone(), Some(BUCKET), PullArrival::TargetMissing),
+        (missing, None, PullArrival::TargetMissing),
+        (unrelated, Some(BUCKET), PullArrival::TargetMissing),
+        (arrived.clone(), None, PullArrival::ObservationsUnavailable),
+        (membership_id, Some(BUCKET), PullArrival::MembershipMismatch),
+        (
+            membership_type,
+            Some(BUCKET),
+            PullArrival::MembershipMismatch,
+        ),
+        (hash, Some(BUCKET), PullArrival::HashDrift),
+        (version, Some(BUCKET), PullArrival::DefinitionVersionDrift),
+    ] {
+        let pair = published_observation(input, bucket, None);
+        let metadata = pair.snapshot().metadata.clone();
+        let target = pair
+            .snapshot()
+            .items
+            .iter()
+            .find(|item| item.instance_id == observation_context().item)
+            .cloned();
+        let observations = pair.observations().map(<[_]>::to_vec);
+        let evidence = classify_pull_observation(&observation_context(), pair);
+        assert_eq!(evidence.classification, expected);
+        assert_eq!(evidence.metadata, metadata);
+        assert_eq!(evidence.target, target);
+        assert_eq!(evidence.observations, observations);
+    }
+}
+
 // These wrappers are installed only after planning and queueing valid renewed
 // evidence. Their counters therefore describe execution, not planning reads.
 #[derive(Default)]

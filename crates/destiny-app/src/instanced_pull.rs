@@ -5,10 +5,11 @@ use crate::{ProfileSyncService, ProfileSyncWithObservationsOutcome, PublishedPro
 use destiny_core::{
     AppError, BucketHash, CapacityRefusal, CharacterId, Clock, DefinitionRepository,
     DefinitionVersion, DestinyMembership, EquipmentCapacityEvidence, EquipmentCapacityPolicy,
-    ErrorCategory, FreshnessPolicy, InstancedPullGateway, InstancedPullOutcome,
-    InstancedPullRequest, InventoryRepository, InventorySnapshotInput, ItemHash, ItemInstanceId,
-    ItemLocation, ManifestGateway, PlanId, PlanIdGenerator, PlanLifetime, ProfileAcquisition,
-    ProfileGateway, ProfileSyncReason, Resolution, SyncRevision, Timestamp,
+    ErrorCategory, FreshnessPolicy, InstancedBucketObservation, InstancedPullGateway,
+    InstancedPullOutcome, InstancedPullRequest, InventoryRepository, InventorySnapshotInput,
+    ItemHash, ItemInstance, ItemInstanceId, ItemLocation, ManifestGateway, PlanId, PlanIdGenerator,
+    PlanLifetime, ProfileAcquisition, ProfileGateway, ProfileSyncReason, Resolution,
+    SnapshotMetadata, SyncRevision, Timestamp,
 };
 
 /// Select one genuine instance. Destination is its freshly observed Postmaster owner.
@@ -163,6 +164,95 @@ struct PullContext {
     definition_version: DefinitionVersion,
     revision: SyncRevision,
 }
+// GPM-008f2 will retain these observations separately from gateway receipts.
+// VerifiedArrival describes a published observation, never causal application.
+#[allow(dead_code)] // Private classifier result until the bounded executor uses it.
+#[derive(Debug, Eq, PartialEq)]
+enum PullArrival {
+    VerifiedArrival,
+    MembershipMismatch,
+    DefinitionVersionDrift,
+    TargetMissing,
+    HashDrift,
+    ObservationsUnavailable,
+    StillInPostmaster,
+    WrongCharacterOwner,
+    WrongActualBucket,
+    Elsewhere,
+    UnknownLocation,
+}
+
+#[allow(dead_code)] // Private evidence seam for GPM-008f2, not dispatch authority.
+#[derive(Debug, Eq, PartialEq)]
+struct PullObservation {
+    metadata: SnapshotMetadata,
+    // None means absent: do not forge observed identity from planned identity.
+    target: Option<ItemInstance>,
+    // Retain the complete actual-bucket evidence, including explicit unavailable.
+    observations: Option<Vec<InstancedBucketObservation>>,
+    classification: PullArrival,
+}
+
+/// Pure classification of the exact successfully published acquisition pair.
+/// PublishedProfileAcquisition guarantees unique IDs and complete, corresponding
+/// observations when available; no reload, definition lookup or capacity reproof.
+/// Revision equality is deliberately irrelevant. Caller serialization is still
+/// required: this observation does not protect against later publications or
+/// external game activity. Receipt refusal resolution belongs to GPM-008f2.
+#[allow(dead_code)] // Internal future executor seam; intentionally not exported.
+fn classify_pull_observation(
+    context: &PullContext,
+    pair: PublishedProfileAcquisition,
+) -> PullObservation {
+    let (snapshot, observations) = pair.into_parts();
+    let target = snapshot
+        .items
+        .into_iter()
+        .find(|item| item.instance_id == context.item);
+    let classification = (|| {
+        if snapshot.metadata.membership_id != *context.membership.membership_id()
+            || snapshot.metadata.membership_type != context.membership.membership_type()
+        {
+            return PullArrival::MembershipMismatch;
+        }
+        if snapshot.metadata.definition_version != context.definition_version {
+            return PullArrival::DefinitionVersionDrift;
+        }
+        let Some(target) = &target else {
+            return PullArrival::TargetMissing;
+        };
+        if target.item_hash != context.item_hash {
+            return PullArrival::HashDrift;
+        }
+        let Some(observations) = &observations else {
+            return PullArrival::ObservationsUnavailable;
+        };
+        let bucket = observations
+            .iter()
+            .find(|row| row.instance_id() == &target.instance_id)
+            .expect("published available observations cover every unique instance")
+            .bucket_hash();
+        match &target.location {
+            ItemLocation::Character(owner) if owner != &context.owner => {
+                PullArrival::WrongCharacterOwner
+            }
+            ItemLocation::Character(_) if bucket != context.destination_bucket => {
+                PullArrival::WrongActualBucket
+            }
+            ItemLocation::Character(_) => PullArrival::VerifiedArrival,
+            ItemLocation::Postmaster(_) => PullArrival::StillInPostmaster,
+            ItemLocation::Vault => PullArrival::Elsewhere,
+            ItemLocation::Other(_) => PullArrival::UnknownLocation,
+        }
+    })();
+    PullObservation {
+        metadata: snapshot.metadata,
+        target,
+        observations,
+        classification,
+    }
+}
+
 struct Eligibility {
     context: PullContext,
     fingerprint: EligibilityFingerprint,
