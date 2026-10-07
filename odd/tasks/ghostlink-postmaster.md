@@ -289,7 +289,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Sanitize typed pre-dispatch/planning/gateway failures; no whole snapshot or
   credentials. Focused serialization tests; estimate 250–400 lines. Delegated
   writer for multi-file unit; ASSESS/verification/commit before CLI integration.
-- [ ] **GPM-009c — CLI genuine-instance pull (IN PROGRESS).** Add ghostlink pull ITEM with
+- [x] **GPM-009c — CLI genuine-instance pull.** Add ghostlink pull ITEM with
   canonical positive int64 instance ID only; no names/hash/quantity/destination.
   Authenticated membership and fresh eligibility derive membership/owner.
   One invocation-owned store for sync and definitions, not two independent
@@ -297,7 +297,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   command/runner/runtime/lib, pull/pull_output and pull_pipeline tests, docs/cli
   and ghostlink skill/exit-code reference stay together. Estimate 250–450 lines;
   delegated bounded writer, pipeline/help/skill checks, ASSESS/verification/commit.
-- [ ] **GPM-009d — MCP genuine-instance pull.** Add pull_item with closed ID-only
+- [ ] **GPM-009d — MCP genuine-instance pull (IN PROGRESS).** Add pull_item with closed ID-only
   schema through an additive mutation wrapper, shared output and production
   shared gateway/repository composition. Reuse existing operation guard.
   Update offline fixture observation acquisition, discovery counts/read-only
@@ -323,8 +323,79 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
+- GPM-009c COMPLETE — `bec28a8aff9d7cb79186229474ac2a6f98f4b974`. Writer
+  `muyi7tq6-c-7fxq` implementation and corrected docs verified/committed. Baseline
+  6d2065ca7ce5f81b9a54ed9a38bf998f6b2892cd; ten authorized paths,1130diff lines
+  (1120additions/10deletions), including602pipeline-test lines. Natural overage
+  preserves readable actual pipeline coverage and SQLiteownership proof, not
+  expanded product scope. Three newfiles intent-to-add normalized for ASSESS.
+  CLI pull accepts canonicalpositiveint64 itemIDonly; invalidinput beforeauth/
+  service/action. Runtime privatehandles share one invocationSQLiteconnection
+  for sync/definitions; fresh concreteManifest qualification, authenticated
+  membership, existingOAuthpullgateway/delay and consumedplan execute_verified.
+  OnlyVerifiedexit0; sharedmapperJSON and ordered sanitizedtext retained.
+  Writer actualparserRED0pass/1fail101,minGREEN1,alternate8then10. Two wrong
+  testaccessors caused intermediatecompilefailure, fixed; fmt1corrected.
+  FinalPASS: pipeline10,skill5,CLI253across20suites,output9,app38,root/pullhelp,
+  fmt,CLIall-target/all-featureclippy,diff/newfilewhitespace. No unresolved
+  writerblocker, dependency/lockfile/unlisted/MCP/livechanges.
+  Parent pull+pull_outputreadback, exactpathset/HEAD/RDDoff/hashreadback done.
+  ASSESSmediumruntimeLarge10paths1130lines,selfverificationstands,
+  independentVerifier=false,reviewDue=true/slice_budget_reached,nativeunknown/
+  unconsumed. Exactinformationalcontinuationrelayednotexecuted:
+  `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
+  Additional bounded gentle-ai-verify route for concrete runtime/store lifetime,
+  freshqualification, exits/privacy and actual pipeline; full diff exceedsparent
+  evidencebudget and publicaction composition needs independentreadback.
+  Interim verifier `muyiqz09-d-izl0`: pipeline10,skill5,help/fmt/diff PASS;
+  pull_repository filter0NOTcoverage, actualruntimeSQLitevisibility1PASS after
+  correcttestselection. Concrete runtimecomposition appears sound. Candidate
+  documentationfinding SKILL.md26 adds pull to unqualified exit43='applied but
+  pending provider refresh', contradicting pullNotYetObserved43 and section87.
+  This can cause false confirmed-application claims. Parentspotreadconfirmed.
+  Settled verifier `muyiqz09-d-izl0` BLOCKED P2/medium documentation-only
+  contradiction. Seven authorized checks PASS,16 actualtests (pipeline10,
+  skill5,actualstorevisibility1); zero filter excluded from coverage. Finalten
+  candidatehashes,Cargo.lock,index,HEAD/branch andintentflags unchanged before
+  declaredparenttrackerwrite; authorizedbookkeeping does not invalidate proof.
+  Route: resume originalwriter for ONLY SKILL.md no-blindretry/exit43rule.
+  Explicitly separate pull43 (NotYetObserved, no confirmedapplication) from
+  existingothermutation applied-pending semantics. Preserve runtime/JSON/exits/
+  otherdocs; passiveprose has no meaningful behavioralRED. Focusedskill5 and
+  pipeline10checks/diff plus exactnineothercandidatehashes unchanged required;
+  Correction continuation `muyizjtn-e-gec0` COMPLETE, soleSKILL.md26phrase
+  explicitpull43arrivalunobserved/applicationnotconfirmed vsotheractionsemantics.
+  OrdinarypassiveprosechecksPASS skill5/pipeline10/diff, no fabricatedRED.
+  Nineothercandidatehashes,index,Cargo.lock,tracker,HEAD/branch unchanged;
+  newSKILLSHA38ac6eacd9a4ccdd553fbb58f4d8da2eaafd94f577cd55ae01a286dea9fc521a.
+  ParentcorrectedrulereadbackPASS; freshASSESSmediumLarge,selfverificationstands
+  (11paths1173linesincludingtracker),nativeunknown/unconsumed,RDDoff,
+  reviewDue=slice_budget_reached; sameexactcontinuationrelayednotexecuted.
+  Independent finalrecheck `muyj360l-f-c86j` PASS, previousP2resolved; skill5/
+  diffPASS, correctedskill/nineotherhashes/index/lock/tracker/status/HEAD/branch/
+  intentflags unchanged. Runtimechecks not rerun after prose-only correction.
+  Parentfinalskill5PASS, freshRDDoff, branch/HEAD/emptycontentindex/exact10paths/
+  tenhashes/diffguardsPASS; staged ONLY authorizedtenfiles beforeworkunitcommit.
+  No nativeapproval/live-readinessclaim. Fullworkspacechecksremain010.
+
+- GPM-009d IN PROGRESS — delegated bounded MCP writer, multi-file/preparation
+  trigger. Reuse serveroperationmutex and productiongateway/repositoryclones;
+  additive mutationwrapper, sharedmapperJSON and closedcanonicalIDonlyschema.
+  Compose freshconcreteManifestqualification/pinnedpolicy, existingOAuthgateway/
+  delay; no independentpullstore or newlock. Offlinefixture mustforward actual
+  acquisitions and expose deterministic arrival for stdio proof, not infer
+  productionvisibilityfromfixture'sseparatelyseededstores. Mutationfake defaults/
+  forwarding/read-only discoveryexclusions/counts preserved. Ordered failures
+  andreceipt/disposition separate; isErrortrue unlessVerified.
+  Exactderivedsurfaces: MCPsrc service/schema/server/main/lib, bin/offline_fixture,
+  tests/pull.rs/tests/stdio.rs,docs/mcp.md,ghostlinkSKILL. Behavior/tests/docs stay
+  together; estimated400–650linesadvisory, preserve coverage/readability and report
+  naturaloverage. Test-first functionalschema/dispatch/oneaction/stdio/serialization
+  checks, nativeASSESS/routedverification and scopedlocalcommit before010.
+  No live/account/publishing authorization; anonymousstacks006remain gated.
+
 - GPM-009 mapped by read-only scout `muyfk9g9-7-zepk`; GPM-009a COMPLETE,
-  GPM-009b COMPLETE; GPM-009c IN PROGRESS. 009a work-unit `66c3addde367627158e3ab7ad812c0865f114b18`
+  GPM-009b/009c COMPLETE; GPM-009d IN PROGRESS. 009a work-unit `66c3addde367627158e3ab7ad812c0865f114b18`
   (176 source diff lines; app facade export and MCP forwarding/regressions).
   Worker `muyg1hqg-8-ov4t`: semantic RED forbidden scoped fallback, 0 passed/
   1 failed exit101 after two test compile errors corrected; minimal GREEN1.
