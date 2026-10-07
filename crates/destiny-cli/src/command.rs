@@ -152,6 +152,7 @@ impl Cli {
             | Command::Agents(_)
             | Command::Setup
             | Command::Update(_)
+            | Command::Uninstall(_)
             | Command::Help
             | Command::Handler(_)
             | Command::Callback(_) => {
@@ -201,6 +202,8 @@ pub enum Command {
     Setup,
     /// Run the official installation's sibling updater (Linux only).
     Update(UpdateArgs),
+    /// Preview or remove a validated official installation, preserving user state.
+    Uninstall(UninstallArgs),
     /// Inspect or explicitly install integrations for supported AI agents.
     Agents(AgentsArgs),
     /// Equip one item, transferring first when needed, then refresh and verify.
@@ -276,6 +279,17 @@ pub enum Command {
     /// authorization outcome, so exit success here is delivery, not authorization.
     #[command(name = "callback", hide = true)]
     Callback(CallbackArgs),
+}
+
+/// Explicit installation removal authorization; user data is never purged.
+#[derive(Debug, Args)]
+pub struct UninstallArgs {
+    /// Preview only: no locks, temporary files, or directories are created.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Authorize the previewed cleanup without an interactive prompt.
+    #[arg(long)]
+    pub yes: bool,
 }
 
 /// Arguments forwarded to the official standalone updater.

@@ -73,6 +73,72 @@ For Cargo builds, rebuild/reinstall with Cargo. For package-manager installs,
 use that manager. For manual copies, obtain an official release or installer.
 A refusal does not claim to have detected which installation method you used.
 
+## Uninstall
+
+```sh
+ghostlink uninstall --dry-run        # read-only preview; creates no lock/temp files
+ghostlink uninstall                  # full preview, then default-no TTY confirmation
+ghostlink uninstall --yes --json     # explicit authorization; never prompts
+```
+
+**Linux x86_64 GNU only; no purge.** Stop MCP hosts and finish active login
+first. The command does not prove processes are inactive, terminate them, elevate,
+load Bungie configuration/dotenv, initialize SQLite or access the keyring.
+Windows refuses before lookup or launch: close Ghostlink, stop MCP hosts and active
+login, then use the original package manager or inspect the official receipt and
+remove only owned binaries/receipt from a separate PowerShell session. Remove
+verified integrations manually and preserve configuration, databases and credentials.
+Other platforms also refuse safely. Source/manual/unknown receipts require the
+original installation method, not an arbitrary target directory.
+
+Uninstall uses the same receipt lookup and product ownership validation as update,
+but a missing updater is optional. An unsafe optional updater is preserved and
+reported. Only exact known regular files are removed: `destiny-mcp`, optional
+`ghostlink-update`, the receipt, and finally `ghostlink`. Shared installation/Cargo
+directories and PATH/shell configuration are never recursively removed or edited.
+The lifecycle lock is acquired **after consent**, then installation identities and
+integration snapshots are rechecked. Execution cannot expand the previewed scope;
+files/symlinks are rechecked before each removal. The lock file remains deliberately:
+unlinking a live lock inode could split serialization between processes.
+
+Scoped integrations are previewed first. Exact bundled skill content is eligible
+for cleanup, but content identity is **not installation provenance**; older,
+modified or unknown copies, symlinks and backups remain. Only an OpenCode local
+MCP entry whose command is exactly this installation's absolute `destiny-mcp`
+path can be edited. Name-only Claude/Codex/Pi registrations always need manual
+inspection and removal; these followups alone are not filesystem failures.
+URI cleanup requires exact desktop ownership, preserves shared MIME files and
+foreign choices, and clears an active Ghostlink selection before deleting its
+entry. Unsafe/ambiguous handler skips or handler errors conservatively retain all
+binaries and receipt. Agent filesystem failures or changed snapshots also retain
+binaries/receipt. Individual completed removals/edits are **not transactional**;
+there is no rollback (including for a failure in the final receipt/CLI pair).
+
+Configuration, databases, credentials, runtime sockets, unknown files, backups,
+external overrides and custom paths remain untouched. Reports list default
+`HOME/.config/ghostlink` and `HOME/.local/share/ghostlink` locations; actual custom
+config/data/runtime paths are not resolved because config is never loaded. XDG
+locations remain preserved except exact previewed integration files. A completed
+binary uninstall does **not** mean all integrations are gone.
+
+JSON emits one result object on stdout for exit 0, or one object on stderr for
+nonzero exits. Preview/result fields include `kind: uninstall`, `status`,
+`planned_removals`, `removed`, `changed`, `agents` (per-path outcomes), `skipped`,
+`handler_actions`, `handler_skips`, `errors`, `manual_followups`, `preserved` and
+`preserved_state`; agent execution also includes `retained_temps`. Partial results
+include both the report and `error` in that **same object**, never a second object.
+Human output renders the complete structured preview/report. JSON or non-TTY
+mutation without `--yes` is refused without prompting; `--dry-run` needs no consent.
+
+| Exit | Code / status | Meaning |
+|---:|---|---|
+| 0 | preview / cancelled / removed_with_manual_followups | Read-only preview, no-consent cancellation, or completed known-file removal; inspect manual followups. |
+| 2 | invalid_request / confirmation_required | Invalid syntax (purge is not accepted), or use `--yes` after preview. |
+| 40 | unsupported_installation / unsupported_operation | Ownership/layout or platform refused; no cleanup performed. |
+| 41 | partial_failure | Snapshot change, unsafe handler skip, or cleanup failure; inspect per-path outcomes, do not blindly retry. Lock metadata may exist even when cleanup did not start. |
+| 43 | lifecycle_busy | Concurrent lifecycle command or unsafe lock; never automatically unlink it. |
+| 51 | local_storage | Preview/local access failed; no elevation. |
+
 ## First-run setup
 
 Run `ghostlink` in an interactive terminal for the first-run wizard, or run

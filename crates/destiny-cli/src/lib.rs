@@ -23,6 +23,7 @@ pub mod output;
 pub mod runner;
 pub mod runtime;
 pub mod setup;
+pub mod uninstall;
 pub mod update;
 
 pub use command::{

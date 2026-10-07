@@ -21,7 +21,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - Flags are not listed here. Before using a command for the first time in a session, run `ghostlink <cmd> --help`.
 - Never guess an item or character. Resolve ambiguity with a read command or ask the user.
 - `ghostlink equip` is the only CLI game mutation. Run it only when the user explicitly named both the item and the character for this action.
-- `ghostlink update` is an installation mutation, not a game action or read. Run it only with explicit user intent; never automatically retry a failed or uncertain lifecycle command.
+- `ghostlink update` and `ghostlink uninstall` are installation mutations, not game actions or reads. Run them only with explicit user intent; never automatically retry a failed or uncertain lifecycle command.
 - Never retry `equip` after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report.
 - Never try to free inventory space, unequip elsewhere, or change plugs; the CLI refuses these by design.
 - Run `ghostlink login` only when the user asks or after exit 10/11; it needs a human to authorize in a browser and waits for the callback.
@@ -47,6 +47,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Equip an item on a character | `ghostlink equip` |
 | Authorize this machine | `ghostlink login` |
 | Explicitly update the Ghostlink installation | `ghostlink update` |
+| Explicitly remove the Ghostlink installation, preserving user state | `ghostlink uninstall` |
 | Browser callback never reaches login (Linux) | `ghostlink handler status` |
 
 `--character` accepts a class name (`hunter`, `titan`, `warlock`) on most commands, but `ghostlink search-inventory --character` requires the exact numeric character ID; get it from `ghostlink list-characters` first.
@@ -57,6 +58,14 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - Windows returns `unsupported_operation` without launching or deferring anything. Tell the user to close Ghostlink, stop `destiny-mcp`, and run the official sibling `.\ghostlink-update.exe` from its installation directory in a separate PowerShell session.
 - Update preserves configuration, data and credentials. Restart MCP hosts afterward to load `destiny-mcp`.
 - `status: updater_completed` means only the updater completed, not that a requested version was installed; `installed_version` is null. No atomic paired update or rollback is guaranteed. After failure or an uncertain outcome, inspect the installation first; never automatically retry.
+
+## Installation Uninstall
+
+- Preview with `ghostlink uninstall --dry-run --json`; it is strictly read-only, including no lock creation. Mutation in JSON requires `ghostlink uninstall --yes --json`, only after explicit user authorization. No purge is supported.
+- Linux x86_64 GNU official receipt-owned installations only. Missing updater is optional; source/manual/unknown installations refuse. Windows refuses before lookup/spawn: ask the user to stop MCP hosts and active login, close Ghostlink, then inspect the receipt and remove only owned files/integrations from a separate PowerShell session (or use the original package manager).
+- Preserve all configuration, databases, credentials, runtime state, external/custom paths, unknown files/backups, Cargo directories and PATH/shell config. Config is never loaded to resolve overrides. Stop MCP hosts and active login first; no process inactivity guarantee or termination.
+- Exact bundled skill identity is not installation provenance. Modified/older skills remain. Only exact installation-owned OpenCode commands and proven URI entries are eligible; name-only Claude/Codex/Pi registrations always require manual followup. Unsafe handler cleanup retains binaries/receipt.
+- Exit 0 can mean preview, cancelled, or removed_with_manual_followups, never unconditional removal of all integrations. Exit 41 partial_failure is one stderr JSON object containing both error and report, including completed/remaining per-path outcomes. Individual changes are not transactional; no rollback. Lock metadata remains intentionally. Report manual followups and preserved locations; never blindly retry.
 
 ## Descriptions
 

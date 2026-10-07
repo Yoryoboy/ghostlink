@@ -32,6 +32,14 @@ sibling updater. Restart MCP hosts afterward. On Windows, close Ghostlink and
 stop its MCP server first, then run `.\ghostlink-update.exe` from the installation
 directory in a separate PowerShell session. See [update limitations](docs/cli.md#update).
 
+To remove a validated official Linux installation, stop MCP hosts and active login,
+then preview with `ghostlink uninstall --dry-run`. Run `ghostlink uninstall` for
+full preview and default-no confirmation, or explicitly authorize with `--yes`.
+Configuration, databases, credentials and unknown files remain; there is no purge.
+Some integrations require manual followup, and partial cleanup is not rolled back.
+Windows self-uninstall safely refuses and provides manual guidance.
+See [uninstall safety and outcomes](docs/cli.md#uninstall).
+
 No Bungie developer account or config file is needed for the official release.
 Linux needs a running Secret Service keyring (GNOME Keyring or KWallet with
 Secret Service enabled) and `libdbus-1`, normally present on desktop distros.
