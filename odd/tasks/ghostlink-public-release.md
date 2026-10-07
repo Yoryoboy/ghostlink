@@ -279,6 +279,15 @@ cargo-dist handling of the libdbus runtime dependency.
     installers on Linux and Windows via versioned URLs, wizard and MCP reads
     from installed binaries, then `0.1.0` stable. On hold while the owner
     finishes parallel work to include in the release.
+  - Pending (release session), lifecycle commands (see
+    `odd/tasks/ghostlink-lifecycle.md` T7), in a disposable Linux container or
+    VM, never on the owner's machine: install `rc.1` with the official
+    installer; `ghostlink uninstall --dry-run` (no writes), cancelled
+    confirmation, then `ghostlink uninstall --yes` removing only receipt-owned
+    files while config, database and credentials remain; reinstall. Update
+    needs two releases: install `rc.1`, publish `rc.2`, run `ghostlink update`
+    and `ghostlink update --version`, then restart MCP and check the installed
+    version. Windows: confirm both commands refuse with manual guidance.
 
 ## Follow-ups (out of scope)
 - Windows `ghostlink://` handler (next feature, developed on Windows).

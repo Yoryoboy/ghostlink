@@ -57,7 +57,7 @@ Expose `ghostlink update` followed by `ghostlink uninstall` as safe installation
   - Commit order: agent cleanup (T2), URI handler cleanup (T3), Linux update (T1, shared installation validation without uninstall-only code), conservative uninstall (T4), then this tracker.
   - Each commit carries its own tests/docs; final committed tree must equal the verified working tree.
   - Each intermediate commit passes bounded cargo check plus its focused tests and skill_drift.
-- [ ] T7 — Verify the official installer end to end in a disposable Linux environment (user-assisted; after T6).
+- [ ] T7 — Verify the official installer end to end in a disposable Linux environment (user-assisted; after T6). Deferred to the pre-release session: no release exists yet, and the owner continues other work first. Recorded under PR-011 pending items in `odd/tasks/ghostlink-public-release.md`.
 
 ## Progress and evidence
 - Exploration complete; Linux-first decision recorded. Feature branch: feature/lifecycle-commands.
@@ -79,6 +79,6 @@ Expose `ghostlink update` followed by `ghostlink uninstall` as safe installation
 - T6 independent bounded verification (nice -n 19, 2 jobs, sequential, temporary worktree under ~/.cache) PASSED at every commit: fmt and `cargo check --workspace --all-targets --all-features` at all four. 8a38846 agents 17/17; 835d5f9 uri_handler 39/39 + agents 17/17; bc2da22 update/skill_drift/agents/handler_parsing 19/19, clippy -D warnings, `update --help` smoke, `uninstall` rejected with exit 2 and no uninstall lifecycle docs; 872f551 CLI focused 34/34 and clippy. Full workspace suite not rerun per commit (final tree equals the tree verified with 1,521 tests). Temporary worktree, target and tmp removed by parent after child safety blocked cleanup.
 
 ## Next step
-T6 done. Next: T7 user-assisted official installer verification in a disposable Linux environment. Push/PR remain the user's decision.
+T6 done. User authorized push, PR and merge on 2026-10-07. T7 deferred to the rc release session (tracked in PR-011).
 
 Previous note: Implementation and applicable Linux/offline checks complete. Await user delivery instructions (commits/PR/publishing not authorized); recommend coherent review slices due ~3,744 changed lines. Before release, verify official installer deployment in a disposable Linux environment; Windows automated lifecycle support and purge remain deferred. Uninstall was split into bounded ownership-cleanup units to avoid a single multi-area change; purge was explicitly deferred by the user.
