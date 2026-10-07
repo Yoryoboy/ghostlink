@@ -9,7 +9,12 @@ pub mod artifact;
 pub use artifact::*;
 pub mod auth;
 pub mod domain;
+pub mod equipment_capacity;
 pub mod error;
+pub use equipment_capacity::{
+    CapacityRefusal, EquipmentCapacityEvidence, EquipmentCapacityPolicy, EquipmentCapacityProof,
+    QualifiedEquipmentCapacityPolicy,
+};
 pub mod ids;
 pub mod instanced_pull;
 pub use instanced_pull::{InstancedPullOutcome, InstancedPullRejection, InstancedPullRequest};

@@ -163,7 +163,25 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   coverage; zero post-write unrelated load_current calls for proof. No writer yet.
 - [ ] **GPM-008b — Qualify equipment capacity policy.** Current public Manifest
   index, exact supported bucket policy/provenance and definition-version binding;
-  missing/changed/unqualified evidence closes the proof. Scope still to map fully.
+  missing/changed/unqualified evidence closes the proof. User decisions
+  (interactive, after scout `capacity-policy` map): pinned audited policy checked
+  against the freshly obtained public Manifest index (new version closes proof
+  until re-audit), NOT acquired bucket definitions; any stack record in a target
+  equipment bucket refuses the proof (never counted, quantities never slots).
+  Destination bucket comes from item definition bucketTypeHash (normal bucket),
+  never runtime Lost Items; missing/unsupported destination refuses.
+- [ ] **GPM-008b1 — Core capacity policy contract.** Pure core module
+  equipment_capacity.rs + integration tests + lib exports: validated policy
+  bound to definition version and bucket artifact identity covering exactly the
+  eight supported equipment buckets; qualification against observed index
+  evidence; capacity proof counting each owner Character-location instance in the
+  destination bucket once (equipped included) from complete observations.
+  Fail closed on unavailable observations, version/artifact mismatch, unsupported
+  or missing destination, stacks in bucket, overflow and occupancy >= capacity.
+  Not dispatch authority or freshness certification.
+- [ ] **GPM-008b2 — Pinned policy and public index qualification adapter.**
+  Audited constants (version 244213.26.06.29.2000-1-bnet.65864, bucket artifact,
+  capacity 10) plus fresh public index comparison via existing Manifest gateway.
 - [ ] **GPM-008 — Verified pull service.** Owned instance/stack selection,
   membership/revision preflight, bounded quantity, conservative post-action
   evidence, no retry and provider-lag tests.
