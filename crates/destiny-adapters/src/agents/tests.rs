@@ -9,6 +9,7 @@ fn fixture() -> LocalAgentFiles {
         .join("../../target/agent-tests")
         .join(format!("{}-{id}", std::process::id()));
     fs::create_dir_all(home.join("bin")).unwrap();
+    let home = fs::canonicalize(home).unwrap();
     LocalAgentFiles::new(home.clone(), home.join("bin/ghostlink"), false)
 }
 fn write(path: &Path, text: &str) {
@@ -288,6 +289,267 @@ fn failed_steps_do_not_stop_other_agents_or_skills() {
     assert_eq!(reports[0].mcp, Some(Outcome::Failed(error)));
     assert_eq!(reports[1].mcp, Some(Outcome::Installed));
     assert_eq!(reports[1].skill, Some(Outcome::Installed));
+}
+
+// Scoped cleanup never resolves production HOME or invokes agent commands.
+#[test]
+fn scoped_plan_is_read_only_and_exact_assets_preserve_unknown_files() {
+    use scoped_cleanup::*;
+    let files = fixture();
+    let home = &files.home;
+    let exe = home.join("bin/destiny-mcp");
+    let empty = plan_cleanup(home, &exe).unwrap();
+    assert!(
+        empty
+            .paths
+            .iter()
+            .all(|p| p.outcome == CleanupOutcome::Missing)
+    );
+    assert!(!home.join(".config").exists());
+    for agent in Agent::ALL {
+        let dir = home.join(agent.skill_dir()).join("ghostlink");
+        write(&dir.join("SKILL.md"), SKILL);
+        write(&dir.join("references/exit-codes.md"), EXIT_CODES);
+        write(&dir.join("unknown"), "keep");
+    }
+    let plan = plan_cleanup(home, &exe).unwrap();
+    assert_eq!(plan.manual_followups.len(), 3);
+    assert_eq!(
+        plan.paths
+            .iter()
+            .filter(|p| p.outcome == CleanupOutcome::Ready)
+            .count(),
+        16
+    );
+    assert_eq!(text(&home.join(".claude/skills/ghostlink/SKILL.md")), SKILL);
+    let report = execute_cleanup(plan);
+    assert_eq!(
+        report
+            .paths
+            .iter()
+            .filter(|p| p.outcome == CleanupOutcome::Removed)
+            .count(),
+        12
+    );
+    for agent in Agent::ALL {
+        let dir = home.join(agent.skill_dir()).join("ghostlink");
+        assert_eq!(text(&dir.join("unknown")), "keep");
+        assert!(!dir.join("SKILL.md").exists());
+    }
+}
+
+#[test]
+fn scoped_modified_assets_and_changed_snapshots_are_preserved_with_partial_success() {
+    use scoped_cleanup::*;
+    let files = fixture();
+    let dir = files.home.join(".claude/skills/ghostlink");
+    write(&dir.join("SKILL.md"), SKILL);
+    write(&dir.join("references/exit-codes.md"), EXIT_CODES);
+    let plan = plan_cleanup(&files.home, &files.home.join("bin/destiny-mcp")).unwrap();
+    write(&dir.join("SKILL.md"), "edited");
+    let report = execute_cleanup(plan);
+    assert!(
+        report
+            .paths
+            .iter()
+            .any(|p| p.outcome == CleanupOutcome::Preserved(SkipReason::Changed))
+    );
+    assert_eq!(text(&dir.join("SKILL.md")), "edited");
+    assert!(!dir.join("references").exists());
+    write(&dir.join("references/exit-codes.md"), "old version");
+    let plan = plan_cleanup(&files.home, &files.home.join("bin/destiny-mcp")).unwrap();
+    assert_eq!(
+        plan.paths
+            .iter()
+            .filter(|p| p.outcome == CleanupOutcome::Preserved(SkipReason::ContentMismatch))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn scoped_opencode_requires_exact_install_and_preserves_shared_fields_and_backups() {
+    use scoped_cleanup::*;
+    for entry in [
+        json!({"type":"local","command":["/other/destiny-mcp"]}),
+        json!({"type":"remote","command":["EXE"]}),
+        json!({"type":"local","command":["EXE","extra"]}),
+        json!({"type":"local","command":"EXE"}),
+        json!({"type":"local","command":["EXE"],"enabled":false}),
+    ] {
+        let files = fixture();
+        let exe = files.home.join("bin/destiny-mcp");
+        let path = files.home.join(".config/opencode/opencode.json");
+        let entry: Value =
+            serde_json::from_str(&entry.to_string().replace("EXE", exe.to_str().unwrap())).unwrap();
+        let exact = entry["type"] == "local" && entry["command"] == json!([exe]);
+        let original =
+            json!({"theme":"dark","mcp":{"ghostlink":entry,"other":{"enabled":false}}}).to_string();
+        write(&path, &original);
+        let backup = path.with_extension("json.ghostlink-backup");
+        write(&backup, "backup");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        let plan = plan_cleanup(&files.home, &exe).unwrap();
+        assert_eq!(text(&path), original);
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 2);
+        execute_cleanup(plan);
+        let after: Value = serde_json::from_str(&text(&path)).unwrap();
+        assert_eq!(after["mcp"].get("ghostlink").is_none(), exact);
+        assert_eq!(after["theme"], "dark");
+        assert_eq!(after["mcp"]["other"]["enabled"], false);
+        assert_eq!(text(&backup), "backup");
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 2);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o640
+            );
+        }
+    }
+}
+
+#[test]
+fn scoped_opencode_changed_invalid_and_oversized_documents_are_not_written() {
+    use scoped_cleanup::*;
+    let files = fixture();
+    let exe = files.home.join("bin/destiny-mcp");
+    let path = files.home.join(".config/opencode/opencode.json");
+    write(
+        &path,
+        &json!({"mcp":{"ghostlink":{"type":"local","command":[exe]}}}).to_string(),
+    );
+    let plan = plan_cleanup(&files.home, &exe).unwrap();
+    write(&path, "changed");
+    let report = execute_cleanup(plan);
+    assert!(
+        report
+            .paths
+            .iter()
+            .any(|p| p.outcome == CleanupOutcome::Preserved(SkipReason::Changed))
+    );
+    for original in ["[]".into(), "{bad".into(), "x".repeat(LIMIT as usize + 1)] {
+        write(&path, &original);
+        let report = execute_cleanup(plan_cleanup(&files.home, &exe).unwrap());
+        assert!(
+            !report
+                .paths
+                .iter()
+                .any(|p| p.outcome == CleanupOutcome::Removed)
+        );
+        assert_eq!(text(&path), original);
+    }
+    assert!(plan_cleanup(Path::new("relative"), &exe).is_err());
+    assert!(plan_cleanup(&files.home, Path::new("relative")).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn scoped_symlink_ancestors_leaves_and_execution_failures_do_not_stop_other_paths() {
+    use scoped_cleanup::*;
+    use std::os::unix::fs::symlink;
+    let files = fixture();
+    let dir = files.home.join(".claude/skills/ghostlink");
+    write(&dir.join("SKILL.md"), SKILL);
+    write(&dir.join("references/exit-codes.md"), EXIT_CODES);
+    let exe = files.home.join("bin/destiny-mcp");
+    let plan = plan_cleanup(&files.home, &exe).unwrap();
+    // Replace a planned regular file with a directory: a per-path failure,
+    // while the independent reference remains eligible.
+    fs::rename(dir.join("SKILL.md"), dir.join("saved")).unwrap();
+    fs::create_dir(dir.join("SKILL.md")).unwrap();
+    let report = execute_cleanup(plan);
+    assert!(
+        report
+            .paths
+            .iter()
+            .any(|p| matches!(p.outcome, CleanupOutcome::Failed(_)))
+    );
+    assert!(!dir.join("references").exists());
+    symlink(dir.join("saved"), dir.join("references")).unwrap();
+    symlink(&dir, files.home.join(".codex")).unwrap();
+    let plan = plan_cleanup(&files.home, &exe).unwrap();
+    assert!(
+        plan.paths
+            .iter()
+            .any(|p| p.outcome == CleanupOutcome::Preserved(SkipReason::UnsafePath))
+    );
+    assert_eq!(text(&dir.join("saved")), SKILL);
+    let path = files.home.join(".config/opencode/opencode.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    symlink(dir.join("saved"), &path).unwrap();
+    execute_cleanup(plan_cleanup(&files.home, &exe).unwrap());
+    assert!(fs::symlink_metadata(path).unwrap().file_type().is_symlink());
+}
+
+#[cfg(unix)]
+#[test]
+fn scoped_skill_symlink_leaves_and_changed_permissions_are_preserved() {
+    use scoped_cleanup::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let files = fixture();
+    let dir = files.home.join(".claude/skills/ghostlink");
+    write(&dir.join("original"), SKILL);
+    symlink(dir.join("original"), dir.join("SKILL.md")).unwrap();
+    write(&dir.join("references/exit-codes.md"), EXIT_CODES);
+    let exe = files.home.join("bin/destiny-mcp");
+    let plan = plan_cleanup(&files.home, &exe).unwrap();
+    assert_eq!(
+        plan.paths[0].outcome,
+        CleanupOutcome::Preserved(SkipReason::UnsafePath)
+    );
+    fs::set_permissions(
+        dir.join("references/exit-codes.md"),
+        fs::Permissions::from_mode(0o400),
+    )
+    .unwrap();
+    let report = execute_cleanup(plan);
+    assert!(
+        report
+            .paths
+            .iter()
+            .any(|p| p.outcome == CleanupOutcome::Preserved(SkipReason::Changed))
+    );
+    assert_eq!(text(&dir.join("original")), SKILL);
+    assert!(
+        fs::symlink_metadata(dir.join("SKILL.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn scoped_empty_owned_directories_removed_but_agent_roots_and_config_preserved() {
+    use scoped_cleanup::*;
+    let files = fixture();
+    let dir = files.home.join(".agents/skills/ghostlink");
+    write(&dir.join("SKILL.md"), SKILL);
+    write(&dir.join("references/exit-codes.md"), EXIT_CODES);
+    let config = files.home.join(".config/opencode/opencode.json");
+    write(&config, "{\"mcp\":{\"ghostlink\":{\"type\":\"remote\"}}}");
+    let backup = config.with_extension("json.ghostlink-backup");
+    write(&backup, "keep");
+    let report =
+        execute_cleanup(plan_cleanup(&files.home, &files.home.join("bin/destiny-mcp")).unwrap());
+    assert_eq!(
+        report
+            .paths
+            .iter()
+            .filter(|p| p.outcome == CleanupOutcome::Removed)
+            .count(),
+        4
+    );
+    assert!(report.retained_temps.is_empty());
+    assert!(!dir.exists());
+    assert!(dir.parent().unwrap().is_dir());
+    assert_eq!(text(&backup), "keep");
+    assert!(config.is_file());
 }
 
 #[test]

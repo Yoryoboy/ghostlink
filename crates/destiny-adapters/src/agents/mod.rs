@@ -1,4 +1,5 @@
 //! Local agent files and processes; all locations and execution are injected.
+pub mod scoped_cleanup;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
