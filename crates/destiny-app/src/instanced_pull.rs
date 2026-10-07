@@ -1,13 +1,14 @@
 //! Fresh, planning-only eligibility for instanced Postmaster recovery.
 //! No dispatch or post-action observation is exposed by this module.
 
-use crate::{ProfileSyncService, ProfileSyncWithObservationsOutcome};
+use crate::{ProfileSyncService, ProfileSyncWithObservationsOutcome, PublishedProfileAcquisition};
 use destiny_core::{
     AppError, BucketHash, CapacityRefusal, CharacterId, Clock, DefinitionRepository,
-    DefinitionVersion, DestinyMembership, EquipmentCapacityPolicy, ErrorCategory, FreshnessPolicy,
-    InventoryRepository, InventorySnapshotInput, ItemHash, ItemInstanceId, ItemLocation,
-    ManifestGateway, PlanId, PlanIdGenerator, PlanLifetime, ProfileAcquisition, ProfileGateway,
-    ProfileSyncReason, Resolution, SyncRevision, Timestamp,
+    DefinitionVersion, DestinyMembership, EquipmentCapacityEvidence, EquipmentCapacityPolicy,
+    ErrorCategory, FreshnessPolicy, InstancedPullGateway, InstancedPullOutcome,
+    InstancedPullRequest, InventoryRepository, InventorySnapshotInput, ItemHash, ItemInstanceId,
+    ItemLocation, ManifestGateway, PlanId, PlanIdGenerator, PlanLifetime, ProfileAcquisition,
+    ProfileGateway, ProfileSyncReason, Resolution, SyncRevision, Timestamp,
 };
 
 /// Select one genuine instance. Destination is its freshly observed Postmaster owner.
@@ -84,6 +85,24 @@ struct EligibilityFingerprint {
 /// use destiny_app::InstancedPullPlan;
 /// let plan = InstancedPullPlan::new();
 /// ```
+/// ```compile_fail
+/// use destiny_app::InstancedPullPlan;
+/// fn consume(_: InstancedPullPlan) {}
+/// fn replay(plan: InstancedPullPlan) {
+///     consume(plan);
+///     consume(plan);
+/// }
+/// ```
+/// ```compile_fail
+/// use destiny_app::InstancedPullService;
+/// use destiny_core::*;
+/// fn dispatch<G: ProfileGateway, R: InventoryRepository, D: DefinitionRepository,
+///     M: ManifestGateway, C: Clock, P: PlanIdGenerator, T: InstancedPullGateway>(
+///     service: &mut InstancedPullService<G, R, D, M, C, P>,
+///     plan: destiny_app::InstancedPullPlan, gateway: &mut T) {
+///     service.preflight_dispatch(plan, gateway, FreshnessPolicy { ttl_seconds: 60 });
+/// }
+/// ```
 #[derive(Debug, Eq, PartialEq)]
 pub struct InstancedPullPlan {
     id: PlanId,
@@ -122,6 +141,51 @@ impl InstancedPullPlan {
     }
     pub fn expires_at(&self) -> Timestamp {
         self.expires_at
+    }
+}
+
+// GPM-008f will consume terminal evidence, not reusable plan authority.
+#[allow(dead_code)]
+#[derive(Debug, Eq, PartialEq)]
+struct PullAttempt {
+    context: PullContext,
+    preflight_at: Timestamp,
+    dispatch_at: Timestamp,
+    outcome: Result<InstancedPullOutcome, AppError>,
+}
+#[derive(Debug, Eq, PartialEq)]
+struct PullContext {
+    membership: DestinyMembership,
+    item: ItemInstanceId,
+    item_hash: ItemHash,
+    owner: CharacterId,
+    destination_bucket: BucketHash,
+    definition_version: DefinitionVersion,
+    revision: SyncRevision,
+}
+struct Eligibility {
+    context: PullContext,
+    fingerprint: EligibilityFingerprint,
+}
+#[allow(dead_code)] // Private until GPM-008f adds the verified executor.
+#[derive(Debug, Eq, PartialEq)]
+enum PreDispatchError {
+    Eligibility(InstancedPullPlanningError),
+    Expired,
+    BackwardsClock,
+    IdentityDrift,
+    DefinitionVersionDrift,
+    RevisionDrift,
+    FingerprintDrift,
+}
+impl From<InstancedPullPlanningError> for PreDispatchError {
+    fn from(error: InstancedPullPlanningError) -> Self {
+        Self::Eligibility(error)
+    }
+}
+impl From<AppError> for PreDispatchError {
+    fn from(error: AppError) -> Self {
+        Self::Eligibility(error.into())
     }
 }
 
@@ -172,7 +236,6 @@ where
         lifetime: PlanLifetime,
         freshness: FreshnessPolicy,
     ) -> Result<InstancedPullPlan, InstancedPullPlanningError> {
-        use InstancedPullRefusal as Refusal;
         let now = self.clock.now()?;
         let pair =
             match self
@@ -187,16 +250,43 @@ where
         // Fetch once even for an eligibility refusal. Never retry or substitute
         // cached index evidence. Qualification still follows the definition gates.
         let evidence = self.manifest.fetch_equipment_capacity_evidence()?;
+        let eligibility = self.eligibility(&request.membership, &request.item, &pair, &evidence)?;
+        let expires_at = lifetime.expires_at(now)?;
+        let id = self.plan_ids.next_plan_id()?;
+        let context = eligibility.context;
+        Ok(InstancedPullPlan {
+            id,
+            created_at: now,
+            expires_at,
+            membership: context.membership,
+            item: context.item,
+            item_hash: context.item_hash,
+            owner: context.owner,
+            destination_bucket: context.destination_bucket,
+            definition_version: context.definition_version,
+            revision: context.revision,
+            fingerprint: eligibility.fingerprint,
+        })
+    }
+
+    fn eligibility(
+        &self,
+        membership: &DestinyMembership,
+        item_id: &ItemInstanceId,
+        pair: &PublishedProfileAcquisition,
+        evidence: &EquipmentCapacityEvidence,
+    ) -> Result<Eligibility, InstancedPullPlanningError> {
+        use InstancedPullRefusal as Refusal;
         let snapshot = pair.snapshot();
-        if request.membership.membership_id() != &snapshot.metadata.membership_id
-            || request.membership.membership_type() != snapshot.metadata.membership_type
+        if membership.membership_id() != &snapshot.metadata.membership_id
+            || membership.membership_type() != snapshot.metadata.membership_type
         {
             return Err(Refusal::MembershipMismatch.into());
         }
         let mut targets = snapshot
             .items
             .iter()
-            .filter(|item| item.instance_id == request.item);
+            .filter(|item| &item.instance_id == item_id);
         let target = targets.next().ok_or(Refusal::TargetMissing)?;
         if targets.next().is_some() {
             return Err(Refusal::TargetAmbiguous.into());
@@ -235,7 +325,7 @@ where
         if self.policy.capacity(bucket).is_none() {
             return Err(Refusal::UnsupportedBucket.into());
         }
-        let qualified = self.policy.qualify(&evidence).map_err(|_| {
+        let qualified = self.policy.qualify(evidence).map_err(|_| {
             if evidence.definition_version() != self.policy.definition_version() {
                 Refusal::PolicyVersionMismatch
             } else {
@@ -270,21 +360,104 @@ where
             occupied: proof.occupied(),
             occupants,
         };
-        let expires_at = lifetime.expires_at(now)?;
-        let id = self.plan_ids.next_plan_id()?;
-        Ok(InstancedPullPlan {
-            id,
-            created_at: now,
-            expires_at,
-            membership: request.membership.clone(),
-            item: target.instance_id.clone(),
-            item_hash: target.item_hash,
-            owner: owner.clone(),
-            destination_bucket: bucket,
-            definition_version: snapshot.metadata.definition_version.clone(),
-            revision: snapshot.metadata.revision,
+        Ok(Eligibility {
+            context: PullContext {
+                membership: membership.clone(),
+                item: target.instance_id.clone(),
+                item_hash: target.item_hash,
+                owner: owner.clone(),
+                destination_bucket: bucket,
+                definition_version: snapshot.metadata.definition_version.clone(),
+                revision: snapshot.metadata.revision,
+            },
             fingerprint,
         })
+    }
+    /// Consumes intent on every path, never remints or retries. Caller must
+    /// serialize local publications through dispatch; these checks cannot be
+    /// atomic against other clients or game activity. No post-action proof yet.
+    #[allow(dead_code)] // Private future GPM-008f seam, deliberately not exported.
+    fn preflight_dispatch<T: InstancedPullGateway>(
+        &mut self,
+        plan: InstancedPullPlan,
+        gateway: &mut T,
+        freshness: FreshnessPolicy,
+    ) -> Result<PullAttempt, PreDispatchError> {
+        let preflight_at = self.clock.now()?;
+        Self::check_time(&plan, preflight_at, plan.created_at)?;
+        let pair = match self.sync.sync_with_observations(
+            ProfileSyncReason::Preflight,
+            freshness,
+            preflight_at,
+        )? {
+            ProfileSyncWithObservationsOutcome::Refreshed(pair) => pair,
+            ProfileSyncWithObservationsOutcome::SkippedFresh { .. } => {
+                return Err(AppError::new(ErrorCategory::ProviderValidation).into());
+            }
+        };
+        let evidence = self.manifest.fetch_equipment_capacity_evidence()?;
+        let eligible = self.eligibility(&plan.membership, &plan.item, &pair, &evidence)?;
+        let context = eligible.context;
+        if context.item_hash != plan.item_hash || context.owner != plan.owner {
+            return Err(PreDispatchError::IdentityDrift);
+        }
+        if context.definition_version != plan.definition_version {
+            return Err(PreDispatchError::DefinitionVersionDrift);
+        }
+        if context.revision != plan.revision {
+            return Err(PreDispatchError::RevisionDrift);
+        }
+        if eligible.fingerprint != plan.fingerprint {
+            return Err(PreDispatchError::FingerprintDrift);
+        }
+        let metadata = self
+            .sync
+            .repository()
+            .load_current()?
+            .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))?
+            .metadata;
+        if metadata.membership_id != *plan.membership.membership_id()
+            || metadata.membership_type != plan.membership.membership_type()
+        {
+            return Err(PreDispatchError::IdentityDrift);
+        }
+        if metadata.revision != plan.revision {
+            return Err(PreDispatchError::RevisionDrift);
+        }
+        if metadata.definition_version != plan.definition_version
+            || self.definitions.current_definition_version()? != plan.definition_version
+        {
+            return Err(PreDispatchError::DefinitionVersionDrift);
+        }
+        let dispatch_at = self.clock.now()?;
+        Self::check_time(&plan, dispatch_at, preflight_at)?;
+        let request = InstancedPullRequest::new(
+            context.membership.clone(),
+            context.item.clone(),
+            context.item_hash,
+            context.owner.clone(),
+        )?;
+        let outcome = gateway.pull(&request); // Exactly one attempt, including Err.
+        Ok(PullAttempt {
+            context,
+            preflight_at,
+            dispatch_at,
+            outcome,
+        })
+    }
+
+    fn check_time(
+        plan: &InstancedPullPlan,
+        now: Timestamp,
+        previous: Timestamp,
+    ) -> Result<(), PreDispatchError> {
+        if now < previous {
+            return Err(PreDispatchError::BackwardsClock);
+        }
+        if now >= plan.expires_at {
+            return Err(PreDispatchError::Expired);
+        }
+        Ok(())
     }
 }
 

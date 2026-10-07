@@ -1,7 +1,7 @@
 use super::*;
 use crate::test_support::{
     DeterministicPlanIds, FakeClock, InMemoryDefinitionRepository, InMemoryInventoryRepository,
-    QueuedManifestGateway, QueuedProfileGateway,
+    QueuedInstancedPullGateway, QueuedManifestGateway, QueuedProfileGateway,
 };
 use destiny_core::*;
 
@@ -158,6 +158,373 @@ fn plan(
     assert_eq!(service.plan_ids.calls(), u64::from(result.is_ok()));
     result
 }
+fn queue_preflight(s: &mut Service, input: InventorySnapshotInput, observed: bool) {
+    let rows = observed.then(|| {
+        input
+            .items
+            .iter()
+            .map(|i| {
+                InstancedBucketObservation::new(
+                    i.instance_id.clone(),
+                    BucketHash::new(if matches!(i.location, ItemLocation::Postmaster(_)) {
+                        215593132
+                    } else {
+                        BUCKET
+                    }),
+                    i.location.clone(),
+                )
+                .unwrap()
+            })
+            .collect()
+    });
+    s.sync
+        .gateway_mut()
+        .queue_membership(Ok(DestinyMembership::new(
+            input.membership_type,
+            input.membership_id.clone(),
+        )
+        .unwrap()));
+    s.sync
+        .gateway_mut()
+        .queue_acquisition(Ok(ProfileAcquisition::new(input, rows).unwrap()));
+    s.manifest.queue_capacity_evidence(evidence());
+}
+
+#[test]
+fn consumed_preflight_dispatches_exactly_once_without_reminting() {
+    for outcome in [
+        Ok(InstancedPullOutcome::Acknowledged),
+        Ok(InstancedPullOutcome::Rejected(
+            InstancedPullRejection::InvalidRequest,
+        )),
+        Ok(InstancedPullOutcome::AuthenticationRefused),
+        Ok(InstancedPullOutcome::Transient),
+        Ok(InstancedPullOutcome::Uncertain),
+        Err(AppError::new(ErrorCategory::ProviderUnavailable)),
+    ] {
+        let mut s = service(input(), vec![definition()], "v1", true, evidence());
+        let plan = plan(&mut s, &request()).unwrap();
+        queue_preflight(&mut s, input(), true);
+        let mut gateway = QueuedInstancedPullGateway::new();
+        gateway.queue(outcome.clone());
+        gateway.queue(Ok(InstancedPullOutcome::Acknowledged));
+        let attempt = s
+            .preflight_dispatch(plan, &mut gateway, FreshnessPolicy { ttl_seconds: 60 })
+            .unwrap();
+        assert_eq!(attempt.outcome, outcome);
+        assert_eq!(attempt.context.item, ItemInstanceId::new("1"));
+        assert_eq!(gateway.calls(), 1);
+        assert_eq!(
+            gateway.requests(),
+            &[InstancedPullRequest::new(
+                membership(),
+                ItemInstanceId::new("1"),
+                ItemHash::new(7),
+                CharacterId::new("2")
+            )
+            .unwrap()]
+        );
+        assert_eq!(gateway.requests()[0].quantity(), 1);
+        assert_eq!(s.plan_ids.calls(), 1);
+        assert_eq!(s.manifest.capacity_evidence_calls(), 2);
+        assert_eq!(
+            s.sync.gateway_mut().requested_reasons(),
+            &[ProfileSyncReason::Preflight, ProfileSyncReason::Preflight]
+        );
+    }
+}
+
+#[test]
+fn preflight_expiry_and_backwards_clock_do_not_acquire() {
+    for (now, expected) in [
+        (99, PreDispatchError::BackwardsClock),
+        (1000, PreDispatchError::Expired),
+    ] {
+        let mut s = service(input(), vec![definition()], "v1", true, evidence());
+        let plan = plan(&mut s, &request()).unwrap();
+        s.clock = FakeClock::fixed(Timestamp::new(now));
+        let mut gateway = QueuedInstancedPullGateway::new();
+        assert_eq!(
+            s.preflight_dispatch(plan, &mut gateway, FreshnessPolicy { ttl_seconds: 60 }),
+            Err(expected)
+        );
+        assert_eq!(gateway.calls(), 0);
+        assert_eq!(s.sync.gateway_mut().membership_calls(), 1);
+        assert_eq!(s.manifest.capacity_evidence_calls(), 1);
+    }
+}
+
+fn assert_preflight_refusal(s: &mut Service, plan: InstancedPullPlan, expected: PreDispatchError) {
+    let mut gateway = QueuedInstancedPullGateway::new();
+    gateway.queue(Ok(InstancedPullOutcome::Acknowledged));
+    assert_eq!(
+        s.preflight_dispatch(plan, &mut gateway, FreshnessPolicy { ttl_seconds: 60 }),
+        Err(expected)
+    );
+    assert_eq!(gateway.calls(), 0);
+    assert!(gateway.requests().is_empty());
+    assert_eq!(s.plan_ids.calls(), 1);
+    assert!(
+        s.sync
+            .gateway_mut()
+            .requested_reasons()
+            .iter()
+            .all(|r| *r == ProfileSyncReason::Preflight)
+    );
+}
+fn refused(reason: InstancedPullRefusal) -> PreDispatchError {
+    PreDispatchError::Eligibility(InstancedPullPlanningError::Refused(reason))
+}
+
+#[test]
+fn preflight_identity_and_revision_changes_fail_closed() {
+    for case in 0..7 {
+        let mut s = service(input(), vec![definition()], "v1", true, evidence());
+        let plan = plan(&mut s, &request()).unwrap();
+        let mut changed = input();
+        let expected = match case {
+            0 => {
+                changed.membership_id = MembershipId::new("456");
+                refused(InstancedPullRefusal::MembershipMismatch)
+            }
+            1 => {
+                changed.membership_type = MembershipType::new(2);
+                refused(InstancedPullRefusal::MembershipMismatch)
+            }
+            2 => {
+                let mut other = changed.characters[0].clone();
+                other.id = CharacterId::new("4");
+                changed.characters.push(other);
+                changed.items[0].location = ItemLocation::Postmaster(CharacterId::new("4"));
+                PreDispatchError::IdentityDrift
+            }
+            3 => {
+                changed.items[0].item_hash = ItemHash::new(8);
+                let mut row = definition();
+                row.hash = ItemHash::new(8);
+                s.definitions =
+                    InMemoryDefinitionRepository::new(DefinitionVersion::new("v1"), vec![row]);
+                PreDispatchError::IdentityDrift
+            }
+            4 => {
+                changed.items[0].location = ItemLocation::Character(CharacterId::new("2"));
+                refused(InstancedPullRefusal::NotInPostmaster)
+            }
+            5 => {
+                changed.items[0].locked = true;
+                PreDispatchError::RevisionDrift
+            }
+            _ => {
+                changed.items.clear();
+                refused(InstancedPullRefusal::TargetMissing)
+            }
+        };
+        queue_preflight(&mut s, changed, true);
+        assert_preflight_refusal(&mut s, plan, expected);
+    }
+}
+
+#[test]
+fn preflight_rechecks_definition_safety_and_versions() {
+    for case in 0..6 {
+        let mut s = service(input(), vec![definition()], "v1", true, evidence());
+        let plan = plan(&mut s, &request()).unwrap();
+        let mut row = definition();
+        let mut version = "v1";
+        let reason = match case {
+            0 => {
+                row.does_postmaster_pull_have_side_effects = Some(true);
+                InstancedPullRefusal::SideEffects
+            }
+            1 => {
+                row.does_postmaster_pull_have_side_effects = None;
+                InstancedPullRefusal::SideEffectsUnknown
+            }
+            2 => {
+                row.is_instance_item = Some(false);
+                InstancedPullRefusal::NonInstanced
+            }
+            3 => {
+                row.is_instance_item = None;
+                InstancedPullRefusal::InstanceKindUnknown
+            }
+            4 => {
+                row.version = DefinitionVersion::new("v2");
+                InstancedPullRefusal::DefinitionVersionMismatch
+            }
+            _ => {
+                version = "v2";
+                InstancedPullRefusal::DefinitionVersionMismatch
+            }
+        };
+        s.definitions =
+            InMemoryDefinitionRepository::new(DefinitionVersion::new(version), vec![row]);
+        queue_preflight(&mut s, input(), true);
+        assert_preflight_refusal(&mut s, plan, refused(reason));
+    }
+}
+
+#[test]
+fn changed_published_definition_version_refuses_even_when_new_policy_qualifies() {
+    let mut s = service(input(), vec![definition()], "v1", true, evidence());
+    let plan = plan(&mut s, &request()).unwrap();
+    let mut changed = input();
+    changed.definition_version = DefinitionVersion::new("v2");
+    let mut row = definition();
+    row.version = DefinitionVersion::new("v2");
+    s.definitions = InMemoryDefinitionRepository::new(DefinitionVersion::new("v2"), vec![row]);
+    s.policy = EquipmentCapacityPolicy::new(
+        DefinitionVersion::new("v2"),
+        "artifact",
+        [
+            1498876634, 2465295065, 953998645, 3448274439, 3551918588, 14239492, 20886954,
+            1585787867,
+        ]
+        .map(|b| (BucketHash::new(b), 10))
+        .to_vec(),
+    )
+    .unwrap();
+    s.manifest
+        .queue_capacity_evidence(Ok(EquipmentCapacityEvidence::new(
+            DefinitionVersion::new("v2"),
+            "artifact",
+        )
+        .unwrap()));
+    queue_preflight(&mut s, changed, true);
+    assert_preflight_refusal(&mut s, plan, PreDispatchError::DefinitionVersionDrift);
+}
+
+#[test]
+fn bucket_only_identity_drift_is_detected_with_unchanged_revision() {
+    let mut input = input();
+    input
+        .items
+        .push(item("3", ItemLocation::Character(CharacterId::new("2"))));
+    input
+        .items
+        .push(item("9", ItemLocation::Character(CharacterId::new("2"))));
+    let mut s = service(input.clone(), vec![definition()], "v1", true, evidence());
+    // Initial evidence: only instance 3 occupies the destination bucket.
+    let mut g = QueuedProfileGateway::new();
+    g.queue_membership(Ok(membership()));
+    let acquisition = |occupant: &str| {
+        ProfileAcquisition::new(
+            input.clone(),
+            Some(
+                input
+                    .items
+                    .iter()
+                    .map(|i| {
+                        InstancedBucketObservation::new(
+                            i.instance_id.clone(),
+                            BucketHash::new(if i.instance_id.as_str() == occupant {
+                                BUCKET
+                            } else {
+                                215593132
+                            }),
+                            i.location.clone(),
+                        )
+                        .unwrap()
+                    })
+                    .collect(),
+            ),
+        )
+        .unwrap()
+    };
+    g.queue_acquisition(Ok(acquisition("3")));
+    let (_, repository) = s.sync.into_parts();
+    s.sync = ProfileSyncService::new(g, repository);
+    let plan = plan(&mut s, &request()).unwrap();
+    let revision = plan.revision;
+    s.sync.gateway_mut().queue_membership(Ok(membership()));
+    s.sync.gateway_mut().queue_acquisition(Ok(acquisition("9")));
+    s.manifest.queue_capacity_evidence(evidence());
+    assert_preflight_refusal(&mut s, plan, PreDispatchError::FingerprintDrift);
+    assert_eq!(
+        s.sync
+            .repository()
+            .load_current()
+            .unwrap()
+            .unwrap()
+            .metadata
+            .revision,
+        revision
+    );
+}
+
+#[test]
+fn preflight_capacity_and_evidence_are_reproved() {
+    for case in 0..5 {
+        let mut s = service(input(), vec![definition()], "v1", true, evidence());
+        let plan = plan(&mut s, &request()).unwrap();
+        let mut changed = input();
+        let reason = match case {
+            0 => InstancedPullRefusal::Capacity(CapacityRefusal::ObservationsUnavailable),
+            1 => {
+                for id in 10..20 {
+                    changed.items.push(item(
+                        &id.to_string(),
+                        ItemLocation::Character(CharacterId::new("2")),
+                    ));
+                }
+                InstancedPullRefusal::Capacity(CapacityRefusal::AtCapacity {
+                    occupied: 10,
+                    capacity: 10,
+                })
+            }
+            2 => {
+                changed.stacks.push(
+                    StackObservation::new(
+                        ItemHash::new(8),
+                        BucketHash::new(BUCKET),
+                        1,
+                        StackContainer::CharacterInventory(CharacterId::new("2")),
+                    )
+                    .unwrap(),
+                );
+                InstancedPullRefusal::Capacity(CapacityRefusal::DestinationStackObserved)
+            }
+            3 => InstancedPullRefusal::PolicyArtifactMismatch,
+            _ => InstancedPullRefusal::PolicyVersionMismatch,
+        };
+        if case >= 3 {
+            s.manifest
+                .queue_capacity_evidence(Ok(EquipmentCapacityEvidence::new(
+                    DefinitionVersion::new(if case == 4 { "v2" } else { "v1" }),
+                    if case == 3 { "changed" } else { "artifact" },
+                )
+                .unwrap()));
+        }
+        queue_preflight(&mut s, changed, case != 0);
+        assert_preflight_refusal(&mut s, plan, refused(reason));
+    }
+}
+
+#[test]
+fn preflight_infrastructure_failures_do_not_dispatch() {
+    for case in 0..3 {
+        let mut s = service(input(), vec![definition()], "v1", true, evidence());
+        let plan = plan(&mut s, &request()).unwrap();
+        let error = AppError::new(ErrorCategory::ProviderUnavailable);
+        match case {
+            0 => s.sync.gateway_mut().queue_membership(Err(error.clone())),
+            1 => {
+                s.sync.gateway_mut().queue_membership(Ok(membership()));
+                s.sync.gateway_mut().queue_acquisition(Err(error.clone()));
+            }
+            _ => {
+                s.manifest.queue_capacity_evidence(Err(error.clone()));
+                queue_preflight(&mut s, input(), true);
+            }
+        }
+        assert_preflight_refusal(
+            &mut s,
+            plan,
+            PreDispatchError::Eligibility(InstancedPullPlanningError::Infrastructure(error)),
+        );
+    }
+}
+
 #[test]
 fn valid_control_is_fresh_opaque_and_binds_occupancy() {
     let mut input = input();
