@@ -283,7 +283,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   verification before a scoped local work-unit commit.
 - [ ] **GPM-009b — Shared pull result presentation (IN PROGRESS).** Use destiny-output
   architecture with src/instanced_pull.rs, lib.rs and app facade exports only as
-  needed. Preserve receipt, disposition, ordered classifications AND failures,
+  needed. Human approved output/Cargo.toml solely for an existing-app test-support
+  dev-dependency to exercise real public service outcomes. Preserve receipt, disposition, ordered classifications AND failures,
   selected IDs/hash/owner/buckets/publication metadata/timestamps independently.
   Sanitize typed pre-dispatch/planning/gateway failures; no whole snapshot or
   credentials. Focused serialization tests; estimate 250–400 lines. Delegated
@@ -342,6 +343,19 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Over estimate70–150 to retain readable fixtures and real SQLite checks.
   009b route: bounded shared-output writer; serialization and sanitized failure
   tests before production mapping, then focused checks/ASSESS/routedverification.
+  Writer `muygi0qr-9-znlh` preparation settled interaction_required, no edits,
+  clean source baseline HEADa477b88. Opaque outcome/attempt constructors require
+  service-backed fixtures; app deterministic fakes need test-support feature.
+  Human initially declined for lack of explanation, then explicitly APPROVED
+  the same narrow two-choice addition after read-only explanation. Add only
+  crates/destiny-output/Cargo.toml for dev-dependency on existing destiny-app
+  with test-support; existing three surfaces retained. No new package/install,
+  Cargo.lock edits, runtime dependency or executor behavior changes authorized.
+  Dependent crates do not inherit app cfg(test); test-support feature enables
+  existing public fakes. Normal production builds do not activate this feature
+  via dev-dependency; tests and explicit all-features do.
+  Resume original writer with four exact allowed paths and refreshed test-first
+  and verification contract. No semantic RED/GREEN/closure checks yet.
   Settled map: server.rs139–146/216–242 acquires the same operation Arc inside
   direct/blocking dispatch and holds it across complete read/mutation calls.
   Existing rc002 guard-lifetime and equip serialization regressions apply.
