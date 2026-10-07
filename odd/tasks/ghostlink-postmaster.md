@@ -237,9 +237,15 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Postmaster(owner) selection, definition gates (explicit false side-effect flag,
   instanced kind, supported normal bucket, definition version == published),
   qualified capacity proof, eligibility fingerprint, private non-Clone plan.
-- [ ] **GPM-008e — Consumed-plan preflight and one-shot dispatch.** Reacquire,
+- [x] **GPM-008e — Consumed-plan preflight and one-shot dispatch.** Reacquire,
   reprove, compare membership/revision/version/fingerprint, consume plan on every
   path, one gateway call; not exposed until GPM-008f.
+- [ ] **GPM-008e1 — Dispatch fault-injection tests (recommended follow-up).**
+  Separate test-only unit before GPM-008f exposure: expiry during slow reads,
+  first/final clock errors, final inventory/definition read failures and drift
+  before final reload. Assert exact refusals/errors and zero gateway calls.
+  No production edits, shared fake expansion or atomic-race guarantee implied.
+  Pending; not started by the GPM-008e commit authorization.
 - [ ] **GPM-008f — Bounded observation and honest terminal outcomes.**
   Verified / not yet observed / uncertain / refused with attempt evidence; lag,
   wrong owner/bucket, missing target, unavailable observations, refresh failure.
@@ -262,6 +268,42 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
+- GPM-008e COMPLETE — explicitly user-authorized local work-unit commit
+  `c5348a991ca5ecc8fe5e7f6fe5349ba8a832cdf1`. Independent focused reverification
+  `muy9hamq-1-l63j` PASS: 15 tests (zero failed/ignored), fmt, app all-targets/
+  all-features clippy with -D warnings, diff check; every command exit 0.
+  Parent reran diff check and pinned both unchanged source SHA-256 hashes before
+  staging only the two verified source paths. No source correction or new RED
+  applicable on this resume. Full workspace suites and compile-fail doctests
+  were NOT rerun; historical totals below are retained, not fresh evidence.
+  RDD freshly off (clone-local); no native verdict or publishing/live actions.
+  Worktree `/home/yoryo/apps/ghostlink-inventory`, `feature/ghostlink-postmaster`.
+  Writer `muy8swuu-c-gp1h` completed implementation;
+  no public/runtime binding. Two source paths, 588 changed lines:
+  shared eligibility, private consumed-plan preflight_dispatch, typed refusals
+  and terminal attempt context preserving the exact gateway outcome/error.
+  Worker RED missing preflight_dispatch; GREEN 15 focused / 210 app tests;
+  1,631 default / 1,649 all-features offline workspace tests, fmt/clippy/diff pass.
+  ASSESS medium (3 paths/597 lines), large runtime writer profile:
+  independentVerifier=false; reviewDue=slice_budget_reached, RDD off, outcome
+  unknown. Native continuation (informational, not executed):
+  `gentle-ai review status --cwd=/home/yoryo/apps/ghostlink-inventory --contract=gentle-ai.review-integration/v2 --next-transition=true`.
+  Parent spot check confirms private dispatch, consumed plan, final local/time
+  checks and sole gateway call. Targeted independent verifier `muy952ou-d-pwa7`
+  PASS: no deterministic dispatch-safety defect under documented caller-local
+  publication serialization. Observed 15 focused tests, fmt/diff clean; candidate
+  hashes unchanged. No new full-suite or historical RED evidence claimed.
+  Coverage gaps remain: expiry during slow reads, first/final clock faults, final
+  inventory/definition read failures and publication drift before final reload.
+  Source checks fail closed, but injected dispatch-level tests remain absent.
+  Drift AFTER final local reads is not atomically prevented; caller serialization
+  is required. Test-local wrappers in existing tests.rs suffice; shared fakes
+  need not be expanded. Recommend a separate test-only unit before exposing 008f,
+  not growing this 588-line implementation slice silently. No runtime blockers
+  demonstrated; 008e verified and locally committed. Next recommended unit:
+  bounded dispatch fault tests, separately scoped before public GPM-008f
+  execution. These tests and GPM-008f have not started.
+  No retries, PostAction observations, rollback, account requests or GPM-008f.
 - GPM-008d COMPLETE — work-unit commit `65ad8d1`: forced Preflight planning from the
   successful publication pair, exact owned Postmaster selection, version-bound
   definition safety gates, qualified capacity and private non-Clone plan with
