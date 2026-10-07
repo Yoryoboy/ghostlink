@@ -845,17 +845,19 @@ impl SearchRepository for InMemorySearchRepository {
 /// Deterministically queues membership resolution and inventory acquisition
 /// outcomes and records how each port method was called.
 ///
-/// The two queues are independent so a test can make resolution succeed while
-/// acquisition fails, or exercise resolution failure without ever requesting a
-/// snapshot. `requested_memberships` records the exact membership each
-/// acquisition was asked for, in call order.
+/// Membership, plain snapshot and full acquisition queues are independent.
+/// `requested_memberships` records the exact membership each acquisition was
+/// asked for in call order; scoped calls additionally record their reasons.
 #[derive(Debug, Default)]
 pub struct QueuedProfileGateway {
     memberships: VecDeque<Result<DestinyMembership, AppError>>,
     snapshots: VecDeque<Result<InventorySnapshotInput, AppError>>,
+    acquisitions: VecDeque<Result<destiny_core::ProfileAcquisition, AppError>>,
     membership_calls: usize,
     inventory_calls: usize,
+    observed_acquisition_calls: usize,
     requested_memberships: Vec<DestinyMembership>,
+    requested_reasons: Vec<destiny_core::ProfileSyncReason>,
 }
 
 impl QueuedProfileGateway {
@@ -873,6 +875,26 @@ impl QueuedProfileGateway {
         self.snapshots.push_back(outcome);
     }
 
+    /// Queues a full observation-aware acquisition, independently of snapshots.
+    /// Once this queue is empty, the scoped observed loader uses the legacy
+    /// snapshot queue and marks observations unavailable (never synthesizes buckets).
+    pub fn queue_acquisition(
+        &mut self,
+        outcome: Result<destiny_core::ProfileAcquisition, AppError>,
+    ) {
+        self.acquisitions.push_back(outcome);
+    }
+
+    pub const fn observed_acquisition_calls(&self) -> usize {
+        self.observed_acquisition_calls
+    }
+
+    /// Reasons for scoped inventory acquisitions in call order; plain calls
+    /// have no reason and are recorded only in `requested_memberships`.
+    pub fn requested_reasons(&self) -> &[destiny_core::ProfileSyncReason] {
+        &self.requested_reasons
+    }
+
     /// Counts resolution attempts, including failures and exhausted queues.
     pub const fn membership_calls(&self) -> usize {
         self.membership_calls
@@ -883,13 +905,39 @@ impl QueuedProfileGateway {
         self.inventory_calls
     }
 
-    /// The memberships passed to `load_inventory`, in call order.
+    /// The memberships passed to all inventory acquisition routes, in call order.
     pub fn requested_memberships(&self) -> &[DestinyMembership] {
         &self.requested_memberships
     }
 }
 
 impl ProfileGateway for QueuedProfileGateway {
+    fn load_inventory_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: destiny_core::ProfileSyncReason,
+    ) -> Result<InventorySnapshotInput, AppError> {
+        self.requested_reasons.push(reason);
+        self.load_inventory(membership)
+    }
+
+    fn load_inventory_with_observations_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: destiny_core::ProfileSyncReason,
+    ) -> Result<destiny_core::ProfileAcquisition, AppError> {
+        self.observed_acquisition_calls += 1;
+        if let Some(outcome) = self.acquisitions.pop_front() {
+            self.inventory_calls += 1;
+            self.requested_memberships.push(membership.clone());
+            self.requested_reasons.push(reason);
+            outcome
+        } else {
+            let input = self.load_inventory_scoped(membership, reason)?;
+            destiny_core::ProfileAcquisition::new(input, None)
+        }
+    }
+
     fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
         self.membership_calls += 1;
         self.memberships.pop_front().unwrap_or_else(|| {
@@ -960,6 +1008,46 @@ impl TransferGateway for QueuedTransferGateway {
                 destiny_core::ErrorCategory::ProviderUnavailable,
             ))
         })
+    }
+}
+
+/// Queues one-shot instanced pull outcomes and records every attempted request.
+/// Exhaustion returns a sanitized provider-unavailable error, never success.
+#[derive(Debug, Default)]
+pub struct QueuedInstancedPullGateway {
+    outcomes: VecDeque<Result<destiny_core::InstancedPullOutcome, AppError>>,
+    requests: Vec<destiny_core::InstancedPullRequest>,
+    calls: usize,
+}
+
+impl QueuedInstancedPullGateway {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn queue(&mut self, outcome: Result<destiny_core::InstancedPullOutcome, AppError>) {
+        self.outcomes.push_back(outcome);
+    }
+
+    pub const fn calls(&self) -> usize {
+        self.calls
+    }
+
+    pub fn requests(&self) -> &[destiny_core::InstancedPullRequest] {
+        &self.requests
+    }
+}
+
+impl destiny_core::InstancedPullGateway for QueuedInstancedPullGateway {
+    fn pull(
+        &mut self,
+        request: &destiny_core::InstancedPullRequest,
+    ) -> Result<destiny_core::InstancedPullOutcome, AppError> {
+        self.calls += 1;
+        self.requests.push(request.clone());
+        self.outcomes
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
     }
 }
 
@@ -1159,6 +1247,8 @@ pub fn synthetic_world(version: DefinitionVersion) -> destiny_core::WorldDefinit
 pub struct QueuedManifestGateway {
     indexes: VecDeque<Result<destiny_core::ports::ManifestIndex, AppError>>,
     outcomes: VecDeque<Result<ManifestAcquisition, AppError>>,
+    capacity_evidence: VecDeque<Result<destiny_core::EquipmentCapacityEvidence, AppError>>,
+    capacity_evidence_calls: usize,
     index_calls: usize,
     component_calls: usize,
     world_calls: usize,
@@ -1208,6 +1298,19 @@ impl QueuedManifestGateway {
         self.worlds.push_back(outcome);
     }
 
+    /// Capacity correspondence evidence is never inferred from the index queue.
+    /// Exhaustion returns a sanitized provider-unavailable error.
+    pub fn queue_capacity_evidence(
+        &mut self,
+        outcome: Result<destiny_core::EquipmentCapacityEvidence, AppError>,
+    ) {
+        self.capacity_evidence.push_back(outcome);
+    }
+
+    pub const fn capacity_evidence_calls(&self) -> usize {
+        self.capacity_evidence_calls
+    }
+
     pub const fn world_calls(&self) -> usize {
         self.world_calls
     }
@@ -1226,6 +1329,15 @@ impl QueuedManifestGateway {
 }
 
 impl ManifestGateway for QueuedManifestGateway {
+    fn fetch_equipment_capacity_evidence(
+        &mut self,
+    ) -> Result<destiny_core::EquipmentCapacityEvidence, AppError> {
+        self.capacity_evidence_calls += 1;
+        self.capacity_evidence
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
+    }
+
     fn load_world_components(
         &mut self,
         _index: &destiny_core::ports::ManifestIndex,
@@ -1306,6 +1418,141 @@ mod tests {
         InstanceSearchQuery, ItemHashFilter, ItemInstance, ItemLocation, MAX_HASH_FILTERS,
         MAX_SEARCH_LIMIT, MembershipId, MembershipType, PerkHash, PerkSummary, SearchTerm,
     };
+
+    #[test]
+    fn capacity_fake_queues_evidence_independently_and_counts_failures() {
+        let mut fake = QueuedManifestGateway::new();
+        let evidence = destiny_core::EquipmentCapacityEvidence::new(
+            DefinitionVersion::new("v1"),
+            "buckets-v1",
+        )
+        .unwrap();
+        fake.queue_index(Err(AppError::new(ErrorCategory::ProviderAuthentication)));
+        fake.queue_capacity_evidence(Ok(evidence.clone()));
+        fake.queue_capacity_evidence(Err(AppError::new(ErrorCategory::ProviderValidation)));
+        assert_eq!(
+            ManifestGateway::fetch_equipment_capacity_evidence(&mut fake).unwrap(),
+            evidence
+        );
+        assert_eq!(
+            fake.fetch_equipment_capacity_evidence()
+                .unwrap_err()
+                .category(),
+            ErrorCategory::ProviderValidation
+        );
+        assert_eq!(
+            fake.fetch_equipment_capacity_evidence().unwrap_err(),
+            AppError::new(ErrorCategory::ProviderUnavailable)
+        );
+        assert_eq!(fake.capacity_evidence_calls(), 3);
+        assert_eq!(fake.index_calls(), 0);
+        assert_eq!(fake.component_calls(), 0);
+        assert_eq!(
+            fake.fetch_index().unwrap_err().category(),
+            ErrorCategory::ProviderAuthentication
+        );
+        assert_eq!(fake.capacity_evidence_calls(), 3);
+    }
+
+    #[test]
+    fn observation_fake_preserves_pairs_reasons_and_plain_fallback() {
+        use destiny_core::{InstancedBucketObservation, ProfileAcquisition, ProfileSyncReason};
+        let membership =
+            DestinyMembership::new(MembershipType::new(1), MembershipId::new("123")).unwrap();
+        let mut candidate = input(1);
+        candidate.membership_id = membership.membership_id().clone();
+        let row = InstancedBucketObservation::new(
+            candidate.items[0].instance_id.clone(),
+            destiny_core::BucketHash::new(123),
+            ItemLocation::Vault,
+        )
+        .unwrap();
+        let observed = ProfileAcquisition::new(candidate.clone(), Some(vec![row])).unwrap();
+        let unavailable = ProfileAcquisition::new(candidate.clone(), None).unwrap();
+        let mut fake = QueuedProfileGateway::new();
+        fake.queue_inventory(Ok(candidate.clone()));
+        fake.queue_acquisition(Ok(observed.clone()));
+        fake.queue_acquisition(Ok(unavailable.clone()));
+        fake.queue_acquisition(Err(AppError::new(ErrorCategory::ProviderValidation)));
+        let acquire = |fake: &mut QueuedProfileGateway, reason| {
+            fake.load_inventory_with_observations_scoped(&membership, reason)
+        };
+        assert_eq!(
+            acquire(&mut fake, ProfileSyncReason::Preflight).unwrap(),
+            observed
+        );
+        assert_eq!(
+            acquire(&mut fake, ProfileSyncReason::PostAction).unwrap(),
+            unavailable
+        );
+        assert_eq!(
+            acquire(&mut fake, ProfileSyncReason::PostAction).unwrap_err(),
+            AppError::new(ErrorCategory::ProviderValidation)
+        );
+        // The observed queue never consumes a scripted plain snapshot.
+        assert_eq!(fake.load_inventory(&membership).unwrap(), candidate.clone());
+        fake.queue_inventory(Ok(candidate));
+        assert_eq!(
+            acquire(&mut fake, ProfileSyncReason::Preflight).unwrap(),
+            unavailable
+        );
+        assert_eq!(
+            acquire(&mut fake, ProfileSyncReason::PostAction).unwrap_err(),
+            AppError::new(ErrorCategory::ProviderUnavailable)
+        );
+        assert_eq!(fake.observed_acquisition_calls(), 5);
+        assert_eq!(fake.inventory_calls(), 6);
+        assert_eq!(fake.membership_calls(), 0);
+        assert_eq!(fake.requested_memberships(), vec![membership; 6]);
+        assert_eq!(
+            fake.requested_reasons(),
+            &[
+                ProfileSyncReason::Preflight,
+                ProfileSyncReason::PostAction,
+                ProfileSyncReason::PostAction,
+                ProfileSyncReason::Preflight,
+                ProfileSyncReason::PostAction
+            ]
+        );
+    }
+
+    #[test]
+    fn pull_fake_records_attempts_and_never_invents_success() {
+        use destiny_core::{
+            InstancedPullGateway, InstancedPullOutcome, InstancedPullRejection,
+            InstancedPullRequest,
+        };
+        let request = InstancedPullRequest::new(
+            DestinyMembership::new(MembershipType::new(3), MembershipId::new("123")).unwrap(),
+            ItemInstanceId::new("456"),
+            ItemHash::new(7),
+            CharacterId::new("789"),
+        )
+        .unwrap();
+        let mut fake = QueuedInstancedPullGateway::new();
+        let outcomes = [
+            InstancedPullOutcome::Acknowledged,
+            InstancedPullOutcome::Uncertain,
+            InstancedPullOutcome::Rejected(InstancedPullRejection::InvalidRequest),
+        ];
+        for outcome in outcomes {
+            fake.queue(Ok(outcome));
+        }
+        fake.queue(Err(AppError::new(ErrorCategory::ProviderAuthentication)));
+        for outcome in outcomes {
+            assert_eq!(fake.pull(&request).unwrap(), outcome);
+        }
+        assert_eq!(
+            fake.pull(&request).unwrap_err().category(),
+            ErrorCategory::ProviderAuthentication
+        );
+        assert_eq!(
+            fake.pull(&request).unwrap_err(),
+            AppError::new(ErrorCategory::ProviderUnavailable)
+        );
+        assert_eq!(fake.calls(), 5);
+        assert_eq!(fake.requests(), vec![request; 5]);
+    }
 
     #[test]
     fn instance_plugs_round_trip_through_inventory_and_search_fakes() {

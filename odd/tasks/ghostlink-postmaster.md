@@ -227,7 +227,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Verified = target instance unique in post-action published pair at
   Character(destination owner), observed actual bucket == definition destination.
   Acknowledged is never application proof; unchanged revision proves nothing.
-- [ ] **GPM-008c — Capacity port and deterministic action fakes.** Required
+- [x] **GPM-008c — Capacity port and deterministic action fakes.** Required
   ManifestGateway::fetch_equipment_capacity_evidence (adapter delegates to the
   inherent method; app fake gets separate evidence queue/counter); observation-
   aware profile fake and queued pull-outcome fake. Surfaces: core ports.rs,
@@ -262,6 +262,17 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
+- GPM-008c COMPLETE (writer verified; ASSESS medium 3 paths/295 lines, large
+  runtime writer profile, independentVerifier=false, reviewDue under_budget).
+  Required ManifestGateway::fetch_equipment_capacity_evidence; adapter trait impl
+  delegates via inherent path (parent confirmed no recursion; port test passes).
+  App fakes: independent capacity evidence queue/counter, observation-aware
+  profile acquisitions with reason/count tracking (empty queue falls back to plain
+  snapshot with unavailable observations), queued instanced-pull fake recording
+  requests; exhaustion returns sanitized ProviderUnavailable. RED 13 missing-API
+  app errors + absent trait method; GREEN 45 focused app/1 adapter; 191 app,
+  65 manifest, 1,612 default / 1,630 all-features, fmt/clippy/diff pass.
+  Next: GPM-008d opaque pull planning and eligibility.
 - GPM-008b2 COMPLETE (independently verified); GPM-008b therefore complete.
   New adapters/src/equipment_capacity_policy.rs (207 lines): audited pinned
   constants, pinned_equipment_capacity_policy through core constructor,

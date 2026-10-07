@@ -6,6 +6,7 @@ use crate::auth::{
 use crate::domain::{
     Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, SyncMetadata,
 };
+use crate::equipment_capacity::EquipmentCapacityEvidence;
 use crate::error::{AppError, ErrorCategory};
 use crate::ids::{
     BucketHash, DefinitionVersion, ItemHash, ItemInstanceId, MembershipId, MembershipType, PlanId,
@@ -794,6 +795,10 @@ pub trait PublicMilestonesGateway {
 
 /// Separates the small version check from acquisition of the large component.
 pub trait ManifestGateway {
+    /// Acquires fresh equipment capacity correspondence evidence once per call,
+    /// without caching. Correspondence only, not authenticity or action authority.
+    fn fetch_equipment_capacity_evidence(&mut self) -> Result<EquipmentCapacityEvidence, AppError>;
+
     fn fetch_index(&mut self) -> Result<ManifestIndex, AppError>;
     fn load_component(&mut self, index: &ManifestIndex) -> Result<ManifestAcquisition, AppError>;
     fn load_world_components(

@@ -1377,6 +1377,12 @@ where
     T: ManifestTransport,
     C: Clock,
 {
+    fn fetch_equipment_capacity_evidence(
+        &mut self,
+    ) -> Result<destiny_core::EquipmentCapacityEvidence, AppError> {
+        BungieManifestGateway::fetch_equipment_capacity_evidence(self)
+    }
+
     fn fetch_index(&mut self) -> Result<destiny_core::ports::ManifestIndex, AppError> {
         let index_request = ManifestHttpRequest::new(MANIFEST_ENDPOINT, Some(&self.api_key));
         let index_bytes = fetch_with_retry(
@@ -2582,6 +2588,33 @@ mod transport_tests {
             }
         })
         .to_string()
+    }
+
+    #[test]
+    fn manifest_capacity_port_acquires_once_per_call_without_cached_index() {
+        let body = json!({"ErrorCode":1,"Response":{"version":"port-v1",
+            "jsonWorldComponentContentPaths":{"en":{"DestinyInventoryBucketDefinition":"/common/destiny2_content/buckets.json"}}}}).to_string();
+        let mut gateway = BungieManifestGateway::new(
+            key(),
+            FakeTransport::with(vec![
+                Ok(json_response(body.clone())),
+                Ok(json_response(body.replace("port-v1", "port-v2"))),
+            ]),
+            clock(),
+        );
+        for (calls, version) in [(1, "port-v1"), (2, "port-v2")] {
+            let evidence =
+                ManifestGateway::fetch_equipment_capacity_evidence(&mut gateway).unwrap();
+            assert_eq!(evidence.definition_version().as_str(), version);
+            assert_eq!(
+                evidence.bucket_artifact_identity(),
+                "/common/destiny2_content/buckets.json"
+            );
+            assert_eq!(gateway.transport().requests.len(), calls);
+            let request = gateway.transport().requests.last().unwrap();
+            assert_eq!(request.url, MANIFEST_ENDPOINT);
+            assert!(request.has_api_key);
+        }
     }
 
     #[test]
