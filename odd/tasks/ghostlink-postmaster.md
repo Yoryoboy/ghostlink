@@ -217,6 +217,32 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   acquisition, successful-publication evidence and capacity policy follow before
   service dispatch. Normal-bucket inference and restrictive all-owner proof are
   not selected. No user-facing/runtime action binding from research alone.
+- GPM-008 split (scout `pull-service` map, 2026-10-07) into four ordered units.
+  User decisions: planning performs automatic forced fresh acquisition (no
+  explicit-sync requirement); post-action uses bounded re-observation: at most 3
+  forced PostAction observations, 2 s injectable delay between, stop at first
+  verified arrival, NEVER redispatch; final outcome from last observation with
+  all evidence retained. Plans: private non-Clone, consumed by value, no ticket
+  reminting (avoid mutation.rs authorize_execution/lock borrowed-plan pattern).
+  Verified = target instance unique in post-action published pair at
+  Character(destination owner), observed actual bucket == definition destination.
+  Acknowledged is never application proof; unchanged revision proves nothing.
+- [ ] **GPM-008c — Capacity port and deterministic action fakes.** Required
+  ManifestGateway::fetch_equipment_capacity_evidence (adapter delegates to the
+  inherent method; app fake gets separate evidence queue/counter); observation-
+  aware profile fake and queued pull-outcome fake. Surfaces: core ports.rs,
+  adapters manifest.rs, app test_support.rs.
+- [ ] **GPM-008d — Opaque pull planning and eligibility.** New app module
+  instanced_pull.rs (+ tests), lib exports. Forced fresh acquisition, owned
+  Postmaster(owner) selection, definition gates (explicit false side-effect flag,
+  instanced kind, supported normal bucket, definition version == published),
+  qualified capacity proof, eligibility fingerprint, private non-Clone plan.
+- [ ] **GPM-008e — Consumed-plan preflight and one-shot dispatch.** Reacquire,
+  reprove, compare membership/revision/version/fingerprint, consume plan on every
+  path, one gateway call; not exposed until GPM-008f.
+- [ ] **GPM-008f — Bounded observation and honest terminal outcomes.**
+  Verified / not yet observed / uncertain / refused with attempt evidence; lag,
+  wrong owner/bucket, missing target, unavailable observations, refresh failure.
 - [ ] **GPM-009 — CLI/MCP pull exposure.** Thin adapters, pipeline/stdio
   coverage, docs, skill and exact outcome/exit semantics.
 - [ ] **GPM-010 — Close technical verification and record live gaps.**
