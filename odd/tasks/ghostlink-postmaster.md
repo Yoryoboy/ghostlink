@@ -240,12 +240,17 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 - [x] **GPM-008e — Consumed-plan preflight and one-shot dispatch.** Reacquire,
   reprove, compare membership/revision/version/fingerprint, consume plan on every
   path, one gateway call; not exposed until GPM-008f.
-- [ ] **GPM-008e1 — Dispatch fault-injection tests (recommended follow-up).**
+- [x] **GPM-008e1 — Dispatch fault-injection tests.**
   Separate test-only unit before GPM-008f exposure: expiry during slow reads,
   first/final clock errors, final inventory/definition read failures and drift
   before final reload. Assert exact refusals/errors and zero gateway calls.
   No production edits, shared fake expansion or atomic-race guarantee implied.
-  Pending; not started by the GPM-008e commit authorization.
+  User authorized this test-only follow-up separately after GPM-008e closure.
+  One bounded writer may edit only instanced_pull/tests.rs. No production or
+  shared-fake edits; report demonstrated defects rather than widening scope.
+  This adds coverage for existing behavior, so a failing production RED is not
+  presumed or fabricated; record actual first-run and focused-check results.
+  User explicitly authorized the verified local work-unit commit `5db5f02`.
 - [ ] **GPM-008f — Bounded observation and honest terminal outcomes.**
   Verified / not yet observed / uncertain / refused with attempt evidence; lag,
   wrong owner/bucket, missing target, unavailable observations, refresh failure.
@@ -268,6 +273,38 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
+- GPM-008e1 COMPLETE — user-authorized local work-unit commit
+  `5db5f02aaff316e75043e750d999acb6209aa860`. Writer `muy9pfbq-2-w8t1` added
+  328 lines only in crates/destiny-app/src/instanced_pull/tests.rs; base `0350775`.
+  Commit-time guard confirmed verified source hashes, expected branch/HEAD,
+  empty index and diff check; only the verified test file was staged.
+  No source changes or new test runs during commit closure. RDD freshly off.
+  Six deterministic tests cover 12 fault cases plus a near-expiry success control:
+  slow-read expiry (exact and beyond), first/final clock errors, final inventory
+  error/missing snapshot, final definition error/version drift, final reload
+  membership ID/type/revision/published-version drift. Every fault asserts the
+  exact refusal/error, zero gateway calls and empty requests. Wrappers installed
+  after planning; stage counters establish valid publication/eligibility before
+  late faults. Success control dispatches once one second before expiry.
+  Coverage-only addition: no meaningful production RED. Initial compilation
+  exit 101 for two wrapper API mistakes, corrected (not safety-regression RED).
+  First runnable focused GREEN 20; final GREEN 21. Two intermediate fmt failures
+  corrected; final fmt, app all-target/all-feature clippy and diff checks exit 0.
+  Full app check PASS: 149 unit, 61 integration and 6 doctests. No required check
+  skipped. Workspace suites and live requests NOT run for this test-only unit.
+  ASSESS medium (2 paths/346 lines before this bookkeeping), runtime large
+  writer: writerSelfVerification=true, independentVerifier=false; RDD off,
+  outcome unknown, candidate not consumed, reviewDue=false/under_budget.
+  Parent structural spot check confirms stage placement, wrappers forwarding
+  and real gateway assertions; rerun diff check/scope/hash checks pass.
+  Production SHA-256 unchanged:
+  `30afcfe53266a51a40111a03dbbf4f3422fedfdb67077c83fe1bc2100c4ff40c`.
+  Tests SHA-256:
+  `58dc3e1d983671b4c686a3f3d350b1653a7668279f1e42bbf2a7b46e4a32c739`.
+  No demonstrated production defect, shared-fake expansion, GPM-008f or live
+  action. Post-final-reload drift still requires caller serialization; no atomic
+  guarantee. Work-unit closed; next pending unit is GPM-008f bounded observation
+  and honest outcomes. No separate independent verifier mandated.
 - GPM-008e COMPLETE — explicitly user-authorized local work-unit commit
   `c5348a991ca5ecc8fe5e7f6fe5349ba8a832cdf1`. Independent focused reverification
   `muy9hamq-1-l63j` PASS: 15 tests (zero failed/ignored), fmt, app all-targets/
@@ -293,16 +330,17 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   PASS: no deterministic dispatch-safety defect under documented caller-local
   publication serialization. Observed 15 focused tests, fmt/diff clean; candidate
   hashes unchanged. No new full-suite or historical RED evidence claimed.
-  Coverage gaps remain: expiry during slow reads, first/final clock faults, final
-  inventory/definition read failures and publication drift before final reload.
-  Source checks fail closed, but injected dispatch-level tests remain absent.
+  At GPM-008e closure, coverage gaps remained: expiry during slow reads,
+  first/final clock faults, final inventory/definition read failures and drift
+  before final reload. Injected tests were absent then; GPM-008e1 above now
+  supplies this coverage in the verified test-only work-unit commit `5db5f02`.
   Drift AFTER final local reads is not atomically prevented; caller serialization
   is required. Test-local wrappers in existing tests.rs suffice; shared fakes
   need not be expanded. Recommend a separate test-only unit before exposing 008f,
   not growing this 588-line implementation slice silently. No runtime blockers
-  demonstrated; 008e verified and locally committed. Next recommended unit:
-  bounded dispatch fault tests, separately scoped before public GPM-008f
-  execution. These tests and GPM-008f have not started.
+  demonstrated; 008e verified and locally committed. Separate bounded dispatch
+  fault tests are now verified and committed in GPM-008e1 (`5db5f02`).
+  Public GPM-008f execution has not started.
   No retries, PostAction observations, rollback, account requests or GPM-008f.
 - GPM-008d COMPLETE — work-unit commit `65ad8d1`: forced Preflight planning from the
   successful publication pair, exact owned Postmaster selection, version-bound
