@@ -170,7 +170,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   equipment bucket refuses the proof (never counted, quantities never slots).
   Destination bucket comes from item definition bucketTypeHash (normal bucket),
   never runtime Lost Items; missing/unsupported destination refuses.
-- [ ] **GPM-008b1 — Core capacity policy contract.** Pure core module
+- [x] **GPM-008b1 — Core capacity policy contract.** Pure core module
   equipment_capacity.rs + integration tests + lib exports: validated policy
   bound to definition version and bucket artifact identity covering exactly the
   eight supported equipment buckets; qualification against observed index
@@ -227,6 +227,17 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
+- GPM-008b1 COMPLETE (independently verified): EquipmentCapacityPolicy,
+  EquipmentCapacityEvidence, exact-match QualifiedEquipmentCapacityPolicy,
+  private EquipmentCapacityProof and typed CapacityRefusal in new
+  core/src/equipment_capacity.rs (234 lines), tests/equipment_capacity.rs (242),
+  lib.rs exports (+5). Worker RED 17 missing-API errors; GREEN 6 focused tests,
+  176 core. ASSESS unassessable (untracked files) so independent verification ran:
+  PASS all five points, no defects; fmt, clippy default/all-features, 6 focused,
+  1,602 default / 1,620 all-features offline tests, diff/whitespace clean.
+  Overflow tested at private checked helper only. Correspondence only, not
+  freshness/authenticity/dispatch authority. Work-unit commit: `5fa5747`.
+  Next: GPM-008b2 pinned policy and public index qualification adapter.
 - GPM-008a3 COMPLETE (independently verified): successful-publication evidence
   outcome with same returned snapshot and full filtered-candidate correspondence.
   Exact four mapped app/journey surfaces; ordinary legacy loader compatibility and
