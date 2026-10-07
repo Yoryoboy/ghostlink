@@ -1,8 +1,4 @@
-use destiny_cli::{
-    OutputMode,
-    command::{Command, UninstallArgs},
-    parse_process,
-};
+use destiny_cli::{OutputMode, command::Command, parse_process};
 
 #[test]
 fn uninstall_accepts_preview_and_consent_but_never_purge() {
@@ -32,6 +28,7 @@ mod linux {
         CommandOutput, DESKTOP_ID, HandlerCommandRunner, LinuxHandlerPaths,
         LinuxUriHandlerRegistrar,
     };
+    use destiny_cli::command::UninstallArgs;
     use destiny_cli::installation::Installation;
     use serde_json::{Value, json};
     use std::os::unix::fs::symlink;

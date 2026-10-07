@@ -1,8 +1,4 @@
-use destiny_cli::{
-    OutputMode,
-    command::{Command, UpdateArgs},
-    parse_process,
-};
+use destiny_cli::{OutputMode, command::Command, parse_process};
 
 #[test]
 fn update_parses_default_and_explicit_version() {
@@ -37,6 +33,7 @@ fn windows_is_actionable_and_does_not_defer() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 mod linux {
     use super::*;
+    use destiny_cli::command::UpdateArgs;
     use destiny_cli::installation::{Installation, receipt_path};
     use serde_json::{Value, json};
     use std::os::unix::fs::{PermissionsExt, symlink};
