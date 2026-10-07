@@ -269,7 +269,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 - [ ] **GPM-009 — CLI/MCP pull exposure.** Parent milestone; complete only
   after all integration units, pipeline/stdio coverage, docs/skill and exact
   outcome/exit semantics are verified and locally committed.
-- [ ] **GPM-009a — Preserve shared MCP acquisition evidence (IN PROGRESS).**
+- [x] **GPM-009a — Preserve shared MCP acquisition evidence.**
   Forward observation-aware scoped acquisitions unchanged through the existing
   SharedGateway. Add ProfileAcquisition facade export only if required.
   Test exact Preflight/PostAction reasons, one inner acquisition, available and
@@ -281,7 +281,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   remain with behavior, not a strict limit. Route: gentle-ai-worker, two-file
   write/preparation trigger; focused self-checks, native ASSESS and routed
   verification before a scoped local work-unit commit.
-- [ ] **GPM-009b — Shared pull result presentation.** Use destiny-output
+- [ ] **GPM-009b — Shared pull result presentation (IN PROGRESS).** Use destiny-output
   architecture with src/instanced_pull.rs, lib.rs and app facade exports only as
   needed. Preserve receipt, disposition, ordered classifications AND failures,
   selected IDs/hash/owner/buckets/publication metadata/timestamps independently.
@@ -322,7 +322,26 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
-- GPM-009 mapped by read-only scout `muyfk9g9-7-zepk`; GPM-009a IN PROGRESS.
+- GPM-009 mapped by read-only scout `muyfk9g9-7-zepk`; GPM-009a COMPLETE,
+  GPM-009b IN PROGRESS. 009a work-unit `66c3addde367627158e3ab7ad812c0865f114b18`
+  (176 source diff lines; app facade export and MCP forwarding/regressions).
+  Worker `muyg1hqg-8-ov4t`: semantic RED forbidden scoped fallback, 0 passed/
+  1 failed exit101 after two test compile errors corrected; minimal GREEN1.
+  Final available/unavailable exact envelope equality, membership/reasons and
+  one inner call assertions; real SQLite inventory/definition clone visibility.
+  Final PASS: shared_gateway1, shared_repository2, rc002_dispatch1, equip5,
+  app instanced_pull38, MCP156 across9 suites, app7 doctests, fmt, MCP
+  all-target/all-feature clippy and diff. Initial formatting exit1 corrected.
+  `ghostlink --bin destiny-mcp shared_gateway` selected zero tests and was NOT
+  coverage; main.rs tests actually run through destiny-mcp library process module.
+  Parent regression readback and fresh shared_gateway1/155filtered rerun PASS;
+  exact branch/HEAD/empty-index/pathset/hash/diff guards passed before localcommit.
+  ASSESS: medium2paths176lines, runtime large writer, writerSelfVerification=true,
+  independentVerifier=false, reviewDue=false/under_budget. Candidate unconsumed/
+  native unknown; RDD freshly clone-local off. No native approval or live calls.
+  Over estimate70–150 to retain readable fixtures and real SQLite checks.
+  009b route: bounded shared-output writer; serialization and sanitized failure
+  tests before production mapping, then focused checks/ASSESS/routedverification.
   Settled map: server.rs139–146/216–242 acquires the same operation Arc inside
   direct/blocking dispatch and holds it across complete read/mutation calls.
   Existing rc002 guard-lifetime and equip serialization regressions apply.
