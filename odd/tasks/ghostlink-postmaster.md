@@ -272,7 +272,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   requests; exhaustion returns sanitized ProviderUnavailable. RED 13 missing-API
   app errors + absent trait method; GREEN 45 focused app/1 adapter; 191 app,
   65 manifest, 1,612 default / 1,630 all-features, fmt/clippy/diff pass.
-  Next: GPM-008d opaque pull planning and eligibility.
+  Work-unit commit: `9664e6d`. Next: GPM-008d opaque pull planning and eligibility.
 - GPM-008b2 COMPLETE (independently verified); GPM-008b therefore complete.
   New adapters/src/equipment_capacity_policy.rs (207 lines): audited pinned
   constants, pinned_equipment_capacity_policy through core constructor,
