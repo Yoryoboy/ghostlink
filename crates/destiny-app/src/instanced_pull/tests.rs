@@ -4,6 +4,7 @@ use crate::test_support::{
     QueuedInstancedPullGateway, QueuedManifestGateway, QueuedProfileGateway,
 };
 use destiny_core::*;
+use std::{cell::Cell, rc::Rc};
 
 const BUCKET: i64 = 1498876634;
 fn membership() -> DestinyMembership {
@@ -188,6 +189,333 @@ fn queue_preflight(s: &mut Service, input: InventorySnapshotInput, observed: boo
         .gateway_mut()
         .queue_acquisition(Ok(ProfileAcquisition::new(input, rows).unwrap()));
     s.manifest.queue_capacity_evidence(evidence());
+}
+
+// These wrappers are installed only after planning and queueing valid renewed
+// evidence. Their counters therefore describe execution, not planning reads.
+#[derive(Default)]
+struct DispatchReads {
+    clocks: Cell<usize>,
+    loads: Cell<usize>,
+    publications: Cell<usize>,
+    lookups: Cell<usize>,
+    versions: Cell<usize>,
+    now: Cell<u64>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FinalInventoryFault {
+    None,
+    Error,
+    Missing,
+    MembershipId,
+    MembershipType,
+    Revision,
+    DefinitionVersion,
+}
+
+struct DispatchInventory {
+    inner: InMemoryInventoryRepository,
+    reads: Rc<DispatchReads>,
+    fault: FinalInventoryFault,
+    advance_to: Option<u64>,
+}
+impl InventoryRepository for DispatchInventory {
+    fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
+        let call = self.reads.loads.get() + 1;
+        self.reads.loads.set(call);
+        let mut snapshot = self.inner.load_current()?;
+        if call == 2 {
+            // The first load is sync's freshness read; the second must follow
+            // successful publication and the renewed definition safety checks.
+            assert_eq!(self.reads.publications.get(), 1);
+            assert_eq!(self.reads.lookups.get(), 1);
+            assert_eq!(self.reads.versions.get(), 1);
+            if let Some(now) = self.advance_to {
+                self.reads.now.set(now); // Simulated slow acquisition/read path.
+            }
+            match self.fault {
+                FinalInventoryFault::None => {}
+                FinalInventoryFault::Error => {
+                    return Err(AppError::new(ErrorCategory::LocalStorage));
+                }
+                FinalInventoryFault::Missing => return Ok(None),
+                fault => {
+                    let metadata = &mut snapshot.as_mut().unwrap().metadata;
+                    match fault {
+                        FinalInventoryFault::MembershipId => {
+                            metadata.membership_id = MembershipId::new("456");
+                        }
+                        FinalInventoryFault::MembershipType => {
+                            metadata.membership_type = MembershipType::new(2);
+                        }
+                        FinalInventoryFault::Revision => {
+                            metadata.revision = SyncRevision::new(metadata.revision.value() + 1);
+                        }
+                        FinalInventoryFault::DefinitionVersion => {
+                            metadata.definition_version = DefinitionVersion::new("v2");
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+        Ok(snapshot)
+    }
+    fn replace_current(
+        &mut self,
+        input: InventorySnapshotInput,
+    ) -> Result<InventorySnapshot, AppError> {
+        let snapshot = self.inner.replace_current(input)?;
+        self.reads
+            .publications
+            .set(self.reads.publications.get() + 1);
+        Ok(snapshot)
+    }
+}
+
+struct DispatchDefinitions {
+    inner: InMemoryDefinitionRepository,
+    reads: Rc<DispatchReads>,
+    final_version: Option<Result<DefinitionVersion, AppError>>,
+}
+impl DefinitionRepository for DispatchDefinitions {
+    fn current_definition_version(&self) -> Result<DefinitionVersion, AppError> {
+        let call = self.reads.versions.get() + 1;
+        self.reads.versions.set(call);
+        if call == 2 {
+            assert_eq!(self.reads.loads.get(), 2);
+            assert_eq!(self.reads.publications.get(), 1);
+            assert_eq!(self.reads.lookups.get(), 1);
+            if let Some(result) = &self.final_version {
+                return result.clone();
+            }
+        }
+        self.inner.current_definition_version()
+    }
+    fn lookup_definition(&self, hash: ItemHash) -> Result<Resolution<ItemDefinition>, AppError> {
+        self.reads.lookups.set(self.reads.lookups.get() + 1);
+        self.inner.lookup_definition(hash)
+    }
+    fn current_metadata(&self) -> Result<Option<SyncMetadata>, AppError> {
+        self.inner.current_metadata()
+    }
+    fn replace_definitions(
+        &mut self,
+        input: DefinitionReplacementInput,
+    ) -> Result<SyncMetadata, AppError> {
+        self.inner.replace_definitions(input)
+    }
+}
+
+struct DispatchClock {
+    reads: Rc<DispatchReads>,
+    error_on: Option<usize>,
+}
+impl Clock for DispatchClock {
+    fn now(&self) -> Result<Timestamp, AppError> {
+        let call = self.reads.clocks.get() + 1;
+        self.reads.clocks.set(call);
+        if self.error_on == Some(call) {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(Timestamp::new(self.reads.now.get()))
+    }
+}
+
+type FaultService = InstancedPullService<
+    QueuedProfileGateway,
+    DispatchInventory,
+    DispatchDefinitions,
+    QueuedManifestGateway,
+    DispatchClock,
+    DeterministicPlanIds,
+>;
+fn armed_dispatch() -> (FaultService, InstancedPullPlan, Rc<DispatchReads>) {
+    let mut s = service(input(), vec![definition()], "v1", true, evidence());
+    let plan = plan(&mut s, &request()).unwrap();
+    queue_preflight(&mut s, input(), true);
+    let reads = Rc::new(DispatchReads::default());
+    reads.now.set(100);
+    let (gateway, repository) = s.sync.into_parts();
+    let wrapped = InstancedPullService::new(
+        ProfileSyncService::new(
+            gateway,
+            DispatchInventory {
+                inner: repository,
+                reads: reads.clone(),
+                fault: FinalInventoryFault::None,
+                advance_to: None,
+            },
+        ),
+        DispatchDefinitions {
+            inner: s.definitions,
+            reads: reads.clone(),
+            final_version: None,
+        },
+        s.manifest,
+        s.policy,
+        DispatchClock {
+            reads: reads.clone(),
+            error_on: None,
+        },
+        s.plan_ids,
+    );
+    (wrapped, plan, reads)
+}
+
+fn assert_fault_dispatch(
+    s: &mut FaultService,
+    plan: InstancedPullPlan,
+    expected: PreDispatchError,
+    clocks: usize,
+    loads: usize,
+    versions: usize,
+) {
+    let mut gateway = QueuedInstancedPullGateway::new();
+    gateway.queue(Ok(InstancedPullOutcome::Acknowledged));
+    assert_eq!(
+        s.preflight_dispatch(plan, &mut gateway, FreshnessPolicy { ttl_seconds: 60 }),
+        Err(expected)
+    );
+    assert_eq!(gateway.calls(), 0);
+    assert!(gateway.requests().is_empty());
+    let reads = &s.clock.reads;
+    assert_eq!(reads.clocks.get(), clocks);
+    assert_eq!(reads.loads.get(), loads);
+    assert_eq!(reads.versions.get(), versions);
+    let renewed = usize::from(loads != 0);
+    assert_eq!(reads.publications.get(), renewed);
+    assert_eq!(reads.lookups.get(), renewed);
+    assert_eq!(s.manifest.capacity_evidence_calls(), 1 + renewed);
+    assert_eq!(s.sync.gateway_mut().membership_calls(), 1 + renewed);
+    assert_eq!(
+        s.sync.gateway_mut().observed_acquisition_calls(),
+        1 + renewed
+    );
+    assert_eq!(s.sync.gateway_mut().inventory_calls(), 1 + renewed);
+    assert_eq!(
+        s.sync.gateway_mut().requested_reasons(),
+        vec![ProfileSyncReason::Preflight; 1 + renewed].as_slice()
+    );
+    assert_eq!(s.plan_ids.calls(), 1);
+}
+
+#[test]
+fn final_clock_rejects_expiry_after_slow_reads_at_and_beyond_boundary() {
+    for beyond in [0, 1] {
+        let (mut s, plan, _) = armed_dispatch();
+        s.sync.repository_mut().advance_to = Some(plan.expires_at().seconds() + beyond);
+        assert_fault_dispatch(&mut s, plan, PreDispatchError::Expired, 2, 2, 2);
+    }
+}
+
+#[test]
+fn slow_read_control_dispatches_once_just_before_expiry() {
+    let (mut s, plan, reads) = armed_dispatch();
+    let dispatch_at = Timestamp::new(plan.expires_at().seconds() - 1);
+    s.sync.repository_mut().advance_to = Some(dispatch_at.seconds());
+    let mut gateway = QueuedInstancedPullGateway::new();
+    gateway.queue(Ok(InstancedPullOutcome::Acknowledged));
+    let attempt = s
+        .preflight_dispatch(plan, &mut gateway, FreshnessPolicy { ttl_seconds: 60 })
+        .unwrap();
+    assert_eq!(attempt.preflight_at, Timestamp::new(100));
+    assert_eq!(attempt.dispatch_at, dispatch_at);
+    assert_eq!(attempt.outcome, Ok(InstancedPullOutcome::Acknowledged));
+    assert_eq!(gateway.calls(), 1);
+    assert_eq!(gateway.requests().len(), 1);
+    assert_eq!(reads.clocks.get(), 2);
+    assert_eq!(reads.loads.get(), 2);
+    assert_eq!(reads.publications.get(), 1);
+    assert_eq!(reads.lookups.get(), 1);
+    assert_eq!(reads.versions.get(), 2);
+    assert_eq!(s.plan_ids.calls(), 1);
+}
+
+#[test]
+fn execution_clock_errors_preserve_sanitized_category_at_each_stage() {
+    for call in [1, 2] {
+        let (mut s, plan, _) = armed_dispatch();
+        s.clock.error_on = Some(call);
+        let renewed = call == 2;
+        assert_fault_dispatch(
+            &mut s,
+            plan,
+            PreDispatchError::Eligibility(InstancedPullPlanningError::Infrastructure(
+                AppError::new(ErrorCategory::ProviderValidation),
+            )),
+            call,
+            if renewed { 2 } else { 0 },
+            if renewed { 2 } else { 0 },
+        );
+    }
+}
+
+#[test]
+fn final_inventory_error_and_missing_snapshot_follow_renewed_eligibility() {
+    for fault in [FinalInventoryFault::Error, FinalInventoryFault::Missing] {
+        let (mut s, plan, _) = armed_dispatch();
+        s.sync.repository_mut().fault = fault;
+        assert_fault_dispatch(
+            &mut s,
+            plan,
+            PreDispatchError::Eligibility(InstancedPullPlanningError::Infrastructure(
+                AppError::new(ErrorCategory::LocalStorage),
+            )),
+            1,
+            2,
+            1,
+        );
+    }
+}
+
+#[test]
+fn final_definition_read_error_and_version_drift_follow_renewed_eligibility() {
+    for (result, expected) in [
+        (
+            Err(AppError::new(ErrorCategory::LocalStorage)),
+            PreDispatchError::Eligibility(InstancedPullPlanningError::Infrastructure(
+                AppError::new(ErrorCategory::LocalStorage),
+            )),
+        ),
+        (
+            Ok(DefinitionVersion::new("v2")),
+            PreDispatchError::DefinitionVersionDrift,
+        ),
+    ] {
+        let (mut s, plan, _) = armed_dispatch();
+        s.definitions.final_version = Some(result);
+        assert_fault_dispatch(&mut s, plan, expected, 1, 2, 2);
+    }
+}
+
+#[test]
+fn publication_drift_visible_only_at_final_reload_refuses_dispatch() {
+    // This models drift visible BEFORE the last local read, not atomic protection
+    // against publication after it. Caller serialization remains required.
+    for (fault, expected) in [
+        (
+            FinalInventoryFault::MembershipId,
+            PreDispatchError::IdentityDrift,
+        ),
+        (
+            FinalInventoryFault::MembershipType,
+            PreDispatchError::IdentityDrift,
+        ),
+        (
+            FinalInventoryFault::Revision,
+            PreDispatchError::RevisionDrift,
+        ),
+        (
+            FinalInventoryFault::DefinitionVersion,
+            PreDispatchError::DefinitionVersionDrift,
+        ),
+    ] {
+        let (mut s, plan, _) = armed_dispatch();
+        s.sync.repository_mut().fault = fault;
+        assert_fault_dispatch(&mut s, plan, expected, 1, 2, 1);
+    }
 }
 
 #[test]
