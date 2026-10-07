@@ -98,6 +98,10 @@ pub use destiny_core::{
     PublicMilestonesSnapshot, StatDefinition, WorldDefinitionTable, WorldDefinitionsAcquisition,
 };
 pub use destiny_core::{
+    CapacityRefusal, EquipmentCapacityEvidence, EquipmentCapacityPolicy,
+    InstancedBucketObservation, InstancedPullGateway, InstancedPullOutcome, InstancedPullRejection,
+};
+pub use destiny_core::{
     CharacterPostmaster, PostmasterInstance, PostmasterResult, PostmasterStack,
     ProfileCurrenciesCoverage, StackContainer, StackObservation,
 };
@@ -110,7 +114,6 @@ pub use destiny_core::{
     EquipGateway, EquipItemRequest, EquipOutcome, EquipPlan, EquipPreflight, EquipRejection,
     EquipRequest,
 };
-pub use destiny_core::{InstancedPullGateway, InstancedPullOutcome, InstancedPullRejection};
 pub use destiny_core::{MAX_STAT_CONDITIONS, NamedStat, StatCondition, StatOp};
 pub use destiny_core::{ManifestAcquisition, ManifestDefinitions, ManifestGateway};
 pub use manifest::{ManifestService, ManifestSyncReport, normalize_manifest};
