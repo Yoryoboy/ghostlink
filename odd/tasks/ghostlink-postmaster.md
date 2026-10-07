@@ -250,8 +250,8 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   body (confounded by JSON failure). Parent fixed it with a decodable body over
   the announced cap; mutation check (announced length None) made it FAIL, real
   code PASS; 519 adapters lib, fmt, adapters clippy all-features, diff clean.
-  Correspondence only; no live authenticity/dispatch claim. Next: GPM-008
-  verified pull service (map scope first).
+  Correspondence only; no live authenticity/dispatch claim. Work-unit commit:
+  `03c5fd3`. Next: GPM-008 verified pull service (map scope first).
 - GPM-008b1 COMPLETE (independently verified): EquipmentCapacityPolicy,
   EquipmentCapacityEvidence, exact-match QualifiedEquipmentCapacityPolicy,
   private EquipmentCapacityProof and typed CapacityRefusal in new
