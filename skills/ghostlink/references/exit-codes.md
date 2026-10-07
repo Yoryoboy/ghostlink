@@ -30,6 +30,42 @@ instruction object on stdout before waiting.) The failure object is either:
 | 50–52 | `credential_store_unavailable` / `local_storage` / `configuration_error` | Local setup problem; report to the user. |
 | 70 | `internal_error` | Report and stop. |
 
+## Update outcomes
+
+`ghostlink update` is an installation mutation requiring explicit user intent.
+Exit 0 with `status: updater_completed` means the updater completed, not that a
+requested version was installed (`installed_version` is null). Configuration,
+data and credentials are preserved; restart MCP hosts afterward. Never
+automatically retry a failed or uncertain update.
+
+| Exit | `error.code` | Agent action for update |
+|---:|---|---|
+| 2 | `invalid_request` | Check the command and requested version against `--help`. |
+| 40 | `unsupported_installation` / `updater_missing` | Report the refusal; use the original installation method or official release installer, not a substitute updater from PATH. |
+| 40 | `unsupported_operation` | Windows refuses without launching or deferring anything. Ask the user to close Ghostlink, stop `destiny-mcp`, then run the official sibling `.\ghostlink-update.exe` from its installation directory in a separate PowerShell session. Other platforms outside Linux x86_64 GNU also refuse. |
+| 41 | `updater_failed` | Files may have changed. Inspect the installation first; report and do not automatically retry. No rollback is guaranteed. |
+| 43 | `lifecycle_busy` | Wait for the other lifecycle command or inspect unsafe lock files manually; never automatically delete foreign locks. This is distinct from equip's pending-provider-refresh exit 43. |
+| 51 | `local_storage` | Check installation ownership and permissions; no automatic elevation. |
+
+## Uninstall outcomes
+
+`ghostlink uninstall` requires explicit installation-removal intent. No purge is
+supported; configuration, databases, credentials, runtime state, external/custom
+paths and unknown files remain. Stop MCP hosts and active login first. No process
+inactivity guarantee, elevation or termination. Preview is read-only; JSON mutation
+requires explicit `--yes`. Exact skill identity is not installation provenance;
+name-only registrations always need manual inspection. Success never guarantees
+all integrations are gone. Individual changes have no rollback; lock metadata remains.
+
+| Exit | Code / status | Agent action for uninstall |
+|---:|---|---|
+| 0 | preview / cancelled / removed_with_manual_followups | Report per-path outcomes, preserved locations and manual followups. |
+| 2 | invalid_request / confirmation_required | Check help; preview first, use `--yes` only with explicit user authorization. |
+| 40 | unsupported_installation / unsupported_operation | Use the original installation method. Windows: close Ghostlink, stop MCP hosts and active login, inspect the receipt and remove only owned files from separate PowerShell, preserving user data; nothing launches. |
+| 41 | partial_failure | One stderr JSON object includes error **and** report; inspect removed/changed paths, agents, handler skips/errors and retained temps. Binaries/receipt stay on unsafe handler or agent filesystem cleanup failure; final file removals can be individually partial. Do not blindly retry. |
+| 43 | lifecycle_busy | Wait or inspect unsafe lock metadata manually; do not unlink live/foreign locks. |
+| 51 | local_storage | Safe preview/access failed; check permissions, no automatic elevation. |
+
 ## Equip `status`
 
 | `status` | Exit | Agent action |

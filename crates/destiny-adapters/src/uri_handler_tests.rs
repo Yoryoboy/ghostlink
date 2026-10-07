@@ -47,6 +47,7 @@ impl Drop for TestDir {
 #[derive(Default)]
 struct FakeRunner {
     default_handler: String,
+    scoped_mime: Option<PathBuf>,
     responses: HashMap<String, CommandOutput>,
     unavailable: Vec<&'static str>,
     calls: Vec<String>,
@@ -96,7 +97,17 @@ impl HandlerCommandRunner for FakeRunner {
         if command == QUERY {
             return Ok(CommandOutput {
                 success: true,
-                stdout: format!("{}\n", self.default_handler),
+                stdout: format!(
+                    "{}\n",
+                    if self.default_handler == DESKTOP_ID {
+                        self.scoped_mime
+                            .as_ref()
+                            .map(|p| fake_mime_default(p))
+                            .unwrap_or_else(|| self.default_handler.clone())
+                    } else {
+                        self.default_handler.clone()
+                    }
+                ),
             });
         }
         if let ["default", handler, "x-scheme-handler/ghostlink"] = args
@@ -114,6 +125,469 @@ impl HandlerCommandRunner for FakeRunner {
             success: true,
             stdout: String::new(),
         })
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_cleanup_absent_is_read_only() {
+    let dir = TestDir::new();
+    let mut registrar = registrar(&dir, FakeRunner::with_default(""));
+    let plan = registrar.scoped_cleanup_plan().expect("plan");
+    assert!(plan.actions.is_empty());
+    assert!(!dir.paths().applications_dir.exists());
+    let report = registrar.execute_scoped_cleanup(&plan);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert!(report.completed.is_empty());
+    assert!(registrar.runner.calls.iter().all(|call| call == QUERY));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_active_default_without_owned_rewrite_preserves_handler() {
+    for record in [None, Some(""), Some("invalid record")] {
+        let dir = TestDir::new();
+        let mut registrar = registrar(&dir, FakeRunner::with_default(DESKTOP_ID));
+        write(
+            &registrar.desktop_file(),
+            &registrar.desktop_entry().unwrap(),
+        );
+        write(
+            &dir.paths().mimeapps_list,
+            "[Default Applications]\ntext/html=browser.desktop;\n",
+        );
+        if let Some(record) = record {
+            write(&dir.paths().record_file, record);
+        }
+        let plan = registrar.scoped_cleanup_plan().unwrap();
+        assert!(plan.actions.is_empty(), "{plan:?}");
+        assert!(!plan.skips.is_empty());
+        let report = registrar.execute_scoped_cleanup(&plan);
+        assert!(report.completed.is_empty());
+        assert!(registrar.desktop_file().exists());
+        if let Some(record) = record {
+            assert_eq!(
+                fs::read_to_string(&dir.paths().record_file).unwrap(),
+                record
+            );
+        }
+    }
+}
+
+// Fake query observes only the fixture's user default after a scoped rewrite.
+fn fake_mime_default(path: &Path) -> String {
+    let text = fs::read_to_string(path).unwrap();
+    let mut in_defaults = false;
+    for line in text.lines() {
+        if line.starts_with('[') {
+            in_defaults = line == "[Default Applications]";
+        }
+        if in_defaults && let Some(value) = scheme_value(line) {
+            return value.split(';').next().unwrap_or_default().to_owned();
+        }
+    }
+    String::new()
+}
+
+#[cfg(target_os = "linux")]
+fn scoped_fixture(dir: &TestDir, default: &str) -> LinuxUriHandlerRegistrar<FakeRunner> {
+    let mut registrar = registrar(dir, FakeRunner::with_default(default));
+    registrar.runner.scoped_mime = Some(dir.paths().mimeapps_list);
+    write(
+        &registrar.desktop_file(),
+        &registrar.desktop_entry().unwrap(),
+    );
+    write(&dir.paths().record_file, "previous.desktop\n");
+    write(
+        &dir.paths().mimeapps_list,
+        "# untouched\n[Default Applications]\nx-scheme-handler/ghostlink=ghostlink-callback.desktop;fallback.desktop;\ntext/html=browser.desktop;\n[Added Associations]\nx-scheme-handler/ghostlink=foreign.desktop;ghostlink-callback.desktop;\n[Removed Associations]\nx-scheme-handler/ghostlink=ghostlink-callback.desktop;removed.desktop;\n",
+    );
+    registrar
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_exact_install_restores_in_shared_mime_and_preserves_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TestDir::new();
+    let mut registrar = scoped_fixture(&dir, DESKTOP_ID);
+    fs::set_permissions(
+        &dir.paths().mimeapps_list,
+        fs::Permissions::from_mode(0o640),
+    )
+    .unwrap();
+    let before = fs::read_to_string(&dir.paths().mimeapps_list).unwrap();
+    let plan = registrar.scoped_cleanup_plan().unwrap();
+    assert_eq!(plan.actions.len(), 3);
+    assert!(plan.skips.is_empty());
+    assert_eq!(
+        fs::read_to_string(&dir.paths().mimeapps_list).unwrap(),
+        before
+    );
+    assert!(registrar.runner.calls.iter().all(|c| c == QUERY));
+    let report = registrar.execute_scoped_cleanup(&plan);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_eq!(report.completed.len(), 3);
+    assert!(!registrar.desktop_file().exists());
+    assert!(!dir.paths().record_file.exists());
+    let mime = fs::read_to_string(&dir.paths().mimeapps_list).unwrap();
+    assert_eq!(
+        mime,
+        "# untouched\n[Default Applications]\nx-scheme-handler/ghostlink=previous.desktop;fallback.desktop;\ntext/html=browser.desktop;\n[Added Associations]\nx-scheme-handler/ghostlink=foreign.desktop;\n[Removed Associations]\nx-scheme-handler/ghostlink=removed.desktop;\n"
+    );
+    assert_eq!(
+        fs::metadata(&dir.paths().mimeapps_list)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o640
+    );
+    assert!(registrar.runner.calls.iter().all(|c| c == QUERY));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_foreign_default_is_not_replaced_by_previous() {
+    let dir = TestDir::new();
+    let mut registrar = scoped_fixture(&dir, "selected.desktop");
+    write(
+        &dir.paths().mimeapps_list,
+        "[Default Applications]\nx-scheme-handler/ghostlink=selected.desktop;ghostlink-callback.desktop;\ntext/html=browser.desktop;\n",
+    );
+    let plan = registrar.scoped_cleanup_plan().unwrap();
+    let report = registrar.execute_scoped_cleanup(&plan);
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert_eq!(registrar.runner.default_handler, "selected.desktop");
+    assert_eq!(
+        fs::read_to_string(&dir.paths().mimeapps_list).unwrap(),
+        "[Default Applications]\nx-scheme-handler/ghostlink=selected.desktop;\ntext/html=browser.desktop;\n"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_changed_default_since_preview_refuses_all_mutation() {
+    let dir = TestDir::new();
+    let mut registrar = scoped_fixture(&dir, DESKTOP_ID);
+    let plan = registrar.scoped_cleanup_plan().unwrap();
+    registrar.runner.default_handler = "new.desktop".into();
+    let report = registrar.execute_scoped_cleanup(&plan);
+    assert_eq!(report.errors.len(), 1);
+    assert!(report.completed.is_empty());
+    assert!(registrar.desktop_file().exists());
+    assert!(dir.paths().record_file.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_modified_and_other_install_desktops_preserve_everything() {
+    for change in [
+        "Exec=/other/ghostlink callback %u",
+        "Name=Custom",
+        "Exec=/opt/ghostlink/bin/ghostlink callback %u\nExec=/evil",
+    ] {
+        let dir = TestDir::new();
+        let mut registrar = scoped_fixture(&dir, DESKTOP_ID);
+        write(
+            &registrar.desktop_file(),
+            &format!("{}\n{change}\n", registrar.desktop_entry().unwrap()),
+        );
+        let plan = registrar.scoped_cleanup_plan().unwrap();
+        assert!(plan.actions.is_empty());
+        assert!(!plan.skips.is_empty());
+        let report = registrar.execute_scoped_cleanup(&plan);
+        assert!(report.completed.is_empty());
+        assert!(dir.paths().record_file.exists());
+        assert!(registrar.runner.calls.is_empty());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_orphan_and_invalid_records_are_preserved() {
+    let dir = TestDir::new();
+    write(&dir.paths().record_file, "previous.desktop\n");
+    let mut registrar = registrar(&dir, FakeRunner::with_default(DESKTOP_ID));
+    let plan = registrar.scoped_cleanup_plan().unwrap();
+    assert!(plan.actions.is_empty());
+    assert!(plan.skips[0].guidance.contains("Orphan"));
+    for record in [
+        "../evil.desktop\n",
+        "previous.desktop\nother.desktop\n",
+        " previous.desktop\n",
+        "ghostlink-callback.desktop\n",
+    ] {
+        let dir = TestDir::new();
+        let mut registrar = scoped_fixture(&dir, DESKTOP_ID);
+        write(&dir.paths().record_file, record);
+        let plan = registrar.scoped_cleanup_plan().unwrap();
+        assert!(!plan.skips.is_empty());
+        let report = registrar.execute_scoped_cleanup(&plan);
+        assert!(report.errors.is_empty(), "{report:?}");
+        assert_eq!(
+            fs::read_to_string(&dir.paths().record_file).unwrap(),
+            record
+        );
+        assert!(
+            !fs::read_to_string(&dir.paths().mimeapps_list)
+                .unwrap()
+                .contains(DESKTOP_ID)
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_empty_record_never_restores_and_ambiguous_mime_is_preserved() {
+    let dir = TestDir::new();
+    let mut registrar = scoped_fixture(&dir, DESKTOP_ID);
+    write(&dir.paths().record_file, "\n");
+    let plan = registrar.scoped_cleanup_plan().unwrap();
+    assert!(matches!(
+        &plan.actions[0],
+        HandlerCleanupAction::RewriteMime { restore: None, .. }
+    ));
+    assert!(registrar.execute_scoped_cleanup(&plan).errors.is_empty());
+    for mime in [
+        "[Default Applications]\nx-scheme-handler/ghostlink=ghostlink-callback.desktop;\nx-scheme-handler/ghostlink=other.desktop;\n",
+        "[Custom]\nx-scheme-handler/ghostlink=ghostlink-callback.desktop;\n",
+        "[Default Applications]\nx-scheme-handler/ghostlink=other.desktop;ghostlink-callback.desktop;\n",
+    ] {
+        let dir = TestDir::new();
+        let mut registrar = scoped_fixture(&dir, DESKTOP_ID);
+        write(&dir.paths().mimeapps_list, mime);
+        registrar.runner.scoped_mime = None; // Model a higher-priority Ghostlink default.
+        let plan = registrar.scoped_cleanup_plan().unwrap();
+        assert!(plan.actions.is_empty(), "{plan:?}");
+        assert!(!plan.skips.is_empty());
+        assert_eq!(
+            fs::read_to_string(&dir.paths().mimeapps_list).unwrap(),
+            mime
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_symlink_leaves_and_ancestors_are_preserved() {
+    use std::os::unix::fs::symlink;
+    // No fixture deletion: inject fresh symlink paths instead.
+    for leaf in [true, false] {
+        let dir = TestDir::new();
+        let outside = dir.0.join("outside");
+        write(&outside.join(DESKTOP_ID), "untouched");
+        let mut paths = dir.paths();
+        if leaf {
+            fs::create_dir_all(&paths.applications_dir).unwrap();
+            symlink(
+                outside.join(DESKTOP_ID),
+                paths.applications_dir.join(DESKTOP_ID),
+            )
+            .unwrap();
+        } else {
+            paths.applications_dir = dir.0.join("linked");
+            symlink(&outside, &paths.applications_dir).unwrap();
+        }
+        let mut registrar =
+            LinuxUriHandlerRegistrar::new(paths, PathBuf::from(EXE), FakeRunner::default());
+        let plan = registrar.scoped_cleanup_plan().unwrap();
+        assert!(plan.actions.is_empty());
+        assert!(plan.skips.iter().any(|s| s.guidance.contains("symlink")));
+        assert!(registrar.execute_scoped_cleanup(&plan).completed.is_empty());
+        assert_eq!(
+            fs::read_to_string(outside.join(DESKTOP_ID)).unwrap(),
+            "untouched"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_bounded_read_and_snapshot_change_preserve_files() {
+    let dir = TestDir::new();
+    let mut registrar = scoped_fixture(&dir, DESKTOP_ID);
+    let plan = registrar.scoped_cleanup_plan().unwrap();
+    write(&dir.paths().record_file, "changed.desktop\n");
+    let report = registrar.execute_scoped_cleanup(&plan);
+    assert_eq!(report.errors.len(), 1);
+    assert!(report.completed.is_empty());
+    write(&dir.paths().record_file, &"a".repeat(READ_LIMIT + 1));
+    let plan = registrar.scoped_cleanup_plan().unwrap();
+    assert!(plan.actions.is_empty());
+    assert!(plan.skips.iter().any(|s| s.guidance.contains("limit")));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_temp_collision_is_structured_and_preserves_existing_file() {
+    use std::os::unix::fs::symlink;
+    for linked in [false, true] {
+        let dir = TestDir::new();
+        let mut registrar = scoped_fixture(&dir, DESKTOP_ID);
+        let temp = dir
+            .paths()
+            .mimeapps_list
+            .with_file_name(".mimeapps.list.ghostlink-scoped-tmp");
+        if linked {
+            let target = dir.0.join("target");
+            write(&target, "keep");
+            symlink(target, &temp).unwrap();
+        } else {
+            write(&temp, "keep");
+        }
+        let plan = registrar.scoped_cleanup_plan().unwrap();
+        let report = registrar.execute_scoped_cleanup(&plan);
+        assert_eq!(report.errors.len(), 1);
+        assert!(report.completed.is_empty());
+        assert_eq!(fs::read_to_string(&temp).unwrap(), "keep");
+        assert!(registrar.desktop_file().exists());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_still_selected_after_mime_rewrite_preserves_desktop_and_record() {
+    let dir = TestDir::new();
+    let mut registrar = scoped_fixture(&dir, DESKTOP_ID);
+    registrar.runner.scoped_mime = None; // Higher-priority desktop-specific MIME file.
+    let plan = registrar.scoped_cleanup_plan().unwrap();
+    let report = registrar.execute_scoped_cleanup(&plan);
+    assert_eq!(report.completed.len(), 1);
+    assert_eq!(report.errors.len(), 1);
+    assert!(registrar.desktop_file().exists());
+    assert!(dir.paths().record_file.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_missing_mime_with_current_default_requires_manual_cleanup() {
+    let dir = TestDir::new();
+    let mut registrar = registrar(&dir, FakeRunner::with_default(DESKTOP_ID));
+    write(
+        &registrar.desktop_file(),
+        &registrar.desktop_entry().unwrap(),
+    );
+    write(&dir.paths().record_file, "previous.desktop\n");
+    let plan = registrar.scoped_cleanup_plan().unwrap();
+    assert!(plan.actions.is_empty());
+    assert!(!plan.skips.is_empty());
+    assert!(registrar.execute_scoped_cleanup(&plan).completed.is_empty());
+    assert!(registrar.desktop_file().exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_record_and_mime_symlinks_require_manual_cleanup() {
+    use std::os::unix::fs::symlink;
+    for record in [false, true] {
+        let dir = TestDir::new();
+        let mut paths = dir.paths();
+        let target = dir.0.join("untouched");
+        write(&target, "previous.desktop\n");
+        let linked = dir.0.join("linked");
+        symlink(&target, &linked).unwrap();
+        if record {
+            paths.record_file = linked;
+        } else {
+            paths.mimeapps_list = linked;
+        }
+        let mut registrar = LinuxUriHandlerRegistrar::new(
+            paths,
+            PathBuf::from(EXE),
+            FakeRunner::with_default(DESKTOP_ID),
+        );
+        write(
+            &registrar.desktop_file(),
+            &registrar.desktop_entry().unwrap(),
+        );
+        let plan = registrar.scoped_cleanup_plan().unwrap();
+        assert!(plan.actions.is_empty());
+        assert!(plan.skips.iter().any(|s| s.guidance.contains("symlink")));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "previous.desktop\n");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_without_current_default_strips_only_owned_values() {
+    let dir = TestDir::new();
+    let mut registrar = scoped_fixture(&dir, "");
+    let plan = registrar.scoped_cleanup_plan().unwrap();
+    assert!(matches!(
+        &plan.actions[0],
+        HandlerCleanupAction::RewriteMime { restore: None, .. }
+    ));
+    let report = registrar.execute_scoped_cleanup(&plan);
+    assert!(report.errors.is_empty(), "{report:?}");
+    let mime = fs::read_to_string(&dir.paths().mimeapps_list).unwrap();
+    assert!(!mime.contains("previous.desktop"));
+    assert!(mime.contains("fallback.desktop"));
+    assert!(mime.contains("text/html=browser.desktop;"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_public_preview_fields_cannot_expand_authority() {
+    let dir = TestDir::new();
+    let mut registrar = scoped_fixture(&dir, DESKTOP_ID);
+    let outside = dir.0.join("unrelated");
+    write(&outside, "keep");
+    let mut plan = registrar.scoped_cleanup_plan().unwrap();
+    plan.actions.push(HandlerCleanupAction::RemoveDesktop {
+        path: outside.clone(),
+    });
+    let report = registrar.execute_scoped_cleanup(&plan);
+    assert!(!report.errors.is_empty());
+    assert!(report.completed.is_empty());
+    assert_eq!(fs::read_to_string(outside).unwrap(), "keep");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scoped_rechecks_after_query_and_reports_partial_success() {
+    struct ChangingRunner {
+        calls: usize,
+        path: PathBuf,
+        mime: PathBuf,
+        at: usize,
+    }
+    impl HandlerCommandRunner for ChangingRunner {
+        fn run(&mut self, program: &str, args: &[&str]) -> Result<CommandOutput, AppError> {
+            assert_eq!(program, "xdg-mime");
+            assert_eq!(args, ["query", "default", SCHEME_MIME]);
+            self.calls += 1;
+            if self.calls == self.at {
+                write(&self.path, "external change\n");
+            }
+            Ok(CommandOutput {
+                success: true,
+                stdout: fake_mime_default(&self.mime),
+            })
+        }
+    }
+    for (at, completed) in [(3, 0), (4, 1), (5, 2)] {
+        let dir = TestDir::new();
+        let fixture = scoped_fixture(&dir, DESKTOP_ID);
+        let mut registrar = LinuxUriHandlerRegistrar::new(
+            dir.paths(),
+            PathBuf::from(EXE),
+            ChangingRunner {
+                calls: 0,
+                path: dir.paths().record_file,
+                mime: dir.paths().mimeapps_list,
+                at,
+            },
+        );
+        let plan = registrar.scoped_cleanup_plan().unwrap();
+        let report = registrar.execute_scoped_cleanup(&plan);
+        assert_eq!(report.completed.len(), completed, "{report:?}");
+        assert_eq!(report.errors.len(), 1, "{report:?}");
+        assert_eq!(
+            fs::read_to_string(&dir.paths().record_file).unwrap(),
+            "external change\n"
+        );
+        drop(fixture);
     }
 }
 
