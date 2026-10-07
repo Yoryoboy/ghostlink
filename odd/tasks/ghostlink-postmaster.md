@@ -254,6 +254,18 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 - [ ] **GPM-008f — Bounded observation and honest terminal outcomes.**
   Verified / not yet observed / uncertain / refused with attempt evidence; lag,
   wrong owner/bucket, missing target, unavailable observations, refresh failure.
+  Implementation map complete; user selected preserving confirmed refusals
+  even when arrival is observed, with arrival evidence shown separately.
+  Natural ordered subunits:
+- [x] **GPM-008f1 — Observation evidence and exact arrival classification.**
+  Private pure classification over the published acquisition pair; retain target
+  metadata/actual buckets and explicit absent/unavailable/drift reasons. No new
+  public dispatch path. Deterministic classifier tests alongside behavior.
+- [ ] **GPM-008f2 — Bounded verified execution and facade (IN PROGRESS).**
+  Consume the plan, call dispatch once, retain exact gateway outcome and all
+  ordered observations. At most three forced PostAction acquisitions, existing
+  RetryDelay pacing of two seconds only between attempts; never redispatch.
+  Additive app exports only after safe execution is integrated and checked.
 - [ ] **GPM-009 — CLI/MCP pull exposure.** Thin adapters, pipeline/stdio
   coverage, docs, skill and exact outcome/exit semantics.
 - [ ] **GPM-010 — Close technical verification and record live gaps.**
@@ -273,6 +285,50 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
+- GPM-008f2 IN PROGRESS — one bounded writer on app instanced_pull.rs,
+  instanced_pull/tests.rs and additive lib.rs exports only. Integrate the private
+  classifier with consumed-plan execution, preserve receipts/all attempts and
+  cap forced PostAction observations at three, two-second waits only between.
+  No runtime/CLI/MCP/shared-fake edits. Gateway Err has no PostAction expense.
+  Continue bounded attempts through lag/non-arrival/unavailable observations or
+  refresh errors; fail closed and stop on clock/backwards-time or published
+  identity/hash/version drift. Preserve the failing attempt and previous evidence.
+  Final disposition uses the last observation, not earlier favourable evidence;
+  stop first exact arrival, but confirmed receipt refusal remains Refused.
+  Plan expiry gates dispatch only, never expires already-dispatched evidence.
+  Existing infallible RetryDelay cannot fail and is reused without new ports.
+  Run focused/app/default/all-features plus workspace suites/clippy at closure.
+- GPM-008f1 COMPLETE — work-unit commit
+  `1f6af5e40e67c35489d761a660dc91e51a0f98d6` (264 source diff lines).
+  Writer `muyec2nt-2-9csc`: private PullArrival/PullObservation and pure classifier
+  from exact PublishedProfileAcquisition. Requires membership/version/hash,
+  Character(exact owner), actual normal bucket. Retains metadata, optional target
+  and actual observations on every failure; revision is deliberately irrelevant.
+  Duplicate target IDs/incomplete available buckets are structurally excluded by
+  validated constructors; no constructor weakened, no causal/atomic guarantee.
+  RED: 18 missing-API compilation errors (exit 101), not assertion RED. GREEN:
+  24 focused, 6 doctests; app default 219 / all-features 436 tests as reported.
+  Alternate missing-target and changed/unchanged revision controls pass. Initial
+  fmt failure corrected within allowed files; final fmt/clippy/diff exit 0.
+  ASSESS medium (3 paths/292 lines), runtime large, writer checks stand,
+  independentVerifier=false; RDD off, outcome unknown/not consumed, under_budget.
+  Parent source/test readback, rerun diff check and guarded hashes/scope passed.
+  Workspace checks deferred to 008f2; no required check skipped. No executor,
+  exports, runtime binding, shared-fake edits or live calls in this unit.
+  Scout `muycj3ju-1-ujk1` maps successful publication pair seams.
+  User selected option 1: confirmed receipt refusal remains Refused even after
+  exact observed arrival; retain arrival evidence separately. Apply uniformly
+  to Rejected, AuthenticationRefused and Transient, never upgrade to success.
+  Acknowledged/Uncertain may become verified only with exact valid arrival proof.
+  Reuse existing infallible RetryDelay in 008f2; no new delay infrastructure.
+  Gateway Err stays pre-dispatch-only, with no PostAction observations.
+  Estimated 500-800 diff lines including tests; split coherent private classifier
+  (008f1) from bounded executor/public facade (008f2), not by file type.
+  User authorized sequential work through GPM-010; session standing permission
+  covers scoped local work-unit commits. Existing no publishing/live restrictions
+  remain. Baseline for 008f1 was `c5acf50`; 008f2 builds on its verified commit.
+  Observe test-first RED before 008f2 implementation, then GREEN/alternate cases/
+  refactor; widen no shared fakes and start no 009 binding before 008f closes.
 - GPM-008e1 COMPLETE — user-authorized local work-unit commit
   `5db5f02aaff316e75043e750d999acb6209aa860`. Writer `muy9pfbq-2-w8t1` added
   328 lines only in crates/destiny-app/src/instanced_pull/tests.rs; base `0350775`.
