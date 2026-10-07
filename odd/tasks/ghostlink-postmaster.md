@@ -142,7 +142,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   instance bucket gives None; zero instances gives Some(empty). Preserve current
   rejection of explicit null or malformed present bucketHash in BOTH decoders;
   no new nullable policy flag or weakened stack bucket validation.
-- [ ] **GPM-008a3 — Publish then expose fresh evidence.** Share sync acquisition,
+- [x] **GPM-008a3 — Publish then expose fresh evidence.** Share sync acquisition,
   membership validation/filtering/publication. Return observations only after
   successful replace_current alongside THAT returned snapshot, never an unrelated
   reload. No proof on freshness skips/failure. Ephemeral buckets do not advance
@@ -209,12 +209,17 @@ instance identifiers or claiming verification from an API acknowledgement alone.
 
 ## Progress and next step
 
-- GPM-008a3 IN PROGRESS: successful-publication evidence outcome with same
-  returned snapshot and full filtered-candidate correspondence. Exact four mapped
-  app/journey surfaces; ordinary legacy loader compatibility and zero post-write
-  reload for proof. No policy/service dispatch or durable buckets in this unit.
-  Writer `muxa5mzh-15-272e` active; no other source writer. Tests include real
-  in-memory SQLite journey plus isolated returned-snapshot mismatch controls.
+- GPM-008a3 COMPLETE (independently verified): successful-publication evidence
+  outcome with same returned snapshot and full filtered-candidate correspondence.
+  Exact four mapped app/journey surfaces; ordinary legacy loader compatibility and
+  zero post-write reload for proof. No policy/service dispatch or durable buckets.
+  Writer `muxa5mzh-15-272e` complete. ASSESS medium (4 paths/799 lines), small
+  writer-profile fallback raised it to required independent verification:
+  gentle-ai-verify PASS on all six contract points; fmt, clippy default/all-features,
+  1,593 default / 1,611 all-features offline tests, zero failures; diff check pass.
+  Parent confirmed git scope equals the four surfaces. RDD off; historical RED not
+  re-observed by verifier. Work-unit commit: `afe746f`.
+  Next: GPM-008b capacity policy (scope still to map).
 - GPM-008a2 COMPLETE: retain actual buckets from a single scoped profile
   acquisition using shared normalization; exact three adapter surfaces above.
   Work-unit commit: `5c113f0`.
