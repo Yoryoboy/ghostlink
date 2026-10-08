@@ -33,6 +33,24 @@ use rmcp::model::{CallToolResult, ContentBlock, JsonObject, Tool};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// MCP output schemas must declare an object root, including tagged enums
+/// whose generated schema expresses their object variants only through `oneOf`.
+trait ObjectOutputSchema {
+    fn with_object_output_schema<T: JsonSchema + 'static>(self) -> Self;
+}
+
+impl ObjectOutputSchema for Tool {
+    fn with_object_output_schema<T: JsonSchema + 'static>(self) -> Self {
+        let mut tool = self.with_output_schema::<T>();
+        if let Some(schema) = &mut tool.output_schema {
+            std::sync::Arc::make_mut(schema)
+                .entry("type")
+                .or_insert_with(|| serde_json::json!("object"));
+        }
+        tool
+    }
+}
+
 /// Stable tool name for the character listing read.
 pub const LIST_CHARACTERS_TOOL: &str = "list_characters";
 
@@ -144,7 +162,7 @@ pub fn tool_specs() -> Vec<Tool> {
             JsonObject::new(),
         )
         .with_input_schema::<GetPostmasterArgs>()
-        .with_output_schema::<GetPostmasterOutput>()
+        .with_object_output_schema::<GetPostmasterOutput>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
         Tool::new(
             LIST_CHARACTERS_TOOL,
@@ -152,59 +170,59 @@ pub fn tool_specs() -> Vec<Tool> {
             JsonObject::new(),
         )
         .with_input_schema::<ListCharactersArgs>()
-        .with_output_schema::<ListCharactersOutput>(),
+        .with_object_output_schema::<ListCharactersOutput>(),
         Tool::new(
             SEARCH_INVENTORY_TOOL,
             SEARCH_INVENTORY_DESCRIPTION,
             JsonObject::new(),
         )
         .with_input_schema::<SearchInventoryArgs>()
-        .with_output_schema::<SearchInventoryOutput>(),
+        .with_object_output_schema::<SearchInventoryOutput>(),
         Tool::new(
             INSPECT_ITEM_TOOL,
             INSPECT_ITEM_DESCRIPTION,
             JsonObject::new(),
         )
         .with_input_schema::<InspectItemArgs>()
-        .with_output_schema::<InspectItemOutput>(),
+        .with_object_output_schema::<InspectItemOutput>(),
         Tool::new(
             GET_SUBCLASS_TOOL,
             "Return the equipped subclass super, abilities, aspects and fragments per character. Omit character for all characters, or select an exact id or unique hunter|titan|warlock class. Requires loaded Manifest definitions.",
             JsonObject::new(),
         )
         .with_input_schema::<GetSubclassArgs>()
-        .with_output_schema::<GetSubclassOutput>(),
+        .with_object_output_schema::<GetSubclassOutput>(),
         Tool::new(
             GET_ARTIFACT_TOOL,
             "Return live artifact points and each character's equipped artifact and perks. Omit character for all characters, or select an exact id or unique hunter|titan|warlock class. Requires login and loaded Manifest definitions; reads live state.",
             JsonObject::new(),
         )
         .with_input_schema::<GetArtifactArgs>()
-        .with_output_schema::<GetArtifactOutput>(),
+        .with_object_output_schema::<GetArtifactOutput>(),
         Tool::new(
             GET_LOADOUTS_TOOL,
             "Return saved in-game loadouts per character with names, weapons, armor, subclass configuration and artifact perks. Omit character for all characters, or select an exact id or unique hunter|titan|warlock class. Requires login and loaded Manifest definitions; run sync-manifest once for loadout names. Reads live state.",
             JsonObject::new(),
         )
         .with_input_schema::<GetLoadoutsArgs>()
-        .with_output_schema::<GetLoadoutsOutput>(),
+        .with_object_output_schema::<GetLoadoutsOutput>(),
         Tool::new(
             WEEKLY_RESET_TOOL,
             "Predict weekly calendar values from a community-derived rotation. Live milestones are observed data for the current week only. Requires login and `ghostlink sync-manifest` to load the required definitions. Dates use UTC, not the server's local zone.",
             JsonObject::new(),
         )
         .with_input_schema::<WeeklyResetArgs>()
-        .with_output_schema::<WeeklyResetOutput>(),
+        .with_object_output_schema::<WeeklyResetOutput>(),
         Tool::new(WEEKLY_TOOL, "Read reliable per-character weekly content and progress. Requires login and `ghostlink sync-manifest`. Reprise is omitted. Vanguard alerts report GM, challenged Crucible, and challenged Vanguard Op variants with visible reward unions; these are not verified in-game weapon assignments. Character accepts an exact id or unique hunter|titan|warlock class; omitted selects strictly highest light, ties use deterministic first.", JsonObject::new())
             .with_input_schema::<WeeklyArgs>()
-            .with_output_schema::<WeeklyOutput>(),
+            .with_object_output_schema::<WeeklyOutput>(),
         Tool::new(
             GET_SUBCLASS_OPTIONS_TOOL,
             "Return available subclass options (supers, abilities, aspects, fragments) per character with unlocked/locked/unknown status. Status is reliable only for the most recently played character's class; raw can_insert/enabled are included. Omit character for all characters or select an exact id or unique hunter|titan|warlock class; optionally filter element. Requires loaded Manifest definitions.",
             JsonObject::new(),
         )
         .with_input_schema::<GetSubclassOptionsArgs>()
-        .with_output_schema::<GetSubclassOptionsOutput>(),
+        .with_object_output_schema::<GetSubclassOptionsOutput>(),
     ]
 }
 
@@ -218,7 +236,7 @@ pub fn tool_specs() -> Vec<Tool> {
 pub fn move_item_tool() -> Tool {
     Tool::new(MOVE_ITEM_TOOL, MOVE_ITEM_DESCRIPTION, JsonObject::new())
         .with_input_schema::<MoveItemArgs>()
-        .with_output_schema::<MoveItemOutput>()
+        .with_object_output_schema::<MoveItemOutput>()
 }
 
 pub const PULL_STACK_TOOL: &str = "pull_stack";
@@ -1623,6 +1641,58 @@ mod tests {
 
     fn move_item_schema() -> Value {
         move_item_tool().schema_as_json_value()
+    }
+
+    #[test]
+    fn every_tool_output_schema_declares_an_object_root() {
+        let mut tools = tool_specs();
+        tools.extend([
+            move_item_tool(),
+            super::equip_item_tool(),
+            super::set_lock_state_tool(),
+            super::pull_item_tool(),
+            super::pull_stack_tool(),
+            super::apply_loadout_tool(),
+            super::equip_items_tool(),
+        ]);
+        let invalid: Vec<_> = tools
+            .iter()
+            .filter(|tool| {
+                tool.output_schema
+                    .as_ref()
+                    .is_some_and(|schema| schema.get("type") != Some(&json!("object")))
+            })
+            .map(|tool| tool.name.as_ref())
+            .collect();
+        assert!(
+            invalid.is_empty(),
+            "outputSchema.type must be object: {invalid:?}"
+        );
+    }
+
+    #[test]
+    fn object_output_schema_preserves_generated_enum_variants() {
+        for (actual, generated) in [
+            (
+                tool_specs()
+                    .into_iter()
+                    .find(|tool| tool.name == INSPECT_ITEM_TOOL)
+                    .expect("inspect_item is exposed"),
+                rmcp::model::Tool::new("inspect", "", rmcp::model::JsonObject::new())
+                    .with_output_schema::<super::InspectItemOutput>(),
+            ),
+            (
+                move_item_tool(),
+                rmcp::model::Tool::new("move", "", rmcp::model::JsonObject::new())
+                    .with_output_schema::<super::MoveItemOutput>(),
+            ),
+        ] {
+            let actual = actual.output_schema.expect("output schema");
+            let mut expected = (*generated.output_schema.expect("generated schema")).clone();
+            assert!(expected.get("oneOf").is_some_and(Value::is_array));
+            expected.insert("type".into(), json!("object"));
+            assert_eq!(*actual, expected);
+        }
     }
 
     #[test]

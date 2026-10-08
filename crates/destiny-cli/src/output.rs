@@ -679,8 +679,16 @@ where
                 lines.push(header);
                 for activity in &milestone.activities {
                     lines.push(format!("  - {}", label(activity.hash, &activity.definition)));
-                    if !activity.modifiers.is_empty() {
-                        lines.push(format!("    modifiers: {}", activity.modifiers.iter().map(|modifier| label(modifier.hash, &modifier.definition)).collect::<Vec<_>>().join(", ")));
+                    // Bungie attaches nameless internal modifiers to live milestones;
+                    // human output omits every unresolved modifier, JSON keeps them.
+                    let modifiers = activity
+                        .modifiers
+                        .iter()
+                        .filter(|modifier| matches!(modifier.definition, DefinitionResolution::Resolved { .. }))
+                        .map(|modifier| label(modifier.hash, &modifier.definition))
+                        .collect::<Vec<_>>();
+                    if !modifiers.is_empty() {
+                        lines.push(format!("    modifiers: {}", modifiers.join(", ")));
                     }
                 }
             }

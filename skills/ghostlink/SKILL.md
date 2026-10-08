@@ -61,7 +61,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Explicitly remove the Ghostlink installation, preserving user state | `ghostlink uninstall` |
 | Browser callback never reaches login (Linux) | `ghostlink handler status` |
 
-`--character` accepts a class name (`hunter`, `titan`, `warlock`) on most commands, but `ghostlink search-inventory --character` requires the exact numeric character ID; get it from `ghostlink list-characters` first.
+`ghostlink search-inventory --character` accepts an exact character ID or a unique case-insensitive class (`hunter`, `titan`, `warlock`), like most CLI commands. Exact IDs take precedence; unknown selectors and duplicate classes are errors. MCP `search_inventory.character_id` still requires an exact character ID; get it from `list_characters` first.
 
 ## Equip several items
 

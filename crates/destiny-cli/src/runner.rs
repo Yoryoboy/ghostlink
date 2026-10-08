@@ -1,6 +1,6 @@
 //! The thin command runner and the sanitized process boundary.
 //!
-//! The runner validates one parsed command line, dispatches exactly one read
+//! The runner validates one parsed command line, dispatches reads
 //! through the shared [`QueryOperations`] surface, and renders the shared
 //! result in the selected mode. It never reproduces freshness, authorization,
 //! or synchronization logic: it forwards the caller-supplied
@@ -109,7 +109,8 @@ where
     }
 }
 
-/// Validates one parsed command line and dispatches it exactly once.
+/// Validates one parsed command line and dispatches it.
+/// Character-filtered searches first read characters to resolve the selector.
 ///
 /// Validation happens before any service call, so an invalid request can never
 /// reach the shared service.
@@ -137,7 +138,8 @@ where
     }
 }
 
-/// Dispatches one already-validated read through the shared trait exactly once.
+/// Dispatches one already-validated request through the shared trait.
+/// Character-filtered searches resolve the selector before the search read.
 ///
 /// The shared result, including its metadata, is rendered in the selected mode.
 /// A missing inspection is mapped through [`inspection_outcome`] to the stable
@@ -181,10 +183,28 @@ where
             .list_characters(freshness.policy, freshness.now)
             .map(|result| render_characters(mode, &result))
             .map_err(CliError::from),
-        ReadRequest::SearchInventory(request) => service
-            .search_inventory(&request, freshness.policy, freshness.now)
-            .map(|result| render_search(mode, &result))
-            .map_err(CliError::from),
+        ReadRequest::SearchInventory(mut request) => {
+            let selection = match request
+                .instances
+                .as_mut()
+                .and_then(|query| query.character_id.as_mut())
+            {
+                Some(selector) => service
+                    .list_characters(freshness.policy, freshness.now)
+                    .map_err(CliError::from)
+                    .and_then(|result| {
+                        crate::runtime::select_weekly_character(&result.characters, Some(selector))
+                    })
+                    .map(|character| *selector = character.id),
+                None => Ok(()),
+            };
+            selection.and_then(|()| {
+                service
+                    .search_inventory(&request, freshness.policy, freshness.now)
+                    .map(|result| render_search(mode, &result))
+                    .map_err(CliError::from)
+            })
+        }
         ReadRequest::InspectItem(request) => service
             .inspect_item(&request, freshness.policy, freshness.now)
             .map_err(CliError::from)
@@ -1351,7 +1371,17 @@ mod tests {
             now: Timestamp,
         ) -> Result<InventorySearchResult, AppError> {
             self.record(Recorded::Search(request.clone()), policy, now);
-            self.search.clone()
+            let mut result = self.search.clone()?;
+            if let Some(character_id) = request
+                .instances
+                .as_ref()
+                .and_then(|query| query.character_id.as_ref())
+            {
+                result.hits.retain(|hit| {
+                    hit.instance.location == ItemLocation::Character(character_id.clone())
+                });
+            }
+            Ok(result)
         }
 
         fn inspect_item(
@@ -2359,6 +2389,135 @@ mod tests {
         assert!(output.stdout.contains("candidates: 1"));
         assert!(output.stdout.ends_with("freshness: fresh\n"));
         assert_eq!(service.recorded(), [(Recorded::Search(expected), TTL, NOW)]);
+    }
+
+    fn hunter_search_service() -> RecordingService {
+        let mut service = RecordingService::new();
+        let mut characters = character_list();
+        let mut hunter = characters.characters[0].clone();
+        hunter.id = CharacterId::new("123");
+        hunter.class = Some("Hunter".into());
+        characters.characters.push(hunter);
+        service.list = Ok(characters);
+        let mut search = search_result();
+        search.hits[0].instance.location = ItemLocation::Character(CharacterId::new("123"));
+        service.search = Ok(search);
+        service
+    }
+
+    #[test]
+    fn search_character_selector_resolves_class_and_exact_id_before_search() {
+        for selector in ["hunter", "HuNtEr", "123"] {
+            let mut service = hunter_search_service();
+            let output = run(
+                &mut service,
+                argv(&["--json", "search-inventory", "--character", selector]),
+                freshness(),
+            );
+            assert_eq!(output.exit_code, 0);
+            assert!(output.stderr.is_empty());
+            let json: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+            assert_eq!(json["hits"].as_array().unwrap().len(), 1, "{selector}");
+            let calls = service.recorded();
+            assert_eq!(calls.len(), 2);
+            assert_eq!(calls[0], (Recorded::List, TTL, NOW));
+            let (Recorded::Search(request), policy, now) = &calls[1] else {
+                panic!("expected search after character selection");
+            };
+            assert_eq!((*policy, *now), (TTL, NOW));
+            assert_eq!(
+                request.instances.as_ref().unwrap().character_id,
+                Some(CharacterId::new("123"))
+            );
+        }
+    }
+
+    #[test]
+    fn search_character_exact_id_wins_over_class_and_valid_empty_search_succeeds() {
+        for empty in [false, true] {
+            let mut service = hunter_search_service();
+            // A class-looking exact ID must win over the other Hunter.
+            service.list.as_mut().unwrap().characters[0].id = CharacterId::new("hunter");
+            let hits = &mut service.search.as_mut().unwrap().hits;
+            hits[0].instance.location = ItemLocation::Character(CharacterId::new("hunter"));
+            if empty {
+                hits.clear();
+            }
+            let output = run(
+                &mut service,
+                argv(&["--json", "search-inventory", "--character", "hunter"]),
+                freshness(),
+            );
+            assert_eq!(output.exit_code, 0);
+            assert!(output.stderr.is_empty());
+            let json: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+            assert_eq!(json["hits"].as_array().unwrap().len(), usize::from(!empty));
+            let calls = service.recorded();
+            assert_eq!(calls[0], (Recorded::List, TTL, NOW));
+            assert_eq!(calls.len(), 2);
+            let Recorded::Search(request) = &calls[1].0 else {
+                panic!("expected search after exact ID selection");
+            };
+            assert_eq!(
+                request.instances.as_ref().unwrap().character_id,
+                Some(CharacterId::new("hunter"))
+            );
+        }
+    }
+
+    #[test]
+    fn search_character_selector_rejects_unknown_before_search() {
+        for selector in ["nonsense", "999"] {
+            assert_search_selector_rejected(selector, false, CliError::invalid_request());
+        }
+    }
+
+    #[test]
+    fn search_character_selector_rejects_ambiguous_before_search() {
+        assert_search_selector_rejected(
+            "hunter",
+            true,
+            CliError::from_category(ErrorCategory::AmbiguousMatch),
+        );
+    }
+
+    fn assert_search_selector_rejected(selector: &str, duplicate: bool, expected: CliError) {
+        let mut service = hunter_search_service();
+        if duplicate {
+            let characters = &mut service.list.as_mut().unwrap().characters;
+            let mut hunter = characters[1].clone();
+            hunter.id = CharacterId::new("456");
+            characters.push(hunter);
+        }
+        let output = run(
+            &mut service,
+            argv(&["--json", "search-inventory", "--character", selector]),
+            freshness(),
+        );
+        assert_eq!(output.exit_code, expected.exit_code(), "{selector}");
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            output.stderr,
+            format!("{}\n", super::render_error(OutputMode::Json, &expected))
+        );
+        assert_eq!(service.recorded(), [(Recorded::List, TTL, NOW)]);
+    }
+
+    #[test]
+    fn search_character_selector_propagates_character_read_failure() {
+        let mut service = hunter_search_service();
+        service.list = Err(AppError::new(ErrorCategory::ProviderUnavailable));
+        let output = run(
+            &mut service,
+            argv(&["--json", "search-inventory", "--character", "hunter"]),
+            freshness(),
+        );
+        assert_eq!(
+            output.exit_code,
+            CliError::from_category(ErrorCategory::ProviderUnavailable).exit_code()
+        );
+        assert!(output.stdout.is_empty());
+        assert_eq!(service.recorded(), [(Recorded::List, TTL, NOW)]);
     }
 
     #[test]

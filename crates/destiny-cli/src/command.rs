@@ -541,7 +541,7 @@ pub struct SearchInventoryArgs {
     #[arg(long = "perk-hash", value_name = "HASH")]
     pub perk_hash: Option<u32>,
 
-    /// Restrict instance matches to the character with this exact identifier.
+    /// Restrict instance matches by exact id or unique hunter|titan|warlock class.
     #[arg(long = "character", value_name = "CHARACTER_ID")]
     pub character: Option<String>,
 
