@@ -3307,6 +3307,7 @@ mod tests {
         let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
         let mut refreshed = fresh_vault_projection();
         refreshed.items[0].location = ItemLocation::Postmaster(CharacterId::new("warlock"));
+        svc.repository_mut().invalidate_freshness().unwrap();
         queue_refresh(&shared, refreshed);
         let mut lock = QueuedLockGateway::new();
         let failure = svc
@@ -3364,6 +3365,8 @@ mod tests {
             let mut req = lock_request();
             req.locked = case != 13;
             let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+            // Exercise changed projection checks through ordinary invalidated sync.
+            svc.repository_mut().invalidate_freshness().unwrap();
             if case == 1 {
                 item.locked = true;
             }
@@ -3440,7 +3443,10 @@ mod tests {
             );
             assert_eq!(lock.calls(), usize::from(case != 1));
             assert_eq!(shared.borrow().inventory_calls(), 1);
-            assert_eq!(svc.repository().freshness_invalidated().unwrap(), case != 1);
+            assert_eq!(
+                svc.repository().freshness_invalidated().unwrap(),
+                matches!(case, 2..=4 | 11 | 12)
+            );
             assert_eq!(
                 outcome.evidence().observed(),
                 if case == 1 { Some(req.locked) } else { None }
@@ -3463,7 +3469,47 @@ mod tests {
     }
 
     #[test]
-    fn acknowledged_lock_fails_closed_when_local_invalidation_fails() {
+    fn fresh_unlock_then_lock_updates_projection_without_acquisition_or_false_noop() {
+        use crate::lock::LockExecutionOutcome;
+        use crate::test_support::QueuedLockGateway;
+        let shared = gateway();
+        let mut repo = CompositeRepository::with_definitions(vec![]);
+        let mut input = fresh_vault_projection();
+        input.items[0].locked = true;
+        repo.commit(input);
+        let mut svc = service(&shared, repo);
+        let mut req = lock_request();
+        req.locked = false;
+        let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+        let before = svc.committed_snapshot().unwrap().metadata.revision;
+        let mut lock = QueuedLockGateway::new();
+        lock.queue(Ok(destiny_core::LockOutcome::Applied));
+        assert!(matches!(
+            svc.execute_lock(&mut lock, &req, &plan, TTL, NOW, NOW)
+                .unwrap(),
+            LockExecutionOutcome::Applied(_)
+        ));
+        let after = svc.committed_snapshot().unwrap();
+        assert!(!after.items[0].locked);
+        assert!(after.metadata.revision > before);
+        assert!(!svc.repository().freshness_invalidated().unwrap());
+        req.locked = true;
+        let next = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+        lock.queue(Ok(destiny_core::LockOutcome::Applied));
+        assert!(matches!(
+            svc.execute_lock(&mut lock, &req, &next, TTL, NOW, NOW)
+                .unwrap(),
+            LockExecutionOutcome::Applied(_)
+        ));
+        assert!(svc.committed_snapshot().unwrap().items[0].locked);
+        assert!(!svc.repository().freshness_invalidated().unwrap());
+        assert_eq!(lock.calls(), 2);
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+    }
+
+    #[test]
+    fn acknowledged_lock_storage_failure_keeps_receipt_invalidates_and_never_retries() {
         use crate::lock::{LockExecutionOutcome, LockVerificationFailureReason};
         use crate::test_support::QueuedLockGateway;
         let shared = gateway();
@@ -3472,8 +3518,7 @@ mod tests {
         let mut svc = service(&shared, repo);
         let req = lock_request();
         let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
-        queue_refresh(&shared, fresh_vault_projection());
-        svc.repository_mut().fails_invalidation = true;
+        svc.repository_mut().fails_effects = true;
         let mut lock = QueuedLockGateway::new();
         lock.queue(Ok(destiny_core::LockOutcome::Applied));
         let outcome = svc
@@ -3495,8 +3540,40 @@ mod tests {
             Some(destiny_core::LockOutcome::Applied)
         );
         assert_eq!(failure.evidence().observed(), None);
-        assert_eq!(shared.borrow().inventory_calls(), 1);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
+        assert!(svc.repository().freshness_invalidated().unwrap());
         assert_eq!(lock.calls(), 1);
+    }
+
+    #[test]
+    fn uncertain_lock_fails_closed_when_local_invalidation_fails() {
+        use crate::lock::LockExecutionOutcome;
+        use crate::test_support::QueuedLockGateway;
+        let shared = gateway();
+        let mut repo = CompositeRepository::with_definitions(vec![]);
+        repo.commit(fresh_vault_projection());
+        let mut svc = service(&shared, repo);
+        let req = lock_request();
+        let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+        svc.repository_mut().fails_invalidation = true;
+        let mut lock = QueuedLockGateway::new();
+        lock.queue(Ok(destiny_core::LockOutcome::Uncertain));
+        let outcome = svc
+            .execute_lock(&mut lock, &req, &plan, TTL, NOW, NOW)
+            .unwrap();
+        let LockExecutionOutcome::VerificationFailed(failure) = outcome else {
+            panic!("invalidation failure must fail closed");
+        };
+        assert_eq!(
+            failure.error(),
+            Some(MutationError::Application(ErrorCategory::LocalStorage))
+        );
+        assert_eq!(
+            failure.evidence().attempt(),
+            Some(destiny_core::LockOutcome::Uncertain)
+        );
+        assert_eq!(lock.calls(), 1);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
     }
 
     #[test]

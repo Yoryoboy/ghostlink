@@ -132,7 +132,7 @@ fn counted_service(
 }
 
 #[test]
-fn acknowledged_lock_with_stale_profile_is_applied_without_post_action_read() {
+fn acknowledged_lock_updates_fresh_projection_and_chains_without_acquisition() {
     for locked in [false, true] {
         let initial = snapshot(!locked, true);
         let (mut mutations, calls) =
@@ -151,26 +151,81 @@ fn acknowledged_lock_with_stale_profile_is_applied_without_post_action_read() {
         .unwrap();
         assert_eq!(output.json()["status"], "applied");
         assert_eq!(output.exit_code(), 0);
-        assert_eq!(calls.get(), 1, "preflight only; no post-action request");
-        assert!(mutations.repository().freshness_invalidated().unwrap());
-        assert_eq!(
-            mutations.repository().load_current().unwrap().unwrap(),
-            before
-        );
+        assert_eq!(calls.get(), 0, "fresh projection requires no acquisition");
+        assert!(!mutations.repository().freshness_invalidated().unwrap());
+        let after = mutations.repository().load_current().unwrap().unwrap();
+        assert_eq!(after.items[0].locked, locked);
+        assert!(after.metadata.revision > before.metadata.revision);
         assert!(output.observed.is_none());
         assert_eq!(gateway.requests().len(), 1);
         mutations
             .sync_mut()
             .sync(ProfileSyncReason::Ordinary, POLICY, NOW)
             .unwrap();
+        assert_eq!(calls.get(), 0, "applied effects retain freshness");
+        gateway.queue(Ok(LockOutcome::Applied));
+        let next = set_lock_state(
+            &LockArgs { item: "123".into() },
+            !locked,
+            &mut mutations,
+            &mut gateway,
+            &FakeClock::fixed(NOW),
+            POLICY,
+        )
+        .unwrap();
         assert_eq!(
-            calls.get(),
-            2,
-            "invalidated freshness forces the next read to sync"
+            next.status,
+            LockStatus::Applied,
+            "must not report a false no-op"
+        );
+        assert_eq!(gateway.requests().len(), 2);
+        assert_eq!(gateway.requests()[1].locked(), !locked);
+        assert_eq!(calls.get(), 0);
+        assert_eq!(
+            mutations
+                .repository()
+                .load_current()
+                .unwrap()
+                .unwrap()
+                .items[0]
+                .locked,
+            !locked
         );
         assert!(!mutations.repository().freshness_invalidated().unwrap());
     }
 }
+#[test]
+fn incomplete_lock_invalidates_and_next_ordinary_read_acquires() {
+    for reply in [
+        LockOutcome::Uncertain,
+        LockOutcome::Rejected(LockRejection::ItemNotFound),
+    ] {
+        let initial = snapshot(false, true);
+        let (mut mutations, calls) = counted_service(initial.clone(), initial, None);
+        let mut gateway = QueuedLockGateway::new();
+        gateway.queue(Ok(reply));
+        let output = set_lock_state(
+            &LockArgs { item: "123".into() },
+            true,
+            &mut mutations,
+            &mut gateway,
+            &FakeClock::fixed(NOW),
+            POLICY,
+        )
+        .unwrap();
+        assert_eq!(output.status, LockStatus::Incomplete);
+        assert_eq!(calls.get(), 0);
+        assert!(mutations.repository().freshness_invalidated().unwrap());
+        mutations
+            .sync_mut()
+            .sync(ProfileSyncReason::Ordinary, POLICY, NOW)
+            .unwrap();
+        assert_eq!(calls.get(), 1);
+        assert!(!mutations.repository().freshness_invalidated().unwrap());
+        assert_eq!(gateway.requests().len(), 1);
+    }
+}
+
 #[test]
 fn lock_pipeline_covers_both_states_locations_and_all_terminal_outcomes() {
     for locked in [false, true] {
@@ -269,7 +324,10 @@ fn lock_pipeline_covers_both_states_locations_and_all_terminal_outcomes() {
                     output.profile_refresh,
                     destiny_cli::lock_output::ProfileRefresh::NotRequired
                 );
-                assert!(mutations.repository().freshness_invalidated().unwrap());
+                assert_eq!(
+                    mutations.repository().freshness_invalidated().unwrap(),
+                    reply != LockOutcome::Applied
+                );
                 let process = destiny_cli::runner::lock_process_output(
                     destiny_cli::OutputMode::Json,
                     &output,
@@ -278,8 +336,8 @@ fn lock_pipeline_covers_both_states_locations_and_all_terminal_outcomes() {
                 assert_eq!(process.stderr.is_empty(), code == 0);
                 assert_eq!(output.render_text().contains("✔ applied"), code == 0);
             }
-            let initial = snapshot(!locked, vault);
-            let mut mutations = service(initial, snapshot(locked, vault), None);
+            let initial = snapshot(locked, vault);
+            let mut mutations = service(initial.clone(), initial, None);
             let mut gateway = QueuedLockGateway::new();
             let output = set_lock_state(
                 &LockArgs { item: "123".into() },

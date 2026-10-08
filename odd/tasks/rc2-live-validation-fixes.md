@@ -93,6 +93,12 @@ G5/G7 CLI UX.
     definition for every equipped item (`UnknownRarity`), pre-existing.
     Commit: see git log (`feat(actions): apply acknowledged move and equip
     effects locally`).
+  - [x] D lock/unlock: ordinary sync + committed-projection validation;
+    acknowledged `SetLocked` persisted, no invalidation when applied.
+    RED (forced acquisition, applied lock invalidated) then GREEN;
+    unlock→lock chains with zero acquisitions and no false `verified_noop`
+    (G3 root cause). Workspace tests + clippy pass. +190/-41. Commit: see
+    git log (`feat(actions): lock and unlock from the local projection`).
 - [ ] **T3 — DIM-style action pipeline.** Remove forced preflight acquisition
   from move, lock, equip, pull item, pull stack and apply loadout; plan and
   execute from the local projection; apply the effect from T2 on

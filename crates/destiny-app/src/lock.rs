@@ -1,9 +1,10 @@
 //! Shared lock-state planning and single-attempt optimistic execution.
 //!
 //! Lock is idempotent state, not equip policy: no class, exotic or equipped
-//! restriction applies. A forced fresh preflight proves a no-op or binds one
-//! dispatch. Acknowledgement yields Applied without a post-action read. Every
-//! dispatched outcome invalidates local freshness; never blindly retry.
+//! restriction applies. Ordinary sync and committed-projection validation prove
+//! a no-op or bind one dispatch. Acknowledgement updates local lock state without
+//! a post-action read. Incomplete attempts or persistence failures invalidate
+//! freshness; never blindly retry.
 //!
 //! Vault requests use the first owned character in committed projection order.
 //! This deterministic provider routing choice still needs live validation.
@@ -48,7 +49,7 @@ impl LockPlan {
 
 /// Bounded evidence: None means no dispatch, Some preserves the exact sanitized
 /// gateway outcome, including a refusal or uncertainty, through classification.
-/// Observed state is populated only by a verified no-op's fresh preflight.
+/// Observed state is populated only by a verified no-op's local validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LockExecutionEvidence {
     plan: PlanId,
@@ -86,7 +87,7 @@ impl LockExecutionFailure {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LockVerificationFailureReason {
-    /// Local freshness invalidation failed; historical wire reason retained.
+    /// Local effects or freshness could not be persisted; wire reason retained.
     RefreshFailed,
 }
 
@@ -116,7 +117,7 @@ impl LockVerificationFailure {
 pub enum LockExecutionOutcome {
     /// Bungie acknowledged the requested state; not a post-action observation.
     Applied(LockExecutionEvidence),
-    /// Fresh preflight already proves the requested state; no dispatch.
+    /// Committed projection already proves the requested state; no dispatch.
     VerifiedNoOp(LockExecutionEvidence),
     IncompleteExecution(LockExecutionEvidence),
     VerificationFailed(LockVerificationFailure),
@@ -177,9 +178,9 @@ where
         })
     }
 
-    /// Fresh preflight → verified no-op or one dispatch → acknowledgement.
+    /// Ordinary sync → local validation → verified no-op or one dispatch.
     /// Timestamp ordering is checked without a post-action profile request.
-    /// Storage invalidation failure fails closed.
+    /// Acknowledged effects retain freshness; storage failure fails closed.
     pub fn execute_lock<L: LockGateway>(
         &mut self,
         gateway: &mut L,
@@ -214,7 +215,7 @@ where
         }
         let observation = self
             .sync_mut()
-            .sync(ProfileSyncReason::Preflight, policy, preflight_now)
+            .sync(ProfileSyncReason::Ordinary, policy, preflight_now)
             .map_err(|error| failure(error.into()))?;
         let snapshot = self.committed_snapshot().map_err(failure)?;
         if snapshot.metadata.membership_id != request.membership
@@ -242,7 +243,7 @@ where
             evidence.observed = Some(item.locked);
             return Ok(LockExecutionOutcome::VerifiedNoOp(evidence));
         }
-        // As equip does, a freshly satisfied state precedes stale-plan refusal.
+        // As equip does, a locally satisfied state precedes stale-plan refusal.
         // Otherwise changed assumptions require a new plan, not a blind rebind.
         if observation.revision() != plan.revision {
             return Err(failure(MutationError::StaleRevision));
@@ -261,22 +262,31 @@ where
             .set_lock_state(&provider_request)
             .map_err(|error| failure(error.into()))?;
         evidence.attempt = Some(attempt);
-        Ok(self.acknowledge_lock_attempt(evidence))
+        Ok(self.acknowledge_lock_attempt(plan, evidence))
     }
 
     fn acknowledge_lock_attempt(
         &mut self,
+        plan: &LockPlan,
         evidence: LockExecutionEvidence,
     ) -> LockExecutionOutcome {
-        // Refused and uncertain dispatched attempts invalidate pre-action state too.
-        if let Err(error) = self.repository_mut().invalidate_freshness() {
+        let applied = evidence.attempt == Some(LockOutcome::Applied);
+        let effects = if applied {
+            vec![destiny_core::InventoryEffect::SetLocked {
+                item: plan.item.clone(),
+                locked: plan.locked,
+            }]
+        } else {
+            Vec::new()
+        };
+        if let Err(error) = self.persist_attempt_effects(&plan.membership, &effects, applied) {
             return LockExecutionOutcome::VerificationFailed(LockVerificationFailure {
                 reason: LockVerificationFailureReason::RefreshFailed,
                 error: Some(error.into()),
                 evidence,
             });
         }
-        if evidence.attempt == Some(LockOutcome::Applied) {
+        if applied {
             LockExecutionOutcome::Applied(evidence)
         } else {
             LockExecutionOutcome::IncompleteExecution(evidence)
