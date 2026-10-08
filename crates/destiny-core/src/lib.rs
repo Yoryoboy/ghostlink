@@ -6,6 +6,8 @@ pub mod clarity;
 pub use calendar::*;
 pub mod loadout;
 pub use loadout::*;
+pub mod loadout_action;
+pub use loadout_action::*;
 pub mod agents;
 pub mod artifact;
 pub use artifact::*;

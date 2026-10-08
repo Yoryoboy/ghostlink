@@ -1150,6 +1150,45 @@ impl destiny_core::EquipGateway for QueuedEquipGateway {
     }
 }
 
+/// Queues official loadout action receipts; exhaustion fails closed.
+#[derive(Debug, Default)]
+pub struct QueuedLoadoutActionGateway {
+    outcomes: VecDeque<Result<destiny_core::LoadoutActionOutcome, AppError>>,
+    requests: Vec<destiny_core::EquipLoadoutRequest>,
+    calls: usize,
+}
+
+impl QueuedLoadoutActionGateway {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn queue(&mut self, outcome: Result<destiny_core::LoadoutActionOutcome, AppError>) {
+        self.outcomes.push_back(outcome);
+    }
+
+    pub const fn calls(&self) -> usize {
+        self.calls
+    }
+
+    pub fn requests(&self) -> &[destiny_core::EquipLoadoutRequest] {
+        &self.requests
+    }
+}
+
+impl destiny_core::LoadoutActionGateway for QueuedLoadoutActionGateway {
+    fn equip_loadout(
+        &mut self,
+        request: &destiny_core::EquipLoadoutRequest,
+    ) -> Result<destiny_core::LoadoutActionOutcome, AppError> {
+        self.calls += 1;
+        self.requests.push(request.clone());
+        self.outcomes
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
+    }
+}
+
 /// Queues lock outcomes in call order; exhaustion fails closed, never succeeds.
 #[derive(Debug, Default)]
 pub struct QueuedLockGateway {
@@ -1196,6 +1235,38 @@ mod equip_gateway_tests {
         AppError, CharacterId, DestinyMembership, EquipGateway, EquipItemRequest, EquipOutcome,
         EquipRejection, ErrorCategory, ItemInstanceId, MembershipId, MembershipType,
     };
+
+    #[test]
+    fn loadout_fake_records_every_attempt_and_fails_closed_on_exhaustion() {
+        use super::QueuedLoadoutActionGateway;
+        use destiny_core::{EquipLoadoutRequest, LoadoutActionGateway, LoadoutActionOutcome};
+        let request = EquipLoadoutRequest::new(
+            DestinyMembership::new(MembershipType::new(3), MembershipId::new("123")).unwrap(),
+            CharacterId::new("789"),
+            0,
+        )
+        .unwrap();
+        let mut fake = QueuedLoadoutActionGateway::new();
+        fake.queue(Ok(LoadoutActionOutcome::Applied));
+        fake.queue(Ok(LoadoutActionOutcome::Uncertain));
+        assert_eq!(
+            fake.equip_loadout(&request).unwrap(),
+            LoadoutActionOutcome::Applied
+        );
+        assert_eq!(
+            fake.equip_loadout(&request).unwrap(),
+            LoadoutActionOutcome::Uncertain
+        );
+        assert_eq!(
+            fake.equip_loadout(&request).unwrap_err().category(),
+            ErrorCategory::ProviderUnavailable
+        );
+        assert_eq!(fake.calls(), 3);
+        assert_eq!(
+            fake.requests(),
+            &[request.clone(), request.clone(), request]
+        );
+    }
 
     #[test]
     fn lock_fake_records_every_attempt_and_fails_closed_on_exhaustion() {

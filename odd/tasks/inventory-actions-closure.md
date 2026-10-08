@@ -54,7 +54,7 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   keep incomplete/refusal/preflight failures.
 - [x] **IAX-002 — Optimistic lock/unlock.**
 - [x] **IAX-003 — Optimistic Postmaster pull and pull-stack.**
-- [ ] **IAX-004 — EquipLoadout adapter and port** (allowlist, request, receipt).
+- [x] **IAX-004 — EquipLoadout adapter and port** (allowlist, request, receipt).
 - [ ] **IAX-005 — Apply loadout service, CLI and MCP** (resolve slot and
   character, optimistic outcome, docs/skill).
 - [ ] **IAX-006 — EquipItems batch adapter and port** (per-item results).
@@ -116,6 +116,15 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   updated. Checkbox intentionally stays open for parent review; no live action
   or commit.
 - IAX-003 coverage follow-up: restored exact refusal receipts, applied dispatch/redaction and hostile control cleaning; retained stack equivalents and restored text control safety; workspace 1,820 passed / 0 failed.
+- IAX-004 implementation progress: added the validated zero-based EquipLoadout
+  request (0–11, matching the existing saved-loadout bound), narrow action port,
+  bounded typed receipts, isolated exact endpoint allowlist and hardened shared
+  transport machinery. Requires MoveEquipDestinyItems; callers pace at 1 action/s.
+  Restricted-location refusals use the existing Bungie ErrorStatus mappings;
+  unknown envelopes remain uncertain. Added queued fake gateway and offline
+  transport/redaction/boundary tests. RED: missing core types/port; GREEN: 1,829
+  passed / 0 failed / 0 ignored across 67 suites; fmt and clippy PASS. No service,
+  CLI/MCP wiring, live account action or commit; checkbox remains open.
 - IAX-001 committed as `635a552`.
 - IAX-002 independent verification: fmt, clippy, all-features and default
   workspace tests (0 failures), diff check PASS; Applied only on HTTP 200 +
@@ -127,3 +136,8 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   tests only partially replaced). Coverage restored (test-only); narrow
   re-verification PASS: 1,820 passed / 0 failed, clippy and fmt PASS, production
   unchanged. Default features 1,796 / 0.
+- IAX-003 committed as `0c71883`.
+- IAX-004 parent spot check: isolated allowlist rejects other URLs before
+  credentials; transport reuses the hardened transfer client; focused
+  `loadout_action` suite 7 passed. Writer full suite 1,829 / 0. Independent
+  full verification deferred to the IAX-005 verifier (covers both).

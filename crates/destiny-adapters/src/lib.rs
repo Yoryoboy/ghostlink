@@ -16,6 +16,13 @@ pub use stack_pull::{
     StackPullTransport, StackPullTransportError, is_allowed_stack_pull_url,
 };
 pub mod loadout;
+pub mod loadout_action;
+pub use loadout_action::{
+    BungieLoadoutActionGateway, HttpLoadoutActionTransport, LOADOUT_ACTION_ENDPOINT,
+    LOADOUT_ACTION_RESPONSE_LIMIT, LoadoutActionApiKey, LoadoutActionBearerToken,
+    LoadoutActionHttpRequest, LoadoutActionHttpResponse, LoadoutActionTransport,
+    LoadoutActionTransportError, is_allowed_loadout_action_url,
+};
 pub mod lock;
 pub mod manifest;
 pub mod oauth;
