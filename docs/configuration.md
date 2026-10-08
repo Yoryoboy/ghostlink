@@ -17,7 +17,6 @@ Shared runtime settings:
 ```text
 BUNGIE_API_KEY                Bungie API key (also used by the read roots)
 DESTINY_DATABASE_PATH         Optional SQLite projection database path override
-DESTINY_DEFINITION_VERSION    Optional override for the stored Manifest version
 DESTINY_FRESHNESS_TTL_SECONDS Positive freshness TTL in seconds (max 2592000)
 ```
 
@@ -68,11 +67,11 @@ seconds. API key, public client ID, and broker URL currently have `None` default
 pending owner provisioning; absent required values still produce the same
 sanitized configuration error. Thus this checkout is not yet fully zero-config.
 The database path defaults to the OS location below. The definition version is
-automatically read from committed Manifest metadata in that database. An explicit
-`DESTINY_DEFINITION_VERSION` still overrides it (environment > file); empty or
-invalid overrides fail rather than falling back. Remove old label overrides to
-use the real version. Existing snapshots remain readable; a changed label can
-advance the next profile revision once, while identical re-syncs retain it. No
+always read from committed Manifest metadata in that database; an old
+`DESTINY_DEFINITION_VERSION` line or environment variable is ignored. Existing
+snapshots remain readable; run `ghostlink sync` to re-stamp an old profile with
+its stored Manifest version. This can advance the next profile revision once,
+while identical re-syncs retain it. No
 schema migration is needed for this change. Client secrets never have a compiled
 default. Startup diagnostics are typed and sanitized.
 
@@ -146,7 +145,6 @@ client ID:
 | --- | --- |
 | `BUNGIE_API_KEY` | Bungie public-client API key |
 | `DESTINY_DATABASE_PATH` | Optional override for the OS-default durable SQLite projection path |
-| `DESTINY_DEFINITION_VERSION` | Optional backward-compatible label override; defaults to the stored Manifest version |
 | `DESTINY_FRESHNESS_TTL_SECONDS` | Positive freshness TTL in seconds (maximum `2592000`) |
 
 A read also requires an already-authorized account. `destiny-cli` loads a

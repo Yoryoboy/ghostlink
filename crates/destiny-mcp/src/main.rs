@@ -121,10 +121,7 @@ fn compose_server<S: CredentialStore + Send + 'static>(
         SystemClock::new(),
         profile_source,
         ProfileApiKey::new(config.api_key().expose_secret())?,
-        config
-            .definition_version()
-            .cloned()
-            .unwrap_or_else(|| DefinitionVersion::new("unavailable")),
+        DefinitionVersion::new("unavailable"),
     )?
     .with_definition_version_resolver(move || {
         version_config.resolve_definition_version(&version_store)

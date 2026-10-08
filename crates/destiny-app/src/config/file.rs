@@ -154,6 +154,58 @@ mod tests {
     }
 
     #[test]
+    fn legacy_definition_version_in_file_and_environment_is_ignored() {
+        use crate::test_support::InMemoryDefinitionRepository;
+        use destiny_core::DefinitionVersion;
+
+        let fixture = Fixture::new(b"BUNGIE_API_KEY=file-key\nDESTINY_DATABASE_PATH=synthetic.db\nDESTINY_FRESHNESS_TTL_SECONDS=900\nDESTINY_DEFINITION_VERSION=live-v1\n");
+        let file = load(Some(fixture.0.clone())).unwrap();
+        let repository = InMemoryDefinitionRepository::new(
+            DefinitionVersion::new("stored-manifest-v1"),
+            vec![destiny_core::ItemDefinition {
+                hash: destiny_core::ItemHash::new(1),
+                name: "item".into(),
+                bucket_hash: None,
+                item_type: None,
+                tier: None,
+                element: None,
+                slot: None,
+                class_type: None,
+                plug_category: None,
+                tags: vec![],
+                version: DefinitionVersion::new("stored-manifest-v1"),
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
+            }],
+        );
+        let config = ReadRuntimeConfig::from_values(&file).unwrap();
+        assert_eq!(
+            config
+                .resolve_definition_version(&repository)
+                .unwrap()
+                .as_str(),
+            "stored-manifest-v1"
+        );
+
+        let values = crate::config::read_env_values(|names| {
+            assert!(!names.contains(&"DESTINY_DEFINITION_VERSION"));
+            crate::config::exact_key_values(names, |name| file.get(name).map(OsString::from))
+        })
+        .unwrap();
+        assert!(!values.contains_key("DESTINY_DEFINITION_VERSION"));
+        let config = ReadRuntimeConfig::from_values(&values).unwrap();
+        assert_eq!(
+            config
+                .resolve_definition_version(&repository)
+                .unwrap()
+                .as_str(),
+            "stored-manifest-v1"
+        );
+    }
+
+    #[test]
     fn windows_config_uses_appdata_and_explicit_override() {
         use crate::config::paths::Platform;
         let resolve = |explicit: Option<&str>, appdata: &str| {

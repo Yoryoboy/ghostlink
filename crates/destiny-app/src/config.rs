@@ -30,11 +30,7 @@ const PRODUCT_CALLBACK_SCHEME: &str = "ghostlink";
 const PRODUCT_CALLBACK_HOST: &str = "oauth";
 const PRODUCT_CALLBACK_PATH: &str = "/callback";
 const READ_DATABASE_PATH: &str = "DESTINY_DATABASE_PATH";
-const READ_DEFINITION_VERSION: &str = "DESTINY_DEFINITION_VERSION";
 const READ_FRESHNESS_TTL_SECONDS: &str = "DESTINY_FRESHNESS_TTL_SECONDS";
-
-/// The longest Manifest definition version the durable projection accepts.
-const MAX_DEFINITION_VERSION_LENGTH: usize = 128;
 
 /// The largest freshness TTL the shared read runtime configuration accepts (30 days).
 ///
@@ -382,7 +378,6 @@ where
     let mut values = load(&[
         API_KEY,
         READ_DATABASE_PATH,
-        READ_DEFINITION_VERSION,
         READ_FRESHNESS_TTL_SECONDS,
         CLIENT_SECRET,
         TOKEN_BROKER_URL,
@@ -541,8 +536,8 @@ impl fmt::Debug for RefreshClientConfig {
 /// composition roots.
 ///
 /// It carries exactly the typed values those roots need to build the read
-/// services — a validated API key, the SQLite database path, the Manifest
-/// definition version, a positive, bounded freshness TTL, and an optional
+/// services — a validated API key, the SQLite database path,
+/// a positive, bounded freshness TTL, and an optional
 /// confidential refresh client. Every field is private and reachable only through a trusted accessor.
 /// [`fmt::Debug`] and [`fmt::Display`] render no value, and every parse failure
 /// is a sanitized [`AppError`] that never echoes the supplied configuration.
@@ -550,7 +545,6 @@ impl fmt::Debug for RefreshClientConfig {
 pub struct ReadRuntimeConfig {
     api_key: ReadApiKey,
     database_path: PathBuf,
-    definition_version: Option<DefinitionVersion>,
     freshness_ttl_seconds: u64,
     refresh_client: Option<RefreshClientConfig>,
 }
@@ -573,10 +567,6 @@ impl ReadRuntimeConfig {
     pub fn from_values(values: &HashMap<String, String>) -> Result<Self, AppError> {
         let api_key = ReadApiKey::new(required(values, API_KEY)?)?;
         let database_path = read_database_path(&required(values, READ_DATABASE_PATH)?)?;
-        let definition_version = values
-            .get(READ_DEFINITION_VERSION)
-            .map(|value| read_definition_version(value))
-            .transpose()?;
         let freshness_ttl_seconds =
             read_freshness_ttl(&required(values, READ_FRESHNESS_TTL_SECONDS)?)?;
         let auth_mode = client_auth_mode(values)?;
@@ -590,7 +580,6 @@ impl ReadRuntimeConfig {
         Ok(Self {
             api_key,
             database_path,
-            definition_version,
             freshness_ttl_seconds,
             refresh_client,
         })
@@ -612,20 +601,12 @@ impl ReadRuntimeConfig {
         &self.database_path
     }
 
-    /// Optional backward-compatible label override (environment beats file).
-    pub fn definition_version(&self) -> Option<&DefinitionVersion> {
-        self.definition_version.as_ref()
-    }
-
     /// Resolve from committed Manifest metadata, never from profile metadata.
     /// An absent catalog is distinct from a corrupt/unreadable store.
     pub fn resolve_definition_version<R: destiny_core::DefinitionRepository>(
         &self,
         repository: &R,
     ) -> Result<DefinitionVersion, AppError> {
-        if let Some(version) = &self.definition_version {
-            return Ok(version.clone());
-        }
         repository
             .current_metadata()?
             .map(|metadata| metadata.definition_version)
@@ -651,7 +632,6 @@ impl fmt::Debug for ReadRuntimeConfig {
             .debug_struct("ReadRuntimeConfig")
             .field("api_key", &destiny_core::redact::REDACTED)
             .field("database_path", &destiny_core::redact::REDACTED)
-            .field("definition_version", &destiny_core::redact::REDACTED)
             .field("freshness_ttl_seconds", &destiny_core::redact::REDACTED)
             .field("refresh_client", &destiny_core::redact::REDACTED)
             .finish()
@@ -675,25 +655,6 @@ fn read_database_path(value: &str) -> Result<PathBuf, AppError> {
         return Err(AppError::configuration());
     }
     Ok(PathBuf::from(value))
-}
-
-/// Requires a non-empty definition version within the durable storage bound.
-///
-/// The value must be provider-safe: no leading or trailing whitespace, no
-/// interior whitespace of any kind, and no control characters. The length bound
-/// is the durable projection's own 128-character limit, so a value accepted
-/// here can always be persisted and compared exactly instead of being trimmed
-/// or normalized later.
-fn read_definition_version(value: &str) -> Result<DefinitionVersion, AppError> {
-    if value.is_empty()
-        || value.chars().count() > MAX_DEFINITION_VERSION_LENGTH
-        || value.trim() != value
-        || value.chars().any(char::is_whitespace)
-        || value.chars().any(char::is_control)
-    {
-        return Err(AppError::configuration());
-    }
-    Ok(DefinitionVersion::new(value))
 }
 
 /// Requires a strictly positive decimal TTL within the accepted ceiling.
@@ -739,7 +700,6 @@ mod tests {
                 &[
                     super::API_KEY,
                     super::READ_DATABASE_PATH,
-                    super::READ_DEFINITION_VERSION,
                     super::READ_FRESHNESS_TTL_SECONDS,
                 ],
                 &defaults,
@@ -812,7 +772,6 @@ mod tests {
                 super::CLIENT_SECRET,
                 super::TOKEN_BROKER_URL,
                 super::READ_DATABASE_PATH,
-                super::READ_DEFINITION_VERSION,
             ],
             &defaults,
             |_| None,
@@ -824,7 +783,6 @@ mod tests {
             super::CLIENT_SECRET,
             super::TOKEN_BROKER_URL,
             super::READ_DATABASE_PATH,
-            super::READ_DEFINITION_VERSION,
         ] {
             assert!(!values.contains_key(key));
         }
@@ -898,7 +856,6 @@ mod tests {
                     super::REGISTERED_CALLBACK_URI,
                     super::TOKEN_BROKER_URL,
                     super::READ_DATABASE_PATH,
-                    super::READ_DEFINITION_VERSION,
                     super::READ_FRESHNESS_TTL_SECONDS,
                 ],
                 &defaults,
@@ -1363,7 +1320,7 @@ mod tests {
     }
 
     #[test]
-    fn definition_version_resolution_prefers_override_then_manifest_and_types_absence() {
+    fn definition_version_resolution_ignores_legacy_override_and_types_absence() {
         use crate::test_support::InMemoryDefinitionRepository;
         let repository = InMemoryDefinitionRepository::new(
             super::DefinitionVersion::new("real-v1"),
@@ -1386,13 +1343,14 @@ mod tests {
             }],
         );
         let mut values = read_runtime_values();
+        values.insert("DESTINY_DEFINITION_VERSION".into(), "live-v1".into());
         let explicit = ReadRuntimeConfig::from_values(&values).unwrap();
         assert_eq!(
             explicit
                 .resolve_definition_version(&repository)
                 .unwrap()
                 .as_str(),
-            "manifest-v1"
+            "real-v1"
         );
         values.remove("DESTINY_DEFINITION_VERSION");
         let automatic = ReadRuntimeConfig::from_values(&values).unwrap();
@@ -1414,29 +1372,31 @@ mod tests {
         assert_eq!(
             explicit
                 .resolve_definition_version(&empty)
-                .unwrap()
-                .as_str(),
-            "manifest-v1"
+                .unwrap_err()
+                .category(),
+            destiny_core::ErrorCategory::DefinitionsUnavailable
         );
         let broken = empty.with_metadata_failure(destiny_core::AppError::new(
             destiny_core::ErrorCategory::LocalStorage,
         ));
-        assert_eq!(
-            automatic
-                .resolve_definition_version(&broken)
-                .unwrap_err()
-                .category(),
-            destiny_core::ErrorCategory::LocalStorage
-        );
+        for config in [&automatic, &explicit] {
+            assert_eq!(
+                config
+                    .resolve_definition_version(&broken)
+                    .unwrap_err()
+                    .category(),
+                destiny_core::ErrorCategory::LocalStorage
+            );
+        }
     }
 
     #[test]
-    fn read_runtime_config_accepts_absent_definition_override() {
+    fn read_runtime_config_ignores_absent_or_empty_legacy_version() {
         let mut values = read_runtime_values();
         values.remove("DESTINY_DEFINITION_VERSION");
         assert!(ReadRuntimeConfig::from_values(&values).is_ok());
         values.insert("DESTINY_DEFINITION_VERSION".into(), String::new());
-        assert!(ReadRuntimeConfig::from_values(&values).is_err());
+        assert!(ReadRuntimeConfig::from_values(&values).is_ok());
     }
 
     #[test]
@@ -1444,7 +1404,6 @@ mod tests {
         let config = ReadRuntimeConfig::from_values(&read_runtime_values()).unwrap();
         assert_eq!(config.api_key().expose_secret(), "api-key-placeholder");
         assert_eq!(config.database_path().to_string_lossy(), "/tmp/destiny.db");
-        assert_eq!(config.definition_version().unwrap().as_str(), "manifest-v1");
         assert_eq!(config.freshness_ttl_seconds(), 900);
         assert_eq!(config.freshness_policy().ttl_seconds, 900);
     }
@@ -1473,7 +1432,7 @@ mod tests {
 
     #[test]
     fn read_runtime_config_rejects_invalid_values() {
-        let cases: [(&str, Vec<String>); 4] = [
+        let cases: [(&str, Vec<String>); 3] = [
             (
                 "BUNGIE_API_KEY",
                 vec!["with space".into(), "with\ttab".into(), "caf\u{e9}".into()],
@@ -1482,7 +1441,6 @@ mod tests {
                 "DESTINY_DATABASE_PATH",
                 vec!["/tmp/with\0nul".into(), " \t ".into()],
             ),
-            ("DESTINY_DEFINITION_VERSION", vec!["v".repeat(129)]),
             (
                 "DESTINY_FRESHNESS_TTL_SECONDS",
                 vec![
@@ -1518,11 +1476,6 @@ mod tests {
                 .freshness_ttl_seconds(),
             MAX_READ_FRESHNESS_TTL_SECONDS
         );
-
-        // The version bound is inclusive.
-        let mut boundary = read_runtime_values();
-        boundary.insert("DESTINY_DEFINITION_VERSION".into(), "v".repeat(128));
-        assert!(ReadRuntimeConfig::from_values(&boundary).is_ok());
     }
 
     #[test]
@@ -1631,7 +1584,7 @@ mod tests {
     }
 
     #[test]
-    fn read_definition_version_rejects_whitespace_and_control_characters() {
+    fn legacy_definition_version_is_ignored_even_when_invalid() {
         for bad in [
             " manifest-v1",
             "manifest-v1 ",
@@ -1645,33 +1598,13 @@ mod tests {
         ] {
             let mut invalid = read_runtime_values();
             invalid.insert("DESTINY_DEFINITION_VERSION".into(), bad.into());
-            let error = ReadRuntimeConfig::from_values(&invalid).expect_err("rejected");
-            assert_eq!(error.category(), ErrorCategory::ConfigurationError);
-            // The rejected value never appears in a diagnostic.
-            assert_eq!(
-                error.to_string(),
-                "required runtime configuration is missing or invalid"
-            );
-            let rendered = format!("{error} {error:?}");
-            assert!(
-                !rendered.contains("manifest") && !rendered.contains(bad),
-                "a diagnostic leaked the definition version {bad:?}: {rendered}"
-            );
+            assert!(ReadRuntimeConfig::from_values(&invalid).is_ok());
         }
 
-        // Clean versions, including a version that is exactly the length bound,
-        // remain accepted.
-        for good in ["manifest-v1", "2026-09-21", &"v".repeat(128)] {
+        for good in ["manifest-v1", "2026-09-21", &"v".repeat(129)] {
             let mut valid = read_runtime_values();
             valid.insert("DESTINY_DEFINITION_VERSION".into(), good.into());
-            assert_eq!(
-                ReadRuntimeConfig::from_values(&valid)
-                    .unwrap()
-                    .definition_version()
-                    .unwrap()
-                    .as_str(),
-                good
-            );
+            assert!(ReadRuntimeConfig::from_values(&valid).is_ok());
         }
     }
 }
