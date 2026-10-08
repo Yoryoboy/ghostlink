@@ -107,7 +107,10 @@ G5/G7 CLI UX.
   already at destination, `DestinyNoRoomInDestination`, equipped-item
   conflicts) to clear refusals and invalidate the projection; never retry
   blindly. Check DIM's blind-move/no-room handling for pulls.
-- [ ] **T5 — Honest no-op and response fields (G3).** `verified_noop` only
+- [ ] **T5 — Honest no-op and response fields (G3).** Includes native-review
+  advisory R3-001 (`crates/destiny-mcp/src/schema.rs:379`): the `equip_item`
+  description still says "the next ordinary read forces sync", false after C2
+  when fully applied. `verified_noop` only
   from local state that includes our own effects; fix or remove
   `profile_refresh` and tool descriptions that claim invalidation.
 - [ ] **T6 — G1 loadouts.** `get_loadouts` returns summaries (slot, name,
@@ -124,6 +127,12 @@ G5/G7 CLI UX.
   `skills/ghostlink/SKILL.md`; cut rc.3 and re-run chained actions live.
 
 ## Evidence
+
+- Native review (RDD on, 2026-10-08), one slice per lineage, all approved
+  and acknowledged (authority burned): T1 `691ad79..3d5d39c`
+  review-d5bfe684fb9934d6; B1+B2 `3d5d39c..5fdc960` review-74b305ea826a912f;
+  C1+C2 `5fdc960..2286f97` review-39e8e68a24f8a08f (advisory R3-001 → T5);
+  D `2286f97..8df605d` review-d303c06c0c266e3c.
 
 - Exploration (2026-10-08): DIM plans from in-memory store with no fetch
   before writes (`item-move-service.ts`, `destiny2-api.ts:186-263`), applies
