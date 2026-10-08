@@ -144,7 +144,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
     the amount AND Postmaster same-hash total fell by exactly the amount within
     the existing 3 bounded re-observations; otherwise Uncertain. Never redispatch.
   Split:
-  - [ ] GPM-006b — Core stack pull contract: request (itemId 0) + outcomes +
+  - [x] GPM-006b — Core stack pull contract: request (itemId 0) + outcomes +
     pure capacity/selection policy with exhaustive tests.
   - [ ] GPM-006c — Qualify non-equipment bucket capacity from the pinned
     manifest (consumables/modifications/materials) with refusal on unknown.

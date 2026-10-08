@@ -1069,6 +1069,23 @@ pub trait InstancedPullGateway {
     ) -> Result<crate::InstancedPullOutcome, AppError>;
 }
 
+/// Performs exactly one non-instanced Postmaster pull under fresh preflight.
+/// No batching, retry, rollback or verification. Request syntax and pure policy
+/// decisions do not authorize dispatch; the service must prove fresh ownership,
+/// complete observations, safe metadata and guaranteed destination capacity.
+///
+/// `Err` is reserved for pre-dispatch failures. Received authentication refusal
+/// is `Ok(StackPullOutcome::AuthenticationRefused)`; post-dispatch ambiguity,
+/// including unknown HTTP 5xx without non-application proof, is `Uncertain`.
+/// Acknowledgement is not recovery, and no outcome permits automatic retry.
+/// No credentials, raw provider payloads or provider messages cross this seam.
+pub trait StackPullGateway {
+    fn pull(
+        &mut self,
+        request: &crate::StackPullRequest,
+    ) -> Result<crate::StackPullOutcome, AppError>;
+}
+
 /// A validated, provider-neutral intent to equip one concrete item on a character.
 /// Identifier syntax is adapter-owned; empty opaque identifiers are refused here.
 #[derive(Clone, Debug, Eq, PartialEq)]

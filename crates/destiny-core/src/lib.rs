@@ -30,6 +30,12 @@ pub mod query;
 pub use ports::PublicMilestonesGateway;
 pub use public_milestones::{PublicMilestone, PublicMilestoneActivity, PublicMilestonesSnapshot};
 pub mod redact;
+pub mod stack_pull;
+pub use ports::StackPullGateway;
+pub use stack_pull::{
+    StackPullCapacityInput, StackPullDecision, StackPullOutcome, StackPullRefusal,
+    StackPullRejection, StackPullRequest, evaluate_stack_pull, evaluate_stack_pull_capacity,
+};
 pub mod stacks;
 pub use stacks::{ProfileCurrenciesCoverage, StackContainer, StackObservation};
 pub mod state;
