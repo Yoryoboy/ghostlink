@@ -1,7 +1,7 @@
-//! Fresh, consumed-plan non-instanced Postmaster pulls.
+//! Local, consumed-plan non-instanced Postmaster pulls.
 //! Acknowledgement is success, not a quantity observation or atomic guarantee.
+use crate::ProfileSyncService;
 use crate::instanced_pull::PullDisposition;
-use crate::{ProfileSyncService, ProfileSyncWithObservationsOutcome, PublishedProfileAcquisition};
 use destiny_core::*;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -43,15 +43,6 @@ impl From<StackPullPlanningRefusal> for StackPullPlanningError {
         Self::Refused(e)
     }
 }
-#[derive(Debug, Eq, PartialEq)]
-struct Fingerprint {
-    capacity: StackPullCapacityInput,
-    unique_label: String,
-    policy_version: DefinitionVersion,
-    policy_artifact: String,
-    // Sorted multiset: equal anonymous rows remain significant, never deduplicated.
-    rows: Vec<StackObservation>,
-}
 /// Opaque intent; no Clone, public constructor, ticket or reminting API.
 /// ```compile_fail
 /// use destiny_app::StackPullPlan;
@@ -68,7 +59,6 @@ pub struct StackPullPlan {
     created_at: Timestamp,
     expires_at: Timestamp,
     context: StackPullContext,
-    fingerprint: Fingerprint,
 }
 impl StackPullPlan {
     pub fn id(&self) -> &PlanId {
@@ -90,6 +80,7 @@ pub struct StackPullContext {
     destination_bucket: BucketHash,
     definition_version: DefinitionVersion,
     revision: SyncRevision,
+    max_stack_size: i32,
     pre_destination_quantity: u64,
     pre_profile_quantity: u64,
     pre_postmaster_quantity: u64,
@@ -209,7 +200,6 @@ impl StackPullExecutionFailure {
 }
 struct Eligibility {
     context: StackPullContext,
-    fingerprint: Fingerprint,
 }
 
 /// Provider-neutral ports and injected audited policy. Callers must serialize
@@ -217,6 +207,8 @@ struct Eligibility {
 pub struct StackPullService<G, R, D, M, C, P> {
     sync: ProfileSyncService<G, R>,
     definitions: D,
+    // Retained for constructor compatibility; stack pulls never fetch it.
+    #[allow(dead_code)]
     manifest: M,
     policy: StackBucketCapacityPolicy,
     clock: C,
@@ -248,22 +240,19 @@ impl<
             plan_ids,
         }
     }
-    fn fresh_preflight(
+    fn committed_snapshot(
         &mut self,
         freshness: FreshnessPolicy,
         now: Timestamp,
-    ) -> Result<PublishedProfileAcquisition, AppError> {
-        match self
-            .sync
-            .sync_with_observations(ProfileSyncReason::Preflight, freshness, now)?
-        {
-            ProfileSyncWithObservationsOutcome::Refreshed(pair) => Ok(pair),
-            ProfileSyncWithObservationsOutcome::SkippedFresh { .. } => {
-                Err(AppError::new(ErrorCategory::ProviderValidation))
-            }
-        }
+    ) -> Result<InventorySnapshot, AppError> {
+        self.sync
+            .sync(ProfileSyncReason::Ordinary, freshness, now)?;
+        self.sync
+            .repository()
+            .load_current()?
+            .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))
     }
-    /// One forced acquisition and one fresh public index evidence fetch; no action.
+    /// Ordinary sync reuses fresh committed stacks; no Manifest capacity fetch.
     pub fn plan(
         &mut self,
         request: &StackPullPlanRequest,
@@ -271,33 +260,27 @@ impl<
         freshness: FreshnessPolicy,
     ) -> Result<StackPullPlan, StackPullPlanningError> {
         let now = self.clock.now()?;
-        let pair = self.fresh_preflight(freshness, now)?;
-        // The existing evidence port supplies the same Manifest version/artifact
-        // identity for both audited policies, not equipment capacity substitution.
-        let evidence = self.manifest.fetch_equipment_capacity_evidence()?;
+        let snapshot = self.committed_snapshot(freshness, now)?;
         let wire = StackPullRequest::new(
             request.membership.clone(),
             request.item_hash,
             request.owner.clone(),
             request.amount,
         )?;
-        let eligible = self.eligibility(wire, &pair, &evidence)?;
+        let eligible = self.eligibility(wire, &snapshot)?;
         Ok(StackPullPlan {
             id: self.plan_ids.next_plan_id()?,
             created_at: now,
             expires_at: lifetime.expires_at(now)?,
             context: eligible.context,
-            fingerprint: eligible.fingerprint,
         })
     }
     fn eligibility(
         &self,
         request: StackPullRequest,
-        pair: &PublishedProfileAcquisition,
-        evidence: &StackBucketCapacityEvidence,
+        snapshot: &InventorySnapshot,
     ) -> Result<Eligibility, StackPullPlanningError> {
         use StackPullPlanningRefusal as Refusal;
-        let snapshot = pair.snapshot();
         if snapshot.metadata.membership_id != *request.membership().membership_id()
             || snapshot.metadata.membership_type != request.membership().membership_type()
         {
@@ -334,18 +317,8 @@ impl<
         if self.policy.capacity(bucket).is_none() {
             return Err(Refusal::UnsupportedBucket.into());
         }
-        let qualified = self
+        let mut capacity = self
             .policy
-            .qualify(evidence)
-            .map_err(|reason| match reason {
-                destiny_core::CapacityPolicyMismatch::VersionMismatch => {
-                    Refusal::PolicyVersionMismatch
-                }
-                destiny_core::CapacityPolicyMismatch::ArtifactMismatch => {
-                    Refusal::PolicyArtifactMismatch
-                }
-            })?;
-        let mut capacity = qualified
             .derive(bucket, request.item_hash(), &snapshot.stacks)
             .map_err(Refusal::Capacity)?;
         capacity.max_stack_size = d.max_stack_size;
@@ -368,43 +341,24 @@ impl<
         profile
             .checked_add(request.quantity() as u64)
             .ok_or(Refusal::Capacity(StackPullRefusal::ArithmeticOverflow))?;
-        let mut rows: Vec<_> = snapshot
-            .stacks
-            .iter()
-            .filter(|r| {
-                let destination_row = r.container() == &StackContainer::ProfileInventory
-                    && r.bucket_hash() == bucket;
-                let same_hash_profile_row = r.container() == &StackContainer::ProfileInventory
-                    && r.item_hash() == request.item_hash();
-                let owner_postmaster_row = r.item_hash() == request.item_hash()
-                    && matches!(r.container(), StackContainer::Postmaster(owner) if owner == request.character());
-                destination_row || same_hash_profile_row || owner_postmaster_row
-            })
-            .cloned()
-            .collect();
-        rows.sort();
-        let fingerprint = Fingerprint {
-            capacity,
-            unique_label: d.stack_unique_label.unwrap_or_default(),
-            policy_version: self.policy.definition_version().clone(),
-            policy_artifact: self.policy.bucket_artifact_identity().to_owned(),
-            rows,
-        };
         Ok(Eligibility {
             context: StackPullContext {
                 request,
                 destination_bucket: bucket,
                 definition_version: snapshot.metadata.definition_version.clone(),
                 revision: snapshot.metadata.revision,
+                max_stack_size: d
+                    .max_stack_size
+                    .ok_or(Refusal::Capacity(StackPullRefusal::UnknownMaxStackSize))?,
                 pre_destination_quantity: destination,
                 pre_profile_quantity: profile,
                 pre_postmaster_quantity: postmaster,
             },
-            fingerprint,
         })
     }
-    /// Consume intent, renew preflight proof, dispatch once and invalidate local
-    /// freshness. Acknowledgement yields Applied; storage failure fails closed.
+    /// Consume intent, recheck committed eligibility and revision, dispatch once.
+    /// Acknowledgements persist exactly once without invalidation; incomplete
+    /// receipts or persistence failures invalidate, retaining the receipt.
     /// No post-action read or retry occurs.
     pub fn execute<T: StackPullGateway>(
         &mut self,
@@ -435,7 +389,30 @@ impl<
                 | StackPullOutcome::Transient
         );
         let acknowledged = matches!(receipt, StackPullOutcome::Acknowledged);
-        let local_state_error = self.sync.repository_mut().invalidate_freshness().err();
+        let context = &dispatch.context;
+        let persistence = if acknowledged {
+            self.sync
+                .repository_mut()
+                .apply_acknowledged_effects(
+                    context.request.membership(),
+                    &[InventoryEffect::PullStack {
+                        item_hash: context.request.item_hash(),
+                        owner: context.request.character().clone(),
+                        quantity: context.request.quantity() as u32,
+                        destination_bucket: context.destination_bucket,
+                        max_stack_size: context.max_stack_size,
+                    }],
+                )
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
+        let local_state_error = if !acknowledged || persistence.is_err() {
+            let invalidation = self.sync.repository_mut().invalidate_freshness();
+            persistence.and(invalidation).err()
+        } else {
+            None
+        };
         let disposition = if local_state_error.is_some() {
             PullDisposition::LocalStateFailed
         } else if refused {
@@ -461,9 +438,8 @@ impl<
         use StackPullPreDispatchError as Error;
         let preflight_at = self.clock.now()?;
         check_time(&plan, preflight_at, plan.created_at)?;
-        let pair = self.fresh_preflight(freshness, preflight_at)?;
-        let evidence = self.manifest.fetch_equipment_capacity_evidence()?;
-        let eligible = self.eligibility(plan.context.request.clone(), &pair, &evidence)?;
+        let snapshot = self.committed_snapshot(freshness, preflight_at)?;
+        let eligible = self.eligibility(plan.context.request.clone(), &snapshot)?;
         let context = eligible.context;
         if context.request != plan.context.request {
             return Err(Error::IdentityDrift);
@@ -475,9 +451,9 @@ impl<
             return Err(Error::RevisionDrift);
         }
         if context.destination_bucket != plan.context.destination_bucket
-            || eligible.fingerprint != plan.fingerprint
+            || context.max_stack_size != plan.context.max_stack_size
         {
-            return Err(Error::FingerprintDrift);
+            return Err(Error::IdentityDrift);
         }
         let metadata = self
             .sync

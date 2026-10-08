@@ -83,19 +83,20 @@ impl StackPullRequest {
 pub enum StackPullRejection {
     /// Received rejection with proven non-application.
     InvalidRequest,
+    /// Bungie rejected the pull because the destination is full (1642).
+    DestinationFull,
 }
 impl StackPullRejection {
     pub const fn category(self) -> ErrorCategory {
         match self {
-            Self::InvalidRequest => ErrorCategory::ProviderValidation,
+            Self::InvalidRequest | Self::DestinationFull => ErrorCategory::ProviderValidation,
         }
     }
 }
 
 /// Evidence of one attempt, not recovery. No variant permits automatic retry.
-/// Verification belongs to bounded fresh observations: destination same-hash
-/// total must rise by exactly the amount and Postmaster total fall by exactly it.
-/// No provider-code mapping or verification machinery lives in this contract.
+/// Acknowledged effects may be applied once to the local projection; they are
+/// not observed quantity verification. No provider-code mapping lives here.
 ///
 /// ```compile_fail
 /// use destiny_core::StackPullOutcome;

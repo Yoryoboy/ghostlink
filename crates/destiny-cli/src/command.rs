@@ -261,7 +261,7 @@ pub enum Command {
     Pull(PullArgs),
     /// Pull a non-instanced Postmaster stack amount from its explicit owner.
     #[command(
-        long_about = "Pull a non-instanced Postmaster stack using a canonical uint32 decimal ITEM_HASH, canonical positive int32 --amount, and canonical positive int64 --character owner ID. Requires login and qualified stored Manifest definitions. Bungie acknowledgement returns applied (exit 0), not observed quantity arrival, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail. No names, destination overrides, redispatch or atomic guarantees."
+        long_about = "Pull a non-instanced Postmaster stack using a canonical uint32 decimal ITEM_HASH, canonical positive int32 --amount, and canonical positive int64 --character owner ID. Requires login and qualified stored Manifest definitions. Ordinary sync reuses fresh committed stacks without profile acquisitions or Manifest capacity fetches. Pinned audited account-wide capacities use unchanged stack arithmetic; locally full refuses, Bungie is the final validator (1642 is destination full). Bungie acknowledgement returns applied (exit 0), applies the requested quantity locally once, advances revision and retains freshness, not observed quantity arrival. No post-action verification. Incomplete receipts or persistence failures invalidate; never retry. Refused and transport-uncertain attempts fail. No names, destination overrides, redispatch or atomic guarantees."
     )]
     PullStack(PullStackArgs),
     /// Lock one explicitly selected owned item; acknowledgement is applied.

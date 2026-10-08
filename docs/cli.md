@@ -871,10 +871,11 @@ fails before authentication, storage or service access.
 
 Requires login with `MoveEquipDestinyItems` and qualified stored Manifest
 metadata. One invocation-owned SQLite connection serializes local inventory
-publication and definition use, with authenticated membership, fresh planning
-and preflight, and fresh public Manifest index capacity evidence. Only pinned
-audited account-wide Consumables and Modifications buckets are supported.
-Unknown metadata, side effects, instanced items, capacity or policy drift refuse.
+publication and definition use, with authenticated membership and ordinary sync
+for planning and execution. Fresh committed state needs no profile acquisition or
+Manifest capacity fetch. Only pinned audited account-wide Consumables and
+Modifications buckets are supported, without Manifest-version/artifact qualification.
+Unknown metadata, side effects, instanced items or locally full destinations refuse.
 Duplicate anonymous rows remain significant: amount must not exceed the smallest
 matching owner Postmaster stack, not their sum. The owner selects the source;
 the destination is the qualified normal account-wide ProfileInventory bucket,
@@ -882,14 +883,17 @@ not an arbitrary character or Vault.
 
 One consumed plan dispatches at most once. Acknowledgement returns `applied`
 (exit 0 / stdout), not observed quantity arrival, without post-action requests or
-waits. Dispatched attempts durably invalidate local freshness so the next ordinary
-read forces sync; no guessed quantities are published. No automatic definition
+waits. Acknowledged pulls apply the requested quantity locally once: decrement a
+Postmaster stack, fill/split profile inventory stacks, advance revision and retain
+freshness. Capacity and the next plan see those updated stacks. Bungie is the final
+validator; numeric 1642 is a typed destination-full refusal, unknown codes uncertain.
+Incomplete receipts or persistence failures invalidate. No automatic definition
 download, recompose, freeing space, reminting, redispatch or rollback.
 JSON uses shared `kind: "stack_pull"`, independent `disposition`, `receipt`,
 `dispatch`, `failure` and `plan_id`; dispatch includes preflight quantity totals,
 not invented post quantities. There is no post-action `observations` field.
 Received refusals remain `refused`; transport uncertainty remains `uncertain`:
-both exit 41 on stderr. Invalidation storage failure is `local_state_failed` (42),
+both exit 41 on stderr. Persistence or invalidation failure is `local_state_failed` (42),
 retaining the receipt and reporting "local state could not be updated after the
 action". There is no provider-lag failure or exit 43.
 Missing definition is 33, ambiguous definition 31, preflight drift/expiry 30;

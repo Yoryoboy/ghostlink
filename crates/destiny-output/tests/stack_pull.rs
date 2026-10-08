@@ -56,9 +56,38 @@ fn input(destination: i64, postmaster: i64) -> InventorySnapshotInput {
         profile_currencies_coverage: ProfileCurrenciesCoverage::NotObserved,
     }
 }
+#[derive(Clone)]
+struct Repository(std::rc::Rc<std::cell::RefCell<InMemoryInventoryRepository>>);
+impl InventoryRepository for Repository {
+    fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
+        self.0.borrow().load_current()
+    }
+    fn replace_current(
+        &mut self,
+        input: InventorySnapshotInput,
+    ) -> Result<InventorySnapshot, AppError> {
+        self.0.borrow_mut().replace_current(input)
+    }
+    fn freshness_invalidated(&self) -> Result<bool, AppError> {
+        self.0.borrow().freshness_invalidated()
+    }
+    fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        self.0.borrow_mut().invalidate_freshness()
+    }
+    fn apply_acknowledged_effects(
+        &mut self,
+        membership: &DestinyMembership,
+        effects: &[InventoryEffect],
+    ) -> Result<InventorySnapshot, AppError> {
+        self.0
+            .borrow_mut()
+            .apply_acknowledged_effects(membership, effects)
+    }
+}
+
 type Service = StackPullService<
     QueuedProfileGateway,
-    InMemoryInventoryRepository,
+    Repository,
     InMemoryDefinitionRepository,
     QueuedManifestGateway,
     FakeClock,
@@ -69,14 +98,13 @@ fn armed(
     posts: Vec<Result<InventorySnapshotInput, AppError>>,
 ) -> (Service, StackPullPlan) {
     let mut profile = QueuedProfileGateway::new();
-    for next in [Ok(input(20, 10)), Ok(preflight)].into_iter().chain(posts) {
-        // Resolve the candidate's membership coherently so account drift is
-        // published and classified by the pull service, not rejected by sync.
+    // Queued later reads must remain unused while the committed state is fresh.
+    for next in posts {
         profile.queue_membership(Ok(next.as_ref().map_or_else(
             |_| membership(),
             |i| DestinyMembership::new(i.membership_type, i.membership_id.clone()).unwrap(),
         )));
-        profile.queue_acquisition(next.and_then(|i| ProfileAcquisition::new(i, None)));
+        profile.queue_inventory(next);
     }
     let mut manifest = QueuedManifestGateway::new();
     for _ in 0..2 {
@@ -103,8 +131,12 @@ fn armed(
         tags: vec![RAW_PAYLOAD.into()],
         version: DefinitionVersion::new(VERSION),
     };
+    let mut repository = Repository(std::rc::Rc::new(std::cell::RefCell::new(
+        InMemoryInventoryRepository::new(),
+    )));
+    repository.replace_current(input(20, 10)).unwrap();
     let mut service = StackPullService::new(
-        ProfileSyncService::new(profile, InMemoryInventoryRepository::new()),
+        ProfileSyncService::new(profile, repository.clone()),
         InMemoryDefinitionRepository::new(DefinitionVersion::new(VERSION), vec![definition]),
         manifest,
         StackBucketCapacityPolicy::new(
@@ -131,6 +163,9 @@ fn armed(
             FRESH,
         )
         .unwrap();
+    // Publish explicitly between plan and execution rather than forcing a read.
+    // Unchanged content retains revision; changed source eligibility still refuses.
+    repository.replace_current(preflight).unwrap();
     (service, plan)
 }
 fn execute(
@@ -181,6 +216,11 @@ fn every_received_outcome_has_independent_receipt_and_disposition() {
         (
             StackPullOutcome::Rejected(StackPullRejection::InvalidRequest),
             json!({"kind":"rejected","reason":"invalid_request"}),
+            PullDisposition::Refused,
+        ),
+        (
+            StackPullOutcome::Rejected(StackPullRejection::DestinationFull),
+            json!({"kind":"rejected","reason":"destination_full"}),
             PullDisposition::Refused,
         ),
     ] {

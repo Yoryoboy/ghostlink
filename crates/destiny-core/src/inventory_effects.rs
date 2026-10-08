@@ -185,6 +185,12 @@ fn pull_stack(
     if quantity == 0 || max_stack_size <= 0 {
         return Err(InvalidStackParameters);
     }
+    // Audited stack destinations have at most 50 slots. Bound expansion even
+    // for direct reducer callers, before source mutation or the new-row loop.
+    // Widen before multiplication so a valid int32 maximum cannot overflow.
+    if u64::from(quantity) > (max_stack_size as u64) * 50 {
+        return Err(InvalidStackParameters);
+    }
     let quantity = i32::try_from(quantity).map_err(|_| StackArithmeticOverflow)?;
     // Validate definition-supplied hashes even when no new destination row is needed.
     let destination = StackObservation::new(

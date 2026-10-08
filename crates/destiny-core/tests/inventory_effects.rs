@@ -99,6 +99,28 @@ fn stack_pull_removes_source_fills_partials_and_splits_remainder() {
 }
 
 #[test]
+fn stack_pull_bounds_destination_row_expansion() {
+    let before = stack_snapshot(vec![stack(20, 501, StackContainer::Postmaster(owner()))]);
+    assert_eq!(
+        apply_inventory_effects(&before, &[stack_effect(501, 10)]),
+        Err(InventoryEffectError::InvalidStackParameters)
+    );
+    let boundary = apply_inventory_effects(&before, &[stack_effect(500, 10)]).unwrap();
+    assert_eq!(
+        boundary
+            .snapshot
+            .stacks
+            .iter()
+            .filter(|r| r.container() == &StackContainer::ProfileInventory)
+            .count(),
+        50
+    );
+    // Widen the product: even the largest valid maximum must not overflow.
+    assert!(apply_inventory_effects(&before, &[stack_effect(501, i32::MAX)]).is_ok());
+    assert_eq!(before.stacks[0].quantity(), 501);
+}
+
+#[test]
 fn stack_pull_exact_split_and_canonical_partial_order() {
     let before = stack_snapshot(vec![stack(20, 30, StackContainer::Postmaster(owner()))]);
     let result = apply_inventory_effects(&before, &[stack_effect(30, 10)]).unwrap();

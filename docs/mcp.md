@@ -240,7 +240,10 @@ rejected before I/O. Use committed stack observations, never synthesize instance
 IDs or choose a destination.
 
 Only qualified non-instanced account-wide Consumables/Modifications are supported.
-Fresh planning and preflight prove eligibility and capacity; duplicate Postmaster
+Ordinary sync reuses the committed projection for planning and execution: fresh
+state needs no profile acquisition or Manifest capacity fetch. Pinned audited
+capacities do not require Manifest-version/artifact qualification; local fullness
+refuses, with unchanged unique-stack and capacity arithmetic. Duplicate Postmaster
 rows bound the amount by the smallest matching stack, not their sum. The adapter
 uses the existing operation guard and production gateway/repository clones.
 
@@ -249,9 +252,12 @@ uses the existing operation guard and production gateway/repository clones.
 `failure`; dispatch retains preflight totals, not invented post quantities.
 Acknowledgement returns `applied`, with `isError=false` (CLI 0), not observed
 quantity arrival. There is no post-action request, wait or `observations` field.
-Dispatched attempts durably invalidate local freshness; the next ordinary read
-forces sync without publishing guessed quantities. Transport uncertainty and
-received refusals remain errors (CLI 41); invalidation storage failure returns
+Acknowledged pulls apply the requested quantity locally once: decrement a
+Postmaster stack, fill/split profile inventory stacks, advance revision and retain
+freshness. Following plans see the updated capacity. Bungie is the final validator;
+numeric 1642 is a typed destination-full refusal, unknown codes stay uncertain.
+Incomplete receipts or persistence failures invalidate. Transport uncertainty and
+received refusals remain errors (CLI 41); persistence or invalidation failure returns
 `local_state_failed` (CLI 42 / `isError=true`) with the exact receipt and "local
 state could not be updated after the action". Pre-action refusals retain category
 exits. There are no provider-lag failures or exit 43. Never blindly retry: re-read

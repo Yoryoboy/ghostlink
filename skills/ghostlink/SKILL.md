@@ -24,7 +24,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - `ghostlink lock` and `ghostlink unlock` require explicit user intent for this item and requested state; MCP `set_lock_state` requires the same intent. Already satisfied is a verified no-op. Vault items use one owned character for the provider call, not a destination selection.
 - MCP `pull_item` and fallback `ghostlink pull` require explicit user intent for one genuine Postmaster equipment instance ID only. Destination is its committed Postmaster owner, never an arbitrary character. Names, hashes, stacks and quantity are unsupported; requires login and qualified stored definitions.
 - MCP `pull_stack` with `{"item_hash":"7","amount":"3","character":"2"}` (all three canonical decimal strings, no extra fields), or fallback `ghostlink pull-stack <ITEM_HASH> --amount <N> --character <CHARACTER_ID>`, requires explicit hash, amount and Postmaster owner intent. Hash is canonical uint32 decimal; amount positive int32; owner positive int64, never a class. Only qualified non-instanced account-wide Consumables/Modifications are supported; do not synthesize stack IDs or select destinations. Requires login and stored definitions. Duplicate rows constrain amount by the smallest matching stack, never their sum.
-- Never blindly retry `pull-stack`, `pull`, `move`, `equip`, `lock` or `unlock`, including after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report. For move/equip/lock/unlock/pull/pull-stack, `applied` exits 0 on full acknowledgement (MCP success), without claiming observed state. Acknowledged instanced pulls persist locally and retain freshness; stack pulls invalidate for the next ordinary read. Pull/pull-stack refused or transport-uncertain attempts exit 41; local invalidation storage failure exits 42 with the receipt retained. Neither emits provider-lag exit 43. Incomplete lock attempts exit 41, not success. Check later, do not repeat the mutation.
+- Never blindly retry `pull-stack`, `pull`, `move`, `equip`, `lock` or `unlock`, including after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report. For move/equip/lock/unlock/pull/pull-stack, `applied` exits 0 on full acknowledgement (MCP success), without claiming observed state. Acknowledged instanced and stack pulls persist locally and retain freshness; stack quantities are applied exactly once. Pull/pull-stack refused or transport-uncertain attempts exit 41; local persistence or invalidation failure exits 42 with the receipt retained. Neither emits provider-lag exit 43. Incomplete lock attempts exit 41, not success. Check later, do not repeat the mutation.
 - Move already at its destination during planning is refused (exit 40), not a verified no-op. Report it without working around the refusal.
 - `ghostlink update` and `ghostlink uninstall` are installation mutations, not game actions or reads. Run them only with explicit user intent; never automatically retry a failed or uncertain lifecycle command.
 - Never try to free inventory space, unequip elsewhere, or change plugs; the CLI refuses these by design.
@@ -140,9 +140,15 @@ Anonymous stacks use MCP `pull_stack` with required `item_hash`, `amount`, and
 `character` decimal strings (uint32, positive int32, positive int64 respectively),
 or fallback `pull-stack`; no names, classes, instance IDs or extra fields. Only
 qualified non-instanced account-wide Consumables/Modifications are supported.
-Duplicate rows bound amount by the smallest matching stack. Stack pulls use the
-same acknowledgement, invalidation and failure contract; dispatch retains only
-preflight totals, not invented post quantities. Live checks remain pending.
+Duplicate rows bound amount by the smallest matching stack. Ordinary sync plans
+and executes from committed stacks; fresh state needs no profile acquisition or
+Manifest capacity fetch. Pinned audited capacity is not version/artifact qualified;
+locally full refuses with unchanged unique-stack arithmetic. Bungie is the final
+validator (numeric 1642 is destination full; unknown codes remain uncertain).
+Acknowledgement applies the requested quantity locally once, decrements Postmaster,
+fills/splits profile stacks, advances revision and retains freshness. Incomplete
+receipts or persistence failures invalidate; no retry. Dispatch retains only
+preflight totals, not observed post quantities. Live checks remain pending.
 Never retry uncertain or refused outcomes blindly; sync, re-read and reassess
 explicit intent before another action.
 
@@ -188,7 +194,7 @@ explicit intent before another action.
 - State facts only from command output; say when a result is empty instead of inventing items.
 - For move or equip, report `status`, each step, and `reason`; never claim rollback after partial progress. Move/equip `applied` means every step was accepted (exit 0), not observed location/equipped state. The next ordinary read forces sync. Neither emits provider-lag exits 42/43; uncertain and partial results still fail. Update exit 43 instead means `lifecycle_busy`.
 - For lock/unlock, report `status`, requested `locked`, `attempt`, `observed` and `reason`. `applied` means Bungie acknowledged the requested state (exit 0 / MCP success), not post-action observation; only no-op has preflight `observed`. There is no post-action profile request; the next ordinary read forces sync. Exit 41 is incomplete; 42 is fail-closed local invalidation storage failure, not provider lag. Lock no longer emits lag exit 43. Never blindly retry.
-- For pull/pull-stack, report `disposition`, `receipt` and `failure`. `applied` means acknowledged (CLI 0 / MCP success), not observed arrival or quantities. No post-action request/wait or observations. Acknowledged instanced pulls persist locally and retain freshness; stack pulls invalidate. Refused/transport-uncertain attempts exit 41 and invalidate; local persistence or invalidation failure exits 42, retaining the receipt. Sync and inspect/Postmaster later; never blindly repeat. Confirm the exact instance or hash, amount and owner before acting.
+- For pull/pull-stack, report `disposition`, `receipt` and `failure`. `applied` means acknowledged (CLI 0 / MCP success), not observed arrival or quantities. No post-action request/wait or observations. Acknowledged instanced and stack pulls persist locally and retain freshness. Refused/transport-uncertain attempts exit 41 and invalidate; local persistence or invalidation failure exits 42, retaining the receipt. Sync and inspect/Postmaster later; never blindly repeat. Confirm the exact instance or hash, amount and owner before acting.
 - Never echo tokens, membership IDs, or raw provider errors.
 
 ## References

@@ -53,7 +53,7 @@ provider-lag exit 43 or retry; every dispatched attempt invalidates freshness.
 
 | `disposition` | Exit | Agent action |
 |---|---:|---|
-| `applied` | 0 | Bungie acknowledged the action, not observed arrival. Instanced pulls persist locally and retain freshness; stack pulls invalidate. |
+| `applied` | 0 | Bungie acknowledged the action, not observed arrival. Instanced and stack pulls persist locally and retain freshness. |
 | `uncertain` | 41 | No clear acknowledgement; sync/inspect and reassess intent, never blindly retry. |
 | `refused` | 41 / varies | Received refusal exits 41; pre-action refusal retains category exits. Report without working around it. |
 | `local_state_failed` | 42 | Local state could not be updated after the action; receipt retained. Sync/inspect, do not retry. |
@@ -81,12 +81,19 @@ uses `kind: "stack_pull"` with independent receipt, disposition and failure.
 Canonical uint32 hash, positive int32 amount and positive int64 owner ID are
 required; invalid input exits 2 before any I/O. The pull disposition table above
 also applies: `applied` is 0, received refusal/transport uncertainty 41, local
-invalidation storage failure 42. No provider-lag exit 43, post-action request,
+persistence or invalidation failure 42. No provider-lag exit 43, post-action request,
 wait or observations; preflight totals are not invented post quantities.
 Missing definition is 33, ambiguous definition 31, preflight drift/expiry 30;
 other pre-action failures retain category exits. Nonzero evidence stays on stderr.
-Requires authenticated membership, qualified non-instanced metadata and fresh
-pinned account-wide capacity evidence. Owner selects the Postmaster source, not
+Requires authenticated membership, qualified non-instanced metadata and pinned
+audited account-wide local capacity (unchanged stack arithmetic). Ordinary sync
+reuses fresh committed stacks without profile or Manifest capacity fetches;
+no version/artifact qualification. Locally full refuses; Bungie is the final
+validator (numeric 1642 means destination full, unknown codes remain uncertain).
+Acknowledgement applies the requested quantity locally once, decrements Postmaster,
+fills/splits profile stacks, advances revision and retains freshness. Incomplete
+receipts or persistence failures invalidate, retaining receipts; never retry.
+Owner selects the Postmaster source, not
 a destination. Sync/read Postmaster and reassess explicit hash/amount/owner intent
 before another action. Acknowledgement is not an atomic or observed-state guarantee;
 offline checks do not establish live readiness.

@@ -270,7 +270,7 @@ impl PullStackArgs {
     }
 }
 pub fn pull_stack_tool() -> Tool {
-    Tool::new(PULL_STACK_TOOL, "Pull an exact amount of one non-instanced Postmaster stack for an owned character. Canonical decimal strings only: uint32 item_hash, positive int32 amount, positive int64 character. Requires authentication, qualified definitions and fresh capacity proof. One action; Bungie acknowledgement returns applied (success), not observed quantities, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail; never blindly retry.", JsonObject::new())
+    Tool::new(PULL_STACK_TOOL, "Pull an exact amount of one non-instanced Postmaster stack for an owned character. Canonical decimal strings only: uint32 item_hash, positive int32 amount, positive int64 character. Requires authentication and qualified definitions. Ordinary sync reuses fresh committed stacks without profile acquisitions or Manifest capacity fetches. Pinned audited account-wide capacities use unchanged stack arithmetic; locally full refuses, Bungie is the final validator (1642 is destination full). One action; acknowledgement returns applied (success), applies the requested quantity locally once, advances revision and retains freshness, not observed quantities. No post-action verification. Incomplete receipts or persistence failures invalidate; never retry. Refused and transport-uncertain attempts fail; never blindly retry.", JsonObject::new())
         .with_input_schema::<PullStackArgs>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
 }
