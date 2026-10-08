@@ -282,6 +282,17 @@ Add the global `--json` flag to select machine output:
 ghostlink --json search-inventory --text gjallar --item-hash 1001
 ```
 
+`ghostlink search-inventory --character` restricts owned item hits to an exact
+character ID or a unique case-insensitive `hunter|titan|warlock` class. Exact IDs
+take precedence; unknown selectors return `invalid_request`, and duplicate
+classes return `ambiguous_match`, rather than an empty successful search. Without
+`--character`, searches retain their existing account-wide scope. MCP
+`search_inventory.character_id` remains an exact-ID filter.
+
+```sh
+ghostlink search-inventory --character hunter --json
+```
+
 ### Postmaster observations
 
 `ghostlink postmaster [--character ID_OR_CLASS] [--json]` lists committed
