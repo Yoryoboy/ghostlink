@@ -138,13 +138,43 @@ fn compose_server<S: CredentialStore + Send + 'static>(
     let equip = destiny_adapters::BungieEquipGateway::new(
         destiny_adapters::HttpEquipTransport::new()?,
         SystemClock::new(),
-        transfer_source,
+        transfer_source.clone(),
         destiny_adapters::EquipApiKey::new(config.api_key().expose_secret())?,
     )?;
+    let lock = destiny_adapters::lock::BungieLockGateway::new(
+        destiny_adapters::lock::HttpLockTransport::new()?,
+        SystemClock::new(),
+        transfer_source.clone(),
+        destiny_adapters::lock::LockApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let pull = destiny_adapters::instanced_pull::BungieInstancedPullGateway::new(
+        destiny_adapters::instanced_pull::HttpInstancedPullTransport::new()?,
+        SystemClock::new(),
+        transfer_source.clone(),
+        destiny_adapters::instanced_pull::InstancedPullApiKey::new(
+            config.api_key().expose_secret(),
+        )?,
+    )?;
+    let manifest = destiny_adapters::manifest::BungieManifestGateway::new(
+        destiny_adapters::manifest::ManifestApiKey::new(config.api_key().expose_secret())?,
+        destiny_adapters::manifest::HttpManifestTransport::new()?,
+        SystemClock::new(),
+    );
+    let stack = destiny_adapters::stack_pull::BungieStackPullGateway::new(
+        destiny_adapters::stack_pull::HttpStackPullTransport::new()?,
+        SystemClock::new(),
+        transfer_source,
+        destiny_adapters::stack_pull::StackPullApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let stack_manifest = destiny_adapters::manifest::BungieManifestGateway::new(
+        destiny_adapters::manifest::ManifestApiKey::new(config.api_key().expose_secret())?,
+        destiny_adapters::manifest::HttpManifestTransport::new()?,
+        SystemClock::new(),
+    );
     let repository = SqliteStore::open(config.database_path())?;
     Ok(assemble_server(
         profile_gateway,
-        (transfer, equip),
+        (transfer, equip, lock, pull, manifest, stack, stack_manifest),
         repository,
         policy,
         weekly_service(config)?,
@@ -244,6 +274,42 @@ where
     Ok((source.clone(), source))
 }
 
+/// Exact action gateways share the profile's credential session.
+type MutationPorts<C> = (
+    BungieTransferGateway<HttpTransferTransport, SystemClock, C>,
+    destiny_adapters::BungieEquipGateway<destiny_adapters::HttpEquipTransport, SystemClock, C>,
+    destiny_adapters::lock::BungieLockGateway<
+        destiny_adapters::lock::HttpLockTransport,
+        SystemClock,
+        C,
+    >,
+    destiny_adapters::instanced_pull::BungieInstancedPullGateway<
+        destiny_adapters::instanced_pull::HttpInstancedPullTransport,
+        SystemClock,
+        C,
+    >,
+    destiny_adapters::manifest::BungieManifestGateway<
+        destiny_adapters::manifest::HttpManifestTransport,
+        SystemClock,
+    >,
+    destiny_adapters::stack_pull::BungieStackPullGateway<
+        destiny_adapters::stack_pull::HttpStackPullTransport,
+        SystemClock,
+        C,
+    >,
+    destiny_adapters::manifest::BungieManifestGateway<
+        destiny_adapters::manifest::HttpManifestTransport,
+        SystemClock,
+    >,
+);
+
+struct PullDelay;
+impl destiny_app::RetryDelay for PullDelay {
+    fn wait(&mut self, duration: std::time::Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
 /// Wires the concrete adapters into one read-plus-mutation tool server.
 ///
 /// The read service and the mutation service share the profile gateway and the
@@ -253,10 +319,7 @@ where
 /// safest accepted window.
 fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     profile_gateway: BungieProfileGateway<HttpProfileTransport, SystemClock, C>,
-    ports: (
-        BungieTransferGateway<HttpTransferTransport, SystemClock, C>,
-        destiny_adapters::BungieEquipGateway<destiny_adapters::HttpEquipTransport, SystemClock, C>,
-    ),
+    ports: MutationPorts<C>,
     repository: SqliteStore,
     policy: FreshnessPolicy,
     weekly: (PublicWeeklyService, destiny_app::calendar::Calendar),
@@ -315,6 +378,36 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         policy,
     );
 
+    // Inventory publication and definition use share the EXISTING SQLite handle.
+    // The concrete Manifest port fetches fresh policy qualification at plan/preflight.
+    let pull = crate::service::InstancedPullToolService::new(
+        gateway.clone(),
+        destiny_app::InstancedPullService::new(
+            ProfileSyncService::new_with_definitions(gateway.clone(), repository.clone()),
+            repository.clone(),
+            ports.4,
+            destiny_adapters::pinned_equipment_capacity_policy(),
+            SystemClock::new(),
+            SystemPlanIds::new(SystemClock::new()),
+        ),
+        ports.3,
+        PullDelay,
+        policy,
+    );
+    let stack = crate::service::StackPullToolService::new(
+        gateway.clone(),
+        destiny_app::StackPullService::new(
+            ProfileSyncService::new_with_definitions(gateway.clone(), repository.clone()),
+            repository.clone(),
+            ports.6,
+            destiny_adapters::stack_bucket_capacity_policy::pinned_stack_bucket_capacity_policy(),
+            SystemClock::new(),
+            SystemPlanIds::new(SystemClock::new()),
+        ),
+        ports.5,
+        PullDelay,
+        policy,
+    );
     let mutations = MutationService::new(
         ProfileSyncService::new_with_definitions(gateway, repository),
         SystemPlanIds::new(SystemClock::new()),
@@ -326,9 +419,12 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         policy,
         PlanLifetime::MAX,
     )
-    .with_equip(ports.1);
+    .with_equip(ports.1)
+    .with_lock(ports.2)
+    .with_pull(pull)
+    .with_stack(stack);
 
-    // Every publishing read decorator and both mutations enter the same outer
+    // Every publishing read decorator and all mutations enter the same outer
     // operation boundary. Do not expose a second unguarded dispatch path for
     // these shared repositories: revision comparison alone is not exclusion.
     ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
@@ -491,6 +587,15 @@ impl<G: ProfileGateway> ProfileGateway for SharedGateway<G> {
         reason: ProfileSyncReason,
     ) -> Result<InventorySnapshotInput, AppError> {
         self.lock()?.load_inventory_scoped(membership, reason)
+    }
+
+    fn load_inventory_with_observations_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<destiny_app::ProfileAcquisition, AppError> {
+        self.lock()?
+            .load_inventory_with_observations_scoped(membership, reason)
     }
 }
 
@@ -894,6 +999,8 @@ mod tests {
         /// default, it would call them and the reason would be silently lost.
         struct RecordingGateway {
             reasons: Arc<Mutex<Vec<ProfileSyncReason>>>,
+            acquisition: Option<destiny_app::ProfileAcquisition>,
+            acquisitions: Vec<(DestinyMembership, ProfileSyncReason)>,
         }
 
         fn membership() -> DestinyMembership {
@@ -906,6 +1013,8 @@ mod tests {
 
         fn inventory_input(membership: &DestinyMembership) -> InventorySnapshotInput {
             InventorySnapshotInput {
+                profile_currencies_coverage: Default::default(),
+                stacks: Vec::new(),
                 plug_set_entries: Vec::new(),
                 membership_id: membership.membership_id().clone(),
                 membership_type: membership.membership_type(),
@@ -942,14 +1051,29 @@ mod tests {
                 membership: &DestinyMembership,
                 reason: ProfileSyncReason,
             ) -> Result<InventorySnapshotInput, AppError> {
+                assert!(
+                    self.acquisition.is_none(),
+                    "observation read fell back to scoped inventory"
+                );
                 self.reasons.lock().expect("reason log").push(reason);
                 Ok(inventory_input(membership))
+            }
+
+            fn load_inventory_with_observations_scoped(
+                &mut self,
+                membership: &DestinyMembership,
+                reason: ProfileSyncReason,
+            ) -> Result<destiny_app::ProfileAcquisition, AppError> {
+                self.acquisitions.push((membership.clone(), reason));
+                Ok(self.acquisition.clone().expect("queued acquisition"))
             }
         }
 
         let reasons = Arc::new(Mutex::new(Vec::new()));
         let mut gateway = SharedGateway::new(RecordingGateway {
             reasons: Arc::clone(&reasons),
+            acquisition: None,
+            acquisitions: Vec::new(),
         });
         let membership = gateway
             .resolve_membership_scoped(ProfileSyncReason::Preflight)
@@ -962,6 +1086,146 @@ mod tests {
             *reasons.lock().expect("reason log"),
             [ProfileSyncReason::Preflight, ProfileSyncReason::Ordinary],
             "the wrapper must forward the exact reason to the locked inner adapter"
+        );
+
+        let available = shared_profile_acquisition();
+        let unavailable = destiny_app::ProfileAcquisition::new(available.input().clone(), None)
+            .expect("unavailable evidence remains a valid acquisition");
+        for expected in [available, unavailable] {
+            gateway.lock().unwrap().acquisition = Some(expected.clone());
+            for reason in [ProfileSyncReason::Preflight, ProfileSyncReason::PostAction] {
+                let before = gateway.lock().unwrap().acquisitions.len();
+                let actual = gateway
+                    .load_inventory_with_observations_scoped(&membership, reason)
+                    .expect("observation-aware forwarding");
+                assert_eq!(
+                    actual, expected,
+                    "the entire paired acquisition must survive"
+                );
+                let inner = gateway.lock().unwrap();
+                assert_eq!(inner.acquisitions.len(), before + 1);
+                assert_eq!(
+                    inner.acquisitions.last(),
+                    Some(&(membership.clone(), reason))
+                );
+                assert_eq!(
+                    inner.reasons.lock().unwrap().len(),
+                    2,
+                    "no resolve or scoped fallback reads"
+                );
+            }
+        }
+    }
+
+    /// Use the existing sanitized profile fixture, supplying actual buckets for
+    /// every instance without changing its inventory, owners, stacks or metadata.
+    fn shared_profile_acquisition() -> destiny_app::ProfileAcquisition {
+        fn add_buckets(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    if map.get("itemInstanceId").is_some_and(|id| id.is_string()) {
+                        map.insert("bucketHash".into(), serde_json::json!(1498876634));
+                    }
+                    for child in map.values_mut() {
+                        add_buckets(child);
+                    }
+                }
+                serde_json::Value::Array(rows) => rows.iter_mut().for_each(add_buckets),
+                _ => {}
+            }
+        }
+        let mut value: serde_json::Value = serde_json::from_str(include_str!(
+            "../../destiny-adapters/tests/fixtures/profile-complete.json"
+        ))
+        .unwrap();
+        add_buckets(&mut value);
+        let membership = destiny_app::DestinyMembership::new(
+            destiny_app::MembershipType::new(3),
+            destiny_app::MembershipId::new("4611686018484639825"),
+        )
+        .unwrap();
+        let pair = destiny_adapters::decode_profile_with_observations(
+            &serde_json::to_vec(&value).unwrap(),
+            &membership,
+            destiny_app::DefinitionVersion::new("manifest-v1"),
+            Timestamp::new(1_724_000_000),
+        )
+        .unwrap();
+        let rows = pair
+            .observations()
+            .expect("complete actual bucket evidence");
+        assert!(!rows.is_empty());
+        assert_eq!(rows.len(), pair.input().items.len());
+        assert!(
+            rows.iter()
+                .any(|row| matches!(row.location(), destiny_app::ItemLocation::Character(_)))
+        );
+        assert!(
+            rows.iter()
+                .all(|row| row.bucket_hash() == destiny_app::BucketHash::new(1498876634))
+        );
+        pair
+    }
+
+    #[test]
+    fn shared_repository_inventory_replacement_is_visible_across_clones() {
+        use destiny_app::InventoryRepository;
+        let mut writer =
+            super::SharedRepository::new(super::SqliteStore::open_in_memory().unwrap());
+        let reader = writer.clone();
+        assert!(reader.load_current().unwrap().is_none());
+        let input = shared_profile_acquisition().into_parts().0;
+        let first = writer.replace_current(input.clone()).unwrap();
+        assert_eq!(reader.load_current().unwrap(), Some(first.clone()));
+        let mut changed = input;
+        changed.items[0].locked = !changed.items[0].locked;
+        changed.checked_at = Timestamp::new(1_724_000_001);
+        let second = writer.replace_current(changed).unwrap();
+        assert_ne!(second, first);
+        assert_eq!(reader.load_current().unwrap(), Some(second));
+    }
+
+    #[test]
+    fn shared_repository_definition_publication_is_visible_across_clones() {
+        use destiny_app::*;
+        let mut writer =
+            super::SharedRepository::new(super::SqliteStore::open_in_memory().unwrap());
+        let reader = writer.clone();
+        let definition = ItemDefinition {
+            hash: ItemHash::new(1001),
+            name: "Shared equipment".into(),
+            bucket_hash: Some(BucketHash::new(1498876634)),
+            does_postmaster_pull_have_side_effects: Some(false),
+            is_instance_item: Some(true),
+            max_stack_size: Some(1),
+            stack_unique_label: Some("".into()),
+            item_type: None,
+            tier: None,
+            element: None,
+            slot: None,
+            class_type: None,
+            plug_category: None,
+            tags: Vec::new(),
+            version: DefinitionVersion::new("manifest-v1"),
+        };
+        let metadata = writer
+            .replace_definitions(DefinitionReplacementInput {
+                definitions: ManifestDefinitions {
+                    version: definition.version.clone(),
+                    definitions: vec![definition.clone()],
+                },
+                checked_at: Timestamp::new(1_724_000_000),
+                source: SourceMarker::Manifest,
+            })
+            .unwrap();
+        assert_eq!(reader.current_metadata().unwrap(), Some(metadata));
+        assert_eq!(
+            reader.current_definition_version().unwrap(),
+            definition.version
+        );
+        assert_eq!(
+            reader.lookup_definition(definition.hash).unwrap(),
+            Resolution::Unique(definition)
         );
     }
 
@@ -1072,13 +1336,44 @@ mod tests {
         let equip = destiny_adapters::BungieEquipGateway::new(
             destiny_adapters::HttpEquipTransport::new().unwrap(),
             SystemClock::new(),
-            destiny_app::StaticCredentialSource::new(credential),
+            destiny_app::StaticCredentialSource::new(credential.clone()),
             destiny_adapters::EquipApiKey::new(API_KEY_SENTINEL).unwrap(),
         )
         .unwrap();
+        let lock = destiny_adapters::lock::BungieLockGateway::new(
+            destiny_adapters::lock::HttpLockTransport::new().unwrap(),
+            SystemClock::new(),
+            destiny_app::StaticCredentialSource::new(credential.clone()),
+            destiny_adapters::lock::LockApiKey::new(API_KEY_SENTINEL).unwrap(),
+        )
+        .unwrap();
+        let pull = destiny_adapters::instanced_pull::BungieInstancedPullGateway::new(
+            destiny_adapters::instanced_pull::HttpInstancedPullTransport::new().unwrap(),
+            SystemClock::new(),
+            destiny_app::StaticCredentialSource::new(credential.clone()),
+            destiny_adapters::instanced_pull::InstancedPullApiKey::new(API_KEY_SENTINEL).unwrap(),
+        )
+        .unwrap();
+        let manifest = destiny_adapters::manifest::BungieManifestGateway::new(
+            destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL).unwrap(),
+            destiny_adapters::manifest::HttpManifestTransport::new().unwrap(),
+            SystemClock::new(),
+        );
+        let stack = destiny_adapters::stack_pull::BungieStackPullGateway::new(
+            destiny_adapters::stack_pull::HttpStackPullTransport::new().unwrap(),
+            SystemClock::new(),
+            destiny_app::StaticCredentialSource::new(credential),
+            destiny_adapters::stack_pull::StackPullApiKey::new(API_KEY_SENTINEL).unwrap(),
+        )
+        .unwrap();
+        let stack_manifest = destiny_adapters::manifest::BungieManifestGateway::new(
+            destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL).unwrap(),
+            destiny_adapters::manifest::HttpManifestTransport::new().unwrap(),
+            SystemClock::new(),
+        );
         let server = assemble_server(
             profile_gateway,
-            (transfer, equip),
+            (transfer, equip, lock, pull, manifest, stack, stack_manifest),
             store,
             FreshnessPolicy { ttl_seconds: 900 },
             (
@@ -1100,6 +1395,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "get_postmaster",
                 "list_characters",
                 "search_inventory",
                 "inspect_item",
@@ -1110,7 +1406,10 @@ mod tests {
                 "weekly",
                 "get_subclass_options",
                 "move_item",
-                "equip_item"
+                "equip_item",
+                "set_lock_state",
+                "pull_item",
+                "pull_stack"
             ],
             "mutation must be default-enabled in the product composition"
         );

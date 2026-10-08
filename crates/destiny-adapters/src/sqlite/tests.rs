@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 21] = [
+const EXPECTED_TABLE_NAMES: [&str; 23] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -20,6 +20,7 @@ const EXPECTED_TABLE_NAMES: [&str; 21] = [
     "clarity_metadata",
     "definition_tags",
     "definitions",
+    "inventory_coverage",
     "item_available_plugs",
     "item_descriptions",
     "item_perks",
@@ -29,6 +30,7 @@ const EXPECTED_TABLE_NAMES: [&str; 21] = [
     "loadout_name_definitions",
     "milestone_definitions",
     "objective_definitions",
+    "stacks",
     "stat_definitions",
     "subclass_plug_options",
     "sync_metadata",
@@ -44,7 +46,15 @@ const EXPECTED_INDEX_NAMES: [&str; 3] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 98] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 110] = [
+    ("inventory_coverage", "id", "INTEGER"),
+    ("inventory_coverage", "profile_currencies", "TEXT"),
+    ("stacks", "ordinal", "INTEGER"),
+    ("stacks", "container", "TEXT"),
+    ("stacks", "owner", "TEXT"),
+    ("stacks", "bucket_hash", "INTEGER"),
+    ("stacks", "item_hash", "INTEGER"),
+    ("stacks", "quantity", "INTEGER"),
     ("clarity_insights", "hash", "INTEGER"),
     ("clarity_insights", "name", "TEXT"),
     ("clarity_insights", "kind", "TEXT"),
@@ -122,6 +132,14 @@ const EXPECTED_COLUMNS: [(&str, &str, &str); 98] = [
     ("definitions", "slot", "TEXT"),
     ("definitions", "class_type", "TEXT"),
     ("definitions", "plug_category", "TEXT"),
+    (
+        "definitions",
+        "does_postmaster_pull_have_side_effects",
+        "INTEGER",
+    ),
+    ("definitions", "is_instance_item", "INTEGER"),
+    ("definitions", "max_stack_size", "INTEGER"),
+    ("definitions", "stack_unique_label", "TEXT"),
     ("item_stats", "instance_id", "TEXT"),
     ("item_stats", "stat_hash", "INTEGER"),
     ("item_stats", "value", "INTEGER"),
@@ -393,10 +411,423 @@ fn reject_membership_type(store: &SqliteStore, value: &str) {
 }
 
 #[test]
+fn v16_preserves_all_children_metadata_and_representable_downgrade() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(15).unwrap();
+    seed_v1_projection(&store);
+    store
+        .connection()
+        .execute_batch(
+            "INSERT INTO item_perks VALUES ('item-1',0,42,1,0);
+             INSERT INTO item_plugs VALUES ('item-1',0,43);
+             INSERT INTO item_stats VALUES ('item-1',44,-5);
+             INSERT INTO item_available_plugs VALUES ('item-1',2,0,45);",
+        )
+        .unwrap();
+    fn rows(connection: &Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
+        let mut statement = connection
+            .prepare(&format!("SELECT * FROM {table}"))
+            .unwrap();
+        let columns = statement.column_count();
+        statement
+            .query_map([], |row| (0..columns).map(|index| row.get(index)).collect())
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+    let preserved = [
+        "active_profile",
+        "characters",
+        "items",
+        "item_perks",
+        "item_plugs",
+        "item_stats",
+        "item_available_plugs",
+        "sync_metadata",
+    ]
+    .map(|table| (table, rows(store.connection(), table)));
+    let children = [
+        "item_perks",
+        "item_plugs",
+        "item_stats",
+        "item_available_plugs",
+    ];
+    for version in [16, 15, 16] {
+        store.migrate_to(version).unwrap();
+        assert_eq!(store.schema_version().unwrap(), version);
+        // Every column, including location, ordered child fields and revision,
+        // must remain byte-for-byte identical to the populated v15 projection.
+        for (table, expected) in &preserved {
+            assert_eq!(
+                &rows(store.connection(), table),
+                expected,
+                "{table} at v{version}"
+            );
+        }
+        assert_eq!(index_names(&store), strings(EXPECTED_INDEX_NAMES));
+        assert!(
+            !store
+                .connection()
+                .prepare("PRAGMA foreign_key_check")
+                .unwrap()
+                .exists([])
+                .unwrap()
+        );
+        for table in children {
+            let target: String = store
+                .connection()
+                .query_row(&format!("PRAGMA foreign_key_list({table})"), [], |r| {
+                    r.get(2)
+                })
+                .unwrap();
+            assert_eq!(target, "items");
+        }
+    }
+    // Prove cascade references still operate after both rebuild directions.
+    store.connection().execute("DELETE FROM items", []).unwrap();
+    for table in children {
+        assert_eq!(row_count(&store, table), 0);
+    }
+}
+
+#[test]
+fn v17_preserves_populated_v16_rows_ordinals_and_foreign_keys() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(16).unwrap();
+    seed_v1_projection(&store);
+    store
+        .connection()
+        .execute_batch(
+            "INSERT INTO item_perks VALUES ('item-1',0,42,1,0);
+         INSERT INTO item_plugs VALUES ('item-1',0,43);
+         INSERT INTO item_stats VALUES ('item-1',44,-5);
+         INSERT INTO item_available_plugs VALUES ('item-1',2,0,45);
+         INSERT INTO stacks VALUES (0,'profile_inventory',NULL,8,7,2);
+         INSERT INTO stacks VALUES (1,'profile_inventory',NULL,8,7,2);
+         INSERT INTO stacks VALUES (2,'postmaster','hunter-1',9,7,3);
+         INSERT INTO stacks VALUES (3,'profile_currencies',NULL,10,7,4);",
+        )
+        .unwrap();
+    let tables = [
+        "active_profile",
+        "characters",
+        "items",
+        "item_perks",
+        "item_plugs",
+        "item_stats",
+        "item_available_plugs",
+        "sync_metadata",
+        "stacks",
+    ];
+    let rows = |table: &str| {
+        let mut statement = store
+            .connection()
+            .prepare(&format!("SELECT * FROM {table} ORDER BY 1"))
+            .unwrap();
+        let count = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..count)
+                    .map(|i| row.get::<_, rusqlite::types::Value>(i))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    let before = tables.map(rows);
+    // All v16 rows, including legacy currency rows, survive without inventing
+    // availability. Contradictory legacy currency rows fail repository readback.
+    for version in [17, 16, 17] {
+        store.migrate_to(version).unwrap();
+        for (table, expected) in tables.iter().zip(&before) {
+            let mut statement = store
+                .connection()
+                .prepare(&format!("SELECT * FROM {table} ORDER BY 1"))
+                .unwrap();
+            let count = statement.column_count();
+            let actual = statement
+                .query_map([], |row| {
+                    (0..count)
+                        .map(|i| row.get::<_, rusqlite::types::Value>(i))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>();
+            assert_eq!(&actual, expected, "{table} at v{version}");
+        }
+        assert!(
+            !store
+                .connection()
+                .prepare("PRAGMA foreign_key_check")
+                .unwrap()
+                .exists([])
+                .unwrap()
+        );
+    }
+    assert_eq!(row_count(&store, "inventory_coverage"), 0);
+    let target: String = store
+        .connection()
+        .query_row("PRAGMA foreign_key_list(stacks)", [], |row| row.get(2))
+        .unwrap();
+    assert_eq!(target, "characters");
+    assert!(
+        store
+            .connection()
+            .execute("DELETE FROM characters", [])
+            .is_err()
+    );
+}
+
+#[test]
+fn v18_qualified_metadata_constraints_and_lossless_affinity() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO definitions(hash,name,definition_version) VALUES(1,'Test','v1')",
+            [],
+        )
+        .unwrap();
+    for column in ["does_postmaster_pull_have_side_effects", "is_instance_item"] {
+        for invalid in ["-1", "2", "0.5", "'true'", "x'00'"] {
+            expect_rejected(
+                &store,
+                &format!("UPDATE definitions SET {column}={invalid}"),
+            );
+        }
+        // SQLite STRICT losslessly coerces integer-valued REAL and numeric
+        // text. The stored type, not the expression type, is constrained.
+        for valid in ["NULL", "0", "1", "1.0", "'0'"] {
+            store
+                .connection()
+                .execute_batch(&format!("UPDATE definitions SET {column}={valid}"))
+                .unwrap();
+            let kind: String = store
+                .connection()
+                .query_row(
+                    &format!("SELECT typeof({column}) FROM definitions"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(kind == "null" || kind == "integer");
+        }
+    }
+    for invalid in ["-2147483649", "2147483648", "1.5", "'invalid'", "x'00'"] {
+        expect_rejected(
+            &store,
+            &format!("UPDATE definitions SET max_stack_size={invalid}"),
+        );
+    }
+    for valid in ["NULL", "-2147483648", "-1", "0", "1", "2147483647"] {
+        store
+            .connection()
+            .execute_batch(&format!("UPDATE definitions SET max_stack_size={valid}"))
+            .unwrap();
+    }
+    expect_rejected(&store, "UPDATE definitions SET stack_unique_label=x'00'");
+    for label in ["", " ", " \0\n\tExact "] {
+        store
+            .connection()
+            .execute("UPDATE definitions SET stack_unique_label=?1", [label])
+            .unwrap();
+        assert_eq!(
+            store
+                .connection()
+                .query_row("SELECT stack_unique_label FROM definitions", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+            label
+        );
+    }
+}
+
+#[test]
+fn v17_checks_balances_and_singleton_coverage() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    for sql in [
+        "INSERT INTO stacks VALUES(0,'profile_currencies',NULL,8,7,-1)",
+        "INSERT INTO stacks VALUES(0,'profile_currencies',NULL,8,7,2147483648)",
+        "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,7,0)",
+        "INSERT INTO inventory_coverage VALUES(0,'available')",
+        "INSERT INTO inventory_coverage VALUES(1,'unknown')",
+    ] {
+        assert!(store.connection().execute_batch(sql).is_err(), "{sql}");
+    }
+    store
+        .connection()
+        .execute_batch(
+            "INSERT INTO stacks VALUES(0,'profile_currencies',NULL,8,7,0);
+        INSERT INTO inventory_coverage VALUES(1,'available');",
+        )
+        .unwrap();
+    assert!(
+        store
+            .connection()
+            .execute("INSERT INTO inventory_coverage VALUES(1,'unavailable')", [])
+            .is_err()
+    );
+}
+
+#[test]
+fn v17_failed_rebuild_rolls_back_schema_version_and_rows() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(16).unwrap();
+    store
+        .connection()
+        .execute_batch(
+            "PRAGMA ignore_check_constraints = ON;
+         INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,7,0);
+         PRAGMA ignore_check_constraints = OFF;",
+        )
+        .unwrap();
+    let before = table_names(&store);
+    let sql = table_sql(&store, "stacks");
+    assert_eq!(
+        store.migrate_to(17).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(store.schema_version().unwrap(), 16);
+    assert_eq!(table_names(&store), before);
+    assert_eq!(table_sql(&store, "stacks"), sql);
+    assert_eq!(row_count(&store, "stacks"), 1);
+    assert_eq!(
+        store
+            .connection()
+            .query_row("SELECT quantity FROM stacks", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn v17_down_refuses_zero_or_known_coverage_without_mutation() {
+    for (coverage, zero) in [
+        ("available", false),
+        ("unavailable", false),
+        ("not_observed", true),
+    ] {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        store.migrate_to(17).unwrap();
+        seed_v1_projection(&store);
+        store
+            .connection()
+            .execute("INSERT INTO inventory_coverage VALUES(1,?1)", [coverage])
+            .unwrap();
+        if zero {
+            store
+                .connection()
+                .execute(
+                    "INSERT INTO stacks VALUES(0,'profile_currencies',NULL,8,7,0)",
+                    [],
+                )
+                .unwrap();
+        }
+        let before = table_names(&store);
+        assert_eq!(
+            store.migrate_to(16).unwrap_err().category(),
+            ErrorCategory::LocalStorage
+        );
+        assert_eq!(store.schema_version().unwrap(), 17);
+        assert_eq!(table_names(&store), before);
+        assert_eq!(row_count(&store, "stacks"), i64::from(zero));
+        let actual: String = store
+            .connection()
+            .query_row(
+                "SELECT profile_currencies FROM inventory_coverage",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(actual, coverage);
+        assert_eq!(row_count(&store, "items"), 1);
+    }
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO inventory_coverage VALUES(1,'not_observed')",
+            [],
+        )
+        .unwrap();
+    store.migrate_to(16).unwrap();
+    store.migrate_to(17).unwrap();
+    assert_eq!(row_count(&store, "inventory_coverage"), 0);
+}
+
+#[test]
+fn v16_stack_and_postmaster_constraints_are_enforced() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(16).unwrap();
+    seed_v1_projection(&store);
+    for sql in [
+        "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,7,0)",
+        "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,7,2147483648)",
+        "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,-1,7,1)",
+        "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,4294967296,1)",
+        "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,7,1.5)",
+        "INSERT INTO stacks VALUES(0,'postmaster','missing',8,7,1)",
+        "INSERT INTO stacks VALUES(0,'postmaster',NULL,8,7,1)",
+        "INSERT INTO stacks VALUES(0,'profile_inventory','character-1',8,7,1)",
+        "UPDATE items SET location_kind='postmaster',equipped=1",
+        "UPDATE items SET location_kind='postmaster',equipped=0,location_character_id='missing'",
+    ] {
+        assert!(store.connection().execute_batch(sql).is_err(), "{sql}");
+    }
+}
+
+#[test]
+fn v16_downgrade_refuses_information_loss_without_mutation() {
+    for postmaster in [false, true] {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        store.migrate_to(16).unwrap();
+        seed_v1_projection(&store);
+        if postmaster {
+            store
+                .connection()
+                .execute("UPDATE items SET location_kind='postmaster',equipped=0", [])
+                .unwrap();
+        } else {
+            store
+                .connection()
+                .execute(
+                    "INSERT INTO stacks VALUES(0,'profile_inventory',NULL,8,7,2)",
+                    [],
+                )
+                .unwrap();
+        }
+        let before = table_names(&store);
+        assert_eq!(
+            store.migrate_to(0).unwrap_err().category(),
+            ErrorCategory::LocalStorage
+        );
+        assert_eq!(store.schema_version().unwrap(), 16);
+        assert_eq!(table_names(&store), before);
+        assert_eq!(row_count(&store, "items"), 1);
+        assert_eq!(row_count(&store, "sync_metadata"), 1);
+        assert_eq!(row_count(&store, "stacks"), i64::from(!postmaster));
+        if postmaster {
+            assert_eq!(
+                store
+                    .connection()
+                    .query_row("SELECT location_kind FROM items", [], |r| r
+                        .get::<_, String>(0))
+                    .unwrap(),
+                "postmaster"
+            );
+        }
+    }
+}
+
+#[test]
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 15);
+    assert_eq!(LATEST_SCHEMA_VERSION, 18);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION
@@ -605,7 +1036,7 @@ fn v2_down_drops_only_item_perks_then_reapply_up_preserves_v1_rows() {
 
     // The entire v1 -> v2 -> v1 -> v2 cycle stays durable across a reopen.
     let store = SqliteStore::open(temp.path()).expect("reopen after the cycle");
-    assert_eq!(store.schema_version().expect("read schema version"), 15);
+    assert_eq!(store.schema_version().expect("read schema version"), 18);
     assert_eq!(row_count(&store, "items"), 1);
     assert_eq!(row_count(&store, "item_perks"), 0);
 }

@@ -6,6 +6,7 @@ use crate::auth::{
 use crate::domain::{
     Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation, SyncMetadata,
 };
+use crate::equipment_capacity::EquipmentCapacityEvidence;
 use crate::error::{AppError, ErrorCategory};
 use crate::ids::{
     BucketHash, DefinitionVersion, ItemHash, ItemInstanceId, MembershipId, MembershipType, PlanId,
@@ -108,6 +109,9 @@ pub trait PlanIdGenerator {
 /// change.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySnapshotInput {
+    /// Explicit profile currency qualification, independent of holdings.
+    pub profile_currencies_coverage: crate::ProfileCurrenciesCoverage,
+    pub stacks: Vec<crate::StackObservation>,
     pub plug_set_entries: Vec<crate::domain::PlugSetEntry>,
     pub membership_id: MembershipId,
     pub membership_type: MembershipType,
@@ -128,6 +132,8 @@ impl InventorySnapshotInput {
             source: snapshot.metadata.source,
             characters: snapshot.characters.clone(),
             items: snapshot.items.clone(),
+            profile_currencies_coverage: snapshot.profile_currencies_coverage,
+            stacks: snapshot.stacks.clone(),
             plug_set_entries: snapshot.plug_set_entries.clone(),
         }
     }
@@ -149,13 +155,15 @@ impl InventorySnapshotInput {
     /// permutation of the *items* themselves is not. Stat values participate in
     /// identity, but stat order does not: both sides are sorted by stat hash.
     /// Plug-set entries are unordered, keyed by scope and hash; both flags
-    /// participate in content identity independently.
+    /// participate in content identity independently. Stacks are sorted multisets:
+    /// all fields and duplicate multiplicity matter, but observation order does not.
     ///
     /// [`PerkSummary`]: crate::domain::PerkSummary
     pub fn content_eq(&self, other: &Self) -> bool {
         if self.membership_id != other.membership_id
             || self.membership_type != other.membership_type
             || self.definition_version != other.definition_version
+            || self.profile_currencies_coverage != other.profile_currencies_coverage
             || self.characters.len() != other.characters.len()
             || self.items.len() != other.items.len()
         {
@@ -181,7 +189,11 @@ impl InventorySnapshotInput {
         let mut right_options = other.plug_set_entries.clone();
         left_options.sort();
         right_options.sort();
-        left_items == right_items && left_options == right_options
+        let mut left_stacks = self.stacks.clone();
+        let mut right_stacks = other.stacks.clone();
+        left_stacks.sort();
+        right_stacks.sort();
+        left_items == right_items && left_options == right_options && left_stacks == right_stacks
     }
 
     /// Reports whether the character and item collections form a complete,
@@ -202,11 +214,34 @@ impl InventorySnapshotInput {
     /// and at most 64 entries per item; incoming order need not be canonical.
     /// Plug-set entries must have unique scoped u32 hashes, and character scopes
     /// must be canonical decimal identifiers referencing this projection.
+    /// Character inventory and Postmaster stack owners must reference characters
+    /// in this projection. Profile stack containers have no owner; duplicate
+    /// observations are valid and are never deduplicated. Currency rows require
+    /// Available coverage; Available with no currency rows is valid.
     pub fn is_structurally_valid(&self) -> bool {
         let mut character_ids = HashSet::with_capacity(self.characters.len());
         for character in &self.characters {
             if !character_ids.insert(character.id.clone()) {
                 return false;
+            }
+        }
+
+        for stack in &self.stacks {
+            match stack.container() {
+                crate::StackContainer::CharacterInventory(owner)
+                | crate::StackContainer::Postmaster(owner) => {
+                    if !character_ids.contains(owner) {
+                        return false;
+                    }
+                }
+                crate::StackContainer::ProfileCurrencies => {
+                    if self.profile_currencies_coverage
+                        != crate::ProfileCurrenciesCoverage::Available
+                    {
+                        return false;
+                    }
+                }
+                crate::StackContainer::ProfileInventory => {}
             }
         }
 
@@ -271,7 +306,11 @@ impl InventorySnapshotInput {
             {
                 return false;
             }
-            if let ItemLocation::Character(character_id) = &item.location
+            if matches!(item.location, ItemLocation::Postmaster(_)) && item.equipped {
+                return false;
+            }
+            if let ItemLocation::Character(character_id) | ItemLocation::Postmaster(character_id) =
+                &item.location
                 && !character_ids.contains(character_id)
             {
                 return false;
@@ -569,6 +608,23 @@ pub trait ProfileGateway {
     ) -> Result<InventorySnapshotInput, AppError> {
         self.load_inventory(membership)
     }
+
+    /// Acquires an immutable input/observation pair with the original retry scope.
+    ///
+    /// The compatibility default calls the existing scoped loader exactly once
+    /// and explicitly marks observations unavailable. It does not resolve a
+    /// membership, retry, look up definitions, or invent buckets or metadata.
+    /// Overrides may supply complete actual runtime associations; construction
+    /// alone proves neither authenticated acquisition nor freshness/publication.
+    /// Sync remains responsible for requested membership validation before publish.
+    fn load_inventory_with_observations_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<crate::ProfileAcquisition, AppError> {
+        let input = self.load_inventory_scoped(membership, reason)?;
+        crate::ProfileAcquisition::new(input, None)
+    }
 }
 
 /// A complete versioned normalized definition set published as one replacement.
@@ -639,7 +695,19 @@ pub struct ManifestDefinitionCandidate {
     /// Ordered, bounded references into the same-version effect catalog.
     pub perk_hashes: Vec<u32>,
     pub hash: ItemHash,
+    /// Normal definition bucket, never an observed runtime container.
     pub bucket_hash: Option<BucketHash>,
+    /// Official top-level doesPostmasterPullHaveSideEffects: potential destructive
+    /// action, not certainty. Missing/null is unknown, never explicit false.
+    pub does_postmaster_pull_have_side_effects: Option<bool>,
+    /// Official inventory.isInstanceItem; missing/null is unknown, not false.
+    pub is_instance_item: Option<bool>,
+    /// Official inventory.maxStackSize, exact signed int32 metadata. Nonpositive
+    /// or unknown values cannot establish usable capacity.
+    pub max_stack_size: Option<i32>,
+    /// Official inventory.stackUniqueLabel, exact and untrimmed. Populated labels
+    /// forbid multiple stacks with that label; known empty differs from unknown.
+    pub stack_unique_label: Option<String>,
     pub name: String,
     pub item_type: Option<String>,
     pub tier: Option<String>,
@@ -727,6 +795,10 @@ pub trait PublicMilestonesGateway {
 
 /// Separates the small version check from acquisition of the large component.
 pub trait ManifestGateway {
+    /// Acquires fresh equipment capacity correspondence evidence once per call,
+    /// without caching. Correspondence only, not authenticity or action authority.
+    fn fetch_equipment_capacity_evidence(&mut self) -> Result<EquipmentCapacityEvidence, AppError>;
+
     fn fetch_index(&mut self) -> Result<ManifestIndex, AppError>;
     fn load_component(&mut self, index: &ManifestIndex) -> Result<ManifestAcquisition, AppError>;
     fn load_world_components(
@@ -835,7 +907,9 @@ impl TransferRequest {
     pub const fn to_vault(&self) -> bool {
         match self.to {
             ItemLocation::Vault => true,
-            ItemLocation::Character(_) | ItemLocation::Other(_) => false,
+            ItemLocation::Character(_) | ItemLocation::Postmaster(_) | ItemLocation::Other(_) => {
+                false
+            }
         }
     }
 }
@@ -858,7 +932,8 @@ fn validate_endpoints(from: &ItemLocation, to: &ItemLocation) -> Result<(), AppE
                 Ok(())
             }
         }
-        (ItemLocation::Other(_), _) | (_, ItemLocation::Other(_)) => {
+        (ItemLocation::Other(_) | ItemLocation::Postmaster(_), _)
+        | (_, ItemLocation::Other(_) | ItemLocation::Postmaster(_)) => {
             Err(AppError::new(ErrorCategory::UnsupportedOperation))
         }
     }
@@ -970,6 +1045,47 @@ pub trait TransferGateway {
     fn transfer(&mut self, request: &TransferRequest) -> Result<TransferOutcome, AppError>;
 }
 
+/// Performs exactly one instanced Postmaster pull attempt, under fresh preflight.
+///
+/// No sequencing, batching, retries, rollback or post-condition verification.
+/// Request syntax alone is not action authorization: the future service must
+/// freshly prove provider identity, ownership, Postmaster location and eligibility.
+/// No credentials, raw provider payloads or provider messages cross this seam.
+///
+/// `Err(AppError)` is reserved for failures before dispatch. A received auth
+/// refusal is `Ok(InstancedPullOutcome::AuthenticationRefused)`. Post-dispatch
+/// ambiguity, including unknown HTTP 5xx without independent non-application
+/// proof, must be `Ok(InstancedPullOutcome::Uncertain)`, never a clean error or
+/// deterministic transient refusal. Acknowledgement is not observed recovery;
+/// no outcome authorizes automatic retry.
+///
+/// [`InstancedPullOutcome::AuthenticationRefused`]: crate::InstancedPullOutcome::AuthenticationRefused
+/// [`InstancedPullOutcome::Uncertain`]: crate::InstancedPullOutcome::Uncertain
+pub trait InstancedPullGateway {
+    /// Issues one request and returns only sanitized evidence of that attempt.
+    fn pull(
+        &mut self,
+        request: &crate::InstancedPullRequest,
+    ) -> Result<crate::InstancedPullOutcome, AppError>;
+}
+
+/// Performs exactly one non-instanced Postmaster pull under fresh preflight.
+/// No batching, retry, rollback or verification. Request syntax and pure policy
+/// decisions do not authorize dispatch; the service must prove fresh ownership,
+/// complete observations, safe metadata and guaranteed destination capacity.
+///
+/// `Err` is reserved for pre-dispatch failures. Received authentication refusal
+/// is `Ok(StackPullOutcome::AuthenticationRefused)`; post-dispatch ambiguity,
+/// including unknown HTTP 5xx without non-application proof, is `Uncertain`.
+/// Acknowledgement is not recovery, and no outcome permits automatic retry.
+/// No credentials, raw provider payloads or provider messages cross this seam.
+pub trait StackPullGateway {
+    fn pull(
+        &mut self,
+        request: &crate::StackPullRequest,
+    ) -> Result<crate::StackPullOutcome, AppError>;
+}
+
 /// A validated, provider-neutral intent to equip one concrete item on a character.
 /// Identifier syntax is adapter-owned; empty opaque identifiers are refused here.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1063,6 +1179,101 @@ impl EquipOutcome {
 /// `Ok(EquipOutcome::Uncertain)`.
 pub trait EquipGateway {
     fn equip(&mut self, request: &EquipItemRequest) -> Result<EquipOutcome, AppError>;
+}
+
+/// A validated, provider-neutral intent to set one concrete item's lock state.
+/// Identifier syntax is adapter-owned; empty opaque identifiers are refused here.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SetLockStateRequest {
+    membership: DestinyMembership,
+    item: ItemInstanceId,
+    character: crate::CharacterId,
+    locked: bool,
+}
+
+impl SetLockStateRequest {
+    pub fn new(
+        membership: DestinyMembership,
+        item: ItemInstanceId,
+        character: crate::CharacterId,
+        locked: bool,
+    ) -> Result<Self, AppError> {
+        if item.as_str().is_empty() || character.as_str().is_empty() {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(Self {
+            membership,
+            item,
+            character,
+            locked,
+        })
+    }
+
+    pub const fn membership(&self) -> &DestinyMembership {
+        &self.membership
+    }
+    pub const fn item(&self) -> &ItemInstanceId {
+        &self.item
+    }
+    pub const fn character(&self) -> &crate::CharacterId {
+        &self.character
+    }
+    pub const fn locked(&self) -> bool {
+        self.locked
+    }
+}
+
+/// Bounded provider refusals; no provider text or identifiers cross the seam.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LockRejection {
+    NotInSocialSpace,
+    ItemNotFound,
+    CharacterNotFound,
+    InvalidRequest,
+}
+
+impl LockRejection {
+    pub const fn category(self) -> ErrorCategory {
+        match self {
+            Self::NotInSocialSpace => ErrorCategory::UnsupportedOperation,
+            Self::ItemNotFound | Self::CharacterNotFound | Self::InvalidRequest => {
+                ErrorCategory::ProviderValidation
+            }
+        }
+    }
+}
+
+/// Honest classification of exactly one lock-state attempt (not verified state).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LockOutcome {
+    Applied,
+    Rejected(LockRejection),
+    /// Received authentication refusal after dispatch, not an applied mutation.
+    AuthenticationRefused,
+    /// A deterministic transient refusal: nothing applied.
+    Transient,
+    /// Dispatch occurred but whether it applied is unknown. Never blindly retry.
+    Uncertain,
+}
+
+impl LockOutcome {
+    pub const fn applied(self) -> bool {
+        matches!(self, Self::Applied)
+    }
+    pub const fn rejection(self) -> Option<LockRejection> {
+        match self {
+            Self::Rejected(reason) => Some(reason),
+            _ => None,
+        }
+    }
+}
+
+/// Issues one lock-state request with no retry, sequencing, or verification.
+/// `Err` is reserved for pre-dispatch failures. Received auth refusals are
+/// `Ok(LockOutcome::AuthenticationRefused)`; post-dispatch ambiguity must be
+/// `Ok(LockOutcome::Uncertain)`. No raw provider payload crosses this seam.
+pub trait LockGateway {
+    fn set_lock_state(&mut self, request: &SetLockStateRequest) -> Result<LockOutcome, AppError>;
 }
 
 /// Opaque credential material. Bytes are available only through the explicit

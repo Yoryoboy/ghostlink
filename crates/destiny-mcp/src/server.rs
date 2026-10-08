@@ -60,7 +60,7 @@ const READ_ONLY_INSTRUCTIONS: &str =
 /// The text must not claim the server is read-only: composing the seam adds the
 /// single intent-authorized `move_item` mutation, so the advertised capability
 /// has to match the discovery set.
-const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item` and `equip_item` mutations.";
+const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item`, `equip_item`, and `set_lock_state`, `pull_item`, and `pull_stack` mutations.";
 
 /// The tools-only RMCP server over one shared read service and an optional
 /// mutation seam.
@@ -120,6 +120,9 @@ impl ReadToolServer {
         if self.mutation.is_some() {
             tools.push(move_item_tool());
             tools.push(crate::schema::equip_item_tool());
+            tools.push(crate::schema::set_lock_state_tool());
+            tools.push(crate::schema::pull_item_tool());
+            tools.push(crate::schema::pull_stack_tool());
         }
         ListToolsResult {
             tools,
@@ -147,7 +150,12 @@ impl ReadToolServer {
 
     /// The mutation seam to use for one tool name, if it is composed.
     fn mutation_for(&self, name: &str) -> Option<&SharedMutationService> {
-        if name == MOVE_ITEM_TOOL || name == crate::schema::EQUIP_ITEM_TOOL {
+        if name == MOVE_ITEM_TOOL
+            || name == crate::schema::EQUIP_ITEM_TOOL
+            || name == crate::schema::SET_LOCK_STATE_TOOL
+            || name == crate::schema::PULL_ITEM_TOOL
+            || name == crate::schema::PULL_STACK_TOOL
+        {
             self.mutation.as_ref()
         } else {
             None
@@ -245,6 +253,16 @@ fn dispatch_locked(
 ) -> Result<CallToolResult, ErrorData> {
     let mut guard = service.lock().map_err(|_| internal_error())?;
     match name {
+        "get_postmaster" => {
+            let arguments: crate::schema::GetPostmasterArgs = deserialize(arguments)?;
+            let character = match arguments.into_request() {
+                Ok(character) => character,
+                Err(error) => return Ok(error.into_call_tool_result()),
+            };
+            Ok(guard
+                .get_postmaster(character.as_ref())
+                .map_or_else(tool_error, |output| output.into_call_tool_result()))
+        }
         LIST_CHARACTERS_TOOL => dispatch_list_characters(guard.as_mut(), arguments),
         SEARCH_INVENTORY_TOOL => dispatch_search_inventory(guard.as_mut(), arguments),
         INSPECT_ITEM_TOOL => dispatch_inspect_item(guard.as_mut(), arguments),
@@ -366,6 +384,49 @@ fn dispatch_mutation_locked(
     name: &str,
     arguments: JsonObject,
 ) -> Result<CallToolResult, ErrorData> {
+    if name == crate::schema::PULL_STACK_TOOL {
+        let args: crate::schema::PullStackArgs = deserialize(arguments)?;
+        if let Err(error) = args.validate() {
+            return Ok(error.into_call_tool_result());
+        }
+        let mut guard = mutation.lock().map_err(|_| internal_error())?;
+        return Ok(guard.pull_stack(&args).map_or_else(tool_error, |output| {
+            let mut result = CallToolResult::structured(output.json());
+            result.is_error = Some(!output.is_success());
+            result
+        }));
+    }
+    if name == crate::schema::PULL_ITEM_TOOL {
+        let args: crate::schema::PullItemArgs = deserialize(arguments)?;
+        if let Err(error) = args.instance_id() {
+            return Ok(error.into_call_tool_result());
+        }
+        let mut guard = mutation.lock().map_err(|_| internal_error())?;
+        return Ok(guard.pull_item(&args).map_or_else(tool_error, |output| {
+            let mut result = CallToolResult::structured(output.json());
+            result.is_error = Some(!output.is_success());
+            result
+        }));
+    }
+    if name == crate::schema::SET_LOCK_STATE_TOOL {
+        let args: crate::schema::SetLockStateArgs = deserialize(arguments)?;
+        if let Err(error) = args.validate() {
+            return Ok(error.into_call_tool_result());
+        }
+        let mut guard = mutation.lock().map_err(|_| internal_error())?;
+        return Ok(guard
+            .set_lock_state(&args)
+            .map_or_else(tool_error, |output| {
+                let is_error = !matches!(
+                    output.status,
+                    destiny_output::lock::LockStatus::VerifiedSuccess
+                        | destiny_output::lock::LockStatus::VerifiedNoop
+                );
+                let mut result = CallToolResult::structured(output.json());
+                result.is_error = Some(is_error);
+                result
+            }));
+    }
     if name == crate::schema::EQUIP_ITEM_TOOL {
         let args: crate::schema::EquipItemArgs = deserialize(arguments)?;
         if let Err(error) = args.validate() {
@@ -501,6 +562,15 @@ mod tests {
     }
 
     impl InventoryReadService for RecordingService {
+        fn get_postmaster(
+            &mut self,
+            _: Option<&destiny_app::CharacterId>,
+        ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+            self.enter("get_postmaster");
+            Err(McpError::new(
+                destiny_app::ErrorCategory::ProviderValidation,
+            ))
+        }
         fn get_loadouts(
             &mut self,
             character: Option<&destiny_app::CharacterId>,
@@ -791,6 +861,171 @@ mod tests {
     }
 
     #[test]
+    fn pull_dispatch_validates_before_seam_and_holds_existing_operation_guard() {
+        use std::sync::{TryLockError, mpsc};
+        const BOUND: Duration = Duration::from_secs(5);
+        struct PausedPull {
+            entered: mpsc::Sender<String>,
+            release: mpsc::Receiver<()>,
+        }
+        impl MutationToolService for PausedPull {
+            fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+                panic!("pull must not dispatch move")
+            }
+            fn pull_item(
+                &mut self,
+                request: &crate::schema::PullItemArgs,
+            ) -> Result<destiny_output::instanced_pull::InstancedPullOutput, McpError> {
+                self.entered.send(request.item.clone()).unwrap();
+                self.release.recv_timeout(BOUND).unwrap();
+                Err(McpError::new(ErrorCategory::ProviderUnavailable))
+            }
+        }
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = Arc::new(ReadToolServer::with_mutation(
+            Box::new(RecordingService::new()),
+            Box::new(PausedPull {
+                entered: entered_tx,
+                release: release_rx,
+            }),
+        ));
+        for item in ["0", "01", "9223372036854775808"] {
+            let result = server
+                .dispatch("pull_item", args(json!({"item":item})))
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(structured(&result)["code"], "provider_validation");
+        }
+        assert!(entered_rx.try_recv().is_err());
+        let worker_server = server.clone();
+        let worker = std::thread::spawn(move || {
+            worker_server.dispatch("pull_item", args(json!({"item":"123"})))
+        });
+        assert_eq!(entered_rx.recv_timeout(BOUND).unwrap(), "123");
+        assert!(matches!(
+            server.operation.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+        release_tx.send(()).unwrap();
+        let result = worker.join().unwrap().unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(structured(&result)["code"], "provider_unavailable");
+        assert!(entered_rx.try_recv().is_err());
+        assert!(server.operation.try_lock().is_ok());
+    }
+
+    #[test]
+    fn stack_dispatch_validates_and_holds_operation_guard() {
+        use std::sync::{TryLockError, mpsc};
+        const BOUND: Duration = Duration::from_secs(5);
+        struct PausedStack(mpsc::Sender<String>, mpsc::Receiver<()>);
+        impl MutationToolService for PausedStack {
+            fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+                panic!("not move")
+            }
+            fn pull_stack(
+                &mut self,
+                request: &crate::schema::PullStackArgs,
+            ) -> Result<destiny_output::stack_pull::StackPullOutput, McpError> {
+                self.0.send(request.amount.clone()).unwrap();
+                self.1.recv_timeout(BOUND).unwrap();
+                Err(McpError::new(ErrorCategory::ProviderUnavailable))
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let server = Arc::new(ReadToolServer::with_mutation(
+            Box::new(RecordingService::new()),
+            Box::new(PausedStack(tx, wait)),
+        ));
+        let result = server
+            .dispatch(
+                "pull_stack",
+                args(json!({"item_hash":"7","amount":"0","character":"2"})),
+            )
+            .unwrap();
+        assert_eq!(structured(&result)["code"], "provider_validation");
+        assert!(rx.try_recv().is_err());
+        let cloned = server.clone();
+        let worker = std::thread::spawn(move || {
+            cloned.dispatch(
+                "pull_stack",
+                args(json!({"item_hash":"7","amount":"3","character":"2"})),
+            )
+        });
+        assert_eq!(rx.recv_timeout(BOUND).unwrap(), "3");
+        assert!(matches!(
+            server.operation.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+        release.send(()).unwrap();
+        assert_eq!(worker.join().unwrap().unwrap().is_error, Some(true));
+        assert!(rx.try_recv().is_err());
+        assert!(server.operation.try_lock().is_ok());
+    }
+
+    #[test]
+    fn stack_discovery_mutation_only_and_default_fails_closed() {
+        let (configured, _, mutation) = mutation_server(RecordingService::new());
+        let tool = configured.get_tool("pull_stack").unwrap();
+        assert_eq!(tool.schema_as_json_value()["additionalProperties"], false);
+        let result = configured
+            .dispatch(
+                "pull_stack",
+                args(json!({"item_hash":"7","amount":"3","character":"2"})),
+            )
+            .unwrap();
+        assert_eq!(structured(&result)["code"], "configuration_error");
+        assert!(mutation.recorded().is_empty());
+        let (readonly, _) = server(RecordingService::new());
+        assert!(readonly.get_tool("pull_stack").is_none());
+        assert_eq!(
+            readonly
+                .dispatch(
+                    "pull_stack",
+                    args(json!({"item_hash":"7","amount":"3","character":"2"}))
+                )
+                .unwrap_err()
+                .code
+                .0,
+            -32601
+        );
+    }
+
+    #[test]
+    fn legacy_mutation_fake_pull_default_fails_closed_without_moving() {
+        let (server, _, mutation) = mutation_server(RecordingService::new());
+        let result = server
+            .dispatch("pull_item", args(json!({"item":"123"})))
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(structured(&result)["code"], "configuration_error");
+        assert!(mutation.recorded().is_empty());
+    }
+
+    #[test]
+    fn pull_discovery_is_closed_id_only_and_mutation_only() {
+        let (configured, _, _) = mutation_server(RecordingService::new());
+        let tool = configured
+            .discover_tools()
+            .tools
+            .into_iter()
+            .find(|tool| tool.name == "pull_item")
+            .expect("configured server exposes pull_item");
+        let schema = tool.schema_as_json_value();
+        assert_eq!(schema["additionalProperties"], false);
+        assert_eq!(schema["required"], json!(["item"]));
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 1);
+        let (readonly, _) = server(RecordingService::new());
+        assert!(readonly.get_tool("pull_item").is_none());
+        let error = readonly
+            .dispatch("pull_item", args(json!({"item":"123"})))
+            .expect_err("read-only construction must not dispatch pulls");
+        assert_eq!(error.code.0, -32601);
+    }
+
+    #[test]
     fn discovery_exposes_exactly_the_four_reads_in_stable_order() {
         let (server, _handle) = server(RecordingService::new());
         let tools = server.discover_tools().tools;
@@ -798,6 +1033,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "get_postmaster",
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",
@@ -1160,6 +1396,43 @@ mod tests {
     }
 
     #[test]
+    fn postmaster_arguments_are_rejected_before_service_calls() {
+        let (server, handle) = server(RecordingService::new());
+        for invalid in [
+            json!({"quantity": 1}),
+            json!({"character": 2}),
+            json!({"membership": "secret"}),
+        ] {
+            assert!(server.dispatch("get_postmaster", args(invalid)).is_err());
+        }
+        for value in [
+            "".to_owned(),
+            " ".to_owned(),
+            "a".repeat(513),
+            "bad\u{7}".to_owned(),
+        ] {
+            let result = server
+                .dispatch("get_postmaster", args(json!({"character": value})))
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+        }
+        assert!(handle.recorded().is_empty());
+        for valid in [
+            json!({}),
+            json!({"character": null}),
+            json!({"character": "wArLoCk"}),
+        ] {
+            let result = server.dispatch("get_postmaster", args(valid)).unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(structured(&result)["code"], "provider_validation");
+        }
+        assert_eq!(
+            handle.recorded(),
+            ["get_postmaster", "get_postmaster", "get_postmaster"]
+        );
+    }
+
+    #[test]
     fn repeated_dispatch_is_deterministic() {
         let (server, _handle) = server(RecordingService::new());
         let first = server
@@ -1179,6 +1452,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "get_postmaster",
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",
@@ -1222,6 +1496,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "get_postmaster",
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 "inspect_item",
@@ -1232,7 +1507,10 @@ mod tests {
                 "weekly",
                 "get_subclass_options",
                 MOVE_ITEM_TOOL,
-                crate::schema::EQUIP_ITEM_TOOL
+                crate::schema::EQUIP_ITEM_TOOL,
+                crate::schema::SET_LOCK_STATE_TOOL,
+                crate::schema::PULL_ITEM_TOOL,
+                crate::schema::PULL_STACK_TOOL
             ]
         );
         let tool = server

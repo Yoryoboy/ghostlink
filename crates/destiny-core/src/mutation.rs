@@ -428,6 +428,16 @@ pub struct MovePlan {
     requires_equipped: bool,
 }
 
+/// Semantic lock-state request; selector and explicit intent use the move rules.
+/// Lock policy is independent of equip eligibility and location changes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LockRequest {
+    pub membership: MembershipId,
+    pub item: ItemSelector,
+    pub locked: bool,
+    pub intent: MoveIntentAuthorization,
+}
+
 /// Semantic equip request; selectors and explicit intent use the move rules.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EquipRequest {
@@ -1499,6 +1509,16 @@ mod tests {
             (
                 ItemLocation::Vault,
                 ItemLocation::Other("unknown".into()),
+                MovePlanValidation::UnsupportedLocation,
+            ),
+            (
+                ItemLocation::Postmaster(CharacterId::new("owner")),
+                ItemLocation::Vault,
+                MovePlanValidation::UnsupportedLocation,
+            ),
+            (
+                ItemLocation::Vault,
+                ItemLocation::Postmaster(CharacterId::new("owner")),
                 MovePlanValidation::UnsupportedLocation,
             ),
         ] {

@@ -1256,6 +1256,10 @@ mod tests {
         let items = [(99, "Weekly Reward"), (100, "The Slammer")]
             .into_iter()
             .map(|(hash, name)| destiny_core::ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: ItemHash::new(hash),
                 name: name.into(),
                 bucket_hash: None,

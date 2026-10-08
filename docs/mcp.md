@@ -1,9 +1,10 @@
 # Ghostlink MCP server (`destiny-mcp`)
 
-`destiny-mcp` serves bounded read tools plus two default-enabled semantic
+`destiny-mcp` serves bounded read tools plus four default-enabled semantic
 mutations over the Model Context Protocol stdio transport:
 
 ```text
+get_postmaster    read committed Postmaster instances and anonymous stacks (no pull)
 list_characters   list the signed-in account's characters
 search_inventory  search Manifest definitions and concrete instances
 inspect_item      inspect exactly one concrete instance by instance identifier
@@ -15,6 +16,9 @@ weekly_reset      predict weekly rotations and observe current-week milestones
 weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
 equip_item        transfer if necessary, equip on an explicit character, and verify
+set_lock_state    lock or unlock one explicitly selected owned item and verify
+pull_item         pull one genuine Postmaster equipment instance to its owner
+pull_stack        pull an explicit amount of a non-instanced Postmaster stack
 ```
 
 Mutation is composed by default in the product binary: its profile gateway and
@@ -35,7 +39,25 @@ with no separate token or approval ceremony. It uses the same shared equip
 pipeline and JSON as `ghostlink equip`; see the [equip safety limits](cli.md#equip-one-item).
 Both `equip_item` and `move_item` can return
 `applied_pending_provider_refresh` with `isError=true`, never verified success.
-`move_item` remains MCP-only: there is no CLI move command.
+`move_item` also has the `ghostlink move` CLI surface.
+
+`set_lock_state` accepts exactly `{"item":"Ace of Spades","locked":true}`;
+use `false` to unlock. Both fields are required, `locked` must be a boolean, and
+unknown fields, controls, and overlong selectors are rejected before I/O.
+Item resolution matches move/equip; ambiguous names require an instance ID.
+One call is explicit intent for shared fresh preflight, at most one dispatch,
+mandatory post-action refresh, and verification of `instance.locked`. Already
+satisfied is a verified no-op, with no provider mutation. Vault items use one
+owned character for the provider call; live validation remains pending.
+
+Lock JSON matches `ghostlink lock` / `ghostlink unlock`: `status`, `item`,
+requested `locked`, sanitized `attempt` and `reason`, `profile_refresh`, and
+`observed` lock state. Only verified success/no-op have `isError=false`.
+Refusal, incomplete, verification-failed and applied-pending-refresh results
+have `isError=true`. No stale observation is presented as fresh after a failed
+refresh. Never blindly retry uncertain outcomes or applied-pending-refresh;
+sync later to confirm. See [Lock or unlock one item](cli.md#lock-or-unlock-one-item).
+All publishing reads and mutations share the same server operation guard.
 
 Install both binaries from a release and run `ghostlink` for setup (or
 `ghostlink login` for sign-in only). Register `destiny-mcp` in your agent using
@@ -57,6 +79,117 @@ runtime failure is a sanitized message written to stderr; nothing else is writte
 to stdout. A missing stored credential fails closed with `authorization is
 required`, a legacy raw-material credential with `reauthorization is required`,
 and neither path guesses an expiry or falls back to an environment value.
+
+## Postmaster observations
+
+Read-only `get_postmaster` uses the same account scope, ordinary freshness policy
+and committed snapshot as `ghostlink postmaster --json`. Omit `character` or use
+`null` for all owned characters, including empty groups. A selector resolves an
+exact ID first, then a unique case-insensitive class; ambiguity is an error.
+Names are optional and do not require a loaded Manifest catalog.
+
+| Input | Contract |
+|---|---|
+| Arguments | Object; `additionalProperties: false` |
+| `character` | Optional string or null; string length 1–512 characters |
+| Refused strings | Empty, whitespace-only, control-containing or oversized |
+| Other fields | Rejected before service calls; no quantity, pull or membership input |
+
+Example MCP tool call:
+
+```json
+{"name":"get_postmaster","arguments":{"character":"hunter"}}
+```
+
+`structuredContent` matches the CLI logical JSON exactly:
+
+```json
+{
+  "kind": "postmaster",
+  "metadata": {"checked_at": 10000, "freshness": "fresh", "revision": 2, "source": "profile"},
+  "profile_currencies_coverage": "not_observed",
+  "characters": [{
+    "character_id": "123", "class": "Hunter",
+    "instances": [{"instance_id": "456", "item_hash": 1, "name": null, "quantity": 1}],
+    "stacks": [{"item_hash": 900, "name": null, "bucket_hash": 215593132, "quantity": 7}]
+  }]
+}
+```
+
+IDs are strings; hashes, quantities, timestamps and revisions are numbers.
+Missing names/classes are null. Equal stack rows remain separate; do not sum
+potentially overlapping sources. Stack buckets are actual runtime observations;
+gear has no inferred bucket. Anonymous stacks have no instance ID, ordinal or
+stable action selector. This tool exposes no pull action.
+
+Metadata reports committed observations, not guaranteed live holdings or full
+Postmaster coverage. Currency coverage is `not_observed`, `unavailable` or
+`available` and qualifies component 103 only, independently of Postmaster coverage.
+A failed refresh returns a sanitized categorized MCP error, never stale holdings.
+Selector, storage and provider errors retain their shared application categories.
+
+## Pull one Postmaster equipment instance
+
+With explicit user intent, call:
+
+```json
+{"name":"pull_item","arguments":{"item":"700000000000000001"}}
+```
+
+`item` is the only field, required as a canonical positive int64 string
+(1–9223372036854775807, no leading zeros). Unknown fields, numeric JSON IDs,
+names, hashes, anonymous stacks, quantity and destination are unsupported.
+Invalid input is rejected before account/service work. Use the genuine
+`instance_id` from `get_postmaster.instances`, never a synthesized stack selector.
+
+One call resolves authenticated membership, freshly derives the Postmaster owner,
+qualifies non-destructive equipment with stored definitions and a freshly fetched
+public Manifest index, and proves pinned target-bucket capacity. Unknown or changed
+evidence refuses. It shares production gateway/repository clones and the existing
+operation guard with publishing reads and sibling mutations, not a separate store.
+No inventory clearing, arbitrary destination, preview, rollback or redispatch.
+
+`structuredContent` is the same shared JSON as `ghostlink pull --json`:
+`kind: "instanced_pull"`, `disposition`, `plan_id`, `dispatch`, independent
+`receipt` and `failure`, and ordered `observations`. Each observation retains its
+classification, failure and publication/target evidence separately. There is at
+most one action and three post-action observations, two seconds between attempts.
+Only `disposition: "verified"` has `isError=false`; `not_yet_observed`, `uncertain`
+and `refused` have `isError=true`. Acknowledgement is not application proof; even
+observed arrival cannot turn a refusal or timestamp failure into success.
+
+Never blindly retry an unconfirmed outcome. Re-read state later and report receipt
+separately from arrival. Local serialization excludes neither other processes nor
+game activity; observations are not causal or atomic guarantees. Non-instanced stacks use `pull_stack`; live account validation is still pending.
+
+## Pull a non-instanced Postmaster stack
+
+With explicit hash, amount and owner intent, call:
+
+```json
+{"name":"pull_stack","arguments":{"item_hash":"7","amount":"3","character":"2"}}
+```
+
+All three fields are required decimal strings: `item_hash` is canonical uint32
+(0–4294967295), `amount` positive int32 (1–2147483647), and `character` positive
+int64 (1–9223372036854775807). No leading zeros (except hash `"0"`), signs,
+whitespace, classes, numeric JSON values or extra fields. Invalid inputs are
+rejected before I/O. Use committed stack observations, never synthesize instance
+IDs or choose a destination.
+
+Only qualified non-instanced account-wide Consumables/Modifications are supported.
+Fresh planning and preflight prove eligibility and capacity; duplicate Postmaster
+rows bound the amount by the smallest matching stack, not their sum. The adapter
+uses the existing operation guard and production gateway/repository clones.
+
+`structuredContent` is the shared `ghostlink pull-stack --json` shape: `kind:
+"stack_pull"`, `disposition`, `plan_id`, `dispatch`, independent `receipt` and
+`failure`, and ordered `observations`. One action, at most three fresh observations,
+two seconds between attempts. Arrival requires an exact amount increase in the
+destination and decrease in Postmaster. Only `verified` has `isError=false`;
+refusal stays an error even if arrival is observed. Never blindly retry uncertain
+or refused outcomes. Re-read later; observations are not causal or atomic proof.
+Live account validation remains pending.
 
 ## Inventory search and inspection
 
@@ -183,7 +316,12 @@ fresh preflight, the minimum transfer calls, a post-action refresh, and
 destination verification with no second call. It also proves a repeated request
 fails closed without replay, an already-satisfied destination is a verified
 no-op, a changed preflight is a typed stale failure, a refused step is an honest
-partial execution, and stdout is protocol-only with no secret sentinel present:
+partial execution, and stdout is protocol-only with no secret sentinel present.
+Pull scenarios additionally prove canonical validation, deterministic actual-bucket
+arrival, receipt/disposition separation, pending/uncertain/refused outcomes and
+failure without redispatch. The fixture's separate seeded read store is not proof
+of production repository sharing:
+
 
 ```sh
 cargo test -p destiny-mcp --all-features --test stdio
@@ -195,4 +333,9 @@ Equip child-process sessions additionally compare complete CLI/MCP JSON for
 success, no-op, refusal, partial progress, uncertainty, pending provider refresh
 and refresh/verification failure, with equipped non-equipment neighbors. These
 are offline observations, not a live-provider verification claim.
+Postmaster child sessions additionally refresh stale synthetic seeds through the
+real query service and committed in-memory repository, preserving owned gear,
+duplicate material/consumable stacks and runtime buckets. They exercise filtering,
+all currency-coverage states, empty groups and refresh refusal with protocol-only,
+secret-canary-checked streams. No user database or live account is accessed.
 

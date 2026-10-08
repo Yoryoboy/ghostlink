@@ -3,7 +3,7 @@
 Ghostlink connects AI assistants to your Destiny 2 account. It reads your real
 characters, inventory, builds and weekly activities through the official Bungie
 API, and can act on them safely: move items between the Vault and characters,
-and equip gear with verification.
+equip gear, and lock or unlock items with verification.
 
 Instead of digging through Vaults, filters and perk lists, you ask:
 
@@ -69,14 +69,23 @@ when missing after login or on a CLI read.
 
 ```sh
 ghostlink list-characters
+ghostlink postmaster --character hunter --json
 ghostlink search-inventory --type "Hand Cannon" --element solar --sort Range
 ghostlink weekly --character hunter
+ghostlink move "Ace of Spades" --vault
 ghostlink equip "Ace of Spades" --character hunter
+ghostlink lock "Ace of Spades" --json
+ghostlink unlock "Ace of Spades" --json
 ```
 
 Add `--json` for machine-readable output. Search by perks, mods, armor stats and
 more; inspect items, subclasses, the seasonal artifact and saved loadouts. See
 the [CLI reference](docs/cli.md) for all commands.
+
+`ghostlink postmaster` lists committed Postmaster instances and anonymous stacks,
+including empty character groups, with ordinary freshness synchronization. Currency
+coverage qualifies currency data only, not Postmaster completeness. No pull feature
+or synthetic instance IDs are exposed.
 
 Actions use fresh preflight checks and post-action verification. Bungie can lag
 in reflecting a change: an "applied but pending refresh" outcome is not verified
@@ -137,13 +146,23 @@ Other MCP clients usually accept the common `mcpServers` shape:
 ```
 
 Restart your agent if needed, then ask the questions at the top of this page.
-See the [MCP reference](docs/mcp.md) for tools and safety contracts.
+Use read-only `get_postmaster` with `{}` for all owned characters or
+`{"character":"hunter"}` for one unique class (an exact ID also works).
+It matches CLI JSON, including empty groups and duplicate anonymous stacks;
+these are committed observations, not guaranteed live or complete holdings.
+See the [MCP reference](docs/mcp.md#postmaster-observations) for its schema,
+currency-coverage limits and the other tools' safety contracts.
 
 ### Option B: CLI skill
 
 Agents with shell access can drive the CLI through the bundled
 [skill](skills/ghostlink/SKILL.md), which maps intents to commands and sets the
-safety rules for `equip`. Install the version-matched skill with:
+safety rules for `move` and `equip`. Both require explicit item and destination
+intent and never blindly retry uncertain outcomes. Move requires exactly one of
+`--character` or `--vault`; an item already at that destination during planning
+is refused (exit 40). Lock/unlock require explicit item and requested-state intent;
+Vault items use one owned character for the provider call. Never blindly retry.
+See the [CLI reference](docs/cli.md#lock-or-unlock-one-item). Install the version-matched skill with:
 
 ```sh
 ghostlink agents install --agent claude codex opencode pi --skill

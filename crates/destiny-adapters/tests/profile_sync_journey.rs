@@ -348,10 +348,350 @@ fn committed(service: &Service) -> InventorySnapshot {
         .expect("committed projection")
 }
 
-/// A materially changed fixture: the vaulted item [`CHANGED_INSTANCE`] carries a
-/// different quantity, which is part of revision identity.
+/// The vaulted gear instance used by the existing quantity-change journey.
 const CHANGED_INSTANCE: &str = "700000000000000001";
 
+/// Actual decoder -> injected transport gateway -> sync -> real in-memory SQLite.
+/// Runtime buckets are synthetic, not live-account or capacity evidence.
+#[test]
+fn published_observations_follow_exact_sqlite_return_not_revision_identity() {
+    use destiny_app::ProfileSyncWithObservationsOutcome;
+    let journey = Journey::new();
+    let gateway = BungieProfileGateway::new(
+        SharedTransport(Rc::clone(&journey.transport)),
+        TestClock(Rc::clone(&journey.clock)),
+        destiny_core::StaticCredentialSource::new(credential()),
+        api_key(),
+        DefinitionVersion::new(DEFINITION_VERSION),
+    )
+    .unwrap();
+    let mut service = ProfileSyncService::new(gateway, SqliteStore::open_in_memory().unwrap());
+    let mut value: Value = serde_json::from_slice(FIXTURE).unwrap();
+    for row in value["Response"]["profileInventory"]["data"]["items"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if row["itemInstanceId"].is_string() {
+            row["bucketHash"] = json!(5100);
+        }
+    }
+    for component in ["characterInventories", "characterEquipment"] {
+        for owner in value["Response"][component]["data"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            for row in owner["items"].as_array_mut().unwrap() {
+                if row["itemInstanceId"].is_string() {
+                    row["bucketHash"] = json!(5200);
+                }
+            }
+        }
+    }
+    for (offset, bucket, quantity, revision) in [(0, 5100, 1, 1), (1, 5101, 1, 1), (2, 5101, 2, 2)]
+    {
+        let now = Timestamp::new(NOW.seconds() + offset);
+        journey.at(now);
+        value["Response"]["profileInventory"]["data"]["items"][0]["bucketHash"] = json!(bucket);
+        value["Response"]["profileInventory"]["data"]["items"][0]["quantity"] = json!(quantity);
+        journey.queue_membership();
+        journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+        let ProfileSyncWithObservationsOutcome::Refreshed(pair) = service
+            .sync_with_observations(ProfileSyncReason::Preflight, TTL, now)
+            .unwrap()
+        else {
+            panic!("forced publication required")
+        };
+        let snapshot = pair.snapshot();
+        assert_eq!(
+            snapshot,
+            &service.repository().load_current().unwrap().unwrap()
+        );
+        assert_eq!(
+            snapshot.metadata.membership_id,
+            *expected_membership().membership_id()
+        );
+        assert_eq!(
+            snapshot.metadata.membership_type,
+            expected_membership().membership_type()
+        );
+        assert_eq!(
+            snapshot.metadata.definition_version,
+            DefinitionVersion::new(DEFINITION_VERSION)
+        );
+        assert_eq!(snapshot.metadata.source, SourceMarker::Profile);
+        assert_eq!(snapshot.metadata.checked_at, now);
+        assert_eq!(snapshot.metadata.revision.value(), revision);
+        let observations = pair.observations().expect("complete runtime buckets");
+        assert_eq!(observations.len(), snapshot.items.len());
+        for item in &snapshot.items {
+            let row = observations
+                .iter()
+                .find(|row| row.instance_id() == &item.instance_id)
+                .unwrap();
+            assert_eq!(row.location(), &item.location);
+        }
+        assert_eq!(
+            observations
+                .iter()
+                .find(|row| row.instance_id().as_str() == CHANGED_INSTANCE)
+                .unwrap()
+                .bucket_hash()
+                .value(),
+            bucket
+        );
+        assert_eq!(journey.request_count(), 2 * (offset as usize + 1));
+    }
+    let before = service.repository().load_current().unwrap().unwrap();
+    assert!(matches!(
+        service
+            .sync_with_observations(ProfileSyncReason::Ordinary, TTL, before.metadata.checked_at)
+            .unwrap(),
+        ProfileSyncWithObservationsOutcome::SkippedFresh { .. }
+    ));
+    assert_eq!(journey.request_count(), 6);
+    // Invalid instance component join fails before SQLite publication, preserving
+    // the real prior projection. This is not a rollback promise for bad returns.
+    value["Response"]["itemComponents"]["instances"]["data"]
+        .as_object_mut()
+        .unwrap()
+        .remove(CHANGED_INSTANCE);
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    assert_eq!(
+        service
+            .sync_with_observations(ProfileSyncReason::PostAction, TTL, NOW)
+            .unwrap_err()
+            .category(),
+        ErrorCategory::ProviderValidation
+    );
+    assert_eq!(
+        service.repository().load_current().unwrap().unwrap(),
+        before
+    );
+    assert_eq!(journey.request_count(), 8);
+}
+
+/// Synthetic bucket hashes exercise provenance only, not provider bucket contracts.
+#[test]
+fn profile_stack_multiset_and_postmaster_survive_sqlite_sync() {
+    use destiny_core::{CharacterId, ItemLocation, StackContainer};
+    let journey = Journey::new();
+    let mut value: Value = serde_json::from_slice(FIXTURE).unwrap();
+    let rows =
+        &mut value["Response"]["characterInventories"]["data"]["900000000000000001"]["items"];
+    rows[0]["location"] = json!(4);
+    rows[1]["location"] = json!(4);
+    let duplicate = rows[1].clone();
+    rows.as_array_mut().unwrap().push(duplicate);
+    let bytes = serde_json::to_vec(&value).unwrap();
+    let mut service = journey.service();
+    journey.queue_membership();
+    journey.queue_profile(&bytes);
+    service.sync(ProfileSyncReason::Ordinary, TTL, NOW).unwrap();
+    let first = committed(&service);
+    let owner = CharacterId::new("900000000000000001");
+    assert_eq!(first.stacks.len(), 4);
+    assert_eq!(
+        first
+            .stacks
+            .iter()
+            .filter(|row| row.container() == &StackContainer::Postmaster(owner.clone()))
+            .count(),
+        2
+    );
+    assert_eq!(
+        first
+            .items
+            .iter()
+            .find(|item| item.instance_id.as_str() == "700000000000000004")
+            .unwrap()
+            .location,
+        ItemLocation::Postmaster(owner)
+    );
+    drop(service);
+    let mut service = journey.service();
+    assert_eq!(committed(&service), first);
+
+    value["Response"]["profileInventory"]["data"]["items"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    value["Response"]["characterInventories"]["data"]["900000000000000001"]["items"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    let reordered = service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+    assert_eq!(reordered.revision(), first.metadata.revision);
+    value["Response"]["characterInventories"]["data"]["900000000000000001"]["items"][0]["quantity"] =
+        json!(49);
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    let changed = service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+    assert_eq!(
+        changed.revision().value(),
+        first.metadata.revision.value() + 1
+    );
+    assert_eq!(committed(&service).stacks.len(), 4);
+}
+
+/// Synthetic component wrappers exercise durable availability, never live coverage.
+#[test]
+fn profile_currency_coverage_balances_and_atomic_rejection_survive_reopen() {
+    use destiny_core::{ProfileCurrenciesCoverage as Coverage, StackContainer};
+    let journey = Journey::new();
+    let mut service = journey.service();
+    journey.queue_membership();
+    journey.queue_profile(FIXTURE);
+    service.sync(ProfileSyncReason::Ordinary, TTL, NOW).unwrap();
+    let legacy = committed(&service);
+    assert_eq!(legacy.profile_currencies_coverage, Coverage::Unavailable);
+    assert!(
+        journey.recorded_urls()[1].ends_with("?components=102,103,200,201,205,300,302,304,305,310")
+    );
+    drop(service);
+    let mut service = journey.service();
+    assert_eq!(committed(&service), legacy);
+
+    let mut value: Value = serde_json::from_slice(FIXTURE).unwrap();
+    value["Response"]["profileCurrencies"] = json!({"privacy":2,"data":{"items":[]}});
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+    let empty = committed(&service);
+    assert_eq!(empty.profile_currencies_coverage, Coverage::Available);
+    assert_eq!(
+        empty.metadata.revision.value(),
+        legacy.metadata.revision.value() + 1
+    );
+    assert_eq!(empty.stacks, legacy.stacks);
+
+    let overlap = value["Response"]["profileInventory"]["data"]["items"][2].clone();
+    let mut zero = overlap.clone();
+    zero["quantity"] = json!(0);
+    value["Response"]["profileCurrencies"]["data"]["items"] =
+        json!([overlap.clone(), overlap, zero]);
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+    let balances = committed(&service);
+    assert_eq!(
+        balances.metadata.revision.value(),
+        empty.metadata.revision.value() + 1
+    );
+    assert_eq!(balances.stacks.len(), legacy.stacks.len() + 3);
+    assert_eq!(
+        balances
+            .stacks
+            .iter()
+            .filter(|s| s.container() == &StackContainer::ProfileCurrencies)
+            .count(),
+        3
+    );
+    assert_eq!(
+        balances
+            .stacks
+            .iter()
+            .filter(|s| s.container() == &StackContainer::ProfileInventory)
+            .count(),
+        2
+    );
+    drop(service);
+    let mut service = journey.service();
+    assert_eq!(committed(&service), balances);
+
+    value["Response"]["profileCurrencies"]["data"]["items"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+    assert_eq!(
+        committed(&service).metadata.revision,
+        balances.metadata.revision
+    );
+    for (field, invalid) in [
+        ("quantity", json!(-1)),
+        ("quantity", json!(2147483648u64)),
+        ("itemHash", json!(4294967296u64)),
+        ("bucketHash", Value::Null),
+        ("itemInstanceId", json!("0")),
+    ] {
+        let mut bad = value.clone();
+        bad["Response"]["profileInventory"]["data"]["items"][0]["quantity"] = json!(2);
+        bad["Response"]["profileCurrencies"]["data"]["items"][0][field] = invalid;
+        journey.queue_membership();
+        journey.queue_profile(&serde_json::to_vec(&bad).unwrap());
+        assert_eq!(
+            service
+                .sync(ProfileSyncReason::Forced, TTL, NOW)
+                .unwrap_err()
+                .category(),
+            ErrorCategory::ProviderValidation
+        );
+        assert_eq!(committed(&service), balances);
+    }
+    for wrapper in [
+        Value::Null,
+        json!({"disabled":true}),
+        json!({"privacy":2,"data":null}),
+    ] {
+        value["Response"]["profileCurrencies"] = wrapper;
+        journey.queue_membership();
+        journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+        service.sync(ProfileSyncReason::Forced, TTL, NOW).unwrap();
+        assert_eq!(
+            committed(&service).profile_currencies_coverage,
+            Coverage::Unavailable
+        );
+        assert_eq!(committed(&service).stacks, legacy.stacks);
+    }
+    let unavailable = committed(&service);
+    drop(service);
+    assert_eq!(committed(&journey.service()), unavailable);
+}
+
+#[test]
+fn profile_invalid_stack_rows_never_publish_partial_sqlite_content() {
+    let journey = Journey::new();
+    let mut service = journey.service();
+    journey.queue_membership();
+    journey.queue_profile(FIXTURE);
+    service.sync(ProfileSyncReason::Ordinary, TTL, NOW).unwrap();
+    let before = committed(&service);
+    for (field, invalid) in [
+        ("bucketHash", Value::Null),
+        ("bucketHash", json!(-1)),
+        ("bucketHash", json!(4294967296u64)),
+        ("itemHash", json!(-1)),
+        ("itemHash", json!(4294967296u64)),
+        ("quantity", json!(-1)),
+        ("quantity", json!(0)),
+        ("quantity", json!(2147483648u64)),
+        ("quantity", json!(1.5)),
+        ("location", json!(4)),
+    ] {
+        let mut value: Value = serde_json::from_slice(FIXTURE).unwrap();
+        // A valid gear change before the invalid stack must not leak through.
+        value["Response"]["profileInventory"]["data"]["items"][0]["quantity"] = json!(2);
+        value["Response"]["profileInventory"]["data"]["items"][2][field] = invalid;
+        journey.queue_membership();
+        journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+        let error = service
+            .sync(ProfileSyncReason::Forced, TTL, NOW)
+            .unwrap_err();
+        assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+        assert_eq!(committed(&service), before);
+    }
+    drop(service);
+    assert_eq!(committed(&journey.service()), before);
+}
+
+/// A materially changed fixture: the vaulted item [`CHANGED_INSTANCE`] carries a
+/// different quantity, which is part of revision identity.
 fn changed_profile() -> Vec<u8> {
     let mut value: Value = serde_json::from_slice(FIXTURE).expect("fixture is JSON");
     value["Response"]["profileInventory"]["data"]["items"][0]["quantity"] = json!(2);

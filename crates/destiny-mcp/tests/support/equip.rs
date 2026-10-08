@@ -54,6 +54,8 @@ fn snapshot(equipped: bool, on_target: bool, ambiguous: bool) -> InventorySnapsh
         items.push(item("126", 100, ItemLocation::Vault, false));
     }
     InventorySnapshotInput {
+        profile_currencies_coverage: Default::default(),
+        stacks: Vec::new(),
         membership_id: MembershipId::new("789"),
         membership_type: MembershipType::new(3),
         checked_at: NOW,
@@ -66,6 +68,10 @@ fn snapshot(equipped: bool, on_target: bool, ambiguous: bool) -> InventorySnapsh
 }
 fn definitions() -> Vec<ItemDefinition> {
     let definition = |hash, name: &str, bucket| ItemDefinition {
+        does_postmaster_pull_have_side_effects: None,
+        is_instance_item: None,
+        max_stack_size: None,
+        stack_unique_label: None,
         hash: ItemHash::new(hash),
         bucket_hash: Some(BucketHash::new(bucket)),
         name: name.into(),

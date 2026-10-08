@@ -564,6 +564,235 @@ pub fn select_weekly_character(
     })
 }
 
+/// Private handles to ONE invocation-owned connection. No handles escape this
+/// synchronous composition, so no caller-local publisher can interleave with
+/// planning, definition use, preflight, dispatch or observations. This does not
+/// serialize another process, the game, or any remote client.
+#[derive(Clone)]
+struct PullStore(std::rc::Rc<std::cell::RefCell<SqliteStore>>);
+
+#[cfg(test)]
+mod pull_store_tests {
+    use super::PullStore;
+    use destiny_adapters::sqlite::SqliteStore;
+    use destiny_app::*;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    fn pull_store_one_connection_shares_definition_and_inventory_publications() {
+        let mut inventory = PullStore(Rc::new(RefCell::new(
+            SqliteStore::open_in_memory().unwrap(),
+        )));
+        let mut definitions = inventory.clone();
+        assert!(Rc::ptr_eq(&inventory.0, &definitions.0));
+        let version = DefinitionVersion::new("pull-store-test");
+        let definition = ItemDefinition {
+            hash: ItemHash::new(7),
+            bucket_hash: Some(BucketHash::new(1498876634)),
+            does_postmaster_pull_have_side_effects: Some(false),
+            is_instance_item: Some(true),
+            max_stack_size: None,
+            stack_unique_label: None,
+            name: "Offline equipment".into(),
+            item_type: None,
+            tier: None,
+            element: None,
+            slot: None,
+            class_type: None,
+            plug_category: None,
+            tags: vec![],
+            version: version.clone(),
+        };
+        let metadata = definitions
+            .replace_definitions(DefinitionReplacementInput {
+                definitions: ManifestDefinitions {
+                    version: version.clone(),
+                    definitions: vec![definition.clone()],
+                },
+                checked_at: Timestamp::new(100),
+                source: SourceMarker::Manifest,
+            })
+            .unwrap();
+        assert_eq!(inventory.current_definition_version().unwrap(), version);
+        assert_eq!(
+            inventory.lookup_definition(ItemHash::new(7)).unwrap(),
+            Resolution::Unique(definition)
+        );
+        assert_eq!(inventory.current_metadata().unwrap(), Some(metadata));
+        let input = InventorySnapshotInput {
+            membership_id: MembershipId::new("123"),
+            membership_type: MembershipType::new(3),
+            definition_version: version,
+            checked_at: Timestamp::new(100),
+            source: SourceMarker::Profile,
+            characters: vec![],
+            items: vec![],
+            stacks: vec![],
+            plug_set_entries: vec![],
+            profile_currencies_coverage: Default::default(),
+        };
+        let first = inventory.replace_current(input.clone()).unwrap();
+        assert_eq!(definitions.load_current().unwrap(), Some(first.clone()));
+        let mut refreshed = input;
+        refreshed.checked_at = Timestamp::new(101);
+        let second = definitions.replace_current(refreshed).unwrap();
+        assert_eq!(second.metadata.revision, first.metadata.revision);
+        assert_eq!(inventory.load_current().unwrap(), Some(second));
+    }
+}
+impl InventoryRepository for PullStore {
+    fn load_current(&self) -> Result<Option<destiny_app::InventorySnapshot>, AppError> {
+        self.0.borrow().load_current()
+    }
+    fn replace_current(
+        &mut self,
+        input: destiny_app::InventorySnapshotInput,
+    ) -> Result<destiny_app::InventorySnapshot, AppError> {
+        self.0.borrow_mut().replace_current(input)
+    }
+}
+impl DefinitionRepository for PullStore {
+    fn current_definition_version(&self) -> Result<destiny_app::DefinitionVersion, AppError> {
+        self.0.borrow().current_definition_version()
+    }
+    fn lookup_definition(
+        &self,
+        hash: destiny_app::ItemHash,
+    ) -> Result<destiny_app::Resolution<destiny_app::ItemDefinition>, AppError> {
+        self.0.borrow().lookup_definition(hash)
+    }
+    fn current_metadata(&self) -> Result<Option<destiny_app::SyncMetadata>, AppError> {
+        DefinitionRepository::current_metadata(&*self.0.borrow())
+    }
+    fn replace_definitions(
+        &mut self,
+        input: destiny_app::DefinitionReplacementInput,
+    ) -> Result<destiny_app::SyncMetadata, AppError> {
+        self.0.borrow_mut().replace_definitions(input)
+    }
+}
+struct PullDelay;
+impl destiny_app::RetryDelay for PullDelay {
+    fn wait(&mut self, delay: std::time::Duration) {
+        std::thread::sleep(delay);
+    }
+}
+
+/// Authenticated membership and fresh Postmaster ownership, never CLI overrides.
+/// One store, fresh concrete Manifest qualification, and one consumed plan. No
+/// automatic definition download/retry after failure or received action outcome.
+pub fn compose_pull(
+    item: destiny_app::ItemInstanceId,
+) -> Result<crate::pull_output::PullOutput, CliError> {
+    use destiny_adapters::instanced_pull::{
+        BungieInstancedPullGateway, HttpInstancedPullTransport, InstancedPullApiKey,
+    };
+    use destiny_adapters::manifest::{
+        BungieManifestGateway, HttpManifestTransport, ManifestApiKey,
+    };
+    use destiny_app::ProfileGateway;
+    let mut foundations = ProductionFoundations;
+    let config = ReadFoundations::config(&mut foundations)?;
+    let source = foundations.credential_source(&config)?;
+    let clock = ReadFoundations::clock(&mut foundations)?;
+    let repository = PullStore(std::rc::Rc::new(std::cell::RefCell::new(
+        ReadFoundations::store(&mut foundations, &config)?,
+    )));
+    let mut profile = BungieProfileGateway::new(
+        ReadFoundations::transport(&mut foundations)?,
+        clock,
+        source.clone(),
+        ProfileApiKey::new(config.api_key().expose_secret())?,
+        config.resolve_definition_version(&repository)?,
+    )?;
+    let membership =
+        profile.resolve_membership_scoped(destiny_app::ProfileSyncReason::Preflight)?;
+    let manifest = BungieManifestGateway::new(
+        ManifestApiKey::new(config.api_key().expose_secret())?,
+        HttpManifestTransport::new()?,
+        SystemClock::new(),
+    );
+    let mut gateway = BungieInstancedPullGateway::new(
+        HttpInstancedPullTransport::new()?,
+        SystemClock::new(),
+        source,
+        InstancedPullApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let mut service = destiny_app::InstancedPullService::new(
+        ProfileSyncService::new_with_definitions(profile, repository.clone()),
+        repository,
+        manifest,
+        destiny_adapters::pinned_equipment_capacity_policy(),
+        SystemClock::new(),
+        crate::pull::InvocationPlanId::new(),
+    );
+    Ok(crate::pull::pull_item(
+        item,
+        membership,
+        &mut service,
+        &mut gateway,
+        &mut PullDelay,
+        config.freshness_policy(),
+    ))
+}
+
+/// One invocation-owned connection, authenticated membership and fresh Manifest
+/// capacity evidence. No recompose, automatic download or action retry.
+pub fn compose_pull_stack(
+    selection: crate::command::StackPullSelection,
+) -> Result<crate::pull_stack_output::StackPullOutput, CliError> {
+    use destiny_adapters::manifest::{
+        BungieManifestGateway, HttpManifestTransport, ManifestApiKey,
+    };
+    use destiny_adapters::stack_pull::{
+        BungieStackPullGateway, HttpStackPullTransport, StackPullApiKey,
+    };
+    use destiny_app::ProfileGateway;
+    let mut foundations = ProductionFoundations;
+    let config = ReadFoundations::config(&mut foundations)?;
+    let source = foundations.credential_source(&config)?;
+    let clock = ReadFoundations::clock(&mut foundations)?;
+    let repository = PullStore(std::rc::Rc::new(std::cell::RefCell::new(
+        ReadFoundations::store(&mut foundations, &config)?,
+    )));
+    let mut profile = BungieProfileGateway::new(
+        ReadFoundations::transport(&mut foundations)?,
+        clock,
+        source.clone(),
+        ProfileApiKey::new(config.api_key().expose_secret())?,
+        config.resolve_definition_version(&repository)?,
+    )?;
+    let membership =
+        profile.resolve_membership_scoped(destiny_app::ProfileSyncReason::Preflight)?;
+    let manifest = BungieManifestGateway::new(
+        ManifestApiKey::new(config.api_key().expose_secret())?,
+        HttpManifestTransport::new()?,
+        SystemClock::new(),
+    );
+    let mut gateway = BungieStackPullGateway::new(
+        HttpStackPullTransport::new()?,
+        SystemClock::new(),
+        source,
+        StackPullApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let mut service = destiny_app::StackPullService::new(
+        ProfileSyncService::new_with_definitions(profile, repository.clone()),
+        repository,
+        manifest,
+        destiny_adapters::stack_bucket_capacity_policy::pinned_stack_bucket_capacity_policy(),
+        SystemClock::new(),
+        crate::pull::InvocationPlanId::new(),
+    );
+    Ok(crate::pull_stack::pull_stack(
+        selection,
+        membership,
+        &mut service,
+        &mut gateway,
+        &mut PullDelay,
+        config.freshness_policy(),
+    ))
+}
+
 /// Compose all three gateways over one lock-backed credential session, so a
 /// confidential refresh cannot race or rotate independently between actions.
 pub fn compose_equip(
@@ -607,6 +836,85 @@ pub fn compose_equip(
         &mut mutations,
         &mut transfer,
         &mut equip,
+        &SystemClock::new(),
+        config.freshness_policy(),
+    )
+}
+
+/// Compose profile and lock gateways over one credential session and one local
+/// repository. The synchronous invocation owns publication through dispatch.
+pub fn compose_lock(
+    arguments: &crate::command::LockArgs,
+    locked: bool,
+) -> Result<crate::lock_output::LockOutput, CliError> {
+    use destiny_adapters::lock::{BungieLockGateway, HttpLockTransport, LockApiKey};
+    arguments.validate()?;
+    let mut foundations = ProductionFoundations;
+    let config = ReadFoundations::config(&mut foundations)?;
+    let source = foundations.credential_source(&config)?;
+    let clock = ReadFoundations::clock(&mut foundations)?;
+    let repository = ReadFoundations::store(&mut foundations, &config)?;
+    let gateway = BungieProfileGateway::new(
+        ReadFoundations::transport(&mut foundations)?,
+        clock,
+        source.clone(),
+        ProfileApiKey::new(config.api_key().expose_secret())?,
+        config.resolve_definition_version(&repository)?,
+    )?;
+    let mut lock = BungieLockGateway::new(
+        HttpLockTransport::new()?,
+        SystemClock::new(),
+        source,
+        LockApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let mut mutations = destiny_app::MutationService::new(
+        ProfileSyncService::new_with_definitions(gateway, repository),
+        crate::equip::InvocationPlanId::new(),
+    );
+    crate::lock::set_lock_state(
+        arguments,
+        locked,
+        &mut mutations,
+        &mut lock,
+        &SystemClock::new(),
+        config.freshness_policy(),
+    )
+}
+
+/// Compose profile and transfer gateways over one lock-backed credential session.
+pub fn compose_move(
+    arguments: &crate::command::MoveArgs,
+) -> Result<crate::move_output::MoveOutput, CliError> {
+    use destiny_adapters::transfer::{
+        BungieTransferGateway, HttpTransferTransport, TransferApiKey,
+    };
+    arguments.validate()?;
+    let mut foundations = ProductionFoundations;
+    let config = ReadFoundations::config(&mut foundations)?;
+    let source = foundations.credential_source(&config)?;
+    let clock = ReadFoundations::clock(&mut foundations)?;
+    let repository = ReadFoundations::store(&mut foundations, &config)?;
+    let gateway = BungieProfileGateway::new(
+        ReadFoundations::transport(&mut foundations)?,
+        clock,
+        source.clone(),
+        ProfileApiKey::new(config.api_key().expose_secret())?,
+        config.resolve_definition_version(&repository)?,
+    )?;
+    let mut transfer = BungieTransferGateway::new(
+        HttpTransferTransport::new()?,
+        SystemClock::new(),
+        source,
+        TransferApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let mut mutations = destiny_app::MutationService::new(
+        ProfileSyncService::new_with_definitions(gateway, repository),
+        crate::move_item::InvocationPlanId::new(),
+    );
+    crate::move_item::move_item(
+        arguments,
+        &mut mutations,
+        &mut transfer,
         &SystemClock::new(),
         config.freshness_policy(),
     )
@@ -1330,6 +1638,8 @@ mod tests {
         assert!(calls.borrow().contains(&"membership"));
         assert!(calls.borrow().contains(&"profile"));
         let mut changed = destiny_app::InventorySnapshotInput {
+            profile_currencies_coverage: first_snapshot.profile_currencies_coverage,
+            stacks: first_snapshot.stacks,
             membership_id: first_snapshot.metadata.membership_id,
             membership_type: first_snapshot.metadata.membership_type,
             checked_at: NOW,
@@ -1474,6 +1784,10 @@ mod tests {
                                     class_type: None,
                                     plug_category: None,
                                     tags: Vec::new(),
+                                    does_postmaster_pull_have_side_effects: None,
+                                    is_instance_item: None,
+                                    max_stack_size: None,
+                                    stack_unique_label: None,
                                     version: destiny_app::DefinitionVersion::new("v1"),
                                 }],
                             },
@@ -1485,6 +1799,8 @@ mod tests {
                     .unwrap();
                 store
                     .replace_current(destiny_app::InventorySnapshotInput {
+                        profile_currencies_coverage: Default::default(),
+                        stacks: Vec::new(),
                         plug_set_entries: Vec::new(),
                         membership_id: destiny_app::MembershipId::new("999"),
                         membership_type: destiny_app::MembershipType::new(3),
@@ -1565,6 +1881,10 @@ mod tests {
                                     class_type: None,
                                     plug_category: None,
                                     tags: Vec::new(),
+                                    does_postmaster_pull_have_side_effects: None,
+                                    is_instance_item: None,
+                                    max_stack_size: None,
+                                    stack_unique_label: None,
                                     version: destiny_app::DefinitionVersion::new("v1"),
                                 }],
                             },
@@ -1687,6 +2007,10 @@ mod tests {
                                 definitions: destiny_app::ManifestDefinitions {
                                     version: destiny_app::DefinitionVersion::new("v1"),
                                     definitions: vec![destiny_app::ItemDefinition {
+                                        does_postmaster_pull_have_side_effects: None,
+                                        is_instance_item: None,
+                                        max_stack_size: None,
+                                        stack_unique_label: None,
                                         hash: destiny_app::ItemHash::new(1),
                                         bucket_hash: None,
                                         name: "Item".into(),

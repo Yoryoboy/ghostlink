@@ -316,6 +316,11 @@ fn normalize_with_count(acquisition: ManifestAcquisition) -> Result<NormalizedMa
             descriptions.push(description);
         }
         definitions.push(ItemDefinition {
+            does_postmaster_pull_have_side_effects: candidate
+                .does_postmaster_pull_have_side_effects,
+            is_instance_item: candidate.is_instance_item,
+            max_stack_size: candidate.max_stack_size,
+            stack_unique_label: candidate.stack_unique_label,
             hash: candidate.hash,
             bucket_hash: candidate.bucket_hash,
             name,
@@ -564,6 +569,10 @@ mod tests {
 
     fn candidate(hash: i64, name: &str) -> ManifestDefinitionCandidate {
         ManifestDefinitionCandidate {
+            does_postmaster_pull_have_side_effects: None,
+            is_instance_item: None,
+            max_stack_size: None,
+            stack_unique_label: None,
             perk_hashes: Vec::new(),
             description: None,
             hash: ItemHash::new(hash),
@@ -610,6 +619,10 @@ mod tests {
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(11)),
                     perk_hashes: Vec::new(),
+                    does_postmaster_pull_have_side_effects: None,
+                    is_instance_item: None,
+                    max_stack_size: None,
+                    stack_unique_label: None,
                     name: "  Ri   FLE  ".into(),
                     item_type: Some("  WEAPON ".into()),
                     tier: Some(" Legendary ".into()),
@@ -633,6 +646,10 @@ mod tests {
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(11)),
                     perk_hashes: Vec::new(),
+                    does_postmaster_pull_have_side_effects: None,
+                    is_instance_item: None,
+                    max_stack_size: None,
+                    stack_unique_label: None,
                     name: "Ri FLE".into(),
                     item_type: Some("WEAPON".into()),
                     tier: Some("Legendary".into()),
@@ -769,12 +786,81 @@ mod tests {
     }
 
     #[test]
+    fn qualified_postmaster_metadata_survives_normalization_and_identity() {
+        let mut raw = candidate(1, "Alpha");
+        raw.does_postmaster_pull_have_side_effects = Some(false);
+        raw.is_instance_item = Some(true);
+        raw.max_stack_size = Some(i32::MIN);
+        raw.stack_unique_label = Some("  Exact Label\n".into());
+        let normalized = normalize_manifest(acquisition(VERSION, vec![raw.clone()])).unwrap();
+        let item = &normalized.definitions[0];
+        assert_eq!(item.does_postmaster_pull_have_side_effects, Some(false));
+        assert_eq!(item.is_instance_item, Some(true));
+        assert_eq!(item.max_stack_size, Some(i32::MIN));
+        assert_eq!(item.stack_unique_label.as_deref(), Some("  Exact Label\n"));
+        let original = DefinitionReplacementInput {
+            definitions: normalized,
+            checked_at: Timestamp::new(1),
+            source: SourceMarker::Manifest,
+        };
+        let mut fake = crate::test_support::InMemoryDefinitionRepository::default();
+        let initial = fake.replace_definitions(original.clone()).unwrap();
+        assert_eq!(
+            fake.clone().lookup_definition(ItemHash::new(1)).unwrap(),
+            destiny_core::Resolution::Unique(original.definitions.definitions[0].clone())
+        );
+        assert_eq!(
+            fake.replace_definitions(original.clone()).unwrap().revision,
+            initial.revision
+        );
+        for field in 0..4 {
+            let mut changed = original.clone();
+            let item = &mut changed.definitions.definitions[0];
+            match field {
+                0 => item.does_postmaster_pull_have_side_effects = None,
+                1 => item.is_instance_item = None,
+                2 => item.max_stack_size = None,
+                _ => item.stack_unique_label = None,
+            }
+            assert!(!original.content_eq(&changed));
+            let mut cloned_fake = fake.clone();
+            assert_eq!(
+                cloned_fake
+                    .replace_definitions(changed.clone())
+                    .unwrap()
+                    .revision
+                    .value(),
+                2
+            );
+            assert_eq!(
+                cloned_fake.lookup_definition(ItemHash::new(1)).unwrap(),
+                destiny_core::Resolution::Unique(changed.definitions.definitions[0].clone())
+            );
+        }
+        let mut raw_empty = raw;
+        raw_empty.does_postmaster_pull_have_side_effects = Some(true);
+        raw_empty.is_instance_item = Some(false);
+        raw_empty.max_stack_size = Some(i32::MAX);
+        raw_empty.stack_unique_label = Some(String::new());
+        let alternate = normalize_manifest(acquisition(VERSION, vec![raw_empty])).unwrap();
+        let item = &alternate.definitions[0];
+        assert_eq!(item.does_postmaster_pull_have_side_effects, Some(true));
+        assert_eq!(item.is_instance_item, Some(false));
+        assert_eq!(item.max_stack_size, Some(i32::MAX));
+        assert_eq!(item.stack_unique_label.as_deref(), Some(""));
+    }
+
+    #[test]
     fn manifest_records_expose_only_definition_identity() {
         // Exhaustive destructuring is a type-level guarantee. If a runtime
-        // instance identifier, a provider metadata flag, or any other
-        // non-definition field were added to the candidate or to the normalized
+        // instance identifier or any other non-definition field were added to
+        // the candidate or to the normalized
         // record, this test would stop compiling.
         let ManifestDefinitionCandidate {
+            does_postmaster_pull_have_side_effects: _,
+            is_instance_item: _,
+            max_stack_size: _,
+            stack_unique_label: _,
             perk_hashes: _,
             description: _,
             hash,
@@ -803,6 +889,10 @@ mod tests {
         let published =
             normalize_manifest(acquisition(VERSION, vec![candidate(1, "Alpha")])).unwrap();
         let ItemDefinition {
+            does_postmaster_pull_have_side_effects: _,
+            is_instance_item: _,
+            max_stack_size: _,
+            stack_unique_label: _,
             hash,
             bucket_hash,
             name,
@@ -931,6 +1021,10 @@ mod tests {
 
         fn item_definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
             ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: ItemHash::new(hash),
                 bucket_hash: None,
                 name: name.into(),

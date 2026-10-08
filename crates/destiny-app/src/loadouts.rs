@@ -409,6 +409,10 @@ mod tests {
         category: Option<&str>,
     ) -> ItemDefinition {
         ItemDefinition {
+            does_postmaster_pull_have_side_effects: None,
+            is_instance_item: None,
+            max_stack_size: None,
+            stack_unique_label: None,
             hash: ItemHash::new(hash),
             name: name.into(),
             slot,
@@ -464,6 +468,8 @@ mod tests {
             })
             .collect();
         let input = InventorySnapshotInput {
+            profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
+            stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_type: MembershipType::new(3),
             membership_id: MembershipId::new("999"),

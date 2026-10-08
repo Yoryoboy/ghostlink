@@ -90,6 +90,14 @@ pub const MAX_IDENTIFIER_LENGTH: usize = 512;
 pub fn tool_specs() -> Vec<Tool> {
     vec![
         Tool::new(
+            "get_postmaster",
+            "Read committed Postmaster observations, not guaranteed live or complete. Omit character (or use null) for all owned characters; select an exact id or unique case-insensitive class. Anonymous stacks are not actionable. Component 103 currency coverage is independent of Postmaster coverage.",
+            JsonObject::new(),
+        )
+        .with_input_schema::<GetPostmasterArgs>()
+        .with_output_schema::<GetPostmasterOutput>()
+        .with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
+        Tool::new(
             LIST_CHARACTERS_TOOL,
             LIST_CHARACTERS_DESCRIPTION,
             JsonObject::new(),
@@ -164,6 +172,70 @@ pub fn move_item_tool() -> Tool {
         .with_output_schema::<MoveItemOutput>()
 }
 
+pub const PULL_STACK_TOOL: &str = "pull_stack";
+
+/// Exact non-instanced stack selection; provider identity is derived internally.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PullStackArgs {
+    #[schemars(length(min = 1, max = 10), regex(pattern = "^(0|[1-9][0-9]{0,9})$"))]
+    pub item_hash: String,
+    #[schemars(length(min = 1, max = 10), regex(pattern = "^[1-9][0-9]{0,9}$"))]
+    pub amount: String,
+    #[schemars(length(min = 1, max = 19), regex(pattern = "^[1-9][0-9]{0,18}$"))]
+    pub character: String,
+}
+impl PullStackArgs {
+    pub fn validate(&self) -> Result<(), McpError> {
+        let invalid = || McpError::new(ErrorCategory::ProviderValidation);
+        let hash = self.item_hash.parse::<u32>().map_err(|_| invalid())?;
+        let amount = self.amount.parse::<i32>().map_err(|_| invalid())?;
+        let character = self.character.parse::<i64>().map_err(|_| invalid())?;
+        if hash.to_string() != self.item_hash
+            || amount <= 0
+            || amount.to_string() != self.amount
+            || character <= 0
+            || character.to_string() != self.character
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
+pub fn pull_stack_tool() -> Tool {
+    Tool::new(PULL_STACK_TOOL, "Pull an exact amount of one non-instanced Postmaster stack for an owned character. Canonical decimal strings only: uint32 item_hash, positive int32 amount, positive int64 character. Requires authentication, qualified definitions and fresh capacity proof. One action, bounded observation; only Verified succeeds. Never blindly retry unconfirmed outcomes. Observations are not causal or atomic guarantees.", JsonObject::new())
+        .with_input_schema::<PullStackArgs>()
+        .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
+}
+
+pub const PULL_ITEM_TOOL: &str = "pull_item";
+
+/// One canonical genuine instance ID; every provider-bound value is derived.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PullItemArgs {
+    #[schemars(length(min = 1, max = 19), regex(pattern = "^[1-9][0-9]{0,18}$"))]
+    pub item: String,
+}
+impl PullItemArgs {
+    pub fn instance_id(&self) -> Result<destiny_app::ItemInstanceId, McpError> {
+        let invalid = || McpError::new(ErrorCategory::ProviderValidation);
+        if self.item.is_empty() || self.item.len() > 19 {
+            return Err(invalid());
+        }
+        let value = self.item.parse::<i64>().map_err(|_| invalid())?;
+        if value <= 0 || value.to_string() != self.item {
+            return Err(invalid());
+        }
+        Ok(destiny_app::ItemInstanceId::new(&self.item))
+    }
+}
+pub fn pull_item_tool() -> Tool {
+    Tool::new(PULL_ITEM_TOOL, "Pull one genuine Postmaster equipment instance into its freshly derived owner's inventory. Requires authentication, qualified definitions and fresh capacity proof. No names, hashes, stacks, quantity or destination. One action, bounded observation; only Verified succeeds. Never blindly retry unconfirmed outcomes. Observations are not causal or atomic guarantees.", JsonObject::new())
+        .with_input_schema::<PullItemArgs>()
+        .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
+}
+
 pub const EQUIP_ITEM_TOOL: &str = "equip_item";
 
 /// Both selectors are mandatory. An invocation authorizes exactly one intent.
@@ -194,6 +266,30 @@ impl EquipItemArgs {
 pub fn equip_item_tool() -> Tool {
     Tool::new(EQUIP_ITEM_TOOL, "Equip one explicitly selected item on one explicitly selected character, automatically transferring if necessary. One call authorizes fresh preflight, ordered mutation, mandatory refresh and equipped-state verification. Ambiguity refuses; partial progress is not rolled back; never blindly retry uncertain outcomes. Character must be in orbit, a social space, or offline.", JsonObject::new())
         .with_input_schema::<EquipItemArgs>()
+}
+
+pub const SET_LOCK_STATE_TOOL: &str = "set_lock_state";
+
+/// One explicit intent to set a concrete owned item's lock state.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetLockStateArgs {
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub item: String,
+    pub locked: bool,
+}
+impl SetLockStateArgs {
+    pub fn validate(&self) -> Result<(), McpError> {
+        destiny_app::ItemSelector::semantic(&self.item).map_err(McpError::from)?;
+        if self.item.trim().is_empty() || self.item.chars().any(char::is_control) {
+            return Err(McpError::new(ErrorCategory::ProviderValidation));
+        }
+        Ok(())
+    }
+}
+pub fn set_lock_state_tool() -> Tool {
+    Tool::new(SET_LOCK_STATE_TOOL, "Set one explicitly selected owned item's lock state (locked=true locks, false unlocks). One call is explicit intent for fresh preflight, at most one dispatch, mandatory refresh and lock-state verification; already satisfied is a verified no-op. Ambiguity refuses. Never blindly retry uncertain or applied-pending-refresh outcomes; sync later to confirm. Vault items use one owned character for the provider call.", JsonObject::new())
+        .with_input_schema::<SetLockStateArgs>()
 }
 
 /// `list_characters` accepts no arguments.
@@ -588,6 +684,68 @@ pub struct InspectItemArgs {
     pub instance_id: String,
 }
 
+/// Optional Postmaster selector; omitted or null returns all owned characters.
+#[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetPostmasterArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub character: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename = "postmaster")]
+pub struct GetPostmasterOutput {
+    pub metadata: PostmasterMetadataView,
+    pub profile_currencies_coverage: PostmasterCurrencyCoverageView,
+    pub characters: Vec<PostmasterCharacterView>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostmasterCurrencyCoverageView {
+    NotObserved,
+    Unavailable,
+    Available,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PostmasterMetadataView {
+    pub checked_at: u64,
+    pub freshness: String,
+    pub revision: u64,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PostmasterCharacterView {
+    pub character_id: String,
+    pub class: Option<String>,
+    pub instances: Vec<PostmasterInstanceView>,
+    pub stacks: Vec<PostmasterStackView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PostmasterInstanceView {
+    pub instance_id: String,
+    pub item_hash: i64,
+    pub name: Option<String>,
+    pub quantity: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct PostmasterStackView {
+    pub item_hash: i64,
+    pub name: Option<String>,
+    pub bucket_hash: i64,
+    pub quantity: i32,
+}
+
+impl GetPostmasterOutput {
+    pub fn into_call_tool_result(self) -> CallToolResult {
+        structured_result(self)
+    }
+}
+
 /// Optional character selector; omitted returns all characters.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -921,6 +1079,7 @@ pub struct PerkView {
 pub enum LocationView {
     Vault,
     Character { character_id: String },
+    Postmaster { character_id: String },
     Other,
 }
 
@@ -1381,12 +1540,28 @@ mod tests {
     }
 
     #[test]
+    fn postmaster_is_discoverable_with_strict_optional_selector() {
+        let tool = tool_specs()
+            .into_iter()
+            .find(|tool| tool.name == "get_postmaster")
+            .expect("Postmaster read must be discoverable");
+        let schema = tool.schema_as_json_value();
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(
+            schema["properties"]["character"]
+                .to_string()
+                .contains("512")
+        );
+    }
+
+    #[test]
     fn tool_specs_expose_semantic_reads_in_stable_order() {
         let tools = tool_specs();
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
         assert_eq!(
             names,
             [
+                "get_postmaster",
                 LIST_CHARACTERS_TOOL,
                 SEARCH_INVENTORY_TOOL,
                 INSPECT_ITEM_TOOL,

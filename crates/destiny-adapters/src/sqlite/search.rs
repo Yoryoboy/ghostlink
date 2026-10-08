@@ -374,6 +374,9 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
     ) {
         ("vault", None, None) => ItemLocation::Vault,
         ("character", Some(character_id), None) => ItemLocation::Character(character_id.into()),
+        ("postmaster", Some(character_id), None) if equipped == 0 => {
+            ItemLocation::Postmaster(character_id.into())
+        }
         ("other", None, Some(other)) => ItemLocation::Other(other),
         _ => return Err(storage_failure()),
     };
@@ -499,6 +502,10 @@ mod tests {
 
     fn definition(hash: i64, name: &str, item_type: Option<&str>, tags: &[&str]) -> ItemDefinition {
         ItemDefinition {
+            does_postmaster_pull_have_side_effects: None,
+            is_instance_item: None,
+            max_stack_size: None,
+            stack_unique_label: None,
             hash: ItemHash::new(hash),
             bucket_hash: Some(BucketHash::new(10_000 + hash)),
             name: name.to_owned(),
@@ -554,6 +561,8 @@ mod tests {
 
     fn snapshot(items: Vec<ItemInstance>) -> InventorySnapshotInput {
         InventorySnapshotInput {
+            profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
+            stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_id: MembershipId::new("membership"),
             membership_type: MembershipType::new(3),

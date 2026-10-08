@@ -104,6 +104,10 @@ fn storage_error() -> AppError {
 
 fn definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
     ItemDefinition {
+        does_postmaster_pull_have_side_effects: None,
+        is_instance_item: None,
+        max_stack_size: None,
+        stack_unique_label: None,
         hash: ItemHash::new(hash),
         bucket_hash: None,
         name: name.to_owned(),
@@ -141,6 +145,8 @@ fn profile(
     checked_at: u64,
 ) -> InventorySnapshotInput {
     InventorySnapshotInput {
+        profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
+        stacks: Vec::new(),
         plug_set_entries: Vec::new(),
         membership_id: MembershipId::new(membership_id),
         membership_type: MembershipType::new(3),

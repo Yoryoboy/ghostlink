@@ -253,6 +253,7 @@ for installation details, manual fallback, and security limits.
 
 ```sh
 ghostlink list-characters
+ghostlink postmaster --character hunter --json
 ghostlink search-inventory --text gjallar --limit 5
 ghostlink inspect-item 700000000000000001
 ghostlink subclass --character hunter
@@ -264,6 +265,40 @@ Add the global `--json` flag to select machine output:
 ```sh
 ghostlink --json search-inventory --text gjallar --item-hash 1001
 ```
+
+### Postmaster observations
+
+`ghostlink postmaster [--character ID_OR_CLASS] [--json]` lists committed
+Postmaster holdings. Omit the selector for all owned characters, including empty
+groups; use an exact ID or a unique case-insensitive class such as `hunter`.
+Empty/control-bearing selectors, selectors longer than 256 characters, duplicate
+selectors, positional extras and mutation flags are rejected before dispatch.
+
+```sh
+ghostlink postmaster
+ghostlink postmaster --character hunter --json
+ghostlink --json postmaster --character 700000000000000001
+```
+
+This read uses ordinary profile freshness synchronization, not an unconditional
+live lookup. Refresh failures refuse stale fallback. Text separates instances
+and stacks, shows quantities and actual stack runtime buckets, and includes a
+revision/time/freshness footer. Missing names fall back to hashes. Instance runtime
+buckets are not persisted and are never inferred from definition buckets.
+
+JSON is one stdout object with `kind: "postmaster"`, `metadata` (the existing
+`checked_at`, `freshness`, `revision`, `source` fields),
+`profile_currencies_coverage` and `characters`. Each character has `character_id`
+(string), nullable `class`, and separate `instances` and `stacks` arrays. Instances
+have string `instance_id`, numeric `item_hash`/`quantity` and nullable `name`;
+stacks have numeric `item_hash`/`bucket_hash`/`quantity` and nullable `name`.
+Duplicate rows remain separate, without totals or synthetic IDs. Errors retain
+the sanitized stderr/exit contract and leave stdout empty.
+
+Currency coverage is `not_observed`, `unavailable` or `available` and qualifies
+only profile currency component 103. Even `available` currencies or an empty
+group do not prove Postmaster completeness or live holdings. Anonymous stack
+rows have no stable pull selector. This read command never pulls an item.
 
 ### Explicit profile sync
 
@@ -719,6 +754,161 @@ and rejected with `--json`):
   provider or repository request. Exit codes follow the stable matrix in
   `odd/tasks/destiny-cli-read-journey.md`.
 
+
+## Pull one Postmaster equipment instance
+
+```sh
+ghostlink pull 700000000000000001 --json
+```
+
+`ITEM` must be a genuine canonical positive int64 instance ID (1 through
+9223372036854775807), obtained from the Postmaster `instances` array. Names,
+hashes, leading zeros, anonymous stacks, quantity, destination and owner arguments
+are not accepted. Requires login with `MoveEquipDestinyItems` authorization and
+qualified stored Manifest definitions; run `ghostlink sync-manifest` explicitly
+if missing. Membership comes from authentication, and the destination is the
+freshly observed original Postmaster owner's character inventory.
+
+One invocation forces fresh planning and preflight, checks explicit non-destructive
+instanced-equipment metadata and target-bucket capacity, then dispatches at most
+one action. The pinned audited capacity policy must match the freshly fetched
+public Manifest index version and bucket artifact; changed or missing evidence
+refuses the proof. No freeing space, redemption, redispatch, reminting or rollback.
+After a received receipt, at most three forced observations run, with two seconds
+between attempts, stopping at the first valid arrival or integrity/time failure.
+
+JSON reuses the shared `kind: "instanced_pull"` projection: independent
+`disposition`, `receipt`, `dispatch`, `failure`, `plan_id` and ordered
+`observations`. Each observation retains classification AND failure, publication
+metadata and selected target/bucket evidence. A timestamp failure may coexist
+with `verified_arrival` without proving success. Confirmed refusal remains
+`refused` even with arrival. Typed pre-action failures have null receipt and no
+observations; no acknowledgement alone is success.
+
+| Disposition | Exit | Meaning |
+| --- | ---: | --- |
+| `verified` | 0 | Exact instance observed at the owner's character in the normal destination bucket. |
+| `not_yet_observed` | 43 | Acknowledged but arrival not yet observed; not proof of application. |
+| `uncertain` | 42 | Unverified or invalid observation evidence. |
+| `refused` | varies | Eligibility/preflight refusal or received refusal; 40 by default, auth 11, transient 21, typed infrastructure category exits. |
+
+Only verified output goes to stdout; every other structured outcome goes to
+stderr with a nonzero exit. Never blindly retry: sync, inspect the instance and
+reassess explicit intent first. One invocation owns local inventory publication
+and definition use throughout the pipeline, not game or other-process activity.
+Observed arrival is neither causal proof nor an atomic guarantee. Anonymous
+stacks use the separate bounded `pull-stack` command below; this is not full
+Postmaster support or a live-readiness claim.
+
+## Pull a non-instanced Postmaster stack
+
+```sh
+ghostlink pull-stack 123456789 --amount 3 --character 700000000000000001 --json
+```
+
+`ITEM_HASH` is canonical uint32 decimal (0–4294967295), `--amount` is
+canonical positive int32 decimal (1–2147483647), and `--character` is the
+canonical positive int64 decimal Postmaster owner ID (1–9223372036854775807).
+All three are required. No signs, leading zeros, whitespace, names, class labels,
+instance IDs, membership overrides or alternative destinations. Invalid input
+fails before authentication, storage or service access.
+
+Requires login with `MoveEquipDestinyItems` and qualified stored Manifest
+metadata. One invocation-owned SQLite connection serializes local inventory
+publication and definition use, with authenticated membership, fresh planning
+and preflight, and fresh public Manifest index capacity evidence. Only pinned
+audited account-wide Consumables and Modifications buckets are supported.
+Unknown metadata, side effects, instanced items, capacity or policy drift refuse.
+Duplicate anonymous rows remain significant: amount must not exceed the smallest
+matching owner Postmaster stack, not their sum. The owner selects the source;
+the destination is the qualified normal account-wide ProfileInventory bucket,
+not an arbitrary character or Vault.
+
+One consumed plan dispatches at most once; at most three forced observations
+follow a received receipt, separated by two seconds. No automatic definition
+download, recompose, freeing space, reminting, redispatch or rollback.
+JSON uses shared `kind: "stack_pull"`, independent `disposition`, `receipt`,
+`dispatch`, `failure`, `plan_id` and ordered `observations`. Text uses the shared
+ordered sanitized renderer. Quantity evidence includes pre/post destination,
+whole-profile and owner Postmaster totals; null means unknown, never zero.
+Only `verified` exits 0 on stdout. Lag/uncertainty exits 42 on stderr; the current
+stack service does not emit `not_yet_observed` (reserved mapping 43). Received
+refusal stays refused even with arrival: auth 11, transient 21, otherwise 40.
+Missing definition is 33, ambiguous definition 31, preflight drift/expiry 30;
+other infrastructure failures use existing category exits. No new exit code.
+
+Never blindly retry. Sync and re-read `postmaster` later, then reassess explicit
+hash/amount/owner intent. Observed quantities are not causal or atomic proof;
+local serialization does not cover the game or other processes. Offline tests
+are not live-account or full Postmaster readiness claims.
+
+## Move one item
+
+```sh
+ghostlink move "Ace of Spades" --character hunter
+ghostlink move 123456789 --vault --json
+```
+
+Exactly one destination is required: `--character <id|class>` or `--vault`;
+using both or neither exits 2. Exact instance and character IDs win over names
+and class labels. Otherwise the item selector and character class must each
+resolve uniquely; no defaults or guessed matches are used. Requires login and
+loaded Manifest definitions; if missing, run `ghostlink sync-manifest` explicitly.
+
+The CLI uses the same `plan_move` / `execute_move_verified` pipeline as MCP
+`move_item`. It transfers character-to-character via the Vault, without
+equipping, freeing space, or changing plugs. An item already at the destination
+when planning is **refused**: `already in <destination>`, exit **40**
+(`unsupported_operation`), not a verified no-op. If the item reaches the
+requested destination between planning and mandatory fresh preflight, the
+shared executor instead reports `verified_noop` (exit 0), with no transfer.
+Other changed preflight locations are refused before dispatch (exit 30).
+Equipped-item and capacity restrictions can be provider refusals after dispatch;
+the move planner does not apply equip's class/exotic policy.
+
+One invocation explicitly authorizes one item and destination. There are no
+retries or rollback. After any attempted step, the shared pipeline refreshes
+and verifies the destination. Never blindly retry an uncertain result: run
+`ghostlink sync`, inspect the item, and reassess the user's intent first.
+
+Move has its own transport-neutral text/JSON contract: `status`, `item`,
+`destination`, ordered `steps`, `steps_completed`, `steps_uncompleted`,
+`verification`, `reason`, `profile_refresh`, and `observed`. Completed counts
+are provider-confirmed steps, not inferred completions from verification;
+uncertain steps remain uncertain even if refreshed state verifies success.
+A failed refresh omits the observation rather than presenting stale state as fresh.
+Success/no-op goes to stdout (0); other results go to stderr. Incomplete execution
+exits 41, failed verification 42, and applied-but-pending-provider-refresh 43.
+For exit 43, do not retry; run `ghostlink sync` later to confirm. Missing item
+exits 32, missing character 2, ambiguity 31; other refusals follow the existing
+category exit mapping. Offline tests establish the pipeline, not live account
+success.
+
+## Lock or unlock one item
+
+```sh
+ghostlink lock "Ace of Spades" --json
+ghostlink unlock 700000000000000001 --json
+```
+
+Each invocation explicitly authorizes the requested lock state of one owned
+instance. Item selectors follow move/equip: concrete IDs win, numeric misses
+remain exact IDs, and semantic names refuse ambiguity. No character or destination
+flag is accepted. Vault items use one owned character for the provider call
+(the first in committed projection order); live Vault routing validation remains
+pending. Locking does not apply equip class, exotic, or equipped-state policy.
+
+The shared service forces fresh preflight, returns a verified no-op when already
+satisfied, otherwise dispatches once, refreshes, and verifies `instance.locked`.
+Never blindly retry. Applied-pending-refresh means check later with `ghostlink sync`
+and `ghostlink inspect-item`, not repeat the action.
+
+JSON includes `status`, `item` (name and instance ID), requested `locked`,
+`attempt` (null when not dispatched), sanitized `reason`, `profile_refresh`, and
+`observed` (lock state, null when unavailable). Exit 0 means verified success or
+no-op; 41 incomplete, 42 verification failed, 43 applied-pending-refresh.
+Refusals use category exits (missing item 32, ambiguity 31, stale state 30).
+Success goes to stdout; refusals and unverified results go to stderr.
 
 ## Equip one item
 

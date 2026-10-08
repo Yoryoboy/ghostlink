@@ -91,6 +91,11 @@ pub struct ListCharactersRequest;
 /// without touching `rmcp`. Requests are already validated and bounded; outputs
 /// are the bounded MCP projections defined in [`crate::schema`].
 pub trait InventoryReadService {
+    /// Reads synchronized committed Postmaster observations without authorizing actions.
+    fn get_postmaster(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetPostmasterOutput, McpError>;
     /// Reads saved in-game loadouts when composed with a loadout service.
     fn get_loadouts(
         &mut self,
@@ -171,6 +176,12 @@ impl<A, I, C> ArtifactReadService<A, I, C> {
 impl<A: destiny_app::ArtifactOperations, I: InventoryReadService, C: Clock> InventoryReadService
     for ArtifactReadService<A, I, C>
 {
+    fn get_postmaster(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+        self.inventory.get_postmaster(character)
+    }
     fn get_subclass_options(
         &mut self,
         character: Option<&CharacterId>,
@@ -249,6 +260,12 @@ impl<L, I, C> LoadoutsReadService<L, I, C> {
 impl<L: destiny_app::LoadoutOperations, I: InventoryReadService, C: Clock> InventoryReadService
     for LoadoutsReadService<L, I, C>
 {
+    fn get_postmaster(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+        self.inventory.get_postmaster(character)
+    }
     fn get_subclass_options(
         &mut self,
         character: Option<&CharacterId>,
@@ -347,6 +364,12 @@ where
     R: destiny_app::WorldDefinitionRepository,
     I: InventoryReadService,
 {
+    fn get_postmaster(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+        self.inventory.get_postmaster(character)
+    }
     fn get_subclass_options(
         &mut self,
         character: Option<&CharacterId>,
@@ -429,6 +452,12 @@ where
         + destiny_app::WorldDefinitionRepository,
     C: Clock,
 {
+    fn get_postmaster(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+        self.inventory.get_postmaster(character)
+    }
     fn weekly(
         &mut self,
         args: &crate::schema::WeeklyArgs,
@@ -700,6 +729,17 @@ where
         + destiny_app::WorldDefinitionRepository,
     C: Clock,
 {
+    fn get_postmaster(
+        &mut self,
+        character: Option<&CharacterId>,
+    ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+        let now = self.clock.now().map_err(McpError::from)?;
+        let result = self
+            .queries
+            .postmaster(character, self.policy, now)
+            .map_err(McpError::from)?;
+        Ok(postmaster_output(&result))
+    }
     fn get_subclass_options(
         &mut self,
         character: Option<&CharacterId>,
@@ -792,6 +832,24 @@ pub struct MoveItemRequest {
 /// bounded MCP projections defined in [`crate::schema`]; a failure is a stable
 /// sanitized [`McpError`].
 pub trait MutationToolService {
+    fn pull_stack(
+        &mut self,
+        _request: &crate::schema::PullStackArgs,
+    ) -> Result<destiny_output::stack_pull::StackPullOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
+    fn pull_item(
+        &mut self,
+        _request: &crate::schema::PullItemArgs,
+    ) -> Result<destiny_output::instanced_pull::InstancedPullOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
+    fn set_lock_state(
+        &mut self,
+        _request: &crate::schema::SetLockStateArgs,
+    ) -> Result<destiny_output::lock::LockOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
     fn equip_item(
         &mut self,
         _request: &crate::schema::EquipItemArgs,
@@ -945,6 +1003,340 @@ pub struct EquipMutationService<G, R, P, C, T, E> {
     inner: ComposedMutationService<G, R, P, C, T>,
     equip: E,
 }
+impl<G, R, P, C, T, E> EquipMutationService<G, R, P, C, T, E> {
+    /// All three mutations share one planner, repository and server operation guard.
+    pub fn with_lock<L>(self, lock: L) -> LockMutationService<G, R, P, C, T, E, L> {
+        LockMutationService { inner: self, lock }
+    }
+}
+
+/// Lock composition over the same service and publication boundary as equip.
+pub struct LockMutationService<G, R, P, C, T, E, L> {
+    inner: EquipMutationService<G, R, P, C, T, E>,
+    lock: L,
+}
+impl<G, R, P, C, T, E, L> LockMutationService<G, R, P, C, T, E, L> {
+    /// Adds pull without changing existing constructor contracts or publication locks.
+    pub fn with_pull<U>(self, pull: U) -> PullMutationService<Self, U> {
+        PullMutationService { inner: self, pull }
+    }
+}
+
+/// An additive action decorator; all other mutations retain their existing behavior.
+pub struct PullMutationService<I, U> {
+    inner: I,
+    pull: U,
+}
+impl<I, U> PullMutationService<I, U> {
+    pub fn with_stack<S>(self, stack: S) -> StackMutationService<Self, S> {
+        StackMutationService { inner: self, stack }
+    }
+}
+
+/// Additive stack action decorator over the existing mutation composition.
+pub struct StackMutationService<I, S> {
+    inner: I,
+    stack: S,
+}
+impl<I: MutationToolService, S: MutationToolService> MutationToolService
+    for StackMutationService<I, S>
+{
+    fn pull_stack(
+        &mut self,
+        args: &crate::schema::PullStackArgs,
+    ) -> Result<destiny_output::stack_pull::StackPullOutput, McpError> {
+        self.stack.pull_stack(args)
+    }
+    fn pull_item(
+        &mut self,
+        args: &crate::schema::PullItemArgs,
+    ) -> Result<destiny_output::instanced_pull::InstancedPullOutput, McpError> {
+        self.inner.pull_item(args)
+    }
+    fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+        self.inner.move_item(request)
+    }
+    fn equip_item(
+        &mut self,
+        args: &crate::schema::EquipItemArgs,
+    ) -> Result<destiny_output::equip::EquipOutput, McpError> {
+        self.inner.equip_item(args)
+    }
+    fn set_lock_state(
+        &mut self,
+        args: &crate::schema::SetLockStateArgs,
+    ) -> Result<destiny_output::lock::LockOutput, McpError> {
+        self.inner.set_lock_state(args)
+    }
+}
+
+/// Shared CLI stack pipeline under the server's existing operation guard.
+pub struct StackPullToolService<G, R, D, M, C, P, T, W> {
+    membership: G,
+    service: destiny_app::StackPullService<G, R, D, M, C, P>,
+    gateway: T,
+    delay: W,
+    freshness: FreshnessPolicy,
+}
+impl<G, R, D, M, C, P, T, W> StackPullToolService<G, R, D, M, C, P, T, W> {
+    pub fn new(
+        membership: G,
+        service: destiny_app::StackPullService<G, R, D, M, C, P>,
+        gateway: T,
+        delay: W,
+        freshness: FreshnessPolicy,
+    ) -> Self {
+        Self {
+            membership,
+            service,
+            gateway,
+            delay,
+            freshness,
+        }
+    }
+}
+impl<G, R, D, M, C, P, T, W> MutationToolService for StackPullToolService<G, R, D, M, C, P, T, W>
+where
+    G: ProfileGateway,
+    R: InventoryRepository,
+    D: DefinitionRepository,
+    M: destiny_app::ManifestGateway,
+    C: Clock,
+    P: PlanIdGenerator,
+    T: destiny_app::StackPullGateway,
+    W: destiny_app::RetryDelay,
+{
+    fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
+    fn pull_stack(
+        &mut self,
+        args: &crate::schema::PullStackArgs,
+    ) -> Result<destiny_output::stack_pull::StackPullOutput, McpError> {
+        use destiny_output::stack_pull::StackPullOutput;
+        args.validate()?;
+        let invalid = |_| McpError::new(ErrorCategory::ProviderValidation);
+        let item_hash = args.item_hash.parse::<u32>().map_err(invalid)?;
+        let amount = args.amount.parse::<i32>().map_err(invalid)?;
+        let membership = self
+            .membership
+            .resolve_membership()
+            .map_err(McpError::from)?;
+        let plan = match self.service.plan(
+            &destiny_app::StackPullPlanRequest {
+                membership,
+                owner: CharacterId::new(&args.character),
+                item_hash: ItemHash::new(i64::from(item_hash)),
+                amount: i64::from(amount),
+            },
+            PlanLifetime::new(60).expect("fixed positive plan lifetime"),
+            self.freshness,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => return Ok(StackPullOutput::planning_failed(&error)),
+        };
+        Ok(
+            match self.service.execute_verified(
+                plan,
+                &mut self.gateway,
+                &mut self.delay,
+                self.freshness,
+            ) {
+                Ok(outcome) => StackPullOutput::from_outcome(&outcome),
+                Err(failure) => StackPullOutput::execution_failed(&failure),
+            },
+        )
+    }
+}
+impl<I: MutationToolService, U: MutationToolService> MutationToolService
+    for PullMutationService<I, U>
+{
+    fn pull_item(
+        &mut self,
+        args: &crate::schema::PullItemArgs,
+    ) -> Result<destiny_output::instanced_pull::InstancedPullOutput, McpError> {
+        self.pull.pull_item(args)
+    }
+    fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+        self.inner.move_item(request)
+    }
+    fn equip_item(
+        &mut self,
+        args: &crate::schema::EquipItemArgs,
+    ) -> Result<destiny_output::equip::EquipOutput, McpError> {
+        self.inner.equip_item(args)
+    }
+    fn set_lock_state(
+        &mut self,
+        args: &crate::schema::SetLockStateArgs,
+    ) -> Result<destiny_output::lock::LockOutput, McpError> {
+        self.inner.set_lock_state(args)
+    }
+}
+
+/// Owns the authenticated membership resolver and shared verified-pull pipeline.
+/// The server's existing outer guard must span this entire synchronous invocation.
+pub struct InstancedPullToolService<G, R, D, M, C, P, T, W> {
+    membership: G,
+    service: destiny_app::InstancedPullService<G, R, D, M, C, P>,
+    gateway: T,
+    delay: W,
+    freshness: FreshnessPolicy,
+}
+impl<G, R, D, M, C, P, T, W> InstancedPullToolService<G, R, D, M, C, P, T, W> {
+    pub fn new(
+        membership: G,
+        service: destiny_app::InstancedPullService<G, R, D, M, C, P>,
+        gateway: T,
+        delay: W,
+        freshness: FreshnessPolicy,
+    ) -> Self {
+        Self {
+            membership,
+            service,
+            gateway,
+            delay,
+            freshness,
+        }
+    }
+}
+impl<G, R, D, M, C, P, T, W> MutationToolService
+    for InstancedPullToolService<G, R, D, M, C, P, T, W>
+where
+    G: ProfileGateway,
+    R: InventoryRepository,
+    D: DefinitionRepository,
+    M: destiny_app::ManifestGateway,
+    C: Clock,
+    P: PlanIdGenerator,
+    T: destiny_app::InstancedPullGateway,
+    W: destiny_app::RetryDelay,
+{
+    fn move_item(&mut self, _request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
+    fn pull_item(
+        &mut self,
+        args: &crate::schema::PullItemArgs,
+    ) -> Result<destiny_output::instanced_pull::InstancedPullOutput, McpError> {
+        use destiny_output::instanced_pull::InstancedPullOutput;
+        let item = args.instance_id()?;
+        // Invalid input cannot resolve credentials or perform any service work.
+        let membership = self
+            .membership
+            .resolve_membership()
+            .map_err(McpError::from)?;
+        let plan = match self.service.plan(
+            &destiny_app::InstancedPullPlanRequest { membership, item },
+            PlanLifetime::MAX,
+            self.freshness,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => return Ok(InstancedPullOutput::planning_failed(&error)),
+        };
+        Ok(
+            match self.service.execute_verified(
+                plan,
+                &mut self.gateway,
+                &mut self.delay,
+                self.freshness,
+            ) {
+                Ok(outcome) => InstancedPullOutput::from_outcome(&outcome),
+                Err(failure) => InstancedPullOutput::execution_failed(&failure),
+            },
+        )
+    }
+}
+
+impl<G, R, P, C, T, E, L> MutationToolService for LockMutationService<G, R, P, C, T, E, L>
+where
+    G: ProfileGateway,
+    R: InventoryRepository + SearchRepository + DefinitionRepository,
+    P: PlanIdGenerator,
+    C: Clock,
+    T: TransferGateway,
+    E: destiny_app::EquipGateway,
+    L: destiny_app::LockGateway,
+{
+    fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+        self.inner.move_item(request)
+    }
+    fn equip_item(
+        &mut self,
+        args: &crate::schema::EquipItemArgs,
+    ) -> Result<destiny_output::equip::EquipOutput, McpError> {
+        self.inner.equip_item(args)
+    }
+    fn set_lock_state(
+        &mut self,
+        args: &crate::schema::SetLockStateArgs,
+    ) -> Result<destiny_output::lock::LockOutput, McpError> {
+        use destiny_output::lock::{LockItem, LockOutput};
+        args.validate()?;
+        let service = &mut self.inner.inner;
+        let now = service.clock.now().map_err(McpError::from)?;
+        let membership = service.committed_membership(now)?;
+        let mutations = &mut service.mutations;
+        let item = match mutations
+            .repository()
+            .lookup_instance(&ItemInstanceId::new(&args.item))
+            .map_err(McpError::from)?
+        {
+            Resolution::Unique(_) | Resolution::Ambiguous(_) => {
+                ItemSelector::instance(ItemInstanceId::new(&args.item))
+            }
+            Resolution::Missing if args.item.bytes().all(|b| b.is_ascii_digit()) => {
+                ItemSelector::instance(ItemInstanceId::new(&args.item))
+            }
+            Resolution::Missing => ItemSelector::semantic(&args.item).map_err(McpError::from)?,
+        };
+        let request = destiny_app::LockRequest {
+            membership,
+            item,
+            locked: args.locked,
+            intent: MoveIntentAuthorization::Explicit,
+        };
+        let plan = match mutations.plan_lock(&request, service.lifetime, service.policy, now) {
+            Ok(plan) => plan,
+            Err(error) => return Ok(LockOutput::refused(error, args.locked)),
+        };
+        let item_view = match mutations
+            .repository()
+            .lookup_instance(plan.item())
+            .map_err(McpError::from)?
+        {
+            Resolution::Unique(instance) => match mutations
+                .repository()
+                .lookup_definition(instance.item_hash)
+                .map_err(McpError::from)?
+            {
+                Resolution::Unique(definition) => Some(LockItem {
+                    name: definition.name,
+                    instance_id: instance.instance_id.as_str().into(),
+                }),
+                _ => None,
+            },
+            _ => None,
+        };
+        let post = service.clock.now().map_err(McpError::from)?;
+        let mut output = match mutations.execute_lock_verified(
+            &mut self.lock,
+            &request,
+            &plan,
+            service.policy,
+            now,
+            post,
+        ) {
+            Ok(outcome) => LockOutput::from_outcome(&outcome, args.locked),
+            Err(failure) => {
+                LockOutput::refused(failure.error(), args.locked).with_evidence(failure.evidence())
+            }
+        };
+        output.item = item_view;
+        Ok(output)
+    }
+}
+
 impl<G, R, P, C, T, E> MutationToolService for EquipMutationService<G, R, P, C, T, E>
 where
     G: ProfileGateway,
@@ -1539,6 +1931,71 @@ pub fn subclass_options_output(
     }
 }
 
+impl crate::schema::GetPostmasterArgs {
+    pub fn into_request(self) -> Result<Option<CharacterId>, McpError> {
+        if let Some(character) = &self.character {
+            validate_identifier(character, "character")?;
+        }
+        Ok(self.character.map(CharacterId::new))
+    }
+}
+
+/// Preserve every committed row and optional name, with no actionable stack identity.
+pub fn postmaster_output(
+    result: &destiny_app::PostmasterResult,
+) -> crate::schema::GetPostmasterOutput {
+    use crate::schema::{
+        GetPostmasterOutput, PostmasterCharacterView, PostmasterInstanceView, PostmasterStackView,
+    };
+    GetPostmasterOutput {
+        metadata: crate::schema::PostmasterMetadataView {
+            checked_at: result.metadata.sync.checked_at.seconds(),
+            freshness: freshness_code(result.metadata.freshness).into(),
+            revision: result.metadata.sync.revision.value(),
+            source: source_code(result.metadata.sync.source).into(),
+        },
+        profile_currencies_coverage: match result.profile_currencies_coverage {
+            destiny_app::ProfileCurrenciesCoverage::NotObserved => {
+                crate::schema::PostmasterCurrencyCoverageView::NotObserved
+            }
+            destiny_app::ProfileCurrenciesCoverage::Unavailable => {
+                crate::schema::PostmasterCurrencyCoverageView::Unavailable
+            }
+            destiny_app::ProfileCurrenciesCoverage::Available => {
+                crate::schema::PostmasterCurrencyCoverageView::Available
+            }
+        },
+        characters: result
+            .characters
+            .iter()
+            .map(|character| PostmasterCharacterView {
+                character_id: character.character_id.as_str().to_owned(),
+                class: character.class.clone(),
+                instances: character
+                    .instances
+                    .iter()
+                    .map(|item| PostmasterInstanceView {
+                        instance_id: item.instance_id.as_str().to_owned(),
+                        item_hash: item.item_hash.value(),
+                        name: item.name.clone(),
+                        quantity: item.quantity,
+                    })
+                    .collect(),
+                stacks: character
+                    .stacks
+                    .iter()
+                    .map(|item| PostmasterStackView {
+                        item_hash: item.item_hash.value(),
+                        name: item.name.clone(),
+                        bucket_hash: item.bucket_hash.value(),
+                        quantity: item.quantity,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
 impl crate::schema::GetSubclassArgs {
     /// Bounds the optional selector before invoking the shared query.
     pub fn into_request(self) -> Result<Option<CharacterId>, McpError> {
@@ -2068,10 +2525,23 @@ fn instance_view(instance: &ItemInstance) -> InstanceView {
     }
 }
 
+#[cfg(test)]
+#[test]
+fn postmaster_location_projection_is_distinct_and_owned() {
+    let location = ItemLocation::Postmaster("123".into());
+    assert_eq!(
+        serde_json::to_value(location_view(&location)).unwrap(),
+        serde_json::json!({"kind": "postmaster", "character_id": "123"})
+    );
+}
+
 fn location_view(location: &ItemLocation) -> LocationView {
     match location {
         ItemLocation::Vault => LocationView::Vault,
         ItemLocation::Character(character_id) => LocationView::Character {
+            character_id: character_id.as_str().to_owned(),
+        },
+        ItemLocation::Postmaster(character_id) => LocationView::Postmaster {
             character_id: character_id.as_str().to_owned(),
         },
         // The opaque provider value is deliberately dropped so no provider text
@@ -2390,6 +2860,10 @@ mod tests {
         tags: Vec<&str>,
     ) -> ItemDefinition {
         ItemDefinition {
+            does_postmaster_pull_have_side_effects: None,
+            is_instance_item: None,
+            max_stack_size: None,
+            stack_unique_label: None,
             hash: ItemHash::new(hash),
             bucket_hash: None,
             name: name.into(),
@@ -2463,6 +2937,8 @@ mod tests {
     ) -> InventorySnapshotInput {
         let membership = membership();
         InventorySnapshotInput {
+            profile_currencies_coverage: Default::default(),
+            stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_id: membership.membership_id().clone(),
             membership_type: membership.membership_type(),

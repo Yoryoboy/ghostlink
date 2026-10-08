@@ -56,6 +56,302 @@ const MOVE_ITEM_TOOL: &str = "move_item";
 mod equip_support;
 
 #[tokio::test]
+async fn stack_stdio_verified_refused_and_invalid() {
+    for (scenario, disposition) in [("stack-success", "verified"), ("stack-refused", "refused")] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let id = session.next_id();
+        let discovery = session.request(id, "tools/list", None).await;
+        let tools = discovery["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 15);
+        let tool = tools.iter().find(|t| t["name"] == "pull_stack").unwrap();
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        assert_eq!(tool["annotations"]["readOnlyHint"], false);
+        assert_eq!(tool["annotations"]["destructiveHint"], true);
+        assert_eq!(tool["annotations"]["idempotentHint"], false);
+        assert_eq!(tool["annotations"]["openWorldHint"], true);
+        let response = session
+            .call_tool(
+                "pull_stack",
+                json!({"item_hash":7,"amount":"3","character":"2"}),
+            )
+            .await;
+        assert_eq!(response["error"]["code"], -32602);
+        for (hash, amount, character) in [("01", "3", "2"), ("7", "0", "2"), ("7", "3", "0")] {
+            let response = session
+                .call_tool(
+                    "pull_stack",
+                    json!({"item_hash":hash,"amount":amount,"character":character}),
+                )
+                .await;
+            assert_eq!(response["result"]["isError"], true);
+            assert_eq!(structured(&response)["code"], "provider_validation");
+        }
+        let response = session
+            .call_tool(
+                "pull_stack",
+                json!({"item_hash":"7","amount":"3","character":"2"}),
+            )
+            .await;
+        let output = structured(&response);
+        assert_eq!(output["kind"], "stack_pull");
+        assert_eq!(output["disposition"], disposition, "{response}");
+        assert_eq!(response["result"]["isError"], disposition != "verified");
+        assert_eq!(
+            output["observations"][0]["classification"],
+            "verified_arrival"
+        );
+        assert_eq!(output["observations"].as_array().unwrap().len(), 1);
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
+    for (scenario, disposition, receipt) in [
+        ("pull-success", "verified", "acknowledged"),
+        ("pull-pending", "not_yet_observed", "acknowledged"),
+        ("pull-uncertain", "uncertain", "uncertain"),
+        ("pull-refused-arrival", "refused", "rejected"),
+    ] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let id = session.next_id();
+        let discovery = session.request(id, "tools/list", None).await;
+        let tools = discovery["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 15);
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == "pull_item")
+            .unwrap();
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        assert_eq!(tool["annotations"]["readOnlyHint"], false);
+        assert_eq!(tool["annotations"]["idempotentHint"], false);
+        for args in [
+            json!({}),
+            json!({"item":123}),
+            json!({"item":"123","quantity":1}),
+        ] {
+            let response = session.call_tool("pull_item", args).await;
+            assert_eq!(response["error"]["code"], -32602);
+        }
+        for item in ["0", "01", "+123", "123\n", "Ace", "9223372036854775808"] {
+            let response = session.call_tool("pull_item", json!({"item":item})).await;
+            assert_eq!(response["result"]["isError"], true);
+            assert_eq!(structured(&response)["code"], "provider_validation");
+        }
+        let response = session.call_tool("pull_item", json!({"item":"123"})).await;
+        let output = structured(&response);
+        assert_eq!(output["kind"], "instanced_pull");
+        assert_eq!(output["disposition"], disposition, "{scenario}: {response}");
+        assert_eq!(output["receipt"]["kind"], receipt);
+        assert_eq!(response["result"]["isError"], disposition != "verified");
+        assert_eq!(output["dispatch"]["item"]["instance_id"], "123");
+        assert_eq!(output["dispatch"]["destination"]["character_id"], "2");
+        let observations = output["observations"].as_array().unwrap();
+        let arrived = matches!(scenario, "pull-success" | "pull-refused-arrival");
+        assert_eq!(observations.len(), if arrived { 1 } else { 3 });
+        assert_eq!(
+            observations[0]["classification"],
+            if arrived {
+                "verified_arrival"
+            } else {
+                "still_in_postmaster"
+            }
+        );
+        assert_eq!(
+            observations[0]["target"]["runtime_bucket"],
+            if arrived { 1498876634 } else { 215593132 }
+        );
+        if arrived {
+            let repeated = session.call_tool("pull_item", json!({"item":"123"})).await;
+            assert_eq!(repeated["result"]["isError"], true);
+            assert_eq!(structured(&repeated)["disposition"], "refused");
+            assert!(structured(&repeated)["dispatch"].is_null());
+        }
+        session.shutdown().await;
+    }
+    let mut session = FixtureSession::spawn(Some("pull-gateway-error")).await;
+    let response = session.call_tool("pull_item", json!({"item":"123"})).await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(structured(&response)["failure"]["stage"], "gateway");
+    assert!(structured(&response)["receipt"].is_null());
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn postmaster_stdio_committed_service_journey_and_refusals() {
+    for (scenario, coverage) in [
+        ("postmaster-not-observed", "not_observed"),
+        ("postmaster-unavailable", "unavailable"),
+        ("postmaster-available", "available"),
+    ] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let id = session.next_id();
+        let discovery = session.request(id, "tools/list", None).await;
+        let tool = discovery["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "get_postmaster")
+            .unwrap();
+        assert_eq!(tool["annotations"]["readOnlyHint"], true);
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        let all = session.call_tool("get_postmaster", json!({})).await;
+        assert_eq!(all["result"]["isError"], false);
+        let output = structured(&all);
+        assert_eq!(output["kind"], "postmaster");
+        assert_eq!(output["profile_currencies_coverage"], coverage);
+        assert_eq!(output["metadata"]["checked_at"], 10000);
+        assert_eq!(output["metadata"]["freshness"], "fresh");
+        assert_eq!(output["metadata"]["source"], "profile");
+        assert_eq!(output["characters"].as_array().unwrap().len(), 2);
+        let owner = &output["characters"][0];
+        assert_eq!(owner["character_id"], "warlock");
+        assert_eq!(owner["instances"][0]["instance_id"], "postmaster-gear");
+        assert_eq!(owner["instances"][0]["name"], "Gjallarhorn");
+        assert_eq!(owner["stacks"].as_array().unwrap().len(), 3);
+        assert_eq!(owner["stacks"][0], owner["stacks"][1]);
+        assert_eq!(owner["stacks"][2]["bucket_hash"], 1469714392);
+        assert!(owner["stacks"][2]["name"].is_null());
+        assert!(owner["stacks"][0].get("instance_id").is_none());
+        assert!(owner["instances"][0].get("bucket_hash").is_none());
+        assert_eq!(output["characters"][1]["stacks"], json!([]));
+        for selector in ["warlock", "WaRlOcK"] {
+            let selected = session
+                .call_tool("get_postmaster", json!({"character": selector}))
+                .await;
+            assert_eq!(structured(&selected)["characters"], json!([owner]));
+        }
+        let empty = session
+            .call_tool("get_postmaster", json!({"character": "Titan"}))
+            .await;
+        assert_eq!(structured(&empty)["characters"][0]["instances"], json!([]));
+        let null = session
+            .call_tool("get_postmaster", json!({"character": null}))
+            .await;
+        assert_eq!(structured(&null), output);
+        for invalid in [
+            json!({"quantity":1}),
+            json!({"character":1}),
+            json!({"pull":true}),
+        ] {
+            let rejected = session.call_tool("get_postmaster", invalid).await;
+            assert_eq!(rejected["error"]["code"], -32602);
+        }
+        for selector in ["missing".to_owned(), "".into(), "a".repeat(513)] {
+            let rejected = session
+                .call_tool("get_postmaster", json!({"character":selector}))
+                .await;
+            assert_eq!(rejected["result"]["isError"], true);
+            assert_eq!(structured(&rejected)["code"], "provider_validation");
+        }
+        session.shutdown().await;
+    }
+    let mut session = FixtureSession::spawn(Some("empty-characters")).await;
+    let empty = session.call_tool("get_postmaster", json!({})).await;
+    assert_eq!(structured(&empty)["characters"], json!([]));
+    session.shutdown().await;
+    for (scenario, selector, code) in [
+        (
+            "postmaster-auth-refused",
+            json!({}),
+            "provider_authentication",
+        ),
+        ("postmaster-local-storage", json!({}), "local_storage"),
+        (
+            "postmaster-refresh-refused",
+            json!({}),
+            "provider_unavailable",
+        ),
+        (
+            "ambiguous-character",
+            json!({"character":"Titan"}),
+            "ambiguous_match",
+        ),
+    ] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let result = session.call_tool("get_postmaster", selector).await;
+        assert_eq!(result["result"]["isError"], true);
+        assert_eq!(structured(&result)["code"], code);
+        assert!(structured(&result).get("characters").is_none());
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn lock_stdio_success_noop_refusal_and_unverified_outcomes() {
+    for (scenario, item, locked, status) in [
+        ("success", "inst-a", true, "verified_success"),
+        ("success", "inst-a", false, "verified_noop"),
+        ("success", "missing", true, "refused"),
+        ("lock-refused", "inst-a", true, "incomplete"),
+        (
+            "lock-provider-stale",
+            "inst-a",
+            true,
+            "applied_pending_provider_refresh",
+        ),
+        ("lock-uncertain", "inst-a", true, "verified_success"),
+        ("lock-uncertain-no-effect", "inst-a", true, "incomplete"),
+        (
+            "lock-refresh-failure",
+            "inst-a",
+            true,
+            "verification_failed",
+        ),
+    ] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let response = session
+            .call_tool("set_lock_state", json!({"item":item,"locked":locked}))
+            .await;
+        let output = &response["result"]["structuredContent"];
+        assert_eq!(output["status"], status, "{scenario}: {response}");
+        assert_eq!(output["locked"], locked);
+        assert_eq!(
+            response["result"]["isError"],
+            !matches!(status, "verified_success" | "verified_noop")
+        );
+        if status == "verified_success" {
+            let repeated = session
+                .call_tool("set_lock_state", json!({"item":item,"locked":locked}))
+                .await;
+            assert_eq!(
+                repeated["result"]["structuredContent"]["status"],
+                "verified_noop"
+            );
+            let unlock = session
+                .call_tool("set_lock_state", json!({"item":item,"locked":false}))
+                .await;
+            assert_eq!(
+                unlock["result"]["structuredContent"]["status"],
+                "verified_success"
+            );
+        }
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn lock_stdio_rejects_invalid_schema_without_dispatch() {
+    let mut session = FixtureSession::spawn(Some("success")).await;
+    for invalid in [
+        json!({"item":"inst-a"}),
+        json!({"item":"inst-a","locked":"true"}),
+        json!({"item":"inst-a","locked":true,"character":"warlock"}),
+    ] {
+        let response = session.call_tool("set_lock_state", invalid).await;
+        assert!(response.get("error").is_some());
+    }
+    let response = session
+        .call_tool("set_lock_state", json!({"item":"inst-a","locked":false}))
+        .await;
+    assert_eq!(
+        response["result"]["structuredContent"]["status"],
+        "verified_noop"
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn equip_stdio_json_matches_cli_for_all_outcomes() {
     for (scenario, item) in [
         ("equip-success", "123"),
@@ -594,6 +890,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
     assert_eq!(
         names,
         [
+            "get_postmaster",
             LIST_CHARACTERS_TOOL,
             SEARCH_INVENTORY_TOOL,
             INSPECT_ITEM_TOOL,
@@ -604,7 +901,10 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             "weekly",
             "get_subclass_options",
             MOVE_ITEM_TOOL,
-            "equip_item"
+            "equip_item",
+            "set_lock_state",
+            "pull_item",
+            "pull_stack"
         ],
         "the product-equivalent server discovers all reads plus move_item and equip_item"
     );

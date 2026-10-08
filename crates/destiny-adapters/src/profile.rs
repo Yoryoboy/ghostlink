@@ -3,8 +3,8 @@
 //!
 //! This module performs no I/O, no scheduling, and no provider calls. It
 //! validates one complete profile response and normalizes the characters and
-//! instanced items it contains. The application profile service still decides
-//! whether to publish the candidate and owns revision, freshness, and
+//! instanced items and non-instanced inventory stacks it contains. The application
+//! profile service still decides whether to publish the candidate and owns revision, freshness, and
 //! provenance; this decoder only attaches the caller-supplied membership,
 //! definition version, timestamp, and the fixed [`SourceMarker::Profile`].
 //!
@@ -16,8 +16,9 @@
 //! `2` with `data` for the authorized owner, so a private component is accepted
 //! exactly when its `data` is present. Characters, profile inventories, character inventories, character
 //! equipment, item instances, and item perks must all be internally
-//! consistent, so a partial, private, or malformed response never yields a
-//! candidate.
+//! consistent. Optional currency coverage is qualified separately: genuinely
+//! unavailable data permits ordinary gear reads, but malformed present currency
+//! records refuse the whole candidate. No missing wrapper means balance zero.
 //!
 //! Every failure is a sanitized `ErrorCategory::ProviderValidation` error.
 //! Neither raw provider JSON nor any provider message, identifier, or path can
@@ -26,15 +27,27 @@
 //!
 //! Normalization rules:
 //!
-//! - Items are retained only when they carry a provider `itemInstanceId`.
-//!   Missing and `null` instance identifiers are intentionally omitted, so
-//!   instance-less materials and consumables never enter the projection.
-//! - A profile item whose `location` is Postmaster (`4`) is omitted. Vault
-//!   (`2`) maps to [`ItemLocation::Vault`]. Every other profile location is
-//!   preserved verbatim as
-//!   `Other("bungie-profile-location:<n>")`.
-//! - Character inventory and equipment items map to their owning character,
-//!   and equipment items are marked equipped.
+//! - Missing and `null` instance identifiers produce validated stack observations
+//!   with positive int32 quantities and mandatory runtime buckets. They never
+//!   join per-instance components or receive fabricated identifiers. Duplicate
+//!   rows remain distinct. Profile stacks retain their ProfileInventory source.
+//! - Literal `"0"` remains an instance identifier under the existing canonical
+//!   decimal parser; no zero-as-stack wire convention is established here.
+//! - Character location Postmaster (`4`) maps to the validated map-key owner
+//!   for gear and stacks. Equipped Postmaster rows are rejected. Profile-origin
+//!   location `4` fails closed because that component supplies no character owner.
+//! - Profile gear location Vault (`2`) maps to [`ItemLocation::Vault`]; other
+//!   profile locations are preserved as `Other("bungie-profile-location:<n>")`.
+//!   Normal character inventory/equipment retains its owner and equipped status.
+//!   Absent character location retains the existing source-based classification;
+//!   supplied location values must be uint32.
+//! - Component 103 retains separate ProfileCurrencies provenance, including
+//!   zero balances and duplicates; overlapping inventory rows are never summed.
+//!   Missing legacy wrappers mean NotObserved; null, disabled or missing data
+//!   mean Unavailable. Usable private data is accepted. Malformed data fails closed.
+//! - Character runtime Lost Items buckets also identify owned Postmaster rows.
+//!   Official Manifest provenance is documented on LOST_ITEMS_BUCKET_HASH;
+//!   decoder fixtures are synthetic and do not establish live-account coverage.
 //! - State bit `1` marks an item locked. An item's equipment status must agree
 //!   with the provider `isEquipped` flag, so a vault item or a character
 //!   inventory item can never be equipped while an equipment item must be.
@@ -50,9 +63,10 @@
 //!   the literal `0` or has a nonzero leading digit.
 
 use destiny_core::{
-    AppError, Character, CharacterId, DefinitionVersion, DestinyMembership, ErrorCategory,
-    InventorySnapshotInput, ItemHash, ItemInstance, ItemInstanceId, ItemLocation, PerkHash,
-    PerkSummary, PlugSummary, SourceMarker, StatSummary, Timestamp,
+    AppError, BucketHash, Character, CharacterId, DefinitionVersion, DestinyMembership,
+    ErrorCategory, InstancedBucketObservation, InventorySnapshotInput, ItemHash, ItemInstance,
+    ItemInstanceId, ItemLocation, PerkHash, PerkSummary, PlugSummary, ProfileAcquisition,
+    SourceMarker, StackContainer, StackObservation, StatSummary, Timestamp,
 };
 use serde_json::{Map, Value};
 use std::cmp::Ordering;
@@ -135,10 +149,17 @@ const MAX_SOCKETS_PER_ITEM: usize = 32;
 ///
 /// `Unknown = 0`, `Inventory = 1`, `Vendor = 3`, and any future value above
 /// `Postmaster` are preserved verbatim as `Other`; `Vault = 2` maps to
-/// [`ItemLocation::Vault`]; `Postmaster = 4` is intentionally omitted because
-/// Postmaster items are out of the MVP transaction scope.
+/// [`ItemLocation::Vault`]. `Postmaster = 4` requires a validated character owner;
+/// profile-origin Postmaster cannot be represented safely and is rejected.
 const LOCATION_VAULT: u32 = 2;
 const LOCATION_POSTMASTER: u32 = 4;
+
+/// Actual Lost Items container, confirmed by the official public English Manifest
+/// bucket definitions (not an item's normal equipment definition bucket):
+/// <https://www.bungie.net/common/destiny2_content/json/en/DestinyInventoryBucketDefinition-a8ba855a-93c7-4014-8f2e-d92357fdfb42.json>.
+/// Definition: location 4, itemCount 21, fifo true, hasTransferDestination false.
+/// Tests using this value are synthetic, not live-account coverage evidence.
+const LOST_ITEMS_BUCKET_HASH: u32 = 215_593_132;
 
 fn provider_validation() -> AppError {
     AppError::new(ErrorCategory::ProviderValidation)
@@ -149,8 +170,10 @@ fn provider_validation() -> AppError {
 /// The caller owns the resolved [`DestinyMembership`], the current
 /// [`DefinitionVersion`], and the acquisition [`Timestamp`]; the decoder
 /// attaches them unchanged and fixes the source to [`SourceMarker::Profile`].
-/// Any missing, private, disabled, duplicated, mismatched, or malformed input
-/// is a sanitized [`ErrorCategory::ProviderValidation`] failure.
+/// Missing or disabled required components and malformed present input are
+/// sanitized [`ErrorCategory::ProviderValidation`] failures. Optional currencies
+/// retain explicit coverage; absent legacy wrappers are NotObserved, while
+/// unusable wrappers are Unavailable. Usable private data is accepted.
 ///
 /// [`ErrorCategory::ProviderValidation`]: destiny_core::ErrorCategory::ProviderValidation
 pub fn decode_profile(
@@ -159,6 +182,20 @@ pub fn decode_profile(
     definition_version: DefinitionVersion,
     checked_at: Timestamp,
 ) -> Result<InventorySnapshotInput, AppError> {
+    decode_profile_with_observations(bytes, membership, definition_version, checked_at)
+        .map(|pair| pair.into_parts().0)
+}
+
+/// Decodes the same candidate with complete actual runtime bucket observations.
+/// Omitted instanced buckets make the entire observation set unavailable without
+/// changing the input. Present malformed buckets (including null) fail closed.
+/// This structural association confers no freshness or action authority.
+pub fn decode_profile_with_observations(
+    bytes: &[u8],
+    membership: &DestinyMembership,
+    definition_version: DefinitionVersion,
+    checked_at: Timestamp,
+) -> Result<ProfileAcquisition, AppError> {
     let UniqueValue(value) = serde_json::from_slice(bytes).map_err(|_| provider_validation())?;
     let root = value.as_object().ok_or_else(provider_validation)?;
 
@@ -224,7 +261,16 @@ pub fn decode_profile(
 
     let mut seen = HashSet::with_capacity(raw_items.len());
     let mut items = Vec::with_capacity(raw_items.len());
-    for raw in raw_items {
+    let mut stacks = Vec::new();
+    let mut observations = Some(Vec::with_capacity(raw_items.len()));
+    for row in raw_items {
+        let raw = match row {
+            RawItem::Stack(stack) => {
+                stacks.push(stack);
+                continue;
+            }
+            RawItem::Instanced(raw) => raw,
+        };
         if !seen.insert(raw.instance_id.clone()) {
             return Err(provider_validation());
         }
@@ -245,6 +291,15 @@ pub fn decode_profile(
         let plugs = decode_plugs(sockets, &raw.instance_id)?;
         let stats = decode_stats(stats, &raw.instance_id)?;
 
+        match (raw.runtime_bucket, &mut observations) {
+            (Some(bucket), Some(rows)) => rows.push(InstancedBucketObservation::new(
+                ItemInstanceId::new(raw.instance_id.clone()),
+                BucketHash::new(i64::from(bucket)),
+                raw.location.clone(),
+            )?),
+            (None, _) => observations = None,
+            _ => {}
+        }
         items.push(ItemInstance {
             available_plugs: decode_available_plugs(reusable, &raw.instance_id)?,
             instance_id: ItemInstanceId::new(raw.instance_id),
@@ -266,7 +321,11 @@ pub fn decode_profile(
         decimal_id_order(left.instance_id.as_str(), right.instance_id.as_str())
     });
 
+    let (profile_currencies_coverage, currencies) = decode_profile_currencies(response)?;
+    stacks.extend(currencies);
     let snapshot = InventorySnapshotInput {
+        profile_currencies_coverage,
+        stacks,
         plug_set_entries: decode_plug_sets(response, &character_ids)?,
         membership_id: membership.membership_id().clone(),
         membership_type: membership.membership_type(),
@@ -277,11 +336,7 @@ pub fn decode_profile(
         items,
     };
 
-    if snapshot.is_structurally_valid() {
-        Ok(snapshot)
-    } else {
-        Err(provider_validation())
-    }
+    ProfileAcquisition::new(snapshot, observations)
 }
 
 /// Optional owner-only components can be absent or withheld for privacy.
@@ -467,13 +522,20 @@ fn decode_stats(
     Ok(stats)
 }
 
+enum RawItem {
+    Instanced(RawInstance),
+    Stack(StackObservation),
+}
+
 /// One retained item before its instance and perk components are resolved.
-struct RawItem {
+struct RawInstance {
     instance_id: String,
     item_hash: ItemHash,
     quantity: u32,
     locked: bool,
     location: ItemLocation,
+    /// Validated actual bucket, never inferred from item definitions.
+    runtime_bucket: Option<u32>,
     /// The equipment status implied by the component the item arrived in.
     equipped: bool,
 }
@@ -611,11 +673,80 @@ fn decode_profile_items(value: &Value) -> Result<Vec<RawItem>, AppError> {
 
     let mut decoded = Vec::with_capacity(items.len());
     for item in items {
-        if let Some(raw) = decode_item(item, ItemOrigin::Profile)? {
-            decoded.push(raw);
-        }
+        decoded.push(decode_item(item, ItemOrigin::Profile)?);
     }
     Ok(decoded)
+}
+
+/// Optional component 103: absent legacy data is not an observed zero balance.
+fn decode_profile_currencies(
+    response: &Map<String, Value>,
+) -> Result<
+    (
+        destiny_core::ProfileCurrenciesCoverage,
+        Vec<StackObservation>,
+    ),
+    AppError,
+> {
+    use destiny_core::ProfileCurrenciesCoverage as Coverage;
+    let Some(value) = response.get("profileCurrencies") else {
+        return Ok((Coverage::NotObserved, Vec::new()));
+    };
+    if value.is_null() {
+        return Ok((Coverage::Unavailable, Vec::new()));
+    }
+    let wrapper = value.as_object().ok_or_else(provider_validation)?;
+    let disabled = match wrapper.get("disabled") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(provider_validation()),
+    };
+    if let Some(privacy) = wrapper.get("privacy")
+        && !matches!(
+            privacy.as_u64(),
+            Some(PRIVACY_NONE | PRIVACY_PUBLIC | PRIVACY_PRIVATE)
+        )
+    {
+        return Err(provider_validation());
+    }
+    let Some(data) = wrapper.get("data").filter(|value| !value.is_null()) else {
+        return Ok((Coverage::Unavailable, Vec::new()));
+    };
+    let items = data
+        .as_object()
+        .and_then(|data| data.get("items"))
+        .and_then(Value::as_array)
+        .ok_or_else(provider_validation)?;
+    let mut stacks = Vec::with_capacity(items.len());
+    for value in items {
+        let row = value.as_object().ok_or_else(provider_validation)?;
+        if !matches!(row.get("itemInstanceId"), None | Some(Value::Null)) {
+            return Err(provider_validation());
+        }
+        let bucket = decode_required_u32(row.get("bucketHash"))?;
+        let location = row
+            .get("location")
+            .map(|v| decode_required_u32(Some(v)))
+            .transpose()?;
+        if bucket == LOST_ITEMS_BUCKET_HASH || location == Some(LOCATION_POSTMASTER) {
+            return Err(provider_validation());
+        }
+        let quantity = row
+            .get("quantity")
+            .and_then(Value::as_i64)
+            .ok_or_else(provider_validation)?;
+        stacks.push(StackObservation::new(
+            decode_item_hash(row.get("itemHash"))?,
+            BucketHash::new(i64::from(bucket)),
+            quantity,
+            StackContainer::ProfileCurrencies,
+        )?);
+    }
+    if disabled {
+        Ok((Coverage::Unavailable, Vec::new()))
+    } else {
+        Ok((Coverage::Available, stacks))
+    }
 }
 
 fn decode_character_items(
@@ -643,9 +774,7 @@ fn decode_character_items(
                 id: character_id,
                 equipped,
             };
-            if let Some(raw) = decode_item(item, origin)? {
-                decoded.push(raw);
-            }
+            decoded.push(decode_item(item, origin)?);
         }
     }
 
@@ -659,43 +788,87 @@ fn decode_character_items(
     Ok(decoded)
 }
 
-fn decode_item(value: &Value, origin: ItemOrigin<'_>) -> Result<Option<RawItem>, AppError> {
+fn decode_item(value: &Value, origin: ItemOrigin<'_>) -> Result<RawItem, AppError> {
     let object = value.as_object().ok_or_else(provider_validation)?;
-
-    let instance_id = match object.get("itemInstanceId") {
-        None | Some(Value::Null) => return Ok(None),
-        Some(value) => decode_decimal_id_value(value)?,
+    // Validate supplied runtime buckets even for legacy instanced gear; absence
+    // remains supported when classification does not depend on the bucket.
+    let runtime_bucket = object
+        .get("bucketHash")
+        .map(|value| decode_required_u32(Some(value)))
+        .transpose()?;
+    let postmaster_bucket = runtime_bucket == Some(LOST_ITEMS_BUCKET_HASH);
+    let (location, container, equipped) = match origin {
+        ItemOrigin::Profile => {
+            let provider_location = decode_required_u32(object.get("location"))?;
+            // This component supplies no validated character owner.
+            if provider_location == LOCATION_POSTMASTER || postmaster_bucket {
+                return Err(provider_validation());
+            }
+            let location = if provider_location == LOCATION_VAULT {
+                ItemLocation::Vault
+            } else {
+                ItemLocation::other(format!("bungie-profile-location:{provider_location}"))
+            };
+            (location, StackContainer::ProfileInventory, false)
+        }
+        ItemOrigin::Character { id, equipped } => {
+            let owner = CharacterId::new(id);
+            // Existing character gear accepts absent location; source ownership
+            // remains authoritative. A supplied location must be a valid u32.
+            let provider_location = object
+                .get("location")
+                .map(|value| decode_required_u32(Some(value)))
+                .transpose()?;
+            if provider_location == Some(LOCATION_POSTMASTER) || postmaster_bucket {
+                if equipped {
+                    return Err(provider_validation());
+                }
+                (
+                    ItemLocation::Postmaster(owner.clone()),
+                    StackContainer::Postmaster(owner),
+                    false,
+                )
+            } else {
+                (
+                    ItemLocation::Character(owner.clone()),
+                    StackContainer::CharacterInventory(owner),
+                    equipped,
+                )
+            }
+        }
     };
 
     let item_hash = decode_item_hash(object.get("itemHash"))?;
+    let instance_id = match object.get("itemInstanceId") {
+        None | Some(Value::Null) => {
+            if equipped {
+                return Err(provider_validation());
+            }
+            let bucket = decode_required_u32(object.get("bucketHash"))?;
+            let quantity = object
+                .get("quantity")
+                .and_then(Value::as_i64)
+                .ok_or_else(provider_validation)?;
+            return StackObservation::new(
+                item_hash,
+                BucketHash::new(i64::from(bucket)),
+                quantity,
+                container,
+            )
+            .map(RawItem::Stack);
+        }
+        Some(value) => decode_decimal_id_value(value)?,
+    };
     let quantity = decode_quantity(object.get("quantity"))?;
     let state = decode_state(object.get("state"))?;
     let locked = state & 1 != 0;
-
-    let (location, equipped) = match origin {
-        ItemOrigin::Profile => {
-            let location = decode_required_u32(object.get("location"))?;
-            if location == LOCATION_POSTMASTER {
-                return Ok(None);
-            }
-            let location = if location == LOCATION_VAULT {
-                ItemLocation::Vault
-            } else {
-                ItemLocation::other(format!("bungie-profile-location:{location}"))
-            };
-            (location, false)
-        }
-        ItemOrigin::Character { id, equipped } => {
-            (ItemLocation::Character(CharacterId::new(id)), equipped)
-        }
-    };
-
-    Ok(Some(RawItem {
+    Ok(RawItem::Instanced(RawInstance {
         instance_id,
         item_hash,
         quantity,
         locked,
         location,
+        runtime_bucket,
         equipped,
     }))
 }
@@ -940,6 +1113,214 @@ mod tests {
         )
     }
 
+    fn observed(bytes: &[u8]) -> Result<destiny_core::ProfileAcquisition, AppError> {
+        super::decode_profile_with_observations(
+            bytes,
+            &membership(),
+            DefinitionVersion::new(DEFINITION_VERSION),
+            Timestamp::new(CHECKED_AT),
+        )
+    }
+
+    fn bucket_fixture() -> Value {
+        let mut value = fixture_value();
+        let response = value["Response"].as_object_mut().unwrap();
+        for row in response["profileInventory"]["data"]["items"]
+            .as_array_mut()
+            .unwrap()
+        {
+            if row["itemInstanceId"].is_string() {
+                row["bucketHash"] = json!(123);
+            }
+        }
+        for group in ["characterInventories", "characterEquipment"] {
+            for owner in response[group]["data"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                for row in owner["items"].as_array_mut().unwrap() {
+                    if row["itemInstanceId"].is_string() {
+                        row["bucketHash"] = json!(123);
+                    }
+                }
+            }
+        }
+        value
+    }
+
+    #[test]
+    fn observation_decoder_complete_actual_buckets_preserves_input() {
+        let mut value = bucket_fixture();
+        // Equal definition hashes must not collapse distinct runtime instances.
+        value["Response"]["profileInventory"]["data"]["items"][1]["itemHash"] = json!(1001);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let pair = observed(&bytes).unwrap();
+        assert_eq!(pair.input(), &decode(&bytes).unwrap());
+        let rows = pair.observations().unwrap();
+        assert_eq!(rows.len(), 6);
+        for item in &pair.input().items {
+            let row = rows
+                .iter()
+                .find(|row| row.instance_id() == &item.instance_id)
+                .unwrap();
+            assert_eq!(row.location(), &item.location);
+            assert_eq!(row.bucket_hash().value(), 123);
+        }
+    }
+
+    #[test]
+    fn observation_decoder_missing_discards_partial_proof_and_zero_is_complete() {
+        let mut value = bucket_fixture();
+        value["Response"]["profileCurrencies"] = json!({"privacy": 2, "data": {"items": [
+            {"itemHash": 900, "bucketHash": 99, "quantity": 0},
+            {"itemHash": 900, "bucketHash": 99, "quantity": 0}
+        ]}});
+        value["Response"]["profileInventory"]["data"]["items"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("bucketHash");
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let pair = observed(&bytes).unwrap();
+        assert!(pair.observations().is_none());
+        assert_eq!(pair.input(), &decode(&bytes).unwrap());
+        assert_eq!(pair.input().stacks.len(), 5);
+        let response = value["Response"].as_object_mut().unwrap();
+        response["profileInventory"]["data"]["items"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|row| !row["itemInstanceId"].is_string());
+        for group in ["characterInventories", "characterEquipment"] {
+            for owner in response[group]["data"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                owner["items"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|row| !row["itemInstanceId"].is_string());
+            }
+        }
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let pair = observed(&bytes).unwrap();
+        assert_eq!(pair.input(), &decode(&bytes).unwrap());
+        assert!(pair.input().items.is_empty());
+        assert_eq!(pair.observations(), Some([].as_slice()));
+        assert_eq!(pair.input().stacks.len(), 5);
+    }
+
+    #[test]
+    fn observation_decoder_bucket_width_types_and_duplicate_keys_fail_atomically() {
+        for invalid in [
+            Value::Null,
+            json!(-1),
+            json!(4294967296_u64),
+            json!(1.5),
+            json!(true),
+            json!("123"),
+            json!([]),
+            json!({}),
+        ] {
+            let mut value = bucket_fixture();
+            value["Response"]["profileInventory"]["data"]["items"][0]["bucketHash"] = invalid;
+            let bytes = serde_json::to_vec(&value).unwrap();
+            assert_eq!(
+                observed(&bytes).unwrap_err().category(),
+                ErrorCategory::ProviderValidation
+            );
+            assert_validation(decode(&bytes));
+        }
+        let bytes = serde_json::to_vec(&bucket_fixture()).unwrap();
+        let duplicate = String::from_utf8(bytes).unwrap().replacen(
+            "\"bucketHash\":123",
+            "\"bucketHash\":123,\"bucketHash\":123",
+            1,
+        );
+        assert_validation(decode(duplicate.as_bytes()));
+        assert_eq!(
+            observed(duplicate.as_bytes()).unwrap_err().category(),
+            ErrorCategory::ProviderValidation
+        );
+        for bucket in [0_u32, u32::MAX] {
+            let mut value = bucket_fixture();
+            value["Response"]["profileInventory"]["data"]["items"][0]["bucketHash"] = json!(bucket);
+            let bytes = serde_json::to_vec(&value).unwrap();
+            let pair = observed(&bytes).unwrap();
+            assert_eq!(pair.input(), &decode(&bytes).unwrap());
+            let row = pair
+                .observations()
+                .unwrap()
+                .iter()
+                .find(|row| row.instance_id().as_str() == "700000000000000001")
+                .unwrap();
+            assert_eq!(row.bucket_hash().value(), i64::from(bucket));
+        }
+    }
+
+    #[test]
+    fn observation_decoder_owned_postmaster_and_bad_joins() {
+        let mut value = bucket_fixture();
+        value["Response"]["characterInventories"]["data"]["900000000000000001"]["items"][0]["bucketHash"] =
+            json!(super::LOST_ITEMS_BUCKET_HASH);
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let pair = observed(&bytes).unwrap();
+        let row = pair
+            .observations()
+            .unwrap()
+            .iter()
+            .find(|row| row.instance_id().as_str() == "700000000000000004")
+            .unwrap();
+        assert_eq!(
+            row.location(),
+            &ItemLocation::Postmaster(CharacterId::new("900000000000000001"))
+        );
+        assert_eq!(pair.input(), &decode(&bytes).unwrap());
+        for bad_owner in [false, true] {
+            let mut value = bucket_fixture();
+            if bad_owner {
+                let owners = value["Response"]["characterInventories"]["data"]
+                    .as_object_mut()
+                    .unwrap();
+                let items = owners.remove("900000000000000001").unwrap();
+                owners.insert("999".to_owned(), items);
+            } else {
+                value["Response"]["profileInventory"]["data"]["items"][1]["itemInstanceId"] =
+                    json!("700000000000000001");
+            }
+            let bytes = serde_json::to_vec(&value).unwrap();
+            assert_validation(decode(&bytes));
+            assert_eq!(
+                observed(&bytes).unwrap_err().category(),
+                ErrorCategory::ProviderValidation
+            );
+        }
+        for component in [
+            "characters",
+            "profileInventory",
+            "characterInventories",
+            "characterEquipment",
+        ] {
+            let mut value = bucket_fixture();
+            value["Response"][component]["disabled"] = json!(true);
+            let bytes = serde_json::to_vec(&value).unwrap();
+            assert_validation(decode(&bytes));
+            assert_eq!(
+                observed(&bytes).unwrap_err().category(),
+                ErrorCategory::ProviderValidation
+            );
+        }
+        let mut value = bucket_fixture();
+        value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"] =
+            Value::Null;
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert_validation(decode(&bytes));
+        assert_eq!(
+            observed(&bytes).unwrap_err().category(),
+            ErrorCategory::ProviderValidation
+        );
+    }
+
     #[test]
     fn character_last_played_normalizes_dates_and_rejects_invalid_values() {
         use super::decode_character;
@@ -978,6 +1359,326 @@ mod tests {
                 .date_last_played
                 .is_none()
         );
+    }
+
+    #[test]
+    fn profile_currency_coverage_and_zero_balance() {
+        use destiny_core::{ProfileCurrenciesCoverage as Coverage, StackContainer};
+        assert_eq!(
+            decode(FIXTURE).unwrap().profile_currencies_coverage,
+            Coverage::NotObserved
+        );
+        let snapshot = decode_mutated(|v| {
+            v["Response"]["profileCurrencies"] = json!({"privacy":2,"data":{"items":[
+                {"itemHash":42,"bucketHash":4100,"quantity":0},
+                {"itemHash":42,"bucketHash":4100,"quantity":0}
+            ]}});
+        })
+        .unwrap();
+        assert_eq!(snapshot.profile_currencies_coverage, Coverage::Available);
+        assert_eq!(snapshot.stacks.len(), 5);
+        assert_eq!(
+            snapshot.stacks[3].container(),
+            &StackContainer::ProfileCurrencies
+        );
+        assert_eq!(snapshot.stacks[3].quantity(), 0);
+        assert_eq!(snapshot.stacks[3], snapshot.stacks[4]);
+    }
+
+    #[test]
+    fn profile_currency_wrapper_availability_is_not_empty_holdings() {
+        use destiny_core::ProfileCurrenciesCoverage as Coverage;
+        for wrapper in [
+            Value::Null,
+            json!({}),
+            json!({"data":null}),
+            json!({"privacy":2}),
+            json!({"disabled":true}),
+            json!({"disabled":true,"data":{"items":[]}}),
+        ] {
+            let snapshot =
+                decode_mutated(|v| v["Response"]["profileCurrencies"] = wrapper).unwrap();
+            assert_eq!(snapshot.profile_currencies_coverage, Coverage::Unavailable);
+            assert_eq!(snapshot.stacks.len(), 3);
+            assert_eq!(snapshot.items.len(), decode(FIXTURE).unwrap().items.len());
+        }
+        for privacy in [0, 1, 2] {
+            let snapshot = decode_mutated(|v| {
+                v["Response"]["profileCurrencies"] = json!({"privacy":privacy,"data":{"items":[]}})
+            })
+            .unwrap();
+            assert_eq!(snapshot.profile_currencies_coverage, Coverage::Available);
+            assert_eq!(snapshot.stacks.len(), 3);
+        }
+        for wrapper in [
+            json!(false),
+            json!([]),
+            json!({"disabled":null}),
+            json!({"disabled":1}),
+            json!({"privacy":3}),
+            json!({"privacy":null}),
+            json!({"privacy":"2"}),
+            json!({"disabled":true,"privacy":false}),
+            json!({"data":[]}),
+            json!({"data":{}}),
+            json!({"data":{"items":null}}),
+            json!({"disabled":true,"data":false}),
+        ] {
+            assert_validation(decode_mutated(|v| {
+                v["Response"]["profileCurrencies"] = wrapper
+            }));
+        }
+    }
+
+    #[test]
+    fn profile_currency_rows_are_strict_and_keep_overlap_provenance() {
+        use destiny_core::{ProfileCurrenciesCoverage as Coverage, StackContainer};
+        let row = json!({"itemHash":123,"bucketHash":4100,"quantity":2147483647,"location":2});
+        let snapshot = decode_mutated(|v| {
+            v["Response"]["profileInventory"]["data"]["items"]
+                .as_array_mut()
+                .unwrap()
+                .push(row.clone());
+            v["Response"]["profileCurrencies"] =
+                json!({"data":{"items":[row.clone(), row.clone()]}});
+        })
+        .unwrap();
+        assert_eq!(snapshot.profile_currencies_coverage, Coverage::Available);
+        let overlap: Vec<_> = snapshot
+            .stacks
+            .iter()
+            .filter(|s| s.item_hash().value() == 123)
+            .collect();
+        assert_eq!(overlap.len(), 3);
+        assert_eq!(overlap[0].container(), &StackContainer::ProfileInventory);
+        assert_eq!(overlap[1].container(), &StackContainer::ProfileCurrencies);
+        assert_eq!(overlap[2], overlap[1]);
+        for (field, invalid) in [
+            ("itemHash", json!(-1)),
+            ("itemHash", json!(4294967296u64)),
+            ("bucketHash", json!(-1)),
+            ("bucketHash", json!(4294967296u64)),
+            ("bucketHash", Value::Null),
+            ("quantity", json!(-1)),
+            ("quantity", json!(2147483648u64)),
+            ("quantity", json!(1.5)),
+            ("quantity", Value::Null),
+            ("itemInstanceId", json!("0")),
+            ("itemInstanceId", json!("123")),
+            ("location", json!(4)),
+            ("bucketHash", json!(215593132)),
+            ("location", json!("1")),
+        ] {
+            let mut bad = row.clone();
+            bad[field] = invalid;
+            assert_validation(decode_mutated(|v| {
+                v["Response"]["profileCurrencies"] = json!({"data":{"items":[bad]}})
+            }));
+        }
+        for field in ["itemHash", "bucketHash", "quantity"] {
+            let mut bad = row.clone();
+            bad.as_object_mut().unwrap().remove(field);
+            assert_validation(decode_mutated(|v| {
+                v["Response"]["profileCurrencies"] = json!({"data":{"items":[bad]}})
+            }));
+        }
+    }
+
+    #[test]
+    fn profile_bucket_classification_rejects_equipped_unowned_and_invalid_buckets() {
+        for component in ["profileInventory", "characterEquipment"] {
+            assert_validation(decode_mutated(|v| {
+                let data = &mut v["Response"][component]["data"];
+                let rows = if component == "profileInventory" {
+                    &mut data["items"]
+                } else {
+                    &mut data["900000000000000001"]["items"]
+                };
+                rows[0]["bucketHash"] = json!(215593132);
+            }));
+        }
+        for invalid in [
+            Value::Null,
+            json!(-1),
+            json!(4294967296u64),
+            json!("215593132"),
+            json!(false),
+        ] {
+            assert_validation(decode_mutated(|v| {
+                v["Response"]["characterInventories"]["data"]["900000000000000001"]["items"][0]["bucketHash"] =
+                    invalid
+            }));
+        }
+    }
+
+    #[test]
+    fn profile_bucket_only_postmaster() {
+        use destiny_core::StackContainer;
+        for location in [None, Some(json!(1))] {
+            let snapshot = decode_mutated(|v| {
+                let rows =
+                    v["Response"]["characterInventories"]["data"]["900000000000000001"]["items"]
+                        .as_array_mut()
+                        .unwrap();
+                for row in rows {
+                    row["bucketHash"] = json!(215593132);
+                    row.as_object_mut().unwrap().remove("location");
+                    if let Some(location) = &location {
+                        row["location"] = location.clone();
+                    }
+                }
+            })
+            .unwrap();
+            let owner = character_id("900000000000000001");
+            assert_eq!(
+                item(&snapshot, "700000000000000004").location,
+                ItemLocation::Postmaster(owner.clone())
+            );
+            assert_eq!(
+                snapshot.stacks[2].container(),
+                &StackContainer::Postmaster(owner)
+            );
+        }
+    }
+
+    #[test]
+    fn profile_retains_synthetic_inventory_stacks_without_instance_components() {
+        use destiny_core::StackContainer;
+        let snapshot = decode(FIXTURE).unwrap();
+        assert_eq!(snapshot.stacks.len(), 3);
+        assert_eq!(
+            snapshot.stacks[0].container(),
+            &StackContainer::ProfileInventory
+        );
+        assert_eq!(snapshot.stacks[0].quantity(), 99);
+        assert_eq!(snapshot.stacks[0].bucket_hash().value(), 4100);
+        assert_eq!(
+            snapshot.stacks[2].container(),
+            &StackContainer::CharacterInventory(character_id("900000000000000001"))
+        );
+    }
+
+    #[test]
+    fn profile_character_postmaster_uses_validated_owner_for_gear_and_stacks() {
+        use destiny_core::StackContainer;
+        let snapshot = decode_mutated(|value| {
+            let rows = &mut value["Response"]["characterInventories"]["data"]["900000000000000001"]
+                ["items"];
+            rows[0]["location"] = json!(4);
+            rows[1]["location"] = json!(4);
+        })
+        .unwrap();
+        let owner = character_id("900000000000000001");
+        assert_eq!(
+            item(&snapshot, "700000000000000004").location,
+            ItemLocation::Postmaster(owner.clone())
+        );
+        assert_eq!(
+            snapshot.stacks[2].container(),
+            &StackContainer::Postmaster(owner)
+        );
+    }
+
+    #[test]
+    fn profile_stack_fields_are_strict_and_accept_full_hash_width() {
+        for field in ["itemHash", "bucketHash", "quantity"] {
+            for invalid in [
+                Value::Null,
+                json!(-1),
+                json!(1.5),
+                json!("1"),
+                json!(u64::MAX),
+            ] {
+                assert_validation(decode_mutated(set_profile_item_field(2, field, invalid)));
+            }
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["profileInventory"]["data"]["items"][2]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field);
+            }));
+        }
+        for quantity in [0i64, i64::from(i32::MAX) + 1] {
+            assert_validation(decode_mutated(set_profile_item_field(
+                2,
+                "quantity",
+                json!(quantity),
+            )));
+        }
+        let snapshot = decode_mutated(|value| {
+            let row = &mut value["Response"]["profileInventory"]["data"]["items"][2];
+            row["itemHash"] = json!(0);
+            row["bucketHash"] = json!(u32::MAX);
+            row["quantity"] = json!(i32::MAX);
+        })
+        .unwrap();
+        assert_eq!(snapshot.stacks[0].item_hash().value(), 0);
+        assert_eq!(
+            snapshot.stacks[0].bucket_hash().value(),
+            i64::from(u32::MAX)
+        );
+        assert_eq!(snapshot.stacks[0].quantity(), i32::MAX);
+    }
+
+    #[test]
+    fn profile_postmaster_rejects_unknown_owner_and_equipped_rows() {
+        assert_validation(decode_mutated(|value| {
+            let groups = value["Response"]["characterInventories"]["data"]
+                .as_object_mut()
+                .unwrap();
+            let mut group = groups.remove("900000000000000001").unwrap();
+            group["items"][0]["location"] = json!(4);
+            groups.insert("999".into(), group);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characterEquipment"]["data"]["900000000000000001"]["items"][0]["location"] =
+                json!(4);
+        }));
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["characterInventories"]["data"]["900000000000000001"]["items"][0]["location"] =
+                json!(4);
+            value["Response"]["itemComponents"]["instances"]["data"]["700000000000000004"]["isEquipped"] =
+                json!(true);
+        }));
+    }
+
+    #[test]
+    fn profile_character_gear_preserves_absent_location_but_validates_supplied_location() {
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["characterInventories"]["data"]["900000000000000001"]["items"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("location");
+        })
+        .unwrap();
+        assert_eq!(
+            item(&snapshot, "700000000000000004").location,
+            ItemLocation::Character(character_id("900000000000000001"))
+        );
+        for invalid in [Value::Null, json!(-1), json!(4294967296u64)] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["characterInventories"]["data"]["900000000000000001"]["items"]
+                    [0]["location"] = invalid;
+            }));
+        }
+    }
+
+    #[test]
+    fn profile_literal_zero_still_requires_a_real_instance_component() {
+        assert_validation(decode_mutated(set_profile_item_field(
+            2,
+            "itemInstanceId",
+            json!("0"),
+        )));
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["profileInventory"]["data"]["items"][2]["itemInstanceId"] =
+                json!("0");
+            value["Response"]["itemComponents"]["instances"]["data"]["0"] =
+                json!({"isEquipped": false});
+        })
+        .unwrap();
+        assert_eq!(snapshot.items[0].instance_id.as_str(), "0");
+        assert_eq!(snapshot.stacks.len(), 2);
     }
 
     fn fixture_value() -> Value {
@@ -1319,6 +2020,32 @@ mod tests {
         let snapshot = decode(FIXTURE).expect("complete fixture");
 
         let expected = InventorySnapshotInput {
+            profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
+            stacks: vec![
+                destiny_core::StackObservation::new(
+                    ItemHash::new(1004),
+                    destiny_core::BucketHash::new(4100),
+                    99,
+                    destiny_core::StackContainer::ProfileInventory,
+                )
+                .unwrap(),
+                destiny_core::StackObservation::new(
+                    ItemHash::new(1005),
+                    destiny_core::BucketHash::new(4100),
+                    50,
+                    destiny_core::StackContainer::ProfileInventory,
+                )
+                .unwrap(),
+                destiny_core::StackObservation::new(
+                    ItemHash::new(2002),
+                    destiny_core::BucketHash::new(4200),
+                    50,
+                    destiny_core::StackContainer::CharacterInventory(character_id(
+                        "900000000000000001",
+                    )),
+                )
+                .unwrap(),
+            ],
             plug_set_entries: Vec::new(),
             membership_id: MembershipId::new(MEMBERSHIP_ID),
             membership_type: MembershipType::new(MEMBERSHIP_TYPE),
@@ -1935,9 +2662,8 @@ mod tests {
     }
 
     #[test]
-    fn profile_locations_preserve_unknown_values_and_omit_postmaster() {
-        // The fixture carries Vendor (3), which is a preserved unknown location,
-        // and Postmaster (4), which is intentionally omitted.
+    fn profile_locations_preserve_unknown_values_and_reject_unowned_postmaster() {
+        // The synthetic fixture carries Vendor (3), a preserved unknown location.
         let snapshot = decode(FIXTURE).expect("fixture");
         assert_eq!(
             item(&snapshot, "700000000000000003").location,
@@ -1960,15 +2686,14 @@ mod tests {
             );
         }
 
-        // Postmaster (4) is dropped from the projection.
-        let snapshot = decode_mutated(set_profile_item_field(0, "location", json!(4)))
-            .expect("postmaster omitted");
-        assert!(
-            snapshot
-                .items
-                .iter()
-                .all(|item| item.instance_id.as_str() != "700000000000000001")
-        );
+        // Neither gear nor stacks in profile scope have a validated owner.
+        for index in [0, 2] {
+            assert_validation(decode_mutated(set_profile_item_field(
+                index,
+                "location",
+                json!(4),
+            )));
+        }
     }
 
     #[test]

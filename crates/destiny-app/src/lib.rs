@@ -20,12 +20,33 @@ pub mod auth;
 pub mod auth_ux;
 mod config;
 mod defaults;
+pub mod instanced_pull;
+pub mod stack_pull;
+pub use destiny_core::{
+    StackBucketCapacityEvidence, StackBucketCapacityPolicy, StackPullGateway, StackPullOutcome,
+    StackPullRefusal, StackPullRejection, StackPullRequest,
+};
+pub use instanced_pull::{
+    InstancedPullExecutionFailure, InstancedPullExecutionFailureReason,
+    InstancedPullExecutionOutcome, InstancedPullPlan, InstancedPullPlanRequest,
+    InstancedPullPlanningError, InstancedPullRefusal, InstancedPullService, PreDispatchError,
+    PullArrival, PullAttempt, PullContext, PullDisposition, PullObservation,
+    PullObservationAttempt, PullObservationFailure,
+};
+pub use stack_pull::*;
+pub mod lock;
 pub mod manifest;
 pub mod mutation;
+pub use destiny_core::{LockGateway, LockOutcome, LockRejection, LockRequest, SetLockStateRequest};
+pub use lock::{
+    LockExecutionEvidence, LockExecutionFailure, LockExecutionOutcome, LockPlan,
+    LockVerificationFailure, LockVerificationFailureReason,
+};
 pub mod queries;
 pub mod session;
 pub mod setup;
 pub mod sync;
+pub use sync::{ProfileSyncWithObservationsOutcome, PublishedProfileAcquisition};
 pub mod uri_handler;
 pub mod weekly_personal;
 pub mod weekly_projection;
@@ -36,7 +57,7 @@ pub use destiny_core::{
 pub mod weekly_reset;
 pub use destiny_core::calendar;
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
@@ -57,10 +78,10 @@ pub use config::{
 // root load a credential; it adds no behavior and no new abstraction.
 pub use destiny_core::domain::ItemSlot;
 pub use destiny_core::name_matching;
-pub use destiny_core::ports::StatDefinitionRepository;
 pub use destiny_core::ports::{
     DefinitionCatalogRepository, ManifestIndex, WorldDefinitionRepository,
 };
+pub use destiny_core::ports::{RetryDelay, StatDefinitionRepository};
 pub use destiny_core::query::{InspectionPlug, InspectionPlugRole, LocationFilter, MAX_NAME_TERMS};
 pub use destiny_core::{
     AccessCredential, AccessCredentialMetadata, AppError, BucketHash, Character, CharacterId,
@@ -72,16 +93,24 @@ pub use destiny_core::{
     ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstance, ItemInstanceId,
     ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH,
     MAX_TAG_FILTERS, MembershipId, MembershipType, MoveEffects, MoveIntentAuthorization, MovePlan,
-    MoveRequest, PerkHash, PerkSummary, PlanId, PlanIdGenerator, PlanLifetime, ProfileGateway,
-    ProfileSyncOutcome, ProfileSyncReason, QueryMetadata, RefreshGrant, RefreshToken, Resolution,
-    SearchRepository, SearchTerm, SourceMarker, StaticCredentialSource, StepAction, StepOutcome,
-    SyncMetadata, SyncRevision, Timestamp, TokenRefresh, TransferGateway, TransferOutcome,
-    TransferRejection, TransferRequest,
+    MoveRequest, PerkHash, PerkSummary, PlanId, PlanIdGenerator, PlanLifetime, ProfileAcquisition,
+    ProfileGateway, ProfileSyncOutcome, ProfileSyncReason, QueryMetadata, RefreshGrant,
+    RefreshToken, Resolution, SearchRepository, SearchTerm, SourceMarker, StaticCredentialSource,
+    StepAction, StepOutcome, SyncMetadata, SyncRevision, Timestamp, TokenRefresh, TransferGateway,
+    TransferOutcome, TransferRejection, TransferRequest,
 };
 pub use destiny_core::{
     ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, MilestoneDefinition,
     ObjectiveDefinition, PublicMilestone, PublicMilestoneActivity, PublicMilestonesGateway,
     PublicMilestonesSnapshot, StatDefinition, WorldDefinitionTable, WorldDefinitionsAcquisition,
+};
+pub use destiny_core::{
+    CapacityRefusal, EquipmentCapacityEvidence, EquipmentCapacityPolicy,
+    InstancedBucketObservation, InstancedPullGateway, InstancedPullOutcome, InstancedPullRejection,
+};
+pub use destiny_core::{
+    CharacterPostmaster, PostmasterInstance, PostmasterResult, PostmasterStack,
+    ProfileCurrenciesCoverage, StackContainer, StackObservation,
 };
 pub use destiny_core::{
     CharacterSubclass, CharacterSubclassOptions, ElementOptions, OptionGroup, OptionStatus,

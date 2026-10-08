@@ -2,14 +2,26 @@
 
 This plan turns the verified MVP architecture into dependency-correct, independently reviewable work units. It preserves runnable vertical progress: every adapter is thin, every provider detail enters through a port, and each slice leaves the repository in a useful state. The plan is implementation guidance, not scaffolding; no source code is added by DMA-004.
 
-## Current scope update: single-item equip
+## Current scope update: single-item move and equip
 
 `ghostlink equip <ITEM> --character <CHARACTER> [--json]` and default-enabled MCP
 `equip_item` now share `plan_equip` / `execute_equip_verified`. Both require explicit
 selectors, refuse ambiguity and unsafe class/exotic/equipped-elsewhere cases,
 transfer automatically if needed, force fresh preflight, refresh after attempted
 actions, and verify target location **and equipped state**. One call authorizes
-intent; there is no separate approval artifact. `move_item` remains MCP-only.
+intent; there is no separate approval artifact.
+
+`ghostlink move <ITEM> (--character <id|class> | --vault) [--json]` now exposes
+MCP `move_item` semantics through the same `plan_move` / `execute_move_verified`
+pipeline, without a CLI dependency on MCP. Exactly one explicit destination is
+required; IDs take precedence and ambiguous selectors are refused. Already at
+the destination during planning is a `SameLocation` refusal (CLI exit 40), not
+a no-op. Reaching it between planning and forced preflight can be a verified
+no-op (0); other changed preflight locations refuse before dispatch. Provider
+restrictions such as equipped items can reject after dispatch. There are no
+retries or rollback; refresh and destination verification follow attempted steps.
+The move text/JSON contract is transport-neutral in `destiny-output`, separate
+from equip; exit policy remains CLI-owned. Offline tests do not prove live success.
 
 `destiny-output` is the neutral shared equip JSON renderer; CLI text and exit
 codes remain CLI-owned. Production MCP composes the exact EquipItem-only adapter
@@ -43,7 +55,7 @@ crates/
   destiny-core/       domain IDs, records, errors, ports, policies, test doubles
   destiny-app/        authorization, sync, query, planning, execution services
   destiny-adapters/   Bungie HTTP/OAuth, Manifest, SQLite, credential store, clock/IDs
-  destiny-output/     transport-neutral equip JSON projection
+  destiny-output/     transport-neutral equip JSON and move/lock text/JSON projections
   destiny-cli/        command parsing, terminal UX, process exit policy
   destiny-mcp/        MCP stdio server, tool schemas, sanitized result mapping
 ```
@@ -296,7 +308,7 @@ Each slice should target roughly one reviewer session and monitor authored addit
 
 ## Explicit non-goals and post-MVP boundary
 
-The current scope includes single-item equip and weekly read capabilities. Build engines, multi-item build plans/apply, plug/mod/perk mutations, dismantling, locking, Postmaster, duplicate ranking, web UI, hosted/confidential backend, general-purpose Bungie proxying, and broad inventory actions remain deferred. Later capabilities may reuse the ports and projections but must not bypass fresh preflight, bounded intent, or post-action verification.
+The current scope includes single-item move/equip, lock/unlock (CLI and MCP `set_lock_state`), and weekly read capabilities. Lock uses shared fresh preflight, one dispatch, post-action refresh and lock-state verification; already satisfied is a verified no-op. Vault items use one owned character for the provider call (live validation pending). Build engines, multi-item build plans/apply, plug/mod/perk mutations, dismantling, Postmaster, duplicate ranking, web UI, hosted/confidential backend, general-purpose Bungie proxying, and broad inventory actions remain deferred. Later capabilities may reuse the ports and projections but must not bypass fresh preflight, bounded intent, or post-action verification.
 
 ## Architecture traceability
 

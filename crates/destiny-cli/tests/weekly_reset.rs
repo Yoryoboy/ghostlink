@@ -76,6 +76,10 @@ fn embedded_dated_week_pins_predictions_and_observation_gating() {
                 definitions: destiny_app::ManifestDefinitions {
                     version: version.clone(),
                     definitions: vec![destiny_app::ItemDefinition {
+                        does_postmaster_pull_have_side_effects: None,
+                        is_instance_item: None,
+                        max_stack_size: None,
+                        stack_unique_label: None,
                         hash: destiny_app::ItemHash::new(1),
                         bucket_hash: None,
                         name: "Item".into(),

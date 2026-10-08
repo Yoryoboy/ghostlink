@@ -11,16 +11,39 @@ pub mod artifact;
 pub use artifact::*;
 pub mod auth;
 pub mod domain;
+pub mod equipment_capacity;
 pub mod error;
+pub use equipment_capacity::{
+    CapacityPolicyMismatch, CapacityRefusal, EquipmentCapacityEvidence, EquipmentCapacityPolicy,
+    EquipmentCapacityProof, QualifiedEquipmentCapacityPolicy,
+};
 pub mod ids;
+pub mod instanced_pull;
+pub use instanced_pull::{InstancedPullOutcome, InstancedPullRejection, InstancedPullRequest};
 pub mod mutation;
 pub mod name_matching;
 pub mod ports;
+pub mod postmaster;
+pub mod profile_observations;
+pub use postmaster::{CharacterPostmaster, PostmasterInstance, PostmasterResult, PostmasterStack};
+pub use profile_observations::{InstancedBucketObservation, ProfileAcquisition};
 pub mod public_milestones;
 pub mod query;
 pub use ports::PublicMilestonesGateway;
 pub use public_milestones::{PublicMilestone, PublicMilestoneActivity, PublicMilestonesSnapshot};
 pub mod redact;
+pub mod stack_bucket_capacity;
+pub use stack_bucket_capacity::{
+    QualifiedStackBucketCapacityPolicy, StackBucketCapacityEvidence, StackBucketCapacityPolicy,
+};
+pub mod stack_pull;
+pub use ports::StackPullGateway;
+pub use stack_pull::{
+    StackPullCapacityInput, StackPullDecision, StackPullOutcome, StackPullRefusal,
+    StackPullRejection, StackPullRequest, evaluate_stack_pull, evaluate_stack_pull_capacity,
+};
+pub mod stacks;
+pub use stacks::{ProfileCurrenciesCoverage, StackContainer, StackObservation};
 pub mod state;
 pub mod uri_handler;
 pub mod weekly_profile;
@@ -49,20 +72,22 @@ pub use ids::{
 };
 pub use mutation::{
     DestinationSelector, EquipPlan, EquipPreflight, EquipRequest, ExecutionEvidence,
-    ExecutionTicket, IntentAuthorizationOutcome, ItemSelector, MAX_MOVE_STEPS, MAX_MUTATION_STEPS,
-    MAX_PLAN_LIFETIME_SECONDS, MoveEffects, MoveIntent, MoveIntentAuthorization, MovePlan,
-    MovePlanValidation, MoveRequest, MutationPolicyInput, MutationPolicyOutcome, MutationStep,
-    PlanBinding, PlanLifetime, PlanLifetimeValidation, StepAction, StepOutcome, StepRecord,
-    character_destination, destination_matches, evaluate_mutation, plan_steps, resolve_destination,
+    ExecutionTicket, IntentAuthorizationOutcome, ItemSelector, LockRequest, MAX_MOVE_STEPS,
+    MAX_MUTATION_STEPS, MAX_PLAN_LIFETIME_SECONDS, MoveEffects, MoveIntent,
+    MoveIntentAuthorization, MovePlan, MovePlanValidation, MoveRequest, MutationPolicyInput,
+    MutationPolicyOutcome, MutationStep, PlanBinding, PlanLifetime, PlanLifetimeValidation,
+    StepAction, StepOutcome, StepRecord, character_destination, destination_matches,
+    evaluate_mutation, plan_steps, resolve_destination,
 };
 pub use ports::{
     AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,
     CredentialSource, CredentialStore, DefinitionReplacementInput, DefinitionRepository,
     DestinyMembership, EquipGateway, EquipItemRequest, EquipOutcome, EquipRejection,
-    InventoryRepository, InventorySnapshotInput, ManifestAcquisition, ManifestDefinitionCandidate,
-    ManifestDefinitions, ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange,
-    SearchRepository, SecureRandom, StatDefinitionRepository, StaticCredentialSource, TokenRefresh,
-    TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
+    InstancedPullGateway, InventoryRepository, InventorySnapshotInput, LockGateway, LockOutcome,
+    LockRejection, ManifestAcquisition, ManifestDefinitionCandidate, ManifestDefinitions,
+    ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange, SearchRepository,
+    SecureRandom, SetLockStateRequest, StatDefinitionRepository, StaticCredentialSource,
+    TokenRefresh, TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
 };
 pub use query::{
     ARTIFACT_BUCKET_HASH, CharacterListResult, CharacterSubclass, CharacterSubclassOptions,

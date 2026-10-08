@@ -1,0 +1,102 @@
+# Inventory Actions Core (Feature A) — COMPLETE (live validation pending)
+
+## Objective
+
+Close the small gaps of the Inventory Actions phase with the existing
+preflight → action → verification pattern:
+
+- `ghostlink move` in the CLI (today `move_item` is MCP-only);
+- lock/unlock one owned item (Bungie `SetLockState`) in CLI and MCP.
+
+Feature B (Postmaster, multi-item equip, apply in-game loadouts) follows on
+its own branch in the same worktree.
+
+## Decisions
+
+- Worktree `../ghostlink-inventory`, branch `feature/inventory-actions-core`
+  from `origin/main` at `c353045`.
+- CLI move reuses the shared app `MutationService` (`plan_move` +
+  `execute_move_verified`); no MCP dependency. Destination is exactly one of
+  `--character <id|class>` or `--vault`. Move gets its own transport-neutral
+  output contract; equip output is not reused as the move schema.
+- CLI move matches MCP `move_item` semantics: an item already at the
+  destination is a `SameLocation` planner refusal, not a verified no-op
+  (unlike equip). `destiny-app` stays unchanged.
+- Lock is its own mutation seam (core port, exact-endpoint adapter, app
+  service, thin CLI/MCP adapters). Verification compares the refreshed
+  `instance.locked` to the requested state. Equip policy (class, exotic,
+  equipped state) is not reused.
+- Bungie contract (confirmed in official docs, operation
+  `Destiny2.SetItemLockState`): POST `/Destiny2/Actions/Items/SetLockState/`,
+  body `DestinyItemStateRequest {state, itemId, characterId, membershipType}`,
+  scope `MoveEquipDestinyItems` (already requested), throttle 0.1 s per user,
+  response `int32`. Still to validate live: Vault items accept any owned
+  character id.
+- Dropped from scope: "first-read freshness stale". Already fixed by GAM-004
+  (`crates/destiny-app/src/queries.rs:910-917`, regression tests at
+  `queries.rs:2600`); older follow-up notes are superseded.
+
+## Constraints and acceptance
+
+- Test-first per behavior task (observe RED, then GREEN).
+- CLI and MCP stay thin; shared logic lives in destiny-app/destiny-core.
+- Docs move with behavior: `docs/cli.md`, `docs/mcp.md`, `README.md`,
+  `skills/ghostlink/SKILL.md` (skill drift test), `docs/mvp-implementation-plan.md`.
+- Checks: `cargo fmt --all -- --check`, clippy with `--all-features -D warnings`,
+  `cargo test --workspace` and `--all-features`, `git diff --check`.
+- One Conventional Commit per task; push/PR/merge are user decisions.
+
+## Tasks
+
+- [x] **IAC-001 — Establish worktree, branch and tracker.**
+- [x] **IAC-002 — CLI `ghostlink move`.** Parsing (`--character` xor `--vault`),
+  runner/runtime composition, thin orchestration, move output contract and exit
+  codes, tests, docs and skill.
+- [x] **IAC-003 — Lock seam in core and adapter.** Provider-neutral request,
+  gateway and outcome types; `SetLockState` adapter with endpoint allowlist and
+  sanitized outcomes; adapter journey tests.
+- [x] **IAC-004 — Lock app service.** Plan with fresh preflight (owned
+  instance, lockable, verified no-op when already in the requested state),
+  execute, post-action refresh and verification; fakes and tests.
+- [x] **IAC-005 — Expose lock in CLI and MCP.** `ghostlink lock` /
+  `ghostlink unlock`, MCP `set_lock_state` tool, offline fixture, docs, skill.
+- [x] **IAC-006 — Close.** Full checks, tracker evidence, live validation
+  notes for the user.
+
+## Evidence
+
+- IAC-001: worktree created at `c353045`.
+- IAC-002: `ghostlink move` via shared plan_move/execute_move_verified; already
+  at destination refuses with exit 40 (MCP parity). RED: missing MoveArgs/modules,
+  then missing "already in <destination>" text. GREEN: 9 move tests, 5 skill-drift,
+  10 equip; fmt, clippy -D warnings, workspace tests (default + all-features),
+  diff check passed. Live provider run pending (user).
+- IAC-003: core `SetLockStateRequest`/`LockGateway`/sanitized outcomes and
+  `LockRequest`; adapter `lock.rs` (exact endpoint allowlist, single POST, 7 unit
+  tests) and `lock_execution_journey.rs`. RED: missing types; GREEN: workspace
+  tests default + all-features, fmt, clippy -D warnings, diff check passed.
+  Note: shared HTTP Debug labels the lock endpoint `<unallowlisted>` (fix in IAC-004).
+- IAC-004: `destiny-app/src/lock.rs` with `plan_lock` and `execute_lock_verified`
+  (fresh preflight, verified no-op, single dispatch, forced PostAction
+  verification); `QueuedLockGateway`; Vault items route through the first
+  character in committed order (live validation pending); lock endpoint Debug
+  label fixed. RED: missing module/fake/methods; GREEN: 376 destiny-app tests,
+  workspace default + all-features, fmt, clippy -D warnings, diff check passed.
+- IAC-005: `ghostlink lock|unlock <ITEM> [--json]` (exits 0/41/42/43/32 like
+  equip/move) and MCP `set_lock_state {item, locked}` reusing the shared service
+  under the existing operation guard; offline fixture fake lock gateway; docs,
+  README, skill and exit codes updated. RED: missing CLI variants/output/MCP
+  schema; GREEN: workspace default + all-features (17 stdio tests), fmt, clippy
+  -D warnings, diff check passed.
+- IAC-006: independent verification at `eaa1ab4`: fmt, clippy (default and
+  all-features) clean; 1,460 tests (default) and 1,477 (all-features) passed;
+  diff check clean; `move`/`lock`/`unlock`/`destiny-mcp --help` OK; no retries,
+  zero mutation calls on pre-dispatch refusals, no new sensitive exposure, docs
+  match exit codes. Branch is ~4k lines: deliver as chained PRs (move, then lock).
+
+## Live validation (user)
+
+- `ghostlink move <item> --vault` and back with `--character <class>`.
+- `ghostlink lock`/`unlock` on a character item and on a Vault item (confirms
+  Vault routing through the first character).
+- `ghostlink lock` on an already locked item reports a verified no-op.

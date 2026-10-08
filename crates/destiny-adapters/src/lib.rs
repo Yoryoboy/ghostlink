@@ -7,7 +7,16 @@ pub mod clarity;
 pub mod clock;
 pub mod credential_store;
 pub mod equip;
+pub mod equipment_capacity_policy;
+pub mod instanced_pull;
+pub mod stack_pull;
+pub use stack_pull::{
+    BungieStackPullGateway, HttpStackPullTransport, STACK_PULL_ENDPOINT, STACK_PULL_RESPONSE_LIMIT,
+    StackPullApiKey, StackPullBearerToken, StackPullHttpRequest, StackPullHttpResponse,
+    StackPullTransport, StackPullTransportError, is_allowed_stack_pull_url,
+};
 pub mod loadout;
+pub mod lock;
 pub mod manifest;
 pub mod oauth;
 pub mod profile;
@@ -15,6 +24,12 @@ pub mod profile_gateway;
 mod public_milestones;
 pub mod random;
 pub mod sqlite;
+pub mod stack_bucket_capacity_policy;
+pub use stack_bucket_capacity_policy::{
+    PINNED_STACK_BUCKET_CAPACITY, PINNED_STACK_BUCKET_CAPACITY_VERSION, PINNED_STACK_BUCKET_PATH,
+    StackBucketCapacityQualificationError, pinned_stack_bucket_capacity_policy,
+    qualify_pinned_stack_bucket_capacity,
+};
 pub mod token;
 pub mod transfer;
 pub mod uri_handler;
@@ -27,12 +42,28 @@ pub use equip::{
     EquipHttpRequest, EquipHttpResponse, EquipTransport, EquipTransportError, HttpEquipTransport,
     is_allowed_equip_url,
 };
+pub use equipment_capacity_policy::{
+    EquipmentCapacityQualificationError, PINNED_EQUIPMENT_BUCKET_PATH, PINNED_EQUIPMENT_CAPACITY,
+    PINNED_EQUIPMENT_CAPACITY_VERSION, decode_equipment_capacity_evidence,
+    pinned_equipment_capacity_policy, qualify_pinned_equipment_capacity,
+};
+pub use instanced_pull::{
+    BungieInstancedPullGateway, HttpInstancedPullTransport, INSTANCED_PULL_ENDPOINT,
+    INSTANCED_PULL_RESPONSE_LIMIT, InstancedPullApiKey, InstancedPullBearerToken,
+    InstancedPullHttpRequest, InstancedPullHttpResponse, InstancedPullTransport,
+    InstancedPullTransportError, is_allowed_instanced_pull_url,
+};
+pub use lock::{
+    BungieLockGateway, HttpLockTransport, LOCK_ENDPOINT, LOCK_RESPONSE_LIMIT, LockApiKey,
+    LockBearerToken, LockHttpRequest, LockHttpResponse, LockTransport, LockTransportError,
+    is_allowed_lock_url,
+};
 pub use oauth::{
     CommandLauncher, DesktopBrowserAuthorization, HeadlessAuthorizationInstruction,
     HeadlessBrowserAuthorization, LoopbackCallbackReceiver, SshTarget, SystemCommandLauncher,
     authorization_url, browser_command,
 };
-pub use profile::decode_profile;
+pub use profile::{decode_profile, decode_profile_with_observations};
 pub use profile_gateway::{
     BungieProfileGateway, HttpProfileTransport, MEMBERSHIP_ENDPOINT, MEMBERSHIP_RESPONSE_LIMIT,
     PROFILE_ORIGIN, PROFILE_RESPONSE_LIMIT, ProfileApiKey, ProfileBearerToken, ProfileHttpRequest,

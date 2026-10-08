@@ -169,6 +169,10 @@ where
             )
             .map(|result| render_subclass_options(mode, &result, locked))
             .map_err(CliError::from),
+        ReadRequest::Postmaster(character_id) => service
+            .postmaster(character_id.as_ref(), freshness.policy, freshness.now)
+            .map(|result| crate::postmaster_output::render_postmaster(mode, &result))
+            .map_err(CliError::from),
         ReadRequest::Subclass(character_id) => service
             .character_subclasses(character_id.as_ref(), freshness.policy, freshness.now)
             .map(|result| render_subclasses(mode, &result))
@@ -383,6 +387,37 @@ where
             })
         });
     }
+    if let Command::PullStack(arguments) = &cli.command {
+        return dispatch_pull_stack(arguments, mode, crate::runtime::compose_pull_stack);
+    }
+    if let Command::Pull(arguments) = &cli.command {
+        // One composition only: never retry/remint a pull after any outcome.
+        return dispatch_pull(arguments, mode, crate::runtime::compose_pull);
+    }
+    if let Command::Lock(arguments) | Command::Unlock(arguments) = &cli.command {
+        if let Err(error) = arguments.validate() {
+            return ProcessOutput::failure(mode, error);
+        }
+        // Never recompose after dispatch uncertainty or acquire definitions by retry.
+        return match crate::runtime::compose_lock(
+            arguments,
+            matches!(cli.command, Command::Lock(_)),
+        ) {
+            Ok(output) => lock_process_output(mode, &output),
+            Err(error) => ProcessOutput::failure(mode, error),
+        };
+    }
+    if let Command::Move(arguments) = &cli.command {
+        if let Err(error) = arguments.validate() {
+            return ProcessOutput::failure(mode, error);
+        }
+        // Never recompose a mutation after an error: dispatch uncertainty is
+        // authoritative. Definition acquisition remains an explicit sync.
+        return match crate::runtime::compose_move(arguments) {
+            Ok(output) => move_process_output(mode, &output),
+            Err(error) => ProcessOutput::failure(mode, error),
+        };
+    }
     if let Command::Equip(arguments) = &cli.command {
         if let Err(error) = arguments.validate() {
             return ProcessOutput::failure(mode, error);
@@ -559,11 +594,168 @@ fn ensure_definitions<M: crate::runtime::ManifestFactory>(factory: &mut M) -> Re
     Ok(())
 }
 
+/// Injectable parser-to-runner stack boundary; invalid inputs never acquire I/O.
+pub fn run_pull_stack_with<I, T, F>(args: I, operation: F) -> ProcessOutput
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+    F: FnOnce(
+        crate::command::StackPullSelection,
+    ) -> Result<crate::pull_stack_output::StackPullOutput, CliError>,
+{
+    let cli = match parse_process(args) {
+        Ok(cli) => cli,
+        Err(output) => return output,
+    };
+    let mode = cli.output_mode();
+    match cli.command {
+        Command::PullStack(arguments) => dispatch_pull_stack(&arguments, mode, operation),
+        _ => ProcessOutput::failure(
+            mode,
+            CliError::from_category(ErrorCategory::UnsupportedOperation),
+        ),
+    }
+}
+fn dispatch_pull_stack<F>(
+    arguments: &crate::command::PullStackArgs,
+    mode: OutputMode,
+    operation: F,
+) -> ProcessOutput
+where
+    F: FnOnce(
+        crate::command::StackPullSelection,
+    ) -> Result<crate::pull_stack_output::StackPullOutput, CliError>,
+{
+    let selection = match arguments.selection() {
+        Ok(selection) => selection,
+        Err(error) => return ProcessOutput::failure(mode, error),
+    };
+    match operation(selection) {
+        Ok(output) => {
+            let body = match mode {
+                OutputMode::Human => output.render_text(),
+                OutputMode::Json => output.json().to_string(),
+            };
+            if output.exit_code() == SUCCESS_EXIT_CODE {
+                ProcessOutput::success(body)
+            } else {
+                ProcessOutput {
+                    stdout: String::new(),
+                    stderr: format!("{body}\n"),
+                    exit_code: output.exit_code(),
+                }
+            }
+        }
+        Err(error) => ProcessOutput::failure(mode, error),
+    }
+}
+
+/// Injectable parser-to-runner pull boundary. Invalid IDs never construct a
+/// runtime or consult authenticated context. Production uses this same dispatch.
+pub fn run_pull_with<I, T, F>(args: I, operation: F) -> ProcessOutput
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+    F: FnOnce(destiny_app::ItemInstanceId) -> Result<crate::pull_output::PullOutput, CliError>,
+{
+    let cli = match parse_process(args) {
+        Ok(cli) => cli,
+        Err(output) => return output,
+    };
+    let mode = cli.output_mode();
+    match cli.command {
+        Command::Pull(arguments) => dispatch_pull(&arguments, mode, operation),
+        _ => ProcessOutput::failure(
+            mode,
+            CliError::from_category(ErrorCategory::UnsupportedOperation),
+        ),
+    }
+}
+fn dispatch_pull<F>(
+    arguments: &crate::command::PullArgs,
+    mode: OutputMode,
+    operation: F,
+) -> ProcessOutput
+where
+    F: FnOnce(destiny_app::ItemInstanceId) -> Result<crate::pull_output::PullOutput, CliError>,
+{
+    let item = match arguments.instance_id() {
+        Ok(item) => item,
+        Err(error) => return ProcessOutput::failure(mode, error),
+    };
+    match operation(item) {
+        Ok(output) => pull_process_output(mode, &output),
+        Err(error) => ProcessOutput::failure(mode, error),
+    }
+}
+/// Only Verified goes to stdout with exit zero. All other structured evidence
+/// remains intact on stderr, following existing mutation JSON semantics.
+pub fn pull_process_output(
+    mode: OutputMode,
+    output: &crate::pull_output::PullOutput,
+) -> ProcessOutput {
+    let body = match mode {
+        OutputMode::Human => output.render_text(),
+        OutputMode::Json => output.json().to_string(),
+    };
+    if output.exit_code() == SUCCESS_EXIT_CODE {
+        ProcessOutput::success(body)
+    } else {
+        ProcessOutput {
+            stdout: String::new(),
+            stderr: format!("{body}\n"),
+            exit_code: output.exit_code(),
+        }
+    }
+}
+
 /// Render one mutation outcome; typed refusals and partial progress are failures.
 /// Like existing CLI errors, their sole object is written to stderr.
 pub fn equip_process_output(
     mode: OutputMode,
     output: &crate::equip_output::EquipOutput,
+) -> ProcessOutput {
+    let body = match mode {
+        OutputMode::Human => output.render_text(),
+        OutputMode::Json => output.json().to_string(),
+    };
+    let exit_code = output.exit_code();
+    if exit_code == SUCCESS_EXIT_CODE {
+        ProcessOutput::success(body)
+    } else {
+        ProcessOutput {
+            stdout: String::new(),
+            stderr: format!("{body}\n"),
+            exit_code,
+        }
+    }
+}
+
+/// Move successes go to stdout; refusals and partial progress go to stderr.
+pub fn move_process_output(
+    mode: OutputMode,
+    output: &crate::move_output::MoveOutput,
+) -> ProcessOutput {
+    let body = match mode {
+        OutputMode::Human => output.render_text(),
+        OutputMode::Json => output.json().to_string(),
+    };
+    let exit_code = output.exit_code();
+    if exit_code == SUCCESS_EXIT_CODE {
+        ProcessOutput::success(body)
+    } else {
+        ProcessOutput {
+            stdout: String::new(),
+            stderr: format!("{body}\n"),
+            exit_code,
+        }
+    }
+}
+
+/// Lock successes go to stdout; refusals and unverified progress go to stderr.
+pub fn lock_process_output(
+    mode: OutputMode,
+    output: &crate::lock_output::LockOutput,
 ) -> ProcessOutput {
     let body = match mode {
         OutputMode::Human => output.render_text(),
@@ -940,6 +1132,7 @@ mod tests {
         Sync,
         Search(SearchInventoryRequest),
         Inspect(InspectItemRequest),
+        Postmaster(Option<CharacterId>),
         Subclass(Option<CharacterId>),
         SubclassOptions(Option<CharacterId>, Option<destiny_app::SubclassElement>),
         Artifact(Option<CharacterId>),
@@ -958,6 +1151,7 @@ mod tests {
     struct RecordingService {
         calls: RecordedCalls,
         sync_failure: Option<ErrorCategory>,
+        postmaster: Result<destiny_app::PostmasterResult, AppError>,
         list: Result<CharacterListResult, AppError>,
         search: Result<InventorySearchResult, AppError>,
         inspect: Result<Resolution<ItemInspection>, AppError>,
@@ -968,6 +1162,11 @@ mod tests {
             Self {
                 calls: Rc::new(RefCell::new(Vec::new())),
                 sync_failure: None,
+                postmaster: Ok(destiny_app::PostmasterResult {
+                    metadata: metadata(FreshnessStatus::Fresh),
+                    profile_currencies_coverage: Default::default(),
+                    characters: vec![],
+                }),
                 list: Ok(character_list()),
                 search: Ok(search_result()),
                 inspect: Ok(Resolution::Unique(inspection())),
@@ -1000,7 +1199,72 @@ mod tests {
         }
     }
 
+    #[test]
+    fn postmaster_dispatch_forwards_selector_policy_time_and_sanitized_errors() {
+        for selector in [None, Some("123"), Some("HuNtEr")] {
+            let mut service = RecordingService::new();
+            let mut args = vec!["ghostlink", "postmaster", "--json"];
+            if let Some(selector) = selector {
+                args.extend(["--character", selector]);
+            }
+            let output = run(
+                &mut service,
+                args,
+                ReadFreshness {
+                    policy: TTL,
+                    now: NOW,
+                },
+            );
+            assert_eq!(output.exit_code, 0);
+            assert!(output.stderr.is_empty());
+            assert_eq!(
+                service.recorded(),
+                vec![(
+                    Recorded::Postmaster(selector.map(CharacterId::new)),
+                    TTL,
+                    NOW
+                )]
+            );
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&output.stdout).unwrap()["kind"],
+                "postmaster"
+            );
+        }
+        for category in [
+            ErrorCategory::AuthorizationRequired,
+            ErrorCategory::ProviderUnavailable,
+            ErrorCategory::LocalStorage,
+        ] {
+            let mut service = RecordingService::new();
+            service.postmaster = Err(AppError::new(category));
+            let output = run(
+                &mut service,
+                ["ghostlink", "postmaster", "--json"],
+                ReadFreshness {
+                    policy: TTL,
+                    now: NOW,
+                },
+            );
+            assert_eq!(
+                output.exit_code,
+                CliError::from_category(category).exit_code()
+            );
+            assert!(output.stdout.is_empty());
+            assert_eq!(service.recorded().len(), 1);
+        }
+    }
+
     impl QueryOperations for RecordingService {
+        fn postmaster(
+            &mut self,
+            character_id: Option<&CharacterId>,
+            policy: FreshnessPolicy,
+            now: Timestamp,
+        ) -> Result<destiny_app::PostmasterResult, AppError> {
+            self.record(Recorded::Postmaster(character_id.cloned()), policy, now);
+            self.postmaster.clone()
+        }
+
         fn subclass_options(
             &mut self,
             character_id: Option<&destiny_app::CharacterId>,
@@ -1313,6 +1577,10 @@ mod tests {
 
     fn definition(hash: i64, name: &str) -> ItemDefinition {
         ItemDefinition {
+            does_postmaster_pull_have_side_effects: None,
+            is_instance_item: None,
+            max_stack_size: None,
+            stack_unique_label: None,
             hash: ItemHash::new(hash),
             bucket_hash: None,
             name: name.to_string(),

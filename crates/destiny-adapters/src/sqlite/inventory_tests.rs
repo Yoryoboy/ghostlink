@@ -15,6 +15,210 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
+fn stack_snapshot_sqlite_roundtrips_duplicates_and_revision() {
+    use destiny_core::{BucketHash, StackContainer, StackObservation};
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let original = store.replace_current(full_input()).unwrap();
+    assert!(original.stacks.is_empty());
+    let before = store.connection().total_changes();
+    let schema = store.schema_version().unwrap();
+    let mut replacement = InventorySnapshotInput::with_metadata(&original);
+    // Stacks coexist with the existing instance projection.
+    replacement.checked_at = Timestamp::new(original.metadata.checked_at.seconds() + 10);
+    replacement.definition_version = DefinitionVersion::new("replacement");
+    replacement.stacks.push(
+        StackObservation::new(
+            ItemHash::new(7),
+            BucketHash::new(8),
+            2,
+            StackContainer::ProfileInventory,
+        )
+        .unwrap(),
+    );
+    replacement.stacks.push(replacement.stacks[0].clone());
+    let committed = store.replace_current(replacement.clone()).unwrap();
+    assert_eq!(committed.stacks.len(), 2);
+    assert_eq!(store.load_current().unwrap(), Some(committed.clone()));
+    assert!(store.connection().total_changes() > before);
+    assert_eq!(store.schema_version().unwrap(), schema);
+    replacement.stacks.reverse();
+    let same = store.replace_current(replacement.clone()).unwrap();
+    assert_eq!(same.metadata.revision, committed.metadata.revision);
+    replacement.stacks.pop();
+    let changed = store.replace_current(replacement).unwrap();
+    assert_eq!(
+        changed.metadata.revision.value(),
+        committed.metadata.revision.value() + 1
+    );
+
+    let mut empty_store = SqliteStore::open_in_memory().unwrap();
+    let mut input = full_input();
+    input.profile_currencies_coverage = destiny_core::ProfileCurrenciesCoverage::Available;
+    input.stacks.push(
+        StackObservation::new(
+            ItemHash::new(7),
+            BucketHash::new(8),
+            2,
+            StackContainer::ProfileCurrencies,
+        )
+        .unwrap(),
+    );
+    let first = empty_store.replace_current(input).unwrap();
+    assert_eq!(first.stacks.len(), 1);
+    assert_eq!(empty_store.load_current().unwrap(), Some(first));
+}
+
+#[test]
+fn postmaster_and_stacks_roundtrip_filter_and_atomic_safety() {
+    use destiny_core::{
+        BucketHash, InstanceSearchQuery, LocationFilter, SearchRepository, StackContainer,
+        StackObservation,
+    };
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut input = full_input();
+    input.items[2].location = ItemLocation::Postmaster(input.characters[0].id.clone());
+    input.profile_currencies_coverage = destiny_core::ProfileCurrenciesCoverage::Available;
+    for container in [
+        StackContainer::ProfileInventory,
+        StackContainer::ProfileCurrencies,
+        StackContainer::CharacterInventory(input.characters[0].id.clone()),
+        StackContainer::Postmaster(input.characters[0].id.clone()),
+    ] {
+        input.stacks.push(
+            StackObservation::new(ItemHash::new(7), BucketHash::new(8), 2, container).unwrap(),
+        );
+    }
+    let original = store.replace_current(input.clone()).unwrap();
+    assert_eq!(store.load_current().unwrap(), Some(original.clone()));
+    let mut permuted = input.clone();
+    permuted.stacks.reverse();
+    permuted.items.reverse();
+    permuted.characters.reverse();
+    assert_eq!(store.replace_current(permuted).unwrap(), original);
+    let query = InstanceSearchQuery {
+        sort: None,
+        location: None,
+        equipped: None,
+        include_available: false,
+        item_hashes: destiny_core::ItemHashFilter::Any,
+        perk_hash: None,
+        perk_name: None,
+        mod_name: None,
+        archetype: None,
+        stats: vec![],
+        character_id: None,
+        definitions: None,
+        min_power: None,
+        limit: 10,
+    };
+    let hits = store.search_instances(&query).unwrap();
+    assert_eq!(hits.len(), 3);
+    assert_eq!(hits[2].location, input.items[2].location);
+    let mut carried = query.clone();
+    carried.character_id = Some(input.characters[0].id.clone());
+    assert_eq!(store.search_instances(&carried).unwrap().len(), 1);
+    carried.character_id = None;
+    carried.location = Some(LocationFilter::Character);
+    assert_eq!(store.search_instances(&carried).unwrap().len(), 1);
+
+    let mut invalid = input.clone();
+    invalid.items[2].equipped = true;
+    assert_eq!(
+        store.replace_current(invalid).unwrap_err().category(),
+        ErrorCategory::ProviderValidation
+    );
+    let mut invalid = input.clone();
+    invalid.stacks[0] = StackObservation::new(
+        ItemHash::new(7),
+        BucketHash::new(8),
+        2,
+        StackContainer::Postmaster("missing".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        store.replace_current(invalid).unwrap_err().category(),
+        ErrorCategory::ProviderValidation
+    );
+    let mut invalid = input.clone();
+    invalid.characters.clear();
+    assert_eq!(
+        store.replace_current(invalid).unwrap_err().category(),
+        ErrorCategory::ProviderValidation
+    );
+    assert_eq!(store.load_current().unwrap(), Some(original.clone()));
+
+    // Force a storage failure after deleting/reinserting projection rows.
+    store.connection().execute_batch(
+        "CREATE TEMP TRIGGER refuse_stack BEFORE INSERT ON stacks BEGIN SELECT RAISE(ABORT, 'test'); END;"
+    ).unwrap();
+    input.stacks[0] = StackObservation::new(
+        ItemHash::new(7),
+        BucketHash::new(8),
+        3,
+        StackContainer::ProfileInventory,
+    )
+    .unwrap();
+    assert_eq!(
+        store.replace_current(input.clone()).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(store.load_current().unwrap(), Some(original.clone()));
+    store
+        .connection()
+        .execute_batch("DROP TRIGGER refuse_stack")
+        .unwrap();
+    let changed = store.replace_current(input).unwrap();
+    assert_eq!(
+        changed.metadata.revision.value(),
+        original.metadata.revision.value() + 1
+    );
+    // Empty replacement deletes owner-bound observations before their characters.
+    let mut empty = InventorySnapshotInput::with_metadata(&changed);
+    empty.stacks.clear();
+    empty.items.clear();
+    empty.characters.clear();
+    store.replace_current(empty).unwrap();
+}
+
+#[test]
+fn stack_readback_fails_closed_for_invalid_fields_owners_and_orphans() {
+    use destiny_core::{BucketHash, StackContainer, StackObservation};
+    for corruption in [
+        "UPDATE stacks SET quantity=0",
+        "UPDATE stacks SET quantity=2147483648",
+        "UPDATE stacks SET item_hash=-1",
+        "UPDATE stacks SET bucket_hash=4294967296",
+        "UPDATE stacks SET container='postmaster',owner='missing'",
+        "UPDATE stacks SET container='postmaster',owner=NULL",
+        "UPDATE stacks SET ordinal=2",
+        "DELETE FROM sync_metadata; DELETE FROM items; DELETE FROM characters; DELETE FROM active_profile",
+    ] {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let mut input = full_input();
+        input.stacks.push(
+            StackObservation::new(
+                ItemHash::new(7),
+                BucketHash::new(8),
+                2,
+                StackContainer::ProfileInventory,
+            )
+            .unwrap(),
+        );
+        store.replace_current(input).unwrap();
+        store
+            .connection()
+            .execute_batch("PRAGMA ignore_check_constraints=ON; PRAGMA foreign_keys=OFF;")
+            .unwrap();
+        store.connection().execute_batch(corruption).unwrap();
+        assert_eq!(
+            store.load_current().unwrap_err().category(),
+            ErrorCategory::LocalStorage,
+            "{corruption}"
+        );
+    }
+}
+
+#[test]
 fn configured_label_to_manifest_version_preserves_snapshots_and_revision_identity() {
     let mut store = SqliteStore::open_in_memory().unwrap();
     let schema = store.schema_version().unwrap();
@@ -101,6 +305,10 @@ fn sync_filters_plugs_before_sqlite_publication_and_keeps_unknown_without_manife
     let definitions = [(60, "frames"), (61, "shader"), (64, "shader")]
         .into_iter()
         .map(|(hash, category)| ItemDefinition {
+            does_postmaster_pull_have_side_effects: None,
+            is_instance_item: None,
+            max_stack_size: None,
+            stack_unique_label: None,
             hash: ItemHash::new(hash),
             bucket_hash: None,
             name: "plug".into(),
@@ -283,6 +491,10 @@ fn sync_publishes_only_named_known_subclass_options() {
     ]
     .into_iter()
     .map(|(hash, category, name)| ItemDefinition {
+        does_postmaster_pull_have_side_effects: None,
+        is_instance_item: None,
+        max_stack_size: None,
+        stack_unique_label: None,
         hash: ItemHash::new(hash),
         bucket_hash: None,
         name: name.into(),
@@ -409,6 +621,15 @@ fn migration_v13_preserves_v11_inventory_and_defaults_last_played() {
         .migrate_to(12)
         .expect("upgrade to subclass option schema");
     store.migrate_to(13).expect("upgrade to last-played schema");
+    let last_played: Option<String> = store
+        .connection()
+        .query_row("SELECT date_last_played FROM characters", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(last_played, None);
+    // Repository readback uses the current schema, not a historical schema.
+    store.migrate_to(super::LATEST_SCHEMA_VERSION).unwrap();
     let snapshot = store.load_current().unwrap().unwrap();
     assert_eq!(snapshot.characters[0].name.as_deref(), Some("Nova"));
     assert!(snapshot.characters[0].date_last_played.is_none());
@@ -457,6 +678,8 @@ fn storage_error() -> AppError {
 /// bounds, and an empty list.
 fn full_input() -> InventorySnapshotInput {
     InventorySnapshotInput {
+        profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
+        stacks: Vec::new(),
         plug_set_entries: Vec::new(),
         membership_id: MembershipId::new("membership-1"),
         membership_type: MembershipType::new(u32::MAX),
@@ -825,6 +1048,10 @@ fn manifest_replacement() -> DefinitionReplacementInput {
         definitions: ManifestDefinitions {
             version: DefinitionVersion::new("manifest-v1"),
             definitions: vec![ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: ItemHash::new(10),
                 bucket_hash: None,
                 name: "Alpha".into(),
@@ -1782,5 +2009,218 @@ fn errors_and_debug_never_leak_stored_values() {
         store.load_current().expect("read projection"),
         committed,
         "a rejected replacement must preserve the committed projection"
+    );
+}
+
+#[test]
+fn currency_zero_and_coverage_sqlite_roundtrip() {
+    use destiny_core::{
+        BucketHash, ProfileCurrenciesCoverage as Coverage, StackContainer, StackObservation,
+    };
+    let temp = TempDatabase::new();
+    let mut store = SqliteStore::open(temp.path()).unwrap();
+    let mut input = full_input();
+    input.profile_currencies_coverage = Coverage::Available;
+    input.stacks.push(
+        StackObservation::new(
+            ItemHash::new(7),
+            BucketHash::new(8),
+            0,
+            StackContainer::ProfileCurrencies,
+        )
+        .unwrap(),
+    );
+    input.stacks.push(input.stacks[0].clone());
+    let snapshot = store.replace_current(input).unwrap();
+    assert_eq!(snapshot.profile_currencies_coverage, Coverage::Available);
+    assert_eq!(snapshot.stacks.len(), 2);
+    assert_eq!(store.load_current().unwrap(), Some(snapshot.clone()));
+    drop(store);
+    let reopened = SqliteStore::open(temp.path()).unwrap();
+    assert_eq!(reopened.load_current().unwrap(), Some(snapshot));
+}
+
+#[test]
+fn currency_coverage_states_revision_restart_and_rollback() {
+    use destiny_core::ProfileCurrenciesCoverage as Coverage;
+    let temp = TempDatabase::new();
+    let mut last_revision = 0;
+    for coverage in [
+        Coverage::NotObserved,
+        Coverage::Unavailable,
+        Coverage::Available,
+    ] {
+        let snapshot = {
+            let mut store = SqliteStore::open(temp.path()).unwrap();
+            let mut input = full_input();
+            input.profile_currencies_coverage = coverage;
+            let snapshot = store.replace_current(input).unwrap();
+            assert_eq!(snapshot.metadata.revision.value(), last_revision + 1);
+            let mut refreshed = InventorySnapshotInput::with_metadata(&snapshot);
+            refreshed.checked_at = Timestamp::new(snapshot.metadata.checked_at.seconds() + 1);
+            let same = store.replace_current(refreshed).unwrap();
+            assert_eq!(same.metadata.revision, snapshot.metadata.revision);
+            last_revision = snapshot.metadata.revision.value();
+            same
+        };
+        let mut store = SqliteStore::open(temp.path()).unwrap();
+        assert_eq!(store.load_current().unwrap(), Some(snapshot.clone()));
+        store
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER refuse_metadata BEFORE UPDATE ON sync_metadata
+            BEGIN SELECT RAISE(ABORT, 'test failure'); END;",
+            )
+            .unwrap();
+        let mut changed = InventorySnapshotInput::with_metadata(&snapshot);
+        changed.profile_currencies_coverage = if coverage == Coverage::Available {
+            Coverage::Unavailable
+        } else {
+            Coverage::Available
+        };
+        assert_eq!(
+            store.replace_current(changed).unwrap_err().category(),
+            ErrorCategory::LocalStorage
+        );
+        assert_eq!(store.load_current().unwrap(), Some(snapshot));
+        store
+            .connection()
+            .execute_batch("DROP TRIGGER refuse_metadata")
+            .unwrap();
+    }
+}
+
+#[test]
+fn currency_marker_orphans_corruption_and_contradictions_fail_closed() {
+    use destiny_core::ProfileCurrenciesCoverage as Coverage;
+    for corrupt in [
+        "UPDATE inventory_coverage SET profile_currencies = 'invalid'",
+        "UPDATE inventory_coverage SET id = 2",
+        "INSERT INTO inventory_coverage VALUES(2,'available')",
+        "INSERT INTO stacks VALUES(0,'profile_currencies',NULL,8,7,1)",
+    ] {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let original = store.replace_current(full_input()).unwrap();
+        store
+            .connection()
+            .execute_batch("PRAGMA ignore_check_constraints = ON")
+            .unwrap();
+        store.connection().execute_batch(corrupt).unwrap();
+        store
+            .connection()
+            .execute_batch("PRAGMA ignore_check_constraints = OFF")
+            .unwrap();
+        assert_eq!(
+            store.load_current().unwrap_err().category(),
+            ErrorCategory::LocalStorage,
+            "{corrupt}"
+        );
+        assert_eq!(
+            store
+                .replace_current(InventorySnapshotInput::with_metadata(&original))
+                .unwrap_err()
+                .category(),
+            ErrorCategory::LocalStorage
+        );
+    }
+    for coverage in ["not_observed", "unavailable", "available"] {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        store
+            .connection()
+            .execute("INSERT INTO inventory_coverage VALUES(1,?1)", [coverage])
+            .unwrap();
+        assert_eq!(
+            store.load_current().unwrap_err().category(),
+            ErrorCategory::LocalStorage
+        );
+        assert_eq!(
+            store.replace_current(full_input()).unwrap_err().category(),
+            ErrorCategory::LocalStorage
+        );
+    }
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let snapshot = store.replace_current(full_input()).unwrap();
+    store
+        .connection()
+        .execute("DELETE FROM inventory_coverage", [])
+        .unwrap();
+    assert_eq!(store.load_current().unwrap(), Some(snapshot));
+    // Legacy positive currency rows do not imply availability, even after migration.
+    store.migrate_to(16).unwrap();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO stacks VALUES(0,'profile_currencies',NULL,8,7,1)",
+            [],
+        )
+        .unwrap();
+    store.migrate_to(17).unwrap();
+    assert_eq!(
+        store.load_current().unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    let mut available = full_input();
+    available.profile_currencies_coverage = Coverage::Available;
+    assert_eq!(
+        store.replace_current(available).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+}
+
+#[test]
+fn currency_coverage_structural_rejection_and_balance_revision() {
+    use destiny_core::{
+        BucketHash, ProfileCurrenciesCoverage as Coverage, StackContainer, StackObservation,
+    };
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let original = store.replace_current(full_input()).unwrap();
+    let balance = |quantity| {
+        StackObservation::new(
+            ItemHash::new(7),
+            BucketHash::new(8),
+            quantity,
+            StackContainer::ProfileCurrencies,
+        )
+        .unwrap()
+    };
+    for coverage in [Coverage::NotObserved, Coverage::Unavailable] {
+        let mut invalid = full_input();
+        invalid.profile_currencies_coverage = coverage;
+        invalid.stacks.push(balance(0));
+        assert_eq!(
+            store.replace_current(invalid).unwrap_err().category(),
+            ErrorCategory::ProviderValidation
+        );
+        assert_eq!(store.load_current().unwrap(), Some(original.clone()));
+    }
+    let mut input = full_input();
+    input.profile_currencies_coverage = Coverage::Available;
+    let empty = store.replace_current(input.clone()).unwrap();
+    assert_eq!(
+        empty.metadata.revision.value(),
+        original.metadata.revision.value() + 1
+    );
+    input.stacks.push(balance(0));
+    let zero = store.replace_current(input.clone()).unwrap();
+    assert_eq!(
+        zero.metadata.revision.value(),
+        empty.metadata.revision.value() + 1
+    );
+    input.stacks[0] = balance(1);
+    let positive = store.replace_current(input.clone()).unwrap();
+    assert_eq!(
+        positive.metadata.revision.value(),
+        zero.metadata.revision.value() + 1
+    );
+    input.stacks.push(balance(1));
+    let duplicate = store.replace_current(input.clone()).unwrap();
+    assert_eq!(
+        duplicate.metadata.revision.value(),
+        positive.metadata.revision.value() + 1
+    );
+    input.stacks.reverse();
+    assert_eq!(
+        store.replace_current(input).unwrap().metadata.revision,
+        duplicate.metadata.revision
     );
 }

@@ -285,6 +285,7 @@ impl fmt::Debug for TransferHttpRequest<'_> {
         let endpoint = match self.url {
             TRANSFER_ENDPOINT => "TransferItem",
             crate::equip::EQUIP_ENDPOINT => "EquipItem",
+            crate::lock::LOCK_ENDPOINT => "SetLockState",
             _ => "<unallowlisted>",
         };
         formatter
@@ -414,11 +415,30 @@ impl HttpTransferTransport {
     /// Builds a hardened client for the fixed transfer endpoint.
     pub fn new() -> Result<Self, AppError> {
         // Hyper's canceled-request retry is pre-write, not an application post-dispatch retry.
-        let client = reqwest::blocking::Client::builder()
+        let client = Self::hardened_client_builder()
+            .build()
+            .map_err(|_| configuration())?;
+        Ok(Self { client })
+    }
+
+    fn hardened_client_builder() -> reqwest::blocking::ClientBuilder {
+        reqwest::blocking::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)
+    }
+
+    /// Pull-only policy: preserve encoded bytes and declared wire length for
+    /// the bounded reader, and forbid reqwest retries regardless of features.
+    /// The public transfer/equip/lock constructor retains its existing policy.
+    pub(crate) fn new_instanced_pull() -> Result<Self, AppError> {
+        let client = Self::hardened_client_builder()
+            .no_gzip()
+            .no_brotli()
+            .no_zstd()
+            .no_deflate()
+            .retry(reqwest::retry::never())
             .build()
             .map_err(|_| configuration())?;
         Ok(Self { client })
@@ -842,6 +862,142 @@ mod tests {
     use serde_json::{Value, json};
     use std::collections::VecDeque;
     use std::io::{self, Cursor, Read};
+
+    // Synthetic loopback only: directly exercise the production client policy,
+    // bypassing the action allowlist in this test without credentials. This is
+    // wire/reader evidence, not Bungie classification or live-provider proof.
+    fn instanced_pull_wire_response(bytes: Vec<u8>, encoding: &str) -> TransferHttpResponse {
+        use std::io::Write;
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+
+        let transport = HttpTransferTransport::new_instanced_pull().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: {encoding}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        );
+        let server = thread::spawn(move || {
+            // Exactly one accept. A bounded watchdog connection below releases
+            // accept even if the client fails before opening its connection.
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0_u8];
+            while request.len() < 4096 && !request.ends_with(b"\r\n\r\n") {
+                if socket.read(&mut byte).unwrap_or(0) == 0 {
+                    return;
+                }
+                request.push(byte[0]);
+            }
+            assert!(request.ends_with(b"\r\n\r\n"));
+            assert!(
+                !request
+                    .windows(13)
+                    .any(|v| v.eq_ignore_ascii_case(b"authorization"))
+            );
+            // The cap can reject a response without reading the full body.
+            let _ = socket
+                .write_all(headers.as_bytes())
+                .and_then(|_| socket.write_all(&bytes));
+        });
+        let (finished, wait) = mpsc::channel();
+        let watchdog = thread::spawn(move || {
+            if wait.recv_timeout(Duration::from_secs(5)).is_err() {
+                let _ = TcpStream::connect_timeout(&address, Duration::from_secs(2));
+            }
+        });
+        let received = transport
+            .client
+            .post(format!("http://{address}/synthetic-pull"))
+            .body(Vec::new())
+            .send();
+        server.join().unwrap();
+        let _ = finished.send(());
+        watchdog.join().unwrap();
+        let received = received.unwrap();
+        TransferHttpResponse {
+            status: received.status().as_u16(),
+            content_length: received.content_length(),
+            content_type: received
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned),
+            body: Box::new(received),
+        }
+    }
+
+    // Valid gzip with one uncompressed DEFLATE block and a computed IEEE CRC32.
+    // FCOMMENT allows a large encoded header around a tiny decoded envelope.
+    fn instanced_pull_gzip_ack(comment_length: usize) -> Vec<u8> {
+        let payload = b"{\"Response\":0,\"ErrorCode\":1,\"ThrottleSeconds\":0}";
+        let mut gzip = vec![0x1f, 0x8b, 8, 0x10, 0, 0, 0, 0, 0, 255];
+        gzip.extend(std::iter::repeat_n(b'x', comment_length));
+        gzip.push(0);
+        gzip.push(1); // Final stored block, aligned to byte boundary.
+        let length = payload.len() as u16;
+        gzip.extend(length.to_le_bytes());
+        gzip.extend((length ^ u16::MAX).to_le_bytes());
+        gzip.extend(payload);
+        let mut crc = u32::MAX;
+        for byte in payload {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb88320 & 0_u32.wrapping_sub(crc & 1));
+            }
+        }
+        gzip.extend((!crc).to_le_bytes());
+        gzip.extend((payload.len() as u32).to_le_bytes());
+        gzip
+    }
+
+    #[test]
+    fn instanced_pull_wire_small_gzip_is_not_decoded_into_ack() {
+        let encoded = instanced_pull_gzip_ack(0);
+        let mut response = instanced_pull_wire_response(encoded.clone(), "gzip");
+        let body = response.json_body(response.content_length()).unwrap();
+        assert_eq!(
+            body, encoded,
+            "pull must preserve encoded wire bytes, never auto-decode an acknowledgement"
+        );
+        assert!(serde_json::from_slice::<Value>(&body).is_err());
+    }
+
+    #[test]
+    fn instanced_pull_wire_gzip_header_cannot_hide_declared_oversize() {
+        let encoded = instanced_pull_gzip_ack(TRANSFER_RESPONSE_LIMIT + 1);
+        let mut response = instanced_pull_wire_response(encoded.clone(), "gzip");
+        assert!(
+            response.json_body(response.content_length()).is_none(),
+            "encoded Content-Length above the cap must not disappear during decompression"
+        );
+        assert_eq!(response.content_length(), Some(encoded.len() as u64));
+    }
+
+    #[test]
+    fn instanced_pull_wire_unknown_encoding_stays_raw_and_identity_stays_usable() {
+        let encoded = instanced_pull_gzip_ack(0);
+        let mut response = instanced_pull_wire_response(encoded.clone(), "unknown-test-encoding");
+        assert_eq!(
+            response.json_body(response.content_length()).unwrap(),
+            encoded
+        );
+        let plain = b"{\"Response\":0,\"ErrorCode\":1,\"ThrottleSeconds\":0}".to_vec();
+        let mut response = instanced_pull_wire_response(plain.clone(), "identity");
+        assert_eq!(
+            response.json_body(response.content_length()).unwrap(),
+            plain
+        );
+    }
 
     const API_KEY_SENTINEL: &str = "sentinel-transfer-api-key";
     const BEARER_SENTINEL: &str = "sentinel-transfer-bearer-token";

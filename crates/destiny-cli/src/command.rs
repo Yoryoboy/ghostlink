@@ -37,8 +37,8 @@ pub const SUCCESS_EXIT_CODE: i32 = 0;
     override_usage = "ghostlink [OPTIONS] <COMMAND>",
     name = "ghostlink",
     version,
-    about = "Destiny profile, inventory, verified item equip, and safe interactive login",
-    long_about = "Read Destiny profile, inventory, and item data, equip one item with explicit character intent and verification, or authorize this machine against the provider."
+    about = "Destiny profile, inventory, verified item move/equip/lock, and safe interactive login",
+    long_about = "Read Destiny profile, inventory, and item data, move or equip one item with explicit destination intent and verification, lock or unlock one explicitly selected item, or authorize this machine against the provider."
 )]
 struct ParsedCli {
     /// Emit exactly one bounded JSON object instead of human text.
@@ -118,6 +118,14 @@ impl Cli {
                 .into_request()?;
                 Ok(ReadRequest::Artifact { character_id })
             }
+            Command::Postmaster(arguments) => {
+                if arguments.character.as_ref().is_some_and(|value| {
+                    value.chars().count() > destiny_app::MAX_SEARCH_TEXT_LENGTH
+                }) {
+                    return Err(CliError::invalid_request());
+                }
+                arguments.into_request().map(ReadRequest::Postmaster)
+            }
             Command::ListCharacters => Ok(ReadRequest::ListCharacters),
             Command::SearchInventory(arguments) => {
                 arguments.into_request().map(ReadRequest::SearchInventory)
@@ -143,7 +151,12 @@ impl Cli {
             // A `login` command line carries no read, and the hidden `callback`
             // handler is not a read either, so both report the stable
             // unsupported-operation outcome instead of guessing at a read.
-            Command::Equip(_)
+            Command::PullStack(_)
+            | Command::Pull(_)
+            | Command::Equip(_)
+            | Command::Move(_)
+            | Command::Lock(_)
+            | Command::Unlock(_)
             | Command::Sync
             | Command::SyncManifest
             | Command::WeeklyReset(_)
@@ -209,6 +222,23 @@ pub enum Command {
     /// Equip one item, transferring first when needed, then refresh and verify.
     #[command(name = "equip")]
     Equip(EquipArgs),
+    /// Move one item to an explicit character or Vault, then refresh and verify.
+    #[command(name = "move")]
+    Move(MoveArgs),
+    /// Pull one genuine Postmaster equipment instance into its owner's inventory.
+    #[command(
+        long_about = "Pull one genuine Postmaster equipment instance using a canonical positive int64 instance ID only. Requires login and qualified stored Manifest definitions. Names, hashes, anonymous stacks, quantity and destination arguments are unsupported. Only verified arrival succeeds; pending, uncertain and refused outcomes are nonzero. Observations are not causal or atomic guarantees."
+    )]
+    Pull(PullArgs),
+    /// Pull a non-instanced Postmaster stack amount from its explicit owner.
+    #[command(
+        long_about = "Pull a non-instanced Postmaster stack using a canonical uint32 decimal ITEM_HASH, canonical positive int32 --amount, and canonical positive int64 --character owner ID. Requires login and qualified stored Manifest definitions. Only verified quantity arrival succeeds. No names, destination overrides, redispatch or atomic guarantees."
+    )]
+    PullStack(PullStackArgs),
+    /// Lock one explicitly selected owned item, then refresh and verify.
+    Lock(LockArgs),
+    /// Unlock one explicitly selected owned item, then refresh and verify.
+    Unlock(LockArgs),
 
     /// Force profile acquisition and publish the local inventory projection.
     #[command(name = "sync")]
@@ -229,6 +259,9 @@ pub enum Command {
     /// List the characters in the current profile projection.
     #[command(name = "list-characters")]
     ListCharacters,
+
+    /// List committed Postmaster instances and anonymous stacks, without pulling.
+    Postmaster(SubclassArgs),
 
     /// Search definitions and, optionally, concrete inventory instances.
     #[command(name = "search-inventory")]
@@ -737,6 +770,125 @@ impl EquipArgs {
     }
 }
 
+/// One invocation explicitly authorizes moving exactly one owned item.
+#[derive(Debug, Args)]
+pub struct MoveArgs {
+    /// Concrete instance id or item name; ambiguous names require an instance id.
+    #[arg(value_name = "ITEM")]
+    pub item: String,
+    /// Exact character id or unique class (case-insensitive).
+    #[arg(
+        long,
+        value_name = "CHARACTER",
+        required_unless_present = "vault",
+        conflicts_with = "vault"
+    )]
+    pub character: Option<String>,
+    /// Move to the Vault instead of a character.
+    #[arg(
+        long,
+        required_unless_present = "character",
+        conflicts_with = "character"
+    )]
+    pub vault: bool,
+}
+impl MoveArgs {
+    /// Validate before configuration, credentials, clock, or network access.
+    pub fn validate(&self) -> Result<(), CliError> {
+        validate_identity(&self.item, "ITEM")?;
+        destiny_app::ItemSelector::semantic(&self.item).map_err(CliError::from)?;
+        if self.vault == self.character.is_some() {
+            return Err(CliError::invalid_request());
+        }
+        if let Some(character) = &self.character {
+            validate_identity(character, "--character")?;
+        }
+        Ok(())
+    }
+}
+
+/// One invocation explicitly authorizes setting one owned item's lock state.
+#[derive(Debug, Args)]
+pub struct LockArgs {
+    /// Concrete instance id or item name; ambiguous names require an instance id.
+    #[arg(value_name = "ITEM")]
+    pub item: String,
+}
+impl LockArgs {
+    /// Validate before configuration, credentials, clock, or provider access.
+    pub fn validate(&self) -> Result<(), CliError> {
+        validate_identity(&self.item, "ITEM")?;
+        destiny_app::ItemSelector::semantic(&self.item).map_err(CliError::from)?;
+        Ok(())
+    }
+}
+
+/// One genuine positive signed-int64 instance ID, never a name or stack selector.
+#[derive(Debug, Args)]
+pub struct PullArgs {
+    /// Canonical positive int64 instance ID for Postmaster equipment only.
+    #[arg(value_name = "ITEM")]
+    pub item: String,
+}
+impl PullArgs {
+    /// Validate before any configuration, authentication or service acquisition.
+    pub fn instance_id(&self) -> Result<ItemInstanceId, CliError> {
+        if self.item.is_empty() || self.item.len() > 19 {
+            return Err(CliError::invalid_request());
+        }
+        let value = self
+            .item
+            .parse::<i64>()
+            .map_err(|_| CliError::invalid_request())?;
+        if value <= 0 || value.to_string() != self.item {
+            return Err(CliError::invalid_request());
+        }
+        Ok(ItemInstanceId::new(self.item.clone()))
+    }
+}
+
+/// Explicit anonymous-stack selection, validated before any acquisition.
+#[derive(Debug, Args)]
+pub struct PullStackArgs {
+    /// Canonical uint32 decimal definition hash (including zero).
+    #[arg(value_name = "ITEM_HASH")]
+    pub item_hash: String,
+    /// Canonical positive int32 decimal quantity.
+    #[arg(long, value_name = "N")]
+    pub amount: String,
+    /// Canonical positive int64 decimal Postmaster owner ID; never a class.
+    #[arg(long, value_name = "CHARACTER_ID")]
+    pub character: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StackPullSelection {
+    pub item_hash: ItemHash,
+    pub amount: i64,
+    pub owner: CharacterId,
+}
+impl PullStackArgs {
+    pub fn selection(&self) -> Result<StackPullSelection, CliError> {
+        fn canonical(value: &str, max: u64, positive: bool) -> Result<u64, CliError> {
+            if value.is_empty() || value.len() > 19 {
+                return Err(CliError::invalid_request());
+            }
+            let parsed = value
+                .parse::<u64>()
+                .map_err(|_| CliError::invalid_request())?;
+            if parsed > max || (positive && parsed == 0) || parsed.to_string() != value {
+                return Err(CliError::invalid_request());
+            }
+            Ok(parsed)
+        }
+        Ok(StackPullSelection {
+            item_hash: ItemHash::new(canonical(&self.item_hash, u32::MAX as u64, false)? as i64),
+            amount: canonical(&self.amount, i32::MAX as u64, true)? as i64,
+            owner: CharacterId::new(canonical(&self.character, i64::MAX as u64, true)?.to_string()),
+        })
+    }
+}
+
 /// Arguments for `loadouts`; JSON always includes the full result.
 #[derive(Debug, Args)]
 pub struct LoadoutsArgs {
@@ -990,6 +1142,7 @@ impl InspectItemArgs {
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReadRequest {
+    Postmaster(Option<CharacterId>),
     ListCharacters,
     SearchInventory(SearchInventoryRequest),
     InspectItem(InspectItemRequest),
@@ -1907,6 +2060,10 @@ mod tests {
             available_mods: Vec::new(),
             stats: Vec::new(),
             definition: destiny_app::ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: destiny_app::ItemHash::new(1),
                 bucket_hash: None,
                 name: "Gjallarhorn".to_string(),

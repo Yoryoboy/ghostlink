@@ -13,6 +13,10 @@ fn definitions(
         definitions: ManifestDefinitions {
             version: version.clone(),
             definitions: vec![ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: ItemHash::new(1),
                 bucket_hash: None,
                 name: "Helmet".into(),
@@ -176,6 +180,8 @@ fn seeded(stats: Vec<StatDefinition>) -> (SqliteStore, InMemorySearchRepository)
     fake.set_instances(instances.clone());
     store
         .replace_current(InventorySnapshotInput {
+            profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
+            stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_id: MembershipId::new("123"),
             membership_type: MembershipType::new(3),

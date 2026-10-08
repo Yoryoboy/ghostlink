@@ -288,8 +288,10 @@ struct InventoryRecord {
     perks: Vec<InventoryPerk>,
     #[serde(default)]
     display_properties: OptionalField<DisplayProperties>,
+    #[serde(default, deserialize_with = "deserialize_inventory_fields")]
+    inventory: Option<InventoryFields>,
     #[serde(default)]
-    inventory: OptionalField<InventoryFields>,
+    does_postmaster_pull_have_side_effects: Option<bool>,
     #[serde(default)]
     plug: Option<PlugFields>,
     #[serde(default)]
@@ -318,9 +320,29 @@ struct DisplayProperties {
 #[serde(rename_all = "camelCase")]
 struct InventoryFields {
     #[serde(default)]
+    is_instance_item: Option<bool>,
+    #[serde(default)]
+    max_stack_size: Option<i32>,
+    #[serde(default)]
+    stack_unique_label: Option<String>,
+    #[serde(default)]
     bucket_type_hash: OptionalField<u32>,
     #[serde(default)]
     tier_type_name: OptionalField<String>,
+}
+
+// Keep legacy tolerance for absent/non-object inventory blocks, but never let
+// the tolerant outer wrapper turn malformed safety children into unknown values.
+fn deserialize_inventory_fields<'de, D: de::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<InventoryFields>, D::Error> {
+    let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+    if !raw.get().trim_start().starts_with('{') {
+        return Ok(None);
+    }
+    serde_json::from_str(raw.get())
+        .map(Some)
+        .map_err(|_| de::Error::custom("invalid manifest"))
 }
 
 #[derive(Deserialize)]
@@ -767,7 +789,7 @@ pub fn decode_activity_types(
     decode_world_reader(bytes, MAX_COMPONENT_BYTES, 1000, project_activity_type)
 }
 
-fn decode_version(value: Option<&Value>) -> Result<DefinitionVersion, AppError> {
+pub(crate) fn decode_version(value: Option<&Value>) -> Result<DefinitionVersion, AppError> {
     let raw = value
         .and_then(Value::as_str)
         .ok_or_else(provider_validation)?;
@@ -784,7 +806,10 @@ fn decode_version(value: Option<&Value>) -> Result<DefinitionVersion, AppError> 
     Ok(DefinitionVersion::new(raw))
 }
 
-fn decode_component_path(response: &Map<String, Value>, kind: &str) -> Result<String, AppError> {
+pub(crate) fn decode_component_path(
+    response: &Map<String, Value>,
+    kind: &str,
+) -> Result<String, AppError> {
     let path = response
         .get("jsonWorldComponentContentPaths")
         .and_then(Value::as_object)
@@ -852,7 +877,14 @@ fn decode_record(
     {
         return Err(provider_validation());
     }
-    let inventory = record.inventory.into_option();
+    let inventory = record.inventory;
+    let is_instance_item = inventory
+        .as_ref()
+        .and_then(|fields| fields.is_instance_item);
+    let max_stack_size = inventory.as_ref().and_then(|fields| fields.max_stack_size);
+    let stack_unique_label = inventory
+        .as_ref()
+        .and_then(|fields| fields.stack_unique_label.clone());
     let (bucket_hash, tier) = inventory.map_or((None, None), |inventory| {
         (
             inventory
@@ -863,6 +895,10 @@ fn decode_record(
         )
     });
     Ok(Some(ManifestDefinitionCandidate {
+        does_postmaster_pull_have_side_effects: record.does_postmaster_pull_have_side_effects,
+        is_instance_item,
+        max_stack_size,
+        stack_unique_label,
         perk_hashes: record
             .perks
             .into_iter()
@@ -1268,6 +1304,24 @@ impl<T, C> BungieManifestGateway<T, C> {
 }
 
 impl<T: ManifestTransport, C: Clock> BungieManifestGateway<T, C> {
+    /// Fetches fresh index evidence at call time, never reusing a prior index.
+    /// Uses the existing bounded read-retry policy. This establishes observed
+    /// correspondence only, not authenticity beyond the existing transport or
+    /// atomicity with a later action.
+    pub fn fetch_equipment_capacity_evidence(
+        &mut self,
+    ) -> Result<destiny_core::EquipmentCapacityEvidence, AppError> {
+        let request = ManifestHttpRequest::new(MANIFEST_ENDPOINT, Some(&self.api_key));
+        let bytes = fetch_with_retry(
+            &mut self.transport,
+            &mut self.read_retry,
+            &self.clock,
+            &request,
+            MAX_INDEX_BYTES,
+        )?;
+        crate::equipment_capacity_policy::decode_equipment_capacity_evidence(&bytes)
+    }
+
     fn load_world_table<D: WorldKind>(
         &mut self,
         path: &str,
@@ -1323,6 +1377,12 @@ where
     T: ManifestTransport,
     C: Clock,
 {
+    fn fetch_equipment_capacity_evidence(
+        &mut self,
+    ) -> Result<destiny_core::EquipmentCapacityEvidence, AppError> {
+        BungieManifestGateway::fetch_equipment_capacity_evidence(self)
+    }
+
     fn fetch_index(&mut self) -> Result<destiny_core::ports::ManifestIndex, AppError> {
         let index_request = ManifestHttpRequest::new(MANIFEST_ENDPOINT, Some(&self.api_key));
         let index_bytes = fetch_with_retry(
@@ -1590,6 +1650,81 @@ fn read_bounded_body(
 #[cfg(test)]
 mod tests {
     use super::{decode_inventory_items, decode_manifest_index};
+
+    #[test]
+    fn postmaster_metadata_preserves_unknown_false_and_exact_values() {
+        for metadata in [
+            "",
+            r#", "inventory": null, "doesPostmasterPullHaveSideEffects": null"#,
+            r#", "inventory": {"isInstanceItem":null,"maxStackSize":null,"stackUniqueLabel":null}"#,
+        ] {
+            let bytes = format!(
+                "{{\"1\":{{\"hash\":1,\"displayProperties\":{{\"name\":\"Item\"}}{metadata}}}}}"
+            );
+            let batch = decode_inventory_items(version(), bytes.as_bytes()).unwrap();
+            let item = &batch.definitions[0];
+            assert_eq!(item.does_postmaster_pull_have_side_effects, None);
+            assert_eq!(item.is_instance_item, None);
+            assert_eq!(item.max_stack_size, None);
+            assert_eq!(item.stack_unique_label, None);
+        }
+        for flag in [false, true] {
+            for capacity in [i32::MIN, -1, 0, 1, i32::MAX] {
+                for label in ["", "  Exact Label\n", "Case.Sensitive"] {
+                    let bytes = serde_json::json!({"1": {
+                        "hash": 1, "displayProperties": {"name": "Item"},
+                        "doesPostmasterPullHaveSideEffects": flag,
+                        "inventory": {"isInstanceItem": flag, "maxStackSize": capacity,
+                            "stackUniqueLabel": label, "bucketTypeHash": 123}
+                    }})
+                    .to_string();
+                    let batch = decode_inventory_items(version(), bytes.as_bytes()).unwrap();
+                    let item = &batch.definitions[0];
+                    assert_eq!(item.does_postmaster_pull_have_side_effects, Some(flag));
+                    assert_eq!(item.is_instance_item, Some(flag));
+                    assert_eq!(item.max_stack_size, Some(capacity));
+                    assert_eq!(item.stack_unique_label.as_deref(), Some(label));
+                    assert_eq!(item.bucket_hash, Some(destiny_core::BucketHash::new(123)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn postmaster_metadata_wrong_types_are_not_swallowed() {
+        for metadata in [
+            r#""doesPostmasterPullHaveSideEffects":"private-invalid""#,
+            r#""doesPostmasterPullHaveSideEffects":0"#,
+            r#""doesPostmasterPullHaveSideEffects":[]"#,
+            r#""doesPostmasterPullHaveSideEffects":{}"#,
+            r#""inventory":{"isInstanceItem":1}"#,
+            r#""inventory":{"isInstanceItem":"false"}"#,
+            r#""inventory":{"isInstanceItem":[]}"#,
+            r#""inventory":{"maxStackSize":1.5}"#,
+            r#""inventory":{"maxStackSize":1.0}"#,
+            r#""inventory":{"maxStackSize":2147483648}"#,
+            r#""inventory":{"maxStackSize":-2147483649}"#,
+            r#""inventory":{"maxStackSize":18446744073709551616}"#,
+            r#""inventory":{"maxStackSize":"1"}"#,
+            r#""inventory":{"maxStackSize":true}"#,
+            r#""inventory":{"maxStackSize":{}}"#,
+            r#""inventory":{"stackUniqueLabel":false}"#,
+            r#""inventory":{"stackUniqueLabel":1}"#,
+            r#""inventory":{"stackUniqueLabel":[]}"#,
+            r#""inventory":{"stackUniqueLabel":{}}"#,
+        ] {
+            for presentation in [
+                r#""displayProperties":{"name":"Item"}"#,
+                r#""displayProperties":{"name":""}"#,
+                r#""redacted":true"#,
+            ] {
+                let bytes = format!(
+                    "{{\"1\":{{\"hash\":1,{presentation},{metadata}}},\"2\":{{\"hash\":2,\"displayProperties\":{{\"name\":\"Other\"}}}}}}"
+                );
+                assert_validation(decode_inventory_items(version(), bytes.as_bytes()));
+            }
+        }
+    }
 
     #[test]
     fn sandbox_perks_and_inventory_references_are_decoded() {
@@ -2455,6 +2590,104 @@ mod transport_tests {
         .to_string()
     }
 
+    #[test]
+    fn manifest_capacity_port_acquires_once_per_call_without_cached_index() {
+        let body = json!({"ErrorCode":1,"Response":{"version":"port-v1",
+            "jsonWorldComponentContentPaths":{"en":{"DestinyInventoryBucketDefinition":"/common/destiny2_content/buckets.json"}}}}).to_string();
+        let mut gateway = BungieManifestGateway::new(
+            key(),
+            FakeTransport::with(vec![
+                Ok(json_response(body.clone())),
+                Ok(json_response(body.replace("port-v1", "port-v2"))),
+            ]),
+            clock(),
+        );
+        for (calls, version) in [(1, "port-v1"), (2, "port-v2")] {
+            let evidence =
+                ManifestGateway::fetch_equipment_capacity_evidence(&mut gateway).unwrap();
+            assert_eq!(evidence.definition_version().as_str(), version);
+            assert_eq!(
+                evidence.bucket_artifact_identity(),
+                "/common/destiny2_content/buckets.json"
+            );
+            assert_eq!(gateway.transport().requests.len(), calls);
+            let request = gateway.transport().requests.last().unwrap();
+            assert_eq!(request.url, MANIFEST_ENDPOINT);
+            assert!(request.has_api_key);
+        }
+    }
+
+    #[test]
+    fn gateway_equipment_capacity_evidence_is_fresh_and_uses_index_request() {
+        let body = json!({"ErrorCode":1,"Response":{"version":"observed-v1",
+            "jsonWorldComponentContentPaths":{"en":{"DestinyInventoryBucketDefinition":"/common/destiny2_content/buckets.json"}}}}).to_string();
+        let changed = body.replace("observed-v1", "observed-v2");
+        let mut gateway = BungieManifestGateway::new(
+            key(),
+            FakeTransport::with(vec![
+                Ok(json_response(index_body(
+                    "/common/destiny2_content/items.json",
+                ))),
+                Ok(json_response(body)),
+                Ok(json_response(changed)),
+            ]),
+            clock(),
+        );
+        gateway.fetch_index().unwrap();
+        assert_eq!(
+            gateway
+                .fetch_equipment_capacity_evidence()
+                .unwrap()
+                .definition_version()
+                .as_str(),
+            "observed-v1"
+        );
+        assert_eq!(
+            gateway
+                .fetch_equipment_capacity_evidence()
+                .unwrap()
+                .definition_version()
+                .as_str(),
+            "observed-v2"
+        );
+        let requests = &gateway.transport().requests;
+        assert_eq!(requests.len(), 3);
+        for request in requests {
+            assert_eq!(request.url, MANIFEST_ENDPOINT);
+            assert!(request.has_api_key);
+        }
+    }
+
+    #[test]
+    fn gateway_equipment_capacity_evidence_reuses_bounded_read_retry() {
+        let body = json!({"ErrorCode":1,"Response":{"version":"v1",
+            "jsonWorldComponentContentPaths":{"en":{"DestinyInventoryBucketDefinition":"/common/destiny2_content/buckets.json"}}}}).to_string();
+        let (mut gateway, delay) = retrying_gateway(vec![
+            Ok(status_response(503)),
+            Ok(json_response(body.clone())),
+        ]);
+        assert!(gateway.fetch_equipment_capacity_evidence().is_ok());
+        assert_eq!(gateway.transport().requests.len(), 2);
+        assert_eq!(delay.waits(), vec![Duration::from_millis(10)]);
+        // A decodable body announced over the cap isolates cap enforcement.
+        let oversized = ManifestHttpResponse::new(
+            200,
+            Some(super::MAX_INDEX_BYTES as u64 + 1),
+            Some("application/json".into()),
+            Box::new(Cursor::new(body.into_bytes())),
+        );
+        let mut gateway =
+            BungieManifestGateway::new(key(), FakeTransport::with(vec![Ok(oversized)]), clock());
+        assert_eq!(
+            gateway
+                .fetch_equipment_capacity_evidence()
+                .unwrap_err()
+                .category(),
+            ErrorCategory::ProviderValidation
+        );
+        assert_eq!(gateway.transport().requests.len(), 1);
+    }
+
     fn component_body() -> String {
         json!({
             "42": { "hash": 42, "displayProperties": { "name": "Test Item" } }
@@ -3123,6 +3356,10 @@ mod transport_tests {
         let repository = InMemoryDefinitionRepository::new(
             prior_version.clone(),
             vec![ItemDefinition {
+                does_postmaster_pull_have_side_effects: None,
+                is_instance_item: None,
+                max_stack_size: None,
+                stack_unique_label: None,
                 hash: ItemHash::new(PRIOR_FAKE_HASH),
                 bucket_hash: None,
                 name: "Prior Fake".to_owned(),

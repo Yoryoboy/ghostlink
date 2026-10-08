@@ -321,6 +321,136 @@ where
         })
     }
 
+    /// Reads owned Postmaster holdings from the synchronized committed snapshot.
+    ///
+    /// Selector text is bounded and validated before synchronization. Exact ID
+    /// takes priority over a unique case-insensitive class name; no selector
+    /// includes all owned characters, even those with no observed holdings.
+    ///
+    /// A committed definition source is required only when the selected groups
+    /// contain holdings to enrich. Its metadata read errors always propagate,
+    /// even for empty groups. Missing individual definitions retain nameless
+    /// rows; ambiguous definitions fail closed. No runtime bucket is inferred
+    /// for instances. Currency coverage qualifies only component 103, not the
+    /// completeness of Postmaster acquisition, including on legacy snapshots.
+    /// Refresh failures propagate without serving a stale fallback.
+    pub fn postmaster(
+        &mut self,
+        character_id: Option<&destiny_core::CharacterId>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::PostmasterResult, AppError> {
+        use destiny_core::{
+            CharacterPostmaster, ItemLocation, PostmasterInstance, PostmasterResult,
+            PostmasterStack, StackContainer,
+        };
+        if character_id.is_some_and(|selector| {
+            let text = selector.as_str();
+            text.trim().is_empty()
+                || text.chars().count() > destiny_core::MAX_SEARCH_TEXT_LENGTH
+                || text.chars().any(char::is_control)
+        }) {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        let outcome = self.synchronize(policy, now)?;
+        let metadata = query_metadata(&outcome, policy, now);
+        let snapshot = self.committed_snapshot()?;
+        // Repository implementations normally enforce this at publication.
+        // Still reject contradictory committed state, including unowned or
+        // equipped Postmaster instances, rather than silently filtering it.
+        if !destiny_core::InventorySnapshotInput::with_metadata(&snapshot).is_structurally_valid() {
+            return Err(invalid_repository_state());
+        }
+        let mut characters = match character_id {
+            Some(selector) => vec![
+                crate::weekly_selection::select_weekly_character(
+                    &snapshot.characters,
+                    Some(selector),
+                )
+                .map_err(|error| {
+                    AppError::new(match error {
+                        crate::weekly_selection::WeeklySelectionError::InvalidRequest => {
+                            ErrorCategory::ProviderValidation
+                        }
+                        crate::weekly_selection::WeeklySelectionError::AmbiguousMatch => {
+                            ErrorCategory::AmbiguousMatch
+                        }
+                    })
+                })?,
+            ],
+            None => snapshot.characters.clone(),
+        };
+        characters.sort_by(|left, right| left.id.cmp(&right.id));
+        let has_holdings = characters.iter().any(|character| {
+            snapshot
+                .items
+                .iter()
+                .any(|item| item.location == ItemLocation::Postmaster(character.id.clone()))
+                || snapshot.stacks.iter().any(|stack| {
+                    stack.container() == &StackContainer::Postmaster(character.id.clone())
+                })
+        });
+        if self.repository().current_metadata()?.is_none() && has_holdings {
+            return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+        }
+        let mut names = std::collections::HashMap::new();
+        let mut name_for = |hash| -> Result<Option<String>, AppError> {
+            if let std::collections::hash_map::Entry::Vacant(entry) = names.entry(hash) {
+                let name = match self.repository().lookup_definition(hash)? {
+                    Resolution::Unique(definition) if definition.hash == hash => {
+                        Some(definition.name)
+                    }
+                    Resolution::Missing => None,
+                    Resolution::Unique(_) | Resolution::Ambiguous(_) => {
+                        return Err(invalid_repository_state());
+                    }
+                };
+                entry.insert(name);
+            }
+            Ok(names[&hash].clone())
+        };
+        let mut groups = Vec::with_capacity(characters.len());
+        for character in characters {
+            let mut instances = Vec::new();
+            for item in snapshot
+                .items
+                .iter()
+                .filter(|item| item.location == ItemLocation::Postmaster(character.id.clone()))
+            {
+                instances.push(PostmasterInstance {
+                    instance_id: item.instance_id.clone(),
+                    item_hash: item.item_hash,
+                    name: name_for(item.item_hash)?,
+                    quantity: item.quantity,
+                });
+            }
+            instances.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+            let mut stacks = Vec::new();
+            for stack in snapshot.stacks.iter().filter(|stack| {
+                stack.container() == &StackContainer::Postmaster(character.id.clone())
+            }) {
+                stacks.push(PostmasterStack {
+                    item_hash: stack.item_hash(),
+                    name: name_for(stack.item_hash())?,
+                    bucket_hash: stack.bucket_hash(),
+                    quantity: stack.quantity(),
+                });
+            }
+            stacks.sort_by_key(|stack| (stack.item_hash, stack.bucket_hash, stack.quantity));
+            groups.push(CharacterPostmaster {
+                character_id: character.id,
+                class: character.class,
+                instances,
+                stacks,
+            });
+        }
+        Ok(PostmasterResult {
+            metadata,
+            profile_currencies_coverage: snapshot.profile_currencies_coverage,
+            characters: groups,
+        })
+    }
+
     /// Returns equipped subclasses after requiring definitions and synchronizing.
     ///
     /// No selector returns all characters in committed order. An explicit
@@ -799,6 +929,14 @@ where
 /// associated types, or `Self`-typed returns, so `&mut dyn QueryOperations` is
 /// a valid dispatch target.
 pub trait QueryOperations {
+    /// Reads committed Postmaster holdings for one selector or all owned characters.
+    fn postmaster(
+        &mut self,
+        character_id: Option<&destiny_core::CharacterId>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::PostmasterResult, AppError>;
+
     fn subclass_options(
         &mut self,
         character_id: Option<&destiny_core::CharacterId>,
@@ -848,6 +986,15 @@ where
         + destiny_core::StatDefinitionRepository
         + destiny_core::ports::WorldDefinitionRepository,
 {
+    fn postmaster(
+        &mut self,
+        character_id: Option<&destiny_core::CharacterId>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<destiny_core::PostmasterResult, AppError> {
+        QueryService::postmaster(self, character_id, policy, now)
+    }
+
     fn subclass_options(
         &mut self,
         character_id: Option<&destiny_core::CharacterId>,
@@ -1440,6 +1587,10 @@ mod tests {
         tags: Vec<&str>,
     ) -> ItemDefinition {
         ItemDefinition {
+            does_postmaster_pull_have_side_effects: None,
+            is_instance_item: None,
+            max_stack_size: None,
+            stack_unique_label: None,
             hash: ItemHash::new(hash),
             bucket_hash: None,
             name: name.into(),
@@ -1513,6 +1664,8 @@ mod tests {
     ) -> InventorySnapshotInput {
         let membership = membership();
         InventorySnapshotInput {
+            profile_currencies_coverage: destiny_core::ProfileCurrenciesCoverage::NotObserved,
+            stacks: Vec::new(),
             plug_set_entries: Vec::new(),
             membership_id: membership.membership_id().clone(),
             membership_type: membership.membership_type(),
