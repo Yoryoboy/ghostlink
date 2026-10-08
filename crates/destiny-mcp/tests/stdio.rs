@@ -776,6 +776,31 @@ fn structured(response: &Value) -> &Value {
 }
 
 #[tokio::test]
+async fn every_tool_output_schema_declares_an_object_root() {
+    let mut session = FixtureSession::spawn(None).await;
+    let id = session.next_id();
+    let listed = session.request(id, "tools/list", None).await;
+    let tools = listed["result"]["tools"]
+        .as_array()
+        .expect("tools/list returns an array");
+    assert!(tools.iter().any(|tool| tool["name"] == "inspect_item"));
+    assert!(tools.iter().any(|tool| tool["name"] == "move_item"));
+    let invalid: Vec<_> = tools
+        .iter()
+        .filter(|tool| {
+            tool.get("outputSchema")
+                .is_some_and(|schema| schema["type"] != "object")
+        })
+        .map(|tool| tool["name"].as_str().expect("a tool name"))
+        .collect();
+    session.shutdown().await;
+    assert!(
+        invalid.is_empty(),
+        "outputSchema.type must be object: {invalid:?}"
+    );
+}
+
+#[tokio::test]
 async fn weekly_stdio_contract() {
     let mut session = FixtureSession::spawn(None).await;
     let id = session.next_id();
@@ -787,7 +812,7 @@ async fn weekly_stdio_contract() {
         .find(|tool| tool["name"] == "weekly")
         .expect("weekly tool listed");
     assert_eq!(tool["inputSchema"]["additionalProperties"], false);
-    assert!(tool["outputSchema"].is_object());
+    assert_eq!(tool["outputSchema"]["type"], "object");
     for (args, expected_id) in [
         (json!({}), "warlock"),
         (json!({"character": "warlock"}), "warlock"),
@@ -938,7 +963,7 @@ async fn weekly_reset_stdio_contract() {
         .find(|tool| tool["name"] == WEEKLY_RESET_TOOL)
         .expect("weekly tool listed");
     assert_eq!(tool["inputSchema"]["additionalProperties"], false);
-    assert!(tool["outputSchema"].is_object());
+    assert_eq!(tool["outputSchema"]["type"], "object");
     let date = &tool["inputSchema"]["properties"]["date"];
     assert!(date.is_object());
     assert!(date["description"].as_str().unwrap().contains("YYYY-MM-DD"));
