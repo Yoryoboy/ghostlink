@@ -25,6 +25,11 @@ use destiny_core::uri_handler::{
 };
 use destiny_core::{AppError, ErrorCategory};
 
+mod scoped_cleanup;
+pub use scoped_cleanup::{
+    HandlerCleanupAction, HandlerCleanupIssue, HandlerCleanupPlan, HandlerCleanupReport,
+};
+
 /// The desktop id of the callback handler entry.
 pub const DESKTOP_ID: &str = "ghostlink-callback.desktop";
 

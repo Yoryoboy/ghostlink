@@ -17,6 +17,7 @@ pub mod command;
 pub mod equip;
 pub mod equip_output;
 pub mod handler;
+pub mod installation;
 pub mod lock;
 pub mod lock_output;
 pub mod login;
@@ -31,6 +32,8 @@ pub mod pull_stack_output;
 pub mod runner;
 pub mod runtime;
 pub mod setup;
+pub mod uninstall;
+pub mod update;
 
 pub use command::{
     CallbackArgs, CallbackMode, Cli, CliError, Command, ErrorOutcome, InspectItemArgs, LoginArgs,

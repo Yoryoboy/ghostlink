@@ -6,6 +6,7 @@
 
 use destiny_core::{
     AppError, DefinitionVersion, ErrorCategory, PublicMilestonesGateway, Timestamp,
+    calendar::{ActivityReference, Calendar, WeekWindow, week_index},
     ports::WorldDefinitionRepository,
 };
 
@@ -76,7 +77,31 @@ pub struct WeeklyMilestone {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RotationOutcome {
+    Predicted(Vec<ActivityReference>),
+    NoData {
+        coverage_start: Timestamp,
+        coverage_note: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeeklyRotation {
+    pub key: String,
+    pub title: String,
+    pub outcome: RotationOutcome,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WeeklyCalendar {
+    pub window: WeekWindow,
+    pub rotations: Vec<WeeklyRotation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WeeklyReset {
+    pub current_week: bool,
+    pub calendar: WeeklyCalendar,
     pub definition_version: DefinitionVersion,
     pub milestones: Vec<WeeklyMilestone>,
 }
@@ -106,13 +131,53 @@ impl<G: PublicMilestonesGateway, R: WorldDefinitionRepository> WeeklyResetServic
     /// Requires committed Manifest metadata and all three populated world tables
     /// before calling the provider. Typed gateway and storage failures propagate
     /// unchanged; absent individual hashes are explicit unresolved outcomes.
-    pub fn weekly_reset(&mut self) -> Result<WeeklyReset, AppError> {
+    pub fn weekly_reset(
+        &mut self,
+        calendar: &Calendar,
+        requested: Timestamp,
+        now: Timestamp,
+    ) -> Result<WeeklyReset, AppError> {
         let metadata = self
             .repository
             .current_metadata()?
             .ok_or_else(|| AppError::new(ErrorCategory::DefinitionsUnavailable))?;
         if self.repository.world_definition_counts()?[..3].contains(&0) {
             return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+        }
+        let week = calendar
+            .week_at(requested)
+            .map_err(|_| AppError::new(ErrorCategory::ClockOverflow))?;
+        let current_week = week.index == week_index(calendar.reference_reset(), now);
+        let calendar = WeeklyCalendar {
+            window: week.window,
+            rotations: week
+                .rotations
+                .into_iter()
+                .map(|prediction| WeeklyRotation {
+                    key: prediction.rotation.key().into(),
+                    title: prediction.rotation.title().into(),
+                    outcome: match prediction.outcome {
+                        destiny_core::calendar::RotationOutcome::Predicted(activities) => {
+                            RotationOutcome::Predicted(activities.to_vec())
+                        }
+                        destiny_core::calendar::RotationOutcome::NoData {
+                            coverage_start,
+                            coverage_note,
+                        } => RotationOutcome::NoData {
+                            coverage_start,
+                            coverage_note: coverage_note.into(),
+                        },
+                    },
+                })
+                .collect(),
+        };
+        if !current_week {
+            return Ok(WeeklyReset {
+                definition_version: metadata.definition_version,
+                current_week,
+                calendar,
+                milestones: Vec::new(),
+            });
         }
         let mut snapshot = self.gateway.load_public_milestones()?;
         snapshot.validate()?;
@@ -161,6 +226,8 @@ impl<G: PublicMilestonesGateway, R: WorldDefinitionRepository> WeeklyResetServic
             });
         }
         Ok(WeeklyReset {
+            current_week,
+            calendar,
             definition_version: metadata.definition_version,
             milestones,
         })
@@ -295,6 +362,73 @@ mod tests {
         }
     }
 
+    fn calendar() -> destiny_core::calendar::Calendar {
+        use destiny_core::calendar::{ActivityReference, Calendar, Rotation};
+        Calendar::new(
+            Timestamp::new(10),
+            vec![
+                Rotation::new(
+                    "raid",
+                    "Raids",
+                    0,
+                    Timestamp::new(10),
+                    "Verified from reference",
+                    vec![vec![ActivityReference::new("alpha", "Alpha", 42).unwrap()]],
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn requested_weeks_gate_live_calls_and_always_predict() {
+        use super::RotationOutcome;
+        let calendar = calendar();
+        let now = Timestamp::new(700_000);
+        let mut service = service(vec![milestone(1, 0)]);
+        let current = service.weekly_reset(&calendar, now, now).unwrap();
+        assert!(current.current_week);
+        assert_eq!(service.gateway.calls, 1);
+        assert_eq!(current.milestones.len(), 1);
+        assert!(matches!(
+            current.calendar.rotations[0].outcome,
+            RotationOutcome::Predicted(_)
+        ));
+        let other = service
+            .weekly_reset(&calendar, Timestamp::new(10), now)
+            .unwrap();
+        assert!(!other.current_week);
+        assert!(other.milestones.is_empty());
+        assert_eq!(service.gateway.calls, 1);
+        assert!(matches!(
+            other.calendar.rotations[0].outcome,
+            RotationOutcome::Predicted(_)
+        ));
+        let precoverage = destiny_core::calendar::Calendar::new(
+            Timestamp::new(10),
+            vec![
+                destiny_core::calendar::Rotation::new(
+                    "raid",
+                    "Raids",
+                    0,
+                    Timestamp::new(604_810),
+                    "Starts later",
+                    calendar.rotations()[0].entries().to_vec(),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        let result = service
+            .weekly_reset(&precoverage, Timestamp::new(10), now)
+            .unwrap();
+        assert!(
+            matches!(&result.calendar.rotations[0].outcome, RotationOutcome::NoData { coverage_note, .. } if coverage_note == "Starts later")
+        );
+        assert_eq!(service.gateway.calls, 1);
+    }
+
     #[test]
     fn each_empty_world_table_prevents_acquisition() {
         for counts in [[0, 1, 1, 1, 1], [1, 0, 1, 1, 1], [1, 1, 0, 1, 1]] {
@@ -325,7 +459,9 @@ mod tests {
                 [counts[0] > 0, counts[1] > 0, counts[2] > 0]
             );
             assert_eq!(
-                service.weekly_reset().unwrap_err(),
+                service
+                    .weekly_reset(&calendar(), Timestamp::new(10), Timestamp::new(10))
+                    .unwrap_err(),
                 AppError::new(ErrorCategory::DefinitionsUnavailable)
             );
             assert_eq!(service.gateway.calls, 0, "counts: {counts:?}");
@@ -349,7 +485,9 @@ mod tests {
                 },
             );
             assert_eq!(
-                service.weekly_reset().unwrap_err(),
+                service
+                    .weekly_reset(&calendar(), Timestamp::new(10), Timestamp::new(10))
+                    .unwrap_err(),
                 AppError::new(ErrorCategory::LocalStorage)
             );
             assert_eq!(service.gateway.calls, expected_calls);
@@ -473,7 +611,10 @@ mod tests {
         let mut service = service(vec![]);
         service.repository = InMemoryDefinitionRepository::default();
         assert_eq!(
-            service.weekly_reset().unwrap_err().category(),
+            service
+                .weekly_reset(&calendar(), Timestamp::new(10), Timestamp::new(10))
+                .unwrap_err()
+                .category(),
             ErrorCategory::DefinitionsUnavailable
         );
         assert_eq!(service.gateway.calls, 0);
@@ -488,7 +629,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            service.weekly_reset().unwrap_err().category(),
+            service
+                .weekly_reset(&calendar(), Timestamp::new(10), Timestamp::new(10))
+                .unwrap_err()
+                .category(),
             ErrorCategory::DefinitionsUnavailable
         );
         assert_eq!(service.gateway.calls, 0);
@@ -497,7 +641,9 @@ mod tests {
     #[test]
     fn resolves_all_and_preserves_templates_and_windows() {
         let mut service = service(vec![milestone(1, 7)]);
-        let result = service.weekly_reset().unwrap();
+        let result = service
+            .weekly_reset(&calendar(), Timestamp::new(10), Timestamp::new(10))
+            .unwrap();
         assert_eq!(
             result.definition_version,
             DefinitionVersion::new("world-v1")
@@ -547,7 +693,9 @@ mod tests {
                 challenge_objective_hashes: vec![],
             },
         );
-        let result = service(vec![missing]).weekly_reset().unwrap();
+        let result = service(vec![missing])
+            .weekly_reset(&calendar(), Timestamp::new(10), Timestamp::new(10))
+            .unwrap();
         let milestone = &result.milestones[0];
         assert_eq!(milestone.hash, 99);
         assert_eq!(milestone.definition, DefinitionResolution::Unresolved);
@@ -578,7 +726,7 @@ mod tests {
     #[test]
     fn milestone_order_is_order_then_hash() {
         let result = service(vec![milestone(9, 2), milestone(4, 1), milestone(1, 1)])
-            .weekly_reset()
+            .weekly_reset(&calendar(), Timestamp::new(10), Timestamp::new(10))
             .unwrap();
         assert_eq!(
             result
@@ -595,24 +743,42 @@ mod tests {
         let mut service = service(vec![]);
         let error = AppError::new(ErrorCategory::ProviderUnavailable);
         service.gateway.result = Err(error.clone());
-        assert_eq!(service.weekly_reset().unwrap_err(), error);
+        assert_eq!(
+            service
+                .weekly_reset(&calendar(), Timestamp::new(10), Timestamp::new(10))
+                .unwrap_err(),
+            error
+        );
     }
 
     #[test]
     fn empty_snapshot_and_repeated_reads_are_not_cached() {
         let mut service = service(vec![]);
-        assert!(service.weekly_reset().unwrap().milestones.is_empty());
+        assert!(
+            service
+                .weekly_reset(&calendar(), Timestamp::new(10), Timestamp::new(10))
+                .unwrap()
+                .milestones
+                .is_empty()
+        );
         service.gateway.result = Ok(PublicMilestonesSnapshot {
             milestones: vec![milestone(1, 0)],
         });
-        assert_eq!(service.weekly_reset().unwrap().milestones.len(), 1);
+        assert_eq!(
+            service
+                .weekly_reset(&calendar(), Timestamp::new(10), Timestamp::new(10))
+                .unwrap()
+                .milestones
+                .len(),
+            1
+        );
         assert_eq!(service.gateway.calls, 2);
     }
 
     #[test]
     fn invalid_snapshot_is_rejected() {
         let error = service(vec![milestone(1, 0), milestone(1, 1)])
-            .weekly_reset()
+            .weekly_reset(&calendar(), Timestamp::new(10), Timestamp::new(10))
             .unwrap_err();
         assert_eq!(error.category(), ErrorCategory::ProviderValidation);
     }

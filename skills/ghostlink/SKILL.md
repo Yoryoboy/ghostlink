@@ -26,6 +26,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - MCP `pull_stack` with `{"item_hash":"7","amount":"3","character":"2"}` (all three canonical decimal strings, no extra fields), or fallback `ghostlink pull-stack <ITEM_HASH> --amount <N> --character <CHARACTER_ID>`, requires explicit hash, amount and Postmaster owner intent. Hash is canonical uint32 decimal; amount positive int32; owner positive int64, never a class. Only qualified non-instanced account-wide Consumables/Modifications are supported; do not synthesize stack IDs or select destinations. Requires login and stored definitions. Duplicate rows constrain amount by the smallest matching stack, never their sum.
 - Never blindly retry `pull-stack`, `pull`, `move`, `equip`, `lock` or `unlock`, including after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report. For pull, exit 43 means arrival not yet observed; application is not confirmed. For move, equip, lock and unlock, exit 43 means applied but pending provider refresh. In either case, check later, do not repeat the mutation.
 - Move already at its destination during planning is refused (exit 40), not a verified no-op. Report it without working around the refusal.
+- `ghostlink update` and `ghostlink uninstall` are installation mutations, not game actions or reads. Run them only with explicit user intent; never automatically retry a failed or uncertain lifecycle command.
 - Never try to free inventory space, unequip elsewhere, or change plugs; the CLI refuses these by design.
 - Run `ghostlink login` only when the user asks or after exit 10/11; it needs a human to authorize in a browser and waits for the callback.
 - `ghostlink handler install` and `ghostlink handler uninstall` change the user's desktop configuration; run them only when the user asks. `ghostlink handler status` is read-only.
@@ -46,7 +47,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Unlockable supers, aspects, fragments | `ghostlink subclass-options` |
 | Artifact points and active perks | `ghostlink artifact` |
 | Saved in-game loadouts | `ghostlink loadouts` |
-| Public weekly reset (no account needed) | `ghostlink weekly-reset` |
+| Weekly rotation predictions (login required) | `ghostlink weekly-reset` |
 | Weekly progress for one character | `ghostlink weekly` |
 | Data looks outdated or after an in-game change | `ghostlink sync` |
 | Item names or descriptions missing, or definitions outdated | `ghostlink sync-manifest` |
@@ -55,6 +56,8 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Protect one owned item from dismantling | `ghostlink lock` |
 | Remove one owned item's lock | `ghostlink unlock` |
 | Authorize this machine | `ghostlink login` |
+| Explicitly update the Ghostlink installation | `ghostlink update` |
+| Explicitly remove the Ghostlink installation, preserving user state | `ghostlink uninstall` |
 | Browser callback never reaches login (Linux) | `ghostlink handler status` |
 
 `--character` accepts a class name (`hunter`, `titan`, `warlock`) on most commands, but `ghostlink search-inventory --character` requires the exact numeric character ID; get it from `ghostlink list-characters` first.
@@ -103,11 +106,33 @@ marks every disposition except `verified` with `isError=true`. `not_yet_observed
 is not confirmed application. Never retry pending, uncertain or refused outcomes
 blindly; re-read later without dispatching another action.
 
+## Installation Update
+
+- Supported only on Linux x86_64 GNU, using the validated official sibling updater. Unsupported installations refuse mutation; use the original installation method rather than work around validation.
+- Windows returns `unsupported_operation` without launching or deferring anything. Tell the user to close Ghostlink, stop `destiny-mcp`, and run the official sibling `.\ghostlink-update.exe` from its installation directory in a separate PowerShell session.
+- Update preserves configuration, data and credentials. Restart MCP hosts afterward to load `destiny-mcp`.
+- `status: updater_completed` means only the updater completed, not that a requested version was installed; `installed_version` is null. No atomic paired update or rollback is guaranteed. After failure or an uncertain outcome, inspect the installation first; never automatically retry.
+
+## Installation Uninstall
+
+- Preview with `ghostlink uninstall --dry-run --json`; it is strictly read-only, including no lock creation. Mutation in JSON requires `ghostlink uninstall --yes --json`, only after explicit user authorization. No purge is supported.
+- Linux x86_64 GNU official receipt-owned installations only. Missing updater is optional; source/manual/unknown installations refuse. Windows refuses before lookup/spawn: ask the user to stop MCP hosts and active login, close Ghostlink, then inspect the receipt and remove only owned files/integrations from a separate PowerShell session (or use the original package manager).
+- Preserve all configuration, databases, credentials, runtime state, external/custom paths, unknown files/backups, Cargo directories and PATH/shell config. Config is never loaded to resolve overrides. Stop MCP hosts and active login first; no process inactivity guarantee or termination.
+- Exact bundled skill identity is not installation provenance. Modified/older skills remain. Only exact installation-owned OpenCode commands and proven URI entries are eligible; name-only Claude/Codex/Pi registrations always require manual followup. Unsafe handler cleanup retains binaries/receipt.
+- Exit 0 can mean preview, cancelled, or removed_with_manual_followups, never unconditional removal of all integrations. Exit 41 partial_failure is one stderr JSON object containing both error and report, including completed/remaining per-path outcomes. Individual changes are not transactional; no rollback. Lock metadata remains intentionally. Report manual followups and preserved locations; never blindly retry.
+
 ## Descriptions
 
 - Five plug surfaces expose optional official `description` and community `clarity`: subclass slots, subclass options, artifact slots, loadout plugs and inspect `plug_details` (`hash`, `name`, `role`, optional `description`, `clarity`, `clarity_match`). Missing fields mean no text is available, not no effect.
 - `ghostlink search-inventory` returns names only. To explain perks, search first, then inspect the chosen instance.
 - Descriptions exist only for plugs present in the user's items, subclass or subclass options; there is no lookup for arbitrary perk names.
+
+## Weekly Calendar
+
+- Calendar values are predictions from a community-derived rotation, never confirmed rotations.
+- For the current week, prefer observed live milestones when they disagree with the calendar, and mention the disagreement.
+- For "what is featured next week", use MCP `date` (`YYYY-MM-DD`, UTC end of day) or CLI `--date` (local end of day); check the returned window.
+- "No data" means outside verified coverage; do not guess.
 
 ## Execution Steps
 
@@ -120,7 +145,7 @@ blindly; re-read later without dispatching another action.
 ## Output Contract
 
 - State facts only from command output; say when a result is empty instead of inventing items.
-- For move or equip, report `status`, each step, and `reason`; never claim rollback after partial progress. Move verifies location, equip verifies location and equipped state. Exit 43 is applied but not yet visible: tell the user to check again later; it is not verified success.
+- For move or equip, report `status`, each step, and `reason`; never claim rollback after partial progress. Move verifies location, equip verifies location and equipped state. Exit 43 is applied but not yet visible: tell the user to check again later; it is not verified success. Update exit 43 instead means `lifecycle_busy`.
 - For lock/unlock, report `status`, requested `locked`, `attempt`, `observed` and `reason`. Only verified success/no-op proves the lock state. Exit 41/42/43 is not verified success; never blindly retry.
 - For pull, report `disposition`, `receipt`, `failure` and all ordered observation classifications and failures. Only verified arrival is success; pending, uncertain and refused are nonzero. Never interpret a receipt as proof or blindly repeat the action.
 - For `pull-stack`, report receipt separately from disposition and ordered observations, including classification AND failure and pre/post destination, whole-profile and owner Postmaster quantities. Only `verified` succeeds; lag remains `uncertain`/42, not confirmed application. Null is unknown, not zero. Re-read with sync/postmaster later; never blindly repeat. Confirm exact hash, amount and owner before acting. Observations are not causal or atomic guarantees.

@@ -159,11 +159,13 @@ impl Cli {
             | Command::Unlock(_)
             | Command::Sync
             | Command::SyncManifest
-            | Command::WeeklyReset
+            | Command::WeeklyReset(_)
             | Command::Weekly(_)
             | Command::Login(_)
             | Command::Agents(_)
             | Command::Setup
+            | Command::Update(_)
+            | Command::Uninstall(_)
             | Command::Help
             | Command::Handler(_)
             | Command::Callback(_) => {
@@ -211,6 +213,10 @@ pub enum Command {
     Help,
     /// Interactively connect agents and optionally sign in to Bungie.
     Setup,
+    /// Run the official installation's sibling updater (Linux only).
+    Update(UpdateArgs),
+    /// Preview or remove a validated official installation, preserving user state.
+    Uninstall(UninstallArgs),
     /// Inspect or explicitly install integrations for supported AI agents.
     Agents(AgentsArgs),
     /// Equip one item, transferring first when needed, then refresh and verify.
@@ -242,9 +248,9 @@ pub enum Command {
     #[command(name = "sync-manifest")]
     SyncManifest,
 
-    /// Show the public weekly reset using stored Manifest definitions.
+    /// Predict weekly rotations and show observed current-week milestones.
     #[command(name = "weekly-reset")]
-    WeeklyReset,
+    WeeklyReset(WeeklyResetArgs),
 
     /// Show reliable weekly content and progress for one character.
     #[command(name = "weekly")]
@@ -306,6 +312,25 @@ pub enum Command {
     /// authorization outcome, so exit success here is delivery, not authorization.
     #[command(name = "callback", hide = true)]
     Callback(CallbackArgs),
+}
+
+/// Explicit installation removal authorization; user data is never purged.
+#[derive(Debug, Args)]
+pub struct UninstallArgs {
+    /// Preview only: no locks, temporary files, or directories are created.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Authorize the previewed cleanup without an interactive prompt.
+    #[arg(long)]
+    pub yes: bool,
+}
+
+/// Arguments forwarded to the official standalone updater.
+#[derive(Debug, Args)]
+pub struct UpdateArgs {
+    /// Request a specific version instead of the latest stable release.
+    #[arg(long, value_name = "VERSION")]
+    pub version: Option<String>,
 }
 
 /// How the authorization page is presented to the human.
@@ -656,6 +681,19 @@ fn parse_slot(value: &str) -> Result<String, String> {
 }
 fn parse_class(value: &str) -> Result<String, String> {
     validate_filter(value, "class")
+}
+
+#[derive(Debug, Args)]
+pub struct WeeklyResetArgs {
+    /// Predict the week in effect at the end of this local calendar day.
+    #[arg(long, value_name = "YYYY-MM-DD", value_parser = parse_calendar_date)]
+    pub date: Option<String>,
+}
+
+fn parse_calendar_date(value: &str) -> Result<String, String> {
+    destiny_adapters::calendar::instant_for_utc_date(value)
+        .map(|_| value.into())
+        .map_err(|_| "expected an ISO calendar date".into())
 }
 
 /// Weekly accepts opaque IDs and uniquely matched character classes.

@@ -129,8 +129,11 @@ pub trait InventoryReadService {
     ) -> Result<crate::schema::WeeklyOutput, WeeklyReadError> {
         Err(McpError::new(ErrorCategory::DefinitionsUnavailable).into())
     }
-    /// Reads the current public rotation; no account state is required.
-    fn weekly_reset(&mut self) -> Result<crate::schema::WeeklyResetOutput, McpError> {
+    /// Reads weekly predictions and current-week observed milestones.
+    fn weekly_reset(
+        &mut self,
+        _args: &crate::schema::WeeklyResetArgs,
+    ) -> Result<crate::schema::WeeklyResetOutput, McpError> {
         Err(McpError::new(ErrorCategory::DefinitionsUnavailable))
     }
 
@@ -209,8 +212,11 @@ impl<A: destiny_app::ArtifactOperations, I: InventoryReadService, C: Clock> Inve
     ) -> Result<crate::schema::WeeklyOutput, WeeklyReadError> {
         self.inventory.weekly(args)
     }
-    fn weekly_reset(&mut self) -> Result<crate::schema::WeeklyResetOutput, McpError> {
-        self.inventory.weekly_reset()
+    fn weekly_reset(
+        &mut self,
+        args: &crate::schema::WeeklyResetArgs,
+    ) -> Result<crate::schema::WeeklyResetOutput, McpError> {
+        self.inventory.weekly_reset(args)
     }
     fn list_characters(
         &mut self,
@@ -296,8 +302,11 @@ impl<L: destiny_app::LoadoutOperations, I: InventoryReadService, C: Clock> Inven
     ) -> Result<crate::schema::WeeklyOutput, WeeklyReadError> {
         self.inventory.weekly(args)
     }
-    fn weekly_reset(&mut self) -> Result<crate::schema::WeeklyResetOutput, McpError> {
-        self.inventory.weekly_reset()
+    fn weekly_reset(
+        &mut self,
+        args: &crate::schema::WeeklyResetArgs,
+    ) -> Result<crate::schema::WeeklyResetOutput, McpError> {
+        self.inventory.weekly_reset(args)
     }
     fn list_characters(
         &mut self,
@@ -319,11 +328,14 @@ impl<L: destiny_app::LoadoutOperations, I: InventoryReadService, C: Clock> Inven
     }
 }
 
-/// Adds a credential-free weekly service to an independent account read seam.
+/// Adds weekly calendar predictions to an independent account read seam.
 pub struct WeeklyReadService<G, R, I> {
     weekly: destiny_app::weekly_reset::WeeklyResetService<G, R>,
     inventory: I,
     timestamp: fn(Timestamp) -> Option<String>,
+    utc_date: fn(&str) -> Result<Timestamp, McpError>,
+    calendar: destiny_app::calendar::Calendar,
+    clock: Box<dyn destiny_app::Clock + Send>,
 }
 
 impl<G, R, I> WeeklyReadService<G, R, I> {
@@ -331,11 +343,17 @@ impl<G, R, I> WeeklyReadService<G, R, I> {
         weekly: destiny_app::weekly_reset::WeeklyResetService<G, R>,
         inventory: I,
         timestamp: fn(Timestamp) -> Option<String>,
+        calendar: destiny_app::calendar::Calendar,
+        clock: impl destiny_app::Clock + Send + 'static,
+        utc_date: fn(&str) -> Result<Timestamp, McpError>,
     ) -> Self {
         Self {
             weekly,
             inventory,
             timestamp,
+            utc_date,
+            calendar,
+            clock: Box::new(clock),
         }
     }
 }
@@ -373,8 +391,16 @@ where
         self.inventory.weekly(args)
     }
 
-    fn weekly_reset(&mut self) -> Result<crate::schema::WeeklyResetOutput, McpError> {
-        let reset = self.weekly.weekly_reset().map_err(McpError::from)?;
+    fn weekly_reset(
+        &mut self,
+        args: &crate::schema::WeeklyResetArgs,
+    ) -> Result<crate::schema::WeeklyResetOutput, McpError> {
+        let requested = args.date.as_deref().map(self.utc_date).transpose()?;
+        let now = self.clock.now().map_err(McpError::from)?;
+        let reset = self
+            .weekly
+            .weekly_reset(&self.calendar, requested.unwrap_or(now), now)
+            .map_err(McpError::from)?;
         Ok(weekly_reset_output(&reset, self.timestamp))
     }
 
@@ -569,6 +595,49 @@ pub fn weekly_reset_output(
     }
     WeeklyResetOutput {
         definition_version: reset.definition_version.as_str().to_owned(),
+        current_week: reset.current_week,
+        milestones_source: "observed".into(),
+        calendar: crate::schema::WeeklyCalendarView {
+            source: "prediction".into(),
+            start: timestamp(reset.calendar.window.start),
+            end: timestamp(reset.calendar.window.end),
+            rotations: reset
+                .calendar
+                .rotations
+                .iter()
+                .map(|rotation| {
+                    use crate::schema::{
+                        CalendarActivityView, WeeklyRotationOutcomeView, WeeklyRotationView,
+                    };
+                    use destiny_app::weekly_reset::RotationOutcome;
+                    WeeklyRotationView {
+                        key: rotation.key.clone(),
+                        title: rotation.title.clone(),
+                        outcome: match &rotation.outcome {
+                            RotationOutcome::Predicted(activities) => {
+                                WeeklyRotationOutcomeView::Predicted {
+                                    activities: activities
+                                        .iter()
+                                        .map(|a| CalendarActivityView {
+                                            name: a.name().into(),
+                                            hash: a.hash(),
+                                        })
+                                        .collect(),
+                                }
+                            }
+                            RotationOutcome::NoData {
+                                coverage_start,
+                                coverage_note,
+                            } => WeeklyRotationOutcomeView::NoData {
+                                activities: vec![],
+                                coverage_start: timestamp(*coverage_start),
+                                coverage_note: coverage_note.clone(),
+                            },
+                        },
+                    }
+                })
+                .collect(),
+        },
         milestones: reset
             .milestones
             .iter()
@@ -3027,8 +3096,28 @@ mod tests {
             ),
             mcp_service(queries),
             |_| None,
+            destiny_app::calendar::Calendar::new(
+                Timestamp::new(10),
+                vec![
+                    destiny_app::calendar::Rotation::new(
+                        "raid",
+                        "Raids",
+                        0,
+                        Timestamp::new(10),
+                        "Verified",
+                        vec![vec![
+                            destiny_app::calendar::ActivityReference::new("alpha", "Alpha", 42)
+                                .unwrap(),
+                        ]],
+                    )
+                    .unwrap(),
+                ],
+            )
+            .unwrap(),
+            destiny_app::test_support::FakeClock::fixed(Timestamp::new(10)),
+            |_| panic!("omitted date must not invoke date resolver"),
         );
-        let error = service.weekly_reset().unwrap_err();
+        let error = service.weekly_reset(&Default::default()).unwrap_err();
         assert_eq!(error.code(), "definitions_unavailable");
         assert_eq!(
             error.message(),
@@ -3043,6 +3132,14 @@ mod tests {
     fn weekly_output_bounds_and_sanitizes_provider_text() {
         use destiny_app::weekly_reset::{DefinitionResolution, WeeklyMilestone, WeeklyReset};
         let reset = WeeklyReset {
+            current_week: true,
+            calendar: destiny_app::weekly_reset::WeeklyCalendar {
+                window: destiny_app::calendar::WeekWindow {
+                    start: Timestamp::new(10),
+                    end: Timestamp::new(20),
+                },
+                rotations: vec![],
+            },
             definition_version: DefinitionVersion::new("v1"),
             milestones: vec![WeeklyMilestone {
                 hash: 1,

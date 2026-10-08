@@ -61,6 +61,55 @@ flags to `ghostlink <cmd> --help`. `crates/destiny-cli/tests/skill_drift.rs`
 fails when the skill names a missing command or flag, or omits a public
 command, so update the skill together with any CLI surface change.
 
+## Lifecycle update tests
+
+`installation.rs` validates the narrowly supported official cargo-home receipt;
+`update.rs` invokes only its validated sibling updater. The runner routes update
+before application runtime construction. Windows returns standalone instructions,
+never a helper launch. See [update](cli.md#update) for the receipt/exit contract.
+
+```sh
+cargo test -p ghostlink --test update
+cargo test -p ghostlink --test agents --test handler_parsing
+cargo fmt --all --check
+```
+
+Update tests use isolated temporary receipts, fake product files and shell
+updaters, not installed binaries, live releases or keyrings. They exercise version
+forwarding, bounded concurrent stream draining, refusal boundaries, receipt
+lookup/child environment, lock contention and panic-on-access runtime factories.
+Linux-only execution tests do not verify Windows runtime behavior or real release
+installation. Fixture directories are retained in the OS temporary directory.
+
+## Lifecycle uninstall tests
+
+`uninstall.rs` dispatches before runtime/API/dotenv/SQLite/keyring factories.
+`Installation::validate_uninstall` shares receipt/product validation but does not
+require an updater. `run_at` injects fixture paths, confirmation and a
+`LinuxUriHandlerRegistrar` with a fake command runner; production uses only
+`current_exe`, never a user-selected install root. Scoped agent and handler APIs
+bind execution to their read-only previews. The kernel lock is acquired after
+consent, snapshots rechecked, and CLI/receipt retained on unsafe integration cleanup.
+No purge, elevation, recursive installation deletion or process termination exists.
+See [uninstall](cli.md#uninstall) for reporting/exit semantics and limitations.
+
+```sh
+cargo test -p ghostlink --test uninstall --test update --test skill_drift --test agents --test handler_parsing
+cargo test -p destiny-adapters --all-features uri_handler
+cargo fmt --all --check
+cargo clippy -p ghostlink --all-targets -- -D warnings
+```
+
+Uninstall tests use only retained private temporary fixture trees, dummy installed
+binaries and fake `xdg-mime` queries, never actual HOME, credentials or integrations.
+They cover preview no-writes, consent/cancellation, ownership/symlinks, optional
+updater, lock contention, changed snapshots, active-handler unsafe skips and partial
+filesystem failures, JSON shape, Windows guidance and panic-on-access factories.
+The handler regression models a higher-priority active Ghostlink association with
+an unrelated user MIME file: without an owned clearing rewrite, desktop/record stay.
+Real desktop behavior, hostile concurrent local replacement, Windows execution and
+live installation/removal are not proven by these fixtures.
+
 ## Baseline checks
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy, build, and the all-features

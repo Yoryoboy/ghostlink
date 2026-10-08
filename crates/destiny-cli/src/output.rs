@@ -621,12 +621,16 @@ pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncRepor
 }
 
 /// Renders the resolved public reset; unknown hashes stay explicitly unresolved.
-pub fn render_weekly_reset(
+pub fn render_weekly_reset<Tz: chrono::TimeZone>(
     mode: OutputMode,
     reset: &destiny_app::weekly_reset::WeeklyReset,
-) -> String {
+    zone: &Tz,
+) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
     use destiny_adapters::format_reset_timestamp;
-    use destiny_app::weekly_reset::DefinitionResolution;
+    use destiny_app::weekly_reset::{DefinitionResolution, RotationOutcome};
     let fields = |definition: &DefinitionResolution| match definition {
         DefinitionResolution::Resolved { name, description } => {
             (Some(name.clone()), Some(description.clone()), true)
@@ -639,7 +643,26 @@ pub fn render_weekly_reset(
     };
     match mode {
         OutputMode::Human => {
-            let mut lines = vec![format!("Weekly reset (manifest {})", sanitize(reset.definition_version.as_str()))];
+            let window = reset.calendar.window;
+            let local = |timestamp: destiny_app::Timestamp| {
+                i64::try_from(timestamp.seconds()).ok()
+                    .and_then(|seconds| zone.timestamp_opt(seconds, 0).single())
+                    .map(|date| date.format("%Y-%m-%d %H:%M %:z").to_string())
+                    .unwrap_or_else(|| "unavailable".into())
+            };
+            let mut lines = vec![
+                format!("Weekly reset (manifest {})", sanitize(reset.definition_version.as_str())),
+                "Calendar (prediction)".into(),
+                format!("Week of {} → {} (exclusive end)", local(window.start), local(window.end)),
+            ];
+            for rotation in &reset.calendar.rotations {
+                let value = match &rotation.outcome {
+                    RotationOutcome::Predicted(activities) => activities.iter().map(|a| sanitize(a.name())).collect::<Vec<_>>().join(", "),
+                    RotationOutcome::NoData { coverage_note, .. } => format!("no data — {}", sanitize(coverage_note)),
+                };
+                lines.push(format!("  {} (prediction): {value}", sanitize(&rotation.title)));
+            }
+            lines.push(if reset.current_week { "Live milestones (observed)" } else { "Live data (observed) is only available for the current week." }.into());
             for milestone in &reset.milestones {
                 let mut header = label(milestone.hash, &milestone.definition);
                 match (
@@ -665,6 +688,19 @@ pub fn render_weekly_reset(
         }
         OutputMode::Json => json!({
             "kind": "weekly_reset", "definition_version": reset.definition_version.as_str(),
+            "current_week": reset.current_week,
+            "calendar": {
+                "source": "prediction",
+                "start": format_reset_timestamp(reset.calendar.window.start, false),
+                "end": format_reset_timestamp(reset.calendar.window.end, false),
+                "rotations": reset.calendar.rotations.iter().map(|rotation| {
+                    match &rotation.outcome {
+                        RotationOutcome::Predicted(activities) => json!({"key": rotation.key, "title": rotation.title, "status": "predicted", "activities": activities.iter().map(|a| json!({"name": a.name(), "hash": a.hash()})).collect::<Vec<_>>() }),
+                        RotationOutcome::NoData { coverage_start, coverage_note } => json!({"key": rotation.key, "title": rotation.title, "status": "no_data", "activities": [], "coverage_start": format_reset_timestamp(*coverage_start, false), "coverage_note": coverage_note}),
+                    }
+                }).collect::<Vec<_>>()
+            },
+            "milestones_source": "observed",
             "milestones": reset.milestones.iter().map(|milestone| {
                 let (name, description, resolved) = fields(&milestone.definition);
                 json!({"hash": milestone.hash, "order": milestone.order, "name": name, "description": description, "resolved": resolved,

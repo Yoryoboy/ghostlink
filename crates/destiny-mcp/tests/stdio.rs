@@ -604,7 +604,7 @@ impl FixtureSession {
     }
 
     /// Cancels, closes stdin, and asserts a clean shutdown with clean streams.
-    async fn shutdown(mut self) {
+    async fn shutdown(mut self) -> String {
         let id = self.next_id();
         self.notify(
             "notifications/cancelled",
@@ -634,6 +634,7 @@ impl FixtureSession {
             !stderr_text.contains("\"jsonrpc\""),
             "protocol frames must not be written to stderr: {stderr_text}"
         );
+        stderr_text
     }
 }
 
@@ -752,6 +753,58 @@ async fn weekly_reset_stdio_missing_definitions() {
 }
 
 #[tokio::test]
+async fn weekly_reset_stdio_dates() {
+    let mut session = FixtureSession::spawn(None).await;
+    let response = session
+        .call_tool(WEEKLY_RESET_TOOL, json!({"date": "2026-10-13"}))
+        .await;
+    assert_eq!(response["result"]["isError"], false, "{response}");
+    let reset = structured(&response);
+    assert_eq!(reset["current_week"], false);
+    assert_eq!(reset["calendar"]["source"], "prediction");
+    assert_eq!(reset["calendar"]["start"], "2026-10-13T17:00:00Z");
+    assert_eq!(reset["calendar"]["end"], "2026-10-20T17:00:00Z");
+    assert_eq!(reset["milestones_source"], "observed");
+    assert_eq!(reset["milestones"], json!([]));
+    let rotations = reset["calendar"]["rotations"].as_array().unwrap();
+    assert_eq!(rotations.len(), 4);
+    assert!(
+        rotations
+            .iter()
+            .all(|r| r["status"] == "predicted" && !r["activities"].as_array().unwrap().is_empty())
+    );
+    assert_eq!(rotations[0]["activities"][0]["name"], "Vow of the Disciple");
+    assert!(rotations[0]["activities"][0]["hash"].is_u64());
+    let response = session
+        .call_tool(WEEKLY_RESET_TOOL, json!({"date": "2026-06-15"}))
+        .await;
+    assert_eq!(response["result"]["isError"], false);
+    assert_eq!(structured(&response)["current_week"], false);
+    for rotation in structured(&response)["calendar"]["rotations"]
+        .as_array()
+        .unwrap()
+    {
+        assert_eq!(rotation["status"], "no_data");
+        assert_eq!(rotation["activities"], json!([]));
+        assert!(rotation["coverage_start"].is_string());
+        assert!(!rotation["coverage_note"].as_str().unwrap().is_empty());
+    }
+    for date in ["2026-13-01", "06/10/2026", "2026-02-29", "2026-10-6"] {
+        let response = session
+            .call_tool(WEEKLY_RESET_TOOL, json!({"date": date}))
+            .await;
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        assert_eq!(structured(&response)["code"], "provider_validation");
+        assert_eq!(
+            structured(&response)["message"],
+            "invalid date: expected YYYY-MM-DD (a representable UTC calendar date)"
+        );
+    }
+    let log = session.shutdown().await;
+    assert!(log.contains("weekly milestones requests: 0"), "{log}");
+}
+
+#[tokio::test]
 async fn weekly_reset_stdio_contract() {
     let mut session = FixtureSession::spawn(None).await;
     let id = session.next_id();
@@ -764,10 +817,37 @@ async fn weekly_reset_stdio_contract() {
         .expect("weekly tool listed");
     assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     assert!(tool["outputSchema"].is_object());
+    let date = &tool["inputSchema"]["properties"]["date"];
+    assert!(date.is_object());
+    assert!(date["description"].as_str().unwrap().contains("YYYY-MM-DD"));
+    assert!(date["description"].as_str().unwrap().contains(
+        "the weekly period in effect at the end of that UTC day; omit for the current week"
+    ));
+    assert!(
+        !tool["inputSchema"]["required"]
+            .as_array()
+            .is_some_and(|r| r.contains(&json!("date")))
+    );
+    assert!(
+        tool["description"]
+            .as_str()
+            .unwrap()
+            .contains("community-derived")
+    );
+    for field in ["current_week", "calendar", "milestones_source"] {
+        assert!(
+            tool["outputSchema"]["properties"].get(field).is_some(),
+            "{field}"
+        );
+    }
     let response = session.call_tool(WEEKLY_RESET_TOOL, json!({})).await;
     assert_eq!(response["result"]["isError"], false);
     let reset = structured(&response);
     assert_eq!(reset["kind"], "weekly_reset");
+    assert_eq!(reset["current_week"], true);
+    assert_eq!(reset["calendar"]["source"], "prediction");
+    assert_eq!(reset["calendar"]["start"], "2026-10-06T17:00:00Z");
+    assert_eq!(reset["milestones_source"], "observed");
     assert_eq!(reset["definition_version"], "fixture-definitions-v1");
     assert_eq!(reset["milestones"][0]["name"], "Weekly raid");
     assert_eq!(reset["milestones"][0]["start"], "1970-01-01T00:00:00Z");
@@ -788,7 +868,17 @@ async fn weekly_reset_stdio_contract() {
         .call_tool(WEEKLY_RESET_TOOL, json!({"unknown": "sentinel"}))
         .await;
     assert_eq!(rejected["error"]["code"], -32602);
-    session.shutdown().await;
+    // Explicit current date uses UTC end-of-day and also fetches live milestones.
+    let response = session
+        .call_tool(WEEKLY_RESET_TOOL, json!({"date": "2026-10-06"}))
+        .await;
+    assert_eq!(structured(&response)["current_week"], true);
+    assert_eq!(
+        structured(&response)["milestones"][0]["name"],
+        "Weekly raid"
+    );
+    let log = session.shutdown().await;
+    assert!(log.contains("weekly milestones requests: 2"), "{log}");
 }
 
 #[tokio::test]

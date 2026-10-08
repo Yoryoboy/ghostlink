@@ -375,12 +375,16 @@ fn compose_configured<F: ReadFoundations>(
     Ok(ReadRuntime::new(service, freshness))
 }
 
-/// Public Manifest acquisitions. Deliberately has no credential-store seam.
+/// Manifest acquisitions; weekly reset additionally requires a stored session.
 ///
 /// Reuses shared read config (API key, database path, optional label, TTL),
 /// which loads no OAuth-only key. Sync uses only the API key and database path;
 /// it always publishes the real upstream version, never the optional override.
 pub trait ManifestFoundations {
+    /// Only authenticated weekly reads call this seam, never Manifest sync.
+    fn require_session(&mut self, _config: &ReadRuntimeConfig) -> Result<(), AppError> {
+        Err(AppError::new(ErrorCategory::AuthorizationRequired))
+    }
     type Transport: destiny_adapters::manifest::ManifestTransport;
     type Clock: Clock;
     type Repository: destiny_app::DefinitionCatalogRepository
@@ -404,6 +408,9 @@ pub trait ManifestFoundations {
 }
 
 impl ManifestFoundations for ProductionFoundations {
+    fn require_session(&mut self, config: &ReadRuntimeConfig) -> Result<(), AppError> {
+        ReadFoundations::credential_source(self, config).map(|_| ())
+    }
     fn clarity_transport(
         &mut self,
     ) -> Result<Box<dyn destiny_adapters::clarity::ClarityTransport>, AppError> {
@@ -507,16 +514,26 @@ impl<F: ManifestFoundations> ManifestFactory for ComposingManifestFactory<F> {
     }
 }
 
-/// Public weekly reads share the Manifest foundations, never account credentials.
+/// Authenticated weekly reset composition over the public milestones gateway.
 pub trait WeeklyResetFactory {
-    fn weekly_reset(&mut self) -> Result<destiny_app::weekly_reset::WeeklyReset, CliError>;
+    fn weekly_reset(
+        &mut self,
+        requested: Option<destiny_app::Timestamp>,
+    ) -> Result<destiny_app::weekly_reset::WeeklyReset, CliError>;
 }
 
 impl<F: ManifestFoundations> WeeklyResetFactory for ComposingManifestFactory<F> {
-    fn weekly_reset(&mut self) -> Result<destiny_app::weekly_reset::WeeklyReset, CliError> {
+    fn weekly_reset(
+        &mut self,
+        requested: Option<destiny_app::Timestamp>,
+    ) -> Result<destiny_app::weekly_reset::WeeklyReset, CliError> {
         let foundations = &mut self.foundations;
         let config = foundations.config()?;
+        foundations.require_session(&config)?;
         let clock = foundations.clock()?;
+        let now = clock.now()?;
+        let calendar = destiny_adapters::calendar::embedded_calendar()
+            .map_err(|_| CliError::from_category(ErrorCategory::ClockOverflow))?;
         let transport = foundations.transport()?;
         let api_key =
             destiny_adapters::manifest::ManifestApiKey::new(config.api_key().expose_secret())?;
@@ -524,7 +541,7 @@ impl<F: ManifestFoundations> WeeklyResetFactory for ComposingManifestFactory<F> 
             destiny_adapters::manifest::BungieManifestGateway::new(api_key, transport, clock);
         let repository = foundations.store(&config)?;
         destiny_app::weekly_reset::WeeklyResetService::new(gateway, repository)
-            .weekly_reset()
+            .weekly_reset(&calendar, requested.unwrap_or(now), now)
             .map_err(CliError::from)
     }
 }
@@ -1304,8 +1321,17 @@ mod tests {
     }
     struct WeeklyFoundations {
         inner: FakeManifestFoundations,
+        missing_login: bool,
     }
     impl super::ManifestFoundations for WeeklyFoundations {
+        fn require_session(&mut self, _: &ReadRuntimeConfig) -> Result<(), AppError> {
+            let mut foundations = PersonalFoundations {
+                store: None,
+                calls: Rc::clone(&self.inner.log),
+                missing_login: self.missing_login,
+            };
+            foundations.credential_source(&config()).map(|_| ())
+        }
         type Transport = WeeklyTransport;
         type Clock = ScriptedClock;
         type Repository = SqliteStore;
@@ -1313,7 +1339,13 @@ mod tests {
             self.inner.config()
         }
         fn clock(&mut self) -> Result<Self::Clock, AppError> {
-            self.inner.clock()
+            Ok(ScriptedClock {
+                now: Ok(
+                    destiny_adapters::calendar::instant_for_date("2026-10-06", &chrono::Utc)
+                        .unwrap(),
+                ),
+                log: Rc::clone(&self.inner.log),
+            })
         }
         fn transport(&mut self) -> Result<Self::Transport, AppError> {
             Ok(WeeklyTransport {
@@ -1814,7 +1846,12 @@ mod tests {
     #[test]
     fn weekly_reset_composition_uses_published_sqlite_and_gates_empty_definitions() {
         use destiny_app::{ManifestGateway, WorldDefinitionRepository};
-        for populated in [false, true] {
+        for (populated, date, current_week) in [
+            (false, None, true),
+            (true, None, true),
+            (true, Some("2026-10-06"), true),
+            (true, Some("2026-09-29"), false),
+        ] {
             // Private temporary SQLite database: no persistent state or credentials.
             let mut store = SqliteStore::open_in_memory().unwrap();
             if populated {
@@ -1860,18 +1897,38 @@ mod tests {
             }
             let calls = log();
             let mut factory = super::ComposingManifestFactory::new(WeeklyFoundations {
+                missing_login: false,
                 inner: FakeManifestFoundations {
                     log: Rc::clone(&calls),
                     store: Some(store),
                 },
             });
-            let output = crate::runner::run_weekly_reset(&mut factory, OutputMode::Human);
-            if populated {
-                assert_eq!(output.exit_code, 0, "{}", output.stderr);
-                assert_eq!(
-                    output.stdout,
-                    "Weekly reset (manifest v1)\nItem\n  - Item\n    modifiers: Item\n"
+            let requested = date.map(|date| {
+                destiny_adapters::calendar::instant_for_date(date, &chrono::Utc).unwrap()
+            });
+            let output =
+                crate::runner::run_weekly_reset(&mut factory, OutputMode::Human, requested);
+            if populated && !current_week {
+                assert_eq!(output.exit_code, 0);
+                assert!(
+                    output
+                        .stdout
+                        .contains("Live data (observed) is only available for the current week.")
                 );
+                assert!(
+                    output
+                        .stdout
+                        .contains("Featured raids (prediction): Deep Stone Crypt, Crota's End")
+                );
+                assert!(!calls.borrow().contains(&"milestones"));
+            } else if populated {
+                assert_eq!(output.exit_code, 0, "{}", output.stderr);
+                assert!(
+                    output.stdout.contains(
+                        "Live milestones (observed)\nItem\n  - Item\n    modifiers: Item\n"
+                    )
+                );
+                assert!(output.stdout.contains("Calendar (prediction)"));
                 assert_eq!(
                     calls
                         .borrow()
@@ -1888,6 +1945,34 @@ mod tests {
                 );
                 assert!(!calls.borrow().contains(&"milestones"));
             }
+        }
+    }
+
+    #[test]
+    fn weekly_reset_missing_session_matches_authenticated_reads() {
+        for mode in [OutputMode::Human, OutputMode::Json] {
+            let calls = log();
+            let mut weekly = super::ComposingManifestFactory::new(WeeklyFoundations {
+                missing_login: true,
+                inner: FakeManifestFoundations {
+                    log: Rc::clone(&calls),
+                    store: Some(SqliteStore::open_in_memory().unwrap()),
+                },
+            });
+            let actual = crate::runner::run_weekly_reset(&mut weekly, mode, None);
+            let mut read = PersonalFoundations {
+                store: Some(SqliteStore::open_in_memory().unwrap()),
+                calls: Rc::clone(&calls),
+                missing_login: true,
+            };
+            let expected = crate::runner::ProcessOutput::failure(
+                mode,
+                compose(&mut read).err().unwrap().into(),
+            );
+            assert_eq!(actual, expected);
+            assert_eq!(actual.exit_code, 10);
+            assert!(!calls.borrow().contains(&"milestones"));
+            assert!(!calls.borrow().contains(&"now"));
         }
     }
 
