@@ -95,7 +95,7 @@ pub use destiny_core::{
     CharacterListResult, Clock, CredentialMaterial, CredentialSource, CredentialStore, Dataset,
     DefinitionReplacementInput, DefinitionRepository, DefinitionSearchQuery, DefinitionVersion,
     DestinationSelector, DestinyMembership, ErrorCategory, ExecutionEvidence, FreshnessPolicy,
-    FreshnessStatus, InspectItemRequest, InstanceSearchQuery, InventoryRepository,
+    FreshnessStatus, InspectItemRequest, InstanceSearchQuery, InventoryEffect, InventoryRepository,
     InventorySearchHit, InventorySearchResult, InventorySnapshot, InventorySnapshotInput,
     ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstance, ItemInstanceId,
     ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH,

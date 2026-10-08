@@ -67,6 +67,12 @@ G5/G7 CLI UX.
     equip with caller-resolved unequip, instance pull); 11 tests, core 210
     pass, clippy clean. Commit: see git log (`feat(core): add acknowledged
     inventory effect reducer`).
+  - [x] B2 `InventoryRepository::apply_acknowledged_effects(membership,
+    effects)`: SQLite IMMEDIATE transaction updates changed item rows and
+    bumps the revision once; keeps checked_at/source/invalidation; no-op
+    writes nothing; in-memory parity; CLI/MCP wrappers forward. core,
+    adapters, app tests + workspace clippy pass. Commit: see git log
+    (`feat(inventory): persist acknowledged effects locally`).
 - [ ] **T3 — DIM-style action pipeline.** Remove forced preflight acquisition
   from move, lock, equip, pull item, pull stack and apply loadout; plan and
   execute from the local projection; apply the effect from T2 on
