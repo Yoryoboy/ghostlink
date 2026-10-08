@@ -96,7 +96,7 @@ Access tokens, authorization codes, API keys, callback query values, and raw cre
 
 Bungie remains the source of truth. SQLite contains a rebuildable cache/search projection, not an authority. Manifest data is synchronized by version: download to temporary storage, validate completeness and version, then replace definitions in one transaction. Profile synchronization fetches the required profile/components, normalizes them, and atomically replaces the affected snapshot plus `fetched_at`, `SyncRevision`, source, and schema version.
 
-Freshness is dataset-specific (Manifest, profile, character inventory) and policy-driven rather than a single global TTL. Reads may use a fresh projection; stale or missing data triggers synchronization before answering. A forced `sync` bypasses freshness. A mutation always performs a mandatory preflight refresh regardless of TTL, and post-action refresh is required before verification. Concurrent syncs use a per-dataset lock or equivalent single-flight policy; an interrupted transaction leaves the prior committed snapshot intact.
+Freshness is dataset-specific (Manifest, profile, character inventory) and policy-driven rather than a single global TTL. Reads may use a fresh projection; stale or missing data triggers synchronization before answering. A forced `sync` bypasses freshness. A mutation always performs a mandatory preflight refresh regardless of TTL; after an acknowledged action the projection is durably invalidated instead of re-read, so the next ordinary read syncs. Concurrent syncs use a per-dataset lock or equivalent single-flight policy; an interrupted transaction leaves the prior committed snapshot intact.
 
 Repeated syncs are idempotent at the projection level: the same Bungie state produces the same normalized rows and revision semantics. A successful replacement with changed normalized content receives the next repository-generated `SyncRevision`; unchanged normalized content may retain its revision. Remote mutations are not assumed globally idempotent. Each plan has a local `plan_id`, a bounded step identity, and an execution record so retries can re-read current state and avoid replaying a step whose postcondition is already true. Never claim atomicity across multiple Bungie calls.
 
@@ -113,16 +113,10 @@ Repeated syncs are idempotent at the projection level: the same Bungie state pro
 3. **Mandatory fresh preflight:** fetch current profile state, re-resolve the item by stable identity, re-check destination, lock/availability and other applicable constraints, and invalidate the plan if assumptions changed. Revalidate official/current lock, availability, and transfer constraints at implementation time before relying on provider behavior.
 4. **Execution:** call the minimum Bungie operations, using Vault as an intermediate only when required by Bungie semantics. Record step outcomes without recording secrets.
 5. **Partial failure:** stop on an unsafe failure, report completed and uncompleted steps, and do not claim rollback or atomicity. A retry must refresh and re-plan.
-6. **Post-action refresh:** fetch the affected profile/components and commit the resulting projection.
-7. **Verification:** require the item to be observed at the requested destination; equip additionally requires `equipped == true`. A failed refresh yields verification failure, not a stale observation or success.
+6. **Acknowledgement (optimistic success):** when Bungie acknowledges every planned step, the outcome is `applied`. The profile is not re-read after the action, because Bungie's profile lags behind accepted actions and a post-action read reported false failures.
+7. **Freshness invalidation:** after any dispatched attempt the local projection is durably marked invalidated, so the next ordinary read forces a provider sync. If that local update fails, the outcome fails closed instead of claiming `applied`.
 
-`applied_pending_provider_refresh` is a distinct non-success state: every
-planned step was attempted and provider-confirmed, but a successful post-action
-refresh retained the pre-dispatch revision (unchanged normalized content) and
-the resolved item did not match the target state. Changed-profile contradictions
-remain `verification_failed`; uncertain, refused and partial attempts do not
-qualify. No polling or retries are added: do not retry; run `ghostlink sync`
-later to confirm.
+Refused, uncertain and partially executed attempts are never `applied`. No polling or retries are added.
 
 ### MCP mutation contract
 
@@ -138,7 +132,7 @@ Retry only transient transport, provider-unavailable, and rate-limit outcomes, w
 
 ## 9. Threat model and trust boundaries
 
-The user and Bungie are external trust boundaries. The system browser is trusted for user interaction but not for callback input; callback state and code validation protect against CSRF and unsolicited callbacks. The MCP host/model is untrusted with respect to credentials and mutation authority. SQLite is local but inspectable and therefore receives only non-secret projections. The OS credential store is the preferred secret boundary. Threats include malicious callback requests, state fixation, token leakage through diagnostics, stale-state destructive actions, prompt-injected mutation requests, and local-disk exposure. Mitigations are exact callback matching, one-time random state, no secrets in model-visible channels, semantic resolution with ambiguity rejection, mandatory fresh preflight, single-call intent-authorized MCP mutation, restricted fallback policy, and post-action verification.
+The user and Bungie are external trust boundaries. The system browser is trusted for user interaction but not for callback input; callback state and code validation protect against CSRF and unsolicited callbacks. The MCP host/model is untrusted with respect to credentials and mutation authority. SQLite is local but inspectable and therefore receives only non-secret projections. The OS credential store is the preferred secret boundary. Threats include malicious callback requests, state fixation, token leakage through diagnostics, stale-state destructive actions, prompt-injected mutation requests, and local-disk exposure. Mitigations are exact callback matching, one-time random state, no secrets in model-visible channels, semantic resolution with ambiguity rejection, mandatory fresh preflight, single-call intent-authorized MCP mutation, restricted fallback policy, and acknowledgement-only success with durable freshness invalidation.
 
 ## 10. Configuration and deployment
 
@@ -160,7 +154,7 @@ The MCP adapter is a server-side stdio process. Its tools include inventory read
 | Equip one item | yes, explicit character required | yes, explicit item and character required | shared equip planner/executor and JSON projection |
 | Raw Bungie request | no | no | never exposed |
 
-Every use case returns either a typed success containing sanitized domain records and freshness, or a typed failure from the shared taxonomy. Adapters may translate wording and exit/status conventions, but cannot reinterpret a successful remote mutation or downgrade `verification_failed` or `applied_pending_provider_refresh` to success. Pending provider refresh remains CLI exit 43 and MCP `isError=true` for both mutation tools.
+Every use case returns either a typed success containing sanitized domain records and freshness, or a typed failure from the shared taxonomy. Adapters may translate wording and exit/status conventions, but cannot reinterpret a non-acknowledged or partial mutation as success. Mutation actions use CLI exit 0 for `applied` or a fresh no-op, 41 for refused, uncertain or partial attempts, and 42 when local state could not be updated after an acknowledged action; MCP reports every non-success as `isError=true`.
 
 ## 12. Operational invariants
 

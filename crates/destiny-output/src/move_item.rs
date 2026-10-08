@@ -13,22 +13,18 @@ pub use crate::equip::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MoveStatus {
     Applied,
-    VerifiedSuccess,
     VerifiedNoop,
     Incomplete,
     VerificationFailed,
-    AppliedPendingProviderRefresh,
     Refused,
 }
 impl MoveStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Applied => "applied",
-            Self::VerifiedSuccess => "verified_success",
             Self::VerifiedNoop => "verified_noop",
             Self::Incomplete => "incomplete",
             Self::VerificationFailed => "verification_failed",
-            Self::AppliedPendingProviderRefresh => "applied_pending_provider_refresh",
             Self::Refused => "refused",
         }
     }
@@ -99,15 +95,8 @@ impl MoveOutput {
                 MoveStatus::Applied, e, ProfileRefresh::NotRequired,
                 Some("Bungie accepted the action; not re-read".into()),
             ),
-            MoveExecutionOutcome::VerifiedSuccess(e) => (
-                MoveStatus::VerifiedSuccess, e, ProfileRefresh::Refreshed, None,
-            ),
             MoveExecutionOutcome::VerifiedNoOp(e) => (
                 MoveStatus::VerifiedNoop, e, ProfileRefresh::NotRequired, None,
-            ),
-            MoveExecutionOutcome::AppliedPendingProviderRefresh(e) => (
-                MoveStatus::AppliedPendingProviderRefresh, e.evidence(), ProfileRefresh::Refreshed,
-                Some("the provider confirmed every step, but its profile still shows the pre-action state; observed location is stale/unconfirmed; do not retry, run `ghostlink sync` later to confirm".into()),
             ),
             MoveExecutionOutcome::IncompleteExecution(e) => (
                 MoveStatus::Incomplete, e.evidence(), ProfileRefresh::NotRequired,
@@ -115,13 +104,9 @@ impl MoveOutput {
             ),
             MoveExecutionOutcome::VerificationFailed(e) => (
                 MoveStatus::VerificationFailed, e.evidence(),
-                if e.reason() == VerificationFailureReason::RefreshFailed {
-                    ProfileRefresh::Failed
-                } else { ProfileRefresh::Refreshed },
+                ProfileRefresh::Failed,
                 Some(match e.reason() {
                     VerificationFailureReason::RefreshFailed => "outcome is uncertain: local state could not be updated after the action",
-                    VerificationFailureReason::Unresolved => "outcome is uncertain: refreshed state could not uniquely resolve the item",
-                    VerificationFailureReason::Elsewhere => "refreshed state contradicts the reported progress; move was not verified",
                 }.into()),
             ),
         };
@@ -160,8 +145,7 @@ impl MoveOutput {
             "steps_completed":self.steps.iter().filter(|s| s.outcome == "completed").count(),
             "steps_uncompleted":self.steps.iter().filter(|s| s.outcome != "completed").count(),
             "verification":match self.status {
-                MoveStatus::VerifiedSuccess | MoveStatus::VerifiedNoop => "verified",
-                MoveStatus::AppliedPendingProviderRefresh => "pending_provider_refresh",
+                MoveStatus::VerifiedNoop => "verified",
                 MoveStatus::VerificationFailed => "failed",
                 _ => "not_verified",
             },
@@ -189,24 +173,6 @@ impl MoveOutput {
         );
         if self.status == MoveStatus::VerifiedNoop {
             return format!("{name} is already at {destination}\n✔ verified");
-        }
-        if self.status == MoveStatus::VerifiedSuccess {
-            let mut text = format!("{name}: ");
-            if let Some(from) = self.steps.first().and_then(|s| s.from.as_ref()) {
-                text.push_str(&clean(&from.label));
-            } else {
-                text.push_str(&destination);
-            }
-            for step in &self.steps {
-                text.push_str(&format!(" → {} (transferred)", clean(&step.to.label)));
-            }
-            text.push_str("\n✔ verified");
-            if self.steps.iter().any(|s| s.outcome == "uncertain") {
-                text.push_str(
-                    "\nprovider outcome was uncertain; refreshed state confirms destination",
-                );
-            }
-            return text;
         }
         let mut lines = vec![format!("{name}: {}", self.status.as_str())];
         if let Some(reason) = &self.reason {
@@ -246,11 +212,7 @@ impl MoveOutput {
         if let Some(observed) = &self.observed {
             lines.push(format!(
                 "{}: {}",
-                if self.status == MoveStatus::AppliedPendingProviderRefresh {
-                    "stale/unconfirmed state"
-                } else {
-                    "refreshed state"
-                },
+                "refreshed state",
                 clean(&observed.location.label)
             ));
         }

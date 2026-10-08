@@ -990,15 +990,12 @@ where
             .plan_move(&move_request, self.lifetime, self.policy, preflight_now)
             .map_err(mutation_failure)?;
 
-        // The post-action observation is read after the plan, so a real clock
-        // stamps it later than the preflight it observes. `plan_move` already
-        // ran the ordinary freshness gate, and the executor forces the fresh
-        // preflight, the ordered dispatch, the post-action refresh, and the
-        // destination verification itself.
+        // Preserve timestamp ordering after planning. The executor owns fresh
+        // preflight, ordered dispatch, receipt classification and invalidation.
         let post_action_now = self.clock.now().map_err(McpError::from)?;
         let outcome = self
             .mutations
-            .execute_move_verified(
+            .execute_move_action(
                 &mut self.transfer,
                 &move_request,
                 &plan,
@@ -1167,7 +1164,7 @@ where
         Ok(
             match self
                 .service
-                .execute_verified(plan, &mut self.gateway, self.freshness)
+                .execute(plan, &mut self.gateway, self.freshness)
             {
                 Ok(outcome) => StackPullOutput::from_outcome(&outcome),
                 Err(failure) => StackPullOutput::execution_failed(&failure),
@@ -1265,7 +1262,7 @@ where
         Ok(
             match self
                 .service
-                .execute_verified(plan, &mut self.gateway, self.freshness)
+                .execute(plan, &mut self.gateway, self.freshness)
             {
                 Ok(outcome) => InstancedPullOutput::from_outcome(&outcome),
                 Err(failure) => InstancedPullOutput::execution_failed(&failure),
@@ -1351,7 +1348,7 @@ where
             _ => None,
         };
         let post = service.clock.now().map_err(McpError::from)?;
-        let mut output = match mutations.execute_lock_verified(
+        let mut output = match mutations.execute_lock(
             &mut self.lock,
             &request,
             &plan,
@@ -1513,7 +1510,7 @@ where
             _ => None,
         };
         let post_action_now = self.inner.clock.now().map_err(McpError::from)?;
-        let mut output = match mutations.execute_equip_verified(
+        let mut output = match mutations.execute_equip_action(
             (&mut self.inner.transfer, &mut self.equip),
             &request,
             &plan,
@@ -2314,30 +2311,18 @@ pub fn inspect_item_output(
 
 /// Projects one planned and executed move into its bounded MCP output.
 ///
-/// Every variant carries the sanitized planned effects, the refreshed final
-/// location, and the bounded step evidence, so a client always sees what was
-/// expected, what happened, and where the item actually is. A typed failure is
-/// the stable sanitized [`McpError`] shape: no provider payload, credential,
+/// Planned effects and bounded receipt evidence come from the shared service.
+/// Only a fresh preflight no-op includes an observed destination. A typed failure
+/// uses the stable sanitized [`McpError`] shape; no provider payload, credential,
 /// membership identifier, revision, or plan identifier crosses this boundary.
-///
-/// The planned effects come from the plan the shared service built, and the
-/// observed location comes from the outcome the shared service verified, so this
-/// projection invents no target and no end state of its own.
 pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> MoveItemOutput {
     let effects = plan.effects();
     match outcome {
-        MoveExecutionOutcome::Applied(evidence) => MoveItemOutput::Applied(crate::schema::AppliedMoveView {
-            effects: effects_view(effects),
-            steps: step_views(evidence),
-            reason: "Bungie accepted the action; not re-read".into(),
-        }),
-        // The refreshed projection proves the item at the requested
-        // destination, so the observed location is that proven destination.
-        MoveExecutionOutcome::VerifiedSuccess(evidence) => {
-            MoveItemOutput::VerifiedSuccess(MoveSuccessView {
+        MoveExecutionOutcome::Applied(evidence) => {
+            MoveItemOutput::Applied(crate::schema::AppliedMoveView {
                 effects: effects_view(effects),
-                observed: location_view(&effects.destination),
                 steps: step_views(evidence),
+                reason: "Bungie accepted the action; not re-read".into(),
             })
         }
         // The mandatory fresh preflight observed the item already at the
@@ -2347,14 +2332,6 @@ pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> Move
                 effects: effects_view(effects),
                 observed: location_view(&effects.destination),
                 steps: step_views(evidence),
-            })
-        }
-        MoveExecutionOutcome::AppliedPendingProviderRefresh(pending) => {
-            MoveItemOutput::AppliedPendingProviderRefresh(crate::schema::PendingProviderRefreshView {
-                effects: effects_view(effects),
-                observed: location_view(pending.observed()),
-                steps: step_views(pending.evidence()),
-                reason: "the provider confirmed every step, but its profile still shows the pre-action state; observed location is stale/unconfirmed; do not retry, run `ghostlink sync` later to confirm".into(),
             })
         }
         MoveExecutionOutcome::IncompleteExecution(incomplete) => {
@@ -2457,8 +2434,6 @@ fn rejection_view(rejection: TransferRejection) -> TransferRejectionView {
 fn verification_reason_view(reason: VerificationFailureReason) -> VerificationFailureReasonView {
     match reason {
         VerificationFailureReason::RefreshFailed => VerificationFailureReasonView::RefreshFailed,
-        VerificationFailureReason::Unresolved => VerificationFailureReasonView::Unresolved,
-        VerificationFailureReason::Elsewhere => VerificationFailureReasonView::Elsewhere,
     }
 }
 
@@ -4135,7 +4110,7 @@ mod tests {
     }
 
     #[test]
-    fn move_item_reports_a_contradicted_projection_as_a_typed_verification_failure() {
+    fn move_item_acknowledges_without_reading_a_later_contradicted_projection() {
         let shared = gateway();
         let transfer = transfer_port();
         let mut repository = CompositeRepository::with_definitions(standard_definitions());
@@ -4187,7 +4162,7 @@ mod tests {
     }
 
     #[test]
-    fn move_item_pending_provider_refresh_preserves_stale_observation_and_steps() {
+    fn move_item_acknowledges_stale_profile_without_claiming_observation() {
         let shared = gateway();
         let transfer = transfer_port();
         let mut repository = CompositeRepository::with_definitions(standard_definitions());
@@ -4223,7 +4198,7 @@ mod tests {
     }
 
     #[test]
-    fn move_item_reports_a_refresh_failure_as_a_typed_sanitized_failure() {
+    fn move_item_acknowledges_without_requesting_a_failing_later_refresh() {
         let shared = gateway();
         let transfer = transfer_port();
         let mut repository = CompositeRepository::with_definitions(standard_definitions());
@@ -4238,7 +4213,7 @@ mod tests {
             vec![warlock()],
             vec![vault_item("inst-a", 1)],
         );
-        // The mandatory post-action refresh fails, so no observation is possible.
+        // A later refresh would fail; acknowledgement leaves it queued.
         shared.borrow_mut().queue_membership(Ok(membership()));
         shared
             .borrow_mut()

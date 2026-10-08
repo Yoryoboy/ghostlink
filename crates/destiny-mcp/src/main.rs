@@ -21,7 +21,7 @@
 //! additionally holds one outer operation guard for every read and mutation
 //! request. All local inventory publication in this composition runs beneath
 //! that guard, so no competing refresh can publish between fresh preflight and
-//! the final ordered dispatch (or post-action verification). Individual adapter
+//! the final ordered dispatch and freshness invalidation. Individual adapter
 //! locks remain short-lived and refresh does not reacquire the operation guard.
 //! This is a process-local guarantee, not protection against external game
 //! changes or another process writing the database. The mutation path is:

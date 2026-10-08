@@ -13,9 +13,9 @@
 //! One in-memory [`FixtureWorld`] is the source of truth. The profile gateway
 //! reads it on every forced refresh, and the transfer gateway applies each
 //! accepted transfer to it. The mutation service therefore plans against a
-//! seeded projection, performs a real fresh preflight and post-action refresh
-//! against the world, and verifies the destination only after the transfer moved
-//! the item. Reads are served from a separate seeded projection.
+//! seeded projection, performs a real fresh preflight against the world, then
+//! classifies acknowledgement and invalidates local freshness without re-reading.
+//! Reads are served from a separate seeded projection.
 //!
 //! # Scenarios
 //!

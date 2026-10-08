@@ -498,7 +498,7 @@ fn json_is_shared_mapper_exactly_and_text_retains_all_sanitized_evidence() {
         .unwrap();
     let outcome = expected_fixture
         .service
-        .execute_verified(plan, &mut expected_fixture.action, FRESHNESS)
+        .execute(plan, &mut expected_fixture.action, FRESHNESS)
         .unwrap();
     let shared = destiny_output::instanced_pull::InstancedPullOutput::from_outcome(&outcome);
     let mut fixture = Fixture::standard(posts(), Ok(InstancedPullOutcome::Acknowledged));

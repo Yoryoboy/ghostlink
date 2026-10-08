@@ -1427,20 +1427,15 @@ pub struct IncompleteMoveView {
     pub failure: Option<McpError>,
 }
 
-/// Why the destination could not be verified after a dispatched sequence.
+/// Why local state could not be updated after a dispatched sequence.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationFailureReasonView {
     RefreshFailed,
-    Unresolved,
-    Elsewhere,
 }
 
-/// A dispatched sequence whose destination could not be verified.
-///
-/// The bounded evidence survives, `observed` is the concrete location the
-/// refreshed projection reported when there was one, and `failure` carries the
-/// sanitized refresh or pre-dispatch error when one applies.
+/// A local-state update failure retaining bounded dispatch evidence.
+/// The legacy `observed` field is not populated; `failure` is sanitized.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct VerificationFailureView {
     pub effects: MoveEffectsView,
@@ -1454,16 +1449,13 @@ pub struct VerificationFailureView {
 
 /// Structured result of `move_item`.
 ///
-/// `VerifiedSuccess` and `VerifiedNoOp` are proven end states; `Incomplete` and
-/// `VerificationFailed` are honest non-success outcomes that keep their evidence
-/// instead of collapsing into a bare error.
+/// `Applied` acknowledges receipts; `VerifiedNoOp` proves fresh preflight state.
+/// `Incomplete` and `VerificationFailed` preserve evidence without claiming success.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum MoveItemOutput {
     /// Bungie acknowledged all steps; the resulting profile was not re-read.
     Applied(AppliedMoveView),
-    AppliedPendingProviderRefresh(PendingProviderRefreshView),
-    VerifiedSuccess(MoveSuccessView),
     VerifiedNoOp(MoveSuccessView),
     Incomplete(IncompleteMoveView),
     VerificationFailed(VerificationFailureView),
@@ -1473,15 +1465,6 @@ pub enum MoveItemOutput {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct AppliedMoveView {
     pub effects: MoveEffectsView,
-    pub steps: Vec<StepEvidenceView>,
-    pub reason: String,
-}
-
-/// Provider-confirmed effects with a stale, unconfirmed observation.
-#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub struct PendingProviderRefreshView {
-    pub effects: MoveEffectsView,
-    pub observed: LocationView,
     pub steps: Vec<StepEvidenceView>,
     pub reason: String,
 }
@@ -1581,10 +1564,7 @@ impl InspectItemOutput {
 impl MoveItemOutput {
     /// Renders this output as a structured tool result.
     pub fn into_call_tool_result(self) -> CallToolResult {
-        let success = matches!(
-            self,
-            Self::Applied(_) | Self::VerifiedSuccess(_) | Self::VerifiedNoOp(_)
-        );
+        let success = matches!(self, Self::Applied(_) | Self::VerifiedNoOp(_));
         let mut result = structured_result(self);
         result.is_error = Some(!success);
         result

@@ -217,7 +217,7 @@ pub fn mcp_json(scenario: &str, item: &str, character: &str) -> serde_json::Valu
 }
 
 /// Exercise the production server boundary with real planning, SQLite publication,
-/// ordered execution and mandatory post-action refresh. Channels pause immediately
+/// ordered execution and freshness invalidation. Channels pause immediately
 /// before the first provider effect (after ticket validation), never sleeps.
 #[allow(
     dead_code,

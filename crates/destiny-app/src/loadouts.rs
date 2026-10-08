@@ -245,7 +245,14 @@ fn item_group(definition: Option<&destiny_core::ItemDefinition>) -> u8 {
         Some(ARTIFACT_BUCKET_HASH) => return 3,
         _ => (),
     }
-    match definition.slot {
+    match definition
+        .slot
+        .filter(|slot| !matches!(slot, ItemSlot::Other | ItemSlot::Unknown))
+        .or_else(|| {
+            definition
+                .bucket_hash
+                .and_then(ItemSlot::from_equipment_bucket)
+        }) {
         Some(ItemSlot::Kinetic | ItemSlot::Energy | ItemSlot::Power) => 0,
         Some(
             ItemSlot::Helmet
@@ -254,11 +261,7 @@ fn item_group(definition: Option<&destiny_core::ItemDefinition>) -> u8 {
             | ItemSlot::Legs
             | ItemSlot::ClassItem,
         ) => 1,
-        _ => match definition.bucket_hash.map(|hash| hash.value()) {
-            Some(1498876634 | 2465295065 | 953998645) => 0,
-            Some(3448274439 | 3551918588 | 14239492 | 20886954 | 1585787867) => 1,
-            _ => 4,
-        },
+        _ => 4,
     }
 }
 

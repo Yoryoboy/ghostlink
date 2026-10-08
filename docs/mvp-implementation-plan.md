@@ -308,7 +308,7 @@ Each slice should target roughly one reviewer session and monitor authored addit
 
 ## Explicit non-goals and post-MVP boundary
 
-The current scope includes single-item move/equip, lock/unlock (CLI and MCP `set_lock_state`), and weekly read capabilities. Lock uses shared fresh preflight, one dispatch, post-action refresh and lock-state verification; already satisfied is a verified no-op. Vault items use one owned character for the provider call (live validation pending). Build engines, multi-item build plans/apply, plug/mod/perk mutations, dismantling, Postmaster, duplicate ranking, web UI, hosted/confidential backend, general-purpose Bungie proxying, and broad inventory actions remain deferred. Later capabilities may reuse the ports and projections but must not bypass fresh preflight, bounded intent, or post-action verification.
+The current scope includes single-item move/equip, lock/unlock (CLI and MCP `set_lock_state`), and weekly read capabilities. Lock uses shared fresh preflight and one dispatch; acknowledgement is `applied` (no post-action read, freshness invalidated); already satisfied is a verified no-op. Vault items use one owned character for the provider call (live validation pending). Build engines, multi-item build plans/apply, plug/mod/perk mutations, dismantling, Postmaster, duplicate ranking, web UI, hosted/confidential backend, general-purpose Bungie proxying, and broad inventory actions remain deferred. Later capabilities may reuse the ports and projections but must not bypass fresh preflight, bounded intent, or acknowledgement-only success with freshness invalidation. (2026-10-08: post-action verification replaced by optimistic semantics; see `odd/tasks/inventory-actions-closure.md`.)
 
 ## Architecture traceability
 

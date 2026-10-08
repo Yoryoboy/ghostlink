@@ -293,9 +293,7 @@ mod tests {
             .unwrap();
         let mut gateway = QueuedInstancedPullGateway::new();
         gateway.queue(Ok(receipt));
-        let outcome = service
-            .execute_verified(plan, &mut gateway, freshness)
-            .unwrap();
+        let outcome = service.execute(plan, &mut gateway, freshness).unwrap();
         assert_eq!(gateway.calls(), 1);
         outcome
     }

@@ -19,8 +19,7 @@
 //!   scripted state instead of a pre-baked body;
 //! - a scripted [`TransferTransport`] that applies the requested move to the same
 //!   scripted world before answering with a real provider envelope, so a second
-//!   step sees the first step's effect and the post-action refresh can observe the
-//!   moved item;
+//!   step sees the first step's effect and a later ordinary read can observe it;
 //! - a [`Clock`] whose `now` the test controls explicitly; and
 //! - the deterministic plan identifier generator the application already ships.
 //!
@@ -33,21 +32,16 @@
 //! 1. the named "The Last Word to Warlock" move: the real read service lists the
 //!    characters and resolves the concrete Vault instance, the real planner binds
 //!    that revision, the mandatory fresh preflight passes, one direct
-//!    Vault-to-character transfer applies, and the forced `PostAction` refresh
-//!    advances the committed revision so both the executor and an independent
-//!    read-service re-inspection verify the destination, including the stale
-//!    cache refresh that spends exactly one more gateway call;
+//!    Vault-to-character transfer is acknowledged and invalidates local freshness;
+//!    an independent read-service re-inspection syncs and observes the destination;
 //! 2. a character-to-character move posts exactly two ordered Vault-mediated
-//!    transfers and verifies the final destination;
+//!    transfers and classifies their acknowledgements;
 //! 3. a refused second step strands the item in the Vault and reports honest
 //!    partial evidence with no rollback claim;
 //! 4. a changed fresh preflight rejects before any transfer is dispatched;
-//! 5. an uncertain step whose effect is confirmed by the post-action projection
-//!    is a verified success;
-//! 6. a post-action projection that contradicts the reported progress is a
-//!    verification failure;
-//! 7. a failed post-action refresh is a verification failure that preserves the
-//!    bounded evidence;
+//! 5. an uncertain receipt remains incomplete even when the scripted effect lands;
+//! 6. acknowledgement succeeds despite scripted contradictory state;
+//! 7. acknowledgement does not request a queued failing later refresh;
 //! 8. an already-satisfied fresh preflight is a verified no-op with zero
 //!    transfers and no post-action refresh; and
 //! 9. credentials and raw provider payloads never reach public errors, evidence,
@@ -194,8 +188,8 @@ fn assert_read_only_profile_requests(urls: &[String]) {
 /// One entry of the scripted provider transfer behaviour.
 ///
 /// A step is applied to the scripted world exactly when its declared effect
-/// landed, so a later step and the post-action refresh observe the first step's
-/// effect. The returned response is a real provider envelope (or transport
+/// landed, so a later step and ordinary sync can observe its effect. The returned
+/// response is a real provider envelope (or transport
 /// failure) that the real [`BungieTransferGateway`] classifies; nothing here
 /// bypasses the adapter's mapping.
 #[derive(Clone, Copy, Debug)]
@@ -257,7 +251,7 @@ enum ProfileFault {
 /// profile-inventory entry carrying `location: 2`, while a character item is a
 /// character-inventory entry with no explicit location. Moving an item therefore
 /// changes the normalized projection and advances the committed revision, which
-/// is what makes preflight invalidation and post-action verification honest.
+/// makes fresh preflight binding and later ordinary reads reflect real effects.
 struct World {
     value: Value,
 }
@@ -852,13 +846,11 @@ fn body_json(recorded: &RecordedTransfer) -> Value {
 /// and by instance identity over the same durable SQLite path the mutation path
 /// uses; the planner binds that exact revision and the named destination; the
 /// mandatory fresh preflight passes; one direct Vault-to-Warlock transfer
-/// applies; the forced `PostAction` refresh commits the destination and advances
-/// the revision; an independent read-service re-inspection verifies the Warlock
-/// placement from the fresh cache without a gateway call; and a stale
-/// re-inspection then spends exactly one ordinary refresh and still observes the
-/// Warlock placement at the retained revision.
+/// is acknowledged and invalidates freshness; independent read-service
+/// re-inspection forces an ordinary sync to observe Warlock placement. A later
+/// stale read spends one more ordinary refresh at the retained revision.
 #[test]
-fn direct_move_is_verified_after_a_post_action_refresh() {
+fn direct_move_is_acknowledged_then_observed_by_an_ordinary_read() {
     let journey = Journey::new();
     journey.at(NOW);
     let mut service = journey.service();
@@ -969,10 +961,10 @@ fn direct_move_is_verified_after_a_post_action_refresh() {
     journey.queue_transfer(TransferAction::Applied);
 
     // Execution runs its own mandatory fresh preflight, dispatches exactly one
-    // ordered transfer, then forces the post-action refresh.
+    // ordered transfer, then invalidates local freshness.
     let post_action_now = Timestamp::new(NOW.seconds() + 2);
     let outcome = service
-        .execute_move_verified(
+        .execute_move_action(
             &mut transfer,
             &request,
             &plan,
@@ -1077,8 +1069,7 @@ fn direct_move_is_verified_after_a_post_action_refresh() {
 }
 
 /// Scenario 2: a character-to-character move posts exactly two ordered
-/// Vault-mediated transfers, and the post-action refresh verifies the item at
-/// the final character.
+/// Vault-mediated transfers, classifying their acknowledgements without re-reading.
 #[test]
 fn character_to_character_move_posts_exactly_two_ordered_transfers() {
     let journey = Journey::new();
@@ -1101,7 +1092,7 @@ fn character_to_character_move_posts_exactly_two_ordered_transfers() {
     journey.queue_transfer(TransferAction::Applied);
 
     let outcome = service
-        .execute_move_verified(
+        .execute_move_action(
             &mut transfer,
             &request,
             &plan,
@@ -1157,9 +1148,8 @@ fn character_to_character_move_posts_exactly_two_ordered_transfers() {
 }
 
 /// Scenario 3: a refused second step strands the item in the Vault and reports
-/// honest partial evidence: the bounded record proves step one applied, the
-/// post-action projection places the item at the Vault, and no rollback is
-/// claimed.
+/// honest partial evidence: the bounded record acknowledges step one and derives
+/// the Vault expectation from that receipt, without claiming rollback.
 #[test]
 fn rc003_move_auth_concurrent_target_remains_non_success() {
     let journey = Journey::new();
@@ -1174,7 +1164,7 @@ fn rc003_move_auth_concurrent_target_remains_non_success() {
     journey.queue_transfer(TransferAction::AuthenticationRefusedConcurrent);
     let before = journey.request_count();
     let MoveExecutionOutcome::IncompleteExecution(incomplete) = service
-        .execute_move_verified(&mut transfer, &request, &plan, TTL, NOW, NOW)
+        .execute_move_action(&mut transfer, &request, &plan, TTL, NOW, NOW)
         .unwrap()
     else {
         panic!("authentication refusal cannot become verified success");
@@ -1214,7 +1204,7 @@ fn rc003_move_auth_retains_progress_stops_and_refreshes() {
             journey.queue_transfer(TransferAction::AuthenticationRefused(status));
             let before = journey.request_count();
             let MoveExecutionOutcome::IncompleteExecution(incomplete) = service
-                .execute_move_verified(&mut transfer, &request, &plan, TTL, NOW, NOW)
+                .execute_move_action(&mut transfer, &request, &plan, TTL, NOW, NOW)
                 .unwrap()
             else {
                 panic!("auth refusal not applied");
@@ -1262,7 +1252,7 @@ fn refused_second_step_strands_the_item_in_the_vault() {
     journey.queue_transfer(TransferAction::Refused(TransferRejection::DestinationFull));
 
     let outcome = service
-        .execute_move_verified(
+        .execute_move_action(
             &mut transfer,
             &request,
             &plan,
@@ -1314,7 +1304,7 @@ fn changed_fresh_preflight_rejects_before_any_transfer() {
     journey.move_to_character(LAST_WORD_INSTANCE, HUNTER_ID);
 
     let failure = service
-        .execute_move_verified(
+        .execute_move_action(
             &mut transfer,
             &request,
             &plan,
@@ -1324,7 +1314,7 @@ fn changed_fresh_preflight_rejects_before_any_transfer() {
         )
         .expect_err("changed state invalidates the plan");
     assert_eq!(failure.error(), MutationError::StaleRevision);
-    assert!(!failure.requires_post_action_refresh());
+    assert!(!failure.requires_freshness_invalidation());
     assert_eq!(failure.evidence().attempted_count(), 0);
 
     // No transfer reached the provider, and no post-action refresh was spent.
@@ -1333,11 +1323,9 @@ fn changed_fresh_preflight_rejects_before_any_transfer() {
     assert_eq!(committed(&service).metadata.revision, SyncRevision::new(2));
 }
 
-/// Scenario 5: a step whose effect the provider left uncertain is confirmed by
-/// the post-action projection, so the verified outcome is a success rather than
-/// a guess.
+/// Scenario 5: an uncertain receipt remains incomplete even if its effect lands.
 #[test]
-fn uncertain_step_confirmed_by_the_post_action_projection_is_a_success() {
+fn uncertain_step_remains_incomplete_even_when_the_scripted_effect_lands() {
     let journey = Journey::new();
     journey.at(NOW);
     let mut service = journey.service();
@@ -1354,7 +1342,7 @@ fn uncertain_step_confirmed_by_the_post_action_projection_is_a_success() {
     journey.queue_transfer(TransferAction::ServerError { lands: true });
 
     let outcome = service
-        .execute_move_verified(
+        .execute_move_action(
             &mut transfer,
             &request,
             &plan,
@@ -1375,9 +1363,9 @@ fn uncertain_step_confirmed_by_the_post_action_projection_is_a_success() {
     );
 }
 
-/// Scenario 6: unchanged provider content cannot verify reported completion.
+/// Scenario 6: acknowledgement succeeds without reading unchanged provider content.
 #[test]
-fn unchanged_post_action_projection_is_pending_provider_refresh() {
+fn unchanged_provider_content_does_not_block_acknowledgement() {
     let journey = Journey::new();
     journey.at(NOW);
     let mut service = journey.service();
@@ -1395,7 +1383,7 @@ fn unchanged_post_action_projection_is_pending_provider_refresh() {
     journey.queue_transfer(TransferAction::ReportWithoutApplying);
 
     let outcome = service
-        .execute_move_verified(
+        .execute_move_action(
             &mut transfer,
             &request,
             &plan,
@@ -1419,7 +1407,7 @@ fn unchanged_post_action_projection_is_pending_provider_refresh() {
 }
 
 #[test]
-fn changed_post_action_revision_with_wrong_location_is_elsewhere() {
+fn changed_scripted_state_does_not_block_acknowledgement() {
     let journey = Journey::new();
     let mut service = journey.service();
     seed(&journey, &mut service);
@@ -1430,7 +1418,7 @@ fn changed_post_action_revision_with_wrong_location_is_elsewhere() {
         .unwrap();
     journey.queue_transfer(TransferAction::Contradiction);
     let MoveExecutionOutcome::Applied(failure) = service
-        .execute_move_verified(&mut transfer, &request, &plan, TTL, NOW, NOW)
+        .execute_move_action(&mut transfer, &request, &plan, TTL, NOW, NOW)
         .unwrap()
     else {
         panic!("changed revision cannot qualify as stale provider refresh");
@@ -1466,10 +1454,9 @@ fn changed_post_action_revision_with_wrong_location_is_elsewhere() {
     );
 }
 
-/// Scenario 7: a failed post-action refresh is itself a verification failure and
-/// still preserves the bounded evidence of the dispatched step.
+/// Scenario 7: acknowledgement leaves a later refresh failure unrequested.
 #[test]
-fn failed_post_action_refresh_is_a_verification_failure() {
+fn acknowledged_move_does_not_request_a_failing_later_refresh() {
     let journey = Journey::new();
     journey.at(NOW);
     let mut service = journey.service();
@@ -1484,7 +1471,7 @@ fn failed_post_action_refresh_is_a_verification_failure() {
     journey.queue_transfer(TransferAction::AppliedThenPostActionFails);
 
     let outcome = service
-        .execute_move_verified(
+        .execute_move_action(
             &mut transfer,
             &request,
             &plan,
@@ -1521,7 +1508,7 @@ fn already_satisfied_preflight_is_a_verified_no_op() {
     journey.move_to_character(LAST_WORD_INSTANCE, WARLOCK_ID);
 
     let outcome = service
-        .execute_move_verified(
+        .execute_move_action(
             &mut transfer,
             &request,
             &plan,
@@ -1567,7 +1554,7 @@ fn secrets_and_payload_markers_never_reach_public_evidence_or_disk() {
         .expect("plan");
     journey.queue_profile_fault(ProfileFault::Sentinel);
     let refresh_failure = service
-        .execute_move_verified(
+        .execute_move_action(
             &mut transfer,
             &request,
             &plan,
@@ -1588,7 +1575,7 @@ fn secrets_and_payload_markers_never_reach_public_evidence_or_disk() {
         .expect("re-plan against the preserved projection");
     journey.queue_transfer(TransferAction::SentinelEnvelope);
     let outcome = service
-        .execute_move_verified(
+        .execute_move_action(
             &mut transfer,
             &request,
             &plan,
@@ -1597,12 +1584,8 @@ fn secrets_and_payload_markers_never_reach_public_evidence_or_disk() {
             Timestamp::new(NOW.seconds() + 2),
         )
         .expect("classified outcome");
-    // The unknown provider envelope must classify as an uncertain step: the
-    // post-action projection still places the item in the Vault, which is
-    // consistent with zero reported progress, so the honest result is an
-    // incomplete execution with no applied step. Asserting that exact variant
-    // means a misclassified transfer (which would report a completed step and
-    // land in a different, later `Elsewhere` result) fails this test.
+    // The unknown envelope must remain uncertain and incomplete with zero
+    // acknowledged steps, independently of scripted inventory state.
     match &outcome {
         MoveExecutionOutcome::IncompleteExecution(incomplete) => {
             assert!(!incomplete.is_partial());

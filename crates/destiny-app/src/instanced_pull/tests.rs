@@ -57,7 +57,7 @@ fn execute(
     let mut gateway = QueuedInstancedPullGateway::new();
     gateway.queue(Ok(receipt));
     let outcome = s
-        .execute_verified(p, &mut gateway, FreshnessPolicy { ttl_seconds: 60 })
+        .execute(p, &mut gateway, FreshnessPolicy { ttl_seconds: 60 })
         .unwrap();
     assert_eq!(gateway.calls(), 1);
     assert_eq!(gateway.requests().len(), 1);
@@ -92,7 +92,7 @@ fn invalidation_storage_failure_retains_receipt_and_fails_closed() {
     let mut gateway = QueuedInstancedPullGateway::new();
     gateway.queue(Ok(InstancedPullOutcome::Acknowledged));
     let outcome = s
-        .execute_verified(p, &mut gateway, FreshnessPolicy { ttl_seconds: 60 })
+        .execute(p, &mut gateway, FreshnessPolicy { ttl_seconds: 60 })
         .unwrap();
     assert_eq!(outcome.disposition(), PullDisposition::LocalStateFailed);
     assert_eq!(
@@ -147,7 +147,7 @@ fn predispatch_and_gateway_errors_have_no_observation_expense() {
         let mut gateway = QueuedInstancedPullGateway::new();
         gateway.queue(Err(error.clone()));
         let failure = s
-            .execute_verified(p, &mut gateway, FreshnessPolicy { ttl_seconds: 60 })
+            .execute(p, &mut gateway, FreshnessPolicy { ttl_seconds: 60 })
             .unwrap_err();
         assert_eq!(failure.plan_id(), &id);
         if expired {

@@ -440,7 +440,7 @@ impl Journey {
             .unwrap();
         let pre_dispatch = service.repository().load_current().unwrap().unwrap();
         let before = self.world.borrow().profiles.len();
-        let result = service.execute_equip_verified(
+        let result = service.execute_equip_action(
             (&mut transfer, &mut equip),
             &request,
             &plan,
@@ -614,7 +614,7 @@ fn rc003_attempt(
         .unwrap();
     world.borrow_mut().profiles.clear();
     let result =
-        service.execute_equip_verified((&mut transfer, &mut equip), &request, &plan, TTL, NOW, NOW);
+        service.execute_equip_action((&mut transfer, &mut equip), &request, &plan, TTL, NOW, NOW);
     for secret in [KEY, TOKEN] {
         assert!(!format!("{result:?}").contains(secret));
     }

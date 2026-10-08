@@ -146,9 +146,9 @@ where
         _ => None,
     };
     // Match the existing MCP move composition's timestamp policy. The shared
-    // executor owns the actual forced post-action acquisition after dispatch.
+    // executor invalidates local freshness after dispatch; it does not re-read.
     let post_action_now = clock.now()?;
-    let execution = mutations.execute_equip_verified(
+    let execution = mutations.execute_equip_action(
         (transfer, equip),
         &request,
         &plan,

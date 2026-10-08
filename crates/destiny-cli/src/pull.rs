@@ -51,7 +51,7 @@ where
         Ok(plan) => plan,
         Err(error) => return PullOutput::planning_failed(&error),
     };
-    match service.execute_verified(plan, gateway, freshness) {
+    match service.execute(plan, gateway, freshness) {
         Ok(outcome) => PullOutput::from_outcome(&outcome),
         Err(failure) => PullOutput::execution_failed(&failure),
     }

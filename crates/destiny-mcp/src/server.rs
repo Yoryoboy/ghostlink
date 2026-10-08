@@ -17,7 +17,7 @@
 //!   introducing a second service contract. A lock is only ever held for one
 //!   synchronous dispatch, never across an `.await`. One outer operation guard
 //!   serializes both seams: local refresh publication cannot overtake mutation
-//!   preflight, ordered dispatch, or post-action verification.
+//!   preflight, ordered dispatch, or freshness invalidation.
 //! - Dispatch is offloaded with [`tokio::task::spawn_blocking`]: the read
 //!   service performs blocking provider and storage work, and the RMCP server
 //!   loop is async. Keeping the blocking work off the async worker is what makes
@@ -68,7 +68,7 @@ const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inv
 /// Each service is shared behind its own mutex. An outer operation guard spans
 /// the entire call on either seam, including all snapshot publication paths.
 /// Lock ordering is operation -> service -> individual gateway/repository calls.
-/// Sync and post-action refresh never reenter the operation guard. This protects
+/// Sync and freshness invalidation never reenter the operation guard. This protects
 /// only this server's local publication, not external game state or other processes.
 /// The server is `Send + Sync + 'static`, as
 /// [`rmcp::ServerHandler`] requires.
@@ -450,7 +450,6 @@ fn dispatch_mutation_locked(
                 let is_error = !matches!(
                     output.status,
                     destiny_output::lock::LockStatus::Applied
-                        | destiny_output::lock::LockStatus::VerifiedSuccess
                         | destiny_output::lock::LockStatus::VerifiedNoop
                 );
                 let mut result = CallToolResult::structured(output.json());
@@ -468,7 +467,6 @@ fn dispatch_mutation_locked(
             let is_error = !matches!(
                 output.status,
                 destiny_output::equip::EquipStatus::Applied
-                    | destiny_output::equip::EquipStatus::VerifiedSuccess
                     | destiny_output::equip::EquipStatus::VerifiedNoop
             );
             let mut result = CallToolResult::structured(output.json());
@@ -519,8 +517,8 @@ fn internal_error() -> ErrorData {
 mod tests {
     use super::ReadToolServer;
     use crate::schema::{
-        InspectItemOutput, LIST_CHARACTERS_TOOL, ListCharactersOutput, LocationView,
-        MOVE_ITEM_TOOL, McpError, MoveEffectsView, MoveItemArgs, MoveItemOutput, MoveSuccessView,
+        AppliedMoveView, InspectItemOutput, LIST_CHARACTERS_TOOL, ListCharactersOutput,
+        LocationView, MOVE_ITEM_TOOL, McpError, MoveEffectsView, MoveItemArgs, MoveItemOutput,
         QueryMetadataView, SEARCH_INVENTORY_TOOL, SearchInventoryOutput,
     };
     use crate::service::{
@@ -796,7 +794,7 @@ mod tests {
 
     /// One bounded successful move output for the recording seam.
     fn move_success_output() -> MoveItemOutput {
-        MoveItemOutput::VerifiedSuccess(MoveSuccessView {
+        MoveItemOutput::Applied(AppliedMoveView {
             effects: MoveEffectsView {
                 item_id: "inst-a".into(),
                 via_vault: false,
@@ -805,10 +803,8 @@ mod tests {
                     character_id: "warlock".into(),
                 },
             },
-            observed: LocationView::Character {
-                character_id: "warlock".into(),
-            },
             steps: Vec::new(),
+            reason: "Bungie accepted the action; not re-read".into(),
         })
     }
 
@@ -1576,7 +1572,7 @@ mod tests {
             .dispatch(MOVE_ITEM_TOOL, args(exact_move_arguments()))
             .expect("move_item dispatch succeeds");
         assert_eq!(result.is_error, Some(false));
-        assert_eq!(structured(&result)["status"], "verified_success");
+        assert_eq!(structured(&result)["status"], "applied");
         assert_eq!(structured(&result)["effects"]["item_id"], "inst-a");
 
         let recorded = mutation.recorded();
@@ -1651,9 +1647,9 @@ mod tests {
     }
 
     #[test]
-    fn equip_pending_provider_refresh_is_a_tool_error() {
-        struct PendingEquip;
-        impl MutationToolService for PendingEquip {
+    fn equip_local_state_failure_is_a_tool_error() {
+        struct LocalStateFailedEquip;
+        impl MutationToolService for LocalStateFailedEquip {
             fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
                 unreachable!()
             }
@@ -1664,14 +1660,14 @@ mod tests {
                 let mut output = destiny_output::equip::EquipOutput::refused(
                     destiny_app::MutationError::MissingItem,
                 );
-                output.status = destiny_output::equip::EquipStatus::AppliedPendingProviderRefresh;
-                output.profile_refresh = destiny_output::equip::ProfileRefresh::Refreshed;
+                output.status = destiny_output::equip::EquipStatus::VerificationFailed;
+                output.profile_refresh = destiny_output::equip::ProfileRefresh::Failed;
                 Ok(output)
             }
         }
         let server = ReadToolServer::with_mutation(
             Box::new(RecordingService::new()),
-            Box::new(PendingEquip),
+            Box::new(LocalStateFailedEquip),
         );
         let result = server
             .dispatch(
@@ -1680,10 +1676,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(result.is_error, Some(true));
-        assert_eq!(
-            structured(&result)["status"],
-            "applied_pending_provider_refresh"
-        );
+        assert_eq!(structured(&result)["status"], "verification_failed");
     }
 
     #[test]

@@ -8,7 +8,7 @@
 //! A default fixture session proves initialize, discovery of the four reads
 //! plus the default-enabled `move_item`, all three reads, the complete one-call
 //! mutation journey (semantic planning, fresh preflight, exactly one transfer,
-//! post-action refresh, and destination verification), a repeated request that
+//! acknowledgement and freshness invalidation), a repeated request that
 //! fails closed without replay, a sanitized missing-item failure, and the secret
 //! sentinel never crossing either stream. Fresh fixture processes selected by
 //! `DESTINY_FIXTURE_SCENARIO` additionally prove an already-satisfied verified
@@ -1361,7 +1361,7 @@ async fn move_item_reports_a_changed_preflight_as_a_typed_sanitized_failure() {
 }
 
 #[tokio::test]
-async fn move_item_reports_pending_provider_refresh_for_confirmed_stale_profile() {
+async fn move_item_acknowledges_stale_profile_without_claiming_observation() {
     let mut session = FixtureSession::spawn(Some("move-provider-stale")).await;
     let moved = session
         .call_tool(

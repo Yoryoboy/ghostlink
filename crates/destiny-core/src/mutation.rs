@@ -1064,7 +1064,7 @@ impl ExecutionEvidence {
 ///   partial result has no path back to another provider call.
 /// - The revision binding closes the remaining route: once an applied step has
 ///   advanced the committed projection, minting a second ticket for the same plan
-///   against the post-action refresh fails with [`ErrorCategory::StaleState`]. A
+///   against a later fresh preflight fails with [`ErrorCategory::StaleState`]. A
 ///   further attempt then requires a new forced refresh and a new plan, never a
 ///   replay. When a forced refresh instead retains the revision, state and
 ///   binding are unchanged, so the same plan may be attempted again only after
@@ -2152,9 +2152,8 @@ mod tests {
             .expect("first step");
         assert_eq!(evidence.stop_outcome(), None);
 
-        // The applied step forces the mandatory post-action refresh, whose
-        // committed projection carries a new revision. Replaying the same plan
-        // against that state is refused, so another attempt requires a new plan.
+        // A later fresh preflight with a new committed revision refuses the same
+        // plan; another attempt against that state requires a new plan.
         assert_eq!(
             ExecutionTicket::after_fresh_preflight(
                 &plan,

@@ -86,9 +86,8 @@ impl LockExecutionFailure {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LockVerificationFailureReason {
+    /// Local freshness invalidation failed; historical wire reason retained.
     RefreshFailed,
-    Unresolved,
-    Contradiction,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -117,12 +116,8 @@ impl LockVerificationFailure {
 pub enum LockExecutionOutcome {
     /// Bungie acknowledged the requested state; not a post-action observation.
     Applied(LockExecutionEvidence),
-    /// Legacy post-action verification variant retained for compatibility, not emitted.
-    VerifiedSuccess(LockExecutionEvidence),
     /// Fresh preflight already proves the requested state; no dispatch.
     VerifiedNoOp(LockExecutionEvidence),
-    /// Legacy provider-lag variant retained for compatibility, not emitted.
-    AppliedPendingProviderRefresh(LockExecutionEvidence),
     IncompleteExecution(LockExecutionEvidence),
     VerificationFailed(LockVerificationFailure),
 }
@@ -131,9 +126,7 @@ impl LockExecutionOutcome {
     pub fn evidence(&self) -> &LockExecutionEvidence {
         match self {
             Self::Applied(evidence)
-            | Self::VerifiedSuccess(evidence)
             | Self::VerifiedNoOp(evidence)
-            | Self::AppliedPendingProviderRefresh(evidence)
             | Self::IncompleteExecution(evidence) => evidence,
             Self::VerificationFailed(failure) => failure.evidence(),
         }
@@ -185,9 +178,9 @@ where
     }
 
     /// Fresh preflight → verified no-op or one dispatch → acknowledgement.
-    /// The historical name/timestamps remain compatible, but no post-action
-    /// profile request is issued. Storage invalidation failure fails closed.
-    pub fn execute_lock_verified<L: LockGateway>(
+    /// Timestamp ordering is checked without a post-action profile request.
+    /// Storage invalidation failure fails closed.
+    pub fn execute_lock<L: LockGateway>(
         &mut self,
         gateway: &mut L,
         request: &LockRequest,

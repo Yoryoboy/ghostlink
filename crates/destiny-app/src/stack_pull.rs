@@ -403,8 +403,8 @@ impl<
     }
     /// Consume intent, renew preflight proof, dispatch once and invalidate local
     /// freshness. Acknowledgement yields Applied; storage failure fails closed.
-    /// The historical method name remains; no post-action read or retry occurs.
-    pub fn execute_verified<T: StackPullGateway>(
+    /// No post-action read or retry occurs.
+    pub fn execute<T: StackPullGateway>(
         &mut self,
         plan: StackPullPlan,
         gateway: &mut T,

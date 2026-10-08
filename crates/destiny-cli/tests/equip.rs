@@ -30,7 +30,8 @@ fn equip_action() -> StepAction {
 
 #[test]
 fn equip_success_noop_json_and_exit_codes() {
-    let mut output = report(EquipStatus::VerifiedSuccess);
+    let mut output = report(EquipStatus::Applied);
+    output.profile_refresh = ProfileRefresh::NotRequired;
     output.steps.push(EquipStep {
         ordinal: 1,
         kind: "transfer",
@@ -52,11 +53,11 @@ fn equip_success_noop_json_and_exit_codes() {
         .push(step_view(2, &equip_action(), StepOutcome::Completed, &[]));
     assert_eq!(
         output.render_text(),
-        "Ace of Spades: Vault → Hunter (transferred) → equipped (Kinetic)\n✔ verified"
+        "Ace of Spades: applied\n1. transfer: completed (Vault → Hunter)\n2. equip: completed"
     );
     assert_eq!(output.exit_code(), 0);
     let value = output.json();
-    assert_eq!(value["status"], "verified_success");
+    assert_eq!(value["status"], "applied");
     assert_eq!(
         value["item"],
         serde_json::json!({"name":"Ace of Spades", "instance_id":"123", "slot":"Kinetic"})
@@ -221,7 +222,7 @@ fn equip_requires_item_and_explicit_character() {
 fn equip_process_streams_and_sanitization_follow_cli_conventions() {
     use destiny_cli::OutputMode;
     for status in [
-        EquipStatus::VerifiedSuccess,
+        EquipStatus::Applied,
         EquipStatus::VerifiedNoop,
         EquipStatus::Incomplete,
         EquipStatus::VerificationFailed,

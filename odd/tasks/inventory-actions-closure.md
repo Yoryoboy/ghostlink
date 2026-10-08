@@ -60,7 +60,7 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
 - [x] **IAX-006 — EquipItems batch adapter and port** (per-item results).
 - [x] **IAX-007 — Batch equip service, CLI and MCP** (combined plan, transfers
   from Vault first, one EquipItems call, per-item outcomes, docs/skill).
-- [ ] **IAX-008 — Cleanups.** Close Postmaster tracker status; replace
+- [x] **IAX-008 — Cleanups.** Close Postmaster tracker status; replace
   duplicated bucket hashes in `destiny-app/src/loadouts.rs` and
   `destiny-cli/src/loadouts_output.rs` with `ItemSlot::from_equipment_bucket`.
 - [ ] **IAX-009 — Interactive live validation** (user in game, agent drives CLI):
@@ -192,3 +192,21 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   (incl. replaced exotic), transfer stop, single EquipItems call, 100 ms
   pacing, invalidation, 0/41/42, unchanged single-item path, CLI/MCP parity
   (2–17 items): PASS, no findings.
+- IAX-008 cleanup progress: Postmaster header COMPLETE (PR #63; live checks
+  IAX-009); shared equipment-bucket mapping; neutral action executor names and
+  corrected optimistic comments. Removed unproduced verified-success/provider-lag
+  outcomes, observation-only reasons, renderers and exit-43 mappings; NotYetObserved
+  was already absent. Kept verified preflight no-ops and local-state failure
+  VerificationFailed/RefreshFailed with unchanged emitted wire values. Offline
+  all-features: 1,856 passed / 0 failed / 0 ignored (count unchanged; synthetic
+  legacy fixtures updated, no test functions deleted). Checkbox stays open;
+  no live account action or commit.
+- IAX-007 committed as `d705949`.
+- IAX-008 independent verification: runtime gates PASS (1,856 / 0 all-features,
+  1,831 / 0 default; removed outcomes had no production constructors; test
+  edits only renamed or removed unreachable cases; loadouts mapping identical).
+  Docs gate FAIL: `docs/mvp-architecture.md` still mandated post-action
+  verification and exit 43. Parent fixed it, together with the
+  `mvp-implementation-plan.md` current-scope paragraph and two stale code
+  comments. Comment/doc-only fix; `cargo check` passed, and no tests reference
+  these docs. Historical WU plan entries were left as historical record.

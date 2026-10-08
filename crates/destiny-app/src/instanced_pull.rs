@@ -377,11 +377,11 @@ where
     /// M: ManifestGateway, C: Clock, P: PlanIdGenerator, T: InstancedPullGateway>(
     /// s: &mut InstancedPullService<G,R,D,M,C,P>,
     /// plan: InstancedPullPlan, gateway: &mut T, freshness: FreshnessPolicy) {
-    ///     s.execute_verified(plan, gateway, freshness);
-    ///     s.execute_verified(plan, gateway, freshness);
+    ///     s.execute(plan, gateway, freshness);
+    ///     s.execute(plan, gateway, freshness);
     /// }
     /// ```
-    pub fn execute_verified<T: InstancedPullGateway>(
+    pub fn execute<T: InstancedPullGateway>(
         &mut self,
         plan: InstancedPullPlan,
         gateway: &mut T,

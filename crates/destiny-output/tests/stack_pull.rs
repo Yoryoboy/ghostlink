@@ -140,7 +140,7 @@ fn execute(
     let (mut service, plan) = armed(input(20, 10), posts);
     let mut gateway = QueuedStackPullGateway::new();
     gateway.queue(Ok(receipt));
-    let outcome = service.execute_verified(plan, &mut gateway, FRESH).unwrap();
+    let outcome = service.execute(plan, &mut gateway, FRESH).unwrap();
     assert_eq!(gateway.calls(), 1);
     StackPullOutput::from_outcome(&outcome)
 }
@@ -234,9 +234,7 @@ fn pre_dispatch_and_gateway_errors_never_invent_receipts() {
         );
         let mut gateway = QueuedStackPullGateway::new();
         gateway.queue(Err(AppError::invalid_argument(BEARER_TOKEN, RAW_PAYLOAD)));
-        let failure = service
-            .execute_verified(plan, &mut gateway, FRESH)
-            .unwrap_err();
+        let failure = service.execute(plan, &mut gateway, FRESH).unwrap_err();
         let output = StackPullOutput::execution_failed(&failure);
         let v = output.json();
         assert!(!output.is_success());

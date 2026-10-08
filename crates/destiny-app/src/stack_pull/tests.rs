@@ -279,7 +279,7 @@ fn acknowledged_stale_profile_is_applied_without_post_action_read() {
     }
     let mut gateway = QueuedStackPullGateway::new();
     gateway.queue(Ok(StackPullOutcome::Acknowledged));
-    let outcome = s.execute_verified(p, &mut gateway, FRESH).unwrap();
+    let outcome = s.execute(p, &mut gateway, FRESH).unwrap();
     assert_eq!(outcome.disposition(), PullDisposition::Applied);
     assert_eq!(gateway.calls(), 1);
     assert_eq!(gateway.requests()[0].quantity(), 3);
@@ -299,7 +299,7 @@ fn invalidation_storage_failure_retains_receipt_and_fails_closed() {
     let before = s.sync.repository().load_current().unwrap();
     let mut gateway = QueuedStackPullGateway::new();
     gateway.queue(Ok(StackPullOutcome::Acknowledged));
-    let outcome = s.execute_verified(p, &mut gateway, FRESH).unwrap();
+    let outcome = s.execute(p, &mut gateway, FRESH).unwrap();
     assert_eq!(outcome.disposition(), PullDisposition::LocalStateFailed);
     assert_eq!(outcome.gateway_outcome(), &StackPullOutcome::Acknowledged);
     assert_eq!(
@@ -331,7 +331,7 @@ fn uncertain_and_refused_receipts_fail_without_post_action_requests() {
         let (mut s, p) = armed();
         let mut gateway = QueuedStackPullGateway::new();
         gateway.queue(Ok(receipt));
-        let outcome = s.execute_verified(p, &mut gateway, FRESH).unwrap();
+        let outcome = s.execute(p, &mut gateway, FRESH).unwrap();
         assert_eq!(outcome.disposition(), disposition);
         assert_eq!(outcome.gateway_outcome(), &receipt);
         assert_eq!(gateway.calls(), 1);
@@ -352,7 +352,7 @@ fn drift_consumes_plan_without_dispatch_or_postaction() {
     queue(&mut s, next);
     s.manifest.queue_capacity_evidence(Ok(evidence()));
     let mut gateway = QueuedStackPullGateway::new();
-    assert!(s.execute_verified(p, &mut gateway, FRESH).is_err());
+    assert!(s.execute(p, &mut gateway, FRESH).is_err());
     assert_eq!(gateway.calls(), 0);
     assert!(!s.sync.repository().freshness_invalidated().unwrap());
 }

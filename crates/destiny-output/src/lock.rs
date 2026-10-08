@@ -11,22 +11,18 @@ pub use crate::equip::ProfileRefresh;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LockStatus {
     Applied,
-    VerifiedSuccess,
     VerifiedNoop,
     Incomplete,
     VerificationFailed,
-    AppliedPendingProviderRefresh,
     Refused,
 }
 impl LockStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Applied => "applied",
-            Self::VerifiedSuccess => "verified_success",
             Self::VerifiedNoop => "verified_noop",
             Self::Incomplete => "incomplete",
             Self::VerificationFailed => "verification_failed",
-            Self::AppliedPendingProviderRefresh => "applied_pending_provider_refresh",
             Self::Refused => "refused",
         }
     }
@@ -105,38 +101,18 @@ impl LockOutput {
             LockExecutionOutcome::Applied(_) => {
                 (LockStatus::Applied, ProfileRefresh::NotRequired, None)
             }
-            LockExecutionOutcome::VerifiedSuccess(_) => {
-                (LockStatus::VerifiedSuccess, ProfileRefresh::Refreshed, None)
-            }
             LockExecutionOutcome::VerifiedNoOp(_) => {
                 (LockStatus::VerifiedNoop, ProfileRefresh::NotRequired, None)
             }
             LockExecutionOutcome::IncompleteExecution(_) => {
                 (LockStatus::Incomplete, ProfileRefresh::NotRequired, None)
             }
-            LockExecutionOutcome::AppliedPendingProviderRefresh(_) => (
-                LockStatus::AppliedPendingProviderRefresh,
-                ProfileRefresh::Refreshed,
-                Some(
-                    "provider confirmed the action, but observed state is stale/unconfirmed; do not retry, run `ghostlink sync` later to confirm",
-                ),
-            ),
             LockExecutionOutcome::VerificationFailed(failure) => (
                 LockStatus::VerificationFailed,
-                if failure.reason() == LockVerificationFailureReason::RefreshFailed {
-                    ProfileRefresh::Failed
-                } else {
-                    ProfileRefresh::Refreshed
-                },
+                ProfileRefresh::Failed,
                 Some(match failure.reason() {
                     LockVerificationFailureReason::RefreshFailed => {
                         "local state could not be updated after the action; do not blindly retry"
-                    }
-                    LockVerificationFailureReason::Unresolved => {
-                        "outcome is uncertain: refreshed item could not be uniquely resolved; do not blindly retry"
-                    }
-                    LockVerificationFailureReason::Contradiction => {
-                        "refreshed state contradicts the action; lock state was not verified; do not blindly retry"
                     }
                 }),
             ),
@@ -176,18 +152,8 @@ impl LockOutput {
                 "{name}: {state}\n✔ applied (acknowledged by Bungie; not post-action verified)"
             );
         }
-        if matches!(
-            self.status,
-            LockStatus::VerifiedSuccess | LockStatus::VerifiedNoop
-        ) {
-            return format!(
-                "{name}: {}{state}\n✔ verified",
-                if self.status == LockStatus::VerifiedNoop {
-                    "already "
-                } else {
-                    ""
-                }
-            );
+        if self.status == LockStatus::VerifiedNoop {
+            return format!("{name}: already {state}\n✔ verified");
         }
         let mut lines = vec![format!("{name}: {}", self.status.as_str())];
         if let Some(reason) = &self.reason {
@@ -206,11 +172,7 @@ impl LockOutput {
         if let Some(locked) = self.observed {
             lines.push(format!(
                 "{}: {}",
-                if self.status == LockStatus::AppliedPendingProviderRefresh {
-                    "stale/unconfirmed state"
-                } else {
-                    "observed state"
-                },
+                "observed state",
                 if locked { "locked" } else { "unlocked" }
             ));
         }
