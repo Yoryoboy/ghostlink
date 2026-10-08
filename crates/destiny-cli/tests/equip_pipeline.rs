@@ -124,7 +124,7 @@ fn cli_equip_routes_selectors_and_preserves_verified_outcomes_offline() {
             false,
             EquipOutcome::Equipped,
             Some(Ok(snapshot(target(), true))),
-            EquipStatus::VerifiedSuccess,
+            EquipStatus::Applied,
         ),
         (
             "123",
@@ -160,7 +160,7 @@ fn cli_equip_routes_selectors_and_preserves_verified_outcomes_offline() {
             false,
             EquipOutcome::Uncertain,
             Some(Ok(snapshot(target(), true))),
-            EquipStatus::VerifiedSuccess,
+            EquipStatus::Incomplete,
         ),
         (
             "123",
@@ -169,7 +169,7 @@ fn cli_equip_routes_selectors_and_preserves_verified_outcomes_offline() {
             false,
             EquipOutcome::Equipped,
             Some(Err(AppError::new(ErrorCategory::ProviderUnavailable))),
-            EquipStatus::VerificationFailed,
+            EquipStatus::Applied,
         ),
         (
             "123",
@@ -178,7 +178,7 @@ fn cli_equip_routes_selectors_and_preserves_verified_outcomes_offline() {
             false,
             EquipOutcome::Equipped,
             Some(Ok(snapshot(ItemLocation::Vault, false))),
-            EquipStatus::AppliedPendingProviderRefresh,
+            EquipStatus::Applied,
         ),
     ] {
         let mut service = mutations(snapshot(source, already), post);
@@ -199,18 +199,15 @@ fn cli_equip_routes_selectors_and_preserves_verified_outcomes_offline() {
         )
         .unwrap();
         assert_eq!(output.status, expected, "{}", output.render_text());
-        if expected == EquipStatus::AppliedPendingProviderRefresh {
-            assert_eq!(output.exit_code(), 43);
-            assert_eq!(output.json()["status"], "applied_pending_provider_refresh");
-            assert_eq!(output.json()["profile_refresh"], "refreshed");
+        if expected == EquipStatus::Applied {
+            assert_eq!(output.exit_code(), 0);
+            assert_eq!(output.json()["status"], "applied");
+            assert_eq!(output.json()["profile_refresh"], "not_required");
             assert_eq!(output.json()["steps"][0]["outcome"], "completed");
             assert_eq!(output.json()["steps"][1]["outcome"], "completed");
-            assert_eq!(output.json()["observed"]["location"]["kind"], "vault");
-            let text = output.render_text();
-            assert!(text.contains("ghostlink sync"));
-            assert!(text.contains("do not retry"));
-            assert!(text.contains("stale/unconfirmed state"));
-            assert!(!text.contains("✔ verified"));
+            assert!(output.json()["observed"].is_null());
+            assert!(output.render_text().contains("not re-read"));
+            assert!(!output.render_text().contains("✔ verified"));
         }
         assert_eq!(output.json()["item"]["name"], "Ace of Spades");
         assert_eq!(output.json()["character"]["label"], "Hunter");
@@ -229,7 +226,7 @@ fn cli_equip_routes_selectors_and_preserves_verified_outcomes_offline() {
             );
         }
         if expected == EquipStatus::Incomplete {
-            assert!(!output.observed.as_ref().unwrap().equipped);
+            assert!(output.observed.is_none());
             assert_eq!(output.steps[0].outcome, "completed");
             assert_eq!(output.exit_code(), 41);
         }
@@ -308,8 +305,9 @@ fn cli_equip_stops_after_transfer_failure_and_reports_unrun_equip() {
         assert_eq!(output.steps[1].outcome, "not_run");
         if dispatched {
             assert_eq!(output.status, EquipStatus::Incomplete);
-            assert_eq!(output.profile_refresh, ProfileRefresh::Refreshed);
-            assert!(output.render_text().contains("profile refreshed"));
+            assert_eq!(output.profile_refresh, ProfileRefresh::NotRequired);
+            assert!(output.observed.is_none());
+            assert_eq!(output.exit_code(), 41);
         } else {
             assert_eq!(output.status, EquipStatus::Refused);
             assert_eq!(output.profile_refresh, ProfileRefresh::NotRequired);

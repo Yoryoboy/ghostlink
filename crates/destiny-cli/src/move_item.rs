@@ -126,7 +126,7 @@ where
         _ => None,
     };
     let post_action_now = clock.now()?;
-    let execution = mutations.execute_move_verified(
+    let execution = mutations.execute_move_action(
         transfer,
         &request,
         &plan,

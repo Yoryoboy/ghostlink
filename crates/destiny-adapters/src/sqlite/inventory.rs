@@ -50,7 +50,7 @@ use destiny_core::{
     PlugSummary, ProfileCurrenciesCoverage, SnapshotMetadata, SourceMarker, StackContainer,
     StackObservation, SyncMetadata, SyncRevision, Timestamp,
 };
-use rusqlite::{Connection, Error as SqlError, TransactionBehavior, params};
+use rusqlite::{Connection, Error as SqlError, OptionalExtension, TransactionBehavior, params};
 use std::collections::HashSet;
 
 /// The fixed `sync_metadata` dataset row this repository owns.
@@ -64,6 +64,33 @@ fn provider_validation() -> AppError {
 }
 
 impl InventoryRepository for SqliteStore {
+    fn freshness_invalidated(&self) -> Result<bool, AppError> {
+        let value: Option<i64> = self
+            .connection()
+            .query_row(
+                "SELECT invalidated FROM sync_metadata WHERE dataset = 'profile_inventory'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| storage_failure())?;
+        match value {
+            None | Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            _ => Err(storage_failure()),
+        }
+    }
+
+    fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        self.connection_mut()
+            .execute(
+                "UPDATE sync_metadata SET invalidated = 1 WHERE dataset = 'profile_inventory'",
+                [],
+            )
+            .map_err(|_| storage_failure())?;
+        Ok(())
+    }
+
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
         read_projection(self.connection())
     }
@@ -130,6 +157,12 @@ impl InventoryRepository for SqliteStore {
             replace_projection(&transaction, &ordered)?;
         }
         upsert_metadata(&transaction, &ordered, revision)?;
+        transaction
+            .execute(
+                "UPDATE sync_metadata SET invalidated = 0 WHERE dataset = 'profile_inventory'",
+                [],
+            )
+            .map_err(|_| storage_failure())?;
         transaction.commit().map_err(|_| storage_failure())?;
 
         Ok(InventorySnapshot {

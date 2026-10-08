@@ -8,7 +8,7 @@
 //! A default fixture session proves initialize, discovery of the four reads
 //! plus the default-enabled `move_item`, all three reads, the complete one-call
 //! mutation journey (semantic planning, fresh preflight, exactly one transfer,
-//! post-action refresh, and destination verification), a repeated request that
+//! acknowledgement and freshness invalidation), a repeated request that
 //! fails closed without replay, a sanitized missing-item failure, and the secret
 //! sentinel never crossing either stream. Fresh fixture processes selected by
 //! `DESTINY_FIXTURE_SCENARIO` additionally prove an already-satisfied verified
@@ -56,13 +56,136 @@ const MOVE_ITEM_TOOL: &str = "move_item";
 mod equip_support;
 
 #[tokio::test]
-async fn stack_stdio_verified_refused_and_invalid() {
-    for (scenario, disposition) in [("stack-success", "verified"), ("stack-refused", "refused")] {
+async fn batch_equip_stdio_reports_per_item_outcomes_and_storage_failure() {
+    for (scenario, outcome, error) in [
+        ("batch-success", "applied", false),
+        ("batch-noop", "verified_no_op", false),
+        ("batch-mixed", "incomplete", true),
+        ("batch-omitted", "incomplete", true),
+        ("batch-location", "incomplete", true),
+        ("batch-uncertain", "incomplete", true),
+        ("batch-storage", "local_state_failed", true),
+    ] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let response = session
+            .call_tool(
+                "equip_items",
+                json!({"character":"warlock", "items":["101", "Second"]}),
+            )
+            .await;
+        let output = structured(&response);
+        assert_eq!(output["outcome"], outcome, "{scenario}");
+        assert_eq!(response["result"]["isError"], error, "{scenario}");
+        assert_eq!(output["items"].as_array().unwrap().len(), 2);
+        if scenario == "batch-mixed" {
+            assert_eq!(output["items"][1]["code"], 99);
+        }
+        if scenario == "batch-omitted" {
+            assert_eq!(output["items"][1]["status"], "not_reported");
+        }
+        if scenario == "batch-location" {
+            assert_eq!(output["reason"], "go to orbit or a social space and retry");
+        }
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn batch_equip_stdio_refuses_invalid_and_missing_items() {
+    let mut session = FixtureSession::spawn(None).await;
+    let response = session
+        .call_tool(
+            "equip_items",
+            json!({"character":"warlock", "items":["missing", "absent"]}),
+        )
+        .await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(structured(&response)["kind"], "equip_items");
+    let response = session
+        .call_tool(
+            "equip_items",
+            json!({"character":"warlock", "items":["missing"]}),
+        )
+        .await;
+    assert_eq!(response["result"]["isError"], true);
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn apply_loadout_stdio_contract() {
+    for (scenario, receipt, outcome) in [
+        ("loadout-success", "applied", "applied"),
+        ("loadout-location", "rejected", "failed"),
+        ("loadout-auth", "authentication_refused", "failed"),
+        ("loadout-transient", "transient", "failed"),
+        ("loadout-uncertain", "uncertain", "failed"),
+        ("loadout-storage", "applied", "local_state_failed"),
+    ] {
+        for args in [
+            json!({"character":"hunter","slot":3}),
+            json!({"character":"1","name":"  pVe "}),
+        ] {
+            let mut session = FixtureSession::spawn(Some(scenario)).await;
+            let response = session.call_tool("apply_loadout", args).await;
+            let output = structured(&response);
+            assert_eq!(output["kind"], "apply_loadout");
+            assert_eq!(output["character"], "1");
+            assert_eq!(output["slot"], 3);
+            assert_eq!(output["name"], "PvE");
+            assert_eq!(output["receipt"], receipt);
+            assert_eq!(output["outcome"], outcome);
+            assert_eq!(response["result"]["isError"], outcome != "applied");
+            if scenario == "loadout-location" {
+                assert_eq!(output["reason"], "go to orbit or a social space and retry");
+            }
+            if scenario == "loadout-storage" {
+                assert_eq!(
+                    output["reason"],
+                    "local state could not be updated after the action"
+                );
+            }
+            session.shutdown().await;
+        }
+    }
+    let mut session = FixtureSession::spawn(Some("loadout-success")).await;
+    for args in [
+        json!({"character":"hunter"}),
+        json!({"character":"hunter","slot":3,"name":"PvE"}),
+        json!({"character":"hunter","slot":13}),
+    ] {
+        let response = session.call_tool("apply_loadout", args).await;
+        assert_eq!(response["result"]["isError"], true);
+    }
+    let response = session
+        .call_tool("apply_loadout", json!({"character":"hunter","name":"Pv"}))
+        .await;
+    assert_eq!(structured(&response)["code"], "unknown_loadout_name");
+    assert_eq!(structured(&response)["candidates"][0]["slot"], 3);
+    let response = session
+        .call_tool("apply_loadout", json!({"character":"hunter","slot":1}))
+        .await;
+    assert_eq!(structured(&response)["code"], "empty_slot");
+    // Invalid calls did not consume the sole queued action acknowledgement.
+    let response = session
+        .call_tool("apply_loadout", json!({"character":"hunter","slot":3}))
+        .await;
+    assert_eq!(response["result"]["isError"], false);
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn stack_stdio_acknowledged_refused_uncertain_and_invalid() {
+    for (scenario, disposition) in [
+        ("stack-success", "applied"),
+        ("stack-pending", "applied"),
+        ("stack-refused", "refused"),
+        ("stack-uncertain", "uncertain"),
+    ] {
         let mut session = FixtureSession::spawn(Some(scenario)).await;
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 17);
         let tool = tools.iter().find(|t| t["name"] == "pull_stack").unwrap();
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(tool["annotations"]["readOnlyHint"], false);
@@ -95,12 +218,8 @@ async fn stack_stdio_verified_refused_and_invalid() {
         let output = structured(&response);
         assert_eq!(output["kind"], "stack_pull");
         assert_eq!(output["disposition"], disposition, "{response}");
-        assert_eq!(response["result"]["isError"], disposition != "verified");
-        assert_eq!(
-            output["observations"][0]["classification"],
-            "verified_arrival"
-        );
-        assert_eq!(output["observations"].as_array().unwrap().len(), 1);
+        assert_eq!(response["result"]["isError"], disposition != "applied");
+        assert!(output.get("observations").is_none());
         session.shutdown().await;
     }
 }
@@ -108,8 +227,8 @@ async fn stack_stdio_verified_refused_and_invalid() {
 #[tokio::test]
 async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
     for (scenario, disposition, receipt) in [
-        ("pull-success", "verified", "acknowledged"),
-        ("pull-pending", "not_yet_observed", "acknowledged"),
+        ("pull-success", "applied", "acknowledged"),
+        ("pull-pending", "applied", "acknowledged"),
         ("pull-uncertain", "uncertain", "uncertain"),
         ("pull-refused-arrival", "refused", "rejected"),
     ] {
@@ -117,7 +236,7 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 17);
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == "pull_item")
@@ -143,24 +262,11 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
         assert_eq!(output["kind"], "instanced_pull");
         assert_eq!(output["disposition"], disposition, "{scenario}: {response}");
         assert_eq!(output["receipt"]["kind"], receipt);
-        assert_eq!(response["result"]["isError"], disposition != "verified");
+        assert_eq!(response["result"]["isError"], disposition != "applied");
         assert_eq!(output["dispatch"]["item"]["instance_id"], "123");
         assert_eq!(output["dispatch"]["destination"]["character_id"], "2");
-        let observations = output["observations"].as_array().unwrap();
+        assert!(output.get("observations").is_none());
         let arrived = matches!(scenario, "pull-success" | "pull-refused-arrival");
-        assert_eq!(observations.len(), if arrived { 1 } else { 3 });
-        assert_eq!(
-            observations[0]["classification"],
-            if arrived {
-                "verified_arrival"
-            } else {
-                "still_in_postmaster"
-            }
-        );
-        assert_eq!(
-            observations[0]["target"]["runtime_bucket"],
-            if arrived { 1498876634 } else { 215593132 }
-        );
         if arrived {
             let repeated = session.call_tool("pull_item", json!({"item":"123"})).await;
             assert_eq!(repeated["result"]["isError"], true);
@@ -175,6 +281,34 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
     assert_eq!(structured(&response)["failure"]["stage"], "gateway");
     assert!(structured(&response)["receipt"].is_null());
     session.shutdown().await;
+}
+
+#[tokio::test]
+async fn pull_storage_failure_is_error_even_after_acknowledgement() {
+    for (scenario, tool, args) in [
+        ("pull-storage", "pull_item", json!({"item":"123"})),
+        (
+            "stack-storage",
+            "pull_stack",
+            json!({"item_hash":"7", "amount":"3", "character":"2"}),
+        ),
+    ] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let response = session.call_tool(tool, args).await;
+        assert_eq!(response["result"]["isError"], true);
+        let output = structured(&response);
+        assert_eq!(output["disposition"], "local_state_failed");
+        assert_eq!(output["receipt"]["kind"], "acknowledged");
+        assert_eq!(output["failure"]["category"], "local_storage");
+        assert!(
+            output["failure"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("local state could not be updated after the action")
+        );
+        assert!(output.get("observations").is_none());
+        session.shutdown().await;
+    }
 }
 
 #[tokio::test]
@@ -278,26 +412,16 @@ async fn postmaster_stdio_committed_service_journey_and_refusals() {
 }
 
 #[tokio::test]
-async fn lock_stdio_success_noop_refusal_and_unverified_outcomes() {
+async fn lock_stdio_applied_noop_refusal_and_incomplete_outcomes() {
     for (scenario, item, locked, status) in [
-        ("success", "inst-a", true, "verified_success"),
+        ("success", "inst-a", true, "applied"),
         ("success", "inst-a", false, "verified_noop"),
         ("success", "missing", true, "refused"),
         ("lock-refused", "inst-a", true, "incomplete"),
-        (
-            "lock-provider-stale",
-            "inst-a",
-            true,
-            "applied_pending_provider_refresh",
-        ),
-        ("lock-uncertain", "inst-a", true, "verified_success"),
+        ("lock-provider-stale", "inst-a", true, "applied"),
+        ("lock-uncertain", "inst-a", true, "incomplete"),
         ("lock-uncertain-no-effect", "inst-a", true, "incomplete"),
-        (
-            "lock-refresh-failure",
-            "inst-a",
-            true,
-            "verification_failed",
-        ),
+        ("lock-refresh-failure", "inst-a", true, "applied"),
     ] {
         let mut session = FixtureSession::spawn(Some(scenario)).await;
         let response = session
@@ -306,11 +430,15 @@ async fn lock_stdio_success_noop_refusal_and_unverified_outcomes() {
         let output = &response["result"]["structuredContent"];
         assert_eq!(output["status"], status, "{scenario}: {response}");
         assert_eq!(output["locked"], locked);
+        assert_eq!(output["profile_refresh"], "not_required");
+        if status == "applied" || status == "incomplete" {
+            assert!(output["observed"].is_null());
+        }
         assert_eq!(
             response["result"]["isError"],
-            !matches!(status, "verified_success" | "verified_noop")
+            !matches!(status, "applied" | "verified_noop")
         );
-        if status == "verified_success" {
+        if status == "applied" && scenario == "success" {
             let repeated = session
                 .call_tool("set_lock_state", json!({"item":item,"locked":locked}))
                 .await;
@@ -321,10 +449,7 @@ async fn lock_stdio_success_noop_refusal_and_unverified_outcomes() {
             let unlock = session
                 .call_tool("set_lock_state", json!({"item":item,"locked":false}))
                 .await;
-            assert_eq!(
-                unlock["result"]["structuredContent"]["status"],
-                "verified_success"
-            );
+            assert_eq!(unlock["result"]["structuredContent"]["status"], "applied");
         }
         session.shutdown().await;
     }
@@ -382,7 +507,7 @@ async fn equip_stdio_json_matches_cli_for_all_outcomes() {
             result["result"]["isError"],
             !matches!(
                 expected["status"].as_str().unwrap(),
-                "verified_success" | "verified_noop"
+                "applied" | "verified_success" | "verified_noop"
             )
         );
         session.shutdown().await;
@@ -412,10 +537,7 @@ async fn equip_stdio_invalid_arguments_never_mutate() {
     let response = session
         .call_tool("equip_item", json!({"item":"123","character":"warlock"}))
         .await;
-    assert_eq!(
-        response["result"]["structuredContent"]["status"],
-        "verified_success"
-    );
+    assert_eq!(response["result"]["structuredContent"]["status"], "applied");
     assert_eq!(
         response["result"]["structuredContent"]["steps"]
             .as_array()
@@ -904,7 +1026,9 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             "equip_item",
             "set_lock_state",
             "pull_item",
-            "pull_stack"
+            "pull_stack",
+            "apply_loadout",
+            "equip_items"
         ],
         "the product-equivalent server discovers all reads plus move_item and equip_item"
     );
@@ -1016,19 +1140,15 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
         .await;
     assert_eq!(moved["result"]["isError"], false);
     let success = structured(&moved);
-    assert_eq!(success["status"], "verified_success");
+    assert_eq!(success["status"], "applied");
     assert_eq!(success["effects"]["item_id"], "inst-a");
     assert_eq!(success["effects"]["via_vault"], false);
     assert_eq!(success["effects"]["source"]["kind"], "vault");
     assert_eq!(success["effects"]["destination"]["kind"], "character");
     assert_eq!(success["effects"]["destination"]["character_id"], "warlock");
-    assert_eq!(success["observed"]["kind"], "character");
-    assert_eq!(success["observed"]["character_id"], "warlock");
+    assert!(success.get("observed").is_none());
 
-    // Exactly the planned steps were dispatched: a Vault move is one transfer.
-    // The refresh and verification are proven by the destination being observed
-    // at all: the projection only reflects the transfer through the forced
-    // post-action refresh.
+    // Exactly the planned steps were acknowledged, without claiming observation.
     let steps = success["steps"].as_array().expect("step evidence");
     assert_eq!(
         steps.len(),
@@ -1158,7 +1278,7 @@ async fn move_item_semantic_text_resolves_the_named_instance_through_the_vault()
         .await;
     assert_eq!(moved["result"]["isError"], false);
     let success = structured(&moved);
-    assert_eq!(success["status"], "verified_success");
+    assert_eq!(success["status"], "applied");
 
     // The resolved concrete instance, not the text, is what was moved, and the
     // route is character -> Vault -> character, so the Vault is used exactly once.
@@ -1169,10 +1289,8 @@ async fn move_item_semantic_text_resolves_the_named_instance_through_the_vault()
     assert_eq!(success["effects"]["destination"]["kind"], "character");
     assert_eq!(success["effects"]["destination"]["character_id"], "warlock");
 
-    // Post-refresh verification: only the forced refresh after the transfer can
-    // make the destination observable from the shared world.
-    assert_eq!(success["observed"]["kind"], "character");
-    assert_eq!(success["observed"]["character_id"], "warlock");
+    // Acknowledgement does not claim a refreshed observation.
+    assert!(success.get("observed").is_none());
 
     // Bounded evidence: the two ordered mediated steps, both completed.
     let steps = success["steps"].as_array().expect("step evidence");
@@ -1243,7 +1361,7 @@ async fn move_item_reports_a_changed_preflight_as_a_typed_sanitized_failure() {
 }
 
 #[tokio::test]
-async fn move_item_reports_pending_provider_refresh_for_confirmed_stale_profile() {
+async fn move_item_acknowledges_stale_profile_without_claiming_observation() {
     let mut session = FixtureSession::spawn(Some("move-provider-stale")).await;
     let moved = session
         .call_tool(
@@ -1251,10 +1369,10 @@ async fn move_item_reports_pending_provider_refresh_for_confirmed_stale_profile(
             json!({"instance_id":"inst-a","character_id":"warlock"}),
         )
         .await;
-    assert_eq!(moved["result"]["isError"], true);
+    assert_eq!(moved["result"]["isError"], false);
     let pending = structured(&moved);
-    assert_eq!(pending["status"], "applied_pending_provider_refresh");
-    assert_eq!(pending["observed"]["kind"], "vault");
+    assert_eq!(pending["status"], "applied");
+    assert!(pending.get("observed").is_none());
     assert_eq!(pending["steps"].as_array().unwrap().len(), 1);
     assert_eq!(pending["steps"][0]["outcome"]["status"], "completed");
     assert_no_secret_in(&moved);
@@ -1274,11 +1392,12 @@ async fn move_item_reports_a_partial_execution_honestly() {
             json!({ "instance_id": "inst-e", "character_id": "warlock" }),
         )
         .await;
-    assert_eq!(moved["result"]["isError"], false);
+    assert_eq!(moved["result"]["isError"], true);
     let incomplete = structured(&moved);
     assert_eq!(incomplete["status"], "incomplete");
     assert_eq!(incomplete["partial"], true);
-    assert_eq!(incomplete["observed"]["kind"], "vault");
+    assert_eq!(incomplete["expected_location"]["kind"], "vault");
+    assert!(incomplete.get("observed").is_none());
     assert_eq!(incomplete["effects"]["via_vault"], true);
 
     let steps = incomplete["steps"].as_array().expect("step evidence");

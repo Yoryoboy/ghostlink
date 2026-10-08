@@ -1,6 +1,6 @@
 # Ghostlink MCP server (`destiny-mcp`)
 
-`destiny-mcp` serves bounded read tools plus four default-enabled semantic
+`destiny-mcp` serves bounded read tools plus six default-enabled semantic
 mutations over the Model Context Protocol stdio transport:
 
 ```text
@@ -15,10 +15,11 @@ get_loadouts      show saved in-game loadouts and configured equipment per chara
 weekly_reset      predict weekly rotations and observe current-week milestones
 weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
-equip_item        transfer if necessary, equip on an explicit character, and verify
-set_lock_state    lock or unlock one explicitly selected owned item and verify
+equip_item        transfer if necessary, equip on an explicit character, return acceptance
+set_lock_state    lock or unlock one explicitly selected owned item, return acceptance
 pull_item         pull one genuine Postmaster equipment instance to its owner
 pull_stack        pull an explicit amount of a non-instanced Postmaster stack
+apply_loadout     apply one saved in-game loadout on an explicit character
 ```
 
 Mutation is composed by default in the product binary: its profile gateway and
@@ -26,9 +27,9 @@ durable projection are shared with the read path, and one explicit `move_item`
 request is the whole intent authorization. There is no preview tool, confirmation
 token or value, approval ceremony, or second MCP call. The single call plans the
 move, forces a fresh revision-bound preflight, issues only the ordered transfer
-steps, refreshes the projection after the action, and verifies the destination
-or reports `applied_pending_provider_refresh` when provider-confirmed steps
-still have an unchanged pre-action profile (see [Equip one item](cli.md#equip-one-item));
+steps, and returns `applied` with `isError=false` when every step is acknowledged.
+It does not perform post-action verification; the next ordinary read forces sync
+without writing guessed inventory state (see [Equip one item](cli.md#equip-one-item));
 membership and credentials are resolved internally and are never accepted or
 emitted through MCP.
 
@@ -37,27 +38,55 @@ emitted through MCP.
 control characters are rejected. One call is the complete intent authorization,
 with no separate token or approval ceremony. It uses the same shared equip
 pipeline and JSON as `ghostlink equip`; see the [equip safety limits](cli.md#equip-one-item).
-Both `equip_item` and `move_item` can return
-`applied_pending_provider_refresh` with `isError=true`, never verified success.
+Both `equip_item` and `move_item` return `applied` on full acknowledgement,
+without claiming an observed destination/equipped state. Already-satisfied fresh
+preflight remains `verified_noop`. Uncertain, refused and partial results remain
+errors with no blind retry. Incomplete move `expected_location` is derived from
+receipts, not an observation.
 `move_item` also has the `ghostlink move` CLI surface.
 
 `set_lock_state` accepts exactly `{"item":"Ace of Spades","locked":true}`;
 use `false` to unlock. Both fields are required, `locked` must be a boolean, and
 unknown fields, controls, and overlong selectors are rejected before I/O.
 Item resolution matches move/equip; ambiguous names require an instance ID.
-One call is explicit intent for shared fresh preflight, at most one dispatch,
-mandatory post-action refresh, and verification of `instance.locked`. Already
+One call is explicit intent for shared fresh preflight and at most one dispatch.
+Bungie acknowledgement returns `applied` (CLI 0), not observed lock state, with no
+post-action profile request. Dispatched attempts invalidate local freshness so
+the next ordinary read forces sync; no guessed state is written. Already
 satisfied is a verified no-op, with no provider mutation. Vault items use one
 owned character for the provider call; live validation remains pending.
 
 Lock JSON matches `ghostlink lock` / `ghostlink unlock`: `status`, `item`,
 requested `locked`, sanitized `attempt` and `reason`, `profile_refresh`, and
-`observed` lock state. Only verified success/no-op have `isError=false`.
-Refusal, incomplete, verification-failed and applied-pending-refresh results
-have `isError=true`. No stale observation is presented as fresh after a failed
-refresh. Never blindly retry uncertain outcomes or applied-pending-refresh;
-sync later to confirm. See [Lock or unlock one item](cli.md#lock-or-unlock-one-item).
+`observed` lock state (only fresh preflight for no-op, otherwise null).
+`applied` and `verified_noop` have `isError=false`. Refusals and incomplete
+attempts (CLI 41), including auth refusal and transient/uncertain transport,
+have `isError=true`. Invalidation storage failure after dispatch fails closed
+(CLI 42): "local state could not be updated after the action". Provider-lag
+verification exits 42/43 are no longer emitted. Never blindly retry; sync later
+to confirm. See [Lock or unlock one item](cli.md#lock-or-unlock-one-item).
 All publishing reads and mutations share the same server operation guard.
+
+`apply_loadout` accepts `{"character":"hunter","slot":3}` or
+`{"character":"hunter","name":"PvE"}`: character is required (exact owned id
+or unique case-insensitive class), and exactly one of slot/name is required.
+Slots are one-based (1–12) as shown by `get_loadouts`; names use normalized exact
+matching within that character. Unknown/ambiguous names return typed errors and
+candidates without guessing; empty/unavailable slots refuse. Unknown fields and
+invalid selectors are rejected before service I/O. Requires login and loaded
+Manifest definitions; orbit, a social space, or an offline character is required.
+Location refusal says "go to orbit or a social space and retry".
+
+One call performs fresh preflight, a live component-206 read, and exactly one
+EquipLoadout action. JSON matches `ghostlink apply-loadout --json`: `kind:
+"apply_loadout"`, `character`, one-based `slot`, `name`, `outcome`, bounded
+`receipt`, and `reason`. `applied` is acknowledgement (`isError=false`, CLI 0),
+not observed state. Refusal/auth/transient/uncertain attempts are errors (CLI 41),
+and durable invalidation failure fails closed (CLI 42), retaining the receipt:
+"local state could not be updated after the action". Every dispatched attempt
+invalidates freshness; the next ordinary read forces sync. No post-action request
+or retry; process-local loadout attempts are paced at one per second. No global
+cross-process throttle guarantee. Never blindly repeat an uncertain action.
 
 Install both binaries from a release and run `ghostlink` for setup (or
 `ghostlink login` for sign-in only). Register `destiny-mcp` in your agent using
@@ -79,6 +108,27 @@ runtime failure is a sanitized message written to stderr; nothing else is writte
 to stdout. A missing stored credential fails closed with `authorization is
 required`, a legacy raw-material credential with `reauthorization is required`,
 and neither path guesses an expiry or falls back to an environment value.
+
+## Batch equip
+
+`equip_items` accepts exactly `{"character":"hunter","items":["123456789","234567890"]}`
+with 2–17 items. Character is an explicit unique class or owned ID; item ID/name
+resolution matches CLI `ghostlink equip <ITEM>... --character <class|id>`.
+The existing single-item `equip_item` tool is unchanged.
+
+One fresh preflight validates the combined equipment state: unique items and
+slots, class compatibility, equippability, and at most one exotic weapon and
+one exotic armor including equipped slots not replaced. Invalid batches dispatch
+nothing. Required transfers use Vault-mediated routing, stop on first failure,
+and precede exactly one EquipItems call; actions are paced at 0.1s minimum.
+Already-equipped requested items are per-item no-ops; all-no-op batches are
+verified without dispatch. Only every per-item success (or no-op) is MCP success.
+Failures, omitted `not_reported` results and envelope refusal/auth/transient/
+uncertainty remain errors. Structured output lists item, slot, status and numeric
+code, matching CLI JSON. Every dispatched attempt invalidates local freshness;
+storage failure is fail-closed with "local state could not be updated after the
+action". Restricted location says "go to orbit or a social space and retry".
+Never blindly retry; read state and reassess user intent.
 
 ## Postmaster observations
 
@@ -151,16 +201,19 @@ No inventory clearing, arbitrary destination, preview, rollback or redispatch.
 
 `structuredContent` is the same shared JSON as `ghostlink pull --json`:
 `kind: "instanced_pull"`, `disposition`, `plan_id`, `dispatch`, independent
-`receipt` and `failure`, and ordered `observations`. Each observation retains its
-classification, failure and publication/target evidence separately. There is at
-most one action and three post-action observations, two seconds between attempts.
-Only `disposition: "verified"` has `isError=false`; `not_yet_observed`, `uncertain`
-and `refused` have `isError=true`. Acknowledgement is not application proof; even
-observed arrival cannot turn a refusal or timestamp failure into success.
+`receipt` and `failure`. Bungie acknowledgement yields `disposition: "applied"`
+with `isError=false` (CLI 0), not observed arrival. There is at most one action,
+no post-action profile request or wait, and no `observations` field. Dispatched
+attempts durably invalidate local freshness so the next ordinary read forces sync;
+no guessed arrival state is published. `uncertain` and received `refused` remain
+errors (CLI 41). Invalidation storage failure returns `local_state_failed` with
+`isError=true` (CLI 42), retaining the receipt and reporting "local state could
+not be updated after the action". Pre-action refusals retain category exits.
 
-Never blindly retry an unconfirmed outcome. Re-read state later and report receipt
-separately from arrival. Local serialization excludes neither other processes nor
-game activity; observations are not causal or atomic guarantees. Non-instanced stacks use `pull_stack`; live account validation is still pending.
+Never blindly retry. Re-read state and reassess explicit intent first. Local
+serialization excludes neither other processes nor game activity; acknowledgement
+is not an atomic or observed-state guarantee. Non-instanced stacks use `pull_stack`;
+live account validation is still pending.
 
 ## Pull a non-instanced Postmaster stack
 
@@ -184,12 +237,17 @@ uses the existing operation guard and production gateway/repository clones.
 
 `structuredContent` is the shared `ghostlink pull-stack --json` shape: `kind:
 "stack_pull"`, `disposition`, `plan_id`, `dispatch`, independent `receipt` and
-`failure`, and ordered `observations`. One action, at most three fresh observations,
-two seconds between attempts. Arrival requires an exact amount increase in the
-destination and decrease in Postmaster. Only `verified` has `isError=false`;
-refusal stays an error even if arrival is observed. Never blindly retry uncertain
-or refused outcomes. Re-read later; observations are not causal or atomic proof.
-Live account validation remains pending.
+`failure`; dispatch retains preflight totals, not invented post quantities.
+Acknowledgement returns `applied`, with `isError=false` (CLI 0), not observed
+quantity arrival. There is no post-action request, wait or `observations` field.
+Dispatched attempts durably invalidate local freshness; the next ordinary read
+forces sync without publishing guessed quantities. Transport uncertainty and
+received refusals remain errors (CLI 41); invalidation storage failure returns
+`local_state_failed` (CLI 42 / `isError=true`) with the exact receipt and "local
+state could not be updated after the action". Pre-action refusals retain category
+exits. There are no provider-lag failures or exit 43. Never blindly retry: re-read
+and reassess explicit hash/amount/owner intent. Acceptance is not an atomic or
+observed-state guarantee. Live account validation remains pending.
 
 ## Inventory search and inspection
 
@@ -312,8 +370,8 @@ binary that composes deterministic in-memory application test doubles, then
 drives complete MCP sessions (initialize, discovery, the three reads, a
 protocol failure, a sanitized tool failure, cancellation, and shutdown) and the
 one-call mutation journey: one `move_item` request performs semantic planning, a
-fresh preflight, the minimum transfer calls, a post-action refresh, and
-destination verification with no second call. It also proves a repeated request
+fresh preflight and the minimum transfer calls, returning acknowledgement without
+post-action verification or a second mutation call. It also proves a repeated request
 fails closed without replay, an already-satisfied destination is a verified
 no-op, a changed preflight is a typed stale failure, a refused step is an honest
 partial execution, and stdout is protocol-only with no secret sentinel present.
@@ -330,8 +388,8 @@ cargo test -p destiny-mcp --all-features --test stdio
 The fixture binary is never reachable from the product `destiny-mcp` binary and
 requires no credential, network, durable database, or native keyring.
 Equip child-process sessions additionally compare complete CLI/MCP JSON for
-success, no-op, refusal, partial progress, uncertainty, pending provider refresh
-and refresh/verification failure, with equipped non-equipment neighbors. These
+applied, no-op, refusal, partial progress and uncertainty, including profiles that
+would lag or fail on a subsequent read, with equipped non-equipment neighbors. These
 are offline observations, not a live-provider verification claim.
 Postmaster child sessions additionally refresh stale synthetic seeds through the
 real query service and committed in-memory repository, preserving owned gear,

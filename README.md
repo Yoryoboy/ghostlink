@@ -3,7 +3,7 @@
 Ghostlink connects AI assistants to your Destiny 2 account. It reads your real
 characters, inventory, builds and weekly activities through the official Bungie
 API, and can act on them safely: move items between the Vault and characters,
-equip gear, and lock or unlock items with verification.
+equip gear, and lock or unlock items with acknowledgement-based success.
 
 Instead of digging through Vaults, filters and perk lists, you ask:
 
@@ -74,8 +74,11 @@ ghostlink search-inventory --type "Hand Cannon" --element solar --sort Range
 ghostlink weekly --character hunter
 ghostlink move "Ace of Spades" --vault
 ghostlink equip "Ace of Spades" --character hunter
+# Equip several items in one batch (one item keeps the single-item path):
+ghostlink equip 123456789 234567890 --character hunter --json
 ghostlink lock "Ace of Spades" --json
 ghostlink unlock "Ace of Spades" --json
+ghostlink apply-loadout 3 --character hunter --json
 ```
 
 Add `--json` for machine-readable output. Search by perks, mods, armor stats and
@@ -84,12 +87,32 @@ the [CLI reference](docs/cli.md) for all commands.
 
 `ghostlink postmaster` lists committed Postmaster instances and anonymous stacks,
 including empty character groups, with ordinary freshness synchronization. Currency
-coverage qualifies currency data only, not Postmaster completeness. No pull feature
-or synthetic instance IDs are exposed.
+coverage qualifies currency data only, not Postmaster completeness. This read
+never pulls items or exposes synthetic instance IDs. For explicit recovery intent,
+use `ghostlink pull <INSTANCE_ID>` or `ghostlink pull-stack <ITEM_HASH> --amount <N>
+--character <OWNER_ID>` (MCP `pull_item` / `pull_stack`). Fresh preflight proves
+eligibility and capacity; acknowledgement returns `applied` (CLI 0 / MCP success),
+not observed arrival or quantities. Refused/transport-uncertain dispatched attempts
+exit 41; local invalidation storage failure fails closed (42), retaining the receipt
+and reporting "local state could not be updated after the action". There are no
+post-action profile requests or waits; the next ordinary read forces provider sync.
+Never blindly retry.
 
-Actions use fresh preflight checks and post-action verification. Bungie can lag
-in reflecting a change: an "applied but pending refresh" outcome is not verified
-success. Do not blindly retry; run `ghostlink sync` later to check.
+Move/equip use fresh preflight checks and return `applied` (exit 0) when Bungie
+acknowledges every step, without post-action verification. The next ordinary read
+forces sync; no guessed state is written. Acceptance is not an observed in-game
+state. Never blindly retry uncertain or partial results. Lock/unlock also return
+`applied` (exit 0) on acknowledgement; incomplete attempts exit 41. Their next
+read forces sync without a post-action verification request, as do pull/pull-stack.
+
+Apply a saved in-game loadout with `ghostlink apply-loadout <slot|name> --character
+<class|id>` (MCP `apply_loadout`). Slots are one-based as shown by `loadouts`;
+names use normalized exact matching within the selected character, never guesses.
+Requires login, Manifest definitions, and orbit, a social space, or an offline
+character. One fresh live loadout read precedes exactly one EquipLoadout action.
+Acknowledgement returns `applied` (0 / MCP success); refusal/auth/transient/uncertain
+attempts fail (41), and local invalidation storage failure fails closed (42) with
+the receipt retained. No post-action request or retry; the next read forces sync.
 
 ## Use it from an AI agent
 

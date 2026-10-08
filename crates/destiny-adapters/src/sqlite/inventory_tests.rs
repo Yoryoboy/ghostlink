@@ -15,6 +15,36 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
+fn invalidation_keeps_acquisition_metadata() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let before = store.replace_current(full_input()).unwrap();
+    store.invalidate_freshness().unwrap();
+    assert_eq!(store.load_current().unwrap().unwrap(), before);
+    assert!(store.freshness_invalidated().unwrap());
+    store.replace_current(full_input()).unwrap();
+    assert!(!store.freshness_invalidated().unwrap());
+}
+
+#[test]
+fn invalidation_survives_reopen_and_v19_preserves_existing_data() {
+    let database = TempDatabase::new();
+    let mut store = SqliteStore::open(database.path()).unwrap();
+    let before = store.replace_current(full_input()).unwrap();
+    super::migrations::migrate_to(store.connection_mut(), 18).unwrap();
+    super::migrations::migrate_to(store.connection_mut(), 19).unwrap();
+    assert_eq!(store.load_current().unwrap().unwrap(), before);
+    assert!(!store.freshness_invalidated().unwrap());
+    store.invalidate_freshness().unwrap();
+    assert!(super::migrations::migrate_to(store.connection_mut(), 18).is_err());
+    drop(store);
+    let mut reopened = SqliteStore::open(database.path()).unwrap();
+    assert!(reopened.freshness_invalidated().unwrap());
+    assert_eq!(reopened.load_current().unwrap().unwrap(), before);
+    reopened.replace_current(full_input()).unwrap();
+    assert!(!reopened.freshness_invalidated().unwrap());
+}
+
+#[test]
 fn stack_snapshot_sqlite_roundtrips_duplicates_and_revision() {
     use destiny_core::{BucketHash, StackContainer, StackObservation};
     let mut store = SqliteStore::open_in_memory().unwrap();

@@ -67,15 +67,14 @@ where
         _ => None,
     };
     let post = clock.now()?;
-    let mut output =
-        match mutations.execute_lock_verified(gateway, &request, &plan, policy, now, post) {
-            Ok(outcome) => LockOutput::from_shared(destiny_output::lock::LockOutput::from_outcome(
-                &outcome, locked,
-            )),
-            Err(failure) => {
-                LockOutput::refused(failure.error(), locked).with_evidence(failure.evidence())
-            }
-        };
+    let mut output = match mutations.execute_lock(gateway, &request, &plan, policy, now, post) {
+        Ok(outcome) => LockOutput::from_shared(destiny_output::lock::LockOutput::from_outcome(
+            &outcome, locked,
+        )),
+        Err(failure) => {
+            LockOutput::refused(failure.error(), locked).with_evidence(failure.evidence())
+        }
+    };
     output.item = item_view;
     Ok(output)
 }

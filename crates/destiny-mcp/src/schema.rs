@@ -53,6 +53,55 @@ pub const GET_ARTIFACT_TOOL: &str = "get_artifact";
 
 /// Stable tool name for saved in-game loadouts.
 pub const GET_LOADOUTS_TOOL: &str = "get_loadouts";
+pub const APPLY_LOADOUT_TOOL: &str = "apply_loadout";
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApplyLoadoutArgs {
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub character: String,
+    #[schemars(range(min = 1, max = 12))]
+    pub slot: Option<u8>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub name: Option<String>,
+}
+impl ApplyLoadoutArgs {
+    pub fn request(&self) -> Result<destiny_app::ApplyLoadoutRequest, McpError> {
+        destiny_app::SearchTerm::new(&self.character).map_err(McpError::from)?;
+        let loadout = match (&self.slot, &self.name) {
+            (Some(slot), None) if (1..=12).contains(slot) => {
+                destiny_app::LoadoutSelector::Slot(*slot)
+            }
+            (None, Some(name)) => {
+                destiny_app::SearchTerm::new(name).map_err(McpError::from)?;
+                destiny_app::LoadoutSelector::Name(name.clone())
+            }
+            _ => return Err(McpError::new(ErrorCategory::ProviderValidation)),
+        };
+        Ok(destiny_app::ApplyLoadoutRequest {
+            character: destiny_app::CharacterId::new(&self.character),
+            loadout,
+            intent: destiny_app::MoveIntentAuthorization::Explicit,
+        })
+    }
+}
+pub fn apply_loadout_tool() -> Tool {
+    let mut tool = Tool::new(
+        APPLY_LOADOUT_TOOL,
+        "Apply one saved in-game loadout. Required character is an exact id or unique class; supply exactly one of one-based slot or normalized exact name. Unknown or ambiguous names list candidates, never guess. Go to orbit or a social space first (offline also allowed). Acknowledgement returns applied without a post-action profile request; freshness is invalidated. No retry on failure or uncertainty.",
+        JsonObject::new(),
+    ).with_input_schema::<ApplyLoadoutArgs>();
+    let mut schema = (*tool.input_schema).clone();
+    schema.insert(
+        "oneOf".into(),
+        serde_json::json!([
+            {"required":["slot"],"not":{"required":["name"]}},
+            {"required":["name"],"not":{"required":["slot"]}}
+        ]),
+    );
+    tool.input_schema = std::sync::Arc::new(schema);
+    tool
+}
 
 /// Stable tool name for the single semantic mutation.
 pub const MOVE_ITEM_TOOL: &str = "move_item";
@@ -68,7 +117,7 @@ const SEARCH_INVENTORY_DESCRIPTION: &str = "Search item definitions and, when re
 const INSPECT_ITEM_DESCRIPTION: &str =
     "Inspect exactly one concrete inventory instance by its instance identifier.";
 
-const MOVE_ITEM_DESCRIPTION: &str = "Move one concrete inventory instance to the Vault or to a character. One call plans the move, forces a fresh preflight, issues only the ordered steps, refreshes the projection after the action, and verifies the destination.";
+const MOVE_ITEM_DESCRIPTION: &str = "Move one concrete inventory instance to the Vault or to a character. One call plans the move, forces a fresh preflight, and issues only the ordered steps. Full acknowledgement returns applied without post-action verification; the next ordinary read forces sync. Never blindly retry partial or uncertain results.";
 
 /// Maximum accepted MCP identifier length, in characters.
 ///
@@ -203,7 +252,7 @@ impl PullStackArgs {
     }
 }
 pub fn pull_stack_tool() -> Tool {
-    Tool::new(PULL_STACK_TOOL, "Pull an exact amount of one non-instanced Postmaster stack for an owned character. Canonical decimal strings only: uint32 item_hash, positive int32 amount, positive int64 character. Requires authentication, qualified definitions and fresh capacity proof. One action, bounded observation; only Verified succeeds. Never blindly retry unconfirmed outcomes. Observations are not causal or atomic guarantees.", JsonObject::new())
+    Tool::new(PULL_STACK_TOOL, "Pull an exact amount of one non-instanced Postmaster stack for an owned character. Canonical decimal strings only: uint32 item_hash, positive int32 amount, positive int64 character. Requires authentication, qualified definitions and fresh capacity proof. One action; Bungie acknowledgement returns applied (success), not observed quantities, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail; never blindly retry.", JsonObject::new())
         .with_input_schema::<PullStackArgs>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
 }
@@ -231,9 +280,54 @@ impl PullItemArgs {
     }
 }
 pub fn pull_item_tool() -> Tool {
-    Tool::new(PULL_ITEM_TOOL, "Pull one genuine Postmaster equipment instance into its freshly derived owner's inventory. Requires authentication, qualified definitions and fresh capacity proof. No names, hashes, stacks, quantity or destination. One action, bounded observation; only Verified succeeds. Never blindly retry unconfirmed outcomes. Observations are not causal or atomic guarantees.", JsonObject::new())
+    Tool::new(PULL_ITEM_TOOL, "Pull one genuine Postmaster equipment instance into its freshly derived owner's inventory. Requires authentication, qualified definitions and fresh capacity proof. No names, hashes, stacks, quantity or destination. One action; Bungie acknowledgement returns applied (success), not observed arrival, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail; never blindly retry.", JsonObject::new())
         .with_input_schema::<PullItemArgs>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
+}
+
+pub const EQUIP_ITEMS_TOOL: &str = "equip_items";
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EquipItemsArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub character: String,
+    #[schemars(length(min = 2, max = 17))]
+    pub items: Vec<String>,
+}
+impl EquipItemsArgs {
+    pub fn request(&self) -> Result<destiny_app::BatchEquipRequest, McpError> {
+        if !(2..=17).contains(&self.items.len()) {
+            return Err(McpError::new(ErrorCategory::ProviderValidation));
+        }
+        for item in &self.items {
+            EquipItemArgs {
+                item: item.clone(),
+                character: self.character.clone(),
+            }
+            .validate()?;
+        }
+        Ok(destiny_app::BatchEquipRequest {
+            character: self.character.clone(),
+            items: self.items.clone(),
+            intent: destiny_app::MoveIntentAuthorization::Explicit,
+        })
+    }
+}
+pub fn equip_items_tool() -> Tool {
+    Tool::new(
+        EQUIP_ITEMS_TOOL,
+        "Equip 2–17 items on one explicit character. Validate combined slots, class and exotic limits before transferring via Vault and making one EquipItems call. Per-item failures or omitted results are incomplete. No retries; local freshness is invalidated after dispatch.",
+        JsonObject::new(),
+    )
+    .with_input_schema::<EquipItemsArgs>()
+    .with_annotations(
+        rmcp::model::ToolAnnotations::new()
+            .read_only(false)
+            .destructive(true)
+            .idempotent(false)
+            .open_world(true),
+    )
 }
 
 pub const EQUIP_ITEM_TOOL: &str = "equip_item";
@@ -264,7 +358,7 @@ impl EquipItemArgs {
     }
 }
 pub fn equip_item_tool() -> Tool {
-    Tool::new(EQUIP_ITEM_TOOL, "Equip one explicitly selected item on one explicitly selected character, automatically transferring if necessary. One call authorizes fresh preflight, ordered mutation, mandatory refresh and equipped-state verification. Ambiguity refuses; partial progress is not rolled back; never blindly retry uncertain outcomes. Character must be in orbit, a social space, or offline.", JsonObject::new())
+    Tool::new(EQUIP_ITEM_TOOL, "Equip one explicitly selected item on one explicitly selected character, automatically transferring if necessary. One call authorizes fresh preflight and ordered mutation. Full acknowledgement returns applied without post-action verification; the next ordinary read forces sync. Ambiguity refuses; partial progress is not rolled back; never blindly retry uncertain outcomes. Character must be in orbit, a social space, or offline.", JsonObject::new())
         .with_input_schema::<EquipItemArgs>()
 }
 
@@ -288,7 +382,7 @@ impl SetLockStateArgs {
     }
 }
 pub fn set_lock_state_tool() -> Tool {
-    Tool::new(SET_LOCK_STATE_TOOL, "Set one explicitly selected owned item's lock state (locked=true locks, false unlocks). One call is explicit intent for fresh preflight, at most one dispatch, mandatory refresh and lock-state verification; already satisfied is a verified no-op. Ambiguity refuses. Never blindly retry uncertain or applied-pending-refresh outcomes; sync later to confirm. Vault items use one owned character for the provider call.", JsonObject::new())
+    Tool::new(SET_LOCK_STATE_TOOL, "Set one explicitly selected owned item's lock state (locked=true locks, false unlocks). One call is explicit intent for fresh preflight and at most one dispatch. Bungie acknowledgement returns applied (success), not observed lock state, without post-action verification. Local freshness is invalidated so the next read syncs; already satisfied is a verified no-op. Ambiguity refuses. Refused and uncertain attempts fail; never blindly retry. Vault items use one owned character for the provider call.", JsonObject::new())
         .with_input_schema::<SetLockStateArgs>()
 }
 
@@ -1325,27 +1419,23 @@ pub struct MoveSuccessView {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct IncompleteMoveView {
     pub effects: MoveEffectsView,
-    pub observed: LocationView,
+    /// Receipt-derived expected location, not an observation.
+    pub expected_location: LocationView,
     pub partial: bool,
     pub steps: Vec<StepEvidenceView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<McpError>,
 }
 
-/// Why the destination could not be verified after a dispatched sequence.
+/// Why local state could not be updated after a dispatched sequence.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum VerificationFailureReasonView {
     RefreshFailed,
-    Unresolved,
-    Elsewhere,
 }
 
-/// A dispatched sequence whose destination could not be verified.
-///
-/// The bounded evidence survives, `observed` is the concrete location the
-/// refreshed projection reported when there was one, and `failure` carries the
-/// sanitized refresh or pre-dispatch error when one applies.
+/// A local-state update failure retaining bounded dispatch evidence.
+/// The legacy `observed` field is not populated; `failure` is sanitized.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct VerificationFailureView {
     pub effects: MoveEffectsView,
@@ -1359,24 +1449,22 @@ pub struct VerificationFailureView {
 
 /// Structured result of `move_item`.
 ///
-/// `VerifiedSuccess` and `VerifiedNoOp` are proven end states; `Incomplete` and
-/// `VerificationFailed` are honest non-success outcomes that keep their evidence
-/// instead of collapsing into a bare error.
+/// `Applied` acknowledges receipts; `VerifiedNoOp` proves fresh preflight state.
+/// `Incomplete` and `VerificationFailed` preserve evidence without claiming success.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum MoveItemOutput {
-    AppliedPendingProviderRefresh(PendingProviderRefreshView),
-    VerifiedSuccess(MoveSuccessView),
+    /// Bungie acknowledged all steps; the resulting profile was not re-read.
+    Applied(AppliedMoveView),
     VerifiedNoOp(MoveSuccessView),
     Incomplete(IncompleteMoveView),
     VerificationFailed(VerificationFailureView),
 }
 
-/// Provider-confirmed effects with a stale, unconfirmed observation.
+/// Acknowledged move with no claimed post-action observation.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub struct PendingProviderRefreshView {
+pub struct AppliedMoveView {
     pub effects: MoveEffectsView,
-    pub observed: LocationView,
     pub steps: Vec<StepEvidenceView>,
     pub reason: String,
 }
@@ -1476,11 +1564,9 @@ impl InspectItemOutput {
 impl MoveItemOutput {
     /// Renders this output as a structured tool result.
     pub fn into_call_tool_result(self) -> CallToolResult {
-        let pending = matches!(self, Self::AppliedPendingProviderRefresh(_));
+        let success = matches!(self, Self::Applied(_) | Self::VerifiedNoOp(_));
         let mut result = structured_result(self);
-        if pending {
-            result.is_error = Some(true);
-        }
+        result.is_error = Some(!success);
         result
     }
 }
@@ -1860,6 +1946,31 @@ mod tests {
         assert_eq!(args.limit, 100);
         assert_eq!(args.tags, Vec::<String>::new());
         assert_eq!(args.instances, None);
+    }
+
+    #[test]
+    fn applied_move_schema_is_success_without_observation() {
+        use super::{AppliedMoveView, LocationView, MoveEffectsView, MoveItemOutput};
+        let output = MoveItemOutput::Applied(AppliedMoveView {
+            effects: MoveEffectsView {
+                item_id: "1".into(),
+                via_vault: false,
+                source: LocationView::Vault,
+                destination: LocationView::Character {
+                    character_id: "2".into(),
+                },
+            },
+            steps: vec![],
+            reason: "Bungie accepted the action; not re-read".into(),
+        });
+        let value = serde_json::to_value(&output).unwrap();
+        assert_eq!(value["status"], "applied");
+        assert!(value.get("observed").is_none());
+        assert_eq!(
+            serde_json::from_value::<MoveItemOutput>(value).unwrap(),
+            output
+        );
+        assert_eq!(output.into_call_tool_result().is_error, Some(false));
     }
 
     #[test]

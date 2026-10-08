@@ -9,7 +9,7 @@ use destiny_app::test_support::{
 use destiny_app::*;
 use destiny_mcp::schema::PullItemArgs;
 use destiny_mcp::service::{InstancedPullToolService, MutationToolService};
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{cell::RefCell, rc::Rc};
 
 const ITEM: &str = "9223372036854775807";
 const POLICY: FreshnessPolicy = FreshnessPolicy { ttl_seconds: 300 };
@@ -105,14 +105,6 @@ impl InstancedPullGateway for Action {
         self.0.borrow_mut().pull(request)
     }
 }
-#[derive(Default)]
-struct Delay(Vec<Duration>);
-impl RetryDelay for Delay {
-    fn wait(&mut self, duration: Duration) {
-        assert_eq!(duration, Duration::from_secs(2));
-        self.0.push(duration);
-    }
-}
 type Pipeline = InstancedPullService<
     Profile,
     InMemoryInventoryRepository,
@@ -188,13 +180,8 @@ impl Fixture {
     fn mcp(self, item: &str) -> serde_json::Value {
         let action = self.action.clone();
         let profile = self.profile.clone();
-        let mut service = InstancedPullToolService::new(
-            self.profile,
-            self.pipeline,
-            self.action,
-            Delay::default(),
-            POLICY,
-        );
+        let mut service =
+            InstancedPullToolService::new(self.profile, self.pipeline, self.action, POLICY);
         let value = service
             .pull_item(&PullItemArgs { item: item.into() })
             .unwrap()
@@ -202,14 +189,10 @@ impl Fixture {
         assert_eq!(action.0.borrow().calls(), 1);
         let reasons = profile.0.borrow().requested_reasons().to_vec();
         assert_eq!(
-            &reasons[..2],
+            &reasons,
             &[ProfileSyncReason::Preflight, ProfileSyncReason::Preflight]
         );
-        assert!(
-            reasons[2..]
-                .iter()
-                .all(|reason| *reason == ProfileSyncReason::PostAction)
-        );
+        assert!(value.get("observations").is_none());
         value
     }
     fn cli(mut self) -> serde_json::Value {
@@ -219,7 +202,6 @@ impl Fixture {
             membership,
             &mut self.pipeline,
             &mut self.action,
-            &mut Delay::default(),
             POLICY,
         )
         .json()
@@ -227,14 +209,9 @@ impl Fixture {
 }
 pub fn parity() {
     for (arrived, receipt, failed, disposition) in [
-        (true, InstancedPullOutcome::Acknowledged, false, "verified"),
-        (true, InstancedPullOutcome::Uncertain, false, "verified"),
-        (
-            false,
-            InstancedPullOutcome::Acknowledged,
-            false,
-            "not_yet_observed",
-        ),
+        (true, InstancedPullOutcome::Acknowledged, false, "applied"),
+        (true, InstancedPullOutcome::Uncertain, false, "uncertain"),
+        (false, InstancedPullOutcome::Acknowledged, false, "applied"),
         (false, InstancedPullOutcome::Uncertain, false, "uncertain"),
         (
             true,
@@ -242,37 +219,21 @@ pub fn parity() {
             false,
             "refused",
         ),
-        (
-            false,
-            InstancedPullOutcome::Acknowledged,
-            true,
-            "not_yet_observed",
-        ),
+        (false, InstancedPullOutcome::Acknowledged, true, "applied"),
     ] {
         let cli = Fixture::new(arrived, receipt, failed).cli();
         let mcp = Fixture::new(arrived, receipt, failed).mcp(ITEM);
         assert_eq!(mcp, cli);
         assert_eq!(mcp["disposition"], disposition);
-        if failed {
-            assert_eq!(mcp["observations"][0]["failure"]["kind"], "refresh");
-            assert_eq!(
-                mcp["observations"][1]["classification"],
-                "still_in_postmaster"
-            );
-        }
+        assert!(mcp.get("observations").is_none());
     }
 }
 pub fn reject_before_io() {
     let fixture = Fixture::new(true, InstancedPullOutcome::Acknowledged, false);
     let profile = fixture.profile.clone();
     let action = fixture.action.clone();
-    let mut service = InstancedPullToolService::new(
-        fixture.profile,
-        fixture.pipeline,
-        fixture.action,
-        Delay::default(),
-        POLICY,
-    );
+    let mut service =
+        InstancedPullToolService::new(fixture.profile, fixture.pipeline, fixture.action, POLICY);
     for item in ["0", "01", "9223372036854775808", "Ace"] {
         assert!(
             service

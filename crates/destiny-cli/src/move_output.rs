@@ -56,10 +56,9 @@ impl MoveOutput {
     }
     pub fn exit_code(&self) -> i32 {
         match self.status {
-            MoveStatus::VerifiedSuccess | MoveStatus::VerifiedNoop => 0,
+            MoveStatus::Applied | MoveStatus::VerifiedNoop => 0,
             MoveStatus::Incomplete => 41,
             MoveStatus::VerificationFailed => 42,
-            MoveStatus::AppliedPendingProviderRefresh => 43,
             MoveStatus::Refused => self.refusal_exit_code.unwrap_or(40),
         }
     }

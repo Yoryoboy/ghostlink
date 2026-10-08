@@ -6,6 +6,26 @@ use destiny_app::test_support::{
 use destiny_app::*;
 use destiny_cli::{command::LockArgs, lock::set_lock_state, lock_output::LockStatus};
 
+use std::cell::Cell;
+use std::rc::Rc;
+
+struct CountedProfile {
+    gateway: QueuedProfileGateway,
+    calls: Rc<Cell<usize>>,
+}
+impl ProfileGateway for CountedProfile {
+    fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
+        self.gateway.resolve_membership()
+    }
+    fn load_inventory(
+        &mut self,
+        membership: &DestinyMembership,
+    ) -> Result<InventorySnapshotInput, AppError> {
+        self.calls.set(self.calls.get() + 1);
+        self.gateway.load_inventory(membership)
+    }
+}
+
 const NOW: Timestamp = Timestamp::new(100);
 const POLICY: FreshnessPolicy = FreshnessPolicy { ttl_seconds: 300 };
 fn snapshot(locked: bool, vault: bool) -> InventorySnapshotInput {
@@ -46,11 +66,20 @@ fn snapshot(locked: bool, vault: bool) -> InventorySnapshotInput {
         plug_set_entries: vec![],
     }
 }
+type LockService = MutationService<CountedProfile, SqliteStore, DeterministicPlanIds>;
+
 fn service(
     initial: InventorySnapshotInput,
     pre: InventorySnapshotInput,
     post: Option<Result<InventorySnapshotInput, AppError>>,
-) -> MutationService<QueuedProfileGateway, SqliteStore, DeterministicPlanIds> {
+) -> LockService {
+    counted_service(initial, pre, post).0
+}
+fn counted_service(
+    initial: InventorySnapshotInput,
+    pre: InventorySnapshotInput,
+    post: Option<Result<InventorySnapshotInput, AppError>>,
+) -> (LockService, Rc<Cell<usize>>) {
     let mut store = SqliteStore::open_in_memory().unwrap();
     store
         .replace_definitions(DefinitionReplacementInput {
@@ -88,10 +117,59 @@ fn service(
         .unwrap()));
         gateway.queue_inventory(input);
     }
-    MutationService::new(
-        ProfileSyncService::new_with_definitions(gateway, store),
-        DeterministicPlanIds::starting_at(1),
+    let calls = Rc::new(Cell::new(0));
+    let profile = CountedProfile {
+        gateway,
+        calls: calls.clone(),
+    };
+    (
+        MutationService::new(
+            ProfileSyncService::new_with_definitions(profile, store),
+            DeterministicPlanIds::starting_at(1),
+        ),
+        calls,
     )
+}
+
+#[test]
+fn acknowledged_lock_with_stale_profile_is_applied_without_post_action_read() {
+    for locked in [false, true] {
+        let initial = snapshot(!locked, true);
+        let (mut mutations, calls) =
+            counted_service(initial.clone(), initial.clone(), Some(Ok(initial)));
+        let before = mutations.repository().load_current().unwrap().unwrap();
+        let mut gateway = QueuedLockGateway::new();
+        gateway.queue(Ok(LockOutcome::Applied));
+        let output = set_lock_state(
+            &LockArgs { item: "123".into() },
+            locked,
+            &mut mutations,
+            &mut gateway,
+            &FakeClock::fixed(NOW),
+            POLICY,
+        )
+        .unwrap();
+        assert_eq!(output.json()["status"], "applied");
+        assert_eq!(output.exit_code(), 0);
+        assert_eq!(calls.get(), 1, "preflight only; no post-action request");
+        assert!(mutations.repository().freshness_invalidated().unwrap());
+        assert_eq!(
+            mutations.repository().load_current().unwrap().unwrap(),
+            before
+        );
+        assert!(output.observed.is_none());
+        assert_eq!(gateway.requests().len(), 1);
+        mutations
+            .sync_mut()
+            .sync(ProfileSyncReason::Ordinary, POLICY, NOW)
+            .unwrap();
+        assert_eq!(
+            calls.get(),
+            2,
+            "invalidated freshness forces the next read to sync"
+        );
+        assert!(!mutations.repository().freshness_invalidated().unwrap());
+    }
 }
 #[test]
 fn lock_pipeline_covers_both_states_locations_and_all_terminal_outcomes() {
@@ -101,24 +179,30 @@ fn lock_pipeline_covers_both_states_locations_and_all_terminal_outcomes() {
                 (
                     LockOutcome::Applied,
                     Ok(snapshot(locked, vault)),
-                    LockStatus::VerifiedSuccess,
+                    LockStatus::Applied,
                     0,
                 ),
                 (
                     LockOutcome::Uncertain,
                     Ok(snapshot(locked, vault)),
-                    LockStatus::VerifiedSuccess,
-                    0,
+                    LockStatus::Incomplete,
+                    41,
                 ),
                 (
                     LockOutcome::Applied,
                     Ok(snapshot(!locked, vault)),
-                    LockStatus::AppliedPendingProviderRefresh,
-                    43,
+                    LockStatus::Applied,
+                    0,
                 ),
                 (
                     LockOutcome::Uncertain,
                     Ok(snapshot(!locked, vault)),
+                    LockStatus::Incomplete,
+                    41,
+                ),
+                (
+                    LockOutcome::Transient,
+                    Ok(snapshot(locked, vault)),
                     LockStatus::Incomplete,
                     41,
                 ),
@@ -137,8 +221,8 @@ fn lock_pipeline_covers_both_states_locations_and_all_terminal_outcomes() {
                 (
                     LockOutcome::Applied,
                     Err(AppError::new(ErrorCategory::ProviderUnavailable)),
-                    LockStatus::VerificationFailed,
-                    42,
+                    LockStatus::Applied,
+                    0,
                 ),
                 (
                     LockOutcome::Applied,
@@ -147,8 +231,8 @@ fn lock_pipeline_covers_both_states_locations_and_all_terminal_outcomes() {
                         changed.items[0].quantity = 2;
                         changed
                     }),
-                    LockStatus::VerificationFailed,
-                    42,
+                    LockStatus::Applied,
+                    0,
                 ),
                 (
                     LockOutcome::Applied,
@@ -157,8 +241,8 @@ fn lock_pipeline_covers_both_states_locations_and_all_terminal_outcomes() {
                         missing.items.clear();
                         missing
                     }),
-                    LockStatus::VerificationFailed,
-                    42,
+                    LockStatus::Applied,
+                    0,
                 ),
             ] {
                 let initial = snapshot(!locked, vault);
@@ -180,19 +264,19 @@ fn lock_pipeline_covers_both_states_locations_and_all_terminal_outcomes() {
                 assert_eq!(gateway.requests()[0].character().as_str(), "456");
                 assert_eq!(gateway.requests()[0].locked(), locked);
                 assert_eq!(output.json()["item"]["name"], "Ace?of Spades");
-                if output.profile_refresh == destiny_cli::lock_output::ProfileRefresh::Failed {
-                    assert!(output.observed.is_none());
-                }
-                if code == 43 {
-                    assert!(output.render_text().contains("do not retry"));
-                }
+                assert!(output.observed.is_none());
+                assert_eq!(
+                    output.profile_refresh,
+                    destiny_cli::lock_output::ProfileRefresh::NotRequired
+                );
+                assert!(mutations.repository().freshness_invalidated().unwrap());
                 let process = destiny_cli::runner::lock_process_output(
                     destiny_cli::OutputMode::Json,
                     &output,
                 );
                 assert_eq!(process.exit_code, code);
                 assert_eq!(process.stderr.is_empty(), code == 0);
-                assert_eq!(output.render_text().contains("✔ verified"), code == 0);
+                assert_eq!(output.render_text().contains("✔ applied"), code == 0);
             }
             let initial = snapshot(!locked, vault);
             let mut mutations = service(initial, snapshot(locked, vault), None);
@@ -210,6 +294,7 @@ fn lock_pipeline_covers_both_states_locations_and_all_terminal_outcomes() {
             assert_eq!(output.exit_code(), 0);
             assert!(output.render_text().contains("already"));
             assert!(gateway.requests().is_empty());
+            assert!(!mutations.repository().freshness_invalidated().unwrap());
         }
     }
 }
@@ -228,7 +313,7 @@ fn lock_pipeline_semantic_selection_and_invalid_args_before_clock() {
         POLICY,
     )
     .unwrap();
-    assert_eq!(output.status, LockStatus::VerifiedSuccess);
+    assert_eq!(output.status, LockStatus::Applied);
     assert_eq!(gateway.requests()[0].item().as_str(), "123");
 
     struct NeverClock;

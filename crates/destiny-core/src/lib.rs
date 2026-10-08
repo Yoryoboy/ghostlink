@@ -6,11 +6,15 @@ pub mod clarity;
 pub use calendar::*;
 pub mod loadout;
 pub use loadout::*;
+pub mod loadout_action;
+pub use loadout_action::*;
 pub mod agents;
 pub mod artifact;
 pub use artifact::*;
 pub mod auth;
 pub mod domain;
+pub mod equip_items;
+pub use equip_items::*;
 pub mod equipment_capacity;
 pub mod error;
 pub use equipment_capacity::{

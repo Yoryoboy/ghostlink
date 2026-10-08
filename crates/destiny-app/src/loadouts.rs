@@ -245,7 +245,14 @@ fn item_group(definition: Option<&destiny_core::ItemDefinition>) -> u8 {
         Some(ARTIFACT_BUCKET_HASH) => return 3,
         _ => (),
     }
-    match definition.slot {
+    match definition
+        .slot
+        .filter(|slot| !matches!(slot, ItemSlot::Other | ItemSlot::Unknown))
+        .or_else(|| {
+            definition
+                .bucket_hash
+                .and_then(ItemSlot::from_equipment_bucket)
+        }) {
         Some(ItemSlot::Kinetic | ItemSlot::Energy | ItemSlot::Power) => 0,
         Some(
             ItemSlot::Helmet
@@ -254,11 +261,7 @@ fn item_group(definition: Option<&destiny_core::ItemDefinition>) -> u8 {
             | ItemSlot::Legs
             | ItemSlot::ClassItem,
         ) => 1,
-        _ => match definition.bucket_hash.map(|hash| hash.value()) {
-            Some(1498876634 | 2465295065 | 953998645) => 0,
-            Some(3448274439 | 3551918588 | 14239492 | 20886954 | 1585787867) => 1,
-            _ => 4,
-        },
+        _ => 4,
     }
 }
 
@@ -292,6 +295,12 @@ mod tests {
         definitions: InMemoryDefinitionRepository,
     }
     impl InventoryRepository for Repository {
+        fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+            self.inventory.invalidate_freshness()
+        }
+        fn freshness_invalidated(&self) -> Result<bool, AppError> {
+            self.inventory.freshness_invalidated()
+        }
         fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
             self.inventory.load_current()
         }
@@ -547,6 +556,159 @@ mod tests {
             calls,
         )
     }
+    fn apply_request(loadout: crate::LoadoutSelector) -> crate::ApplyLoadoutRequest {
+        crate::ApplyLoadoutRequest {
+            character: CharacterId::new("HuNtEr"),
+            loadout,
+            intent: MoveIntentAuthorization::Explicit,
+        }
+    }
+
+    #[test]
+    fn apply_saved_loadout_acknowledges_once_without_post_action_read() {
+        for selector in [
+            crate::LoadoutSelector::Slot(3),
+            crate::LoadoutSelector::Name("  pVe ".into()),
+        ] {
+            let (read, calls) = fixture(false);
+            let mut service = crate::ApplyLoadoutService::new(read.sync);
+            let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+            action.queue(Ok(LoadoutActionOutcome::Applied));
+            let result = service
+                .apply(&mut action, &apply_request(selector), TTL, NOW)
+                .unwrap();
+            assert_eq!(result.receipt, LoadoutActionOutcome::Applied);
+            assert!(result.local_state_updated);
+            assert_eq!(result.character, CharacterId::new("1"));
+            assert_eq!((result.slot, result.name.as_deref()), (3, Some("PvE")));
+            assert_eq!(action.calls(), 1);
+            assert_eq!(action.requests()[0].loadout_index(), 2);
+            assert_eq!(&*calls.borrow(), &["membership", "inventory", "loadouts"]);
+            assert!(
+                service
+                    .into_sync()
+                    .repository()
+                    .freshness_invalidated()
+                    .unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn apply_saved_loadout_preserves_all_receipts_and_fails_closed_on_storage() {
+        for receipt in [
+            LoadoutActionOutcome::Applied,
+            LoadoutActionOutcome::Rejected(LoadoutActionRejection::RestrictedLocation),
+            LoadoutActionOutcome::AuthenticationRefused,
+            LoadoutActionOutcome::Transient,
+            LoadoutActionOutcome::Uncertain,
+        ] {
+            for storage_failure in [false, true] {
+                let (mut read, calls) = fixture(false);
+                if storage_failure {
+                    let inventory = std::mem::take(&mut read.sync.repository_mut().inventory);
+                    read.sync.repository_mut().inventory = inventory.with_invalidation_failure();
+                }
+                let mut service = crate::ApplyLoadoutService::new(read.sync);
+                let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+                action.queue(Ok(receipt));
+                let result = service
+                    .apply(
+                        &mut action,
+                        &apply_request(crate::LoadoutSelector::Slot(3)),
+                        TTL,
+                        NOW,
+                    )
+                    .unwrap();
+                assert_eq!(result.receipt, receipt);
+                assert_eq!(result.local_state_updated, !storage_failure);
+                assert_eq!(action.calls(), 1);
+                assert_eq!(&*calls.borrow(), &["membership", "inventory", "loadouts"]);
+                assert_eq!(
+                    service
+                        .into_sync()
+                        .repository()
+                        .freshness_invalidated()
+                        .unwrap(),
+                    !storage_failure
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn apply_saved_loadout_name_resolution_never_guesses() {
+        for ambiguous in [false, true] {
+            let (mut read, _) = fixture(false);
+            if ambiguous {
+                let mut duplicate = read.sync.gateway_mut().live.characters[0].loadouts[0].clone();
+                duplicate.slot_index = 4;
+                read.sync.gateway_mut().live.characters[0]
+                    .loadouts
+                    .push(duplicate);
+            }
+            let mut service = crate::ApplyLoadoutService::new(read.sync);
+            let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+            let name = if ambiguous { "PvE" } else { "Pv" };
+            let error = service
+                .apply(
+                    &mut action,
+                    &apply_request(crate::LoadoutSelector::Name(name.into())),
+                    TTL,
+                    NOW,
+                )
+                .unwrap_err();
+            match error {
+                crate::ApplyLoadoutError::AmbiguousName(candidates) if ambiguous => {
+                    assert_eq!(candidates.len(), 2)
+                }
+                crate::ApplyLoadoutError::UnknownName(candidates) if !ambiguous => {
+                    assert_eq!(candidates[0].slot, 3)
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+            assert_eq!(action.calls(), 0);
+        }
+    }
+
+    #[test]
+    fn apply_saved_loadout_invalid_empty_and_unauthorized_never_dispatch() {
+        for slot in [0, 1, 13, 255] {
+            let (read, calls) = fixture(false);
+            let mut service = crate::ApplyLoadoutService::new(read.sync);
+            let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+            let error = service
+                .apply(
+                    &mut action,
+                    &apply_request(crate::LoadoutSelector::Slot(slot)),
+                    TTL,
+                    NOW,
+                )
+                .unwrap_err();
+            assert_eq!(
+                error,
+                if slot == 1 {
+                    crate::ApplyLoadoutError::EmptySlot
+                } else {
+                    crate::ApplyLoadoutError::InvalidSlot
+                }
+            );
+            assert_eq!(action.calls(), 0);
+            assert_eq!(calls.borrow().len(), if slot == 1 { 3 } else { 0 });
+        }
+        let (read, calls) = fixture(false);
+        let mut service = crate::ApplyLoadoutService::new(read.sync);
+        let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+        let mut request = apply_request(crate::LoadoutSelector::Slot(3));
+        request.intent = MoveIntentAuthorization::Absent;
+        assert_eq!(
+            service.apply(&mut action, &request, TTL, NOW),
+            Err(crate::ApplyLoadoutError::MissingIntent)
+        );
+        assert!(calls.borrow().is_empty());
+        assert_eq!(action.calls(), 0);
+    }
+
     #[test]
     fn joins_names_missing_instances_and_retains_socket_and_slot_gaps() {
         let (mut service, calls) = fixture(true);

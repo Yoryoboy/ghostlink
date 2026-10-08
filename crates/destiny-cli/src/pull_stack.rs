@@ -1,15 +1,14 @@
-//! One fresh stack plan, consumed once, with bounded verified observations.
+//! One fresh stack plan, consumed once, with acknowledgement and no retry.
 use crate::{command::StackPullSelection, pull_stack_output::StackPullOutput};
 use destiny_app::*;
 
 /// Membership is authenticated context, never a command-line override. Caller
 /// serializes local inventory publication and definition use across this call.
-pub fn pull_stack<G, R, D, M, C, P, T, W>(
+pub fn pull_stack<G, R, D, M, C, P, T>(
     selection: StackPullSelection,
     membership: DestinyMembership,
     service: &mut StackPullService<G, R, D, M, C, P>,
     gateway: &mut T,
-    delay: &mut W,
     freshness: FreshnessPolicy,
 ) -> StackPullOutput
 where
@@ -20,7 +19,6 @@ where
     C: Clock,
     P: PlanIdGenerator,
     T: StackPullGateway,
-    W: RetryDelay,
 {
     let request = StackPullPlanRequest {
         membership,
@@ -36,7 +34,7 @@ where
         Ok(plan) => plan,
         Err(error) => return StackPullOutput::planning_failed(&error),
     };
-    match service.execute_verified(plan, gateway, delay, freshness) {
+    match service.execute(plan, gateway, freshness) {
         Ok(outcome) => StackPullOutput::from_outcome(&outcome),
         Err(failure) => StackPullOutput::execution_failed(&failure),
     }

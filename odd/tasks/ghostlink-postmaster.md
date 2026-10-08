@@ -1,4 +1,4 @@
-# Full Postmaster Support — IN PROGRESS
+# Full Postmaster Support — COMPLETE (merged via PR #63; live owner checks moved to IAX-009 of inventory-actions-closure)
 
 Expose and recover Postmaster gear, materials and consumables without inventing
 instance identifiers or claiming verification from an API acknowledgement alone.

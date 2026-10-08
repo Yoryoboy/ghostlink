@@ -1,6 +1,5 @@
 use super::*;
 use crate::test_support::*;
-use std::time::Duration;
 const BUCKET: i64 = 1469714392;
 const FRESH: FreshnessPolicy = FreshnessPolicy { ttl_seconds: 60 };
 type Service = StackPullService<
@@ -265,21 +264,6 @@ fn capacity_counts_profile_rows_and_excludes_overlapping_sources() {
         StackPullPlanningRefusal::Capacity(StackPullRefusal::InsufficientCapacity),
     );
 }
-#[derive(Default)]
-struct Delay(Vec<Duration>);
-impl destiny_core::ports::RetryDelay for Delay {
-    fn wait(&mut self, d: Duration) {
-        self.0.push(d);
-    }
-}
-fn arrived() -> InventorySnapshotInput {
-    let mut next = input();
-    next.stacks = vec![
-        row(7, StackContainer::Postmaster(CharacterId::new("2"))),
-        row(23, StackContainer::ProfileInventory),
-    ];
-    next
-}
 fn armed() -> (Service, StackPullPlan) {
     let mut s = service(input(), vec![definition()]);
     let p = plan(&mut s, 3).unwrap();
@@ -288,80 +272,74 @@ fn armed() -> (Service, StackPullPlan) {
     (s, p)
 }
 #[test]
-fn one_shot_observes_first_or_third_and_never_redispatches() {
-    for arrival in [Some(0), Some(2), None] {
+fn acknowledged_stale_profile_is_applied_without_post_action_read() {
+    let (mut s, p) = armed();
+    for _ in 0..3 {
+        queue(&mut s, input());
+    }
+    let mut gateway = QueuedStackPullGateway::new();
+    gateway.queue(Ok(StackPullOutcome::Acknowledged));
+    let outcome = s.execute(p, &mut gateway, FRESH).unwrap();
+    assert_eq!(outcome.disposition(), PullDisposition::Applied);
+    assert_eq!(gateway.calls(), 1);
+    assert_eq!(gateway.requests()[0].quantity(), 3);
+    assert_eq!(gateway.requests()[0].item_id(), "0");
+    assert_eq!(
+        s.sync.gateway_mut().requested_reasons(),
+        &[ProfileSyncReason::Preflight, ProfileSyncReason::Preflight]
+    );
+    assert!(s.sync.repository().freshness_invalidated().unwrap());
+}
+
+#[test]
+fn invalidation_storage_failure_retains_receipt_and_fails_closed() {
+    let (mut s, p) = armed();
+    let repository = s.sync.repository_mut();
+    *repository = std::mem::take(repository).with_invalidation_failure();
+    let before = s.sync.repository().load_current().unwrap();
+    let mut gateway = QueuedStackPullGateway::new();
+    gateway.queue(Ok(StackPullOutcome::Acknowledged));
+    let outcome = s.execute(p, &mut gateway, FRESH).unwrap();
+    assert_eq!(outcome.disposition(), PullDisposition::LocalStateFailed);
+    assert_eq!(outcome.gateway_outcome(), &StackPullOutcome::Acknowledged);
+    assert_eq!(
+        outcome.local_state_error().unwrap().category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(gateway.calls(), 1);
+    assert_eq!(s.sync.repository().load_current().unwrap(), before);
+    assert_eq!(
+        s.sync.gateway_mut().requested_reasons(),
+        &[ProfileSyncReason::Preflight; 2]
+    );
+}
+
+#[test]
+fn uncertain_and_refused_receipts_fail_without_post_action_requests() {
+    for (receipt, disposition) in [
+        (StackPullOutcome::Uncertain, PullDisposition::Uncertain),
+        (
+            StackPullOutcome::Rejected(StackPullRejection::InvalidRequest),
+            PullDisposition::Refused,
+        ),
+        (StackPullOutcome::Transient, PullDisposition::Refused),
+        (
+            StackPullOutcome::AuthenticationRefused,
+            PullDisposition::Refused,
+        ),
+    ] {
         let (mut s, p) = armed();
-        for index in 0..3 {
-            queue(
-                &mut s,
-                if Some(index) == arrival {
-                    arrived()
-                } else {
-                    input()
-                },
-            );
-        }
         let mut gateway = QueuedStackPullGateway::new();
-        gateway.queue(Ok(StackPullOutcome::Acknowledged));
-        let mut delay = Delay::default();
-        let outcome = s
-            .execute_verified(p, &mut gateway, &mut delay, FRESH)
-            .unwrap();
-        let count = arrival.map_or(3, |i| i + 1);
+        gateway.queue(Ok(receipt));
+        let outcome = s.execute(p, &mut gateway, FRESH).unwrap();
+        assert_eq!(outcome.disposition(), disposition);
+        assert_eq!(outcome.gateway_outcome(), &receipt);
         assert_eq!(gateway.calls(), 1);
-        assert_eq!(gateway.requests()[0].quantity(), 3);
-        assert_eq!(gateway.requests()[0].item_id(), "0");
-        assert_eq!(outcome.observations().len(), count);
-        assert_eq!(delay.0, vec![Duration::from_secs(2); count - 1]);
-        assert_eq!(
-            outcome.disposition(),
-            if arrival.is_some() {
-                PullDisposition::Verified
-            } else {
-                PullDisposition::Uncertain
-            }
-        );
+        assert!(s.sync.repository().freshness_invalidated().unwrap());
         assert_eq!(
             s.sync.gateway_mut().requested_reasons(),
-            &[
-                vec![ProfileSyncReason::Preflight; 2],
-                vec![ProfileSyncReason::PostAction; count]
-            ]
-            .concat()
+            &[ProfileSyncReason::Preflight; 2]
         );
-    }
-}
-#[test]
-fn both_quantity_deltas_are_required_and_last_failure_wins() {
-    for case in 0..4 {
-        let (mut s, p) = armed();
-        let mut next = arrived();
-        match case {
-            0 => next.stacks[0] = row(10, StackContainer::Postmaster(CharacterId::new("2"))),
-            1 => next.stacks[1] = row(20, StackContainer::ProfileInventory),
-            2 => {
-                next.stacks[1] = row(
-                    23,
-                    StackContainer::CharacterInventory(CharacterId::new("2")),
-                )
-            }
-            _ => next.stacks[1] = row(24, StackContainer::ProfileInventory),
-        }
-        queue(&mut s, next);
-        queue(&mut s, input());
-        s.sync.gateway_mut().queue_membership(Ok(membership()));
-        s.sync
-            .gateway_mut()
-            .queue_acquisition(Err(AppError::new(ErrorCategory::ProviderUnavailable)));
-        let mut gateway = QueuedStackPullGateway::new();
-        gateway.queue(Ok(StackPullOutcome::Acknowledged));
-        let outcome = s
-            .execute_verified(p, &mut gateway, &mut Delay::default(), FRESH)
-            .unwrap();
-        assert_eq!(outcome.disposition(), PullDisposition::Uncertain);
-        assert_eq!(outcome.observations().len(), 3);
-        assert!(outcome.observations()[2].failure().is_some());
-        assert_eq!(gateway.calls(), 1);
     }
 }
 #[test]
@@ -374,35 +352,7 @@ fn drift_consumes_plan_without_dispatch_or_postaction() {
     queue(&mut s, next);
     s.manifest.queue_capacity_evidence(Ok(evidence()));
     let mut gateway = QueuedStackPullGateway::new();
-    let mut delay = Delay::default();
-    assert!(
-        s.execute_verified(p, &mut gateway, &mut delay, FRESH)
-            .is_err()
-    );
+    assert!(s.execute(p, &mut gateway, FRESH).is_err());
     assert_eq!(gateway.calls(), 0);
-    assert!(delay.0.is_empty());
-}
-#[test]
-fn same_hash_change_in_another_profile_bucket_is_not_verified() {
-    let (mut s, p) = armed();
-    let mut next = arrived();
-    next.stacks.push(
-        StackObservation::new(
-            ItemHash::new(7),
-            BucketHash::new(3313201758),
-            4,
-            StackContainer::ProfileInventory,
-        )
-        .unwrap(),
-    );
-    for _ in 0..3 {
-        queue(&mut s, next.clone());
-    }
-    let mut gateway = QueuedStackPullGateway::new();
-    gateway.queue(Ok(StackPullOutcome::Acknowledged));
-    let outcome = s
-        .execute_verified(p, &mut gateway, &mut Delay::default(), FRESH)
-        .unwrap();
-    assert_eq!(outcome.disposition(), PullDisposition::Uncertain);
-    assert_eq!(gateway.calls(), 1);
+    assert!(!s.sync.repository().freshness_invalidated().unwrap());
 }

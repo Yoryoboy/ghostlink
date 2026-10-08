@@ -1,6 +1,10 @@
 use destiny_mcp::schema::{SetLockStateArgs, set_lock_state_tool};
 use serde_json::json;
 
+// Exercise the shared SQLite/CLI lock contract alongside MCP transport tests.
+#[path = "../../destiny-cli/tests/lock_pipeline.rs"]
+mod cli_lock_contract;
+
 #[test]
 fn lock_schema_requires_boolean_state_and_bounded_item() {
     for invalid in [

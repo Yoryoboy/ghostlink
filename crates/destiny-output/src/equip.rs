@@ -7,21 +7,19 @@ use serde_json::{Value, json};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EquipStatus {
-    VerifiedSuccess,
+    Applied,
     VerifiedNoop,
     Incomplete,
     VerificationFailed,
-    AppliedPendingProviderRefresh,
     Refused,
 }
 impl EquipStatus {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::VerifiedSuccess => "verified_success",
+            Self::Applied => "applied",
             Self::VerifiedNoop => "verified_noop",
             Self::Incomplete => "incomplete",
             Self::VerificationFailed => "verification_failed",
-            Self::AppliedPendingProviderRefresh => "applied_pending_provider_refresh",
             Self::Refused => "refused",
         }
     }
@@ -206,11 +204,11 @@ impl EquipOutput {
         observed: Option<&ItemInstance>,
     ) -> Self {
         let (status, evidence, refresh, reason) = match outcome {
-            MoveExecutionOutcome::VerifiedSuccess(e) => (
-                EquipStatus::VerifiedSuccess,
+            MoveExecutionOutcome::Applied(e) => (
+                EquipStatus::Applied,
                 e,
-                ProfileRefresh::Refreshed,
-                None,
+                ProfileRefresh::NotRequired,
+                Some("Bungie accepted the action; not re-read".into()),
             ),
             MoveExecutionOutcome::VerifiedNoOp(e) => (
                 EquipStatus::VerifiedNoop,
@@ -218,42 +216,27 @@ impl EquipOutput {
                 ProfileRefresh::NotRequired,
                 None,
             ),
-            MoveExecutionOutcome::AppliedPendingProviderRefresh(e) => (
-                EquipStatus::AppliedPendingProviderRefresh,
-                e.evidence(),
-                ProfileRefresh::Refreshed,
-                Some("the provider confirmed every step, but its profile still shows the pre-action state; observed state is stale/unconfirmed; do not retry, run `ghostlink sync` later to confirm".into()),
-            ),
             MoveExecutionOutcome::IncompleteExecution(e) => (
                 EquipStatus::Incomplete,
                 e.evidence(),
-                ProfileRefresh::Refreshed,
+                ProfileRefresh::NotRequired,
                 e.error().map(mutation_reason),
             ),
             MoveExecutionOutcome::VerificationFailed(e) => (
                 EquipStatus::VerificationFailed,
                 e.evidence(),
-                if e.reason() == VerificationFailureReason::RefreshFailed {
-                    ProfileRefresh::Failed
-                } else {
-                    ProfileRefresh::Refreshed
-                },
+                ProfileRefresh::Failed,
                 Some(match e.reason() {
                     VerificationFailureReason::RefreshFailed => {
-                        "outcome is uncertain: post-action profile refresh failed".into()
-                    }
-                    VerificationFailureReason::Unresolved => {
-                        "outcome is uncertain: refreshed state could not uniquely resolve the item"
-                            .into()
-                    }
-                    VerificationFailureReason::Elsewhere => {
-                        "refreshed state contradicts the reported progress; equip was not verified"
+                        "outcome is uncertain: local state could not be updated after the action"
                             .into()
                     }
                 }),
             ),
         };
-        let observation = if refresh == ProfileRefresh::Failed {
+        let observation = if refresh == ProfileRefresh::Failed
+            || matches!(status, EquipStatus::Applied | EquipStatus::Incomplete)
+        {
             None
         } else {
             observed.map(|i| EquipObservation {

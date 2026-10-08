@@ -1,4 +1,5 @@
 //! Shared snake-case saved loadouts projection for CLI and MCP.
+use destiny_app::{BucketHash, ItemSlot};
 use destiny_app::{LoadoutItemView, LoadoutPlugView, LoadoutsResult, SubclassPlugKind};
 use serde_json::{Value, json};
 
@@ -86,17 +87,22 @@ pub fn render_loadouts(mode: super::OutputMode, result: &LoadoutsResult, detail:
                 .map(super::sanitize)
                 .unwrap_or_else(|| format!("#{}", loadout.name_hash));
             lines.push(format!("  [{}] {name}", loadout.slot));
-            for (label, buckets) in [
-                ("Weapons", &[1498876634, 2465295065, 953998645][..]),
-                (
-                    "Armor",
-                    &[3448274439, 3551918588, 14239492, 20886954, 1585787867][..],
-                ),
-            ] {
+            for (label, weapons) in [("Weapons", true), ("Armor", false)] {
                 let names = loadout
                     .items
                     .iter()
-                    .filter(|item| item.bucket_hash.is_some_and(|hash| buckets.contains(&hash)))
+                    .filter(|item| {
+                        item.bucket_hash
+                            .and_then(|hash| {
+                                ItemSlot::from_equipment_bucket(BucketHash::new(i64::from(hash)))
+                            })
+                            .is_some_and(|slot| {
+                                matches!(
+                                    slot,
+                                    ItemSlot::Kinetic | ItemSlot::Energy | ItemSlot::Power
+                                ) == weapons
+                            })
+                    })
                     .map(item_name)
                     .collect::<Vec<_>>();
                 if !names.is_empty() {
@@ -135,10 +141,9 @@ pub fn render_loadouts(mode: super::OutputMode, result: &LoadoutsResult, detail:
                         lines.push(format!("      Artifact: {}{suffix}", item_name(item)));
                     }
                     // Unknown equipment cannot be assigned a category safely.
-                    Some(
-                        1498876634 | 2465295065 | 953998645 | 3448274439 | 3551918588 | 14239492
-                        | 20886954 | 1585787867,
-                    ) => (),
+                    Some(hash)
+                        if ItemSlot::from_equipment_bucket(BucketHash::new(i64::from(hash)))
+                            .is_some() => {}
                     _ => lines.push(format!("      {}", item_name(item))),
                 }
                 if !detail && matches!(item.bucket_hash, Some(3284755031 | 1506418338)) {

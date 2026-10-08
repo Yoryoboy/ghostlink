@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 18;
+pub(crate) const LATEST_VERSION: u32 = 19;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 18] = [
+const MIGRATIONS: [Migration; 19] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -144,7 +144,26 @@ const MIGRATIONS: [Migration; 18] = [
         up: SCHEMA_V18_UP,
         down: SCHEMA_V18_DOWN,
     },
+    Migration {
+        version: 19,
+        up: SCHEMA_V19_UP,
+        down: SCHEMA_V19_DOWN,
+    },
 ];
+
+const SCHEMA_V19_UP: &str = r#"
+ALTER TABLE sync_metadata ADD COLUMN invalidated INTEGER NOT NULL DEFAULT 0
+    CHECK (typeof(invalidated) = 'integer' AND invalidated IN (0, 1));
+"#;
+
+const SCHEMA_V19_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM sync_metadata WHERE invalidated = 1
+) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+ALTER TABLE sync_metadata DROP COLUMN invalidated;
+"#;
 
 // Additive only: no catalog or inventory table is rebuilt, and legacy rows
 // remain unknown. STRICT affinity permits lossless integer coercion only.

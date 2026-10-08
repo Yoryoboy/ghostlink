@@ -59,18 +59,30 @@ pub struct Cli {
 }
 impl clap::CommandFactory for Cli {
     fn command() -> clap::Command {
-        ParsedCli::command()
+        equip_command(ParsedCli::command())
     }
     fn command_for_update() -> clap::Command {
-        ParsedCli::command_for_update()
+        equip_command(ParsedCli::command_for_update())
     }
 }
 impl clap::FromArgMatches for Cli {
     fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
         let parsed = ParsedCli::from_arg_matches(matches)?;
+        let mut command = parsed.command.unwrap_or(Command::Help);
+        if let Some(equip) = matches.subcommand_matches("equip")
+            && let Some(extra) = equip.get_many::<String>("additional_items")
+            && let Command::Equip(args) = command
+        {
+            let mut items = vec![args.item];
+            items.extend(extra.cloned());
+            command = Command::EquipItems(EquipItemsArgs {
+                items,
+                character: args.character,
+            });
+        }
         Ok(Self {
             json: parsed.json,
-            command: parsed.command.unwrap_or(Command::Help),
+            command,
         })
     }
     fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
@@ -79,6 +91,19 @@ impl clap::FromArgMatches for Cli {
     }
 }
 impl Parser for Cli {}
+
+// Keep the public single-item argument contract intact. Extra positionals are
+// converted to the internal batch variant only when there are multiple items.
+fn equip_command(command: clap::Command) -> clap::Command {
+    command.mut_subcommand("equip", |equip| {
+        equip.arg(
+            clap::Arg::new("additional_items")
+                .index(2)
+                .num_args(0..)
+                .value_name("ITEM"),
+        )
+    })
+}
 
 impl Cli {
     /// The output mode selected by the global `--json` flag.
@@ -151,9 +176,11 @@ impl Cli {
             // A `login` command line carries no read, and the hidden `callback`
             // handler is not a read either, so both report the stable
             // unsupported-operation outcome instead of guessing at a read.
-            Command::PullStack(_)
+            Command::ApplyLoadout(_)
+            | Command::PullStack(_)
             | Command::Pull(_)
             | Command::Equip(_)
+            | Command::EquipItems(_)
             | Command::Move(_)
             | Command::Lock(_)
             | Command::Unlock(_)
@@ -219,20 +246,22 @@ pub enum Command {
     Uninstall(UninstallArgs),
     /// Inspect or explicitly install integrations for supported AI agents.
     Agents(AgentsArgs),
-    /// Equip one item, transferring first when needed, then refresh and verify.
+    /// Equip one or several items on an explicit character, transferring first when needed.
     #[command(name = "equip")]
     Equip(EquipArgs),
+    #[command(skip)]
+    EquipItems(EquipItemsArgs),
     /// Move one item to an explicit character or Vault, then refresh and verify.
     #[command(name = "move")]
     Move(MoveArgs),
     /// Pull one genuine Postmaster equipment instance into its owner's inventory.
     #[command(
-        long_about = "Pull one genuine Postmaster equipment instance using a canonical positive int64 instance ID only. Requires login and qualified stored Manifest definitions. Names, hashes, anonymous stacks, quantity and destination arguments are unsupported. Only verified arrival succeeds; pending, uncertain and refused outcomes are nonzero. Observations are not causal or atomic guarantees."
+        long_about = "Pull one genuine Postmaster equipment instance using a canonical positive int64 instance ID only. Requires login and qualified stored Manifest definitions. Names, hashes, anonymous stacks, quantity and destination arguments are unsupported. Bungie acknowledgement returns applied (exit 0), not observed arrival, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail; never blindly retry."
     )]
     Pull(PullArgs),
     /// Pull a non-instanced Postmaster stack amount from its explicit owner.
     #[command(
-        long_about = "Pull a non-instanced Postmaster stack using a canonical uint32 decimal ITEM_HASH, canonical positive int32 --amount, and canonical positive int64 --character owner ID. Requires login and qualified stored Manifest definitions. Only verified quantity arrival succeeds. No names, destination overrides, redispatch or atomic guarantees."
+        long_about = "Pull a non-instanced Postmaster stack using a canonical uint32 decimal ITEM_HASH, canonical positive int32 --amount, and canonical positive int64 --character owner ID. Requires login and qualified stored Manifest definitions. Bungie acknowledgement returns applied (exit 0), not observed quantity arrival, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail. No names, destination overrides, redispatch or atomic guarantees."
     )]
     PullStack(PullStackArgs),
     /// Lock one explicitly selected owned item, then refresh and verify.
@@ -286,6 +315,8 @@ pub enum Command {
     /// Show saved in-game loadouts for one or all characters.
     #[command(name = "loadouts")]
     Loadouts(LoadoutsArgs),
+    /// Apply one saved loadout in orbit or a social space; never blindly retry.
+    ApplyLoadout(ApplyLoadoutArgs),
 
     /// Authorize this machine against the provider.
     ///
@@ -750,6 +781,31 @@ impl WeeklyArgs {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct EquipItemsArgs {
+    pub items: Vec<String>,
+    pub character: String,
+}
+impl EquipItemsArgs {
+    pub fn request(&self) -> Result<destiny_app::BatchEquipRequest, CliError> {
+        if !(2..=17).contains(&self.items.len()) {
+            return Err(CliError::invalid_request());
+        }
+        for item in &self.items {
+            EquipArgs {
+                item: item.clone(),
+                character: self.character.clone(),
+            }
+            .validate()?;
+        }
+        Ok(destiny_app::BatchEquipRequest {
+            character: self.character.clone(),
+            items: self.items.clone(),
+            intent: destiny_app::MoveIntentAuthorization::Explicit,
+        })
+    }
+}
+
 /// One invocation explicitly authorizes equipping exactly one item.
 #[derive(Debug, Args)]
 pub struct EquipArgs {
@@ -885,6 +941,38 @@ impl PullStackArgs {
             item_hash: ItemHash::new(canonical(&self.item_hash, u32::MAX as u64, false)? as i64),
             amount: canonical(&self.amount, i32::MAX as u64, true)? as i64,
             owner: CharacterId::new(canonical(&self.character, i64::MAX as u64, true)?.to_string()),
+        })
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct ApplyLoadoutArgs {
+    /// One-based slot shown by loadouts, or a normalized exact loadout name.
+    pub loadout: String,
+    /// Exact ID or unique hunter|titan|warlock class.
+    #[arg(long, required = true)]
+    pub character: String,
+}
+impl ApplyLoadoutArgs {
+    pub fn request(&self) -> Result<destiny_app::ApplyLoadoutRequest, CliError> {
+        SearchTerm::new(&self.character).map_err(|_| CliError::invalid_request())?;
+        let loadout = if self.loadout.chars().all(|c| c.is_ascii_digit()) {
+            let slot = self
+                .loadout
+                .parse()
+                .map_err(|_| CliError::invalid_request())?;
+            if !(1..=12).contains(&slot) {
+                return Err(CliError::invalid_request());
+            }
+            destiny_app::LoadoutSelector::Slot(slot)
+        } else {
+            SearchTerm::new(&self.loadout).map_err(|_| CliError::invalid_request())?;
+            destiny_app::LoadoutSelector::Name(self.loadout.clone())
+        };
+        Ok(destiny_app::ApplyLoadoutRequest {
+            character: CharacterId::new(&self.character),
+            loadout,
+            intent: destiny_app::MoveIntentAuthorization::Explicit,
         })
     }
 }

@@ -413,6 +413,18 @@ pub trait StatDefinitionRepository {
 
 /// Reads and atomically replaces the current normalized inventory projection.
 pub trait InventoryRepository {
+    /// Read-only repositories default to valid acquisition metadata.
+    fn freshness_invalidated(&self) -> Result<bool, AppError> {
+        Ok(false)
+    }
+
+    /// Invalidate freshness without changing content, revision, or acquisition time.
+    /// Mutable implementations must persist this flag and clear it atomically on
+    /// successful publication. Unsupported repositories fail closed.
+    fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        Err(AppError::new(ErrorCategory::UnsupportedOperation))
+    }
+
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError>;
     /// The repository assigns or retains the revision and publishes only on success.
     fn replace_current(

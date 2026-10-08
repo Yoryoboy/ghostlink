@@ -96,27 +96,21 @@
 //! discarding it. A first-step failure before dispatch has no attempted step and
 //! so honestly reports that no remote mutation occurred, while a post-dispatch
 //! outcome that cannot be determined is recorded as typed step uncertainty.
-//! [`ExecutionFailure::requires_post_action_refresh`] is the single predicate
-//! the DTE-004 orchestration uses to find every path that must refresh. The
+//! [`ExecutionFailure::requires_freshness_invalidation`] identifies dispatched
+//! attempts whose cached freshness must be invalidated. The
 //! executor seam itself stays deliberately narrow: [`MutationService::execute_move`]
 //! never refreshes after acting and never verifies the final destination on its
 //! own, which is what keeps one fresh preflight bound to exactly one ordered
 //! attempt.
 //!
-//! # Verification (DTE-004)
+//! # Acknowledgement (IAX-001)
 //!
-//! [`MutationService::execute_move_verified`] is the shared orchestration that
-//! composes the gates above with a mandatory [`ProfileSyncReason::PostAction`]
-//! refresh and a concrete destination verification. It forces one refresh, stamped
-//! with an explicit post-action observation timestamp distinct from the preflight
-//! timestamp, after every attempt whose bounded evidence shows at least one step
-//! reached the provider, then resolves the plan's item in the refreshed committed
-//! projection. A uniquely observed item at the destination is a verified success;
-//! a location consistent with the sequence's own reported progress is an honest
-//! [`IncompleteExecution`] that never claims a rollback; a contradiction, an
-//! unresolvable item, or a failed refresh is a [`VerificationFailure`]. A
-//! first-step pre-dispatch failure with zero attempted steps is returned as an
-//! error without spending a refresh, and the HTTP adapter remains DTE-005.
+//! [`MutationService::execute_move_action`] classifies provider receipts without
+//! a post-action request. Every planned
+//! step must be acknowledged for [`MoveExecutionOutcome::Applied`]; uncertainty,
+//! refusal and partial progress remain incomplete. Dispatched attempts durably
+//! invalidate freshness without guessing inventory content. The next ordinary
+//! read forces sync. Already-satisfied fresh preflight remains a verified no-op.
 
 use std::fmt;
 
@@ -170,7 +164,7 @@ pub enum MutationError {
     SourceMismatch,
     /// The plan's bounded lifetime elapsed before preflight.
     Expired,
-    /// The post-action observation timestamp precedes the preflight timestamp.
+    /// The completion clock input precedes the preflight timestamp.
     InvalidTimestamps,
     /// The committed projection changed after the plan was created.
     StaleRevision,
@@ -387,12 +381,8 @@ pub enum ExecutionAuthorization {
 /// completion instead of collapsing back to a bare error. The evidence is
 /// bounded by the plan exactly as [`ExecutionEvidence`] is.
 ///
-/// [`ExecutionFailure::requires_post_action_refresh`] is the single predicate
-/// [`MutationService::execute_move_verified`] uses to decide whether the
-/// DTE-004 post-action refresh is mandatory: it is true exactly when at least one
-/// step reached the provider, so every path that must refresh is observable and a
-/// first-step pre-dispatch failure honestly reports that no remote mutation
-/// occurred.
+/// Attempt evidence distinguishes dispatched sequences, which require freshness
+/// invalidation, from first-step pre-dispatch failures with no remote mutation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecutionFailure {
     error: MutationError,
@@ -418,24 +408,19 @@ impl ExecutionFailure {
         &self.evidence
     }
 
-    /// True when at least one step reached the provider, so a post-action
-    /// refresh is mandatory before any further decision.
-    ///
-    /// A first-step failure before dispatch has no attempted step, so this is
-    /// false and no remote mutation occurred; a failure after an earlier step
-    /// applied has a nonzero attempted count, so the refreshed state must be
-    /// read before anything else.
-    pub fn requires_post_action_refresh(&self) -> bool {
+    /// True when at least one step reached the provider and local freshness
+    /// must be invalidated. A first-step pre-dispatch failure returns false.
+    pub fn requires_freshness_invalidation(&self) -> bool {
         self.evidence.attempted_count() > 0
     }
 }
 
 /// The honest, sanitized account of a dispatched sequence that did not complete
-/// and left the concrete item somewhere other than the requested destination.
+/// without proving the concrete item's post-action state.
 ///
-/// The record preserves the bounded [`ExecutionEvidence`] observed before the
-/// attempt stopped, the concrete location the refreshed committed projection
-/// places the item at, and the pre-dispatch provider error when the sequence
+/// The record preserves the bounded [`ExecutionEvidence`] received before the
+/// attempt stopped, the expected location derived from completed receipts
+/// (not an observation), and the pre-dispatch provider error when the sequence
 /// stopped on one rather than on a classified step outcome. The concept is
 /// deliberately *incomplete* rather than *partial*: zero, one, or every planned
 /// step may have applied before the sequence stopped, and
@@ -445,19 +430,19 @@ impl ExecutionFailure {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IncompleteExecution {
     error: Option<MutationError>,
-    observed: ItemLocation,
+    expected_location: ItemLocation,
     evidence: Box<ExecutionEvidence>,
 }
 
 impl IncompleteExecution {
     fn new(
         error: Option<MutationError>,
-        observed: ItemLocation,
+        expected_location: ItemLocation,
         evidence: ExecutionEvidence,
     ) -> Self {
         Self {
             error,
-            observed,
+            expected_location,
             evidence: Box::new(evidence),
         }
     }
@@ -468,9 +453,15 @@ impl IncompleteExecution {
         self.error
     }
 
-    /// The concrete location the refreshed projection places the item at.
+    /// Receipt-derived expected location, not a post-action observation.
+    pub fn expected_location(&self) -> &ItemLocation {
+        &self.expected_location
+    }
+
+    /// Compatibility accessor for the receipt-derived expected location.
+    /// This is not an observation; presentation must use `expected_location`.
     pub fn observed(&self) -> &ItemLocation {
-        &self.observed
+        self.expected_location()
     }
 
     /// The bounded step evidence observed before the attempt stopped.
@@ -485,38 +476,23 @@ impl IncompleteExecution {
 
     /// True when at least one planned step reported that it applied.
     ///
-    /// A false value means the refreshed projection confirms that no step
-    /// applied, but the execution is still *incomplete* rather than successful,
-    /// so this predicate must not be used to tell failure from success. It only
-    /// distinguishes an incomplete execution that left a provider effect behind
-    /// from one that applied nothing; the observed location is reported and no
-    /// rollback is claimed either way.
+    /// A false value means no step was acknowledged as completed, not that
+    /// no provider effect occurred. This predicate does not establish success
+    /// or observed location; uncertainty is preserved and no rollback is claimed.
     pub fn is_partial(&self) -> bool {
         self.evidence.is_partial()
     }
 }
 
-/// Why the mandatory post-action verification could not prove the concrete item
-/// at the requested destination.
+/// Why local freshness could not be invalidated after a dispatched attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VerificationFailureReason {
-    /// The forced post-action refresh, or a read of the refreshed projection,
-    /// failed, so no observation could be made.
+    /// Local state could not be updated. The historical wire reason is retained.
     RefreshFailed,
-    /// The item did not resolve to exactly one concrete instance in the
-    /// refreshed projection.
-    Unresolved,
-    /// The item's location or required equipped state contradicts the progress
-    /// the dispatched sequence reported.
-    Elsewhere,
 }
 
-/// The sanitized verification failure and the bounded evidence it preserves.
-///
-/// A dispatched sequence is never discarded when the post-action verification
-/// cannot prove the destination: the reason, the concrete observed location when
-/// there is one, the pre-dispatch or refresh error that applies, and the bounded
-/// step evidence all survive. No rollback is claimed.
+/// A sanitized local-state failure preserving bounded dispatch evidence.
+/// No rollback or post-action observation is claimed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerificationFailure {
     reason: VerificationFailureReason,
@@ -540,23 +516,17 @@ impl VerificationFailure {
         }
     }
 
-    /// Why the destination could not be verified.
+    /// Why local state could not be updated.
     pub fn reason(&self) -> VerificationFailureReason {
         self.reason
     }
 
-    /// The concrete location the refreshed projection observed, when the item
-    /// resolved uniquely to one.
+    /// Legacy observation field; local-state failures do not populate it.
     pub fn observed(&self) -> Option<&ItemLocation> {
         self.observed.as_ref()
     }
 
-    /// The sanitized error that made verification impossible, when one applies.
-    ///
-    /// This is the refresh or projection-read failure for
-    /// [`VerificationFailureReason::RefreshFailed`], the pre-dispatch provider
-    /// error for a contradicted sequence that stopped on one, and `None`
-    /// otherwise.
+    /// The sanitized local-state update error, when one applies.
     pub fn error(&self) -> Option<MutationError> {
         self.error
     }
@@ -567,72 +537,24 @@ impl VerificationFailure {
     }
 }
 
-/// Provider-confirmed steps whose post-action observation is still stale.
-#[derive(Debug, Eq, PartialEq)]
-pub struct PendingProviderRefresh {
-    observed: ItemLocation,
-    evidence: ExecutionEvidence,
-}
-
-impl PendingProviderRefresh {
-    /// The stale, unconfirmed location from the unchanged projection.
-    pub fn observed(&self) -> &ItemLocation {
-        &self.observed
-    }
-
-    /// Every planned step was confirmed completed by the provider.
-    pub fn evidence(&self) -> &ExecutionEvidence {
-        &self.evidence
-    }
-}
-
-/// The typed, sanitized final outcome of one verified move attempt.
+/// The typed, sanitized final outcome of one move/equip attempt.
 ///
-/// [`MutationService::execute_move_verified`] combines the DTE-003 attempt with
-/// the mandatory [`ProfileSyncReason::PostAction`] refresh and the concrete
-/// destination verification, so a caller never has to remember either gate. The
-/// five variants are the only terminal shapes that combination can report, and
-/// every one carries the bounded [`ExecutionEvidence`] that was observed:
-///
-/// - [`MoveExecutionOutcome::VerifiedSuccess`]: the refreshed projection proves
-///   the concrete item at the requested destination. A step whose effect was
-///   reported as uncertain but which the projection confirms also lands here.
-/// - [`MoveExecutionOutcome::VerifiedNoOp`]: the mandatory fresh preflight proved
-///   the item already at the destination, so zero steps were dispatched and no
-///   post-action refresh was needed.
-/// - [`MoveExecutionOutcome::AppliedPendingProviderRefresh`]: the provider
-///   confirmed every step, but the refreshed profile is content-identical to
-///   pre-dispatch and has not confirmed the target. Do not retry; sync later.
-/// - [`MoveExecutionOutcome::IncompleteExecution`]: a dispatched sequence
-///   stopped short and the refreshed projection is consistent with the progress
-///   it reported, so the item is honestly somewhere other than the destination
-///   and may be stranded. Zero or more steps may have applied; the carried record
-///   reports which through [`IncompleteExecution::is_partial`]. No rollback is
-///   claimed.
-/// - [`MoveExecutionOutcome::VerificationFailed`]: a dispatched sequence occurred
-///   but the refreshed projection cannot prove the destination.
-///
-/// A first-step pre-dispatch failure whose evidence has zero attempted steps is
-/// not one of these variants: it is returned as `Err(ExecutionFailure)` because
-/// no transfer step reached the provider, so there is nothing to refresh or
-/// verify. Every failure with at least one attempted step is refreshed and
-/// classified into this enum instead.
+/// Full acknowledgement yields `Applied`, not an observed destination. Fresh
+/// already-satisfied preflight yields `VerifiedNoOp`. Refused, partial and
+/// uncertain attempts yield `IncompleteExecution`, preserving ordered receipts.
+/// No post-action provider verification is performed. Cache invalidation failure
+/// fails closed.
+/// A first-step pre-dispatch error remains an error without remote mutation.
 #[derive(Debug, Eq, PartialEq)]
 pub enum MoveExecutionOutcome {
-    /// The refreshed committed projection proves the concrete item at the
-    /// requested destination.
-    VerifiedSuccess(ExecutionEvidence),
+    /// Every planned step was acknowledged by Bungie; no post-action read.
+    Applied(ExecutionEvidence),
     /// The mandatory fresh preflight proved the concrete item already at the
     /// destination, so no transfer step was dispatched.
     VerifiedNoOp(ExecutionEvidence),
-    /// All steps were provider-confirmed, but the unchanged profile has not
-    /// confirmed the target. Do not retry; synchronize later to confirm.
-    AppliedPendingProviderRefresh(PendingProviderRefresh),
-    /// A dispatched sequence stopped short and the refreshed projection is
-    /// consistent with the progress it reported.
+    /// A dispatched sequence stopped short; receipts preserve its progress.
     IncompleteExecution(IncompleteExecution),
-    /// A dispatched sequence occurred but the refreshed projection cannot prove
-    /// the concrete item at the requested destination.
+    /// Local freshness could not be invalidated after dispatch.
     VerificationFailed(VerificationFailure),
 }
 
@@ -802,7 +724,7 @@ where
         Ok((destiny_core::EquipPreflight::Ready, outcome))
     }
 
-    fn validate_equip(
+    pub(crate) fn validate_equip(
         &self,
         item: &ItemInstance,
         destination: &ItemLocation,
@@ -896,7 +818,7 @@ where
     }
 
     /// Exact catalog lookup avoids truncating a definition search for safety.
-    fn equip_definition(
+    pub(crate) fn equip_definition(
         &self,
         hash: destiny_core::ItemHash,
     ) -> Result<destiny_core::ItemDefinition, MutationError>
@@ -1108,13 +1030,13 @@ where
     /// instead of dropping them. That failure shape distinguishes a first-step
     /// pre-dispatch failure, whose evidence has no attempted step and therefore
     /// represents no remote mutation, from a failure after a provider effect,
-    /// which the DTE-004 orchestration refreshes before deciding anything. A
+    /// which the composed action path invalidates local freshness for. A
     /// post-dispatch outcome whose effect cannot be determined is recorded as
     /// [`StepOutcome::Uncertain`], never collapsed into a success or a clean
     /// failure. This narrow seam never refreshes or verifies the final
-    /// destination on its own; [`MutationService::execute_move_verified`] is the
-    /// composed DTE-004 path that does, and this executor deliberately stays
-    /// unchanged so one fresh preflight remains bound to one ordered attempt.
+    /// destination on its own; [`MutationService::execute_move_action`] classifies
+    /// the receipts and invalidates freshness. One fresh preflight remains bound
+    /// to one ordered attempt.
     pub fn execute_move<T: TransferGateway>(
         &mut self,
         transfer: &mut T,
@@ -1131,46 +1053,14 @@ where
         }
     }
 
-    /// DTE-004: the shared orchestration that dispatches one plan and then
-    /// verifies the concrete destination from a mandatory fresh post-action
-    /// refresh.
+    /// Dispatches one freshly authorized plan and classifies acknowledgement.
     ///
-    /// It composes the three existing pieces rather than reimplementing any of
-    /// them: [`MutationService::authorize_execution`] performs the mandatory
-    /// fresh execution preflight, [`MutationService::execute_move`] issues the
-    /// ticket's ordered steps through the unchanged narrow executor seam, and
-    /// then one [`ProfileSyncReason::PostAction`] refresh is forced before the
-    /// final classification.
-    ///
-    /// The refresh is mandatory for every dispatched attempt, whether the
-    /// attempt reported a rejection, a transient or uncertain result, a partial
-    /// completion, or stopped on a mid-sequence pre-dispatch error after an
-    /// earlier step applied; that is why the predicate used to decide is
-    /// [`ExecutionFailure::requires_post_action_refresh`]. A first-step
-    /// pre-dispatch error has zero attempted steps, so no transfer reached the
-    /// provider, no remote mutation occurred, and no post-action refresh is
-    /// spent: it is returned unchanged as `Err`.
-    ///
-    /// Verification resolves the plan's concrete item in the freshly refreshed
-    /// committed projection. A uniquely observed item at the plan destination is
-    /// [`MoveExecutionOutcome::VerifiedSuccess`]. When it is not at the
-    /// destination, the observed location is compared with the location the
-    /// sequence's own reported progress would leave the item at: a match is an
-    /// honest [`MoveExecutionOutcome::IncompleteExecution`] that carries the
-    /// bounded evidence and the observed location, while a contradiction, a
-    /// missing or ambiguous item, or a failed refresh is
-    /// [`MoveExecutionOutcome::VerificationFailed`]. No path claims a rollback,
-    /// and the bounded [`ExecutionEvidence`] is preserved in every variant.
-    ///
-    /// The attempt and its post-action observation use two explicit timestamps.
-    /// `preflight_now` authorizes and time-bounds the attempt, while
-    /// `post_action_now` is the observation instant of the mandatory
-    /// [`ProfileSyncReason::PostAction`] refresh; a post-action instant that
-    /// precedes the preflight instant is a caller contract violation and is
-    /// rejected with [`MutationError::InvalidTimestamps`] before any provider
-    /// read, so the refresh can never be stamped with a time that predates the
-    /// action it is meant to observe.
-    pub fn execute_move_verified<T: TransferGateway>(
+    /// Timestamp arguments retain their ordering contract.
+    /// `post_action_now` must not precede preflight, but no post-action read is
+    /// issued. Dispatched attempts invalidate repository freshness; complete
+    /// receipts yield `Applied`. Incomplete/uncertain evidence never claims
+    /// observed state or rollback. A zero-attempt pre-dispatch error remains Err.
+    pub fn execute_move_action<T: TransferGateway>(
         &mut self,
         transfer: &mut T,
         request: &MoveRequest,
@@ -1179,8 +1069,7 @@ where
         preflight_now: Timestamp,
         post_action_now: Timestamp,
     ) -> Result<MoveExecutionOutcome, ExecutionFailure> {
-        // The post-action observation cannot precede the attempt it observes, so
-        // the caller's clock input is validated before any side effect.
+        // Preserve the caller's clock ordering contract before any side effect.
         if post_action_now < preflight_now {
             return Err(ExecutionFailure::new(
                 MutationError::InvalidTimestamps,
@@ -1194,7 +1083,7 @@ where
             Ok(authorization) => authorization,
             Err(error) => {
                 // The attempt was never dispatched, so the bounded skeleton is
-                // the whole evidence and no post-action refresh is warranted.
+                // the whole evidence and freshness invalidation is not required.
                 return Err(ExecutionFailure::new(
                     error,
                     ExecutionEvidence::for_plan(plan),
@@ -1212,9 +1101,9 @@ where
         let (evidence, attempt_error) = match self.execute_move(transfer, plan, ticket) {
             Ok(evidence) => (evidence, None),
             Err(failure) => {
-                if !failure.requires_post_action_refresh() {
+                if !failure.requires_freshness_invalidation() {
                     // No step reached the provider, so no remote mutation
-                    // occurred and no post-action refresh may be spent.
+                    // occurred and local freshness remains unchanged.
                     return Err(failure);
                 }
                 // At least one step reached the provider. The evidence observed
@@ -1225,23 +1114,17 @@ where
             }
         };
 
-        Ok(self.verify_attempt(
-            plan,
-            revision,
-            evidence,
-            attempt_error,
-            policy,
-            post_action_now,
-        ))
+        let _ = revision;
+        Ok(self.acknowledge_attempt(plan, evidence, attempt_error))
     }
 
-    /// Executes an equip intent and verifies its equipped-state postcondition.
+    /// Executes an equip intent with acknowledgement-based (optimistic) success.
     ///
     /// The gateway pair is (transfer, equip). A single fresh preflight either
-    /// proves a no-op or authorizes one ordered attempt. Every dispatched call,
-    /// including a refusal or uncertainty, requires a PostAction refresh; only
-    /// the concrete item equipped on the target proves success. No retry occurs.
-    pub fn execute_equip_verified<T: TransferGateway, E: destiny_core::EquipGateway>(
+    /// proves a no-op or authorizes one ordered attempt. The outcome is Applied
+    /// only when every planned step is acknowledged; the profile is not re-read,
+    /// and local freshness is invalidated so the next read syncs. No retry occurs.
+    pub fn execute_equip_action<T: TransferGateway, E: destiny_core::EquipGateway>(
         &mut self,
         gateways: (&mut T, &mut E),
         request: &destiny_core::EquipRequest,
@@ -1272,20 +1155,14 @@ where
         let (evidence, attempt_error) = match self.execute_equip(gateways, plan, ticket) {
             Ok(evidence) => (evidence, None),
             Err(failure) => {
-                if !failure.requires_post_action_refresh() {
+                if !failure.requires_freshness_invalidation() {
                     return Err(failure);
                 }
                 (*failure.evidence, Some(failure.error))
             }
         };
-        Ok(self.verify_attempt(
-            mutation,
-            revision,
-            evidence,
-            attempt_error,
-            policy,
-            post_action_now,
-        ))
+        let _ = revision;
+        Ok(self.acknowledge_attempt(mutation, evidence, attempt_error))
     }
 
     /// Consumes one fresh ticket and dispatches transfers before equip, without retries.
@@ -1308,118 +1185,37 @@ where
         }
     }
 
-    /// Forces the mandatory post-action refresh and classifies the destination.
-    ///
-    /// The refresh outcome is never optional, and its failure is itself a
-    /// verification failure rather than a propagated error, because a dispatched
-    /// sequence must always keep its bounded evidence. The refreshed projection
-    /// then decides between verified success, an honest incomplete execution that
-    /// is consistent with the reported progress, and a verification failure.
-    fn verify_attempt(
+    /// Classifies receipts without a post-action provider request.
+    fn acknowledge_attempt(
         &mut self,
         plan: &MovePlan,
-        revision: SyncRevision,
         evidence: ExecutionEvidence,
         attempt_error: Option<MutationError>,
-        policy: FreshnessPolicy,
-        post_action_now: Timestamp,
     ) -> MoveExecutionOutcome {
-        // The post-action acquisition is unconditional, but the provider may
-        // still serve pre-action content. Retain its revision to detect that.
-        let refresh = match self
-            .sync
-            .sync(ProfileSyncReason::PostAction, policy, post_action_now)
-        {
-            Ok(refresh) => refresh,
-            Err(app_error) => {
-                return MoveExecutionOutcome::VerificationFailed(VerificationFailure::new(
-                    VerificationFailureReason::RefreshFailed,
-                    None,
-                    Some(MutationError::from(app_error)),
-                    evidence,
-                ));
-            }
-        };
-        let instance = match self.repository().lookup_instance(&plan.item) {
-            Ok(Resolution::Unique(instance)) => instance,
-            Ok(Resolution::Missing) | Ok(Resolution::Ambiguous(_)) => {
-                return MoveExecutionOutcome::VerificationFailed(VerificationFailure::new(
-                    VerificationFailureReason::Unresolved,
-                    None,
-                    attempt_error,
-                    evidence,
-                ));
-            }
-            Err(app_error) => {
-                return MoveExecutionOutcome::VerificationFailed(VerificationFailure::new(
-                    VerificationFailureReason::RefreshFailed,
-                    None,
-                    Some(MutationError::from(app_error)),
-                    evidence,
-                ));
-            }
-        };
-        let observed = instance.location;
-        if evidence.stop_outcome() == Some(StepOutcome::AuthenticationRefused) {
-            // A definite refusal is not confirmed dispatch, even if an external
-            // action independently satisfied the target. Keep fresh observation
-            // and the original authentication error without claiming success.
-            return MoveExecutionOutcome::IncompleteExecution(IncompleteExecution::new(
-                attempt_error,
-                observed,
+        // Even refusals and uncertain attempts invalidate the pre-action cache.
+        if let Err(error) = self.repository_mut().invalidate_freshness() {
+            return MoveExecutionOutcome::VerificationFailed(VerificationFailure::new(
+                VerificationFailureReason::RefreshFailed,
+                None,
+                Some(MutationError::from(error)),
                 evidence,
             ));
         }
-        if observed == plan.destination && (!plan.requires_equipped() || instance.equipped) {
-            // The requested end state holds, whatever the steps individually
-            // reported: a step whose effect was uncertain is now confirmed.
-            return MoveExecutionOutcome::VerifiedSuccess(evidence);
-        }
-        if refresh.revision() == revision
-            && evidence.completed_count() == plan.steps().len()
+        if evidence.completed_count() == plan.steps().len()
             && evidence
                 .steps()
                 .iter()
                 .all(|step| step.outcome == StepOutcome::Completed)
+            && attempt_error.is_none()
         {
-            // Bracket the lookup with committed revision equality: another
-            // publisher may have changed the projection since the refresh.
-            let current = match self.committed_snapshot() {
-                Ok(snapshot) => snapshot.metadata.revision,
-                Err(error) => {
-                    return MoveExecutionOutcome::VerificationFailed(VerificationFailure::new(
-                        VerificationFailureReason::RefreshFailed,
-                        Some(observed),
-                        Some(error),
-                        evidence,
-                    ));
-                }
-            };
-            if current == refresh.revision() {
-                return MoveExecutionOutcome::AppliedPendingProviderRefresh(
-                    PendingProviderRefresh { observed, evidence },
-                );
-            }
-        }
-        // The item is not at the destination. It is an honest incomplete
-        // execution only when the refreshed location matches the progress the
-        // sequence reported; any other location contradicts it and is a
-        // verification failure. Neither shape rolls an applied step back.
-        if observed == expected_location(plan, evidence.completed_count())
-            && (!plan.requires_equipped() || evidence.completed_count() < plan.steps().len())
-        {
-            return MoveExecutionOutcome::IncompleteExecution(IncompleteExecution::new(
+            MoveExecutionOutcome::Applied(evidence)
+        } else {
+            MoveExecutionOutcome::IncompleteExecution(IncompleteExecution::new(
                 attempt_error,
-                observed,
+                expected_location(plan, evidence.completed_count()),
                 evidence,
-            ));
+            ))
         }
-        MoveExecutionOutcome::VerificationFailed(VerificationFailure::new(
-            VerificationFailureReason::Elsewhere,
-            Some(observed),
-            attempt_error,
-            evidence,
-        ))
     }
 
     /// Runs the ticket's ordered steps in place, stopping at the first that does
@@ -1775,6 +1571,10 @@ enum EquipmentCategory {
 
 /// Weapon and armor exotic limits are independent; unsupported slots are not
 /// treated as equipment. Slots come from normalized Manifest bucket hashes.
+pub(crate) fn is_equipment_slot(slot: destiny_core::domain::ItemSlot) -> bool {
+    equipment_category(slot).is_some()
+}
+
 fn equipment_category(slot: destiny_core::domain::ItemSlot) -> Option<EquipmentCategory> {
     use destiny_core::domain::ItemSlot;
     match slot {
@@ -1825,10 +1625,8 @@ pub(crate) fn authorize(request: &MoveRequest) -> Result<(), MutationError> {
 /// The location a sequence with `completed` applied steps is expected to leave
 /// the item at.
 ///
-/// This is how the post-action verification tells an honest incomplete execution
-/// from a contradiction: with no applied step the item must still be at the
-/// plan's source, and with `n` applied steps it must be at the destination of
-/// step `n`.
+/// This receipt-derived expectation is not an observation: with no acknowledged
+/// step use the source; with `n` acknowledged steps use step `n`'s destination.
 /// A sequence can never report more applied steps than the plan has, so the
 /// fallback is unreachable and only keeps the helper total.
 fn expected_location(plan: &MovePlan, completed: usize) -> ItemLocation {
@@ -1888,6 +1686,7 @@ mod tests {
         search: InMemorySearchRepository,
         catalog: crate::test_support::InMemoryDefinitionRepository,
         hides_current: bool,
+        fails_invalidation: bool,
         calls: RefCell<Vec<&'static str>>,
     }
 
@@ -1902,6 +1701,7 @@ mod tests {
                     definitions,
                 ),
                 hides_current: false,
+                fails_invalidation: false,
                 calls: RefCell::new(Vec::new()),
             }
         }
@@ -1944,6 +1744,15 @@ mod tests {
     }
 
     impl InventoryRepository for CompositeRepository {
+        fn freshness_invalidated(&self) -> Result<bool, AppError> {
+            self.inventory.borrow().freshness_invalidated()
+        }
+        fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+            if self.fails_invalidation {
+                return Err(AppError::new(ErrorCategory::LocalStorage));
+            }
+            self.inventory.get_mut().invalidate_freshness()
+        }
         fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
             self.record("load_current");
             if self.hides_current {
@@ -2188,7 +1997,7 @@ mod tests {
                         continue;
                     }
                     let result = if let Some(plan) = equip_plan {
-                        service.execute_equip_verified(
+                        service.execute_equip_action(
                             (&mut transfer, &mut equip_gateway),
                             &req,
                             &plan,
@@ -2197,7 +2006,7 @@ mod tests {
                             POST_ACTION_NOW,
                         )
                     } else {
-                        service.execute_move_verified(
+                        service.execute_move_action(
                             &mut transfer,
                             &req.as_move_request(),
                             move_plan.as_ref().unwrap(),
@@ -2216,6 +2025,262 @@ mod tests {
                     }
                     assert!(transfer.requests().is_empty());
                     assert!(equip_gateway.requests().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn batch_equip_acknowledges_once_and_invalidates() {
+        use destiny_core::{EquipItemResult, EquipItemStatus, EquipItemsOutcome};
+        let shared = gateway();
+        let mut first = equip_definition(1, destiny_core::domain::ItemSlot::Kinetic);
+        first.tier = Some("Legendary".into());
+        let mut second = equip_definition(2, destiny_core::domain::ItemSlot::Energy);
+        second.tier = Some("Legendary".into());
+        let input = projection(
+            NOW,
+            vec![character("123", None, Some("Warlock"))],
+            vec![
+                instance("101", 1, ItemLocation::Character(CharacterId::new("123"))),
+                instance("102", 2, ItemLocation::Character(CharacterId::new("123"))),
+            ],
+        );
+        let mut repo = CompositeRepository::with_definitions(vec![first, second]);
+        repo.commit(input.clone());
+        queue_refresh(&shared, input);
+        let mut service = service(&shared, repo);
+        let mut transfer = QueuedTransferGateway::new();
+        let mut equip = crate::test_support::QueuedEquipItemsGateway::new();
+        equip.queue(Ok(EquipItemsOutcome::Acknowledged(vec![
+            EquipItemResult {
+                item: item_id("101"),
+                status: EquipItemStatus::Success,
+            },
+            EquipItemResult {
+                item: item_id("102"),
+                status: EquipItemStatus::Success,
+            },
+        ])));
+        let result = service
+            .equip_items(
+                (&mut transfer, &mut equip),
+                &crate::BatchEquipRequest {
+                    character: "warlock".into(),
+                    items: vec!["101".into(), "102".into()],
+                    intent: MoveIntentAuthorization::Explicit,
+                },
+                TTL,
+                NOW,
+                || {},
+            )
+            .unwrap();
+        assert!(result.applied());
+        assert_eq!(equip.requests().len(), 1);
+        assert!(transfer.requests().is_empty());
+        assert!(service.repository().freshness_invalidated().unwrap());
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+    }
+
+    fn batch_fixture(
+        first: ItemDefinition,
+        second: ItemDefinition,
+        items: Vec<ItemInstance>,
+        storage_failure: bool,
+    ) -> Service {
+        let shared = gateway();
+        let input = projection(
+            NOW,
+            vec![
+                character("123", None, Some("Warlock")),
+                character("456", None, Some("Hunter")),
+            ],
+            items,
+        );
+        let mut repo = CompositeRepository::with_definitions(vec![
+            first,
+            second,
+            equip_definition(3, destiny_core::domain::ItemSlot::Energy),
+        ]);
+        repo.commit(input.clone());
+        repo.fails_invalidation = storage_failure;
+        queue_refresh(&shared, input);
+        service(&shared, repo)
+    }
+
+    fn batch_request() -> crate::BatchEquipRequest {
+        crate::BatchEquipRequest {
+            character: "warlock".into(),
+            items: vec!["101".into(), "102".into()],
+            intent: MoveIntentAuthorization::Explicit,
+        }
+    }
+
+    #[test]
+    fn batch_combined_refusals_dispatch_nothing() {
+        use destiny_core::domain::{ClassType, ItemSlot};
+        for case in [
+            "same_slot",
+            "two_exotics",
+            "equipped_conflict",
+            "wrong_class",
+            "duplicate",
+        ] {
+            let mut first = equip_definition(1, ItemSlot::Kinetic);
+            let mut second = equip_definition(2, ItemSlot::Energy);
+            first.tier = Some("Legendary".into());
+            second.tier = Some("Legendary".into());
+            let mut items = vec![
+                instance("101", 1, ItemLocation::Vault),
+                instance("102", 2, ItemLocation::Vault),
+            ];
+            let mut request = batch_request();
+            match case {
+                "same_slot" => second.slot = first.slot,
+                "two_exotics" => {
+                    first.tier = Some("Exotic".into());
+                    second.tier = Some("Exotic".into());
+                }
+                "equipped_conflict" => {
+                    first.tier = Some("Exotic".into());
+                    second.slot = Some(ItemSlot::Helmet);
+                    let mut neighbor =
+                        instance("103", 3, ItemLocation::Character(CharacterId::new("123")));
+                    neighbor.equipped = true;
+                    items.push(neighbor);
+                }
+                "wrong_class" => second.class_type = Some(ClassType::Hunter),
+                "duplicate" => request.items[1] = request.items[0].clone(),
+                _ => unreachable!(),
+            }
+            let mut service = batch_fixture(first, second, items, false);
+            let mut transfer = QueuedTransferGateway::new();
+            let mut equip = crate::test_support::QueuedEquipItemsGateway::new();
+            assert!(
+                service
+                    .equip_items((&mut transfer, &mut equip), &request, TTL, NOW, || {})
+                    .is_err(),
+                "{case}"
+            );
+            assert!(transfer.requests().is_empty(), "{case}");
+            assert!(equip.requests().is_empty(), "{case}");
+            assert!(!service.repository().freshness_invalidated().unwrap());
+        }
+    }
+
+    #[test]
+    fn batch_receipts_noops_transfers_and_storage_fail_closed() {
+        use destiny_core::domain::ItemSlot;
+        use destiny_core::{EquipItemResult, EquipItemStatus, EquipItemsOutcome};
+        for case in [
+            "mixed",
+            "omitted",
+            "noop",
+            "storage",
+            "transfer_stop",
+            "refused",
+            "auth",
+            "transient",
+            "uncertain",
+            "success_transfers",
+            "replaced_exotic",
+        ] {
+            let mut first = equip_definition(1, ItemSlot::Kinetic);
+            let mut second = equip_definition(2, ItemSlot::Energy);
+            first.tier = Some("Legendary".into());
+            second.tier = Some("Legendary".into());
+            let source = if matches!(case, "transfer_stop" | "success_transfers") {
+                ItemLocation::Character(CharacterId::new("456"))
+            } else {
+                ItemLocation::Character(CharacterId::new("123"))
+            };
+            let mut items = vec![
+                instance("101", 1, source.clone()),
+                instance("102", 2, source),
+            ];
+            if case == "noop" {
+                for item in &mut items {
+                    item.equipped = true;
+                }
+            }
+            if case == "replaced_exotic" {
+                first.tier = Some("Exotic".into());
+                let mut neighbor =
+                    instance("103", 3, ItemLocation::Character(CharacterId::new("123")));
+                neighbor.equipped = true;
+                items.push(neighbor);
+            }
+            let mut service = batch_fixture(first, second, items, case == "storage");
+            let mut transfer = QueuedTransferGateway::new();
+            for index in 0..4 {
+                transfer.queue(Ok(if case == "transfer_stop" && index == 1 {
+                    TransferOutcome::Uncertain
+                } else {
+                    TransferOutcome::Transferred
+                }));
+            }
+            let mut equip = crate::test_support::QueuedEquipItemsGateway::new();
+            let receipt = match case {
+                "refused" => EquipItemsOutcome::Refused,
+                "auth" => EquipItemsOutcome::AuthenticationRefused,
+                "transient" => EquipItemsOutcome::Transient,
+                "uncertain" => EquipItemsOutcome::Uncertain,
+                _ => EquipItemsOutcome::Acknowledged(vec![
+                    EquipItemResult {
+                        item: item_id("101"),
+                        status: EquipItemStatus::Success,
+                    },
+                    EquipItemResult {
+                        item: item_id("102"),
+                        status: match case {
+                            "mixed" => EquipItemStatus::Failure(99),
+                            "omitted" => EquipItemStatus::NotReported,
+                            _ => EquipItemStatus::Success,
+                        },
+                    },
+                ]),
+            };
+            equip.queue(Ok(receipt));
+            let mut paced = 0;
+            let result = service
+                .equip_items(
+                    (&mut transfer, &mut equip),
+                    &batch_request(),
+                    TTL,
+                    NOW,
+                    || paced += 1,
+                )
+                .unwrap();
+            if case == "noop" {
+                assert!(result.no_op());
+                assert!(equip.requests().is_empty());
+                assert!(!service.repository().freshness_invalidated().unwrap());
+            } else {
+                assert_eq!(
+                    result.applied(),
+                    matches!(case, "success_transfers" | "replaced_exotic"),
+                    "{case}"
+                );
+                assert_eq!(paced, transfer.requests().len() + equip.requests().len());
+                if case == "mixed" {
+                    assert_eq!(result.items[1].status, crate::BatchItemStatus::Failure(99));
+                }
+                if case == "omitted" {
+                    assert_eq!(result.items[1].status, crate::BatchItemStatus::NotReported);
+                }
+                if case == "success_transfers" {
+                    assert_eq!(transfer.requests().len(), 4);
+                    assert_eq!(equip.requests()[0].items().len(), 2);
+                }
+                if case == "storage" {
+                    assert!(!result.local_state_updated);
+                    assert!(result.receipt.is_some());
+                } else {
+                    assert!(service.repository().freshness_invalidated().unwrap());
+                }
+                assert_eq!(equip.requests().len(), usize::from(case != "transfer_stop"));
+                if case == "transfer_stop" {
+                    assert_eq!(transfer.requests().len(), 2);
                 }
             }
         }
@@ -2458,13 +2523,13 @@ mod tests {
     }
 
     #[test]
-    fn equip_verified_execution_scenarios() {
+    fn equip_acknowledgement_execution_scenarios() {
         use crate::test_support::QueuedEquipGateway;
         use destiny_core::{EquipOutcome, EquipRejection, domain::ItemSlot};
         // 0-2: routes; 3: no-op; 4-5: equip refusals; 6-8: uncertainty;
         // 9: transfer refusal; 10: elsewhere; 11: stale preflight;
         // 12: transient; 13: pre-dispatch equip error; 14: equipped contradiction;
-        // 15: newly satisfied preflight; 16: failed post-action refresh;
+        // 15: newly satisfied preflight; 16: unused later refresh failure;
         // 17/22: stale confirmed transfer/equip; 18: stale uncertain equip;
         // 19: stale auth refusal; 20/21: unchanged partial plans.
         // Each case uses realistic equipped non-equipment neighbors.
@@ -2552,7 +2617,7 @@ mod tests {
                     Ok(projection(POST_ACTION_NOW, chars, neighbors))
                 });
             }
-            let result = svc.execute_equip_verified(
+            let result = svc.execute_equip_action(
                 (&mut transfer, &mut equip),
                 &equip_request(),
                 &plan,
@@ -2566,47 +2631,26 @@ mod tests {
                 continue;
             }
             let result = result.unwrap();
-            if matches!(case, 17 | 22) {
-                let MoveExecutionOutcome::AppliedPendingProviderRefresh(pending) = result else {
-                    panic!("expected pending, got {result:?}");
-                };
-                assert_eq!(pending.observed(), &source);
-                assert_eq!(pending.evidence().completed_count(), plan.steps().len());
-                continue;
-            }
             let evidence = match result {
                 MoveExecutionOutcome::VerifiedNoOp(evidence) => {
                     assert!(matches!(case, 3 | 15));
                     evidence
                 }
-                MoveExecutionOutcome::VerifiedSuccess(evidence) => {
-                    assert!(matches!(case, 0..=2 | 6));
+                MoveExecutionOutcome::Applied(evidence) => {
+                    assert!(matches!(case, 0..=2 | 10 | 14 | 16 | 17 | 22));
                     evidence
                 }
                 MoveExecutionOutcome::IncompleteExecution(incomplete) => {
-                    assert!(matches!(case, 4 | 5 | 7 | 9 | 12 | 13 | 18..=21));
+                    assert!(matches!(case, 4..=9 | 12 | 13 | 18..=21));
                     incomplete.evidence().clone()
-                }
-                MoveExecutionOutcome::AppliedPendingProviderRefresh(_) => {
-                    panic!("unexpected pending outcome")
                 }
                 MoveExecutionOutcome::VerificationFailed(failure) => {
                     assert!(matches!(case, 8 | 10 | 14 | 16));
-                    assert_eq!(
-                        failure.reason(),
-                        if case == 16 {
-                            VerificationFailureReason::RefreshFailed
-                        } else {
-                            VerificationFailureReason::Elsewhere
-                        }
-                    );
+                    assert_eq!(failure.reason(), VerificationFailureReason::RefreshFailed);
                     failure.evidence().clone()
                 }
             };
-            assert_eq!(
-                shared.borrow().inventory_calls(),
-                if matches!(case, 3 | 15) { 1 } else { 2 }
-            );
+            assert_eq!(shared.borrow().inventory_calls(), 1);
             assert_eq!(
                 equip.calls(),
                 if matches!(case, 3 | 9 | 15 | 21) {
@@ -2618,7 +2662,7 @@ mod tests {
             assert_eq!(
                 transfer.calls(),
                 match case {
-                    0 | 3 | 15 | 18..=20 => 0,
+                    0 | 3 | 15 | 18..=20 | 22 => 0,
                     2 => 2,
                     _ => 1,
                 }
@@ -2706,7 +2750,7 @@ mod tests {
                 .unwrap_err();
             assert_eq!(failure.error(), MutationError::InvalidPlan);
             assert_eq!(transfer.calls(), 0);
-            assert!(!failure.requires_post_action_refresh());
+            assert!(!failure.requires_freshness_invalidation());
         }
     }
 
@@ -3091,7 +3135,7 @@ mod tests {
         queue_refresh(&shared, refreshed);
         let mut lock = QueuedLockGateway::new();
         let failure = svc
-            .execute_lock_verified(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW)
+            .execute_lock(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW)
             .unwrap_err();
         assert_eq!(failure.error(), MutationError::UnsupportedSource);
         assert_eq!(failure.evidence().attempt(), None);
@@ -3128,13 +3172,12 @@ mod tests {
     }
 
     #[test]
-    fn lock_verified_execution_scenarios() {
-        use crate::lock::{LockExecutionOutcome, LockVerificationFailureReason};
+    fn lock_optimistic_execution_scenarios() {
+        use crate::lock::LockExecutionOutcome;
         use crate::test_support::QueuedLockGateway;
         use destiny_core::{LockOutcome, LockRejection};
-        // Success, fresh no-op, rejection, uncertain (confirmed/unconfirmed),
-        // refresh failure, mismatch, unchanged applied, pre-dispatch error,
-        // moved/disappeared, auth refusal, transient, unlock, unresolved after dispatch.
+        // Acknowledgement, fresh no-op, rejection, uncertainty, provider lag,
+        // unused post-action failures/drift, pre-dispatch errors, auth and unlock.
         for case in 0..15 {
             let shared = gateway();
             let chars = vec![warlock_character(), character("hunter", None, None)];
@@ -3195,8 +3238,7 @@ mod tests {
                     ))
                 });
             }
-            let result =
-                svc.execute_lock_verified(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW);
+            let result = svc.execute_lock(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW);
             if matches!(case, 8..=10) {
                 let error = result.unwrap_err();
                 assert_eq!(error.evidence().attempt(), None);
@@ -3206,23 +3248,12 @@ mod tests {
             }
             let outcome = result.unwrap();
             match &outcome {
-                LockExecutionOutcome::VerifiedSuccess(_) => assert!(matches!(case, 0 | 3 | 13)),
+                LockExecutionOutcome::Applied(_) => assert!(matches!(case, 0 | 5..=7 | 13 | 14)),
                 LockExecutionOutcome::VerifiedNoOp(_) => assert_eq!(case, 1),
                 LockExecutionOutcome::IncompleteExecution(_) => {
-                    assert!(matches!(case, 2 | 4 | 11 | 12))
+                    assert!(matches!(case, 2..=4 | 11 | 12))
                 }
-                LockExecutionOutcome::AppliedPendingProviderRefresh(_) => assert_eq!(case, 7),
-                LockExecutionOutcome::VerificationFailed(failure) => {
-                    assert!(matches!(case, 5 | 6 | 14));
-                    assert_eq!(
-                        failure.reason(),
-                        match case {
-                            5 => LockVerificationFailureReason::RefreshFailed,
-                            14 => LockVerificationFailureReason::Unresolved,
-                            _ => LockVerificationFailureReason::Contradiction,
-                        }
-                    );
-                }
+                other => panic!("no post-action verification: {other:?}"),
             }
             assert_eq!(
                 outcome.evidence().attempt(),
@@ -3233,9 +3264,11 @@ mod tests {
                 }
             );
             assert_eq!(lock.calls(), usize::from(case != 1));
+            assert_eq!(shared.borrow().inventory_calls(), 1);
+            assert_eq!(svc.repository().freshness_invalidated().unwrap(), case != 1);
             assert_eq!(
-                shared.borrow().inventory_calls(),
-                if case == 1 { 1 } else { 2 }
+                outcome.evidence().observed(),
+                if case == 1 { Some(req.locked) } else { None }
             );
             if case != 1 {
                 assert_eq!(lock.requests()[0].character(), &CharacterId::new("hunter"));
@@ -3252,6 +3285,43 @@ mod tests {
                 _ => LockOutcome::Applied,
             }
         }
+    }
+
+    #[test]
+    fn acknowledged_lock_fails_closed_when_local_invalidation_fails() {
+        use crate::lock::{LockExecutionOutcome, LockVerificationFailureReason};
+        use crate::test_support::QueuedLockGateway;
+        let shared = gateway();
+        let mut repo = CompositeRepository::with_definitions(vec![]);
+        repo.commit(fresh_vault_projection());
+        let mut svc = service(&shared, repo);
+        let req = lock_request();
+        let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+        queue_refresh(&shared, fresh_vault_projection());
+        svc.repository_mut().fails_invalidation = true;
+        let mut lock = QueuedLockGateway::new();
+        lock.queue(Ok(destiny_core::LockOutcome::Applied));
+        let outcome = svc
+            .execute_lock(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW)
+            .unwrap();
+        let LockExecutionOutcome::VerificationFailed(failure) = outcome else {
+            panic!("storage failure must fail closed: {outcome:?}");
+        };
+        assert_eq!(
+            failure.reason(),
+            LockVerificationFailureReason::RefreshFailed
+        );
+        assert_eq!(
+            failure.error(),
+            Some(MutationError::Application(ErrorCategory::LocalStorage))
+        );
+        assert_eq!(
+            failure.evidence().attempt(),
+            Some(destiny_core::LockOutcome::Applied)
+        );
+        assert_eq!(failure.evidence().observed(), None);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+        assert_eq!(lock.calls(), 1);
     }
 
     #[test]
@@ -3274,8 +3344,8 @@ mod tests {
         let mut lock = QueuedLockGateway::new();
         lock.queue(Ok(LockOutcome::Applied));
         assert!(matches!(
-            svc.execute_lock_verified(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW),
-            Ok(crate::lock::LockExecutionOutcome::VerifiedSuccess(_))
+            svc.execute_lock(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW),
+            Ok(crate::lock::LockExecutionOutcome::Applied(_))
         ));
         assert_eq!(lock.requests()[0].character(), &CharacterId::new("warlock"));
         assert_eq!(lock.calls(), 1);
@@ -3326,7 +3396,7 @@ mod tests {
             };
             let mut lock = QueuedLockGateway::new();
             let failure = svc
-                .execute_lock_verified(&mut lock, &req, &plan, TTL, pre, post)
+                .execute_lock(&mut lock, &req, &plan, TTL, pre, post)
                 .unwrap_err();
             assert_eq!(failure.error(), expected);
             assert_eq!(failure.evidence().attempt(), None);
@@ -3350,7 +3420,7 @@ mod tests {
         *svc.repository().publication_on_lookup.borrow_mut() = Some(changed);
         let mut lock = QueuedLockGateway::new();
         let failure = svc
-            .execute_lock_verified(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW)
+            .execute_lock(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW)
             .unwrap_err();
         assert_eq!(failure.error(), MutationError::StaleRevision);
         assert_eq!(lock.calls(), 0);
@@ -5415,7 +5485,7 @@ mod tests {
         // honestly reports no remote mutation and no post-action refresh.
         assert_eq!(failure.evidence().attempted_count(), 0);
         assert_eq!(failure.evidence().completed_count(), 0);
-        assert!(!failure.requires_post_action_refresh());
+        assert!(!failure.requires_freshness_invalidation());
         assert_eq!(transfer.calls(), 1);
         let rendered = format!("{} {:?}", failure.error(), failure.error());
         for secret in ["item-1", MEMBERSHIP_IDENTIFIER, "warlock"] {
@@ -5447,9 +5517,8 @@ mod tests {
         assert_eq!(failure.evidence().unattempted_count(), 1);
         assert!(failure.evidence().is_partial());
         assert_eq!(failure.evidence().plan_id(), &PlanId::new("plan-1"));
-        // The first step reached the provider, so DTE-004 must refresh before
-        // deciding anything about the item's location.
-        assert!(failure.requires_post_action_refresh());
+        // The first step reached the provider, so local freshness is invalidated.
+        assert!(failure.requires_freshness_invalidation());
     }
 
     #[test]
@@ -5467,7 +5536,7 @@ mod tests {
 
         assert_eq!(failure.error(), MutationError::InvalidPlan);
         assert_eq!(failure.evidence().attempted_count(), 0);
-        assert!(!failure.requires_post_action_refresh());
+        assert!(!failure.requires_freshness_invalidation());
         assert_eq!(transfer.calls(), 0);
     }
 
@@ -5506,7 +5575,7 @@ mod tests {
         let _: EntryPoint = Service::execute_move::<QueuedTransferGateway>;
     }
 
-    // --- DTE-004: mandatory post-action refresh and destination verification ---
+    // --- Composed move: acknowledgement and durable freshness invalidation ---
 
     fn hunter_character() -> Character {
         character("hunter", Some("Hunter"), None)
@@ -5526,7 +5595,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_move_verified_reports_verified_success_for_a_direct_move() {
+    fn execute_move_action_reports_applied_for_a_direct_move() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         queue_refresh(&shared, fresh_vault_projection());
         queue_refresh(&shared, after_projection(warlock()));
@@ -5534,7 +5603,7 @@ mod tests {
         transfer.queue(Ok(TransferOutcome::Transferred));
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -5542,10 +5611,10 @@ mod tests {
                 NOW,
                 POST_ACTION_NOW,
             )
-            .expect("verified outcome");
+            .expect("acknowledgement outcome");
 
         match outcome {
-            MoveExecutionOutcome::VerifiedSuccess(evidence) => {
+            MoveExecutionOutcome::Applied(evidence) => {
                 assert!(evidence.is_complete());
                 assert_eq!(evidence.attempted_count(), 1);
                 assert_eq!(evidence.completed_count(), 1);
@@ -5553,12 +5622,12 @@ mod tests {
             other => panic!("expected verified success, got {other:?}"),
         }
         assert_eq!(transfer.calls(), 1);
-        // The mandatory fresh preflight plus the mandatory post-action refresh.
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        // Only the mandatory fresh preflight.
+        assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_reports_verified_success_for_a_vault_mediated_move() {
+    fn execute_move_action_reports_applied_for_a_vault_mediated_move() {
         let (shared, mut service, move_request, plan) = vault_mediated_service_with_plan();
         queue_refresh(&shared, after_projection(hunter()));
         let mut transfer = QueuedTransferGateway::new();
@@ -5566,7 +5635,7 @@ mod tests {
         transfer.queue(Ok(TransferOutcome::Transferred));
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -5574,10 +5643,10 @@ mod tests {
                 NOW,
                 POST_ACTION_NOW,
             )
-            .expect("verified outcome");
+            .expect("acknowledgement outcome");
 
         match outcome {
-            MoveExecutionOutcome::VerifiedSuccess(evidence) => {
+            MoveExecutionOutcome::Applied(evidence) => {
                 assert!(evidence.is_complete());
                 assert_eq!(evidence.attempted_count(), 2);
                 assert_eq!(evidence.completed_count(), 2);
@@ -5585,11 +5654,11 @@ mod tests {
             other => panic!("expected verified success, got {other:?}"),
         }
         assert_eq!(transfer.calls(), 2);
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_reports_a_verified_no_op_without_a_post_action_refresh() {
+    fn execute_move_action_reports_a_fresh_no_op_without_dispatch() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         // The fresh preflight proves the concrete item already at the
         // destination, so no step is dispatched.
@@ -5597,7 +5666,7 @@ mod tests {
         let mut transfer = QueuedTransferGateway::new();
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -5605,7 +5674,7 @@ mod tests {
                 NOW,
                 POST_ACTION_NOW,
             )
-            .expect("verified outcome");
+            .expect("fresh no-op outcome");
 
         match outcome {
             MoveExecutionOutcome::VerifiedNoOp(evidence) => {
@@ -5620,7 +5689,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_move_verified_reports_vault_stranding_as_an_honest_incomplete_execution() {
+    fn execute_move_action_reports_vault_stranding_as_incomplete() {
         let (shared, mut service, move_request, plan) = vault_mediated_service_with_plan();
         queue_refresh(&shared, after_projection(ItemLocation::Vault));
         let mut transfer = QueuedTransferGateway::new();
@@ -5630,7 +5699,7 @@ mod tests {
         )));
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -5658,11 +5727,11 @@ mod tests {
             other => panic!("expected an incomplete execution, got {other:?}"),
         }
         assert_eq!(transfer.calls(), 2);
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_pending_provider_refresh() {
+    fn execute_move_action_classifies_receipts_and_invalidates_freshness() {
         for step in [
             TransferOutcome::Transferred,
             TransferOutcome::Uncertain,
@@ -5677,13 +5746,26 @@ mod tests {
             let mut transfer = QueuedTransferGateway::new();
             transfer.queue(Ok(step));
             let outcome = service
-                .execute_move_verified(&mut transfer, &request, &plan, TTL, NOW, POST_ACTION_NOW)
+                .execute_move_action(&mut transfer, &request, &plan, TTL, NOW, POST_ACTION_NOW)
                 .unwrap();
             match outcome {
-                MoveExecutionOutcome::AppliedPendingProviderRefresh(pending) => {
-                    assert_eq!(step, TransferOutcome::Transferred);
-                    assert_eq!(pending.observed(), &ItemLocation::Vault);
-                    assert_eq!(pending.evidence().completed_count(), 1);
+                outcome if step == TransferOutcome::Transferred => {
+                    assert!(format!("{outcome:?}").starts_with("Applied("));
+                    assert_eq!(shared.borrow().inventory_calls(), 1);
+                    service
+                        .sync
+                        .sync(
+                            destiny_core::ProfileSyncReason::Ordinary,
+                            TTL,
+                            POST_ACTION_NOW,
+                        )
+                        .unwrap();
+                    assert_eq!(shared.borrow().inventory_calls(), 2);
+                    assert!(!service.repository().freshness_invalidated().unwrap());
+                    assert_eq!(
+                        service.committed_snapshot().unwrap().metadata.checked_at,
+                        POST_ACTION_NOW
+                    );
                 }
                 MoveExecutionOutcome::IncompleteExecution(incomplete) => {
                     assert_ne!(step, TransferOutcome::Transferred);
@@ -5696,34 +5778,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_move_verified_publication_between_refresh_and_lookup_is_not_pending() {
-        let (shared, mut service, request, plan) = direct_service_with_plan();
-        queue_refresh(&shared, fresh_vault_projection());
-        let ticket = authorized_ticket(&mut service, &request, &plan);
-        let revision = ticket.revision();
-        let mut transfer = QueuedTransferGateway::new();
-        transfer.queue(Ok(TransferOutcome::Transferred));
-        let evidence = service.execute_move(&mut transfer, &plan, ticket).unwrap();
-        queue_refresh(&shared, fresh_vault_projection());
-        *service.repository().publication_on_lookup.borrow_mut() = Some(after_projection(hunter()));
-
-        let outcome = service.verify_attempt(&plan, revision, evidence, None, TTL, POST_ACTION_NOW);
-
-        let MoveExecutionOutcome::VerificationFailed(failure) = outcome else {
-            panic!("concurrent publication must not be pending: {outcome:?}");
-        };
-        assert_eq!(failure.reason(), VerificationFailureReason::Elsewhere);
-        assert_eq!(failure.observed(), Some(&hunter()));
-        assert_eq!(failure.error(), None);
-        assert_eq!(failure.evidence().completed_count(), 1);
-        assert_ne!(
-            service.committed_snapshot().unwrap().metadata.revision,
-            revision
-        );
-    }
-
-    #[test]
-    fn execute_move_verified_fails_verification_when_the_refreshed_state_changed_away() {
+    fn execute_move_action_does_not_read_a_later_changed_revision() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         queue_refresh(&shared, fresh_vault_projection());
         // A genuinely changed revision still holds the item at the source.
@@ -5734,7 +5789,7 @@ mod tests {
         transfer.queue(Ok(TransferOutcome::Transferred));
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -5745,28 +5800,25 @@ mod tests {
             .expect("verified outcome");
 
         match outcome {
-            MoveExecutionOutcome::VerificationFailed(failure) => {
-                assert_eq!(failure.reason(), VerificationFailureReason::Elsewhere);
-                assert_eq!(failure.observed(), Some(&ItemLocation::Vault));
-                assert_eq!(failure.error(), None);
-                assert_eq!(failure.evidence().completed_count(), 1);
+            MoveExecutionOutcome::Applied(evidence) => {
+                assert_eq!(evidence.completed_count(), 1);
             }
             other => panic!("expected verification failure, got {other:?}"),
         }
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_fails_verification_at_an_unexpected_destination() {
+    fn execute_move_action_does_not_read_a_later_unexpected_destination() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         queue_refresh(&shared, fresh_vault_projection());
-        // The item ended up on a different character than requested.
+        // A queued later projection differs, but acknowledgement does not read it.
         queue_refresh(&shared, after_projection(hunter()));
         let mut transfer = QueuedTransferGateway::new();
         transfer.queue(Ok(TransferOutcome::Transferred));
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -5777,18 +5829,16 @@ mod tests {
             .expect("verified outcome");
 
         match outcome {
-            MoveExecutionOutcome::VerificationFailed(failure) => {
-                assert_eq!(failure.reason(), VerificationFailureReason::Elsewhere);
-                assert_eq!(failure.observed(), Some(&hunter()));
-                assert_eq!(failure.evidence().completed_count(), 1);
+            MoveExecutionOutcome::Applied(evidence) => {
+                assert_eq!(evidence.completed_count(), 1);
             }
             other => panic!("expected verification failure, got {other:?}"),
         }
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_fails_verification_when_the_item_is_missing_after_refresh() {
+    fn execute_move_action_does_not_read_a_later_missing_item() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         queue_refresh(&shared, fresh_vault_projection());
         queue_refresh(
@@ -5803,7 +5853,7 @@ mod tests {
         transfer.queue(Ok(TransferOutcome::Transferred));
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -5814,22 +5864,19 @@ mod tests {
             .expect("verified outcome");
 
         match outcome {
-            MoveExecutionOutcome::VerificationFailed(failure) => {
-                assert_eq!(failure.reason(), VerificationFailureReason::Unresolved);
-                assert_eq!(failure.observed(), None);
-                assert_eq!(failure.evidence().completed_count(), 1);
+            MoveExecutionOutcome::Applied(evidence) => {
+                assert_eq!(evidence.completed_count(), 1);
             }
             other => panic!("expected verification failure, got {other:?}"),
         }
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_fails_verification_when_the_post_action_refresh_fails() {
+    fn execute_move_action_does_not_request_a_failing_later_refresh() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         queue_refresh(&shared, fresh_vault_projection());
-        // The forced post-action refresh fails before any inventory is acquired,
-        // so the destination cannot be observed at all.
+        // A later refresh would fail, but acknowledgement never requests it.
         shared
             .borrow_mut()
             .queue_membership(Err(AppError::new(ErrorCategory::ProviderUnavailable)));
@@ -5837,7 +5884,7 @@ mod tests {
         transfer.queue(Ok(TransferOutcome::Transferred));
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -5848,28 +5895,18 @@ mod tests {
             .expect("verified outcome");
 
         match outcome {
-            MoveExecutionOutcome::VerificationFailed(failure) => {
-                assert_eq!(failure.reason(), VerificationFailureReason::RefreshFailed);
-                assert_eq!(failure.observed(), None);
-                assert_eq!(
-                    failure.error(),
-                    Some(MutationError::Application(
-                        ErrorCategory::ProviderUnavailable
-                    ))
-                );
-                // The dispatched evidence survives the failed verification.
-                assert_eq!(failure.evidence().completed_count(), 1);
+            MoveExecutionOutcome::Applied(evidence) => {
+                assert_eq!(evidence.completed_count(), 1);
             }
             other => panic!("expected verification failure, got {other:?}"),
         }
-        // Only the fresh preflight acquired inventory; the post-action refresh
-        // could not.
+        // Only fresh preflight acquired inventory; the later failure stays queued.
         assert_eq!(shared.borrow().inventory_calls(), 1);
-        assert_eq!(shared.borrow().membership_calls(), 2);
+        assert_eq!(shared.borrow().membership_calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_confirms_an_uncertain_step_the_projection_shows_applied() {
+    fn execute_move_action_keeps_uncertainty_despite_a_later_applied_projection() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         queue_refresh(&shared, fresh_vault_projection());
         queue_refresh(&shared, after_projection(warlock()));
@@ -5877,7 +5914,7 @@ mod tests {
         transfer.queue(Ok(TransferOutcome::Uncertain));
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -5885,22 +5922,20 @@ mod tests {
                 NOW,
                 POST_ACTION_NOW,
             )
-            .expect("verified outcome");
+            .expect("receipt outcome");
 
         match outcome {
-            MoveExecutionOutcome::VerifiedSuccess(evidence) => {
-                // The dispatch account keeps the uncertain step honest, while the
-                // verified outcome records that the end state actually holds.
-                assert_eq!(evidence.stop_outcome(), Some(StepOutcome::Uncertain));
-                assert_eq!(evidence.completed_count(), 0);
+            MoveExecutionOutcome::IncompleteExecution(incomplete) => {
+                assert_eq!(incomplete.stop_outcome(), Some(StepOutcome::Uncertain));
+                assert_eq!(incomplete.evidence().completed_count(), 0);
             }
             other => panic!("expected verified success, got {other:?}"),
         }
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_reports_an_unapplied_uncertain_step_as_an_incomplete_execution() {
+    fn execute_move_action_reports_uncertainty_as_incomplete() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         queue_refresh(&shared, fresh_vault_projection());
         queue_refresh(&shared, after_projection(ItemLocation::Vault));
@@ -5908,7 +5943,7 @@ mod tests {
         transfer.queue(Ok(TransferOutcome::Uncertain));
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -5916,7 +5951,7 @@ mod tests {
                 NOW,
                 POST_ACTION_NOW,
             )
-            .expect("verified outcome");
+            .expect("receipt outcome");
 
         match outcome {
             MoveExecutionOutcome::IncompleteExecution(failure) => {
@@ -5926,11 +5961,11 @@ mod tests {
             }
             other => panic!("expected an incomplete execution, got {other:?}"),
         }
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_refreshes_after_a_rejected_step() {
+    fn execute_move_action_invalidates_after_a_rejected_step() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         queue_refresh(&shared, fresh_vault_projection());
         queue_refresh(&shared, after_projection(ItemLocation::Vault));
@@ -5940,7 +5975,7 @@ mod tests {
         )));
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -5961,13 +5996,13 @@ mod tests {
             }
             other => panic!("expected an incomplete execution, got {other:?}"),
         }
-        // A rejection still reached the provider, so the refresh is mandatory.
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        // A refusal stops without post-action acquisition.
+        assert_eq!(shared.borrow().inventory_calls(), 1);
         assert_eq!(transfer.calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_refreshes_after_a_transient_step() {
+    fn execute_move_action_invalidates_after_a_transient_step() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         queue_refresh(&shared, fresh_vault_projection());
         queue_refresh(&shared, after_projection(ItemLocation::Vault));
@@ -5975,7 +6010,7 @@ mod tests {
         transfer.queue(Ok(TransferOutcome::Transient));
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -5993,11 +6028,11 @@ mod tests {
             }
             other => panic!("expected an incomplete execution, got {other:?}"),
         }
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_does_not_refresh_after_a_zero_attempt_error() {
+    fn execute_move_action_keeps_freshness_after_a_zero_attempt_error() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         queue_refresh(&shared, fresh_vault_projection());
         let mut transfer = QueuedTransferGateway::new();
@@ -6006,7 +6041,7 @@ mod tests {
         transfer.queue(Err(AppError::new(ErrorCategory::ProviderUnavailable)));
 
         let failure = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -6021,25 +6056,24 @@ mod tests {
             MutationError::Application(ErrorCategory::ProviderUnavailable)
         );
         assert_eq!(failure.evidence().attempted_count(), 0);
-        assert!(!failure.requires_post_action_refresh());
+        assert!(!failure.requires_freshness_invalidation());
         assert_eq!(transfer.calls(), 1);
-        // Only the fresh preflight refreshed; the zero-attempt error must not
-        // spend a post-action refresh.
+        // Only fresh preflight reads; a zero-attempt error keeps local freshness.
         assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_refreshes_after_a_mid_sequence_pre_dispatch_error() {
+    fn execute_move_action_invalidates_after_a_mid_sequence_pre_dispatch_error() {
         let (shared, mut service, move_request, plan) = vault_mediated_service_with_plan();
         queue_refresh(&shared, after_projection(ItemLocation::Vault));
         let mut transfer = QueuedTransferGateway::new();
         transfer.queue(Ok(TransferOutcome::Transferred));
         // The second step errors before dispatch, so the first step's applied
-        // effect must still force the refresh and survive into the outcome.
+        // effect must still invalidate freshness and survive into the outcome.
         transfer.queue(Err(AppError::new(ErrorCategory::ProviderUnavailable)));
 
         let outcome = service
-            .execute_move_verified(
+            .execute_move_action(
                 &mut transfer,
                 &move_request,
                 &plan,
@@ -6047,7 +6081,7 @@ mod tests {
                 NOW,
                 POST_ACTION_NOW,
             )
-            .expect("verified outcome");
+            .expect("receipt outcome");
 
         match outcome {
             MoveExecutionOutcome::IncompleteExecution(failure) => {
@@ -6065,11 +6099,11 @@ mod tests {
             other => panic!("expected an incomplete execution, got {other:?}"),
         }
         assert_eq!(transfer.calls(), 2);
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
-    fn execute_move_verified_returns_an_authorization_failure_without_dispatching() {
+    fn execute_move_action_returns_an_authorization_failure_without_dispatching() {
         let shared = gateway();
         let mut repository =
             CompositeRepository::with_definitions(vec![definition(1, "Gjallarhorn")]);
@@ -6084,32 +6118,32 @@ mod tests {
         let mut transfer = QueuedTransferGateway::new();
 
         let failure = service
-            .execute_move_verified(&mut transfer, &move_request, &plan, TTL, later, later)
+            .execute_move_action(&mut transfer, &move_request, &plan, TTL, later, later)
             .expect_err("expired plan");
 
         assert_eq!(failure.error(), MutationError::Expired);
         assert_eq!(failure.evidence().attempted_count(), 0);
-        assert!(!failure.requires_post_action_refresh());
+        assert!(!failure.requires_freshness_invalidation());
         assert_eq!(transfer.calls(), 0);
         // Expiry is rejected before the forced preflight, so nothing refreshed.
         assert_eq!(shared.borrow().inventory_calls(), 0);
     }
 
     #[test]
-    fn execute_move_verified_rejects_a_post_action_timestamp_before_the_preflight() {
+    fn execute_move_action_rejects_a_completion_timestamp_before_preflight() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
         let mut transfer = QueuedTransferGateway::new();
-        // A post-action observation cannot precede the attempt it observes.
+        // Preserve the timestamp ordering contract without observing post-action state.
         let earlier = Timestamp::new(NOW.seconds() - 1);
 
         let failure = service
-            .execute_move_verified(&mut transfer, &move_request, &plan, TTL, NOW, earlier)
+            .execute_move_action(&mut transfer, &move_request, &plan, TTL, NOW, earlier)
             .expect_err("inverted timestamps");
 
         assert_eq!(failure.error(), MutationError::InvalidTimestamps);
         assert_eq!(failure.error().category(), ErrorCategory::StaleState);
         assert_eq!(failure.evidence().attempted_count(), 0);
-        assert!(!failure.requires_post_action_refresh());
+        assert!(!failure.requires_freshness_invalidation());
         // The caller's clock input is validated before any side effect.
         assert_eq!(transfer.calls(), 0);
         assert_eq!(shared.borrow().inventory_calls(), 0);

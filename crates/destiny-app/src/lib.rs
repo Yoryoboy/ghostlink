@@ -3,8 +3,16 @@
 pub mod clarity;
 pub use clarity::{ClaritySyncReport, ManifestAndClarityReport};
 pub use destiny_core::{ClarityInsight, ClarityRepository};
+pub mod equip_items;
+pub use destiny_core::{
+    EquipItemResult, EquipItemStatus, EquipItemsGateway, EquipItemsOutcome, EquipItemsRequest,
+};
+pub use equip_items::*;
+pub mod apply_loadout;
 pub mod loadouts;
-pub use destiny_core::{LoadoutGateway, LoadoutSnapshot};
+pub use apply_loadout::*;
+pub use destiny_core::{CharacterLoadouts, Loadout, LoadoutGateway, LoadoutItem, LoadoutSnapshot};
+pub use destiny_core::{LoadoutActionGateway, LoadoutActionOutcome, LoadoutActionRejection};
 pub use loadouts::{
     CharacterLoadoutsView, LoadoutItemView, LoadoutOperations, LoadoutPlugView, LoadoutService,
     LoadoutView, LoadoutsResult,
@@ -30,8 +38,7 @@ pub use instanced_pull::{
     InstancedPullExecutionFailure, InstancedPullExecutionFailureReason,
     InstancedPullExecutionOutcome, InstancedPullPlan, InstancedPullPlanRequest,
     InstancedPullPlanningError, InstancedPullRefusal, InstancedPullService, PreDispatchError,
-    PullArrival, PullAttempt, PullContext, PullDisposition, PullObservation,
-    PullObservationAttempt, PullObservationFailure,
+    PullAttempt, PullContext, PullDisposition,
 };
 pub use stack_pull::*;
 pub mod lock;

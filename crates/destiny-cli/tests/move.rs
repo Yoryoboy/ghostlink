@@ -38,11 +38,10 @@ fn move_requires_exactly_one_destination() {
 #[test]
 fn move_status_rendering_exit_codes_and_streams() {
     for (status, code) in [
-        (MoveStatus::VerifiedSuccess, 0),
+        (MoveStatus::Applied, 0),
         (MoveStatus::VerifiedNoop, 0),
         (MoveStatus::Incomplete, 41),
         (MoveStatus::VerificationFailed, 42),
-        (MoveStatus::AppliedPendingProviderRefresh, 43),
         (MoveStatus::Refused, 40),
     ] {
         let output = MoveOutput::from_shared(destiny_output::move_item::MoveOutput {
@@ -66,7 +65,10 @@ fn move_status_rendering_exit_codes_and_streams() {
         assert!(!text.contains('\u{1b}'));
         assert!(!text.contains("Ace\n"));
         assert!(!text.contains("equipped"));
-        assert_eq!(text.contains("✔ verified"), code == 0);
+        assert_eq!(
+            text.contains("✔ verified"),
+            status == MoveStatus::VerifiedNoop
+        );
         for mode in [OutputMode::Human, OutputMode::Json] {
             let process = destiny_cli::runner::move_process_output(mode, &output);
             assert_eq!(process.exit_code, code);

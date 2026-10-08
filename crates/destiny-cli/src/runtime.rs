@@ -641,6 +641,12 @@ mod pull_store_tests {
     }
 }
 impl InventoryRepository for PullStore {
+    fn freshness_invalidated(&self) -> Result<bool, AppError> {
+        self.0.borrow().freshness_invalidated()
+    }
+    fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        self.0.borrow_mut().invalidate_freshness()
+    }
     fn load_current(&self) -> Result<Option<destiny_app::InventorySnapshot>, AppError> {
         self.0.borrow().load_current()
     }
@@ -669,12 +675,6 @@ impl DefinitionRepository for PullStore {
         input: destiny_app::DefinitionReplacementInput,
     ) -> Result<destiny_app::SyncMetadata, AppError> {
         self.0.borrow_mut().replace_definitions(input)
-    }
-}
-struct PullDelay;
-impl destiny_app::RetryDelay for PullDelay {
-    fn wait(&mut self, delay: std::time::Duration) {
-        std::thread::sleep(delay);
     }
 }
 
@@ -731,7 +731,6 @@ pub fn compose_pull(
         membership,
         &mut service,
         &mut gateway,
-        &mut PullDelay,
         config.freshness_policy(),
     ))
 }
@@ -788,7 +787,6 @@ pub fn compose_pull_stack(
         membership,
         &mut service,
         &mut gateway,
-        &mut PullDelay,
         config.freshness_policy(),
     ))
 }
@@ -838,6 +836,90 @@ pub fn compose_equip(
         &mut equip,
         &SystemClock::new(),
         config.freshness_policy(),
+    )
+}
+
+/// Compose one combined batch using existing session credentials and per-action clients.
+pub fn compose_equip_items(
+    arguments: &crate::command::EquipItemsArgs,
+) -> Result<destiny_output::equip_items::EquipItemsOutput, CliError> {
+    let request = arguments.request()?;
+    let mut foundations = ProductionFoundations;
+    let config = ReadFoundations::config(&mut foundations)?;
+    let source = foundations.credential_source(&config)?;
+    let clock = ReadFoundations::clock(&mut foundations)?;
+    let repository = ReadFoundations::store(&mut foundations, &config)?;
+    let gateway = BungieProfileGateway::new(
+        ReadFoundations::transport(&mut foundations)?,
+        clock,
+        source.clone(),
+        ProfileApiKey::new(config.api_key().expose_secret())?,
+        config.resolve_definition_version(&repository)?,
+    )?;
+    let mut transfer = destiny_adapters::BungieTransferGateway::new(
+        destiny_adapters::HttpTransferTransport::new()?,
+        SystemClock::new(),
+        source.clone(),
+        destiny_adapters::TransferApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let mut action = destiny_adapters::BungieEquipItemsGateway::new(
+        destiny_adapters::HttpEquipItemsTransport::new()?,
+        SystemClock::new(),
+        source,
+        destiny_adapters::EquipItemsApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let mut service = destiny_app::MutationService::new(
+        ProfileSyncService::new_with_definitions(gateway, repository),
+        crate::equip::InvocationPlanId::new(),
+    );
+    let mut last = None;
+    let result = service.equip_items(
+        (&mut transfer, &mut action),
+        &request,
+        config.freshness_policy(),
+        SystemClock::new().now()?,
+        || destiny_app::equip_items::pace(&mut last),
+    );
+    Ok(destiny_output::equip_items::EquipItemsOutput::from_result(
+        result,
+    ))
+}
+
+/// Compose one saved-loadout action over the same lock-backed session as profile.
+pub fn compose_apply_loadout(
+    arguments: &crate::command::ApplyLoadoutArgs,
+) -> Result<destiny_output::apply_loadout::ApplyLoadoutOutput, CliError> {
+    use destiny_adapters::loadout_action::{
+        BungieLoadoutActionGateway, HttpLoadoutActionTransport, LoadoutActionApiKey,
+    };
+    let request = arguments.request()?;
+    let mut foundations = ProductionFoundations;
+    let config = ReadFoundations::config(&mut foundations)?;
+    let source = foundations.credential_source(&config)?;
+    let repository = ReadFoundations::store(&mut foundations, &config)?;
+    let gateway = BungieProfileGateway::new(
+        ReadFoundations::transport(&mut foundations)?,
+        SystemClock::new(),
+        source.clone(),
+        ProfileApiKey::new(config.api_key().expose_secret())?,
+        config.resolve_definition_version(&repository)?,
+    )?;
+    let mut action = BungieLoadoutActionGateway::new(
+        HttpLoadoutActionTransport::new()?,
+        SystemClock::new(),
+        source,
+        LoadoutActionApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let mut service = destiny_app::ApplyLoadoutService::new(
+        ProfileSyncService::new_with_definitions(gateway, repository),
+    );
+    Ok(
+        destiny_output::apply_loadout::ApplyLoadoutOutput::from_result(service.apply(
+            &mut action,
+            &request,
+            config.freshness_policy(),
+            SystemClock::new().now()?,
+        )),
     )
 }
 

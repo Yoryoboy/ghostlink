@@ -7,8 +7,8 @@ instruction object on stdout before waiting.) The failure object is either:
 - `{"error":{"code":"...","message":"..."}}` for every command, including
   `pull-stack` / `pull` / `move` / `equip` / `lock` / `unlock` argument, configuration and authorization failures; or
 - a mutation result with `status` and `reason`, after argument validation; or
-- `kind: "instanced_pull"` with independent `disposition`, `receipt`, `failure`
-  and ordered `observations` for pull planning/execution evidence.
+- `kind: "instanced_pull"` or `kind: "stack_pull"` with independent
+  `disposition`, `receipt` and `failure` for pull planning/execution evidence.
 
 ## Error codes
 
@@ -31,21 +31,39 @@ instruction object on stdout before waiting.) The failure object is either:
 | 50–52 | `credential_store_unavailable` / `local_storage` / `configuration_error` | Local setup problem; report to the user. |
 | 70 | `internal_error` | Report and stop. |
 
+## Apply loadout `outcome`
+
+`ghostlink apply-loadout <slot|name> --character <class|id> --json` and MCP
+`apply_loadout` share `kind: "apply_loadout"`, character, one-based slot, name,
+outcome, receipt and reason. Exactly one MCP slot/name; names are normalized exact
+matches within that character. Unknown/ambiguous names list candidates; select
+explicitly, never guess. Empty/unavailable slots refuse without an action.
+
+| `outcome` | Exit | Agent action |
+|---|---:|---|
+| `applied` | 0 | Acknowledged, not observed. Next ordinary read forces sync. |
+| `refused` / `failed` | 41 | Report reason/receipt/candidates; no automatic retry. Location refusal: go to orbit or a social space and retry only with reassessed intent. |
+| `local_state_failed` | 42 | Local state could not be updated after the action; receipt retained. Sync/read, never blindly repeat. |
+
+Startup/argument errors use the usual error envelope and exits. Requires login,
+Manifest definitions and orbit/social space/offline. No post-action request,
+provider-lag exit 43 or retry; every dispatched attempt invalidates freshness.
+
 ## Pull `disposition` (CLI genuine-instance equipment only)
 
 | `disposition` | Exit | Agent action |
 |---|---:|---|
-| `verified` | 0 | Report exact arrival separately from the received receipt; observation is not causal proof. |
-| `not_yet_observed` | 43 | Acknowledged but no verified arrival; do not claim application. Check later with sync/inspect, never blindly repeat. |
-| `uncertain` | 42 | Report all ordered classifications AND failures, then sync/inspect. Arrival plus timestamp failure remains unverified. |
-| `refused` | varies | Report `failure` or received refusal and any arrival separately; do not work around or retry. |
+| `applied` | 0 | Bungie acknowledged the action, not observed arrival. Next ordinary read forces sync. |
+| `uncertain` | 41 | No clear acknowledgement; sync/inspect and reassess intent, never blindly retry. |
+| `refused` | 41 / varies | Received refusal exits 41; pre-action refusal retains category exits. Report without working around it. |
+| `local_state_failed` | 42 | Local state could not be updated after the action; receipt retained. Sync/inspect, do not retry. |
 
-Refusal defaults to 40. Received authentication refusal is 11, transient refusal
-21. Planning missing target is 32, ambiguity 31, missing definition 33; preflight
-drift/expiry is 30. Typed infrastructure errors use the category table above.
-Pre-action failures have no receipt or post-action observations. Confirmed refusal
-remains refused even if arrival is observed. All nonzero results stay on stderr
-as complete structured evidence, not a generic error replacing that evidence.
+Planning missing target is 32, ambiguity 31, missing definition 33; preflight
+drift/expiry is 30, other eligibility refusals default to 40. Typed pre-action
+infrastructure errors use the category table above. No post-action profile request,
+wait or observations; no provider-lag exit 43. Dispatched receipts invalidate local
+freshness durably, without guessed state. Pre-action failures have no receipt.
+All nonzero results stay on stderr as complete structured evidence.
 
 Pull accepts only a canonical positive int64 instance ID, not names, hashes,
 quantity, destination overrides or anonymous stacks. Requires authenticated
@@ -56,32 +74,29 @@ claim. MCP `pull_item` uses the same shared output.
 ## Stack pull `disposition`
 
 `ghostlink pull-stack <ITEM_HASH> --amount <N> --character <CHARACTER_ID>`
-uses `kind: "stack_pull"` with independent receipt, disposition, failure and
-ordered observations. Canonical uint32 hash, positive int32 amount and positive
-int64 owner ID are required; invalid input exits 2 before any I/O.
-Only `verified` exits 0. Lag and uncertain evidence exit 42; sync and read
-Postmaster later, never blindly repeat. The current service does not emit
-`not_yet_observed`; its reserved mapping is 43, not confirmed application.
-Refusal defaults to 40; received auth 11, transient 21. Missing definition 33,
-ambiguous definition 31, preflight drift/expiry 30; infrastructure uses the
-existing category table. No new exit codes. Nonzero evidence stays on stderr.
-Report all quantity classifications AND failures; null quantity is unknown.
-Confirmed refusal remains refused even with arrival. Requires authenticated
-membership, qualified non-instanced metadata and fresh pinned account-wide
-capacity evidence. Owner selects the Postmaster source, not a destination.
-Reassess explicit hash/amount/owner intent after fresh reads. Observed quantities
-are neither causal nor atomic proof; offline checks do not establish live readiness.
+uses `kind: "stack_pull"` with independent receipt, disposition and failure.
+Canonical uint32 hash, positive int32 amount and positive int64 owner ID are
+required; invalid input exits 2 before any I/O. The pull disposition table above
+also applies: `applied` is 0, received refusal/transport uncertainty 41, local
+invalidation storage failure 42. No provider-lag exit 43, post-action request,
+wait or observations; preflight totals are not invented post quantities.
+Missing definition is 33, ambiguous definition 31, preflight drift/expiry 30;
+other pre-action failures retain category exits. Nonzero evidence stays on stderr.
+Requires authenticated membership, qualified non-instanced metadata and fresh
+pinned account-wide capacity evidence. Owner selects the Postmaster source, not
+a destination. Sync/read Postmaster and reassess explicit hash/amount/owner intent
+before another action. Acknowledgement is not an atomic or observed-state guarantee;
+offline checks do not establish live readiness.
 
 ## Move `status`
 
 | `status` | Exit | Agent action |
 |---|---:|---|
-| `verified_success` | 0 | Freshly observed at the destination; report it. |
+| `applied` | 0 | Every step accepted; not an observed destination. Next ordinary read forces sync. |
 | `verified_noop` | 0 | Reached the destination between planning and fresh preflight; no transfer dispatched. |
 | `refused` | varies | Report `reason` and steps; do not retry. Already in the destination when planning is exit **40** (`unsupported_operation`), not no-op success. Missing item is 32, missing character 2, ambiguity 31, changed preflight 30. |
 | `incomplete` | 41 | Report completed, rejected/uncertain and unrun steps; no rollback. Do not retry. |
-| `verification_failed` | 42 | Run `ghostlink sync`, inspect the item, report uncertainty. |
-| `applied_pending_provider_refresh` | 43 | Provider accepted every step but refreshed profile lags. Not verified; check later, never repeat blindly. |
+Move does not emit provider-lag verification exits 42/43. Never blindly repeat.
 
 Move may be rejected by Bungie for an equipped item or full destination after
 dispatch. A character-to-character route uses the Vault and may stop there.
@@ -100,7 +115,7 @@ automatically retry a failed or uncertain update.
 | 40 | `unsupported_installation` / `updater_missing` | Report the refusal; use the original installation method or official release installer, not a substitute updater from PATH. |
 | 40 | `unsupported_operation` | Windows refuses without launching or deferring anything. Ask the user to close Ghostlink, stop `destiny-mcp`, then run the official sibling `.\ghostlink-update.exe` from its installation directory in a separate PowerShell session. Other platforms outside Linux x86_64 GNU also refuse. |
 | 41 | `updater_failed` | Files may have changed. Inspect the installation first; report and do not automatically retry. No rollback is guaranteed. |
-| 43 | `lifecycle_busy` | Wait for the other lifecycle command or inspect unsafe lock files manually; never automatically delete foreign locks. This is distinct from equip's pending-provider-refresh exit 43. |
+| 43 | `lifecycle_busy` | Wait for the other lifecycle command or inspect unsafe lock files manually; never automatically delete foreign locks. This is unrelated to move/equip acknowledgement outcomes. |
 | 51 | `local_storage` | Check installation ownership and permissions; no automatic elevation. |
 
 ## Uninstall outcomes
@@ -126,11 +141,11 @@ all integrations are gone. Individual changes have no rollback; lock metadata re
 
 | `status` | Exit | Agent action |
 |---|---:|---|
-| `verified_success` / `verified_noop` | 0 | Item is equipped on the target. Report it. |
+| `applied` | 0 | Every step accepted, not observed equipped state. Next ordinary read forces sync. |
+| `verified_noop` | 0 | Fresh preflight already satisfies intent; no dispatch. |
 | `refused` | varies | Report `reason` and `steps`; a refusal during execution can follow a completed transfer, so never assume nothing changed. Do not retry. Exit 32 means the item selector matched nothing, 2 means the character matched nothing, other exits follow the error table. |
 | `incomplete` | 41 | Some steps ran. Report each step; do not retry. |
-| `verification_failed` | 42 | Outcome uncertain. Run `ghostlink sync`, inspect the item, report. |
-| `applied_pending_provider_refresh` | 43 | Bungie accepted it but the profile has not caught up. Not verified; suggest checking later. |
+Equip does not emit provider-lag verification exits 42/43. Never blindly repeat.
 
 Equip requires the character to be in orbit, a social space, or offline;
 Bungie may refuse after a transfer already happened.
@@ -139,11 +154,14 @@ Bungie may refuse after a transfer already happened.
 
 | `status` | Exit | Agent action |
 |---|---:|---|
-| `verified_success` / `verified_noop` | 0 | Requested lock state verified; no-op did not dispatch. |
+| `applied` | 0 | Bungie acknowledged requested lock state, not a post-action observation. Next ordinary read forces sync. |
+| `verified_noop` | 0 | Fresh preflight already satisfies requested state; no dispatch. |
 | `refused` | varies | Report `reason`; missing item 32, ambiguity 31, stale state 30, otherwise category exit. No dispatch; do not work around refusal. |
-| `incomplete` | 41 | Report bounded `attempt` and `observed`; never blindly retry. |
-| `verification_failed` | 42 | Outcome unverified; sync and inspect, then report. |
-| `applied_pending_provider_refresh` | 43 | Provider accepted the action but observed state is stale/unconfirmed; check later, do not repeat. |
+| `incomplete` | 41 | Refused, auth-refused, transient or uncertain attempt; no post-action observation. Never blindly retry. |
+| `verification_failed` | 42 | Local invalidation storage failed after dispatch: local state could not be updated after the action. Sync and inspect; do not retry. |
+
+Lock/unlock no longer emit provider-lag verification exits 42/43. Dispatched
+attempts invalidate freshness, not guessed state; already-satisfied no-ops do not.
 
 Vault items use one owned character for the provider call. Lock/unlock do not
 apply equip class, exotic, or equipped-state policy.

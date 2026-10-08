@@ -832,6 +832,18 @@ pub struct MoveItemRequest {
 /// bounded MCP projections defined in [`crate::schema`]; a failure is a stable
 /// sanitized [`McpError`].
 pub trait MutationToolService {
+    fn equip_items(
+        &mut self,
+        _request: &crate::schema::EquipItemsArgs,
+    ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
+    fn apply_loadout(
+        &mut self,
+        _request: &crate::schema::ApplyLoadoutArgs,
+    ) -> Result<destiny_output::apply_loadout::ApplyLoadoutOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
     fn pull_stack(
         &mut self,
         _request: &crate::schema::PullStackArgs,
@@ -900,7 +912,12 @@ impl<G, R, P, C, T> ComposedMutationService<G, R, P, C, T> {
 
     /// Adds the exact equip port; both mutations share the same planner and lock.
     pub fn with_equip<E>(self, equip: E) -> EquipMutationService<G, R, P, C, T, E> {
-        EquipMutationService { inner: self, equip }
+        EquipMutationService {
+            inner: self,
+            equip,
+            batch: None,
+            last_batch_action: None,
+        }
     }
 
     /// Borrows the composed mutation service.
@@ -973,15 +990,12 @@ where
             .plan_move(&move_request, self.lifetime, self.policy, preflight_now)
             .map_err(mutation_failure)?;
 
-        // The post-action observation is read after the plan, so a real clock
-        // stamps it later than the preflight it observes. `plan_move` already
-        // ran the ordinary freshness gate, and the executor forces the fresh
-        // preflight, the ordered dispatch, the post-action refresh, and the
-        // destination verification itself.
+        // Preserve timestamp ordering after planning. The executor owns fresh
+        // preflight, ordered dispatch, receipt classification and invalidation.
         let post_action_now = self.clock.now().map_err(McpError::from)?;
         let outcome = self
             .mutations
-            .execute_move_verified(
+            .execute_move_action(
                 &mut self.transfer,
                 &move_request,
                 &plan,
@@ -1002,8 +1016,18 @@ where
 pub struct EquipMutationService<G, R, P, C, T, E> {
     inner: ComposedMutationService<G, R, P, C, T>,
     equip: E,
+    batch: Option<Box<dyn destiny_app::EquipItemsGateway + Send>>,
+    last_batch_action: Option<std::time::Instant>,
 }
 impl<G, R, P, C, T, E> EquipMutationService<G, R, P, C, T, E> {
+    pub fn with_equip_items<B: destiny_app::EquipItemsGateway + Send + 'static>(
+        mut self,
+        batch: B,
+    ) -> Self {
+        self.batch = Some(Box::new(batch));
+        self
+    }
+
     /// All three mutations share one planner, repository and server operation guard.
     pub fn with_lock<L>(self, lock: L) -> LockMutationService<G, R, P, C, T, E, L> {
         LockMutationService { inner: self, lock }
@@ -1041,6 +1065,12 @@ pub struct StackMutationService<I, S> {
 impl<I: MutationToolService, S: MutationToolService> MutationToolService
     for StackMutationService<I, S>
 {
+    fn equip_items(
+        &mut self,
+        args: &crate::schema::EquipItemsArgs,
+    ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
+        self.inner.equip_items(args)
+    }
     fn pull_stack(
         &mut self,
         args: &crate::schema::PullStackArgs,
@@ -1071,31 +1101,28 @@ impl<I: MutationToolService, S: MutationToolService> MutationToolService
 }
 
 /// Shared CLI stack pipeline under the server's existing operation guard.
-pub struct StackPullToolService<G, R, D, M, C, P, T, W> {
+pub struct StackPullToolService<G, R, D, M, C, P, T> {
     membership: G,
     service: destiny_app::StackPullService<G, R, D, M, C, P>,
     gateway: T,
-    delay: W,
     freshness: FreshnessPolicy,
 }
-impl<G, R, D, M, C, P, T, W> StackPullToolService<G, R, D, M, C, P, T, W> {
+impl<G, R, D, M, C, P, T> StackPullToolService<G, R, D, M, C, P, T> {
     pub fn new(
         membership: G,
         service: destiny_app::StackPullService<G, R, D, M, C, P>,
         gateway: T,
-        delay: W,
         freshness: FreshnessPolicy,
     ) -> Self {
         Self {
             membership,
             service,
             gateway,
-            delay,
             freshness,
         }
     }
 }
-impl<G, R, D, M, C, P, T, W> MutationToolService for StackPullToolService<G, R, D, M, C, P, T, W>
+impl<G, R, D, M, C, P, T> MutationToolService for StackPullToolService<G, R, D, M, C, P, T>
 where
     G: ProfileGateway,
     R: InventoryRepository,
@@ -1104,7 +1131,6 @@ where
     C: Clock,
     P: PlanIdGenerator,
     T: destiny_app::StackPullGateway,
-    W: destiny_app::RetryDelay,
 {
     fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
         Err(McpError::new(ErrorCategory::ConfigurationError))
@@ -1136,12 +1162,10 @@ where
             Err(error) => return Ok(StackPullOutput::planning_failed(&error)),
         };
         Ok(
-            match self.service.execute_verified(
-                plan,
-                &mut self.gateway,
-                &mut self.delay,
-                self.freshness,
-            ) {
+            match self
+                .service
+                .execute(plan, &mut self.gateway, self.freshness)
+            {
                 Ok(outcome) => StackPullOutput::from_outcome(&outcome),
                 Err(failure) => StackPullOutput::execution_failed(&failure),
             },
@@ -1151,6 +1175,12 @@ where
 impl<I: MutationToolService, U: MutationToolService> MutationToolService
     for PullMutationService<I, U>
 {
+    fn equip_items(
+        &mut self,
+        args: &crate::schema::EquipItemsArgs,
+    ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
+        self.inner.equip_items(args)
+    }
     fn pull_item(
         &mut self,
         args: &crate::schema::PullItemArgs,
@@ -1174,34 +1204,30 @@ impl<I: MutationToolService, U: MutationToolService> MutationToolService
     }
 }
 
-/// Owns the authenticated membership resolver and shared verified-pull pipeline.
+/// Owns the authenticated membership resolver and shared optimistic-pull pipeline.
 /// The server's existing outer guard must span this entire synchronous invocation.
-pub struct InstancedPullToolService<G, R, D, M, C, P, T, W> {
+pub struct InstancedPullToolService<G, R, D, M, C, P, T> {
     membership: G,
     service: destiny_app::InstancedPullService<G, R, D, M, C, P>,
     gateway: T,
-    delay: W,
     freshness: FreshnessPolicy,
 }
-impl<G, R, D, M, C, P, T, W> InstancedPullToolService<G, R, D, M, C, P, T, W> {
+impl<G, R, D, M, C, P, T> InstancedPullToolService<G, R, D, M, C, P, T> {
     pub fn new(
         membership: G,
         service: destiny_app::InstancedPullService<G, R, D, M, C, P>,
         gateway: T,
-        delay: W,
         freshness: FreshnessPolicy,
     ) -> Self {
         Self {
             membership,
             service,
             gateway,
-            delay,
             freshness,
         }
     }
 }
-impl<G, R, D, M, C, P, T, W> MutationToolService
-    for InstancedPullToolService<G, R, D, M, C, P, T, W>
+impl<G, R, D, M, C, P, T> MutationToolService for InstancedPullToolService<G, R, D, M, C, P, T>
 where
     G: ProfileGateway,
     R: InventoryRepository,
@@ -1210,7 +1236,6 @@ where
     C: Clock,
     P: PlanIdGenerator,
     T: destiny_app::InstancedPullGateway,
-    W: destiny_app::RetryDelay,
 {
     fn move_item(&mut self, _request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
         Err(McpError::new(ErrorCategory::ConfigurationError))
@@ -1235,12 +1260,10 @@ where
             Err(error) => return Ok(InstancedPullOutput::planning_failed(&error)),
         };
         Ok(
-            match self.service.execute_verified(
-                plan,
-                &mut self.gateway,
-                &mut self.delay,
-                self.freshness,
-            ) {
+            match self
+                .service
+                .execute(plan, &mut self.gateway, self.freshness)
+            {
                 Ok(outcome) => InstancedPullOutput::from_outcome(&outcome),
                 Err(failure) => InstancedPullOutput::execution_failed(&failure),
             },
@@ -1258,6 +1281,12 @@ where
     E: destiny_app::EquipGateway,
     L: destiny_app::LockGateway,
 {
+    fn equip_items(
+        &mut self,
+        args: &crate::schema::EquipItemsArgs,
+    ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
+        self.inner.equip_items(args)
+    }
     fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
         self.inner.move_item(request)
     }
@@ -1319,7 +1348,7 @@ where
             _ => None,
         };
         let post = service.clock.now().map_err(McpError::from)?;
-        let mut output = match mutations.execute_lock_verified(
+        let mut output = match mutations.execute_lock(
             &mut self.lock,
             &request,
             &plan,
@@ -1346,6 +1375,28 @@ where
     T: TransferGateway,
     E: destiny_app::EquipGateway,
 {
+    fn equip_items(
+        &mut self,
+        args: &crate::schema::EquipItemsArgs,
+    ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
+        let request = args.request()?;
+        let action = self
+            .batch
+            .as_deref_mut()
+            .ok_or_else(|| McpError::new(ErrorCategory::ConfigurationError))?;
+        let now = self.inner.clock.now().map_err(McpError::from)?;
+        let last = &mut self.last_batch_action;
+        let result = self.inner.mutations.equip_items(
+            (&mut self.inner.transfer, action),
+            &request,
+            self.inner.policy,
+            now,
+            || destiny_app::equip_items::pace(last),
+        );
+        Ok(destiny_output::equip_items::EquipItemsOutput::from_result(
+            result,
+        ))
+    }
     fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
         self.inner.move_item(request)
     }
@@ -1459,7 +1510,7 @@ where
             _ => None,
         };
         let post_action_now = self.inner.clock.now().map_err(McpError::from)?;
-        let mut output = match mutations.execute_equip_verified(
+        let mut output = match mutations.execute_equip_action(
             (&mut self.inner.transfer, &mut self.equip),
             &request,
             &plan,
@@ -2260,25 +2311,18 @@ pub fn inspect_item_output(
 
 /// Projects one planned and executed move into its bounded MCP output.
 ///
-/// Every variant carries the sanitized planned effects, the refreshed final
-/// location, and the bounded step evidence, so a client always sees what was
-/// expected, what happened, and where the item actually is. A typed failure is
-/// the stable sanitized [`McpError`] shape: no provider payload, credential,
+/// Planned effects and bounded receipt evidence come from the shared service.
+/// Only a fresh preflight no-op includes an observed destination. A typed failure
+/// uses the stable sanitized [`McpError`] shape; no provider payload, credential,
 /// membership identifier, revision, or plan identifier crosses this boundary.
-///
-/// The planned effects come from the plan the shared service built, and the
-/// observed location comes from the outcome the shared service verified, so this
-/// projection invents no target and no end state of its own.
 pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> MoveItemOutput {
     let effects = plan.effects();
     match outcome {
-        // The refreshed projection proves the item at the requested
-        // destination, so the observed location is that proven destination.
-        MoveExecutionOutcome::VerifiedSuccess(evidence) => {
-            MoveItemOutput::VerifiedSuccess(MoveSuccessView {
+        MoveExecutionOutcome::Applied(evidence) => {
+            MoveItemOutput::Applied(crate::schema::AppliedMoveView {
                 effects: effects_view(effects),
-                observed: location_view(&effects.destination),
                 steps: step_views(evidence),
+                reason: "Bungie accepted the action; not re-read".into(),
             })
         }
         // The mandatory fresh preflight observed the item already at the
@@ -2290,18 +2334,10 @@ pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> Move
                 steps: step_views(evidence),
             })
         }
-        MoveExecutionOutcome::AppliedPendingProviderRefresh(pending) => {
-            MoveItemOutput::AppliedPendingProviderRefresh(crate::schema::PendingProviderRefreshView {
-                effects: effects_view(effects),
-                observed: location_view(pending.observed()),
-                steps: step_views(pending.evidence()),
-                reason: "the provider confirmed every step, but its profile still shows the pre-action state; observed location is stale/unconfirmed; do not retry, run `ghostlink sync` later to confirm".into(),
-            })
-        }
         MoveExecutionOutcome::IncompleteExecution(incomplete) => {
             MoveItemOutput::Incomplete(IncompleteMoveView {
                 effects: effects_view(effects),
-                observed: location_view(incomplete.observed()),
+                expected_location: location_view(incomplete.expected_location()),
                 partial: incomplete.is_partial(),
                 steps: step_views(incomplete.evidence()),
                 failure: incomplete.error().map(mutation_failure),
@@ -2398,8 +2434,6 @@ fn rejection_view(rejection: TransferRejection) -> TransferRejectionView {
 fn verification_reason_view(reason: VerificationFailureReason) -> VerificationFailureReasonView {
     match reason {
         VerificationFailureReason::RefreshFailed => VerificationFailureReasonView::RefreshFailed,
-        VerificationFailureReason::Unresolved => VerificationFailureReasonView::Unresolved,
-        VerificationFailureReason::Elsewhere => VerificationFailureReasonView::Elsewhere,
     }
 }
 
@@ -2594,7 +2628,7 @@ mod tests {
     use crate::schema::{
         InspectItemArgs, InspectItemOutput, InstanceQueryArgs, LocationView, MAX_IDENTIFIER_LENGTH,
         MoveEffectsView, MoveItemArgs, MoveItemOutput, SearchInventoryArgs, StepOutcomeView,
-        TransferRejectionView, VerificationFailureReasonView,
+        TransferRejectionView,
     };
     use destiny_app::test_support::{
         DeterministicPlanIds, FakeClock, InMemoryDefinitionRepository, InMemoryInventoryRepository,
@@ -2659,6 +2693,12 @@ mod tests {
     }
 
     impl InventoryRepository for CompositeRepository {
+        fn freshness_invalidated(&self) -> Result<bool, AppError> {
+            self.inventory.freshness_invalidated()
+        }
+        fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+            self.inventory.invalidate_freshness()
+        }
         fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
             self.record("load_current");
             self.inventory.load_current()
@@ -3812,7 +3852,7 @@ mod tests {
             character_id: "warlock".to_owned(),
         };
         match &output {
-            MoveItemOutput::VerifiedSuccess(success) => {
+            MoveItemOutput::Applied(success) => {
                 assert_eq!(
                     success.effects,
                     MoveEffectsView {
@@ -3822,7 +3862,6 @@ mod tests {
                         destination: destination.clone(),
                     }
                 );
-                assert_eq!(success.observed, destination);
                 assert_eq!(success.steps.len(), 1);
                 assert_eq!(success.steps[0].ordinal, 1);
                 assert_eq!(success.steps[0].from, LocationView::Vault);
@@ -3832,10 +3871,9 @@ mod tests {
             other => panic!("expected a verified success, got {other:?}"),
         }
 
-        // Exactly one fresh preflight, one ordered transfer, and one post-action
-        // refresh, all inside the single MCP call.
-        assert_eq!(shared.borrow().membership_calls(), 2);
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        // One fresh preflight and one ordered transfer, without a post-action read.
+        assert_eq!(shared.borrow().membership_calls(), 1);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
         assert_eq!(service.mutations().plan_ids().calls(), 1);
 
         let queue = transfer.borrow();
@@ -3855,7 +3893,7 @@ mod tests {
 
         // No membership identifier, credential, or provider text crosses MCP.
         let rendered = serde_json::to_string(&output).expect("output serializes");
-        assert!(rendered.contains("verified_success"));
+        assert!(rendered.contains("applied"));
         assert!(!rendered.contains(MEMBERSHIP_IDENTIFIER), "{rendered}");
     }
 
@@ -3933,7 +3971,7 @@ mod tests {
 
         match &output {
             MoveItemOutput::Incomplete(incomplete) => {
-                assert_eq!(incomplete.observed, LocationView::Vault);
+                assert_eq!(incomplete.expected_location, LocationView::Vault);
                 assert!(!incomplete.partial);
                 assert!(incomplete.failure.is_none());
                 assert_eq!(incomplete.steps.len(), 1);
@@ -3948,7 +3986,7 @@ mod tests {
         }
 
         assert_eq!(transfer.borrow().calls(), 1);
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
@@ -3987,7 +4025,7 @@ mod tests {
 
         match &output {
             MoveItemOutput::Incomplete(incomplete) => {
-                assert_eq!(incomplete.observed, LocationView::Vault);
+                assert_eq!(incomplete.expected_location, LocationView::Vault);
                 assert!(incomplete.partial, "one applied step is a partial write");
                 assert!(incomplete.effects.via_vault);
                 assert_eq!(incomplete.steps.len(), 2);
@@ -4032,7 +4070,7 @@ mod tests {
 
         match &output {
             MoveItemOutput::Incomplete(incomplete) => {
-                assert_eq!(incomplete.observed, LocationView::Vault);
+                assert_eq!(incomplete.expected_location, LocationView::Vault);
                 assert!(!incomplete.partial);
                 assert_eq!(incomplete.steps[0].outcome, StepOutcomeView::Uncertain);
             }
@@ -4072,7 +4110,7 @@ mod tests {
     }
 
     #[test]
-    fn move_item_reports_a_contradicted_projection_as_a_typed_verification_failure() {
+    fn move_item_acknowledges_without_reading_a_later_contradicted_projection() {
         let shared = gateway();
         let transfer = transfer_port();
         let mut repository = CompositeRepository::with_definitions(standard_definitions());
@@ -4109,26 +4147,22 @@ mod tests {
             .expect("a contradiction is an outcome, not a tool error");
 
         match &output {
-            MoveItemOutput::VerificationFailed(failure) => {
-                assert!(matches!(
-                    failure.reason,
-                    VerificationFailureReasonView::Elsewhere
-                ));
-                assert_eq!(
-                    failure.observed,
-                    Some(LocationView::Character {
-                        character_id: "warlock".to_owned(),
-                    })
+            MoveItemOutput::Applied(applied) => {
+                assert_eq!(applied.steps.len(), 2);
+                assert!(
+                    applied
+                        .steps
+                        .iter()
+                        .all(|step| step.outcome == StepOutcomeView::Completed)
                 );
-                assert!(failure.failure.is_none());
-                assert_eq!(failure.steps.len(), 2);
+                assert_eq!(shared.borrow().inventory_calls(), 1);
             }
             other => panic!("expected a verification failure, got {other:?}"),
         }
     }
 
     #[test]
-    fn move_item_pending_provider_refresh_preserves_stale_observation_and_steps() {
+    fn move_item_acknowledges_stale_profile_without_claiming_observation() {
         let shared = gateway();
         let transfer = transfer_port();
         let mut repository = CompositeRepository::with_definitions(standard_definitions());
@@ -4150,21 +4184,21 @@ mod tests {
             .queue(Ok(TransferOutcome::Transferred));
         let mut service = composed_service(&shared, &transfer, repository);
         let output = service.move_item(&exact_move("inst-a", "warlock")).unwrap();
-        let MoveItemOutput::AppliedPendingProviderRefresh(pending) = &output else {
-            panic!("expected pending, got {output:?}");
+        let MoveItemOutput::Applied(pending) = &output else {
+            panic!("expected applied, got {output:?}");
         };
-        assert_eq!(pending.observed, LocationView::Vault);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
         assert_eq!(pending.steps.len(), 1);
         assert_eq!(pending.steps[0].outcome, StepOutcomeView::Completed);
-        assert!(pending.reason.contains("stale/unconfirmed"));
-        assert!(pending.reason.contains("ghostlink sync"));
+        assert!(pending.reason.contains("not re-read"));
         let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(json["status"], "applied_pending_provider_refresh");
-        assert_eq!(output.into_call_tool_result().is_error, Some(true));
+        assert_eq!(json["status"], "applied");
+        assert!(json.get("observed").is_none());
+        assert_eq!(output.into_call_tool_result().is_error, Some(false));
     }
 
     #[test]
-    fn move_item_reports_a_refresh_failure_as_a_typed_sanitized_failure() {
+    fn move_item_acknowledges_without_requesting_a_failing_later_refresh() {
         let shared = gateway();
         let transfer = transfer_port();
         let mut repository = CompositeRepository::with_definitions(standard_definitions());
@@ -4179,7 +4213,7 @@ mod tests {
             vec![warlock()],
             vec![vault_item("inst-a", 1)],
         );
-        // The mandatory post-action refresh fails, so no observation is possible.
+        // A later refresh would fail; acknowledgement leaves it queued.
         shared.borrow_mut().queue_membership(Ok(membership()));
         shared
             .borrow_mut()
@@ -4194,16 +4228,10 @@ mod tests {
             .expect("a refresh failure keeps its bounded evidence");
 
         match &output {
-            MoveItemOutput::VerificationFailed(failure) => {
-                assert!(matches!(
-                    failure.reason,
-                    VerificationFailureReasonView::RefreshFailed
-                ));
-                assert!(failure.observed.is_none());
-                let typed = failure.failure.as_ref().expect("a typed refresh failure");
-                assert_eq!(typed.code(), "provider_unavailable");
-                assert_eq!(failure.steps.len(), 1);
-                assert_eq!(failure.steps[0].outcome, StepOutcomeView::Completed);
+            MoveItemOutput::Applied(applied) => {
+                assert_eq!(applied.steps.len(), 1);
+                assert_eq!(applied.steps[0].outcome, StepOutcomeView::Completed);
+                assert_eq!(shared.borrow().inventory_calls(), 1);
             }
             other => panic!("expected a verification failure, got {other:?}"),
         }
@@ -4314,7 +4342,7 @@ mod tests {
             .expect("the semantic term and label resolve uniquely");
 
         match &output {
-            MoveItemOutput::VerifiedSuccess(success) => {
+            MoveItemOutput::Applied(success) => {
                 assert_eq!(success.effects.item_id, "inst-a");
             }
             other => panic!("expected a verified success, got {other:?}"),
@@ -4461,6 +4489,6 @@ mod tests {
             .move_item(&exact_move("inst-a", "warlock"))
             .expect("injected mutation succeeds");
 
-        assert!(matches!(output, MoveItemOutput::VerifiedSuccess(_)));
+        assert!(matches!(output, MoveItemOutput::Applied(_)));
     }
 }

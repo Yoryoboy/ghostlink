@@ -21,7 +21,7 @@
 //! additionally holds one outer operation guard for every read and mutation
 //! request. All local inventory publication in this composition runs beneath
 //! that guard, so no competing refresh can publish between fresh preflight and
-//! the final ordered dispatch (or post-action verification). Individual adapter
+//! the final ordered dispatch and freshness invalidation. Individual adapter
 //! locks remain short-lived and refresh does not reacquire the operation guard.
 //! This is a process-local guarantee, not protection against external game
 //! changes or another process writing the database. The mutation path is:
@@ -160,6 +160,20 @@ fn compose_server<S: CredentialStore + Send + 'static>(
         destiny_adapters::manifest::HttpManifestTransport::new()?,
         SystemClock::new(),
     );
+    let loadout_action = destiny_adapters::loadout_action::BungieLoadoutActionGateway::new(
+        destiny_adapters::loadout_action::HttpLoadoutActionTransport::new()?,
+        SystemClock::new(),
+        transfer_source.clone(),
+        destiny_adapters::loadout_action::LoadoutActionApiKey::new(
+            config.api_key().expose_secret(),
+        )?,
+    )?;
+    let batch = destiny_adapters::BungieEquipItemsGateway::new(
+        destiny_adapters::HttpEquipItemsTransport::new()?,
+        SystemClock::new(),
+        transfer_source.clone(),
+        destiny_adapters::EquipItemsApiKey::new(config.api_key().expose_secret())?,
+    )?;
     let stack = destiny_adapters::stack_pull::BungieStackPullGateway::new(
         destiny_adapters::stack_pull::HttpStackPullTransport::new()?,
         SystemClock::new(),
@@ -174,7 +188,17 @@ fn compose_server<S: CredentialStore + Send + 'static>(
     let repository = SqliteStore::open(config.database_path())?;
     Ok(assemble_server(
         profile_gateway,
-        (transfer, equip, lock, pull, manifest, stack, stack_manifest),
+        (
+            transfer,
+            equip,
+            lock,
+            pull,
+            manifest,
+            stack,
+            stack_manifest,
+            loadout_action,
+            batch,
+        ),
         repository,
         policy,
         weekly_service(config)?,
@@ -301,14 +325,17 @@ type MutationPorts<C> = (
         destiny_adapters::manifest::HttpManifestTransport,
         SystemClock,
     >,
+    destiny_adapters::loadout_action::BungieLoadoutActionGateway<
+        destiny_adapters::loadout_action::HttpLoadoutActionTransport,
+        SystemClock,
+        C,
+    >,
+    destiny_adapters::BungieEquipItemsGateway<
+        destiny_adapters::HttpEquipItemsTransport,
+        SystemClock,
+        C,
+    >,
 );
-
-struct PullDelay;
-impl destiny_app::RetryDelay for PullDelay {
-    fn wait(&mut self, duration: std::time::Duration) {
-        std::thread::sleep(duration);
-    }
-}
 
 /// Wires the concrete adapters into one read-plus-mutation tool server.
 ///
@@ -391,7 +418,6 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
             SystemPlanIds::new(SystemClock::new()),
         ),
         ports.3,
-        PullDelay,
         policy,
     );
     let stack = crate::service::StackPullToolService::new(
@@ -405,8 +431,10 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
             SystemPlanIds::new(SystemClock::new()),
         ),
         ports.5,
-        PullDelay,
         policy,
+    );
+    let apply_loadout = destiny_app::ApplyLoadoutService::new(
+        ProfileSyncService::new_with_definitions(gateway.clone(), repository.clone()),
     );
     let mutations = MutationService::new(
         ProfileSyncService::new_with_definitions(gateway, repository),
@@ -420,9 +448,18 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         PlanLifetime::MAX,
     )
     .with_equip(ports.1)
+    .with_equip_items(ports.8)
     .with_lock(ports.2)
     .with_pull(pull)
     .with_stack(stack);
+    let mutation_service = crate::apply_loadout::ApplyLoadoutMutationService {
+        inner: mutation_service,
+        service: apply_loadout,
+        action: ports.7,
+        clock: SystemClock::new(),
+        policy,
+        last_attempt: None,
+    };
 
     // Every publishing read decorator and all mutations enter the same outer
     // operation boundary. Do not expose a second unguarded dispatch path for
@@ -627,6 +664,12 @@ impl SharedRepository {
 }
 
 impl InventoryRepository for SharedRepository {
+    fn freshness_invalidated(&self) -> Result<bool, AppError> {
+        self.lock()?.freshness_invalidated()
+    }
+    fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        self.lock()?.invalidate_freshness()
+    }
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
         self.lock()?.load_current()
     }
@@ -1359,6 +1402,20 @@ mod tests {
             destiny_adapters::manifest::HttpManifestTransport::new().unwrap(),
             SystemClock::new(),
         );
+        let loadout_action = destiny_adapters::loadout_action::BungieLoadoutActionGateway::new(
+            destiny_adapters::loadout_action::HttpLoadoutActionTransport::new().unwrap(),
+            SystemClock::new(),
+            destiny_app::StaticCredentialSource::new(credential.clone()),
+            destiny_adapters::loadout_action::LoadoutActionApiKey::new(API_KEY_SENTINEL).unwrap(),
+        )
+        .unwrap();
+        let batch = destiny_adapters::BungieEquipItemsGateway::new(
+            destiny_adapters::HttpEquipItemsTransport::new().unwrap(),
+            SystemClock::new(),
+            destiny_app::StaticCredentialSource::new(credential.clone()),
+            destiny_adapters::EquipItemsApiKey::new(API_KEY_SENTINEL).unwrap(),
+        )
+        .unwrap();
         let stack = destiny_adapters::stack_pull::BungieStackPullGateway::new(
             destiny_adapters::stack_pull::HttpStackPullTransport::new().unwrap(),
             SystemClock::new(),
@@ -1373,7 +1430,17 @@ mod tests {
         );
         let server = assemble_server(
             profile_gateway,
-            (transfer, equip, lock, pull, manifest, stack, stack_manifest),
+            (
+                transfer,
+                equip,
+                lock,
+                pull,
+                manifest,
+                stack,
+                stack_manifest,
+                loadout_action,
+                batch,
+            ),
             store,
             FreshnessPolicy { ttl_seconds: 900 },
             (
@@ -1409,7 +1476,9 @@ mod tests {
                 "equip_item",
                 "set_lock_state",
                 "pull_item",
-                "pull_stack"
+                "pull_stack",
+                "apply_loadout",
+                "equip_items"
             ],
             "mutation must be default-enabled in the product composition"
         );

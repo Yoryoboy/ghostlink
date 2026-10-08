@@ -1,6 +1,5 @@
-//! One fresh plan, consumed once, with bounded observation and no redispatch.
+//! One fresh plan, consumed once, with acknowledgement and no redispatch.
 use crate::pull_output::PullOutput;
-use destiny_app::RetryDelay;
 use destiny_app::{
     Clock, DefinitionRepository, DestinyMembership, FreshnessPolicy, InstancedPullGateway,
     InstancedPullPlanRequest, InstancedPullService, InventoryRepository, ItemInstanceId,
@@ -28,12 +27,11 @@ impl PlanIdGenerator for InvocationPlanId {
 
 /// Caller owns local publication/definition-use serialization across this entire
 /// call. Membership is authenticated context, not a command-line argument.
-pub fn pull_item<G, R, D, M, C, P, T, W>(
+pub fn pull_item<G, R, D, M, C, P, T>(
     item: ItemInstanceId,
     membership: DestinyMembership,
     service: &mut InstancedPullService<G, R, D, M, C, P>,
     gateway: &mut T,
-    delay: &mut W,
     freshness: FreshnessPolicy,
 ) -> PullOutput
 where
@@ -44,7 +42,6 @@ where
     C: Clock,
     P: PlanIdGenerator,
     T: InstancedPullGateway,
-    W: RetryDelay,
 {
     let plan = match service.plan(
         &InstancedPullPlanRequest { membership, item },
@@ -54,7 +51,7 @@ where
         Ok(plan) => plan,
         Err(error) => return PullOutput::planning_failed(&error),
     };
-    match service.execute_verified(plan, gateway, delay, freshness) {
+    match service.execute(plan, gateway, freshness) {
         Ok(outcome) => PullOutput::from_outcome(&outcome),
         Err(failure) => PullOutput::execution_failed(&failure),
     }

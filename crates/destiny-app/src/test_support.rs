@@ -586,6 +586,8 @@ impl destiny_core::ports::DefinitionCatalogRepository for InMemoryDefinitionRepo
 
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryInventoryRepository {
+    invalidated: bool,
+    fail_invalidation: bool,
     current: Option<InventorySnapshot>,
     previous_input: Option<InventorySnapshotInput>,
 }
@@ -593,6 +595,12 @@ pub struct InMemoryInventoryRepository {
 impl InMemoryInventoryRepository {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Injects a storage failure only at the post-dispatch invalidation boundary.
+    pub fn with_invalidation_failure(mut self) -> Self {
+        self.fail_invalidation = true;
+        self
     }
 
     /// Constructs an overflow boundary state for repository contract tests.
@@ -624,6 +632,8 @@ impl InMemoryInventoryRepository {
             plug_set_entries: input.plug_set_entries.clone(),
         };
         Self {
+            invalidated: false,
+            fail_invalidation: false,
             current: Some(snapshot),
             previous_input: Some(input),
         }
@@ -636,6 +646,18 @@ impl InMemoryInventoryRepository {
 }
 
 impl InventoryRepository for InMemoryInventoryRepository {
+    fn freshness_invalidated(&self) -> Result<bool, AppError> {
+        Ok(self.invalidated)
+    }
+
+    fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        if self.fail_invalidation {
+            return Err(AppError::new(ErrorCategory::LocalStorage));
+        }
+        self.invalidated = true;
+        Ok(())
+    }
+
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
         Ok(self.current.clone())
     }
@@ -697,6 +719,7 @@ impl InventoryRepository for InMemoryInventoryRepository {
             stacks: input.stacks,
             plug_set_entries: input.plug_set_entries,
         };
+        self.invalidated = false;
         self.current = Some(snapshot.clone());
         self.previous_input = Some(InventorySnapshotInput::with_metadata(&snapshot));
         Ok(snapshot)
@@ -1127,6 +1150,79 @@ impl destiny_core::EquipGateway for QueuedEquipGateway {
     }
 }
 
+/// Queues batch equip receipts; exhaustion never invents acknowledgement.
+#[derive(Debug, Default)]
+pub struct QueuedEquipItemsGateway {
+    outcomes: VecDeque<Result<destiny_core::EquipItemsOutcome, AppError>>,
+    requests: Vec<destiny_core::EquipItemsRequest>,
+    calls: usize,
+}
+impl QueuedEquipItemsGateway {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn queue(&mut self, outcome: Result<destiny_core::EquipItemsOutcome, AppError>) {
+        self.outcomes.push_back(outcome);
+    }
+    pub const fn calls(&self) -> usize {
+        self.calls
+    }
+    pub fn requests(&self) -> &[destiny_core::EquipItemsRequest] {
+        &self.requests
+    }
+}
+impl destiny_core::EquipItemsGateway for QueuedEquipItemsGateway {
+    fn equip_items(
+        &mut self,
+        request: &destiny_core::EquipItemsRequest,
+    ) -> Result<destiny_core::EquipItemsOutcome, AppError> {
+        self.calls += 1;
+        self.requests.push(request.clone());
+        self.outcomes
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
+    }
+}
+
+/// Queues official loadout action receipts; exhaustion fails closed.
+#[derive(Debug, Default)]
+pub struct QueuedLoadoutActionGateway {
+    outcomes: VecDeque<Result<destiny_core::LoadoutActionOutcome, AppError>>,
+    requests: Vec<destiny_core::EquipLoadoutRequest>,
+    calls: usize,
+}
+
+impl QueuedLoadoutActionGateway {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn queue(&mut self, outcome: Result<destiny_core::LoadoutActionOutcome, AppError>) {
+        self.outcomes.push_back(outcome);
+    }
+
+    pub const fn calls(&self) -> usize {
+        self.calls
+    }
+
+    pub fn requests(&self) -> &[destiny_core::EquipLoadoutRequest] {
+        &self.requests
+    }
+}
+
+impl destiny_core::LoadoutActionGateway for QueuedLoadoutActionGateway {
+    fn equip_loadout(
+        &mut self,
+        request: &destiny_core::EquipLoadoutRequest,
+    ) -> Result<destiny_core::LoadoutActionOutcome, AppError> {
+        self.calls += 1;
+        self.requests.push(request.clone());
+        self.outcomes
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
+    }
+}
+
 /// Queues lock outcomes in call order; exhaustion fails closed, never succeeds.
 #[derive(Debug, Default)]
 pub struct QueuedLockGateway {
@@ -1173,6 +1269,70 @@ mod equip_gateway_tests {
         AppError, CharacterId, DestinyMembership, EquipGateway, EquipItemRequest, EquipOutcome,
         EquipRejection, ErrorCategory, ItemInstanceId, MembershipId, MembershipType,
     };
+
+    #[test]
+    fn batch_fake_records_attempts_and_fails_closed_on_exhaustion() {
+        use super::QueuedEquipItemsGateway;
+        use destiny_core::{EquipItemsGateway, EquipItemsOutcome, EquipItemsRequest};
+        let request = EquipItemsRequest::new(
+            DestinyMembership::new(MembershipType::new(3), MembershipId::new("123")).unwrap(),
+            CharacterId::new("789"),
+            vec![ItemInstanceId::new("456")],
+        )
+        .unwrap();
+        let mut fake = QueuedEquipItemsGateway::new();
+        fake.queue(Ok(EquipItemsOutcome::Refused));
+        fake.queue(Ok(EquipItemsOutcome::Uncertain));
+        assert_eq!(
+            fake.equip_items(&request).unwrap(),
+            EquipItemsOutcome::Refused
+        );
+        assert_eq!(
+            fake.equip_items(&request).unwrap(),
+            EquipItemsOutcome::Uncertain
+        );
+        assert_eq!(
+            fake.equip_items(&request).unwrap_err().category(),
+            ErrorCategory::ProviderUnavailable
+        );
+        assert_eq!(fake.calls(), 3);
+        assert_eq!(
+            fake.requests(),
+            &[request.clone(), request.clone(), request]
+        );
+    }
+
+    #[test]
+    fn loadout_fake_records_every_attempt_and_fails_closed_on_exhaustion() {
+        use super::QueuedLoadoutActionGateway;
+        use destiny_core::{EquipLoadoutRequest, LoadoutActionGateway, LoadoutActionOutcome};
+        let request = EquipLoadoutRequest::new(
+            DestinyMembership::new(MembershipType::new(3), MembershipId::new("123")).unwrap(),
+            CharacterId::new("789"),
+            0,
+        )
+        .unwrap();
+        let mut fake = QueuedLoadoutActionGateway::new();
+        fake.queue(Ok(LoadoutActionOutcome::Applied));
+        fake.queue(Ok(LoadoutActionOutcome::Uncertain));
+        assert_eq!(
+            fake.equip_loadout(&request).unwrap(),
+            LoadoutActionOutcome::Applied
+        );
+        assert_eq!(
+            fake.equip_loadout(&request).unwrap(),
+            LoadoutActionOutcome::Uncertain
+        );
+        assert_eq!(
+            fake.equip_loadout(&request).unwrap_err().category(),
+            ErrorCategory::ProviderUnavailable
+        );
+        assert_eq!(fake.calls(), 3);
+        assert_eq!(
+            fake.requests(),
+            &[request.clone(), request.clone(), request]
+        );
+    }
 
     #[test]
     fn lock_fake_records_every_attempt_and_fails_closed_on_exhaustion() {

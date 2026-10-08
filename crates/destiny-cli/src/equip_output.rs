@@ -66,10 +66,9 @@ impl EquipOutput {
     }
     pub fn exit_code(&self) -> i32 {
         match self.status {
-            EquipStatus::VerifiedSuccess | EquipStatus::VerifiedNoop => 0,
+            EquipStatus::Applied | EquipStatus::VerifiedNoop => 0,
             EquipStatus::Incomplete => 41,
             EquipStatus::VerificationFailed => 42,
-            EquipStatus::AppliedPendingProviderRefresh => 43,
             EquipStatus::Refused => self.refusal_exit_code.unwrap_or(40),
         }
     }
@@ -88,30 +87,6 @@ impl EquipOutput {
         );
         if self.status == EquipStatus::VerifiedNoop {
             return format!("{name} is already equipped on {character}\n✔ verified");
-        }
-        if self.status == EquipStatus::VerifiedSuccess {
-            let transfers: Vec<_> = self.steps.iter().filter(|s| s.kind == "transfer").collect();
-            let mut text = format!("{name}: ");
-            if let Some(first) = transfers.first().and_then(|s| s.from.as_ref()) {
-                text.push_str(&clean(&first.label));
-            } else {
-                text.push_str(&character);
-            }
-            for s in transfers {
-                text.push_str(&format!(" → {} (transferred)", clean(&s.to.label)));
-            }
-            let slot = self
-                .item
-                .as_ref()
-                .and_then(|i| i.slot.as_deref())
-                .unwrap_or("equipment");
-            text.push_str(&format!(" → equipped ({})\n✔ verified", clean(slot)));
-            if self.steps.iter().any(|s| s.outcome == "uncertain") {
-                text.push_str(
-                    "\nprovider outcome was uncertain; refreshed state confirms equipped",
-                );
-            }
-            return text;
         }
         let mut lines = vec![format!("{name}: {}", self.status.as_str())];
         if let Some(reason) = &self.reason {
@@ -151,11 +126,7 @@ impl EquipOutput {
         if let Some(o) = &self.observed {
             lines.push(format!(
                 "{}: {}; {}",
-                if self.status == EquipStatus::AppliedPendingProviderRefresh {
-                    "stale/unconfirmed state"
-                } else {
-                    "refreshed state"
-                },
+                "refreshed state",
                 clean(&o.location.label),
                 if o.equipped {
                     "equipped"

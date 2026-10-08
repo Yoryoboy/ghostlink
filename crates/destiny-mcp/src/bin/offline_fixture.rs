@@ -13,9 +13,9 @@
 //! One in-memory [`FixtureWorld`] is the source of truth. The profile gateway
 //! reads it on every forced refresh, and the transfer gateway applies each
 //! accepted transfer to it. The mutation service therefore plans against a
-//! seeded projection, performs a real fresh preflight and post-action refresh
-//! against the world, and verifies the destination only after the transfer moved
-//! the item. Reads are served from a separate seeded projection.
+//! seeded projection, performs a real fresh preflight against the world, then
+//! classifies acknowledgement and invalidates local freshness without re-reading.
+//! Reads are served from a separate seeded projection.
 //!
 //! # Scenarios
 //!
@@ -185,7 +185,6 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         WorldPullGateway {
             world: Arc::clone(&world),
         },
-        FixturePullDelay,
         TTL,
     );
     let mut stack_manifest = destiny_app::test_support::QueuedManifestGateway::new();
@@ -226,9 +225,29 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         WorldStackGateway {
             world: Arc::clone(&world),
         },
-        FixturePullDelay,
         TTL,
     );
+    let mut batch = destiny_app::test_support::QueuedEquipItemsGateway::new();
+    let batch_scenario = std::env::var(SCENARIO_ENV).unwrap_or_default();
+    let batch_outcome = match batch_scenario.as_str() {
+        "batch-location" => destiny_app::EquipItemsOutcome::RestrictedLocation,
+        "batch-uncertain" => destiny_app::EquipItemsOutcome::Uncertain,
+        _ => destiny_app::EquipItemsOutcome::Acknowledged(vec![
+            destiny_app::EquipItemResult {
+                item: ItemInstanceId::new("101"),
+                status: destiny_app::EquipItemStatus::Success,
+            },
+            destiny_app::EquipItemResult {
+                item: ItemInstanceId::new("102"),
+                status: match batch_scenario.as_str() {
+                    "batch-mixed" => destiny_app::EquipItemStatus::Failure(99),
+                    "batch-omitted" => destiny_app::EquipItemStatus::NotReported,
+                    _ => destiny_app::EquipItemStatus::Success,
+                },
+            },
+        ]),
+    };
+    batch.queue(Ok(batch_outcome));
     let mutation_service = ComposedMutationService::new(
         mutations,
         WorldTransferGateway {
@@ -242,6 +261,7 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
     .with_equip(WorldEquipGateway {
         world: Arc::clone(&world),
     })
+    .with_equip_items(batch)
     .with_lock(WorldLockGateway { world })
     .with_pull(pull)
     .with_stack(stack);
@@ -285,7 +305,71 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         FakeClock::fixed(NOW),
         TTL,
     );
+    if !std::env::var(SCENARIO_ENV)
+        .unwrap_or_default()
+        .starts_with("loadout-")
+    {
+        return ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service));
+    }
+    let mut loadout_character = character("1");
+    loadout_character.id = CharacterId::new("1");
+    loadout_character.class = Some("Hunter".into());
+    let loadout_repository = FixtureRepository::seeded(&[loadout_character.clone()], &[]);
+    let loadout_world = Arc::new(Mutex::new(FixtureWorld {
+        characters: vec![loadout_character],
+        items: vec![],
+        refresh_failed: false,
+        stack_arrived: false,
+    }));
+    let mut action = destiny_app::test_support::QueuedLoadoutActionGateway::new();
+    let outcome = match std::env::var(SCENARIO_ENV).ok().as_deref() {
+        Some("loadout-location") => destiny_app::LoadoutActionOutcome::Rejected(
+            destiny_app::LoadoutActionRejection::RestrictedLocation,
+        ),
+        Some("loadout-auth") => destiny_app::LoadoutActionOutcome::AuthenticationRefused,
+        Some("loadout-transient") => destiny_app::LoadoutActionOutcome::Transient,
+        Some("loadout-uncertain") => destiny_app::LoadoutActionOutcome::Uncertain,
+        _ => destiny_app::LoadoutActionOutcome::Applied,
+    };
+    action.queue(Ok(outcome));
+    let mutation_service = destiny_mcp::apply_loadout::ApplyLoadoutMutationService {
+        inner: mutation_service,
+        service: destiny_app::ApplyLoadoutService::new(ProfileSyncService::new(
+            WorldGateway {
+                membership: membership(),
+                world: loadout_world,
+            },
+            loadout_repository,
+        )),
+        action,
+        clock: FakeClock::fixed(NOW),
+        policy: TTL,
+        last_attempt: None,
+    };
     ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
+}
+
+impl destiny_app::LoadoutGateway for WorldGateway {
+    fn load_loadouts(
+        &mut self,
+        _: &DestinyMembership,
+    ) -> Result<destiny_app::LoadoutSnapshot, AppError> {
+        Ok(destiny_app::LoadoutSnapshot {
+            characters: vec![destiny_app::CharacterLoadouts {
+                character_id: CharacterId::new("1"),
+                loadouts: vec![destiny_app::Loadout {
+                    slot_index: 2,
+                    name_hash: 7,
+                    color_hash: 8,
+                    icon_hash: 9,
+                    items: vec![destiny_app::LoadoutItem {
+                        instance_id: ItemInstanceId::new("123"),
+                        plugs: vec![],
+                    }],
+                }],
+            }],
+        })
+    }
 }
 
 struct FixtureLoadouts;
@@ -653,12 +737,6 @@ impl ProfileGateway for WorldGateway {
     }
 }
 
-struct FixturePullDelay;
-impl destiny_app::RetryDelay for FixturePullDelay {
-    fn wait(&mut self, duration: std::time::Duration) {
-        assert_eq!(duration, std::time::Duration::from_secs(2));
-    }
-}
 struct WorldStackGateway {
     world: Arc<Mutex<FixtureWorld>>,
 }
@@ -668,16 +746,17 @@ impl destiny_app::StackPullGateway for WorldStackGateway {
         request: &destiny_app::StackPullRequest,
     ) -> Result<destiny_app::StackPullOutcome, AppError> {
         assert_eq!(request.quantity(), 3);
-        self.world.lock().expect("fixture world").stack_arrived = true;
-        Ok(
-            if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("stack-refused") {
-                destiny_app::StackPullOutcome::Rejected(
-                    destiny_app::StackPullRejection::InvalidRequest,
-                )
-            } else {
-                destiny_app::StackPullOutcome::Acknowledged
-            },
-        )
+        let scenario = std::env::var(SCENARIO_ENV).unwrap_or_default();
+        if scenario != "stack-pending" && scenario != "stack-uncertain" {
+            self.world.lock().expect("fixture world").stack_arrived = true;
+        }
+        Ok(match scenario.as_str() {
+            "stack-refused" => destiny_app::StackPullOutcome::Rejected(
+                destiny_app::StackPullRejection::InvalidRequest,
+            ),
+            "stack-uncertain" => destiny_app::StackPullOutcome::Uncertain,
+            _ => destiny_app::StackPullOutcome::Acknowledged,
+        })
     }
 }
 struct WorldPullGateway {
@@ -870,6 +949,18 @@ impl FixtureRepository {
 }
 
 impl InventoryRepository for FixtureRepository {
+    fn freshness_invalidated(&self) -> Result<bool, AppError> {
+        self.inventory.freshness_invalidated()
+    }
+    fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        if matches!(
+            std::env::var(SCENARIO_ENV).ok().as_deref(),
+            Some("pull-storage" | "stack-storage" | "loadout-storage" | "batch-storage")
+        ) {
+            return Err(AppError::new(ErrorCategory::LocalStorage));
+        }
+        self.inventory.invalidate_freshness()
+    }
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
         if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("postmaster-local-storage") {
             return Err(AppError::new(ErrorCategory::LocalStorage));
@@ -955,7 +1046,11 @@ impl destiny_app::WorldDefinitionRepository for FixtureRepository {
         self.definitions.lookup_activity_type(hash)
     }
     fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
-        self.definitions.lookup_loadout_name(hash)
+        if hash == 7 {
+            Ok(Some("PvE".into()))
+        } else {
+            self.definitions.lookup_loadout_name(hash)
+        }
     }
     fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
         self.definitions.world_definition_counts()
@@ -1052,6 +1147,11 @@ fn snapshot_input(characters: &[Character], items: &[ItemInstance]) -> Inventory
 }
 
 fn characters() -> Vec<Character> {
+    if batch_scenario() {
+        let mut target = character("123");
+        target.class = Some("Warlock".into());
+        return vec![target];
+    }
     if std::env::var(SCENARIO_ENV)
         .unwrap_or_default()
         .starts_with("stack-")
@@ -1089,7 +1189,26 @@ fn fixture_version() -> DefinitionVersion {
         DEFINITION_VERSION
     })
 }
+fn batch_scenario() -> bool {
+    std::env::var(SCENARIO_ENV)
+        .ok()
+        .is_some_and(|s| s.starts_with("batch-"))
+}
+
 fn base_items() -> Vec<ItemInstance> {
+    if batch_scenario() {
+        let mut items = vec![
+            instance("101", 100, ItemLocation::Vault, vec![]),
+            instance("102", 101, ItemLocation::Vault, vec![]),
+        ];
+        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("batch-noop") {
+            for item in &mut items {
+                item.location = at_character("123");
+                item.equipped = true;
+            }
+        }
+        return items;
+    }
     if std::env::var(SCENARIO_ENV)
         .unwrap_or_default()
         .starts_with("stack-")
@@ -1171,6 +1290,21 @@ fn set_location(items: &mut [ItemInstance], instance_id: &str, location: ItemLoc
 }
 
 fn fixture_definitions() -> Vec<ItemDefinition> {
+    if batch_scenario() {
+        return [
+            (100, "First", destiny_app::ItemSlot::Kinetic),
+            (101, "Second", destiny_app::ItemSlot::Energy),
+        ]
+        .into_iter()
+        .map(|(hash, name, slot)| {
+            let mut item = definition(hash, name);
+            item.slot = Some(slot);
+            item.tier = Some("Legendary".into());
+            item.class_type = Some("any".parse().unwrap());
+            item
+        })
+        .collect();
+    }
     if std::env::var(SCENARIO_ENV)
         .unwrap_or_default()
         .starts_with("stack-")

@@ -76,11 +76,26 @@ fn definition() -> ItemDefinition {
         version: version(),
     }
 }
-#[derive(Default)]
-struct Delay(Vec<std::time::Duration>);
-impl RetryDelay for Delay {
-    fn wait(&mut self, value: std::time::Duration) {
-        self.0.push(value);
+#[derive(Clone)]
+struct Profile(std::rc::Rc<std::cell::RefCell<QueuedProfileGateway>>);
+impl ProfileGateway for Profile {
+    fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
+        self.0.borrow_mut().resolve_membership()
+    }
+    fn load_inventory(
+        &mut self,
+        membership: &DestinyMembership,
+    ) -> Result<InventorySnapshotInput, AppError> {
+        self.0.borrow_mut().load_inventory(membership)
+    }
+    fn load_inventory_with_observations_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<ProfileAcquisition, AppError> {
+        self.0
+            .borrow_mut()
+            .load_inventory_with_observations_scoped(membership, reason)
     }
 }
 fn pipeline(
@@ -89,12 +104,38 @@ fn pipeline(
     posts: Vec<Result<InventorySnapshotInput, AppError>>,
     receipt: Result<StackPullOutcome, AppError>,
     json: bool,
-) -> (destiny_cli::ProcessOutput, QueuedStackPullGateway, Delay) {
+) -> (
+    destiny_cli::ProcessOutput,
+    QueuedStackPullGateway,
+    Vec<ProfileSyncReason>,
+) {
+    pipeline_with_repository(
+        d,
+        pre,
+        posts,
+        receipt,
+        json,
+        InMemoryInventoryRepository::new(),
+    )
+}
+fn pipeline_with_repository(
+    d: Vec<ItemDefinition>,
+    pre: InventorySnapshotInput,
+    posts: Vec<Result<InventorySnapshotInput, AppError>>,
+    receipt: Result<StackPullOutcome, AppError>,
+    json: bool,
+    repository: InMemoryInventoryRepository,
+) -> (
+    destiny_cli::ProcessOutput,
+    QueuedStackPullGateway,
+    Vec<ProfileSyncReason>,
+) {
     let mut profile = QueuedProfileGateway::new();
     for next in [Ok(pre.clone()), Ok(pre)].into_iter().chain(posts) {
         profile.queue_membership(Ok(membership()));
         profile.queue_acquisition(next.map(|i| ProfileAcquisition::new(i, None).unwrap()));
     }
+    let profile = Profile(std::rc::Rc::new(std::cell::RefCell::new(profile)));
     let mut manifest = QueuedManifestGateway::new();
     for _ in 0..2 {
         manifest.queue_capacity_evidence(Ok(EquipmentCapacityEvidence::new(
@@ -104,7 +145,7 @@ fn pipeline(
         .unwrap()));
     }
     let mut service = StackPullService::new(
-        ProfileSyncService::new(profile, InMemoryInventoryRepository::new()),
+        ProfileSyncService::new(profile.clone(), repository),
         InMemoryDefinitionRepository::new(version(), d),
         manifest,
         pinned_stack_bucket_capacity_policy(),
@@ -113,7 +154,6 @@ fn pipeline(
     );
     let mut gateway = QueuedStackPullGateway::new();
     gateway.queue(receipt);
-    let mut delay = Delay::default();
     let mut args = vec![
         "ghostlink",
         "pull-stack",
@@ -132,11 +172,11 @@ fn pipeline(
             membership(),
             &mut service,
             &mut gateway,
-            &mut delay,
             FreshnessPolicy { ttl_seconds: 300 },
         ))
     });
-    (output, gateway, delay)
+    let reasons = profile.0.borrow().requested_reasons().to_vec();
+    (output, gateway, reasons)
 }
 fn body(output: &destiny_cli::ProcessOutput) -> serde_json::Value {
     serde_json::from_str(if output.exit_code == 0 {
@@ -147,33 +187,24 @@ fn body(output: &destiny_cli::ProcessOutput) -> serde_json::Value {
     .unwrap()
 }
 #[test]
-fn verified_quantities_receipt_and_shared_text() {
-    for receipt in [StackPullOutcome::Acknowledged, StackPullOutcome::Uncertain] {
-        let (output, action, delay) = pipeline(
-            vec![definition()],
-            input(false),
-            vec![Ok(input(true))],
-            Ok(receipt),
-            true,
-        );
-        assert_eq!(output.exit_code, 0);
-        assert!(output.stderr.is_empty());
-        let value = body(&output);
-        assert_eq!(value["kind"], "stack_pull");
-        assert_eq!(value["disposition"], "verified");
-        assert_eq!(
-            value["observations"][0]["classification"],
-            "verified_arrival"
-        );
-        assert_eq!(
-            value["observations"][0]["quantities"]["profile"]["post"],
-            23
-        );
-        assert_eq!(action.calls(), 1);
-        assert_eq!(action.requests()[0].quantity(), 3);
-        assert_eq!(action.requests()[0].character().as_str(), "2");
-        assert!(delay.0.is_empty());
-    }
+fn acknowledged_stale_profile_and_shared_text() {
+    let (output, action, reasons) = pipeline(
+        vec![definition()],
+        input(false),
+        vec![Ok(input(false))],
+        Ok(StackPullOutcome::Acknowledged),
+        true,
+    );
+    assert_eq!(output.exit_code, 0);
+    assert!(output.stderr.is_empty());
+    let value = body(&output);
+    assert_eq!(value["kind"], "stack_pull");
+    assert_eq!(value["disposition"], "applied");
+    assert!(value.get("observations").is_none());
+    assert_eq!(action.calls(), 1);
+    assert_eq!(action.requests()[0].quantity(), 3);
+    assert_eq!(action.requests()[0].character().as_str(), "2");
+    assert_eq!(reasons, [ProfileSyncReason::Preflight; 2]);
     let (text, _, _) = pipeline(
         vec![definition()],
         input(false),
@@ -182,40 +213,41 @@ fn verified_quantities_receipt_and_shared_text() {
         false,
     );
     assert_eq!(text.exit_code, 0);
-    assert!(text.stdout.contains("stack_pull: verified"));
-    assert!(text.stdout.contains("profile_quantity: 20 -> 23"));
+    assert!(text.stdout.contains("stack_pull: applied"));
+    assert!(text.stdout.contains("pre_profile_quantity: 20"));
     assert!(!text.stdout.contains("PRIVATE"));
 }
 #[test]
-fn lag_and_observation_failure_are_uncertain_without_redispatch() {
+fn lag_and_unused_observation_failure_do_not_override_acknowledgement() {
     for posts in [
         vec![Ok(input(false)); 3],
         vec![Err(AppError::new(ErrorCategory::ProviderUnavailable)); 3],
     ] {
-        let (output, action, delay) = pipeline(
+        let (output, action, reasons) = pipeline(
             vec![definition()],
             input(false),
             posts,
             Ok(StackPullOutcome::Acknowledged),
             true,
         );
-        assert_eq!(output.exit_code, 42);
-        assert!(output.stdout.is_empty());
-        assert_eq!(body(&output)["disposition"], "uncertain");
-        assert_eq!(body(&output)["observations"].as_array().unwrap().len(), 3);
+        assert_eq!(output.exit_code, 0);
+        assert!(output.stderr.is_empty());
+        assert_eq!(body(&output)["disposition"], "applied");
+        assert!(body(&output).get("observations").is_none());
         assert_eq!(action.calls(), 1);
-        assert_eq!(delay.0, vec![std::time::Duration::from_secs(2); 2]);
+        assert_eq!(reasons, [ProfileSyncReason::Preflight; 2]);
     }
 }
 #[test]
 fn received_refusals_stay_refused_even_with_arrival() {
-    for (receipt, exit) in [
-        (StackPullOutcome::AuthenticationRefused, 11),
-        (StackPullOutcome::Transient, 21),
+    for (receipt, disposition) in [
+        (StackPullOutcome::AuthenticationRefused, "refused"),
+        (StackPullOutcome::Transient, "refused"),
         (
             StackPullOutcome::Rejected(StackPullRejection::InvalidRequest),
-            40,
+            "refused",
         ),
+        (StackPullOutcome::Uncertain, "uncertain"),
     ] {
         let (output, action, _) = pipeline(
             vec![definition()],
@@ -224,12 +256,9 @@ fn received_refusals_stay_refused_even_with_arrival() {
             Ok(receipt),
             true,
         );
-        assert_eq!(output.exit_code, exit);
-        assert_eq!(body(&output)["disposition"], "refused");
-        assert_eq!(
-            body(&output)["observations"][0]["classification"],
-            "verified_arrival"
-        );
+        assert_eq!(output.exit_code, 41);
+        assert_eq!(body(&output)["disposition"], disposition);
+        assert!(body(&output).get("observations").is_none());
         assert_eq!(action.calls(), 1);
     }
 }
@@ -262,14 +291,14 @@ fn planning_refusals_preserve_reasons_and_do_not_dispatch() {
                 (vec![d], 40, "instance_kind_unknown")
             }
         };
-        let (output, action, delay) =
+        let (output, action, reasons) =
             pipeline(defs, pre, vec![], Ok(StackPullOutcome::Acknowledged), true);
         assert_eq!(output.exit_code, exit);
         let value = body(&output);
         assert_eq!(value["failure"]["reason"], reason);
         assert!(value["receipt"].is_null());
         assert_eq!(action.calls(), 0);
-        assert!(delay.0.is_empty());
+        assert_eq!(reasons, [ProfileSyncReason::Preflight]);
         assert!(!output.stderr.contains("PRIVATE"));
     }
 }
@@ -284,7 +313,7 @@ fn gateway_infrastructure_uses_category_exit_without_receipt() {
     );
     assert_eq!(output.exit_code, 21);
     assert!(body(&output)["receipt"].is_null());
-    assert_eq!(body(&output)["observations"], serde_json::json!([]));
+    assert!(body(&output).get("observations").is_none());
     assert_eq!(action.calls(), 1);
 }
 
@@ -309,29 +338,29 @@ fn duplicate_stacks_use_smallest_quantity_not_sum() {
 }
 
 #[test]
-fn text_keeps_ordered_failures_and_null_quantities() {
-    let (output, action, _) = pipeline(
+fn acknowledged_stack_storage_failure_exits_42_and_retains_receipt() {
+    let (output, action, reasons) = pipeline_with_repository(
         vec![definition()],
         input(false),
-        vec![
-            Ok(input(false)),
-            Err(AppError::new(ErrorCategory::ProviderUnavailable)),
-            Ok(input(false)),
-        ],
+        vec![],
         Ok(StackPullOutcome::Acknowledged),
-        false,
+        true,
+        InMemoryInventoryRepository::new().with_invalidation_failure(),
     );
     assert_eq!(output.exit_code, 42);
     assert!(output.stdout.is_empty());
-    let text = output.stderr;
-    assert!(text.contains("classification: quantity_mismatch"));
-    assert!(text.contains("classification: null"));
-    assert!(text.contains("profile_quantity: 20 -> null"));
-    assert!(text.contains("provider_unavailable"));
-    assert!(text.find("observation 1:").unwrap() < text.find("observation 2:").unwrap());
-    assert!(text.find("observation 2:").unwrap() < text.find("observation 3:").unwrap());
-    assert!(!text.contains("PRIVATE"));
+    let value = body(&output);
+    assert_eq!(value["disposition"], "local_state_failed");
+    assert_eq!(value["receipt"]["kind"], "acknowledged");
+    assert_eq!(value["failure"]["category"], "local_storage");
+    assert!(
+        value["failure"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("local state could not be updated after the action")
+    );
     assert_eq!(action.calls(), 1);
+    assert_eq!(reasons, [ProfileSyncReason::Preflight; 2]);
 }
 
 #[test]
@@ -473,7 +502,7 @@ fn canonical_bounds_and_help() {
         "--amount",
         "--character",
         "canonical",
-        "verified",
+        "acknowledgement",
     ] {
         assert!(help.stdout.contains(text), "{text}: {}", help.stdout);
     }

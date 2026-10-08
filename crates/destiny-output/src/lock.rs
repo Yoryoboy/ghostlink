@@ -5,7 +5,28 @@ use destiny_app::{
 };
 use serde_json::{Value, json};
 
-pub use crate::equip::{EquipStatus as LockStatus, ProfileRefresh};
+pub use crate::equip::ProfileRefresh;
+
+/// Acknowledgement-based success, sharing equip's refresh vocabulary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LockStatus {
+    Applied,
+    VerifiedNoop,
+    Incomplete,
+    VerificationFailed,
+    Refused,
+}
+impl LockStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Applied => "applied",
+            Self::VerifiedNoop => "verified_noop",
+            Self::Incomplete => "incomplete",
+            Self::VerificationFailed => "verification_failed",
+            Self::Refused => "refused",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct LockItem {
@@ -77,38 +98,21 @@ impl LockOutput {
     }
     pub fn from_outcome(outcome: &LockExecutionOutcome, locked: bool) -> Self {
         let (status, refresh, reason) = match outcome {
-            LockExecutionOutcome::VerifiedSuccess(_) => {
-                (LockStatus::VerifiedSuccess, ProfileRefresh::Refreshed, None)
+            LockExecutionOutcome::Applied(_) => {
+                (LockStatus::Applied, ProfileRefresh::NotRequired, None)
             }
             LockExecutionOutcome::VerifiedNoOp(_) => {
                 (LockStatus::VerifiedNoop, ProfileRefresh::NotRequired, None)
             }
             LockExecutionOutcome::IncompleteExecution(_) => {
-                (LockStatus::Incomplete, ProfileRefresh::Refreshed, None)
+                (LockStatus::Incomplete, ProfileRefresh::NotRequired, None)
             }
-            LockExecutionOutcome::AppliedPendingProviderRefresh(_) => (
-                LockStatus::AppliedPendingProviderRefresh,
-                ProfileRefresh::Refreshed,
-                Some(
-                    "provider confirmed the action, but observed state is stale/unconfirmed; do not retry, run `ghostlink sync` later to confirm",
-                ),
-            ),
             LockExecutionOutcome::VerificationFailed(failure) => (
                 LockStatus::VerificationFailed,
-                if failure.reason() == LockVerificationFailureReason::RefreshFailed {
-                    ProfileRefresh::Failed
-                } else {
-                    ProfileRefresh::Refreshed
-                },
+                ProfileRefresh::Failed,
                 Some(match failure.reason() {
                     LockVerificationFailureReason::RefreshFailed => {
-                        "outcome is uncertain: post-action profile refresh failed; do not blindly retry"
-                    }
-                    LockVerificationFailureReason::Unresolved => {
-                        "outcome is uncertain: refreshed item could not be uniquely resolved; do not blindly retry"
-                    }
-                    LockVerificationFailureReason::Contradiction => {
-                        "refreshed state contradicts the action; lock state was not verified; do not blindly retry"
+                        "local state could not be updated after the action; do not blindly retry"
                     }
                 }),
             ),
@@ -143,18 +147,13 @@ impl LockOutput {
                 .unwrap_or("Item"),
         );
         let state = if self.locked { "locked" } else { "unlocked" };
-        if matches!(
-            self.status,
-            LockStatus::VerifiedSuccess | LockStatus::VerifiedNoop
-        ) {
+        if self.status == LockStatus::Applied {
             return format!(
-                "{name}: {}{state}\n✔ verified",
-                if self.status == LockStatus::VerifiedNoop {
-                    "already "
-                } else {
-                    ""
-                }
+                "{name}: {state}\n✔ applied (acknowledged by Bungie; not post-action verified)"
             );
+        }
+        if self.status == LockStatus::VerifiedNoop {
+            return format!("{name}: already {state}\n✔ verified");
         }
         let mut lines = vec![format!("{name}: {}", self.status.as_str())];
         if let Some(reason) = &self.reason {
@@ -173,11 +172,7 @@ impl LockOutput {
         if let Some(locked) = self.observed {
             lines.push(format!(
                 "{}: {}",
-                if self.status == LockStatus::AppliedPendingProviderRefresh {
-                    "stale/unconfirmed state"
-                } else {
-                    "observed state"
-                },
+                "observed state",
                 if locked { "locked" } else { "unlocked" }
             ));
         }
