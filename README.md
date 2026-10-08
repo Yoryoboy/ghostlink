@@ -28,7 +28,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/Yoryoboy/ghostlink
 These commands install the latest stable release. GitHub never treats a
 prerelease as "latest", so to install a release candidate use its versioned URL
 instead, for example
-`https://github.com/Yoryoboy/ghostlink/releases/download/v0.1.0-rc.1/ghostlink-installer.sh`
+`https://github.com/Yoryoboy/ghostlink/releases/download/v0.1.0-rc.2/ghostlink-installer.sh`
 (or `ghostlink-installer.ps1` on Windows).
 
 The installer puts **`ghostlink`** (CLI) and **`destiny-mcp`** (AI-agent server)
