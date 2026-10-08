@@ -160,6 +160,14 @@ fn compose_server<S: CredentialStore + Send + 'static>(
         destiny_adapters::manifest::HttpManifestTransport::new()?,
         SystemClock::new(),
     );
+    let loadout_action = destiny_adapters::loadout_action::BungieLoadoutActionGateway::new(
+        destiny_adapters::loadout_action::HttpLoadoutActionTransport::new()?,
+        SystemClock::new(),
+        transfer_source.clone(),
+        destiny_adapters::loadout_action::LoadoutActionApiKey::new(
+            config.api_key().expose_secret(),
+        )?,
+    )?;
     let stack = destiny_adapters::stack_pull::BungieStackPullGateway::new(
         destiny_adapters::stack_pull::HttpStackPullTransport::new()?,
         SystemClock::new(),
@@ -174,7 +182,16 @@ fn compose_server<S: CredentialStore + Send + 'static>(
     let repository = SqliteStore::open(config.database_path())?;
     Ok(assemble_server(
         profile_gateway,
-        (transfer, equip, lock, pull, manifest, stack, stack_manifest),
+        (
+            transfer,
+            equip,
+            lock,
+            pull,
+            manifest,
+            stack,
+            stack_manifest,
+            loadout_action,
+        ),
         repository,
         policy,
         weekly_service(config)?,
@@ -301,6 +318,11 @@ type MutationPorts<C> = (
         destiny_adapters::manifest::HttpManifestTransport,
         SystemClock,
     >,
+    destiny_adapters::loadout_action::BungieLoadoutActionGateway<
+        destiny_adapters::loadout_action::HttpLoadoutActionTransport,
+        SystemClock,
+        C,
+    >,
 );
 
 /// Wires the concrete adapters into one read-plus-mutation tool server.
@@ -399,6 +421,9 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         ports.5,
         policy,
     );
+    let apply_loadout = destiny_app::ApplyLoadoutService::new(
+        ProfileSyncService::new_with_definitions(gateway.clone(), repository.clone()),
+    );
     let mutations = MutationService::new(
         ProfileSyncService::new_with_definitions(gateway, repository),
         SystemPlanIds::new(SystemClock::new()),
@@ -414,6 +439,14 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     .with_lock(ports.2)
     .with_pull(pull)
     .with_stack(stack);
+    let mutation_service = crate::apply_loadout::ApplyLoadoutMutationService {
+        inner: mutation_service,
+        service: apply_loadout,
+        action: ports.7,
+        clock: SystemClock::new(),
+        policy,
+        last_attempt: None,
+    };
 
     // Every publishing read decorator and all mutations enter the same outer
     // operation boundary. Do not expose a second unguarded dispatch path for
@@ -1356,6 +1389,13 @@ mod tests {
             destiny_adapters::manifest::HttpManifestTransport::new().unwrap(),
             SystemClock::new(),
         );
+        let loadout_action = destiny_adapters::loadout_action::BungieLoadoutActionGateway::new(
+            destiny_adapters::loadout_action::HttpLoadoutActionTransport::new().unwrap(),
+            SystemClock::new(),
+            destiny_app::StaticCredentialSource::new(credential.clone()),
+            destiny_adapters::loadout_action::LoadoutActionApiKey::new(API_KEY_SENTINEL).unwrap(),
+        )
+        .unwrap();
         let stack = destiny_adapters::stack_pull::BungieStackPullGateway::new(
             destiny_adapters::stack_pull::HttpStackPullTransport::new().unwrap(),
             SystemClock::new(),
@@ -1370,7 +1410,16 @@ mod tests {
         );
         let server = assemble_server(
             profile_gateway,
-            (transfer, equip, lock, pull, manifest, stack, stack_manifest),
+            (
+                transfer,
+                equip,
+                lock,
+                pull,
+                manifest,
+                stack,
+                stack_manifest,
+                loadout_action,
+            ),
             store,
             FreshnessPolicy { ttl_seconds: 900 },
             (
@@ -1406,7 +1455,8 @@ mod tests {
                 "equip_item",
                 "set_lock_state",
                 "pull_item",
-                "pull_stack"
+                "pull_stack",
+                "apply_loadout"
             ],
             "mutation must be default-enabled in the product composition"
         );

@@ -839,6 +839,44 @@ pub fn compose_equip(
     )
 }
 
+/// Compose one saved-loadout action over the same lock-backed session as profile.
+pub fn compose_apply_loadout(
+    arguments: &crate::command::ApplyLoadoutArgs,
+) -> Result<destiny_output::apply_loadout::ApplyLoadoutOutput, CliError> {
+    use destiny_adapters::loadout_action::{
+        BungieLoadoutActionGateway, HttpLoadoutActionTransport, LoadoutActionApiKey,
+    };
+    let request = arguments.request()?;
+    let mut foundations = ProductionFoundations;
+    let config = ReadFoundations::config(&mut foundations)?;
+    let source = foundations.credential_source(&config)?;
+    let repository = ReadFoundations::store(&mut foundations, &config)?;
+    let gateway = BungieProfileGateway::new(
+        ReadFoundations::transport(&mut foundations)?,
+        SystemClock::new(),
+        source.clone(),
+        ProfileApiKey::new(config.api_key().expose_secret())?,
+        config.resolve_definition_version(&repository)?,
+    )?;
+    let mut action = BungieLoadoutActionGateway::new(
+        HttpLoadoutActionTransport::new()?,
+        SystemClock::new(),
+        source,
+        LoadoutActionApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let mut service = destiny_app::ApplyLoadoutService::new(
+        ProfileSyncService::new_with_definitions(gateway, repository),
+    );
+    Ok(
+        destiny_output::apply_loadout::ApplyLoadoutOutput::from_result(service.apply(
+            &mut action,
+            &request,
+            config.freshness_policy(),
+            SystemClock::new().now()?,
+        )),
+    )
+}
+
 /// Compose profile and lock gateways over one credential session and one local
 /// repository. The synchronous invocation owns publication through dispatch.
 pub fn compose_lock(

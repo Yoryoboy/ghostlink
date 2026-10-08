@@ -3,8 +3,11 @@
 pub mod clarity;
 pub use clarity::{ClaritySyncReport, ManifestAndClarityReport};
 pub use destiny_core::{ClarityInsight, ClarityRepository};
+pub mod apply_loadout;
 pub mod loadouts;
-pub use destiny_core::{LoadoutGateway, LoadoutSnapshot};
+pub use apply_loadout::*;
+pub use destiny_core::{CharacterLoadouts, Loadout, LoadoutGateway, LoadoutItem, LoadoutSnapshot};
+pub use destiny_core::{LoadoutActionGateway, LoadoutActionOutcome, LoadoutActionRejection};
 pub use loadouts::{
     CharacterLoadoutsView, LoadoutItemView, LoadoutOperations, LoadoutPlugView, LoadoutService,
     LoadoutView, LoadoutsResult,

@@ -34,6 +34,7 @@
 mod process;
 pub use process::run;
 
+pub mod apply_loadout;
 pub mod runtime;
 pub mod schema;
 pub mod server;

@@ -56,6 +56,68 @@ const MOVE_ITEM_TOOL: &str = "move_item";
 mod equip_support;
 
 #[tokio::test]
+async fn apply_loadout_stdio_contract() {
+    for (scenario, receipt, outcome) in [
+        ("loadout-success", "applied", "applied"),
+        ("loadout-location", "rejected", "failed"),
+        ("loadout-auth", "authentication_refused", "failed"),
+        ("loadout-transient", "transient", "failed"),
+        ("loadout-uncertain", "uncertain", "failed"),
+        ("loadout-storage", "applied", "local_state_failed"),
+    ] {
+        for args in [
+            json!({"character":"hunter","slot":3}),
+            json!({"character":"1","name":"  pVe "}),
+        ] {
+            let mut session = FixtureSession::spawn(Some(scenario)).await;
+            let response = session.call_tool("apply_loadout", args).await;
+            let output = structured(&response);
+            assert_eq!(output["kind"], "apply_loadout");
+            assert_eq!(output["character"], "1");
+            assert_eq!(output["slot"], 3);
+            assert_eq!(output["name"], "PvE");
+            assert_eq!(output["receipt"], receipt);
+            assert_eq!(output["outcome"], outcome);
+            assert_eq!(response["result"]["isError"], outcome != "applied");
+            if scenario == "loadout-location" {
+                assert_eq!(output["reason"], "go to orbit or a social space and retry");
+            }
+            if scenario == "loadout-storage" {
+                assert_eq!(
+                    output["reason"],
+                    "local state could not be updated after the action"
+                );
+            }
+            session.shutdown().await;
+        }
+    }
+    let mut session = FixtureSession::spawn(Some("loadout-success")).await;
+    for args in [
+        json!({"character":"hunter"}),
+        json!({"character":"hunter","slot":3,"name":"PvE"}),
+        json!({"character":"hunter","slot":13}),
+    ] {
+        let response = session.call_tool("apply_loadout", args).await;
+        assert_eq!(response["result"]["isError"], true);
+    }
+    let response = session
+        .call_tool("apply_loadout", json!({"character":"hunter","name":"Pv"}))
+        .await;
+    assert_eq!(structured(&response)["code"], "unknown_loadout_name");
+    assert_eq!(structured(&response)["candidates"][0]["slot"], 3);
+    let response = session
+        .call_tool("apply_loadout", json!({"character":"hunter","slot":1}))
+        .await;
+    assert_eq!(structured(&response)["code"], "empty_slot");
+    // Invalid calls did not consume the sole queued action acknowledgement.
+    let response = session
+        .call_tool("apply_loadout", json!({"character":"hunter","slot":3}))
+        .await;
+    assert_eq!(response["result"]["isError"], false);
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn stack_stdio_acknowledged_refused_uncertain_and_invalid() {
     for (scenario, disposition) in [
         ("stack-success", "applied"),
@@ -67,7 +129,7 @@ async fn stack_stdio_acknowledged_refused_uncertain_and_invalid() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 16);
         let tool = tools.iter().find(|t| t["name"] == "pull_stack").unwrap();
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(tool["annotations"]["readOnlyHint"], false);
@@ -118,7 +180,7 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 15);
+        assert_eq!(tools.len(), 16);
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == "pull_item")
@@ -908,7 +970,8 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             "equip_item",
             "set_lock_state",
             "pull_item",
-            "pull_stack"
+            "pull_stack",
+            "apply_loadout"
         ],
         "the product-equivalent server discovers all reads plus move_item and equip_item"
     );

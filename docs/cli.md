@@ -624,6 +624,35 @@ includes optional `description` (official Manifest tooltip), omitted when
 unavailable. The compact text view shows subclass/artifact descriptions; `--detail`
 also shows descriptions beneath each item's named perks and mods.
 
+### Apply a saved loadout
+
+```sh
+ghostlink apply-loadout 3 --character hunter
+ghostlink apply-loadout "PvE" --character hunter --json
+```
+
+`--character` is required: exact owned id or unique case-insensitive class, with
+no default. LOADOUT is the one-based slot shown by `ghostlink loadouts` (1–12),
+or a normalized exact name within that character (trim/collapse whitespace,
+case-insensitive). Unknown/ambiguous names return typed errors with available
+candidates; choose a slot, never guess. Empty/unavailable slots refuse before action.
+Requires login and loaded Manifest definitions. Go to orbit or a social space
+first; offline characters are also permitted. A location refusal says
+"go to orbit or a social space and retry".
+
+Fresh profile preflight and a live component-206 loadout read confirm the saved
+slot before exactly one official EquipLoadout call; no item-by-item emulation,
+post-action profile request, or automatic retry. JSON (`kind: "apply_loadout"`)
+and human output show `character`, one-based `slot`, `name`, `outcome`, `receipt`
+and `reason`. `applied` is acknowledgement, not observed game state (exit 0).
+Refusal/auth/transient/uncertain attempts fail (41); invalidation storage failure
+is `local_state_failed` (42), preserving the receipt and reporting
+"local state could not be updated after the action". All dispatched outcomes
+invalidate freshness durably; the next ordinary read syncs, never writes guessed
+state. Nonzero action output is on stderr; startup/argument errors retain the
+ordinary error envelope. No provider-lag exit 43. Never blindly retry uncertainty.
+MCP `apply_loadout` uses the same service and output.
+
 ### Inspect one owned item
 
 `ghostlink inspect-item <INSTANCE_ID>` shows named socketed perks and mods,

@@ -151,7 +151,8 @@ impl Cli {
             // A `login` command line carries no read, and the hidden `callback`
             // handler is not a read either, so both report the stable
             // unsupported-operation outcome instead of guessing at a read.
-            Command::PullStack(_)
+            Command::ApplyLoadout(_)
+            | Command::PullStack(_)
             | Command::Pull(_)
             | Command::Equip(_)
             | Command::Move(_)
@@ -286,6 +287,8 @@ pub enum Command {
     /// Show saved in-game loadouts for one or all characters.
     #[command(name = "loadouts")]
     Loadouts(LoadoutsArgs),
+    /// Apply one saved loadout in orbit or a social space; never blindly retry.
+    ApplyLoadout(ApplyLoadoutArgs),
 
     /// Authorize this machine against the provider.
     ///
@@ -885,6 +888,38 @@ impl PullStackArgs {
             item_hash: ItemHash::new(canonical(&self.item_hash, u32::MAX as u64, false)? as i64),
             amount: canonical(&self.amount, i32::MAX as u64, true)? as i64,
             owner: CharacterId::new(canonical(&self.character, i64::MAX as u64, true)?.to_string()),
+        })
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct ApplyLoadoutArgs {
+    /// One-based slot shown by loadouts, or a normalized exact loadout name.
+    pub loadout: String,
+    /// Exact ID or unique hunter|titan|warlock class.
+    #[arg(long, required = true)]
+    pub character: String,
+}
+impl ApplyLoadoutArgs {
+    pub fn request(&self) -> Result<destiny_app::ApplyLoadoutRequest, CliError> {
+        SearchTerm::new(&self.character).map_err(|_| CliError::invalid_request())?;
+        let loadout = if self.loadout.chars().all(|c| c.is_ascii_digit()) {
+            let slot = self
+                .loadout
+                .parse()
+                .map_err(|_| CliError::invalid_request())?;
+            if !(1..=12).contains(&slot) {
+                return Err(CliError::invalid_request());
+            }
+            destiny_app::LoadoutSelector::Slot(slot)
+        } else {
+            SearchTerm::new(&self.loadout).map_err(|_| CliError::invalid_request())?;
+            destiny_app::LoadoutSelector::Name(self.loadout.clone())
+        };
+        Ok(destiny_app::ApplyLoadoutRequest {
+            character: CharacterId::new(&self.character),
+            loadout,
+            intent: destiny_app::MoveIntentAuthorization::Explicit,
         })
     }
 }

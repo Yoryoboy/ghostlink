@@ -53,6 +53,55 @@ pub const GET_ARTIFACT_TOOL: &str = "get_artifact";
 
 /// Stable tool name for saved in-game loadouts.
 pub const GET_LOADOUTS_TOOL: &str = "get_loadouts";
+pub const APPLY_LOADOUT_TOOL: &str = "apply_loadout";
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApplyLoadoutArgs {
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub character: String,
+    #[schemars(range(min = 1, max = 12))]
+    pub slot: Option<u8>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub name: Option<String>,
+}
+impl ApplyLoadoutArgs {
+    pub fn request(&self) -> Result<destiny_app::ApplyLoadoutRequest, McpError> {
+        destiny_app::SearchTerm::new(&self.character).map_err(McpError::from)?;
+        let loadout = match (&self.slot, &self.name) {
+            (Some(slot), None) if (1..=12).contains(slot) => {
+                destiny_app::LoadoutSelector::Slot(*slot)
+            }
+            (None, Some(name)) => {
+                destiny_app::SearchTerm::new(name).map_err(McpError::from)?;
+                destiny_app::LoadoutSelector::Name(name.clone())
+            }
+            _ => return Err(McpError::new(ErrorCategory::ProviderValidation)),
+        };
+        Ok(destiny_app::ApplyLoadoutRequest {
+            character: destiny_app::CharacterId::new(&self.character),
+            loadout,
+            intent: destiny_app::MoveIntentAuthorization::Explicit,
+        })
+    }
+}
+pub fn apply_loadout_tool() -> Tool {
+    let mut tool = Tool::new(
+        APPLY_LOADOUT_TOOL,
+        "Apply one saved in-game loadout. Required character is an exact id or unique class; supply exactly one of one-based slot or normalized exact name. Unknown or ambiguous names list candidates, never guess. Go to orbit or a social space first (offline also allowed). Acknowledgement returns applied without a post-action profile request; freshness is invalidated. No retry on failure or uncertainty.",
+        JsonObject::new(),
+    ).with_input_schema::<ApplyLoadoutArgs>();
+    let mut schema = (*tool.input_schema).clone();
+    schema.insert(
+        "oneOf".into(),
+        serde_json::json!([
+            {"required":["slot"],"not":{"required":["name"]}},
+            {"required":["name"],"not":{"required":["slot"]}}
+        ]),
+    );
+    tool.input_schema = std::sync::Arc::new(schema);
+    tool
+}
 
 /// Stable tool name for the single semantic mutation.
 pub const MOVE_ITEM_TOOL: &str = "move_item";

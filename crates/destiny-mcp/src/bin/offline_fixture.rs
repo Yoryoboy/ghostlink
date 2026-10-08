@@ -283,7 +283,71 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         FakeClock::fixed(NOW),
         TTL,
     );
+    if !std::env::var(SCENARIO_ENV)
+        .unwrap_or_default()
+        .starts_with("loadout-")
+    {
+        return ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service));
+    }
+    let mut loadout_character = character("1");
+    loadout_character.id = CharacterId::new("1");
+    loadout_character.class = Some("Hunter".into());
+    let loadout_repository = FixtureRepository::seeded(&[loadout_character.clone()], &[]);
+    let loadout_world = Arc::new(Mutex::new(FixtureWorld {
+        characters: vec![loadout_character],
+        items: vec![],
+        refresh_failed: false,
+        stack_arrived: false,
+    }));
+    let mut action = destiny_app::test_support::QueuedLoadoutActionGateway::new();
+    let outcome = match std::env::var(SCENARIO_ENV).ok().as_deref() {
+        Some("loadout-location") => destiny_app::LoadoutActionOutcome::Rejected(
+            destiny_app::LoadoutActionRejection::RestrictedLocation,
+        ),
+        Some("loadout-auth") => destiny_app::LoadoutActionOutcome::AuthenticationRefused,
+        Some("loadout-transient") => destiny_app::LoadoutActionOutcome::Transient,
+        Some("loadout-uncertain") => destiny_app::LoadoutActionOutcome::Uncertain,
+        _ => destiny_app::LoadoutActionOutcome::Applied,
+    };
+    action.queue(Ok(outcome));
+    let mutation_service = destiny_mcp::apply_loadout::ApplyLoadoutMutationService {
+        inner: mutation_service,
+        service: destiny_app::ApplyLoadoutService::new(ProfileSyncService::new(
+            WorldGateway {
+                membership: membership(),
+                world: loadout_world,
+            },
+            loadout_repository,
+        )),
+        action,
+        clock: FakeClock::fixed(NOW),
+        policy: TTL,
+        last_attempt: None,
+    };
     ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
+}
+
+impl destiny_app::LoadoutGateway for WorldGateway {
+    fn load_loadouts(
+        &mut self,
+        _: &DestinyMembership,
+    ) -> Result<destiny_app::LoadoutSnapshot, AppError> {
+        Ok(destiny_app::LoadoutSnapshot {
+            characters: vec![destiny_app::CharacterLoadouts {
+                character_id: CharacterId::new("1"),
+                loadouts: vec![destiny_app::Loadout {
+                    slot_index: 2,
+                    name_hash: 7,
+                    color_hash: 8,
+                    icon_hash: 9,
+                    items: vec![destiny_app::LoadoutItem {
+                        instance_id: ItemInstanceId::new("123"),
+                        plugs: vec![],
+                    }],
+                }],
+            }],
+        })
+    }
 }
 
 struct FixtureLoadouts;
@@ -869,7 +933,7 @@ impl InventoryRepository for FixtureRepository {
     fn invalidate_freshness(&mut self) -> Result<(), AppError> {
         if matches!(
             std::env::var(SCENARIO_ENV).ok().as_deref(),
-            Some("pull-storage" | "stack-storage")
+            Some("pull-storage" | "stack-storage" | "loadout-storage")
         ) {
             return Err(AppError::new(ErrorCategory::LocalStorage));
         }
@@ -960,7 +1024,11 @@ impl destiny_app::WorldDefinitionRepository for FixtureRepository {
         self.definitions.lookup_activity_type(hash)
     }
     fn lookup_loadout_name(&self, hash: u32) -> Result<Option<String>, AppError> {
-        self.definitions.lookup_loadout_name(hash)
+        if hash == 7 {
+            Ok(Some("PvE".into()))
+        } else {
+            self.definitions.lookup_loadout_name(hash)
+        }
     }
     fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
         self.definitions.world_definition_counts()

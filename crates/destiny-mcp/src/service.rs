@@ -832,6 +832,12 @@ pub struct MoveItemRequest {
 /// bounded MCP projections defined in [`crate::schema`]; a failure is a stable
 /// sanitized [`McpError`].
 pub trait MutationToolService {
+    fn apply_loadout(
+        &mut self,
+        _request: &crate::schema::ApplyLoadoutArgs,
+    ) -> Result<destiny_output::apply_loadout::ApplyLoadoutOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
     fn pull_stack(
         &mut self,
         _request: &crate::schema::PullStackArgs,

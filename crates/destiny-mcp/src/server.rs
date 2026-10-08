@@ -60,7 +60,7 @@ const READ_ONLY_INSTRUCTIONS: &str =
 /// The text must not claim the server is read-only: composing the seam adds the
 /// single intent-authorized `move_item` mutation, so the advertised capability
 /// has to match the discovery set.
-const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item`, `equip_item`, and `set_lock_state`, `pull_item`, and `pull_stack` mutations.";
+const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item`, `equip_item`, and `set_lock_state`, `pull_item`, `pull_stack`, and `apply_loadout` mutations.";
 
 /// The tools-only RMCP server over one shared read service and an optional
 /// mutation seam.
@@ -123,6 +123,7 @@ impl ReadToolServer {
             tools.push(crate::schema::set_lock_state_tool());
             tools.push(crate::schema::pull_item_tool());
             tools.push(crate::schema::pull_stack_tool());
+            tools.push(crate::schema::apply_loadout_tool());
         }
         ListToolsResult {
             tools,
@@ -155,6 +156,7 @@ impl ReadToolServer {
             || name == crate::schema::SET_LOCK_STATE_TOOL
             || name == crate::schema::PULL_ITEM_TOOL
             || name == crate::schema::PULL_STACK_TOOL
+            || name == crate::schema::APPLY_LOADOUT_TOOL
         {
             self.mutation.as_ref()
         } else {
@@ -407,6 +409,20 @@ fn dispatch_mutation_locked(
             result.is_error = Some(!output.is_success());
             result
         }));
+    }
+    if name == crate::schema::APPLY_LOADOUT_TOOL {
+        let args: crate::schema::ApplyLoadoutArgs = deserialize(arguments)?;
+        if let Err(error) = args.request() {
+            return Ok(error.into_call_tool_result());
+        }
+        let mut guard = mutation.lock().map_err(|_| internal_error())?;
+        return Ok(guard
+            .apply_loadout(&args)
+            .map_or_else(tool_error, |output| {
+                let mut result = CallToolResult::structured(output.value);
+                result.is_error = Some(output.exit_code != 0);
+                result
+            }));
     }
     if name == crate::schema::SET_LOCK_STATE_TOOL {
         let args: crate::schema::SetLockStateArgs = deserialize(arguments)?;
@@ -1512,7 +1528,8 @@ mod tests {
                 crate::schema::EQUIP_ITEM_TOOL,
                 crate::schema::SET_LOCK_STATE_TOOL,
                 crate::schema::PULL_ITEM_TOOL,
-                crate::schema::PULL_STACK_TOOL
+                crate::schema::PULL_STACK_TOOL,
+                crate::schema::APPLY_LOADOUT_TOOL
             ]
         );
         let tool = server

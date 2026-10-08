@@ -55,7 +55,7 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
 - [x] **IAX-002 — Optimistic lock/unlock.**
 - [x] **IAX-003 — Optimistic Postmaster pull and pull-stack.**
 - [x] **IAX-004 — EquipLoadout adapter and port** (allowlist, request, receipt).
-- [ ] **IAX-005 — Apply loadout service, CLI and MCP** (resolve slot and
+- [x] **IAX-005 — Apply loadout service, CLI and MCP** (resolve slot and
   character, optimistic outcome, docs/skill).
 - [ ] **IAX-006 — EquipItems batch adapter and port** (per-item results).
 - [ ] **IAX-007 — Batch equip service, CLI and MCP** (combined plan, transfers
@@ -125,6 +125,13 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   transport/redaction/boundary tests. RED: missing core types/port; GREEN: 1,829
   passed / 0 failed / 0 ignored across 67 suites; fmt and clippy PASS. No service,
   CLI/MCP wiring, live account action or commit; checkbox remains open.
+- IAX-005 implementation progress: shared fresh live slot/name resolution and
+  single-dispatch optimistic service, CLI `apply-loadout`, MCP `apply_loadout`,
+  durable invalidation, receipt-preserving storage failure, location guidance,
+  shared sanitized output and production session wiring. RED: missing CLI command;
+  offline service/parity/stdio coverage added. GREEN: 1,838 passed / 0 failed,
+  fmt/clippy/diff checks PASS. Checkbox stays open for parent review;
+  no live account action or commit.
 - IAX-001 committed as `635a552`.
 - IAX-002 independent verification: fmt, clippy, all-features and default
   workspace tests (0 failures), diff check PASS; Applied only on HTTP 200 +
@@ -141,3 +148,12 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   credentials; transport reuses the hardened transfer client; focused
   `loadout_action` suite 7 passed. Writer full suite 1,829 / 0. Independent
   full verification deferred to the IAX-005 verifier (covers both).
+- IAX-004 committed as `6448ba3`.
+- IAX-005 independent verification (covers IAX-004): fmt, clippy, all-features
+  1,838 / 0, default 1,815 / 0, diff check PASS; adapter, slot conversion
+  (+1 presentation / -1 dispatch), exact name resolution, single dispatch,
+  invalidation, 0/41/42 and MCP parity PASS. Composition finding "HTTP
+  session not shared" is not a defect: the parent's task wording was wrong.
+  Shared HTTP affinity was deliberately DROPPED (`ghostlink-http-affinity.md`,
+  2026-10-05), and per-action clients match the lock wiring. MCP pacing is
+  process-local.

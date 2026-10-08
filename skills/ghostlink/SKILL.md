@@ -47,6 +47,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Unlockable supers, aspects, fragments | `ghostlink subclass-options` |
 | Artifact points and active perks | `ghostlink artifact` |
 | Saved in-game loadouts | `ghostlink loadouts` |
+| Apply one saved loadout on an explicit character | MCP `apply_loadout`; fallback `ghostlink apply-loadout` |
 | Weekly rotation predictions (login required) | `ghostlink weekly-reset` |
 | Weekly progress for one character | `ghostlink weekly` |
 | Data looks outdated or after an in-game change | `ghostlink sync` |
@@ -61,6 +62,26 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Browser callback never reaches login (Linux) | `ghostlink handler status` |
 
 `--character` accepts a class name (`hunter`, `titan`, `warlock`) on most commands, but `ghostlink search-inventory --character` requires the exact numeric character ID; get it from `ghostlink list-characters` first.
+
+## Apply saved loadouts
+
+Require explicit user intent for the saved slot/name and character. Prefer MCP
+`apply_loadout` with `{"character":"hunter","slot":3}` or
+`{"character":"hunter","name":"PvE"}` (exactly one of slot/name, no extra fields).
+Fallback: `ghostlink apply-loadout 3 --character hunter --json`. Character is
+required: exact owned id or unique class; never default. Slots are one-based
+1–12 from `get_loadouts` / `ghostlink loadouts`. Names use normalized exact matching
+within that character; unknown/ambiguous names list candidates, never guess.
+Requires login and loaded Manifest definitions. Ask the user to go to orbit or
+a social space first (offline is also allowed); location refusal explicitly says
+"go to orbit or a social space and retry". One fresh live read precedes one action.
+Report `kind: "apply_loadout"`, `character`, `slot`, `name`, `outcome`, `receipt`
+and `reason`. `applied` (CLI 0 / MCP success) means acknowledged, not observed.
+Failure/refusal/auth/transient/uncertain is 41; local invalidation failure is 42,
+retaining the receipt: "local state could not be updated after the action".
+No post-action request, provider-lag exit 43 or automatic retry. Every dispatched
+attempt invalidates freshness; read later and reassess intent, never blindly
+repeat `apply-loadout`, including after nonzero exit.
 
 ## Postmaster limits
 
@@ -139,7 +160,7 @@ explicit intent before another action.
 1. Pick the command from the table; check its `--help` if not yet seen.
 2. Run it with `--json`. Reads refresh a stale profile automatically; use `ghostlink sync` only to force freshness.
 3. On exit 0, answer from the JSON. Mention `metadata.checked_at` when freshness matters.
-4. On non-zero exit, parse stderr. An object with `status` is a move, equip, lock or unlock result: read `status` and `reason`. For `kind: "instanced_pull"` or `kind: "stack_pull"`, read `disposition`, independent `receipt` and `failure`; there are no post-action observations. Otherwise read `error.code`. Then follow `references/exit-codes.md`.
+4. On non-zero exit, parse stderr. An object with `status` is a move, equip, lock or unlock result: read `status` and `reason`. For `kind: "instanced_pull"` or `kind: "stack_pull"`, read `disposition`, independent `receipt` and `failure`; there are no post-action observations. For `kind: "apply_loadout"`, read `outcome`, `receipt`, `reason` and any name-resolution `candidates`. Otherwise read `error.code`. Then follow `references/exit-codes.md`.
 5. For mutations, quote the resolved item and destination (move/equip) or requested lock state (lock/unlock) back to the user if inferred from earlier conversation; obtain explicit intent before acting. For pull, confirm the exact genuine instance ID and its observed Postmaster owner.
 
 ## Output Contract

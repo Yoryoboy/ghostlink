@@ -1,6 +1,6 @@
 # Ghostlink MCP server (`destiny-mcp`)
 
-`destiny-mcp` serves bounded read tools plus four default-enabled semantic
+`destiny-mcp` serves bounded read tools plus six default-enabled semantic
 mutations over the Model Context Protocol stdio transport:
 
 ```text
@@ -19,6 +19,7 @@ equip_item        transfer if necessary, equip on an explicit character, return 
 set_lock_state    lock or unlock one explicitly selected owned item, return acceptance
 pull_item         pull one genuine Postmaster equipment instance to its owner
 pull_stack        pull an explicit amount of a non-instanced Postmaster stack
+apply_loadout     apply one saved in-game loadout on an explicit character
 ```
 
 Mutation is composed by default in the product binary: its profile gateway and
@@ -65,6 +66,27 @@ have `isError=true`. Invalidation storage failure after dispatch fails closed
 verification exits 42/43 are no longer emitted. Never blindly retry; sync later
 to confirm. See [Lock or unlock one item](cli.md#lock-or-unlock-one-item).
 All publishing reads and mutations share the same server operation guard.
+
+`apply_loadout` accepts `{"character":"hunter","slot":3}` or
+`{"character":"hunter","name":"PvE"}`: character is required (exact owned id
+or unique case-insensitive class), and exactly one of slot/name is required.
+Slots are one-based (1–12) as shown by `get_loadouts`; names use normalized exact
+matching within that character. Unknown/ambiguous names return typed errors and
+candidates without guessing; empty/unavailable slots refuse. Unknown fields and
+invalid selectors are rejected before service I/O. Requires login and loaded
+Manifest definitions; orbit, a social space, or an offline character is required.
+Location refusal says "go to orbit or a social space and retry".
+
+One call performs fresh preflight, a live component-206 read, and exactly one
+EquipLoadout action. JSON matches `ghostlink apply-loadout --json`: `kind:
+"apply_loadout"`, `character`, one-based `slot`, `name`, `outcome`, bounded
+`receipt`, and `reason`. `applied` is acknowledgement (`isError=false`, CLI 0),
+not observed state. Refusal/auth/transient/uncertain attempts are errors (CLI 41),
+and durable invalidation failure fails closed (CLI 42), retaining the receipt:
+"local state could not be updated after the action". Every dispatched attempt
+invalidates freshness; the next ordinary read forces sync. No post-action request
+or retry; process-local loadout attempts are paced at one per second. No global
+cross-process throttle guarantee. Never blindly repeat an uncertain action.
 
 Install both binaries from a release and run `ghostlink` for setup (or
 `ghostlink login` for sign-in only). Register `destiny-mcp` in your agent using

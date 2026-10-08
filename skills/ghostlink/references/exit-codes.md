@@ -31,6 +31,24 @@ instruction object on stdout before waiting.) The failure object is either:
 | 50–52 | `credential_store_unavailable` / `local_storage` / `configuration_error` | Local setup problem; report to the user. |
 | 70 | `internal_error` | Report and stop. |
 
+## Apply loadout `outcome`
+
+`ghostlink apply-loadout <slot|name> --character <class|id> --json` and MCP
+`apply_loadout` share `kind: "apply_loadout"`, character, one-based slot, name,
+outcome, receipt and reason. Exactly one MCP slot/name; names are normalized exact
+matches within that character. Unknown/ambiguous names list candidates; select
+explicitly, never guess. Empty/unavailable slots refuse without an action.
+
+| `outcome` | Exit | Agent action |
+|---|---:|---|
+| `applied` | 0 | Acknowledged, not observed. Next ordinary read forces sync. |
+| `refused` / `failed` | 41 | Report reason/receipt/candidates; no automatic retry. Location refusal: go to orbit or a social space and retry only with reassessed intent. |
+| `local_state_failed` | 42 | Local state could not be updated after the action; receipt retained. Sync/read, never blindly repeat. |
+
+Startup/argument errors use the usual error envelope and exits. Requires login,
+Manifest definitions and orbit/social space/offline. No post-action request,
+provider-lag exit 43 or retry; every dispatched attempt invalidates freshness.
+
 ## Pull `disposition` (CLI genuine-instance equipment only)
 
 | `disposition` | Exit | Agent action |
