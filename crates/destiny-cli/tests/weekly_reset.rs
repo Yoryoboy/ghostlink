@@ -239,8 +239,36 @@ fn reset() -> WeeklyReset {
 fn weekly_reset_text_resolved_unresolved_windows_and_empty_activities() {
     assert_eq!(
         render_weekly_reset(OutputMode::Human, &reset()),
-        "Weekly reset (manifest v1)\nCalendar (prediction)\nWeek of 2026-10-06 14:00 -03:00 → 2026-10-13 14:00 -03:00 (exclusive end)\n  Raids (prediction): Alpha\nLive milestones (observed)\nRaid?Name [2026-09-29 17:00Z -> 2026-10-06 17:00Z]\n  - Activity\n    modifiers: A, unresolved #5\n  - unresolved #6\nunresolved #7"
+        "Weekly reset (manifest v1)\nCalendar (prediction)\nWeek of 2026-10-06 14:00 -03:00 → 2026-10-13 14:00 -03:00 (exclusive end)\n  Raids (prediction): Alpha\nLive milestones (observed)\nRaid?Name [2026-09-29 17:00Z -> 2026-10-06 17:00Z]\n  - Activity\n    modifiers: A\n  - unresolved #6\nunresolved #7"
     );
+}
+
+#[test]
+fn weekly_reset_text_omits_unresolved_modifiers_but_json_keeps_them() {
+    let mut reset = reset();
+    let activity = reset
+        .milestones
+        .iter_mut()
+        .flat_map(|milestone| milestone.activities.iter_mut())
+        .find(|activity| activity.hash == 6)
+        .unwrap();
+    activity.modifiers = vec![WeeklyModifier::new(8, D::Unresolved)];
+    let text = render_weekly_reset(OutputMode::Human, &reset);
+    assert!(!text.contains("unresolved #5"));
+    assert!(!text.contains("unresolved #8"));
+    assert!(text.contains("  - unresolved #6\nunresolved #7"));
+    let json: serde_json::Value =
+        serde_json::from_str(&render_weekly_reset(OutputMode::Json, &reset)).unwrap();
+    let unresolved: Vec<_> = json["milestones"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|milestone| milestone["activities"].as_array().unwrap())
+        .flat_map(|activity| activity["modifiers"].as_array().unwrap())
+        .filter(|modifier| modifier["resolved"] == false)
+        .map(|modifier| modifier["hash"].as_u64().unwrap())
+        .collect();
+    assert_eq!(unresolved, [5, 8]);
 }
 
 #[test]
