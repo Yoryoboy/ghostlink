@@ -109,6 +109,16 @@ G5/G7 CLI UX.
     7-digit fractions tested. Workspace 1,899 pass, clippy clean. +765/-42
     (size:exception). Commit: see git log (`feat(sync): discard profiles not
     newer than the stored one`).
+  - [x] E1 instanced pulls from the local projection (`670e276`, fix
+    `85681b8` known-full refuses even with unknown occupants): ordinary sync,
+    occupancy by definition bucket (DIM) vs audited capacities, unknown
+    occupancy dispatches, Bungie 1642 → typed destination-full, acknowledged
+    `PullFromPostmaster` applied. No per-action Manifest evidence fetch.
+  - [x] E2 `InventoryEffect::PullStack` + SQLite stack persistence
+    (`7024f92`, DIM reducer.ts:231-295; not idempotent).
+  - [x] E3 stack pulls from the local projection (`1d858b2`): ordinary sync,
+    audited capacities, 1642 mapping, `PullStack` applied once, expansion
+    bound (≤50 new rows). Capacity-evidence port kept for compatibility.
 - [ ] **T3 — DIM-style action pipeline.** Remove forced preflight acquisition
   from move, lock, equip, pull item, pull stack and apply loadout; plan and
   execute from the local projection; apply the effect from T2 on
@@ -123,7 +133,10 @@ G5/G7 CLI UX.
   when fully applied. `verified_noop` only
   from local state that includes our own effects; fix or remove
   `profile_refresh` and tool descriptions that claim invalidation.
-- [ ] **T6 — G1 loadouts.** `get_loadouts` returns summaries (slot, name,
+- [x] **T6 — G1 loadouts.** Done on `feat/compact-loadouts` (from main),
+  commit `b657b88`, PR #78; review-eaee74a19c8192e0. Plug texts deduplicated
+  by content (`plug_insights` + per-plug `insight` index); fixture 56,441 →
+  581 bytes. Original scope: `get_loadouts` returns summaries (slot, name,
   subclass, item names); new per-loadout detail tool by slot/name with
   deduplicated plug text. CLI parity. Text/`structuredContent` duplication
   reviewed separately after checking Pi support.
@@ -153,7 +166,10 @@ G5/G7 CLI UX.
   C1+C2 `5fdc960..2286f97` review-39e8e68a24f8a08f (advisory R3-001 → T5);
   D `2286f97..8df605d` review-d303c06c0c266e3c; A `fd36f4f..5e1e4a3`
   review-932172cc582153fc (advisory R3-001 stale docs on malformed minted
-  values, fixed in the follow-up docs commit).
+  values, fixed in the follow-up docs commit). T6 review-eaee74a19c8192e0;
+  E1 review-6360156695547b12 (advisory → fix `85681b8`,
+  review-b350a2e156c22cc5); E2 review-f25d4dfae107b3ee (advisory → E3
+  expansion bound); E3 review-2657454001cb4b39.
 
 - Exploration (2026-10-08): DIM plans from in-memory store with no fetch
   before writes (`item-move-service.ts`, `destiny2-api.ts:186-263`), applies
