@@ -1384,6 +1384,33 @@ fn unknown_occupant_definitions_blind_attempt_instead_of_guessing_zero() {
 }
 
 #[test]
+fn known_full_bucket_refuses_even_with_unknown_occupants() {
+    let mut input = input();
+    for id in 10..20 {
+        input.items.push(item(
+            &id.to_string(),
+            ItemLocation::Character(CharacterId::new("2")),
+        ));
+    }
+    let mut unknown = item("30", ItemLocation::Character(CharacterId::new("2")));
+    unknown.item_hash = ItemHash::new(8);
+    input.items.push(unknown);
+    let s = service(input, vec![definition()], "v1", false, evidence());
+    let snapshot = s.sync.repository().load_current().unwrap().unwrap();
+    assert!(matches!(
+        s.policy.check_local_capacity(
+            &snapshot,
+            &s.definitions,
+            &CharacterId::new("2"),
+            BucketHash::new(BUCKET)
+        ),
+        Err(LocalCapacityError::Refused(
+            CapacityRefusal::AtCapacity { .. }
+        ))
+    ));
+}
+
+#[test]
 fn acknowledged_pull_fills_last_slot_and_next_pull_refuses_locally() {
     let mut input = input();
     input

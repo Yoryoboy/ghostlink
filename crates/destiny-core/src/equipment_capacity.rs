@@ -106,14 +106,16 @@ impl EquipmentCapacityPolicy {
                 _ => unknown = true,
             }
         }
-        if unknown {
-            return Ok(LocalEquipmentOccupancy::Unknown);
-        }
+        // Known occupants alone can prove the bucket full; unknown ones only
+        // matter while known occupancy still leaves room.
         if occupied >= capacity {
             return Err(LocalCapacityError::Refused(CapacityRefusal::AtCapacity {
                 occupied,
                 capacity,
             }));
+        }
+        if unknown {
+            return Ok(LocalEquipmentOccupancy::Unknown);
         }
         Ok(LocalEquipmentOccupancy::Known { occupied, capacity })
     }
