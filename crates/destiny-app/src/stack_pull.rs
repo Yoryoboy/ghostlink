@@ -349,7 +349,9 @@ impl<
             .derive(bucket, request.item_hash(), &snapshot.stacks)
             .map_err(Refusal::Capacity)?;
         capacity.max_stack_size = d.max_stack_size;
-        capacity.unique_stack = d.stack_unique_label.as_ref().map(|s| !s.is_empty());
+        // The instance kind is known here, so the inventory block was decoded:
+        // an absent label (most live stacks) means "not unique", as in DIM.
+        capacity.unique_stack = Some(d.stack_unique_label.as_ref().is_some_and(|s| !s.is_empty()));
         capacity.side_effects = d.does_postmaster_pull_have_side_effects;
         if let StackPullDecision::Refused(reason) =
             evaluate_stack_pull(&request, &snapshot.stacks, &capacity)
@@ -383,7 +385,7 @@ impl<
         rows.sort();
         let fingerprint = Fingerprint {
             capacity,
-            unique_label: d.stack_unique_label.expect("eligible uniqueness is known"),
+            unique_label: d.stack_unique_label.unwrap_or_default(),
             policy_version: self.policy.definition_version().clone(),
             policy_artifact: self.policy.bucket_artifact_identity().to_owned(),
             rows,
