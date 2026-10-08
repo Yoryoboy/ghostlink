@@ -1002,7 +1002,10 @@ impl InventoryRepository for FixtureRepository {
         membership: &DestinyMembership,
         effects: &[destiny_app::InventoryEffect],
     ) -> Result<InventorySnapshot, AppError> {
-        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("batch-storage") {
+        if matches!(
+            std::env::var(SCENARIO_ENV).ok().as_deref(),
+            Some("batch-storage" | "pull-storage")
+        ) {
             return Err(AppError::new(ErrorCategory::LocalStorage));
         }
         let mut projection = self.projection()?;

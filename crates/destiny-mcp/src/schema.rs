@@ -298,7 +298,7 @@ impl PullItemArgs {
     }
 }
 pub fn pull_item_tool() -> Tool {
-    Tool::new(PULL_ITEM_TOOL, "Pull one genuine Postmaster equipment instance into its freshly derived owner's inventory. Requires authentication, qualified definitions and fresh capacity proof. No names, hashes, stacks, quantity or destination. One action; Bungie acknowledgement returns applied (success), not observed arrival, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail; never blindly retry.", JsonObject::new())
+    Tool::new(PULL_ITEM_TOOL, "Pull one genuine Postmaster equipment instance into its committed owner's inventory. Requires authentication and qualified definitions. Ordinary sync reuses fresh local state without profile or Manifest-index capacity fetches. Known full definition buckets refuse locally; unknown occupancy permits Bungie's final validation. No names, hashes, stacks, quantity or destination. One action; acknowledgement returns applied (success), updates local inventory without equipping and retains freshness, not observed arrival. Incomplete attempts or persistence failure invalidate freshness. Numeric error 1642 means destination full; free a slot and reassess. Never blindly retry.", JsonObject::new())
         .with_input_schema::<PullItemArgs>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
 }

@@ -197,6 +197,13 @@ fn classify_response(response: &mut InstancedPullHttpResponse) -> InstancedPullO
         envelope.message_data,
         envelope.detailed_error_trace,
     );
+    // Bungie Platform DestinyNoRoomInDestination = 1642. There is no local
+    // PlatformErrorCodes table; never infer this refusal from provider text.
+    if envelope.error_code == 1642 {
+        return InstancedPullOutcome::Rejected(
+            destiny_core::InstancedPullRejection::DestinationFull,
+        );
+    }
     if envelope.error_code == 1
         && envelope.throttle_seconds >= 0
         && envelope
@@ -365,6 +372,27 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn numeric_no_room_refuses_without_borrowing_provider_text() {
+        for status in ["DestinyNoRoomInDestination", "Success", "untrusted"] {
+            let body =
+                json!({"Response":0,"ErrorCode":1642,"ThrottleSeconds":0,"ErrorStatus":status});
+            assert_outcome(
+                response(200, &body.to_string()),
+                InstancedPullOutcome::Rejected(
+                    destiny_core::InstancedPullRejection::DestinationFull,
+                ),
+            );
+        }
+        for code in [1641, 1643, 999] {
+            let body = json!({"Response":0,"ErrorCode":code,"ThrottleSeconds":0,"ErrorStatus":"DestinyNoRoomInDestination"});
+            assert_outcome(
+                response(200, &body.to_string()),
+                InstancedPullOutcome::Uncertain,
+            );
+        }
+    }
+
     #[test]
     fn instanced_pull_strict_numeric_envelope_and_duplicate_keys() {
         for text in [

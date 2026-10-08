@@ -98,24 +98,26 @@ fn positive_int64_id(value: &str) -> bool {
 }
 
 /// Minimal, sanitized classification of a deterministic received refusal.
-/// No transfer-specific refusal assumptions or provider numeric codes are mapped.
+/// Numeric provider mapping is adapter-owned; no provider text is retained.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InstancedPullRejection {
     /// The provider deterministically rejected the request; nothing applied.
     InvalidRequest,
+    /// DestinyNoRoomInDestination (Bungie Platform error 1642).
+    DestinationFull,
 }
 
 impl InstancedPullRejection {
     pub const fn category(self) -> ErrorCategory {
         match self {
-            Self::InvalidRequest => ErrorCategory::ProviderValidation,
+            Self::InvalidRequest | Self::DestinationFull => ErrorCategory::ProviderValidation,
         }
     }
 }
 
 /// Evidence from one attempt, never proof of observed recovery or authorization.
-/// No variant permits automatic retry. Fresh post-action observation is required
-/// separately; this core unit supplies no outcome-to-provider-code mapping.
+/// No variant permits automatic retry. Acknowledged effects may be persisted
+/// locally; this core unit supplies no outcome-to-provider-code mapping.
 ///
 /// Acknowledgement deliberately has no applied, recovered or verified helpers:
 ///

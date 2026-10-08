@@ -256,7 +256,7 @@ pub enum Command {
     Move(MoveArgs),
     /// Pull one genuine Postmaster equipment instance into its owner's inventory.
     #[command(
-        long_about = "Pull one genuine Postmaster equipment instance using a canonical positive int64 instance ID only. Requires login and qualified stored Manifest definitions. Names, hashes, anonymous stacks, quantity and destination arguments are unsupported. Bungie acknowledgement returns applied (exit 0), not observed arrival, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail; never blindly retry."
+        long_about = "Pull one genuine Postmaster equipment instance using a canonical positive int64 instance ID only. Requires login and qualified stored Manifest definitions. Names, hashes, anonymous stacks, quantity and destination arguments are unsupported. Ordinary sync reuses fresh local state; known full definition buckets refuse locally, unknown occupancy permits Bungie's final validation. No per-action Manifest capacity fetch. Bungie acknowledgement returns applied (exit 0), updates local inventory without equipping and retains freshness, not observed arrival. Incomplete attempts or persistence failure invalidate freshness. Refused and transport-uncertain attempts fail; never blindly retry."
     )]
     Pull(PullArgs),
     /// Pull a non-instanced Postmaster stack amount from its explicit owner.

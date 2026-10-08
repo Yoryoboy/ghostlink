@@ -1,17 +1,17 @@
-//! Fresh instanced Postmaster planning and consumed-plan optimistic execution.
+//! Local instanced Postmaster planning and consumed-plan optimistic execution.
 //! Acknowledgement is success, not a post-action observation or atomic guarantee.
 
-use crate::{ProfileSyncService, ProfileSyncWithObservationsOutcome, PublishedProfileAcquisition};
+use crate::ProfileSyncService;
 use destiny_core::{
     AppError, BucketHash, CapacityRefusal, CharacterId, Clock, DefinitionRepository,
-    DefinitionVersion, DestinyMembership, EquipmentCapacityEvidence, EquipmentCapacityPolicy,
-    ErrorCategory, FreshnessPolicy, InstancedPullGateway, InstancedPullOutcome,
-    InstancedPullRequest, InventoryRepository, InventorySnapshotInput, ItemHash, ItemInstanceId,
-    ItemLocation, ManifestGateway, PlanId, PlanIdGenerator, PlanLifetime, ProfileAcquisition,
-    ProfileGateway, ProfileSyncReason, Resolution, SyncRevision, Timestamp,
+    DefinitionVersion, DestinyMembership, EquipmentCapacityPolicy, ErrorCategory, FreshnessPolicy,
+    InstancedPullGateway, InstancedPullOutcome, InstancedPullRequest, InventoryRepository,
+    InventorySnapshot, ItemHash, ItemInstanceId, ItemLocation, ManifestGateway, PlanId,
+    PlanIdGenerator, PlanLifetime, ProfileGateway, ProfileSyncReason, Resolution, SyncRevision,
+    Timestamp,
 };
 
-/// Select one genuine instance. Destination is its freshly observed Postmaster owner.
+/// Select one genuine instance. Destination is its committed Postmaster owner.
 #[derive(Debug, Eq, PartialEq)]
 pub struct InstancedPullPlanRequest {
     pub membership: DestinyMembership,
@@ -56,23 +56,8 @@ impl From<InstancedPullRefusal> for InstancedPullPlanningError {
     }
 }
 
-// Ephemeral runtime buckets do not change the inventory revision. Bind the
-// complete eligibility basis separately so future preflight cannot reuse proof
-// on revision equality alone. IDs are sorted, preserving occupant identity.
-#[derive(Debug, Eq, PartialEq)]
-struct EligibilityFingerprint {
-    item_hash: ItemHash,
-    instance_kind: bool,
-    side_effects: bool,
-    bucket: BucketHash,
-    policy_version: DefinitionVersion,
-    policy_artifact: String,
-    occupied: usize,
-    occupants: Vec<ItemInstanceId>,
-}
-
 /// Opaque bounded intent, NOT dispatch authority. Execution takes
-/// this plan by value on every path and reacquires/reproves eligibility. There is
+/// this plan by value on every path and checks committed eligibility and revision. There is
 /// no borrowed-plan ticket authorization, cloning, or reminting API.
 ///
 /// ```compile_fail
@@ -115,7 +100,6 @@ pub struct InstancedPullPlan {
     destination_bucket: BucketHash,
     definition_version: DefinitionVersion,
     revision: SyncRevision,
-    fingerprint: EligibilityFingerprint,
 }
 impl InstancedPullPlan {
     pub fn id(&self) -> &PlanId {
@@ -249,10 +233,14 @@ pub enum InstancedPullExecutionFailureReason {
 pub struct InstancedPullExecutionFailure {
     plan_id: PlanId,
     reason: InstancedPullExecutionFailureReason,
+    local_state_error: Option<AppError>,
 }
 impl InstancedPullExecutionFailure {
     pub fn plan_id(&self) -> &PlanId {
         &self.plan_id
+    }
+    pub fn local_state_error(&self) -> Option<&AppError> {
+        self.local_state_error.as_ref()
     }
     pub fn reason(&self) -> &InstancedPullExecutionFailureReason {
         &self.reason
@@ -261,7 +249,6 @@ impl InstancedPullExecutionFailure {
 
 struct Eligibility {
     context: PullContext,
-    fingerprint: EligibilityFingerprint,
 }
 #[derive(Debug, Eq, PartialEq)]
 pub enum PreDispatchError {
@@ -290,6 +277,8 @@ impl From<AppError> for PreDispatchError {
 pub struct InstancedPullService<G, R, D, M, C, P> {
     sync: ProfileSyncService<G, R>,
     definitions: D,
+    // Retained for constructor compatibility; instanced pulls never fetch it.
+    #[allow(dead_code)]
     manifest: M,
     policy: EquipmentCapacityPolicy,
     clock: C,
@@ -322,9 +311,9 @@ where
         }
     }
 
-    /// Always performs exactly one forced Preflight acquisition, even over an
-    /// already-fresh committed snapshot. One evidence fetch follows successful
-    /// publication; no request here can dispatch an action.
+    /// Ordinary sync reuses a fresh committed snapshot without acquisition.
+    /// Definition-based capacity is advisory; no Manifest-index evidence fetch.
+    /// Planning cannot dispatch an action.
     pub fn plan(
         &mut self,
         request: &InstancedPullPlanRequest,
@@ -332,20 +321,14 @@ where
         freshness: FreshnessPolicy,
     ) -> Result<InstancedPullPlan, InstancedPullPlanningError> {
         let now = self.clock.now()?;
-        let pair =
-            match self
-                .sync
-                .sync_with_observations(ProfileSyncReason::Preflight, freshness, now)?
-            {
-                ProfileSyncWithObservationsOutcome::Refreshed(pair) => pair,
-                ProfileSyncWithObservationsOutcome::SkippedFresh { .. } => {
-                    return Err(AppError::new(ErrorCategory::ProviderValidation).into());
-                }
-            };
-        // Fetch once even for an eligibility refusal. Never retry or substitute
-        // cached index evidence. Qualification still follows the definition gates.
-        let evidence = self.manifest.fetch_equipment_capacity_evidence()?;
-        let eligibility = self.eligibility(&request.membership, &request.item, &pair, &evidence)?;
+        self.sync
+            .sync(ProfileSyncReason::Ordinary, freshness, now)?;
+        let snapshot = self
+            .sync
+            .repository()
+            .load_current()?
+            .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))?;
+        let eligibility = self.eligibility(&request.membership, &request.item, &snapshot)?;
         let expires_at = lifetime.expires_at(now)?;
         let id = self.plan_ids.next_plan_id()?;
         let context = eligibility.context;
@@ -360,14 +343,13 @@ where
             destination_bucket: context.destination_bucket,
             definition_version: context.definition_version,
             revision: context.revision,
-            fingerprint: eligibility.fingerprint,
         })
     }
 
-    /// Consume intent, renew preflight proof and dispatch at most once. A clear
-    /// acknowledgement yields Applied without a post-action profile request.
-    /// Every received outcome invalidates local freshness; storage failure fails
-    /// closed while retaining the receipt. Gateway Err is pre-dispatch-only.
+    /// Consume intent, validate the committed revision and dispatch at most once.
+    /// Acknowledgements persist locally and retain freshness without a post-action
+    /// profile request. Incomplete receipts or persistence failures invalidate,
+    /// retaining the receipt. Gateway Err is pre-dispatch-only.
     /// Callers serialize local publication/definition use; no retry or rollback.
     ///
     /// ```compile_fail
@@ -393,12 +375,15 @@ where
             .map_err(|error| InstancedPullExecutionFailure {
                 plan_id: plan_id.clone(),
                 reason: InstancedPullExecutionFailureReason::PreDispatch(error),
+                local_state_error: None,
             })?;
         let receipt = match &dispatch.outcome {
             Ok(receipt) => receipt,
             Err(_) => {
+                let local_state_error = self.sync.repository_mut().invalidate_freshness().err();
                 return Err(InstancedPullExecutionFailure {
                     plan_id,
+                    local_state_error,
                     reason: InstancedPullExecutionFailureReason::Gateway(Box::new(dispatch)),
                 });
             }
@@ -410,7 +395,26 @@ where
                 | InstancedPullOutcome::Transient
         );
         let acknowledged = matches!(receipt, InstancedPullOutcome::Acknowledged);
-        let local_state_error = self.sync.repository_mut().invalidate_freshness().err();
+        let persistence = if acknowledged {
+            self.sync
+                .repository_mut()
+                .apply_acknowledged_effects(
+                    dispatch.context.membership(),
+                    &[destiny_core::InventoryEffect::PullFromPostmaster {
+                        item: dispatch.context.item.clone(),
+                        character: dispatch.context.owner.clone(),
+                    }],
+                )
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
+        let local_state_error = if !acknowledged || persistence.is_err() {
+            let invalidation = self.sync.repository_mut().invalidate_freshness();
+            persistence.and(invalidation).err()
+        } else {
+            None
+        };
         let disposition = if local_state_error.is_some() {
             PullDisposition::LocalStateFailed
         } else if refused {
@@ -432,11 +436,9 @@ where
         &self,
         membership: &DestinyMembership,
         item_id: &ItemInstanceId,
-        pair: &PublishedProfileAcquisition,
-        evidence: &EquipmentCapacityEvidence,
+        snapshot: &InventorySnapshot,
     ) -> Result<Eligibility, InstancedPullPlanningError> {
         use InstancedPullRefusal as Refusal;
-        let snapshot = pair.snapshot();
         if membership.membership_id() != &snapshot.metadata.membership_id
             || membership.membership_type() != snapshot.metadata.membership_type
         {
@@ -484,45 +486,14 @@ where
         if self.policy.capacity(bucket).is_none() {
             return Err(Refusal::UnsupportedBucket.into());
         }
-        let qualified = self
-            .policy
-            .qualify(evidence)
-            .map_err(|reason| match reason {
-                destiny_core::CapacityPolicyMismatch::VersionMismatch => {
-                    Refusal::PolicyVersionMismatch
+        self.policy
+            .check_local_capacity(snapshot, &self.definitions, owner, bucket)
+            .map_err(|error| match error {
+                destiny_core::LocalCapacityError::Refused(reason) => {
+                    InstancedPullPlanningError::Refused(Refusal::Capacity(reason))
                 }
-                destiny_core::CapacityPolicyMismatch::ArtifactMismatch => {
-                    Refusal::PolicyArtifactMismatch
-                }
+                destiny_core::LocalCapacityError::Infrastructure(error) => error.into(),
             })?;
-        let acquisition = ProfileAcquisition::new(
-            InventorySnapshotInput::with_metadata(snapshot),
-            pair.observations().map(<[_]>::to_vec),
-        )?;
-        let proof = qualified
-            .prove(&acquisition, owner, Some(bucket))
-            .map_err(Refusal::Capacity)?;
-        let mut occupants: Vec<_> = acquisition
-            .observations()
-            .ok_or(Refusal::Capacity(CapacityRefusal::ObservationsUnavailable))?
-            .iter()
-            .filter(|row| {
-                row.bucket_hash() == bucket
-                    && matches!(row.location(), ItemLocation::Character(id) if id == owner)
-            })
-            .map(|row| row.instance_id().clone())
-            .collect();
-        occupants.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        let fingerprint = EligibilityFingerprint {
-            item_hash: target.item_hash,
-            instance_kind: true,
-            side_effects: false,
-            bucket,
-            policy_version: self.policy.definition_version().clone(),
-            policy_artifact: self.policy.bucket_artifact_identity().to_owned(),
-            occupied: proof.occupied(),
-            occupants,
-        };
         Ok(Eligibility {
             context: PullContext {
                 membership: membership.clone(),
@@ -533,7 +504,6 @@ where
                 definition_version: snapshot.metadata.definition_version.clone(),
                 revision: snapshot.metadata.revision,
             },
-            fingerprint,
         })
     }
     /// Consumes intent on every path, never remints or retries. Caller must
@@ -547,18 +517,14 @@ where
     ) -> Result<PullAttempt, PreDispatchError> {
         let preflight_at = self.clock.now()?;
         Self::check_time(&plan, preflight_at, plan.created_at)?;
-        let pair = match self.sync.sync_with_observations(
-            ProfileSyncReason::Preflight,
-            freshness,
-            preflight_at,
-        )? {
-            ProfileSyncWithObservationsOutcome::Refreshed(pair) => pair,
-            ProfileSyncWithObservationsOutcome::SkippedFresh { .. } => {
-                return Err(AppError::new(ErrorCategory::ProviderValidation).into());
-            }
-        };
-        let evidence = self.manifest.fetch_equipment_capacity_evidence()?;
-        let eligible = self.eligibility(&plan.membership, &plan.item, &pair, &evidence)?;
+        self.sync
+            .sync(ProfileSyncReason::Ordinary, freshness, preflight_at)?;
+        let snapshot = self
+            .sync
+            .repository()
+            .load_current()?
+            .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))?;
+        let eligible = self.eligibility(&plan.membership, &plan.item, &snapshot)?;
         let context = eligible.context;
         if context.item_hash != plan.item_hash || context.owner != plan.owner {
             return Err(PreDispatchError::IdentityDrift);
@@ -569,8 +535,8 @@ where
         if context.revision != plan.revision {
             return Err(PreDispatchError::RevisionDrift);
         }
-        if eligible.fingerprint != plan.fingerprint {
-            return Err(PreDispatchError::FingerprintDrift);
+        if context.destination_bucket != plan.destination_bucket {
+            return Err(PreDispatchError::IdentityDrift);
         }
         let metadata = self
             .sync

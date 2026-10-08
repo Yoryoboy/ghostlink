@@ -53,7 +53,7 @@ provider-lag exit 43 or retry; every dispatched attempt invalidates freshness.
 
 | `disposition` | Exit | Agent action |
 |---|---:|---|
-| `applied` | 0 | Bungie acknowledged the action, not observed arrival. Next ordinary read forces sync. |
+| `applied` | 0 | Bungie acknowledged the action, not observed arrival. Instanced pulls persist locally and retain freshness; stack pulls invalidate. |
 | `uncertain` | 41 | No clear acknowledgement; sync/inspect and reassess intent, never blindly retry. |
 | `refused` | 41 / varies | Received refusal exits 41; pre-action refusal retains category exits. Report without working around it. |
 | `local_state_failed` | 42 | Local state could not be updated after the action; receipt retained. Sync/inspect, do not retry. |
@@ -61,14 +61,17 @@ provider-lag exit 43 or retry; every dispatched attempt invalidates freshness.
 Planning missing target is 32, ambiguity 31, missing definition 33; preflight
 drift/expiry is 30, other eligibility refusals default to 40. Typed pre-action
 infrastructure errors use the category table above. No post-action profile request,
-wait or observations; no provider-lag exit 43. Dispatched receipts invalidate local
-freshness durably, without guessed state. Pre-action failures have no receipt.
+wait or observations; no provider-lag exit 43. Acknowledged instanced pulls update
+character inventory without equipping and advance revision, retaining freshness.
+Incomplete attempts or persistence failures invalidate. Pre-action failures have no receipt.
 All nonzero results stay on stderr as complete structured evidence.
 
 Pull accepts only a canonical positive int64 instance ID, not names, hashes,
 quantity, destination overrides or anonymous stacks. Requires authenticated
-membership and freshly eligible original Postmaster ownership, stored definitions
-and fresh pinned Manifest capacity qualification. No full-stack/live-readiness
+membership and committed original Postmaster ownership, stored definitions
+and pinned advisory definition-bucket capacity, without a remote Manifest-index
+fetch. Known full refuses; unknown occupant definitions permit Bungie's final
+validation. Numeric error 1642 is destination full; text alone never classifies it. No full-stack/live-readiness
 claim. MCP `pull_item` uses the same shared output.
 
 ## Stack pull `disposition`

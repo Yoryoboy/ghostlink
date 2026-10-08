@@ -100,12 +100,16 @@ including empty character groups, with ordinary freshness synchronization. Curre
 coverage qualifies currency data only, not Postmaster completeness. This read
 never pulls items or exposes synthetic instance IDs. For explicit recovery intent,
 use `ghostlink pull <INSTANCE_ID>` or `ghostlink pull-stack <ITEM_HASH> --amount <N>
---character <OWNER_ID>` (MCP `pull_item` / `pull_stack`). Fresh preflight proves
-eligibility and capacity; acknowledgement returns `applied` (CLI 0 / MCP success),
+--character <OWNER_ID>` (MCP `pull_item` / `pull_stack`). Instanced pulls use
+ordinary local sync and advisory definition-bucket capacity; known full refuses,
+unknown occupancy lets Bungie decide. Stack pulls retain fresh capacity preflight.
+Acknowledgement returns `applied` (CLI 0 / MCP success),
 not observed arrival or quantities. Refused/transport-uncertain dispatched attempts
 exit 41; local invalidation storage failure fails closed (42), retaining the receipt
 and reporting "local state could not be updated after the action". There are no
-post-action profile requests or waits; the next ordinary read forces provider sync.
+post-action profile requests or waits. Acknowledged instanced pulls update local
+inventory without equipping, advance revision and retain freshness. Incomplete
+attempts or persistence failures invalidate; stack pulls invalidate every receipt.
 Never blindly retry.
 
 Move/equip use fresh preflight checks and return `applied` (exit 0) when Bungie
@@ -113,7 +117,8 @@ acknowledges every step, without post-action verification. The next ordinary rea
 forces sync; no guessed state is written. Acceptance is not an observed in-game
 state. Never blindly retry uncertain or partial results. Lock/unlock also return
 `applied` (exit 0) on acknowledgement; incomplete attempts exit 41. Their next
-read forces sync without a post-action verification request, as do pull/pull-stack.
+read forces sync without a post-action verification request, as do stack pulls;
+acknowledged instanced pulls instead retain freshness after local persistence.
 
 Apply a saved in-game loadout with `ghostlink apply-loadout <slot|name> --character
 <class|id>` (MCP `apply_loadout`). Slots are one-based as shown by `loadouts`;
