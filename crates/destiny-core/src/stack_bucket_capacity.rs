@@ -1,8 +1,9 @@
 //! Pure stack destination capacity correspondence and profile-row derivation.
 
 use crate::{
-    AppError, BucketHash, DefinitionVersion, EquipmentCapacityEvidence, ErrorCategory, ItemHash,
-    StackContainer, StackObservation, StackPullCapacityInput, StackPullRefusal,
+    AppError, BucketHash, CapacityPolicyMismatch, DefinitionVersion, EquipmentCapacityEvidence,
+    ErrorCategory, ItemHash, StackContainer, StackObservation, StackPullCapacityInput,
+    StackPullRefusal,
 };
 
 /// Reuses the existing Manifest version + bucket artifact evidence contract.
@@ -62,9 +63,12 @@ impl StackBucketCapacityPolicy {
     pub fn qualify(
         &self,
         evidence: &StackBucketCapacityEvidence,
-    ) -> Result<QualifiedStackBucketCapacityPolicy, AppError> {
-        if &self.identity != evidence {
-            return Err(AppError::new(ErrorCategory::ProviderValidation));
+    ) -> Result<QualifiedStackBucketCapacityPolicy, CapacityPolicyMismatch> {
+        if self.definition_version() != evidence.definition_version() {
+            return Err(CapacityPolicyMismatch::VersionMismatch);
+        }
+        if self.bucket_artifact_identity() != evidence.bucket_artifact_identity() {
+            return Err(CapacityPolicyMismatch::ArtifactMismatch);
         }
         Ok(QualifiedStackBucketCapacityPolicy {
             policy: self.clone(),

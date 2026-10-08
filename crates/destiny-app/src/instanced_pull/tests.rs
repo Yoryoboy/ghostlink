@@ -2070,6 +2070,11 @@ fn evidence_fetch_and_qualification_fail_closed() {
             "different",
             InstancedPullRefusal::PolicyArtifactMismatch,
         ),
+        (
+            "v2",
+            "different",
+            InstancedPullRefusal::PolicyVersionMismatch,
+        ),
     ] {
         let mut s = service(
             input(),

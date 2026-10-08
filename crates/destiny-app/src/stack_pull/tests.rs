@@ -221,6 +221,7 @@ fn membership_owner_source_and_policy_refusals() {
     for (version, artifact, reason) in [
         ("old", "artifact", PolicyVersionMismatch),
         ("v1", "changed", PolicyArtifactMismatch),
+        ("old", "changed", PolicyVersionMismatch),
     ] {
         let mut s = service(input(), vec![definition()]);
         s.manifest = QueuedManifestGateway::new();

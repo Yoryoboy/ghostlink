@@ -389,13 +389,17 @@ impl<
         if self.policy.capacity(bucket).is_none() {
             return Err(Refusal::UnsupportedBucket.into());
         }
-        let qualified = self.policy.qualify(evidence).map_err(|_| {
-            if evidence.definition_version() != self.policy.definition_version() {
-                Refusal::PolicyVersionMismatch
-            } else {
-                Refusal::PolicyArtifactMismatch
-            }
-        })?;
+        let qualified = self
+            .policy
+            .qualify(evidence)
+            .map_err(|reason| match reason {
+                destiny_core::CapacityPolicyMismatch::VersionMismatch => {
+                    Refusal::PolicyVersionMismatch
+                }
+                destiny_core::CapacityPolicyMismatch::ArtifactMismatch => {
+                    Refusal::PolicyArtifactMismatch
+                }
+            })?;
         let mut capacity = qualified
             .derive(bucket, request.item_hash(), &snapshot.stacks)
             .map_err(Refusal::Capacity)?;
@@ -496,6 +500,8 @@ impl<
             .filter(|a| a.failure().is_none())
             .and_then(PullObservationAttempt::observation)
             .is_some_and(|o| o.classification == StackPullArrival::VerifiedArrival);
+        // Confirmed refusals stay Refused even if arrival is later observed: this
+        // request did not apply, so that arrival has another cause (GPM-008f2).
         let disposition = if refused {
             PullDisposition::Refused
         } else if verified {

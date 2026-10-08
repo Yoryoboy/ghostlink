@@ -583,6 +583,8 @@ where
             .filter(|attempt| attempt.failure().is_none())
             .and_then(PullObservationAttempt::observation)
             .map(PullObservation::classification);
+        // Confirmed refusals stay Refused even if arrival is later observed: this
+        // request did not apply, so that arrival has another cause (GPM-008f2).
         let disposition = if refused {
             PullDisposition::Refused
         } else if last == Some(PullArrival::VerifiedArrival) {
@@ -656,13 +658,17 @@ where
         if self.policy.capacity(bucket).is_none() {
             return Err(Refusal::UnsupportedBucket.into());
         }
-        let qualified = self.policy.qualify(evidence).map_err(|_| {
-            if evidence.definition_version() != self.policy.definition_version() {
-                Refusal::PolicyVersionMismatch
-            } else {
-                Refusal::PolicyArtifactMismatch
-            }
-        })?;
+        let qualified = self
+            .policy
+            .qualify(evidence)
+            .map_err(|reason| match reason {
+                destiny_core::CapacityPolicyMismatch::VersionMismatch => {
+                    Refusal::PolicyVersionMismatch
+                }
+                destiny_core::CapacityPolicyMismatch::ArtifactMismatch => {
+                    Refusal::PolicyArtifactMismatch
+                }
+            })?;
         let acquisition = ProfileAcquisition::new(
             InventorySnapshotInput::with_metadata(snapshot),
             pair.observations().map(<[_]>::to_vec),

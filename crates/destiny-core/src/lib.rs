@@ -12,8 +12,8 @@ pub mod domain;
 pub mod equipment_capacity;
 pub mod error;
 pub use equipment_capacity::{
-    CapacityRefusal, EquipmentCapacityEvidence, EquipmentCapacityPolicy, EquipmentCapacityProof,
-    QualifiedEquipmentCapacityPolicy,
+    CapacityPolicyMismatch, CapacityRefusal, EquipmentCapacityEvidence, EquipmentCapacityPolicy,
+    EquipmentCapacityProof, QualifiedEquipmentCapacityPolicy,
 };
 pub mod ids;
 pub mod instanced_pull;

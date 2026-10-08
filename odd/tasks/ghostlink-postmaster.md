@@ -180,7 +180,13 @@ instance identifiers or claiming verification from an API acknowledgement alone.
     before I/O, MCP isError unless Verified, mutex reused. Pending owner-run live
     checks: pull-stack / pull_stack against a real Consumables or Modifications
     Postmaster stack, partial amount, duplicate stacks and provider lag.
-  - GPM-006d review advisories (non-blocking follow-ups): adapter outcome
+  - GPM-006d advisories RESOLVED: (1) core qualify() returns typed
+    CapacityPolicyMismatch (version precedence) for stack and equipment
+    policies, app maps it directly; (3) adapter classify_response documents
+    conservative Uncertain mapping. (2) execution boundary advisory reviewed and
+    NOT changed: GPM-008f2 decision "confirmed refusals stay Refused even after
+    arrival" is kept and now documented at both disposition sites.
+  - Original GPM-006d review advisories (non-blocking follow-ups): adapter outcome
     mapping (adapters stack_pull.rs:60-83), execution time boundaries
     (app stack_pull.rs:549-571), policy version/artifact refusal attribution
     (app stack_pull.rs:387-393).

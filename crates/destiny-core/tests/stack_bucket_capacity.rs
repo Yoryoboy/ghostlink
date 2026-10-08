@@ -113,13 +113,18 @@ fn unknown_bucket_and_identity_drift_refuse() {
             Err(StackPullRefusal::UnknownCapacity)
         );
     }
-    for (version, artifact) in [("v2", "buckets.json"), ("v1", "new.json")] {
+    for (version, artifact, reason) in [
+        (
+            "v2",
+            "buckets.json",
+            CapacityPolicyMismatch::VersionMismatch,
+        ),
+        ("v1", "new.json", CapacityPolicyMismatch::ArtifactMismatch),
+        ("v2", "new.json", CapacityPolicyMismatch::VersionMismatch),
+    ] {
         let evidence =
             StackBucketCapacityEvidence::new(DefinitionVersion::new(version), artifact).unwrap();
-        assert_eq!(
-            policy().qualify(&evidence).unwrap_err().category(),
-            ErrorCategory::ProviderValidation
-        );
+        assert_eq!(policy().qualify(&evidence).unwrap_err(), reason);
     }
 }
 

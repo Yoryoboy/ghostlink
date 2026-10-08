@@ -5,8 +5,8 @@ use crate::equipment_capacity_policy::{
     decode_equipment_capacity_evidence,
 };
 use destiny_core::{
-    AppError, BucketHash, DefinitionVersion, QualifiedStackBucketCapacityPolicy,
-    StackBucketCapacityPolicy,
+    AppError, BucketHash, CapacityPolicyMismatch, DefinitionVersion,
+    QualifiedStackBucketCapacityPolicy, StackBucketCapacityPolicy,
 };
 
 pub const PINNED_STACK_BUCKET_CAPACITY_VERSION: &str = PINNED_EQUIPMENT_CAPACITY_VERSION;
@@ -31,7 +31,7 @@ pub fn pinned_stack_bucket_capacity_policy() -> StackBucketCapacityPolicy {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StackBucketCapacityQualificationError {
     Decode(AppError),
-    Qualification(AppError),
+    Qualification(CapacityPolicyMismatch),
 }
 
 /// No fetch, new port, or authenticity/freshness certification. Reuses exactly
@@ -49,7 +49,7 @@ pub fn qualify_pinned_stack_bucket_capacity(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use destiny_core::{ErrorCategory, ItemHash, StackPullRefusal};
+    use destiny_core::{ItemHash, StackPullRefusal};
     use serde_json::{Value, json};
 
     fn index() -> Value {
@@ -107,7 +107,14 @@ mod tests {
             else {
                 panic!("expected qualification refusal");
             };
-            assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+            assert_eq!(
+                error,
+                if field == "version" {
+                    CapacityPolicyMismatch::VersionMismatch
+                } else {
+                    CapacityPolicyMismatch::ArtifactMismatch
+                }
+            );
         }
     }
 

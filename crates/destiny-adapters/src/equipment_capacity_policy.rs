@@ -2,8 +2,8 @@
 
 use crate::manifest::{decode_component_path, decode_version};
 use destiny_core::{
-    AppError, BucketHash, DefinitionVersion, EquipmentCapacityEvidence, EquipmentCapacityPolicy,
-    ErrorCategory, QualifiedEquipmentCapacityPolicy,
+    AppError, BucketHash, CapacityPolicyMismatch, DefinitionVersion, EquipmentCapacityEvidence,
+    EquipmentCapacityPolicy, ErrorCategory, QualifiedEquipmentCapacityPolicy,
 };
 use serde_json::Value;
 
@@ -58,12 +58,13 @@ pub fn decode_equipment_capacity_evidence(
 }
 
 /// Distinguishes malformed index evidence from the core's exact correspondence
-/// refusal. Both wrap the original sanitized AppError (ProviderValidation);
-/// qualification does not imply freshness, authenticity or dispatch authority.
+/// refusal. Decode errors are sanitized AppErrors; correspondence failures
+/// retain the typed mismatch reason. Neither implies freshness, authenticity
+/// or dispatch authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EquipmentCapacityQualificationError {
     Decode(AppError),
-    Qualification(AppError),
+    Qualification(CapacityPolicyMismatch),
 }
 
 /// Qualifies only exact audited version AND artifact correspondence.
@@ -153,7 +154,14 @@ mod tests {
             else {
                 panic!("expected correspondence refusal")
             };
-            assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+            assert_eq!(
+                error,
+                if field == "version" {
+                    CapacityPolicyMismatch::VersionMismatch
+                } else {
+                    CapacityPolicyMismatch::ArtifactMismatch
+                }
+            );
         }
     }
 

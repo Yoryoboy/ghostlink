@@ -6,6 +6,14 @@ use crate::{
     ProfileAcquisition, StackContainer,
 };
 
+/// Exact capacity-policy correspondence failure; version takes precedence when
+/// both identities differ. Contains no provider-controlled text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CapacityPolicyMismatch {
+    VersionMismatch,
+    ArtifactMismatch,
+}
+
 /// Audited capacities including the equipped slot, bound to exact definition artifacts.
 /// No default policy or mutable fields: callers must supply all eight supported buckets.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -63,11 +71,12 @@ impl EquipmentCapacityPolicy {
     pub fn qualify(
         &self,
         evidence: &EquipmentCapacityEvidence,
-    ) -> Result<QualifiedEquipmentCapacityPolicy, AppError> {
-        if self.definition_version != evidence.definition_version
-            || self.bucket_artifact_identity != evidence.bucket_artifact_identity
-        {
-            return Err(AppError::new(ErrorCategory::ProviderValidation));
+    ) -> Result<QualifiedEquipmentCapacityPolicy, CapacityPolicyMismatch> {
+        if self.definition_version != evidence.definition_version {
+            return Err(CapacityPolicyMismatch::VersionMismatch);
+        }
+        if self.bucket_artifact_identity != evidence.bucket_artifact_identity {
+            return Err(CapacityPolicyMismatch::ArtifactMismatch);
         }
         Ok(QualifiedEquipmentCapacityPolicy {
             policy: self.clone(),

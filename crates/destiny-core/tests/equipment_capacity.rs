@@ -124,15 +124,24 @@ fn qualification_requires_both_exact_identities() {
     let matching =
         EquipmentCapacityEvidence::new(DefinitionVersion::new("v1"), "artifact").unwrap();
     assert!(policy().qualify(&matching).is_ok());
-    for (version, artifact) in [("v2", "artifact"), ("v1", "other-artifact")] {
+    for (version, artifact, reason) in [
+        ("v2", "artifact", CapacityPolicyMismatch::VersionMismatch),
+        (
+            "v1",
+            "other-artifact",
+            CapacityPolicyMismatch::ArtifactMismatch,
+        ),
+        (
+            "v2",
+            "other-artifact",
+            CapacityPolicyMismatch::VersionMismatch,
+        ),
+    ] {
         let evidence =
             EquipmentCapacityEvidence::new(DefinitionVersion::new(version), artifact).unwrap();
         assert_eq!(evidence.definition_version().as_str(), version);
         assert_eq!(evidence.bucket_artifact_identity(), artifact);
-        assert_eq!(
-            policy().qualify(&evidence).unwrap_err().category(),
-            ErrorCategory::ProviderValidation
-        );
+        assert_eq!(policy().qualify(&evidence).unwrap_err(), reason);
     }
 }
 

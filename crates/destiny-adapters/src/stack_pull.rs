@@ -121,6 +121,8 @@ fn classify_response(response: &mut StackPullHttpResponse) -> StackPullOutcome {
     let Ok(envelope) = serde_json::from_slice::<Envelope>(&body) else {
         return StackPullOutcome::Uncertain;
     };
+    // These fields are validated, not surfaced or interpreted as function-result
+    // semantics. In particular Response need not be zero to acknowledge.
     let _ = (
         envelope.response,
         envelope.message,
@@ -136,6 +138,8 @@ fn classify_response(response: &mut StackPullHttpResponse) -> StackPullOutcome {
     {
         StackPullOutcome::Acknowledged
     } else {
+        // No non-success Bungie code is proven to mean non-application; keep
+        // Uncertain rather than mapping to Rejected/Transient without evidence.
         StackPullOutcome::Uncertain
     }
 }
