@@ -285,6 +285,51 @@ pub fn pull_item_tool() -> Tool {
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
 }
 
+pub const EQUIP_ITEMS_TOOL: &str = "equip_items";
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EquipItemsArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub character: String,
+    #[schemars(length(min = 2, max = 17))]
+    pub items: Vec<String>,
+}
+impl EquipItemsArgs {
+    pub fn request(&self) -> Result<destiny_app::BatchEquipRequest, McpError> {
+        if !(2..=17).contains(&self.items.len()) {
+            return Err(McpError::new(ErrorCategory::ProviderValidation));
+        }
+        for item in &self.items {
+            EquipItemArgs {
+                item: item.clone(),
+                character: self.character.clone(),
+            }
+            .validate()?;
+        }
+        Ok(destiny_app::BatchEquipRequest {
+            character: self.character.clone(),
+            items: self.items.clone(),
+            intent: destiny_app::MoveIntentAuthorization::Explicit,
+        })
+    }
+}
+pub fn equip_items_tool() -> Tool {
+    Tool::new(
+        EQUIP_ITEMS_TOOL,
+        "Equip 2–17 items on one explicit character. Validate combined slots, class and exotic limits before transferring via Vault and making one EquipItems call. Per-item failures or omitted results are incomplete. No retries; local freshness is invalidated after dispatch.",
+        JsonObject::new(),
+    )
+    .with_input_schema::<EquipItemsArgs>()
+    .with_annotations(
+        rmcp::model::ToolAnnotations::new()
+            .read_only(false)
+            .destructive(true)
+            .idempotent(false)
+            .open_world(true),
+    )
+}
+
 pub const EQUIP_ITEM_TOOL: &str = "equip_item";
 
 /// Both selectors are mandatory. An invocation authorizes exactly one intent.

@@ -156,8 +156,10 @@ fn classify_response(
                 "DestinyCharacterNotInTower"
                 | "DestinyCannotPerformActionAtThisLocation"
                 | "DestinyCanOnlyEquipInGame"
-                | "DestinyAccountMustBeOffline"
-                | "DestinyCharacterNotFound"
+                | "DestinyAccountMustBeOffline",
+            ) => O::RestrictedLocation,
+            Some(
+                "DestinyCharacterNotFound"
                 | "DestinyItemNotFound"
                 | "DestinyItemUniqueEquipRestricted"
                 | "DestinyItemUnequippable"

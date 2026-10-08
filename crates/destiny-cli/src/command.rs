@@ -59,18 +59,30 @@ pub struct Cli {
 }
 impl clap::CommandFactory for Cli {
     fn command() -> clap::Command {
-        ParsedCli::command()
+        equip_command(ParsedCli::command())
     }
     fn command_for_update() -> clap::Command {
-        ParsedCli::command_for_update()
+        equip_command(ParsedCli::command_for_update())
     }
 }
 impl clap::FromArgMatches for Cli {
     fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
         let parsed = ParsedCli::from_arg_matches(matches)?;
+        let mut command = parsed.command.unwrap_or(Command::Help);
+        if let Some(equip) = matches.subcommand_matches("equip")
+            && let Some(extra) = equip.get_many::<String>("additional_items")
+            && let Command::Equip(args) = command
+        {
+            let mut items = vec![args.item];
+            items.extend(extra.cloned());
+            command = Command::EquipItems(EquipItemsArgs {
+                items,
+                character: args.character,
+            });
+        }
         Ok(Self {
             json: parsed.json,
-            command: parsed.command.unwrap_or(Command::Help),
+            command,
         })
     }
     fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
@@ -79,6 +91,19 @@ impl clap::FromArgMatches for Cli {
     }
 }
 impl Parser for Cli {}
+
+// Keep the public single-item argument contract intact. Extra positionals are
+// converted to the internal batch variant only when there are multiple items.
+fn equip_command(command: clap::Command) -> clap::Command {
+    command.mut_subcommand("equip", |equip| {
+        equip.arg(
+            clap::Arg::new("additional_items")
+                .index(2)
+                .num_args(0..)
+                .value_name("ITEM"),
+        )
+    })
+}
 
 impl Cli {
     /// The output mode selected by the global `--json` flag.
@@ -155,6 +180,7 @@ impl Cli {
             | Command::PullStack(_)
             | Command::Pull(_)
             | Command::Equip(_)
+            | Command::EquipItems(_)
             | Command::Move(_)
             | Command::Lock(_)
             | Command::Unlock(_)
@@ -220,9 +246,11 @@ pub enum Command {
     Uninstall(UninstallArgs),
     /// Inspect or explicitly install integrations for supported AI agents.
     Agents(AgentsArgs),
-    /// Equip one item, transferring first when needed, then refresh and verify.
+    /// Equip one or several items on an explicit character, transferring first when needed.
     #[command(name = "equip")]
     Equip(EquipArgs),
+    #[command(skip)]
+    EquipItems(EquipItemsArgs),
     /// Move one item to an explicit character or Vault, then refresh and verify.
     #[command(name = "move")]
     Move(MoveArgs),
@@ -750,6 +778,31 @@ impl WeeklyArgs {
                 Ok(CharacterId::new(value))
             })
             .transpose()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EquipItemsArgs {
+    pub items: Vec<String>,
+    pub character: String,
+}
+impl EquipItemsArgs {
+    pub fn request(&self) -> Result<destiny_app::BatchEquipRequest, CliError> {
+        if !(2..=17).contains(&self.items.len()) {
+            return Err(CliError::invalid_request());
+        }
+        for item in &self.items {
+            EquipArgs {
+                item: item.clone(),
+                character: self.character.clone(),
+            }
+            .validate()?;
+        }
+        Ok(destiny_app::BatchEquipRequest {
+            character: self.character.clone(),
+            items: self.items.clone(),
+            intent: destiny_app::MoveIntentAuthorization::Explicit,
+        })
     }
 }
 

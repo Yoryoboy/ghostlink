@@ -58,7 +58,7 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
 - [x] **IAX-005 — Apply loadout service, CLI and MCP** (resolve slot and
   character, optimistic outcome, docs/skill).
 - [x] **IAX-006 — EquipItems batch adapter and port** (per-item results).
-- [ ] **IAX-007 — Batch equip service, CLI and MCP** (combined plan, transfers
+- [x] **IAX-007 — Batch equip service, CLI and MCP** (combined plan, transfers
   from Vault first, one EquipItems call, per-item outcomes, docs/skill).
 - [ ] **IAX-008 — Cleanups.** Close Postmaster tracker status; replace
   duplicated bucket hashes in `destiny-app/src/loadouts.rs` and
@@ -179,3 +179,16 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   check: focused `equip_items` 9 passed; the single-item equip allowlist still
   rejects EquipItems. Writer full suite 1,849 / 0. Independent verification is
   deferred to IAX-007.
+- IAX-007 implementation progress: combined-state batch service, multi-item CLI
+  preserving single-item equip, MCP `equip_items`, shared sanitized per-item
+  output, Vault transfers, 0.1s pacing and durable invalidation. RED: missing
+  batch request/service. Offline GREEN: 1,856 passed / 0 failed; fmt, clippy
+  `-D warnings` and diff check PASS, including unchanged single-item suites,
+  combined refusals, mixed/omitted receipts, no-op, transfer stop, storage
+  failure, parity and stdio. Checkbox remains open; no live action or commit.
+- IAX-006 committed as `538eba5`.
+- IAX-007 independent verification (covers IAX-006): fmt, clippy, all-features
+  1,856 / 0, default 1,831 / 0, diff check PASS. Adapter, combined preflight
+  (incl. replaced exotic), transfer stop, single EquipItems call, 100 ms
+  pacing, invalidation, 0/41/42, unchanged single-item path, CLI/MCP parity
+  (2–17 items): PASS, no findings.

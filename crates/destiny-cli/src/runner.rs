@@ -387,6 +387,26 @@ where
             })
         });
     }
+    if let Command::EquipItems(arguments) = &cli.command {
+        return match crate::runtime::compose_equip_items(arguments) {
+            Ok(output) => {
+                let body = match mode {
+                    OutputMode::Human => output.render_text(),
+                    OutputMode::Json => output.value.to_string(),
+                };
+                if output.exit_code == 0 {
+                    ProcessOutput::success(body)
+                } else {
+                    ProcessOutput {
+                        stdout: String::new(),
+                        stderr: format!("{body}\n"),
+                        exit_code: output.exit_code,
+                    }
+                }
+            }
+            Err(error) => ProcessOutput::failure(mode, error),
+        };
+    }
     if let Command::ApplyLoadout(arguments) = &cli.command {
         return match crate::runtime::compose_apply_loadout(arguments) {
             Ok(output) => {

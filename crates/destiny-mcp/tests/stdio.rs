@@ -56,6 +56,62 @@ const MOVE_ITEM_TOOL: &str = "move_item";
 mod equip_support;
 
 #[tokio::test]
+async fn batch_equip_stdio_reports_per_item_outcomes_and_storage_failure() {
+    for (scenario, outcome, error) in [
+        ("batch-success", "applied", false),
+        ("batch-noop", "verified_no_op", false),
+        ("batch-mixed", "incomplete", true),
+        ("batch-omitted", "incomplete", true),
+        ("batch-location", "incomplete", true),
+        ("batch-uncertain", "incomplete", true),
+        ("batch-storage", "local_state_failed", true),
+    ] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let response = session
+            .call_tool(
+                "equip_items",
+                json!({"character":"warlock", "items":["101", "Second"]}),
+            )
+            .await;
+        let output = structured(&response);
+        assert_eq!(output["outcome"], outcome, "{scenario}");
+        assert_eq!(response["result"]["isError"], error, "{scenario}");
+        assert_eq!(output["items"].as_array().unwrap().len(), 2);
+        if scenario == "batch-mixed" {
+            assert_eq!(output["items"][1]["code"], 99);
+        }
+        if scenario == "batch-omitted" {
+            assert_eq!(output["items"][1]["status"], "not_reported");
+        }
+        if scenario == "batch-location" {
+            assert_eq!(output["reason"], "go to orbit or a social space and retry");
+        }
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn batch_equip_stdio_refuses_invalid_and_missing_items() {
+    let mut session = FixtureSession::spawn(None).await;
+    let response = session
+        .call_tool(
+            "equip_items",
+            json!({"character":"warlock", "items":["missing", "absent"]}),
+        )
+        .await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(structured(&response)["kind"], "equip_items");
+    let response = session
+        .call_tool(
+            "equip_items",
+            json!({"character":"warlock", "items":["missing"]}),
+        )
+        .await;
+    assert_eq!(response["result"]["isError"], true);
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn apply_loadout_stdio_contract() {
     for (scenario, receipt, outcome) in [
         ("loadout-success", "applied", "applied"),
@@ -129,7 +185,7 @@ async fn stack_stdio_acknowledged_refused_uncertain_and_invalid() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 17);
         let tool = tools.iter().find(|t| t["name"] == "pull_stack").unwrap();
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(tool["annotations"]["readOnlyHint"], false);
@@ -180,7 +236,7 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 17);
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == "pull_item")
@@ -971,7 +1027,8 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             "set_lock_state",
             "pull_item",
             "pull_stack",
-            "apply_loadout"
+            "apply_loadout",
+            "equip_items"
         ],
         "the product-equivalent server discovers all reads plus move_item and equip_item"
     );

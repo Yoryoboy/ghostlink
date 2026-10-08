@@ -832,6 +832,12 @@ pub struct MoveItemRequest {
 /// bounded MCP projections defined in [`crate::schema`]; a failure is a stable
 /// sanitized [`McpError`].
 pub trait MutationToolService {
+    fn equip_items(
+        &mut self,
+        _request: &crate::schema::EquipItemsArgs,
+    ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
     fn apply_loadout(
         &mut self,
         _request: &crate::schema::ApplyLoadoutArgs,
@@ -906,7 +912,12 @@ impl<G, R, P, C, T> ComposedMutationService<G, R, P, C, T> {
 
     /// Adds the exact equip port; both mutations share the same planner and lock.
     pub fn with_equip<E>(self, equip: E) -> EquipMutationService<G, R, P, C, T, E> {
-        EquipMutationService { inner: self, equip }
+        EquipMutationService {
+            inner: self,
+            equip,
+            batch: None,
+            last_batch_action: None,
+        }
     }
 
     /// Borrows the composed mutation service.
@@ -1008,8 +1019,18 @@ where
 pub struct EquipMutationService<G, R, P, C, T, E> {
     inner: ComposedMutationService<G, R, P, C, T>,
     equip: E,
+    batch: Option<Box<dyn destiny_app::EquipItemsGateway + Send>>,
+    last_batch_action: Option<std::time::Instant>,
 }
 impl<G, R, P, C, T, E> EquipMutationService<G, R, P, C, T, E> {
+    pub fn with_equip_items<B: destiny_app::EquipItemsGateway + Send + 'static>(
+        mut self,
+        batch: B,
+    ) -> Self {
+        self.batch = Some(Box::new(batch));
+        self
+    }
+
     /// All three mutations share one planner, repository and server operation guard.
     pub fn with_lock<L>(self, lock: L) -> LockMutationService<G, R, P, C, T, E, L> {
         LockMutationService { inner: self, lock }
@@ -1047,6 +1068,12 @@ pub struct StackMutationService<I, S> {
 impl<I: MutationToolService, S: MutationToolService> MutationToolService
     for StackMutationService<I, S>
 {
+    fn equip_items(
+        &mut self,
+        args: &crate::schema::EquipItemsArgs,
+    ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
+        self.inner.equip_items(args)
+    }
     fn pull_stack(
         &mut self,
         args: &crate::schema::PullStackArgs,
@@ -1151,6 +1178,12 @@ where
 impl<I: MutationToolService, U: MutationToolService> MutationToolService
     for PullMutationService<I, U>
 {
+    fn equip_items(
+        &mut self,
+        args: &crate::schema::EquipItemsArgs,
+    ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
+        self.inner.equip_items(args)
+    }
     fn pull_item(
         &mut self,
         args: &crate::schema::PullItemArgs,
@@ -1251,6 +1284,12 @@ where
     E: destiny_app::EquipGateway,
     L: destiny_app::LockGateway,
 {
+    fn equip_items(
+        &mut self,
+        args: &crate::schema::EquipItemsArgs,
+    ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
+        self.inner.equip_items(args)
+    }
     fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
         self.inner.move_item(request)
     }
@@ -1339,6 +1378,28 @@ where
     T: TransferGateway,
     E: destiny_app::EquipGateway,
 {
+    fn equip_items(
+        &mut self,
+        args: &crate::schema::EquipItemsArgs,
+    ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
+        let request = args.request()?;
+        let action = self
+            .batch
+            .as_deref_mut()
+            .ok_or_else(|| McpError::new(ErrorCategory::ConfigurationError))?;
+        let now = self.inner.clock.now().map_err(McpError::from)?;
+        let last = &mut self.last_batch_action;
+        let result = self.inner.mutations.equip_items(
+            (&mut self.inner.transfer, action),
+            &request,
+            self.inner.policy,
+            now,
+            || destiny_app::equip_items::pace(last),
+        );
+        Ok(destiny_output::equip_items::EquipItemsOutput::from_result(
+            result,
+        ))
+    }
     fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
         self.inner.move_item(request)
     }

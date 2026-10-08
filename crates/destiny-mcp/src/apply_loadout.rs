@@ -25,6 +25,12 @@ where
     A: LoadoutActionGateway,
     C: Clock,
 {
+    fn equip_items(
+        &mut self,
+        args: &crate::schema::EquipItemsArgs,
+    ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
+        self.inner.equip_items(args)
+    }
     fn apply_loadout(
         &mut self,
         args: &ApplyLoadoutArgs,

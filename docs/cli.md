@@ -945,6 +945,30 @@ after the action". Lock/unlock no longer emit provider-lag exits 42/43.
 Refusals use category exits (missing item 32, ambiguity 31, stale state 30).
 Success goes to stdout; refusals and unverified results go to stderr.
 
+## Equip several items
+
+```sh
+ghostlink equip 123456789 234567890 --character hunter --json
+```
+
+`equip <ITEM>... --character <class|id>` accepts 1–17 selectors. Exactly one
+item retains the existing single-item behavior and output below. Two or more
+use a fresh combined-state preflight and one batch equip call after necessary
+Vault-mediated transfers, paced at least 0.1s apart. Each selector uses the same
+ID/name and ambiguity rules as single-item equip.
+
+The entire batch is refused before dispatch for duplicates, repeated equipment
+slots, wrong class, non-equippable items, or exotic conflicts (including equipped
+items in slots not being replaced). A failed transfer stops the sequence without
+equipping. Already-equipped requested items are per-item no-ops; an all-no-op
+batch is verified without dispatch. Only all successful per-item results produce
+`applied` (0); failures, omitted `not_reported` results and uncertain/refused
+attempts are incomplete (41). Human and JSON output list item, slot, status and
+sanitized numeric code. Dispatched actions durably invalidate local freshness;
+storage failure exits 42: "local state could not be updated after the action".
+Location refusal says "go to orbit or a social space and retry". Never blindly
+retry a partial batch; read state and reassess intent first.
+
 ## Equip one item
 
 ```sh

@@ -73,6 +73,7 @@ pub struct EquipItemResult {
 pub enum EquipItemsOutcome {
     Acknowledged(Vec<EquipItemResult>),
     Refused,
+    RestrictedLocation,
     AuthenticationRefused,
     Transient,
     Uncertain,

@@ -109,6 +109,27 @@ to stdout. A missing stored credential fails closed with `authorization is
 required`, a legacy raw-material credential with `reauthorization is required`,
 and neither path guesses an expiry or falls back to an environment value.
 
+## Batch equip
+
+`equip_items` accepts exactly `{"character":"hunter","items":["123456789","234567890"]}`
+with 2–17 items. Character is an explicit unique class or owned ID; item ID/name
+resolution matches CLI `ghostlink equip <ITEM>... --character <class|id>`.
+The existing single-item `equip_item` tool is unchanged.
+
+One fresh preflight validates the combined equipment state: unique items and
+slots, class compatibility, equippability, and at most one exotic weapon and
+one exotic armor including equipped slots not replaced. Invalid batches dispatch
+nothing. Required transfers use Vault-mediated routing, stop on first failure,
+and precede exactly one EquipItems call; actions are paced at 0.1s minimum.
+Already-equipped requested items are per-item no-ops; all-no-op batches are
+verified without dispatch. Only every per-item success (or no-op) is MCP success.
+Failures, omitted `not_reported` results and envelope refusal/auth/transient/
+uncertainty remain errors. Structured output lists item, slot, status and numeric
+code, matching CLI JSON. Every dispatched attempt invalidates local freshness;
+storage failure is fail-closed with "local state could not be updated after the
+action". Restricted location says "go to orbit or a social space and retry".
+Never blindly retry; read state and reassess user intent.
+
 ## Postmaster observations
 
 Read-only `get_postmaster` uses the same account scope, ordinary freshness policy

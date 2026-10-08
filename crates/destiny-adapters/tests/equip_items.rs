@@ -258,7 +258,10 @@ fn envelope_refusal_auth_transient_and_unknown() {
     }
     for (status, expected) in [
         ("DestinyCharacterNotFound", O::Refused),
-        ("DestinyCannotPerformActionAtThisLocation", O::Refused),
+        (
+            "DestinyCannotPerformActionAtThisLocation",
+            O::RestrictedLocation,
+        ),
         ("DestinyItemUniqueEquipRestricted", O::Refused),
         ("WebAuthRequired", O::AuthenticationRefused),
         ("AccessTokenHasExpired", O::AuthenticationRefused),

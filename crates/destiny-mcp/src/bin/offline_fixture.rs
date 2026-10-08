@@ -227,6 +227,27 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         },
         TTL,
     );
+    let mut batch = destiny_app::test_support::QueuedEquipItemsGateway::new();
+    let batch_scenario = std::env::var(SCENARIO_ENV).unwrap_or_default();
+    let batch_outcome = match batch_scenario.as_str() {
+        "batch-location" => destiny_app::EquipItemsOutcome::RestrictedLocation,
+        "batch-uncertain" => destiny_app::EquipItemsOutcome::Uncertain,
+        _ => destiny_app::EquipItemsOutcome::Acknowledged(vec![
+            destiny_app::EquipItemResult {
+                item: ItemInstanceId::new("101"),
+                status: destiny_app::EquipItemStatus::Success,
+            },
+            destiny_app::EquipItemResult {
+                item: ItemInstanceId::new("102"),
+                status: match batch_scenario.as_str() {
+                    "batch-mixed" => destiny_app::EquipItemStatus::Failure(99),
+                    "batch-omitted" => destiny_app::EquipItemStatus::NotReported,
+                    _ => destiny_app::EquipItemStatus::Success,
+                },
+            },
+        ]),
+    };
+    batch.queue(Ok(batch_outcome));
     let mutation_service = ComposedMutationService::new(
         mutations,
         WorldTransferGateway {
@@ -240,6 +261,7 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
     .with_equip(WorldEquipGateway {
         world: Arc::clone(&world),
     })
+    .with_equip_items(batch)
     .with_lock(WorldLockGateway { world })
     .with_pull(pull)
     .with_stack(stack);
@@ -933,7 +955,7 @@ impl InventoryRepository for FixtureRepository {
     fn invalidate_freshness(&mut self) -> Result<(), AppError> {
         if matches!(
             std::env::var(SCENARIO_ENV).ok().as_deref(),
-            Some("pull-storage" | "stack-storage" | "loadout-storage")
+            Some("pull-storage" | "stack-storage" | "loadout-storage" | "batch-storage")
         ) {
             return Err(AppError::new(ErrorCategory::LocalStorage));
         }
@@ -1125,6 +1147,11 @@ fn snapshot_input(characters: &[Character], items: &[ItemInstance]) -> Inventory
 }
 
 fn characters() -> Vec<Character> {
+    if batch_scenario() {
+        let mut target = character("123");
+        target.class = Some("Warlock".into());
+        return vec![target];
+    }
     if std::env::var(SCENARIO_ENV)
         .unwrap_or_default()
         .starts_with("stack-")
@@ -1162,7 +1189,26 @@ fn fixture_version() -> DefinitionVersion {
         DEFINITION_VERSION
     })
 }
+fn batch_scenario() -> bool {
+    std::env::var(SCENARIO_ENV)
+        .ok()
+        .is_some_and(|s| s.starts_with("batch-"))
+}
+
 fn base_items() -> Vec<ItemInstance> {
+    if batch_scenario() {
+        let mut items = vec![
+            instance("101", 100, ItemLocation::Vault, vec![]),
+            instance("102", 101, ItemLocation::Vault, vec![]),
+        ];
+        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("batch-noop") {
+            for item in &mut items {
+                item.location = at_character("123");
+                item.equipped = true;
+            }
+        }
+        return items;
+    }
     if std::env::var(SCENARIO_ENV)
         .unwrap_or_default()
         .starts_with("stack-")
@@ -1244,6 +1290,21 @@ fn set_location(items: &mut [ItemInstance], instance_id: &str, location: ItemLoc
 }
 
 fn fixture_definitions() -> Vec<ItemDefinition> {
+    if batch_scenario() {
+        return [
+            (100, "First", destiny_app::ItemSlot::Kinetic),
+            (101, "Second", destiny_app::ItemSlot::Energy),
+        ]
+        .into_iter()
+        .map(|(hash, name, slot)| {
+            let mut item = definition(hash, name);
+            item.slot = Some(slot);
+            item.tier = Some("Legendary".into());
+            item.class_type = Some("any".parse().unwrap());
+            item
+        })
+        .collect();
+    }
     if std::env::var(SCENARIO_ENV)
         .unwrap_or_default()
         .starts_with("stack-")

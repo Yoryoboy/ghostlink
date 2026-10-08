@@ -168,6 +168,12 @@ fn compose_server<S: CredentialStore + Send + 'static>(
             config.api_key().expose_secret(),
         )?,
     )?;
+    let batch = destiny_adapters::BungieEquipItemsGateway::new(
+        destiny_adapters::HttpEquipItemsTransport::new()?,
+        SystemClock::new(),
+        transfer_source.clone(),
+        destiny_adapters::EquipItemsApiKey::new(config.api_key().expose_secret())?,
+    )?;
     let stack = destiny_adapters::stack_pull::BungieStackPullGateway::new(
         destiny_adapters::stack_pull::HttpStackPullTransport::new()?,
         SystemClock::new(),
@@ -191,6 +197,7 @@ fn compose_server<S: CredentialStore + Send + 'static>(
             stack,
             stack_manifest,
             loadout_action,
+            batch,
         ),
         repository,
         policy,
@@ -323,6 +330,11 @@ type MutationPorts<C> = (
         SystemClock,
         C,
     >,
+    destiny_adapters::BungieEquipItemsGateway<
+        destiny_adapters::HttpEquipItemsTransport,
+        SystemClock,
+        C,
+    >,
 );
 
 /// Wires the concrete adapters into one read-plus-mutation tool server.
@@ -436,6 +448,7 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         PlanLifetime::MAX,
     )
     .with_equip(ports.1)
+    .with_equip_items(ports.8)
     .with_lock(ports.2)
     .with_pull(pull)
     .with_stack(stack);
@@ -1396,6 +1409,13 @@ mod tests {
             destiny_adapters::loadout_action::LoadoutActionApiKey::new(API_KEY_SENTINEL).unwrap(),
         )
         .unwrap();
+        let batch = destiny_adapters::BungieEquipItemsGateway::new(
+            destiny_adapters::HttpEquipItemsTransport::new().unwrap(),
+            SystemClock::new(),
+            destiny_app::StaticCredentialSource::new(credential.clone()),
+            destiny_adapters::EquipItemsApiKey::new(API_KEY_SENTINEL).unwrap(),
+        )
+        .unwrap();
         let stack = destiny_adapters::stack_pull::BungieStackPullGateway::new(
             destiny_adapters::stack_pull::HttpStackPullTransport::new().unwrap(),
             SystemClock::new(),
@@ -1419,6 +1439,7 @@ mod tests {
                 stack,
                 stack_manifest,
                 loadout_action,
+                batch,
             ),
             store,
             FreshnessPolicy { ttl_seconds: 900 },
@@ -1456,7 +1477,8 @@ mod tests {
                 "set_lock_state",
                 "pull_item",
                 "pull_stack",
-                "apply_loadout"
+                "apply_loadout",
+                "equip_items"
             ],
             "mutation must be default-enabled in the product composition"
         );

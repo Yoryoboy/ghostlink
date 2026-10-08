@@ -778,7 +778,7 @@ where
         Ok((destiny_core::EquipPreflight::Ready, outcome))
     }
 
-    fn validate_equip(
+    pub(crate) fn validate_equip(
         &self,
         item: &ItemInstance,
         destination: &ItemLocation,
@@ -872,7 +872,7 @@ where
     }
 
     /// Exact catalog lookup avoids truncating a definition search for safety.
-    fn equip_definition(
+    pub(crate) fn equip_definition(
         &self,
         hash: destiny_core::ItemHash,
     ) -> Result<destiny_core::ItemDefinition, MutationError>
@@ -1626,6 +1626,10 @@ enum EquipmentCategory {
 
 /// Weapon and armor exotic limits are independent; unsupported slots are not
 /// treated as equipment. Slots come from normalized Manifest bucket hashes.
+pub(crate) fn is_equipment_slot(slot: destiny_core::domain::ItemSlot) -> bool {
+    equipment_category(slot).is_some()
+}
+
 fn equipment_category(slot: destiny_core::domain::ItemSlot) -> Option<EquipmentCategory> {
     use destiny_core::domain::ItemSlot;
     match slot {
@@ -2078,6 +2082,262 @@ mod tests {
                     }
                     assert!(transfer.requests().is_empty());
                     assert!(equip_gateway.requests().is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn batch_equip_acknowledges_once_and_invalidates() {
+        use destiny_core::{EquipItemResult, EquipItemStatus, EquipItemsOutcome};
+        let shared = gateway();
+        let mut first = equip_definition(1, destiny_core::domain::ItemSlot::Kinetic);
+        first.tier = Some("Legendary".into());
+        let mut second = equip_definition(2, destiny_core::domain::ItemSlot::Energy);
+        second.tier = Some("Legendary".into());
+        let input = projection(
+            NOW,
+            vec![character("123", None, Some("Warlock"))],
+            vec![
+                instance("101", 1, ItemLocation::Character(CharacterId::new("123"))),
+                instance("102", 2, ItemLocation::Character(CharacterId::new("123"))),
+            ],
+        );
+        let mut repo = CompositeRepository::with_definitions(vec![first, second]);
+        repo.commit(input.clone());
+        queue_refresh(&shared, input);
+        let mut service = service(&shared, repo);
+        let mut transfer = QueuedTransferGateway::new();
+        let mut equip = crate::test_support::QueuedEquipItemsGateway::new();
+        equip.queue(Ok(EquipItemsOutcome::Acknowledged(vec![
+            EquipItemResult {
+                item: item_id("101"),
+                status: EquipItemStatus::Success,
+            },
+            EquipItemResult {
+                item: item_id("102"),
+                status: EquipItemStatus::Success,
+            },
+        ])));
+        let result = service
+            .equip_items(
+                (&mut transfer, &mut equip),
+                &crate::BatchEquipRequest {
+                    character: "warlock".into(),
+                    items: vec!["101".into(), "102".into()],
+                    intent: MoveIntentAuthorization::Explicit,
+                },
+                TTL,
+                NOW,
+                || {},
+            )
+            .unwrap();
+        assert!(result.applied());
+        assert_eq!(equip.requests().len(), 1);
+        assert!(transfer.requests().is_empty());
+        assert!(service.repository().freshness_invalidated().unwrap());
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+    }
+
+    fn batch_fixture(
+        first: ItemDefinition,
+        second: ItemDefinition,
+        items: Vec<ItemInstance>,
+        storage_failure: bool,
+    ) -> Service {
+        let shared = gateway();
+        let input = projection(
+            NOW,
+            vec![
+                character("123", None, Some("Warlock")),
+                character("456", None, Some("Hunter")),
+            ],
+            items,
+        );
+        let mut repo = CompositeRepository::with_definitions(vec![
+            first,
+            second,
+            equip_definition(3, destiny_core::domain::ItemSlot::Energy),
+        ]);
+        repo.commit(input.clone());
+        repo.fails_invalidation = storage_failure;
+        queue_refresh(&shared, input);
+        service(&shared, repo)
+    }
+
+    fn batch_request() -> crate::BatchEquipRequest {
+        crate::BatchEquipRequest {
+            character: "warlock".into(),
+            items: vec!["101".into(), "102".into()],
+            intent: MoveIntentAuthorization::Explicit,
+        }
+    }
+
+    #[test]
+    fn batch_combined_refusals_dispatch_nothing() {
+        use destiny_core::domain::{ClassType, ItemSlot};
+        for case in [
+            "same_slot",
+            "two_exotics",
+            "equipped_conflict",
+            "wrong_class",
+            "duplicate",
+        ] {
+            let mut first = equip_definition(1, ItemSlot::Kinetic);
+            let mut second = equip_definition(2, ItemSlot::Energy);
+            first.tier = Some("Legendary".into());
+            second.tier = Some("Legendary".into());
+            let mut items = vec![
+                instance("101", 1, ItemLocation::Vault),
+                instance("102", 2, ItemLocation::Vault),
+            ];
+            let mut request = batch_request();
+            match case {
+                "same_slot" => second.slot = first.slot,
+                "two_exotics" => {
+                    first.tier = Some("Exotic".into());
+                    second.tier = Some("Exotic".into());
+                }
+                "equipped_conflict" => {
+                    first.tier = Some("Exotic".into());
+                    second.slot = Some(ItemSlot::Helmet);
+                    let mut neighbor =
+                        instance("103", 3, ItemLocation::Character(CharacterId::new("123")));
+                    neighbor.equipped = true;
+                    items.push(neighbor);
+                }
+                "wrong_class" => second.class_type = Some(ClassType::Hunter),
+                "duplicate" => request.items[1] = request.items[0].clone(),
+                _ => unreachable!(),
+            }
+            let mut service = batch_fixture(first, second, items, false);
+            let mut transfer = QueuedTransferGateway::new();
+            let mut equip = crate::test_support::QueuedEquipItemsGateway::new();
+            assert!(
+                service
+                    .equip_items((&mut transfer, &mut equip), &request, TTL, NOW, || {})
+                    .is_err(),
+                "{case}"
+            );
+            assert!(transfer.requests().is_empty(), "{case}");
+            assert!(equip.requests().is_empty(), "{case}");
+            assert!(!service.repository().freshness_invalidated().unwrap());
+        }
+    }
+
+    #[test]
+    fn batch_receipts_noops_transfers_and_storage_fail_closed() {
+        use destiny_core::domain::ItemSlot;
+        use destiny_core::{EquipItemResult, EquipItemStatus, EquipItemsOutcome};
+        for case in [
+            "mixed",
+            "omitted",
+            "noop",
+            "storage",
+            "transfer_stop",
+            "refused",
+            "auth",
+            "transient",
+            "uncertain",
+            "success_transfers",
+            "replaced_exotic",
+        ] {
+            let mut first = equip_definition(1, ItemSlot::Kinetic);
+            let mut second = equip_definition(2, ItemSlot::Energy);
+            first.tier = Some("Legendary".into());
+            second.tier = Some("Legendary".into());
+            let source = if matches!(case, "transfer_stop" | "success_transfers") {
+                ItemLocation::Character(CharacterId::new("456"))
+            } else {
+                ItemLocation::Character(CharacterId::new("123"))
+            };
+            let mut items = vec![
+                instance("101", 1, source.clone()),
+                instance("102", 2, source),
+            ];
+            if case == "noop" {
+                for item in &mut items {
+                    item.equipped = true;
+                }
+            }
+            if case == "replaced_exotic" {
+                first.tier = Some("Exotic".into());
+                let mut neighbor =
+                    instance("103", 3, ItemLocation::Character(CharacterId::new("123")));
+                neighbor.equipped = true;
+                items.push(neighbor);
+            }
+            let mut service = batch_fixture(first, second, items, case == "storage");
+            let mut transfer = QueuedTransferGateway::new();
+            for index in 0..4 {
+                transfer.queue(Ok(if case == "transfer_stop" && index == 1 {
+                    TransferOutcome::Uncertain
+                } else {
+                    TransferOutcome::Transferred
+                }));
+            }
+            let mut equip = crate::test_support::QueuedEquipItemsGateway::new();
+            let receipt = match case {
+                "refused" => EquipItemsOutcome::Refused,
+                "auth" => EquipItemsOutcome::AuthenticationRefused,
+                "transient" => EquipItemsOutcome::Transient,
+                "uncertain" => EquipItemsOutcome::Uncertain,
+                _ => EquipItemsOutcome::Acknowledged(vec![
+                    EquipItemResult {
+                        item: item_id("101"),
+                        status: EquipItemStatus::Success,
+                    },
+                    EquipItemResult {
+                        item: item_id("102"),
+                        status: match case {
+                            "mixed" => EquipItemStatus::Failure(99),
+                            "omitted" => EquipItemStatus::NotReported,
+                            _ => EquipItemStatus::Success,
+                        },
+                    },
+                ]),
+            };
+            equip.queue(Ok(receipt));
+            let mut paced = 0;
+            let result = service
+                .equip_items(
+                    (&mut transfer, &mut equip),
+                    &batch_request(),
+                    TTL,
+                    NOW,
+                    || paced += 1,
+                )
+                .unwrap();
+            if case == "noop" {
+                assert!(result.no_op());
+                assert!(equip.requests().is_empty());
+                assert!(!service.repository().freshness_invalidated().unwrap());
+            } else {
+                assert_eq!(
+                    result.applied(),
+                    matches!(case, "success_transfers" | "replaced_exotic"),
+                    "{case}"
+                );
+                assert_eq!(paced, transfer.requests().len() + equip.requests().len());
+                if case == "mixed" {
+                    assert_eq!(result.items[1].status, crate::BatchItemStatus::Failure(99));
+                }
+                if case == "omitted" {
+                    assert_eq!(result.items[1].status, crate::BatchItemStatus::NotReported);
+                }
+                if case == "success_transfers" {
+                    assert_eq!(transfer.requests().len(), 4);
+                    assert_eq!(equip.requests()[0].items().len(), 2);
+                }
+                if case == "storage" {
+                    assert!(!result.local_state_updated);
+                    assert!(result.receipt.is_some());
+                } else {
+                    assert!(service.repository().freshness_invalidated().unwrap());
+                }
+                assert_eq!(equip.requests().len(), usize::from(case != "transfer_stop"));
+                if case == "transfer_stop" {
+                    assert_eq!(transfer.requests().len(), 2);
                 }
             }
         }

@@ -74,6 +74,8 @@ ghostlink search-inventory --type "Hand Cannon" --element solar --sort Range
 ghostlink weekly --character hunter
 ghostlink move "Ace of Spades" --vault
 ghostlink equip "Ace of Spades" --character hunter
+# Equip several items in one batch (one item keeps the single-item path):
+ghostlink equip 123456789 234567890 --character hunter --json
 ghostlink lock "Ace of Spades" --json
 ghostlink unlock "Ace of Spades" --json
 ghostlink apply-loadout 3 --character hunter --json

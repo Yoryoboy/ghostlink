@@ -63,6 +63,22 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 
 `--character` accepts a class name (`hunter`, `titan`, `warlock`) on most commands, but `ghostlink search-inventory --character` requires the exact numeric character ID; get it from `ghostlink list-characters` first.
 
+## Equip several items
+
+Require explicit user intent for every item and one target character. Prefer MCP
+`equip_items` with `{"character":"hunter","items":["123456789","234567890"]}`
+(2–17 items, no extra fields). Fallback: `ghostlink equip 123456789 234567890
+--character hunter --json`. One selector retains single-item equip unchanged.
+Use owned IDs or unambiguous names; never guess. Combined preflight rejects
+repeated slots/items, wrong class, non-equippable items and exotic conflicts
+including currently equipped slots not replaced. Transfers stop on first failure
+before the single batch equip call. Report each item, slot, status and numeric
+code; omitted `not_reported` results are failures, never success. All already
+equipped is a verified no-op. Full acknowledgement is applied (0 / MCP success),
+not observed state; incomplete is 41 and local invalidation storage failure 42.
+On location refusal ask the user to go to orbit or a social space. Read state
+and reassess intent after failures; never blindly repeat a batch.
+
 ## Apply saved loadouts
 
 Require explicit user intent for the saved slot/name and character. Prefer MCP
