@@ -1,9 +1,12 @@
-//! Pure local projection effects for acknowledged instance actions.
+//! Pure local projection effects for acknowledged inventory actions.
 //!
 //! Callers supply acknowledgment and resolve equipment buckets. This module
 //! performs no I/O and leaves snapshot identity, freshness and revision alone.
 
-use crate::{CharacterId, InventorySnapshot, ItemInstance, ItemInstanceId, ItemLocation};
+use crate::{
+    BucketHash, CharacterId, InventorySnapshot, ItemHash, ItemInstance, ItemInstanceId,
+    ItemLocation, StackContainer, StackObservation,
+};
 
 /// One acknowledged action, not a request or authorization to call a provider.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,7 +27,17 @@ pub enum InventoryEffect {
         character: CharacterId,
         unequip: Vec<ItemInstanceId>,
     },
-    /// Only instanced holdings; stack pulls are not represented.
+    /// Pulls one anonymous Postmaster stack into profile inventory.
+    /// The caller resolves the destination bucket and max stack size from definitions.
+    /// Apply exactly once per acknowledgement: replay pulls the quantity again.
+    PullStack {
+        item_hash: ItemHash,
+        owner: CharacterId,
+        quantity: u32,
+        destination_bucket: BucketHash,
+        max_stack_size: i32,
+    },
+    /// Only instanced holdings; anonymous stacks use `PullStack`.
     PullFromPostmaster {
         item: ItemInstanceId,
         character: CharacterId,
@@ -39,6 +52,9 @@ pub enum InventoryEffectError {
     UnsupportedDestination,
     InvalidPostmasterSource { item: ItemInstanceId },
     InvalidUnequipSubject { item: ItemInstanceId },
+    InvalidStackParameters,
+    NoEligiblePostmasterStack,
+    StackArithmeticOverflow,
 }
 
 /// Updated projection with a net content-change flag, not a revision allocation.
@@ -50,12 +66,15 @@ pub struct InventoryEffectsResult {
 
 /// Applies effects in order to a copy, returning no partial projection on error.
 ///
-/// Only location, equipped and locked can change. `changed` compares the final
+/// Instance location, equipped and locked, and stack rows can change.
+/// `changed` compares the final
 /// projection with the input, so a sequence with no net change reports false.
 /// Duplicate IDs are rejected only for referenced subjects, including unequip
 /// subjects. The input and every unrelated field remain untouched.
 ///
-/// Replay is accepted when the complete postcondition already holds: a pull is
+/// Stack pulls are NOT idempotent: replay pulls again. Callers must apply them
+/// exactly once per acknowledgement. Stack effects restore canonical row order.
+/// Instance replay is accepted when the complete postcondition already holds: a pull is
 /// already carried and unequipped on its owner; an equip target is equipped on
 /// its character and all unequip subjects are there and unequipped. Otherwise,
 /// pulls require that owner's Postmaster and unequip subjects must be equipped
@@ -68,6 +87,20 @@ pub fn apply_inventory_effects(
     let mut updated = snapshot.clone();
     for effect in effects {
         match effect {
+            InventoryEffect::PullStack {
+                item_hash,
+                owner,
+                quantity,
+                destination_bucket,
+                max_stack_size,
+            } => pull_stack(
+                &mut updated.stacks,
+                *item_hash,
+                owner,
+                *quantity,
+                *destination_bucket,
+                *max_stack_size,
+            )?,
             InventoryEffect::Relocate { item, to } => {
                 let index = subject_index(&updated.items, item)?;
                 if !matches!(to, ItemLocation::Vault | ItemLocation::Character(_)) {
@@ -138,6 +171,95 @@ pub fn apply_inventory_effects(
         changed: updated != *snapshot,
         snapshot: updated,
     })
+}
+
+fn pull_stack(
+    stacks: &mut Vec<StackObservation>,
+    item_hash: ItemHash,
+    owner: &CharacterId,
+    quantity: u32,
+    destination_bucket: BucketHash,
+    max_stack_size: i32,
+) -> Result<(), InventoryEffectError> {
+    use InventoryEffectError::{InvalidStackParameters, StackArithmeticOverflow};
+    if quantity == 0 || max_stack_size <= 0 {
+        return Err(InvalidStackParameters);
+    }
+    let quantity = i32::try_from(quantity).map_err(|_| StackArithmeticOverflow)?;
+    // Validate definition-supplied hashes even when no new destination row is needed.
+    let destination = StackObservation::new(
+        item_hash,
+        destination_bucket,
+        1,
+        StackContainer::ProfileInventory,
+    )
+    .map_err(|_| InvalidStackParameters)?;
+    stacks.sort();
+    let source = stacks
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| {
+            row.item_hash() == item_hash
+                && row.container() == &StackContainer::Postmaster(owner.clone())
+                && row.quantity() >= quantity
+        })
+        .min_by_key(|(index, row)| (row.quantity(), *index))
+        .map(|(index, _)| index)
+        .ok_or(InventoryEffectError::NoEligiblePostmasterStack)?;
+    let remaining = stacks[source]
+        .quantity()
+        .checked_sub(quantity)
+        .ok_or(StackArithmeticOverflow)?;
+    if remaining == 0 {
+        stacks.remove(source);
+    } else {
+        stacks[source] = stack_with_quantity(&stacks[source], remaining)?;
+    }
+    let mut remaining = quantity;
+    for row in stacks.iter_mut().filter(|row| {
+        row.item_hash() == item_hash
+            && row.bucket_hash() == destination_bucket
+            && row.container() == &StackContainer::ProfileInventory
+            && row.quantity() < max_stack_size
+    }) {
+        let capacity = max_stack_size
+            .checked_sub(row.quantity())
+            .ok_or(StackArithmeticOverflow)?;
+        let added = remaining.min(capacity);
+        let total = row
+            .quantity()
+            .checked_add(added)
+            .ok_or(StackArithmeticOverflow)?;
+        *row = stack_with_quantity(row, total)?;
+        remaining = remaining
+            .checked_sub(added)
+            .ok_or(StackArithmeticOverflow)?;
+        if remaining == 0 {
+            break;
+        }
+    }
+    while remaining > 0 {
+        let added = remaining.min(max_stack_size);
+        stacks.push(stack_with_quantity(&destination, added)?);
+        remaining = remaining
+            .checked_sub(added)
+            .ok_or(StackArithmeticOverflow)?;
+    }
+    stacks.sort();
+    Ok(())
+}
+
+fn stack_with_quantity(
+    row: &StackObservation,
+    quantity: i32,
+) -> Result<StackObservation, InventoryEffectError> {
+    StackObservation::new(
+        row.item_hash(),
+        row.bucket_hash(),
+        i64::from(quantity),
+        row.container().clone(),
+    )
+    .map_err(|_| InventoryEffectError::StackArithmeticOverflow)
 }
 
 fn subject_index(

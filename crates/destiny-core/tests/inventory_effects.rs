@@ -1,5 +1,178 @@
 use destiny_core::*;
 
+fn stack(bucket: i64, quantity: i64, container: StackContainer) -> StackObservation {
+    StackObservation::new(
+        ItemHash::new(42),
+        BucketHash::new(bucket),
+        quantity,
+        container,
+    )
+    .unwrap()
+}
+fn stack_effect(quantity: u32, max_stack_size: i32) -> InventoryEffect {
+    InventoryEffect::PullStack {
+        item_hash: ItemHash::new(42),
+        owner: owner(),
+        quantity,
+        destination_bucket: BucketHash::new(10),
+        max_stack_size,
+    }
+}
+fn stack_snapshot(mut stacks: Vec<StackObservation>) -> InventorySnapshot {
+    stacks.sort();
+    InventorySnapshot {
+        stacks,
+        ..snapshot()
+    }
+}
+
+#[test]
+fn stack_pull_decrements_smallest_eligible_and_replay_pulls_again() {
+    let before = stack_snapshot(vec![
+        stack(20, 2, StackContainer::Postmaster(owner())),
+        stack(20, 8, StackContainer::Postmaster(owner())),
+        stack(20, 8, StackContainer::Postmaster(owner())),
+        stack(19, 8, StackContainer::Postmaster(owner())),
+        stack(20, 12, StackContainer::Postmaster(owner())),
+    ]);
+    let result = apply_inventory_effects(&before, &[stack_effect(3, 10)]).unwrap();
+    assert!(result.changed);
+    let expected = stack_snapshot(vec![
+        stack(20, 2, StackContainer::Postmaster(owner())),
+        stack(20, 8, StackContainer::Postmaster(owner())),
+        stack(20, 8, StackContainer::Postmaster(owner())),
+        stack(19, 5, StackContainer::Postmaster(owner())),
+        stack(20, 12, StackContainer::Postmaster(owner())),
+        stack(10, 3, StackContainer::ProfileInventory),
+    ]);
+    assert_eq!(result.snapshot, expected);
+    let replay = apply_inventory_effects(&expected, &[stack_effect(3, 10)]).unwrap();
+    assert!(replay.changed);
+    assert!(
+        replay
+            .snapshot
+            .stacks
+            .contains(&stack(19, 2, StackContainer::Postmaster(owner())))
+    );
+    assert_eq!(before.stacks.len(), 5);
+}
+
+#[test]
+fn stack_pull_removes_source_fills_partials_and_splits_remainder() {
+    for quantity in [25, 30] {
+        let before = stack_snapshot(vec![
+            stack(20, quantity, StackContainer::Postmaster(owner())),
+            stack(10, 8, StackContainer::ProfileInventory),
+            stack(10, 4, StackContainer::ProfileInventory),
+            stack(11, 3, StackContainer::ProfileInventory),
+            stack(10, 7, StackContainer::ProfileCurrencies),
+            stack(10, 2, StackContainer::CharacterInventory(owner())),
+            stack(20, 9, StackContainer::Postmaster(CharacterId::new("b"))),
+        ]);
+        let mut expected = before.clone();
+        expected.stacks = vec![
+            stack(10, 10, StackContainer::ProfileInventory),
+            stack(10, 10, StackContainer::ProfileInventory),
+            stack(10, 10, StackContainer::ProfileInventory),
+            stack(11, 3, StackContainer::ProfileInventory),
+            stack(10, 7, StackContainer::ProfileCurrencies),
+            stack(10, 2, StackContainer::CharacterInventory(owner())),
+            stack(20, 9, StackContainer::Postmaster(CharacterId::new("b"))),
+        ];
+        let mut remainder = quantity - 18;
+        while remainder > 0 {
+            expected.stacks.push(stack(
+                10,
+                remainder.min(10),
+                StackContainer::ProfileInventory,
+            ));
+            remainder -= remainder.min(10);
+        }
+        expected.stacks.sort();
+        assert_eq!(
+            apply_inventory_effects(&before, &[stack_effect(quantity as u32, 10)])
+                .unwrap()
+                .snapshot,
+            expected
+        );
+    }
+}
+
+#[test]
+fn stack_pull_exact_split_and_canonical_partial_order() {
+    let before = stack_snapshot(vec![stack(20, 30, StackContainer::Postmaster(owner()))]);
+    let result = apply_inventory_effects(&before, &[stack_effect(30, 10)]).unwrap();
+    assert_eq!(
+        result.snapshot.stacks,
+        vec![stack(10, 10, StackContainer::ProfileInventory); 3]
+    );
+    let before = stack_snapshot(vec![
+        stack(20, 3, StackContainer::Postmaster(owner())),
+        stack(10, 8, StackContainer::ProfileInventory),
+        stack(10, 4, StackContainer::ProfileInventory),
+    ]);
+    assert_eq!(
+        apply_inventory_effects(&before, &[stack_effect(3, 10)])
+            .unwrap()
+            .snapshot
+            .stacks,
+        vec![
+            stack(10, 7, StackContainer::ProfileInventory),
+            stack(10, 8, StackContainer::ProfileInventory)
+        ]
+    );
+}
+
+#[test]
+fn stack_pull_rejects_invalid_amount_capacity_source_and_overflow_atomically() {
+    let before = stack_snapshot(vec![stack(20, 10, StackContainer::Postmaster(owner()))]);
+    for effect in [
+        stack_effect(0, 10),
+        stack_effect(1, 0),
+        stack_effect(1, -1),
+        stack_effect(11, 10),
+        stack_effect(u32::MAX, 10),
+    ] {
+        assert!(
+            apply_inventory_effects(
+                &before,
+                &[
+                    InventoryEffect::SetLocked {
+                        item: id("item"),
+                        locked: true
+                    },
+                    effect
+                ]
+            )
+            .is_err()
+        );
+    }
+    for container in [
+        StackContainer::ProfileInventory,
+        StackContainer::Postmaster(CharacterId::new("b")),
+    ] {
+        assert!(
+            apply_inventory_effects(
+                &stack_snapshot(vec![stack(20, 10, container)]),
+                &[stack_effect(1, 10)]
+            )
+            .is_err()
+        );
+    }
+    let mut wrong_hash = before.clone();
+    wrong_hash.stacks = vec![
+        StackObservation::new(
+            ItemHash::new(99),
+            BucketHash::new(20),
+            10,
+            StackContainer::Postmaster(owner()),
+        )
+        .unwrap(),
+    ];
+    assert!(apply_inventory_effects(&wrong_hash, &[stack_effect(1, 10)]).is_err());
+    assert!(!before.items[0].locked);
+}
+
 fn id(value: &str) -> ItemInstanceId {
     ItemInstanceId::new(value)
 }
