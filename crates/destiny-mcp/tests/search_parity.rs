@@ -85,6 +85,7 @@ fn loadouts_cli_mcp_json_parity() {
                             name: Some("Weapon".into()),
                             item_type: Some("Type".into()),
                             bucket_hash: Some(1498876634),
+                            element: None,
                             missing: false,
                             plugs: [
                                 Super,
@@ -117,6 +118,7 @@ fn loadouts_cli_mcp_json_parity() {
                             name: None,
                             item_type: None,
                             bucket_hash: None,
+                            element: None,
                             missing: true,
                             plugs: vec![LoadoutPlugView {
                                 socket_index: 9,
@@ -141,12 +143,69 @@ fn loadouts_cli_mcp_json_parity() {
     };
     for case in 0..4 {
         let cli = cli_loadouts_output::loadouts_json(&result);
-        if case == 0 {
-            let plugs = &cli["characters"][0]["loadouts"][0]["items"][0]["plugs"];
-            assert_eq!(plugs[0]["clarity"], "  Research\nSecond\n");
-            assert!(plugs[0].get("clarity_match").is_none());
-            assert_eq!(plugs[1]["clarity_match"], "variant");
-            assert!(plugs[2].get("clarity").is_none());
+        assert!(!cli.to_string().contains("clarity"));
+        assert!(!cli.to_string().contains("description"));
+        assert!(!cli.to_string().contains("plugs"));
+        if case < 2 {
+            let selected = destiny_app::loadouts::select_loadout(
+                &result,
+                &destiny_app::LoadoutSelector::Slot(3),
+            )
+            .unwrap();
+            let detail = cli_loadouts_output::loadout_json(&selected);
+            let plugs = detail["items"][0]["plugs"].as_array().unwrap();
+            for (occurrence, source) in plugs.iter().zip(&selected.loadout.items[0].plugs) {
+                if source.description.is_some()
+                    || source.clarity.is_some()
+                    || source.clarity_match.is_some()
+                {
+                    let insight =
+                        &detail["plug_insights"][occurrence["insight"].as_u64().unwrap() as usize];
+                    assert_eq!(
+                        insight.get("description"),
+                        source
+                            .description
+                            .as_ref()
+                            .map(|text| serde_json::json!(text))
+                            .as_ref()
+                    );
+                    assert_eq!(
+                        insight.get("clarity"),
+                        source
+                            .clarity
+                            .as_ref()
+                            .map(|text| serde_json::json!(text))
+                            .as_ref()
+                    );
+                    assert_eq!(
+                        insight.get("clarity_match"),
+                        source
+                            .clarity_match
+                            .as_ref()
+                            .map(|text| serde_json::json!(text))
+                            .as_ref()
+                    );
+                } else {
+                    assert!(occurrence.get("insight").is_none());
+                }
+                assert!(occurrence.get("description").is_none());
+                assert!(occurrence.get("clarity").is_none());
+            }
+            assert_eq!(
+                destiny_mcp::service::loadout_output(&selected)
+                    .into_call_tool_result()
+                    .structured_content
+                    .unwrap(),
+                detail
+            );
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&cli_loadouts_output::render_loadout(
+                    OutputMode::Json,
+                    &selected
+                ))
+                .unwrap(),
+                detail
+            );
         }
         let mcp = destiny_mcp::service::loadouts_output(&result).into_call_tool_result();
         assert_eq!(mcp.structured_content.unwrap(), cli);
@@ -226,6 +285,75 @@ fn loadouts_tool_is_registered_with_closed_bounded_arguments() {
             .contains("512")
     );
     assert!(tool.output_schema.is_some());
+}
+
+#[test]
+fn loadout_detail_selector_parity_and_closed_schema() {
+    use clap::Parser;
+    use destiny_mcp::schema::GetLoadoutArgs;
+    for (value, mcp_value) in [
+        ("3", serde_json::json!(3)),
+        ("3", serde_json::json!("3")),
+        (" PvE ", serde_json::json!(" PvE ")),
+    ] {
+        for character in [None, Some("hunter")] {
+            let mut args = vec!["ghostlink", "loadouts", value, "--json"];
+            if let Some(character) = character {
+                args.extend(["--character", character]);
+            }
+            let cli_command::ReadRequest::Loadouts {
+                character_id,
+                loadout,
+                ..
+            } = cli_command::Cli::try_parse_from(args)
+                .unwrap()
+                .into_read_request()
+                .unwrap()
+            else {
+                panic!("loadouts")
+            };
+            let mcp: GetLoadoutArgs = serde_json::from_value(
+                serde_json::json!({"character":character,"loadout":mcp_value}),
+            )
+            .unwrap();
+            let (mcp_character, mcp_selector) = mcp.into_request().unwrap();
+            assert_eq!(character_id, mcp_character);
+            assert_eq!(loadout, Some(mcp_selector));
+        }
+    }
+    let tool = destiny_mcp::schema::tool_specs()
+        .into_iter()
+        .find(|tool| tool.name == "get_loadout")
+        .unwrap();
+    let schema = tool.schema_as_json_value();
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["required"], serde_json::json!(["loadout"]));
+    assert!(
+        schema["properties"]["character"]
+            .to_string()
+            .contains("512")
+    );
+    assert_eq!(tool.output_schema.unwrap()["type"], "object");
+    for value in [
+        serde_json::json!({}),
+        serde_json::json!({"loadout":true}),
+        serde_json::json!({"loadout":3,"unknown":1}),
+    ] {
+        assert!(serde_json::from_value::<GetLoadoutArgs>(value).is_err());
+    }
+    for value in [
+        serde_json::json!({"loadout":0}),
+        serde_json::json!({"loadout":13}),
+        serde_json::json!({"loadout":" "}),
+        serde_json::json!({"loadout":"a".repeat(513)}),
+    ] {
+        assert!(
+            serde_json::from_value::<GetLoadoutArgs>(value)
+                .unwrap()
+                .into_request()
+                .is_err()
+        );
+    }
 }
 
 #[test]

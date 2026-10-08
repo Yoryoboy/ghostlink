@@ -129,32 +129,7 @@ where
                 }
             }
         }
-        let selected = match &request.loadout {
-            LoadoutSelector::Slot(slot) => candidates
-                .iter()
-                .find(|c| c.slot == *slot)
-                .ok_or(ApplyLoadoutError::EmptySlot)?,
-            LoadoutSelector::Name(name) => {
-                let normalized = SearchTerm::new(name)?;
-                let matches: Vec<_> = candidates
-                    .iter()
-                    .filter(|c| {
-                        c.name.as_deref().is_some_and(|name| {
-                            SearchTerm::new(name).is_ok_and(|n| n == normalized)
-                        })
-                    })
-                    .collect();
-                match matches.as_slice() {
-                    [candidate] => *candidate,
-                    [] => return Err(ApplyLoadoutError::UnknownName(candidates)),
-                    _ => {
-                        return Err(ApplyLoadoutError::AmbiguousName(
-                            matches.into_iter().cloned().collect(),
-                        ));
-                    }
-                }
-            }
-        };
+        let selected = crate::loadouts::resolve_loadout(&candidates, &request.loadout)?;
         let provider = EquipLoadoutRequest::new(
             membership,
             character.id.clone(),

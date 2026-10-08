@@ -636,20 +636,42 @@ Legacy artifact tiers and power-bonus fields are not reported.
 
 ### Saved in-game loadouts
 
-`ghostlink loadouts [--character <id|class>] [--detail]` shows saved loadout
+`ghostlink loadouts [<slot-or-name>] [--character <id|class>] [--detail]` shows saved loadout
 names, weapons, armor, subclass configuration and artifact perks per character.
 Omit `--character` for all characters; selection follows the subclass rules above.
 The compact view summarizes equipment; `--detail` adds each item's perks and mods.
 Requires login and Manifest definitions. Run `ghostlink sync-manifest` once after
 upgrading to populate loadout names.
 
-`ghostlink --json loadouts` returns the full `kind: "loadouts"` envelope regardless
-of `--detail`. Unused slots are omitted; saved slot and socket indices retain gaps.
-Missing inventory instances are explicit (`missing: true`, nullable item fields).
-Cosmetics and stat trackers are omitted; unknown plugs remain visible. Each plug
-includes optional `description` (official Manifest tooltip), omitted when
-unavailable. The compact text view shows subclass/artifact descriptions; `--detail`
-also shows descriptions beneath each item's named perks and mods.
+Start with `ghostlink --json loadouts`: it returns compact `kind: "loadouts"`
+summaries, regardless of `--detail`. Per character, each saved loadout includes
+`slot`, `name`, nullable `subclass` (name/element), and `items` (slot/name).
+There are no plugs, descriptions or Clarity texts in this discovery output.
+
+Select one saved loadout positionally for full detail:
+
+```sh
+ghostlink loadouts 3 --character hunter --json
+ghostlink loadouts "PvE" --character hunter --json
+```
+
+The detail envelope has `kind: "loadout"`, character ID/class, presentation hashes,
+full items/plugs (including subclass configuration and artifact perks), and a
+`plug_insights` array. Each plug with text has an `insight` index into that array;
+entries contain optional official `description`, community `clarity`, and
+`clarity_match`. Full content equality deduplicates entries in deterministic
+first-occurrence order, preserving parent-specific variants even for the same
+plug hash. Plugs without insights omit the index. Slot/socket gaps, missing
+instances (`missing: true`), unknown plugs and verbatim multiline text are retained;
+cosmetics and stat trackers remain omitted. JSON matches MCP `get_loadouts` and
+`get_loadout` respectively.
+
+Names use the same normalized exact resolution as apply-loadout; unknown or
+ambiguous names return typed errors and candidates. Omitted character searches
+all characters but must resolve uniquely; specify character if ambiguous.
+Without `--json`, a positional selector prints the existing detailed text for
+that one loadout. No-selector human output is unchanged: the compact text view
+shows subclass/artifact descriptions; `--detail` also shows each item's perks/mods.
 
 ### Apply a saved loadout
 

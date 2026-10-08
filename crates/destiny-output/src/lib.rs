@@ -3,6 +3,7 @@ pub mod apply_loadout;
 pub mod equip;
 pub mod equip_items;
 pub mod instanced_pull;
+pub mod loadouts;
 pub mod lock;
 pub mod move_item;
 pub mod stack_pull;

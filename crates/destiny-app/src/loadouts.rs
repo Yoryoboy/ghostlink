@@ -31,6 +31,7 @@ pub struct LoadoutItemView {
     pub name: Option<String>,
     pub item_type: Option<String>,
     pub bucket_hash: Option<u32>,
+    pub element: Option<String>,
     pub missing: bool,
     pub plugs: Vec<LoadoutPlugView>,
 }
@@ -45,6 +46,110 @@ pub struct LoadoutPlugView {
     pub subclass_kind: Option<SubclassPlugKind>,
     pub empty: bool,
 }
+/// One resolved saved loadout, retaining all enriched item and plug observations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoadoutDetailResult {
+    pub character_id: CharacterId,
+    pub class: Option<String>,
+    pub loadout: LoadoutView,
+}
+
+/// Shared exact normalized name / one-based slot resolution for reads and apply.
+pub fn resolve_loadout(
+    candidates: &[crate::LoadoutCandidate],
+    selector: &crate::LoadoutSelector,
+) -> Result<crate::LoadoutCandidate, crate::ApplyLoadoutError> {
+    use crate::{ApplyLoadoutError, LoadoutSelector};
+    use destiny_core::SearchTerm;
+    match selector {
+        LoadoutSelector::Slot(slot) => {
+            if !(1..=12).contains(slot) {
+                return Err(ApplyLoadoutError::InvalidSlot);
+            }
+            let matches: Vec<_> = candidates
+                .iter()
+                .filter(|c| c.slot == *slot)
+                .cloned()
+                .collect();
+            match matches.as_slice() {
+                [candidate] => Ok(candidate.clone()),
+                [] => Err(ApplyLoadoutError::EmptySlot),
+                _ => Err(ApplyLoadoutError::AmbiguousName(matches)),
+            }
+        }
+        LoadoutSelector::Name(name) => {
+            let normalized = SearchTerm::new(name)?;
+            let matches: Vec<_> = candidates
+                .iter()
+                .filter(|c| {
+                    c.name
+                        .as_deref()
+                        .is_some_and(|name| SearchTerm::new(name).is_ok_and(|n| n == normalized))
+                })
+                .cloned()
+                .collect();
+            match matches.as_slice() {
+                [candidate] => Ok(candidate.clone()),
+                [] => Err(ApplyLoadoutError::UnknownName(candidates.to_vec())),
+                _ => Err(ApplyLoadoutError::AmbiguousName(matches)),
+            }
+        }
+    }
+}
+
+/// Omitted character may search all characters, but must resolve exactly one loadout.
+pub fn select_loadout(
+    result: &LoadoutsResult,
+    selector: &crate::LoadoutSelector,
+) -> Result<LoadoutDetailResult, crate::ApplyLoadoutError> {
+    let saved: Vec<_> = result
+        .characters
+        .iter()
+        .flat_map(|character| {
+            character
+                .loadouts
+                .iter()
+                .filter(|loadout| !loadout.items.is_empty())
+                .map(move |loadout| (character, loadout))
+        })
+        .collect();
+    let candidates: Vec<_> = saved
+        .iter()
+        .map(|(_, loadout)| crate::LoadoutCandidate {
+            slot: loadout.slot,
+            name: loadout.name.clone(),
+        })
+        .collect();
+    let selected = resolve_loadout(&candidates, selector)?;
+    let (character, loadout) = saved
+        .into_iter()
+        .find(|(_, loadout)| loadout.slot == selected.slot && loadout.name == selected.name)
+        .expect("resolved candidate belongs to the saved loadouts");
+    Ok(LoadoutDetailResult {
+        character_id: character.character_id.clone(),
+        class: character.class.clone(),
+        loadout: loadout.clone(),
+    })
+}
+
+/// Parse the positional CLI / MCP slot-or-name selector without guessing names.
+pub fn parse_loadout_selector(
+    value: &str,
+) -> Result<crate::LoadoutSelector, crate::ApplyLoadoutError> {
+    if !value.is_empty() && value.chars().all(|c| c.is_ascii_digit()) {
+        let slot: u8 = value
+            .parse()
+            .map_err(|_| crate::ApplyLoadoutError::InvalidSlot)?;
+        if !(1..=12).contains(&slot) {
+            return Err(crate::ApplyLoadoutError::InvalidSlot);
+        }
+        Ok(crate::LoadoutSelector::Slot(slot))
+    } else {
+        destiny_core::SearchTerm::new(value)?;
+        Ok(crate::LoadoutSelector::Name(value.into()))
+    }
+}
+
 pub trait LoadoutOperations {
     fn loadouts(
         &mut self,
@@ -195,6 +300,7 @@ where
                                             .map_err(|_| AppError::new(ErrorCategory::LocalStorage))
                                     })
                                     .transpose()?,
+                                element: definition.as_ref().and_then(|d| d.element.clone()),
                                 missing: instance.is_none(),
                                 plugs,
                             },
@@ -341,6 +447,22 @@ mod tests {
                 item_name: None,
                 text: "  Community research.\nSecond line.\n".into(),
             }))
+        }
+        fn lookup_clarity_by_name(&self, name: &str) -> Result<Vec<ClarityInsight>, AppError> {
+            if name != "Parent-specific Aspect" {
+                return Ok(vec![]);
+            }
+            Ok([(1, "Parent A research"), (2, "Parent B research")]
+                .into_iter()
+                .map(|(parent, text)| ClarityInsight {
+                    hash: 100 + parent,
+                    name: name.into(),
+                    kind: "Subclass Aspect".into(),
+                    item_hash: Some(parent),
+                    item_name: None,
+                    text: text.into(),
+                })
+                .collect())
         }
         fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
             if self.description_error {
@@ -763,6 +885,46 @@ mod tests {
         assert_eq!(plugs[2].name, None);
         assert!(!plugs[2].empty);
     }
+    #[test]
+    fn same_plug_hash_retains_parent_specific_clarity_after_selection() {
+        let (mut service, _) = fixture(false);
+        service.sync.repository_mut().definitions = InMemoryDefinitionRepository::new(
+            DefinitionVersion::new("v1"),
+            vec![
+                definition(1, "Weapon", Some(ItemSlot::Kinetic), None),
+                definition(2, "Armor", Some(ItemSlot::Helmet), None),
+                definition(
+                    13,
+                    "Parent-specific Aspect",
+                    None,
+                    Some("hunter.arc.aspects"),
+                ),
+            ],
+        );
+        for item in &mut service.sync.gateway_mut().live.characters[0].loadouts[0].items {
+            item.plugs = vec![LoadoutPlug {
+                socket_index: 2,
+                plug_hash: ItemHash::new(13),
+            }];
+        }
+        let result = service
+            .loadouts(Some(&CharacterId::new("hunter")), TTL, NOW)
+            .unwrap();
+        let selected = select_loadout(&result, &crate::LoadoutSelector::Slot(3)).unwrap();
+        assert_eq!(
+            selected.loadout.items[0].plugs[0].clarity.as_deref(),
+            Some("Parent A research")
+        );
+        assert_eq!(
+            selected.loadout.items[1].plugs[0].clarity.as_deref(),
+            Some("Parent B research")
+        );
+        assert_eq!(
+            selected.loadout.items[0].plugs[0].plug_hash,
+            selected.loadout.items[1].plugs[0].plug_hash
+        );
+    }
+
     #[test]
     fn description_storage_error_propagates() {
         let (mut service, _) = fixture(false);

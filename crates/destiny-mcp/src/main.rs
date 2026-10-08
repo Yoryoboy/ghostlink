@@ -1523,6 +1523,7 @@ mod tests {
                 "get_subclass",
                 "get_artifact",
                 "get_loadouts",
+                "get_loadout",
                 "weekly_reset",
                 "weekly",
                 "get_subclass_options",

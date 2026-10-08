@@ -103,6 +103,15 @@ pub trait InventoryReadService {
     ) -> Result<crate::schema::GetLoadoutsOutput, McpError> {
         Err(McpError::new(ErrorCategory::DefinitionsUnavailable))
     }
+    /// Reads exactly one resolved loadout with content-deduplicated insights.
+    fn get_loadout(
+        &mut self,
+        _character: Option<&CharacterId>,
+        _selector: &destiny_app::LoadoutSelector,
+    ) -> Result<Result<crate::schema::GetLoadoutOutput, destiny_app::ApplyLoadoutError>, McpError>
+    {
+        Err(McpError::new(ErrorCategory::DefinitionsUnavailable))
+    }
     /// Reads live artifact state when composed with an artifact service.
     fn get_artifact(
         &mut self,
@@ -283,6 +292,20 @@ impl<L: destiny_app::LoadoutOperations, I: InventoryReadService, C: Clock> Inven
             .loadouts(character, self.policy, now)
             .map_err(McpError::from)?;
         Ok(loadouts_output(&result))
+    }
+    fn get_loadout(
+        &mut self,
+        character: Option<&CharacterId>,
+        selector: &destiny_app::LoadoutSelector,
+    ) -> Result<Result<crate::schema::GetLoadoutOutput, destiny_app::ApplyLoadoutError>, McpError>
+    {
+        let now = self.clock.now().map_err(McpError::from)?;
+        let result = self
+            .loadouts
+            .loadouts(character, self.policy, now)
+            .map_err(McpError::from)?;
+        Ok(destiny_app::loadouts::select_loadout(&result, selector)
+            .map(|selected| loadout_output(&selected)))
     }
     fn get_artifact(
         &mut self,
@@ -1733,83 +1756,41 @@ impl crate::schema::GetLoadoutsArgs {
     }
 }
 
-/// Full CLI-compatible loadouts envelope, retaining saved slot and socket gaps.
+/// CLI-compatible compact discovery projection.
 pub fn loadouts_output(result: &destiny_app::LoadoutsResult) -> crate::schema::GetLoadoutsOutput {
-    use crate::schema::{
-        CharacterLoadoutsView, GetLoadoutsOutput, LoadoutItemView, LoadoutPlugView, LoadoutView,
-        SubclassPlugKindView,
-    };
-    GetLoadoutsOutput {
-        characters: result
-            .characters
-            .iter()
-            .map(|character| CharacterLoadoutsView {
-                character_id: character.character_id.as_str().to_owned(),
-                class: character.class.clone(),
-                loadouts: character
-                    .loadouts
-                    .iter()
-                    .map(|loadout| LoadoutView {
-                        slot: loadout.slot,
-                        name: loadout.name.clone(),
-                        name_hash: loadout.name_hash,
-                        color_hash: loadout.color_hash,
-                        icon_hash: loadout.icon_hash,
-                        items: loadout
-                            .items
-                            .iter()
-                            .map(|item| LoadoutItemView {
-                                instance_id: item.instance_id.as_str().to_owned(),
-                                item_hash: item.item_hash.map(|hash| hash.value()),
-                                name: item.name.clone(),
-                                item_type: item.item_type.clone(),
-                                bucket_hash: item.bucket_hash,
-                                missing: item.missing,
-                                plugs: item
-                                    .plugs
-                                    .iter()
-                                    .map(|plug| LoadoutPlugView {
-                                        socket_index: plug.socket_index,
-                                        plug_hash: plug.plug_hash.value(),
-                                        name: plug.name.clone(),
-                                        description: plug.description.clone(),
-                                        clarity: plug.clarity.clone(),
-                                        clarity_match: plug.clarity_match.clone(),
-                                        empty: plug.empty,
-                                        subclass_kind: plug.subclass_kind.map(|kind| match kind {
-                                            destiny_app::SubclassPlugKind::Super => {
-                                                SubclassPlugKindView::Super
-                                            }
-                                            destiny_app::SubclassPlugKind::Aspect => {
-                                                SubclassPlugKindView::Aspect
-                                            }
-                                            destiny_app::SubclassPlugKind::Fragment => {
-                                                SubclassPlugKindView::Fragment
-                                            }
-                                            destiny_app::SubclassPlugKind::Grenade => {
-                                                SubclassPlugKindView::Grenade
-                                            }
-                                            destiny_app::SubclassPlugKind::Melee => {
-                                                SubclassPlugKindView::Melee
-                                            }
-                                            destiny_app::SubclassPlugKind::ClassAbility => {
-                                                SubclassPlugKindView::ClassAbility
-                                            }
-                                            destiny_app::SubclassPlugKind::Movement => {
-                                                SubclassPlugKindView::Movement
-                                            }
-                                            destiny_app::SubclassPlugKind::Transcendence => {
-                                                SubclassPlugKindView::Transcendence
-                                            }
-                                        }),
-                                    })
-                                    .collect(),
-                            })
-                            .collect(),
-                    })
-                    .collect(),
-            })
-            .collect(),
+    serde_json::from_value(destiny_output::loadouts::loadouts_json(result))
+        .expect("shared loadouts projection matches its MCP schema")
+}
+
+/// CLI-compatible single-loadout detail, with content-deduplicated insights.
+pub fn loadout_output(
+    result: &destiny_app::loadouts::LoadoutDetailResult,
+) -> crate::schema::GetLoadoutOutput {
+    serde_json::from_value(destiny_output::loadouts::loadout_json(result))
+        .expect("shared loadout projection matches its MCP schema")
+}
+
+impl crate::schema::GetLoadoutArgs {
+    pub fn into_request(
+        self,
+    ) -> Result<(Option<CharacterId>, destiny_app::LoadoutSelector), McpError> {
+        if let Some(character) = &self.character {
+            validate_identifier(character, "character")?;
+        }
+        let selector = match self.loadout {
+            crate::schema::LoadoutSelectorArg::Slot(slot) if (1..=12).contains(&slot) => {
+                destiny_app::LoadoutSelector::Slot(slot)
+            }
+            crate::schema::LoadoutSelectorArg::Slot(_) => {
+                return Err(McpError::new(ErrorCategory::ProviderValidation));
+            }
+            crate::schema::LoadoutSelectorArg::Name(name) => {
+                validate_identifier(&name, "loadout")?;
+                destiny_app::loadouts::parse_loadout_selector(&name)
+                    .map_err(|_| McpError::new(ErrorCategory::ProviderValidation))?
+            }
+        };
+        Ok((self.character.map(CharacterId::new), selector))
     }
 }
 
