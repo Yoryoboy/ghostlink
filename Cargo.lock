@@ -487,7 +487,7 @@ dependencies = [
 
 [[package]]
 name = "destiny-adapters"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "apple-native-keyring-store",
  "base64 0.22.1",
@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "destiny-app"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "destiny-core",
  "url",
@@ -519,11 +519,11 @@ dependencies = [
 
 [[package]]
 name = "destiny-core"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 
 [[package]]
 name = "destiny-mcp"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "clap",
  "destiny-adapters",
@@ -539,7 +539,7 @@ dependencies = [
 
 [[package]]
 name = "destiny-output"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "destiny-app",
  "serde_json",
@@ -793,7 +793,7 @@ dependencies = [
 
 [[package]]
 name = "ghostlink"
-version = "0.1.0-rc.1"
+version = "0.1.0-rc.2"
 dependencies = [
  "chrono",
  "clap",
