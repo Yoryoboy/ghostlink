@@ -167,6 +167,7 @@ fn non_unique_formula_exhaustive_small_domain() {
                         occupied: Some(occupied),
                         existing_quantity: Some(existing),
                         max_stack_size: Some(max),
+                        account_wide: Some(true),
                         ..capacity()
                     };
                     let open = slots.saturating_sub(occupied);
@@ -204,6 +205,7 @@ fn unique_stack_needs_one_slot_or_only_tops_off() {
                 occupied: Some(0),
                 existing_quantity: Some(existing),
                 unique_stack: Some(true),
+                account_wide: Some(true),
                 ..capacity()
             };
             for amount in [1, 9, 10, 11] {
@@ -250,7 +252,11 @@ fn metadata_unknowns_and_safety_refusals_are_distinct() {
     check_field!(unique_stack, None, UnknownUniqueness);
     check_field!(account_wide, None, UnknownAccountWide);
     check_field!(side_effects, None, UnknownSideEffects);
-    check_field!(account_wide, Some(true), AccountWideDestination);
+    let account = StackPullCapacityInput {
+        account_wide: Some(true),
+        ..capacity()
+    };
+    check_capacity(&account, 1, StackPullDecision::Eligible);
     check_field!(side_effects, Some(true), PullHasSideEffects);
     check_field!(max_stack_size, Some(0), InvalidCapacityMetadata);
     check_field!(max_stack_size, Some(-1), InvalidCapacityMetadata);

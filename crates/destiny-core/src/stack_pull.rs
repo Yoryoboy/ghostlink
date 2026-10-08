@@ -131,7 +131,8 @@ pub struct StackPullCapacityInput {
     pub max_stack_size: Option<i32>,
     /// True iff the known stackUniqueLabel is non-empty (without trimming).
     pub unique_stack: Option<bool>,
-    /// Account-wide buckets/profile currencies are initially unsupported.
+    /// Known destination scope. Account-wide occupancy must come from profile
+    /// inventory, never character inventory or overlapping currency summaries.
     pub account_wide: Option<bool>,
     /// Exact doesPostmasterPullHaveSideEffects; only explicit false is safe.
     pub side_effects: Option<bool>,
@@ -156,7 +157,6 @@ pub enum StackPullRefusal {
     UnknownUniqueness,
     UnknownAccountWide,
     UnknownSideEffects,
-    AccountWideDestination,
     PullHasSideEffects,
     /// Nonpositive maxStackSize or unique holdings greater than one maximum.
     InvalidCapacityMetadata,
@@ -212,9 +212,7 @@ fn guaranteed_room(input: &StackPullCapacityInput) -> Result<u64, StackPullRefus
     if input.side_effects.ok_or(UnknownSideEffects)? {
         return Err(PullHasSideEffects);
     }
-    if input.account_wide.ok_or(UnknownAccountWide)? {
-        return Err(AccountWideDestination);
-    }
+    input.account_wide.ok_or(UnknownAccountWide)?;
     let capacity = input.capacity.ok_or(UnknownCapacity)?;
     let occupied = input.occupied.ok_or(UnknownOccupancy)?;
     let existing = input.existing_quantity.ok_or(UnknownExistingQuantity)?;

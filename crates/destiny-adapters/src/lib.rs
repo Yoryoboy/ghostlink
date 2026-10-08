@@ -17,6 +17,12 @@ pub mod profile_gateway;
 mod public_milestones;
 pub mod random;
 pub mod sqlite;
+pub mod stack_bucket_capacity_policy;
+pub use stack_bucket_capacity_policy::{
+    PINNED_STACK_BUCKET_CAPACITY, PINNED_STACK_BUCKET_CAPACITY_VERSION, PINNED_STACK_BUCKET_PATH,
+    StackBucketCapacityQualificationError, pinned_stack_bucket_capacity_policy,
+    qualify_pinned_stack_bucket_capacity,
+};
 pub mod token;
 pub mod transfer;
 pub mod uri_handler;

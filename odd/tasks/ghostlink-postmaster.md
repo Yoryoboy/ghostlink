@@ -146,7 +146,17 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   Split:
   - [x] GPM-006b — Core stack pull contract: request (itemId 0) + outcomes +
     pure capacity/selection policy with exhaustive tests.
-  - [ ] GPM-006c — Qualify non-equipment bucket capacity from the pinned
+  Decision 2026-10-07 (human, after bucket audit): SUPPORT account-wide
+  destinations. Pinned artifact DestinyInventoryBucketDefinition-a8ba855a-...
+  shows Consumables 1469714392 and Modifications 3313201758 are scope=1
+  (account), category=1, location=0, itemCount=50, transfer destination, non-FIFO.
+  Engrams 375726501 is character-scoped but engrams are instanced; Materials
+  3865314626 has itemCount 0 (unused). Account-wide capacity and occupancy are
+  measured on the observed ProfileInventory stacks for that bucket (rows = slots,
+  same-hash quantity sum); request still targets the Postmaster owner
+  character. Verification: profile same-hash total +amount and Postmaster
+  same-hash total -amount. Only these two buckets are supported initially.
+  - [x] GPM-006c — Qualify non-equipment bucket capacity from the pinned
     manifest (consumables/modifications/materials) with refusal on unknown.
   - [ ] GPM-006d — Adapter request body and app service plan/preflight/
     bounded quantity verification reusing GPM-008 machinery.

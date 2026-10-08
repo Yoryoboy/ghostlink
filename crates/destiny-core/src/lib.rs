@@ -30,6 +30,10 @@ pub mod query;
 pub use ports::PublicMilestonesGateway;
 pub use public_milestones::{PublicMilestone, PublicMilestoneActivity, PublicMilestonesSnapshot};
 pub mod redact;
+pub mod stack_bucket_capacity;
+pub use stack_bucket_capacity::{
+    QualifiedStackBucketCapacityPolicy, StackBucketCapacityEvidence, StackBucketCapacityPolicy,
+};
 pub mod stack_pull;
 pub use ports::StackPullGateway;
 pub use stack_pull::{
