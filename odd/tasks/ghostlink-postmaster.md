@@ -122,6 +122,36 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   evidence, explicit stack ambiguity/capacity rules, request fixtures. Non-instance
   itemId, partial/duplicate selection and per-material coverage remain unresolved;
   this task is not complete just because a limited instanced slice is possible.
+  Evidence 2026-10-07 (secondary, DIM master d7c02e5): DIM sends PullFromPostmaster
+  with itemId="0" for non-instanced items (d2-item-factory.ts:524 "zero for
+  non-instanced is legacy hack"), itemReferenceHash, characterId=owner and
+  stackSize=requested amount, so partial pulls are a normal client path
+  (destiny2-api.ts transfer). Capacity (stores-helpers.ts potentialSpaceLeftForItem):
+  open slots = bucket capacity - occupied stacks; non-unique stackables get
+  openSlots*maxStackSize minus existing remainder; uniqueStack items (non-empty
+  stackUniqueLabel) may only top off one stack (maxStackSize - existing) or need
+  one open slot; account-wide buckets only on current character. DIM also uses an
+  optimistic "couldMakeSpace" path; Ghostlink rejects it (guaranteed only).
+  With itemId=0 the client cannot choose among same-hash Postmaster stacks.
+  Decisions (agent, delegated by human "take the best decisions"):
+  - Wire: itemId "0", hash, owner character, stackSize in 1..=int32 max.
+  - Selection: by hash; amount must be <= the SMALLEST same-hash Postmaster
+    stack, so the request is valid whichever stack Bungie picks. No merging.
+  - Capacity: guaranteed-only DIM formula from qualified manifest bucket
+    capacity; unknown maxStackSize/uniqueness/bucket/side-effect -> refuse.
+    Account-wide destination buckets and profile currencies refused initially.
+  - Verification: Verified only if destination same-hash total rose by exactly
+    the amount AND Postmaster same-hash total fell by exactly the amount within
+    the existing 3 bounded re-observations; otherwise Uncertain. Never redispatch.
+  Split:
+  - [ ] GPM-006b — Core stack pull contract: request (itemId 0) + outcomes +
+    pure capacity/selection policy with exhaustive tests.
+  - [ ] GPM-006c — Qualify non-equipment bucket capacity from the pinned
+    manifest (consumables/modifications/materials) with refusal on unknown.
+  - [ ] GPM-006d — Adapter request body and app service plan/preflight/
+    bounded quantity verification reusing GPM-008 machinery.
+  - [ ] GPM-006e — CLI `pull` and MCP `pull_item` stack mode (hash + amount),
+    parity tests, docs/skill.
 - [x] **GPM-007a — Instanced pull core contract.** Genuine positive int64
   IDs, uint32 reference hash, representable membership type, fixed quantity one;
   immutable request and one-shot gateway/outcomes. No anonymous stack request.
