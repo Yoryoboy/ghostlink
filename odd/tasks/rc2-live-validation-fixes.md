@@ -15,9 +15,15 @@ Parent tracker: `odd/tasks/ghostlink-public-release.md` (PR-011).
   acknowledgement apply the effect locally (DIM `itemMoved` /
   `itemLockStateChanged` reducers). Bungie is the final validator; its errors
   become clear refusals plus local invalidation.
-- **Go beyond DIM:** acknowledged effects survive newer-but-stale Bungie
-  profiles (pending-effect overlay until a profile confirms them or they
-  expire). DIM only guards profile-vs-profile `responseMintedTimestamp`.
+- **Owner rule:** before any design question, check how DIM does it; if it
+  is clear and fits, apply it directly. Only discuss when ambiguous or it
+  does not fit Ghostlink.
+- **No pending-effect window (as DIM).** Acknowledged effects are written to
+  the projection and the projection is NOT invalidated after an action.
+  Sync only on TTL expiry / missing projection / Bungie rejection. Discard
+  profiles whose `responseMintedTimestamp` is not newer than the stored one
+  (`d2-stores.ts:256-289`). Revisit an overlay only if rc.3 shows effects
+  overwritten.
 - Remove the `DESTINY_DEFINITION_VERSION` override; the version always comes
   from the stored Manifest.
 - Test-first where applicable: `cargo test --workspace --all-features`; gates
@@ -42,12 +48,25 @@ G5/G7 CLI UX.
   behavior was removed. Verifier: fmt, clippy `-D warnings`, workspace
   1,868 passed / 0 failed, `git diff --check`. Commit evidence: see git log
   (`fix(stack-pull): treat absent stackUniqueLabel as not unique`).
-- [ ] **T2 — Acknowledged-effect store.** SQLite migration + repository API to
-  apply acknowledged effects atomically (move/pull: location; lock: `locked`;
+- [ ] **T2 — Acknowledged-effect store.** Repository API to apply
+  acknowledged effects atomically (move/pull: location; lock: `locked`;
   equip: equipped flags + clear replaced same-slot item; stack pull:
-  quantities), advance the projection revision, keep receipt provenance.
-  Pending effects overlay every later sync until confirmed or expired (expiry
-  window to decide, informed by observed Bungie lag of 10–130 s).
+  quantities), advance the projection revision. Decode and persist
+  `responseMintedTimestamp`; reject non-newer profiles.
+- Slice plan for T2/T3 (exploration 2026-10-08, estimates not measured):
+  A1–A3 minted-timestamp type, decode + SQLite column, sync discard guard;
+  B1–B2 effect enum + repository port (in-memory, SQLite); C1–C2 core
+  ticket from committed projection + move/equip/equip_items effects; D lock;
+  E1–E3 durable runtime bucket/coverage, cached capacity evidence,
+  instance/stack pull effects; F1–F2 durable saved-loadout cache (206) +
+  applied-loadout effects (DIM `ingame-loadout-apply.ts:50-83`). Each
+  ~150–390 lines; total ~3.5–4.5k → stacked PRs to `main` (owner approved
+  2026-10-08). Branch `feat/local-action-effects` from
+  `fix/rc2-live-validation`.
+  - [x] B1 pure core reducer `apply_inventory_effects` (relocate, lock,
+    equip with caller-resolved unequip, instance pull); 11 tests, core 210
+    pass, clippy clean. Commit: see git log (`feat(core): add acknowledged
+    inventory effect reducer`).
 - [ ] **T3 — DIM-style action pipeline.** Remove forced preflight acquisition
   from move, lock, equip, pull item, pull stack and apply loadout; plan and
   execute from the local projection; apply the effect from T2 on
