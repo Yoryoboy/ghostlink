@@ -15,6 +15,77 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
+fn minted_publication_migration_and_reopen() {
+    let database = TempDatabase::new();
+    let mut store = SqliteStore::open(database.path()).unwrap();
+    let legacy = store.replace_current(full_input()).unwrap();
+    super::migrations::migrate_to(store.connection_mut(), 19).unwrap();
+    super::migrations::migrate_to(store.connection_mut(), 20).unwrap();
+    assert_eq!(store.profile_minted_at().unwrap(), None);
+    assert_eq!(store.load_current().unwrap(), Some(legacy.clone()));
+    let minted = destiny_core::ProfileMintedAt::new(1_800_000_000, 123456789).unwrap();
+    let published = store
+        .replace_current_minted(full_input(), Some(minted))
+        .unwrap();
+    assert_eq!(published.metadata.revision, legacy.metadata.revision);
+    assert_eq!(store.profile_minted_at().unwrap(), Some(minted));
+    store.invalidate_freshness().unwrap();
+    drop(store);
+    let mut reopened = SqliteStore::open(database.path()).unwrap();
+    assert_eq!(reopened.load_current().unwrap(), Some(published));
+    assert_eq!(reopened.profile_minted_at().unwrap(), Some(minted));
+    assert!(reopened.freshness_invalidated().unwrap());
+    let mut invalid = full_input();
+    invalid.source = SourceMarker::Manifest;
+    assert!(reopened.replace_current_minted(invalid, None).is_err());
+    assert_eq!(reopened.profile_minted_at().unwrap(), Some(minted));
+    assert!(super::migrations::migrate_to(reopened.connection_mut(), 19).is_err());
+    reopened.replace_current(full_input()).unwrap();
+    assert_eq!(reopened.profile_minted_at().unwrap(), None);
+}
+
+#[test]
+fn minted_write_failure_rolls_back_publication_and_corrupt_instants_fail_closed() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let minted = destiny_core::ProfileMintedAt::new(-1, 999_999_999).unwrap();
+    let before = store
+        .replace_current_minted(full_input(), Some(minted))
+        .unwrap();
+    store.invalidate_freshness().unwrap();
+    store.connection().execute_batch("CREATE TRIGGER reject_minted BEFORE UPDATE OF profile_minted_at ON sync_metadata BEGIN SELECT RAISE(ABORT, 'test'); END;").unwrap();
+    let mut changed = full_input();
+    changed.items.clear();
+    assert_eq!(
+        store
+            .replace_current_minted(changed, None)
+            .unwrap_err()
+            .category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(store.load_current().unwrap(), Some(before));
+    assert_eq!(store.profile_minted_at().unwrap(), Some(minted));
+    assert!(store.freshness_invalidated().unwrap());
+    store
+        .connection()
+        .execute_batch("DROP TRIGGER reject_minted;")
+        .unwrap();
+    for raw in [
+        "not-an-instant",
+        "1:1000000000",
+        "01:0",
+        "1:00",
+        "9223372036854775808:0",
+        "1:-1",
+    ] {
+        store.connection().execute("UPDATE sync_metadata SET profile_minted_at = ?1 WHERE dataset = 'profile_inventory'", [raw]).unwrap();
+        assert_eq!(
+            store.profile_minted_at().unwrap_err().category(),
+            ErrorCategory::LocalStorage
+        );
+    }
+}
+
+#[test]
 fn invalidation_keeps_acquisition_metadata() {
     let mut store = SqliteStore::open_in_memory().unwrap();
     let before = store.replace_current(full_input()).unwrap();

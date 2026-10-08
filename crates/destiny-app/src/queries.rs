@@ -1062,7 +1062,9 @@ fn query_metadata(
     let metadata = outcome.metadata();
     let now = match outcome {
         ProfileSyncOutcome::Refreshed { .. } => now.max(metadata.checked_at),
-        ProfileSyncOutcome::SkippedFresh { .. } => now,
+        ProfileSyncOutcome::SkippedFresh { .. } | ProfileSyncOutcome::DiscardedNotNewer { .. } => {
+            now
+        }
     };
     let freshness = FreshnessInput {
         dataset: Dataset::ProfileInventory,
@@ -2827,6 +2829,20 @@ mod tests {
         );
         let mut old = metadata.clone();
         old.checked_at = stale_checked_at();
+        let discarded = destiny_core::ProfileSyncOutcome::DiscardedNotNewer {
+            metadata: old.clone(),
+        };
+        assert_eq!(
+            super::query_metadata(&discarded, TTL, NOW).freshness,
+            FreshnessStatus::Stale
+        );
+        let future_discarded = destiny_core::ProfileSyncOutcome::DiscardedNotNewer {
+            metadata: metadata.clone(),
+        };
+        assert_eq!(
+            super::query_metadata(&future_discarded, TTL, NOW).freshness,
+            FreshnessStatus::Stale
+        );
         let refreshed = destiny_core::ProfileSyncOutcome::Refreshed { metadata: old };
         assert_eq!(
             super::query_metadata(&refreshed, TTL, NOW).freshness,

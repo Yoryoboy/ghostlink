@@ -109,7 +109,7 @@ pub use query::{
 pub use query::{InspectionPlug, InspectionPlugRole};
 pub use redact::{REDACTED, Redacted, opaque, redact_optional};
 pub use state::{
-    Dataset, FreshnessInput, FreshnessPolicy, FreshnessStatus, ProfileSyncOutcome,
+    Dataset, FreshnessInput, FreshnessPolicy, FreshnessStatus, ProfileMintedAt, ProfileSyncOutcome,
     ProfileSyncReason, Resolution, RevisionAllocation, RevisionOverflow, RevisionState,
     SemanticResolution, SourceMarker, Timestamp, allocate_revision,
 };

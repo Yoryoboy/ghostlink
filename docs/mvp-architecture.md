@@ -98,6 +98,38 @@ Bungie remains the source of truth. SQLite contains a rebuildable cache/search p
 
 Freshness is dataset-specific (Manifest, profile, character inventory) and policy-driven rather than a single global TTL. Reads may use a fresh projection; stale or missing data triggers synchronization before answering. A forced `sync` bypasses freshness. Move, single-item equip and lock/unlock dispatch from the committed local projection after ordinary sync, acquiring only when missing, stale or invalidated; other mutations retain forced preflight. Bungie is the final validator. Acknowledged move/equip effects and lock state update the projection locally without a post-action read, advance its revision when content changes, and retain freshness on complete success. Incomplete, rejected or uncertain attempts invalidate freshness. Local persistence failure after acknowledgement preserves receipts and invalidates freshness without retrying Bungie; the next ordinary read syncs. Concurrent syncs use a per-dataset lock or equivalent single-flight policy; an interrupted transaction leaves the prior committed snapshot intact.
 
+### Profile minted-time guard (slice A)
+
+Ordinary sync compares Bungie's `Response.responseMintedTimestamp` with the
+active profile's persisted minted instant, after requested-membership validation
+and before definition filtering or publication. For the same membership ID and
+type, when both instants are present, an older or equal candidate is discarded
+(including its runtime bucket observations). The retained projection, acknowledged
+effects, revision, minted instant, `checked_at`, and invalidation flag stay unchanged.
+`DiscardedNotNewer` is a successful non-publication outcome, not an error or fresh
+acquisition; the observation route uses its existing skip shape with `discarded:
+true` and no observation pair.
+
+Callers proceed with the retained projection for this call and report its actual
+freshness. A stale projection remains stale, so a later Ordinary call may fetch
+again. No retry loop or fabricated freshness evidence is introduced.
+
+Missing minted evidence on either side, or an account switch, preserves normal
+publication. Successful publication atomically stores the supplied instant (or
+clears it when missing) with the SQLite profile row; effects and invalidation do
+not change it. Minted time is acquisition metadata, excluded from normalized
+content/revision identity, and is not a TTL timestamp. The core stores signed Unix
+seconds plus nanoseconds; the adapter parses RFC 3339 instants with timezone
+normalization, never orders raw strings. Missing fields mean unknown; malformed
+present fields, leap seconds and fractions beyond nanosecond precision are
+provider-validation failures, rather than silently weakening the guard.
+
+**Temporary scope:** Forced, Preflight and PostAction acquisitions still publish
+even older/equal minted profiles and store their supplied instant. Pulls and
+loadout application retain that behavior until slices E/F move them to Ordinary
+local sync, at which point they inherit the guard. This is not yet a global
+monotonic-profile guarantee.
+
 Repeated syncs are idempotent at the projection level: the same Bungie state produces the same normalized rows and revision semantics. A successful replacement with changed normalized content receives the next repository-generated `SyncRevision`; unchanged normalized content may retain its revision. Remote mutations are not assumed globally idempotent. Each plan has a local `plan_id`, a bounded step identity, and an execution record so retries can re-read current state and avoid replaying a step whose postcondition is already true. Never claim atomicity across multiple Bungie calls.
 
 ## 6. Read workflows

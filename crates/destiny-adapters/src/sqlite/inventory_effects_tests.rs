@@ -70,7 +70,8 @@ fn effects() -> Vec<InventoryEffect> {
 fn acknowledged_effects_preserve_metadata_and_update_search() {
     for invalidated in [false, true] {
         let mut store = SqliteStore::open_in_memory().unwrap();
-        let before = store.replace_current(input()).unwrap();
+        let minted = ProfileMintedAt::new(1_800_000_000, 987654321).unwrap();
+        let before = store.replace_current_minted(input(), Some(minted)).unwrap();
         if invalidated {
             store.invalidate_freshness().unwrap();
         }
@@ -84,6 +85,7 @@ fn acknowledged_effects_preserve_metadata_and_update_search() {
         assert_eq!(after, expected);
         assert_eq!(store.load_current().unwrap(), Some(after.clone()));
         assert_eq!(store.freshness_invalidated().unwrap(), invalidated);
+        assert_eq!(store.profile_minted_at().unwrap(), Some(minted));
         assert_eq!(
             store.lookup_instance(&"target".into()).unwrap(),
             Resolution::Unique(

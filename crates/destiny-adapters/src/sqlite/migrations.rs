@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 19;
+pub(crate) const LATEST_VERSION: u32 = 20;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 19] = [
+const MIGRATIONS: [Migration; 20] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -149,7 +149,29 @@ const MIGRATIONS: [Migration; 19] = [
         up: SCHEMA_V19_UP,
         down: SCHEMA_V19_DOWN,
     },
+    Migration {
+        version: 20,
+        up: SCHEMA_V20_UP,
+        down: SCHEMA_V20_DOWN,
+    },
 ];
+
+// Canonical signed Unix seconds and nanoseconds, encoded by the inventory adapter.
+// Additive migration leaves all legacy rows unknown; only profile rows may carry it.
+const SCHEMA_V20_UP: &str = r#"
+ALTER TABLE sync_metadata ADD COLUMN profile_minted_at TEXT
+    CHECK (profile_minted_at IS NULL OR
+        (dataset = 'profile_inventory' AND typeof(profile_minted_at) = 'text'));
+"#;
+
+const SCHEMA_V20_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (
+    SELECT 1 FROM sync_metadata WHERE profile_minted_at IS NOT NULL
+) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+ALTER TABLE sync_metadata DROP COLUMN profile_minted_at;
+"#;
 
 const SCHEMA_V19_UP: &str = r#"
 ALTER TABLE sync_metadata ADD COLUMN invalidated INTEGER NOT NULL DEFAULT 0

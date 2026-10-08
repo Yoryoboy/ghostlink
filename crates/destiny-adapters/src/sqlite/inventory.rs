@@ -64,6 +64,33 @@ fn provider_validation() -> AppError {
 }
 
 impl InventoryRepository for SqliteStore {
+    fn profile_minted_at(&self) -> Result<Option<destiny_core::ProfileMintedAt>, AppError> {
+        let stored: Option<Option<String>> = self
+            .connection()
+            .query_row(
+                "SELECT profile_minted_at FROM sync_metadata WHERE dataset = 'profile_inventory'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| storage_failure())?;
+        stored
+            .flatten()
+            .map(|raw| {
+                let (seconds, nanos) = raw.split_once(':').ok_or_else(storage_failure)?;
+                let minted = destiny_core::ProfileMintedAt::new(
+                    seconds.parse().map_err(|_| storage_failure())?,
+                    nanos.parse().map_err(|_| storage_failure())?,
+                )
+                .map_err(|_| storage_failure())?;
+                if encode_minted(minted) != raw {
+                    return Err(storage_failure());
+                }
+                Ok(minted)
+            })
+            .transpose()
+    }
+
     fn freshness_invalidated(&self) -> Result<bool, AppError> {
         let value: Option<i64> = self
             .connection()
@@ -164,6 +191,14 @@ impl InventoryRepository for SqliteStore {
         &mut self,
         input: InventorySnapshotInput,
     ) -> Result<InventorySnapshot, AppError> {
+        self.replace_current_minted(input, None)
+    }
+
+    fn replace_current_minted(
+        &mut self,
+        input: InventorySnapshotInput,
+        minted: Option<destiny_core::ProfileMintedAt>,
+    ) -> Result<InventorySnapshot, AppError> {
         // Provenance and structural validity need no storage, so they are
         // rejected here before the transaction is opened and no write is ever
         // attempted.
@@ -217,8 +252,8 @@ impl InventoryRepository for SqliteStore {
         upsert_metadata(&transaction, &ordered, revision)?;
         transaction
             .execute(
-                "UPDATE sync_metadata SET invalidated = 0 WHERE dataset = 'profile_inventory'",
-                [],
+                "UPDATE sync_metadata SET invalidated = 0, profile_minted_at = ?1 WHERE dataset = 'profile_inventory'",
+                [minted.map(encode_minted)],
             )
             .map_err(|_| storage_failure())?;
         transaction.commit().map_err(|_| storage_failure())?;
@@ -239,6 +274,10 @@ impl InventoryRepository for SqliteStore {
             items: ordered.items,
         })
     }
+}
+
+fn encode_minted(minted: destiny_core::ProfileMintedAt) -> String {
+    format!("{}:{}", minted.seconds(), minted.nanoseconds())
 }
 
 fn next_revision(revision: SyncRevision) -> Result<SyncRevision, AppError> {

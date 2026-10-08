@@ -99,6 +99,16 @@ G5/G7 CLI UX.
     unlock→lock chains with zero acquisitions and no false `verified_noop`
     (G3 root cause). Workspace tests + clippy pass. +190/-41. Commit: see
     git log (`feat(actions): lock and unlock from the local projection`).
+  - [x] A1–A3 `responseMintedTimestamp` guard: `ProfileMintedAt` on
+    `ProfileAcquisition` (builder, no snapshot constructor churn), migration
+    20 nullable column, atomic publication; Ordinary sync discards
+    same-membership profiles with older/equal minted time (projection,
+    effects, revision, checked_at, invalidation kept; observations dropped).
+    Preflight/PostAction still publish until E/F. Unusable minted values are
+    treated as unknown (DIM `new Date(x ?? 0)`), never failing a sync; .NET
+    7-digit fractions tested. Workspace 1,899 pass, clippy clean. +765/-42
+    (size:exception). Commit: see git log (`feat(sync): discard profiles not
+    newer than the stored one`).
 - [ ] **T3 — DIM-style action pipeline.** Remove forced preflight acquisition
   from move, lock, equip, pull item, pull stack and apply loadout; plan and
   execute from the local projection; apply the effect from T2 on
@@ -117,7 +127,10 @@ G5/G7 CLI UX.
   subclass, item names); new per-loadout detail tool by slot/name with
   deduplicated plug text. CLI parity. Text/`structuredContent` duplication
   reviewed separately after checking Pi support.
-- [ ] **T7 — G4 definition version.** Remove `DESTINY_DEFINITION_VERSION`
+- [x] **T7 — G4 definition version.** Done on `fix/remove-definition-version-override`
+  (from main), commit `b026fdd`, PR #76; native review review-73e258b88f25a6f6.
+  Old key ignored. Mismatch message naming both versions deferred to T8.
+  Original scope: Remove `DESTINY_DEFINITION_VERSION`
   (config, docs, example env, tests); mismatch refusals name both versions.
   Review whether `DESTINY_FRESHNESS_TTL_SECONDS` should remain user-facing.
 - [ ] **T8 — G5/G7 CLI UX.** Human sentences for `pull`/`pull-stack`
@@ -125,6 +138,12 @@ G5/G7 CLI UX.
   `apply-loadout` selector consistency with MCP `name`/`slot`.
 - [ ] **T9 — Docs, skill and live re-validation.** Update `docs/`,
   `skills/ghostlink/SKILL.md`; cut rc.3 and re-run chained actions live.
+
+## Delivery
+
+- Stacked PRs: #72 (T1) → main, #73 (B1+B2) → #72, #74 (C1+C2) → #73,
+  #75 (D + tracker) → #74. #76 (T7) → main. Follow-ups stack on
+  `feat/local-action-effects` (next: `feat/profile-minted-guard`).
 
 ## Evidence
 

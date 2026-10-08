@@ -626,6 +626,15 @@ impl<G: ProfileGateway> ProfileGateway for SharedGateway<G> {
         self.lock()?.load_inventory_scoped(membership, reason)
     }
 
+    fn load_inventory_minted_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<(InventorySnapshotInput, Option<destiny_app::ProfileMintedAt>), AppError> {
+        self.lock()?
+            .load_inventory_minted_scoped(membership, reason)
+    }
+
     fn load_inventory_with_observations_scoped(
         &mut self,
         membership: &DestinyMembership,
@@ -664,6 +673,16 @@ impl SharedRepository {
 }
 
 impl InventoryRepository for SharedRepository {
+    fn profile_minted_at(&self) -> Result<Option<destiny_app::ProfileMintedAt>, AppError> {
+        self.lock()?.profile_minted_at()
+    }
+    fn replace_current_minted(
+        &mut self,
+        input: InventorySnapshotInput,
+        minted: Option<destiny_app::ProfileMintedAt>,
+    ) -> Result<InventorySnapshot, AppError> {
+        self.lock()?.replace_current_minted(input, minted)
+    }
     fn freshness_invalidated(&self) -> Result<bool, AppError> {
         self.lock()?.freshness_invalidated()
     }
@@ -1109,6 +1128,17 @@ mod tests {
                 Ok(inventory_input(membership))
             }
 
+            fn load_inventory_minted_scoped(
+                &mut self,
+                membership: &DestinyMembership,
+                reason: ProfileSyncReason,
+            ) -> Result<(InventorySnapshotInput, Option<destiny_app::ProfileMintedAt>), AppError>
+            {
+                self.acquisitions.push((membership.clone(), reason));
+                let pair = self.acquisition.as_ref().expect("queued acquisition");
+                Ok((pair.input().clone(), pair.minted_at().copied()))
+            }
+
             fn load_inventory_with_observations_scoped(
                 &mut self,
                 membership: &DestinyMembership,
@@ -1138,11 +1168,23 @@ mod tests {
             "the wrapper must forward the exact reason to the locked inner adapter"
         );
 
-        let available = shared_profile_acquisition();
+        let minted = destiny_app::ProfileMintedAt::new(100, 123456789).unwrap();
+        let available = shared_profile_acquisition().with_minted_at(Some(minted));
         let unavailable = destiny_app::ProfileAcquisition::new(available.input().clone(), None)
             .expect("unavailable evidence remains a valid acquisition");
         for expected in [available, unavailable] {
             gateway.lock().unwrap().acquisition = Some(expected.clone());
+            let actual = gateway
+                .load_inventory_minted_scoped(&membership, ProfileSyncReason::Ordinary)
+                .unwrap();
+            assert_eq!(
+                actual,
+                (expected.input().clone(), expected.minted_at().copied())
+            );
+            assert_eq!(
+                gateway.lock().unwrap().acquisitions.last(),
+                Some(&(membership.clone(), ProfileSyncReason::Ordinary))
+            );
             for reason in [ProfileSyncReason::Preflight, ProfileSyncReason::PostAction] {
                 let before = gateway.lock().unwrap().acquisitions.len();
                 let actual = gateway
@@ -1225,12 +1267,17 @@ mod tests {
         let reader = writer.clone();
         assert!(reader.load_current().unwrap().is_none());
         let input = shared_profile_acquisition().into_parts().0;
-        let first = writer.replace_current(input.clone()).unwrap();
+        let minted = destiny_app::ProfileMintedAt::new(100, 123456789).unwrap();
+        let first = writer
+            .replace_current_minted(input.clone(), Some(minted))
+            .unwrap();
+        assert_eq!(reader.profile_minted_at().unwrap(), Some(minted));
         assert_eq!(reader.load_current().unwrap(), Some(first.clone()));
         let mut changed = input;
         changed.items[0].locked = !changed.items[0].locked;
         changed.checked_at = Timestamp::new(1_724_000_001);
         let second = writer.replace_current(changed).unwrap();
+        assert_eq!(reader.profile_minted_at().unwrap(), None);
         assert_ne!(second, first);
         assert_eq!(reader.load_current().unwrap(), Some(second));
     }

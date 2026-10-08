@@ -75,6 +75,7 @@ impl InstancedBucketObservation {
 pub struct ProfileAcquisition {
     input: InventorySnapshotInput,
     observations: Option<Vec<InstancedBucketObservation>>,
+    minted_at: Option<crate::ProfileMintedAt>,
 }
 
 impl ProfileAcquisition {
@@ -106,7 +107,17 @@ impl ProfileAcquisition {
         Ok(Self {
             input,
             observations,
+            minted_at: None,
         })
+    }
+
+    pub fn with_minted_at(mut self, minted: Option<crate::ProfileMintedAt>) -> Self {
+        self.minted_at = minted;
+        self
+    }
+
+    pub fn minted_at(&self) -> Option<&crate::ProfileMintedAt> {
+        self.minted_at.as_ref()
     }
 
     pub fn input(&self) -> &InventorySnapshotInput {
@@ -117,7 +128,9 @@ impl ProfileAcquisition {
         self.observations.as_deref()
     }
 
-    /// Ends the immutable association, returning the original values unchanged.
+    /// Ends the immutable association, returning input and observations unchanged.
+    /// Read `minted_at` before consumption when publishing; this compatibility
+    /// method deliberately does not change the existing two-part return shape.
     /// Neither part becomes publication or action authorization evidence.
     pub fn into_parts(
         self,
