@@ -7,9 +7,10 @@ use serde_json::{Value, json};
 
 pub use crate::equip::ProfileRefresh;
 
-/// Lock retains its verification semantics independently of optimistic equip.
+/// Acknowledgement-based success, sharing equip's refresh vocabulary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LockStatus {
+    Applied,
     VerifiedSuccess,
     VerifiedNoop,
     Incomplete,
@@ -20,6 +21,7 @@ pub enum LockStatus {
 impl LockStatus {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Applied => "applied",
             Self::VerifiedSuccess => "verified_success",
             Self::VerifiedNoop => "verified_noop",
             Self::Incomplete => "incomplete",
@@ -100,6 +102,9 @@ impl LockOutput {
     }
     pub fn from_outcome(outcome: &LockExecutionOutcome, locked: bool) -> Self {
         let (status, refresh, reason) = match outcome {
+            LockExecutionOutcome::Applied(_) => {
+                (LockStatus::Applied, ProfileRefresh::NotRequired, None)
+            }
             LockExecutionOutcome::VerifiedSuccess(_) => {
                 (LockStatus::VerifiedSuccess, ProfileRefresh::Refreshed, None)
             }
@@ -107,7 +112,7 @@ impl LockOutput {
                 (LockStatus::VerifiedNoop, ProfileRefresh::NotRequired, None)
             }
             LockExecutionOutcome::IncompleteExecution(_) => {
-                (LockStatus::Incomplete, ProfileRefresh::Refreshed, None)
+                (LockStatus::Incomplete, ProfileRefresh::NotRequired, None)
             }
             LockExecutionOutcome::AppliedPendingProviderRefresh(_) => (
                 LockStatus::AppliedPendingProviderRefresh,
@@ -125,7 +130,7 @@ impl LockOutput {
                 },
                 Some(match failure.reason() {
                     LockVerificationFailureReason::RefreshFailed => {
-                        "outcome is uncertain: post-action profile refresh failed; do not blindly retry"
+                        "local state could not be updated after the action; do not blindly retry"
                     }
                     LockVerificationFailureReason::Unresolved => {
                         "outcome is uncertain: refreshed item could not be uniquely resolved; do not blindly retry"
@@ -166,6 +171,11 @@ impl LockOutput {
                 .unwrap_or("Item"),
         );
         let state = if self.locked { "locked" } else { "unlocked" };
+        if self.status == LockStatus::Applied {
+            return format!(
+                "{name}: {state}\n✔ applied (acknowledged by Bungie; not post-action verified)"
+            );
+        }
         if matches!(
             self.status,
             LockStatus::VerifiedSuccess | LockStatus::VerifiedNoop

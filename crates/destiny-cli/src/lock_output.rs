@@ -42,7 +42,7 @@ impl LockOutput {
     }
     pub fn exit_code(&self) -> i32 {
         match self.status {
-            LockStatus::VerifiedSuccess | LockStatus::VerifiedNoop => 0,
+            LockStatus::Applied | LockStatus::VerifiedSuccess | LockStatus::VerifiedNoop => 0,
             LockStatus::Incomplete => 41,
             LockStatus::VerificationFailed => 42,
             LockStatus::AppliedPendingProviderRefresh => 43,

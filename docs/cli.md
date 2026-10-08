@@ -899,14 +899,19 @@ flag is accepted. Vault items use one owned character for the provider call
 pending. Locking does not apply equip class, exotic, or equipped-state policy.
 
 The shared service forces fresh preflight, returns a verified no-op when already
-satisfied, otherwise dispatches once, refreshes, and verifies `instance.locked`.
-Never blindly retry. Applied-pending-refresh means check later with `ghostlink sync`
-and `ghostlink inspect-item`, not repeat the action.
+satisfied, otherwise dispatches once. Bungie acknowledgement returns `applied`
+without post-action verification: accepted requested state, not observed in-game
+state. Dispatched attempts invalidate local freshness; the next ordinary read
+forces sync without writing guessed state. Refusal, authentication refusal and
+transient/uncertain transport remain failures. Never blindly retry; check later
+with `ghostlink sync` and `ghostlink inspect-item`, not repeat the action.
 
 JSON includes `status`, `item` (name and instance ID), requested `locked`,
 `attempt` (null when not dispatched), sanitized `reason`, `profile_refresh`, and
-`observed` (lock state, null when unavailable). Exit 0 means verified success or
-no-op; 41 incomplete, 42 verification failed, 43 applied-pending-refresh.
+`observed` (fresh preflight state for a no-op, otherwise null). Exit 0 means
+`applied` or `verified_noop`; 41 means incomplete. Local invalidation storage
+failure after dispatch fails closed (42), with "local state could not be updated
+after the action". Lock/unlock no longer emit provider-lag exits 42/43.
 Refusals use category exits (missing item 32, ambiguity 31, stale state 30).
 Success goes to stdout; refusals and unverified results go to stderr.
 

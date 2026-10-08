@@ -1739,6 +1739,7 @@ mod tests {
         search: InMemorySearchRepository,
         catalog: crate::test_support::InMemoryDefinitionRepository,
         hides_current: bool,
+        fails_invalidation: bool,
         calls: RefCell<Vec<&'static str>>,
     }
 
@@ -1753,6 +1754,7 @@ mod tests {
                     definitions,
                 ),
                 hides_current: false,
+                fails_invalidation: false,
                 calls: RefCell::new(Vec::new()),
             }
         }
@@ -1799,6 +1801,9 @@ mod tests {
             self.inventory.borrow().freshness_invalidated()
         }
         fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+            if self.fails_invalidation {
+                return Err(AppError::new(ErrorCategory::LocalStorage));
+            }
             self.inventory.get_mut().invalidate_freshness()
         }
         fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
@@ -2975,13 +2980,12 @@ mod tests {
     }
 
     #[test]
-    fn lock_verified_execution_scenarios() {
-        use crate::lock::{LockExecutionOutcome, LockVerificationFailureReason};
+    fn lock_optimistic_execution_scenarios() {
+        use crate::lock::LockExecutionOutcome;
         use crate::test_support::QueuedLockGateway;
         use destiny_core::{LockOutcome, LockRejection};
-        // Success, fresh no-op, rejection, uncertain (confirmed/unconfirmed),
-        // refresh failure, mismatch, unchanged applied, pre-dispatch error,
-        // moved/disappeared, auth refusal, transient, unlock, unresolved after dispatch.
+        // Acknowledgement, fresh no-op, rejection, uncertainty, provider lag,
+        // unused post-action failures/drift, pre-dispatch errors, auth and unlock.
         for case in 0..15 {
             let shared = gateway();
             let chars = vec![warlock_character(), character("hunter", None, None)];
@@ -3053,23 +3057,12 @@ mod tests {
             }
             let outcome = result.unwrap();
             match &outcome {
-                LockExecutionOutcome::VerifiedSuccess(_) => assert!(matches!(case, 0 | 3 | 13)),
+                LockExecutionOutcome::Applied(_) => assert!(matches!(case, 0 | 5..=7 | 13 | 14)),
                 LockExecutionOutcome::VerifiedNoOp(_) => assert_eq!(case, 1),
                 LockExecutionOutcome::IncompleteExecution(_) => {
-                    assert!(matches!(case, 2 | 4 | 11 | 12))
+                    assert!(matches!(case, 2..=4 | 11 | 12))
                 }
-                LockExecutionOutcome::AppliedPendingProviderRefresh(_) => assert_eq!(case, 7),
-                LockExecutionOutcome::VerificationFailed(failure) => {
-                    assert!(matches!(case, 5 | 6 | 14));
-                    assert_eq!(
-                        failure.reason(),
-                        match case {
-                            5 => LockVerificationFailureReason::RefreshFailed,
-                            14 => LockVerificationFailureReason::Unresolved,
-                            _ => LockVerificationFailureReason::Contradiction,
-                        }
-                    );
-                }
+                other => panic!("no post-action verification: {other:?}"),
             }
             assert_eq!(
                 outcome.evidence().attempt(),
@@ -3080,9 +3073,11 @@ mod tests {
                 }
             );
             assert_eq!(lock.calls(), usize::from(case != 1));
+            assert_eq!(shared.borrow().inventory_calls(), 1);
+            assert_eq!(svc.repository().freshness_invalidated().unwrap(), case != 1);
             assert_eq!(
-                shared.borrow().inventory_calls(),
-                if case == 1 { 1 } else { 2 }
+                outcome.evidence().observed(),
+                if case == 1 { Some(req.locked) } else { None }
             );
             if case != 1 {
                 assert_eq!(lock.requests()[0].character(), &CharacterId::new("hunter"));
@@ -3099,6 +3094,43 @@ mod tests {
                 _ => LockOutcome::Applied,
             }
         }
+    }
+
+    #[test]
+    fn acknowledged_lock_fails_closed_when_local_invalidation_fails() {
+        use crate::lock::{LockExecutionOutcome, LockVerificationFailureReason};
+        use crate::test_support::QueuedLockGateway;
+        let shared = gateway();
+        let mut repo = CompositeRepository::with_definitions(vec![]);
+        repo.commit(fresh_vault_projection());
+        let mut svc = service(&shared, repo);
+        let req = lock_request();
+        let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+        queue_refresh(&shared, fresh_vault_projection());
+        svc.repository_mut().fails_invalidation = true;
+        let mut lock = QueuedLockGateway::new();
+        lock.queue(Ok(destiny_core::LockOutcome::Applied));
+        let outcome = svc
+            .execute_lock_verified(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW)
+            .unwrap();
+        let LockExecutionOutcome::VerificationFailed(failure) = outcome else {
+            panic!("storage failure must fail closed: {outcome:?}");
+        };
+        assert_eq!(
+            failure.reason(),
+            LockVerificationFailureReason::RefreshFailed
+        );
+        assert_eq!(
+            failure.error(),
+            Some(MutationError::Application(ErrorCategory::LocalStorage))
+        );
+        assert_eq!(
+            failure.evidence().attempt(),
+            Some(destiny_core::LockOutcome::Applied)
+        );
+        assert_eq!(failure.evidence().observed(), None);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+        assert_eq!(lock.calls(), 1);
     }
 
     #[test]
@@ -3122,7 +3154,7 @@ mod tests {
         lock.queue(Ok(LockOutcome::Applied));
         assert!(matches!(
             svc.execute_lock_verified(&mut lock, &req, &plan, TTL, NOW, POST_ACTION_NOW),
-            Ok(crate::lock::LockExecutionOutcome::VerifiedSuccess(_))
+            Ok(crate::lock::LockExecutionOutcome::Applied(_))
         ));
         assert_eq!(lock.requests()[0].character(), &CharacterId::new("warlock"));
         assert_eq!(lock.calls(), 1);

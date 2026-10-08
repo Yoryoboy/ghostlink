@@ -138,11 +138,14 @@ Bungie may refuse after a transfer already happened.
 
 | `status` | Exit | Agent action |
 |---|---:|---|
-| `verified_success` / `verified_noop` | 0 | Requested lock state verified; no-op did not dispatch. |
+| `applied` | 0 | Bungie acknowledged requested lock state, not a post-action observation. Next ordinary read forces sync. |
+| `verified_noop` | 0 | Fresh preflight already satisfies requested state; no dispatch. |
 | `refused` | varies | Report `reason`; missing item 32, ambiguity 31, stale state 30, otherwise category exit. No dispatch; do not work around refusal. |
-| `incomplete` | 41 | Report bounded `attempt` and `observed`; never blindly retry. |
-| `verification_failed` | 42 | Outcome unverified; sync and inspect, then report. |
-| `applied_pending_provider_refresh` | 43 | Provider accepted the action but observed state is stale/unconfirmed; check later, do not repeat. |
+| `incomplete` | 41 | Refused, auth-refused, transient or uncertain attempt; no post-action observation. Never blindly retry. |
+| `verification_failed` | 42 | Local invalidation storage failed after dispatch: local state could not be updated after the action. Sync and inspect; do not retry. |
+
+Lock/unlock no longer emit provider-lag verification exits 42/43. Dispatched
+attempts invalidate freshness, not guessed state; already-satisfied no-ops do not.
 
 Vault items use one owned character for the provider call. Lock/unlock do not
 apply equip class, exotic, or equipped-state policy.

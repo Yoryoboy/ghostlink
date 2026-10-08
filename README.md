@@ -3,7 +3,7 @@
 Ghostlink connects AI assistants to your Destiny 2 account. It reads your real
 characters, inventory, builds and weekly activities through the official Bungie
 API, and can act on them safely: move items between the Vault and characters,
-equip gear, and lock or unlock items with verification.
+equip gear, and lock or unlock items with acknowledgement-based success.
 
 Instead of digging through Vaults, filters and perk lists, you ask:
 
@@ -90,8 +90,10 @@ or synthetic instance IDs are exposed.
 Move/equip use fresh preflight checks and return `applied` (exit 0) when Bungie
 acknowledges every step, without post-action verification. The next ordinary read
 forces sync; no guessed state is written. Acceptance is not an observed in-game
-state. Never blindly retry uncertain or partial results. Lock and pull retain
-their existing verification behavior.
+state. Never blindly retry uncertain or partial results. Lock/unlock also return
+`applied` (exit 0) on acknowledgement; incomplete attempts exit 41. Their next
+read forces sync without a post-action verification request. Pull retains its
+existing verification behavior.
 
 ## Use it from an AI agent
 

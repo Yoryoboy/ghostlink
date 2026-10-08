@@ -278,26 +278,16 @@ async fn postmaster_stdio_committed_service_journey_and_refusals() {
 }
 
 #[tokio::test]
-async fn lock_stdio_success_noop_refusal_and_unverified_outcomes() {
+async fn lock_stdio_applied_noop_refusal_and_incomplete_outcomes() {
     for (scenario, item, locked, status) in [
-        ("success", "inst-a", true, "verified_success"),
+        ("success", "inst-a", true, "applied"),
         ("success", "inst-a", false, "verified_noop"),
         ("success", "missing", true, "refused"),
         ("lock-refused", "inst-a", true, "incomplete"),
-        (
-            "lock-provider-stale",
-            "inst-a",
-            true,
-            "applied_pending_provider_refresh",
-        ),
-        ("lock-uncertain", "inst-a", true, "verified_success"),
+        ("lock-provider-stale", "inst-a", true, "applied"),
+        ("lock-uncertain", "inst-a", true, "incomplete"),
         ("lock-uncertain-no-effect", "inst-a", true, "incomplete"),
-        (
-            "lock-refresh-failure",
-            "inst-a",
-            true,
-            "verification_failed",
-        ),
+        ("lock-refresh-failure", "inst-a", true, "applied"),
     ] {
         let mut session = FixtureSession::spawn(Some(scenario)).await;
         let response = session
@@ -306,11 +296,15 @@ async fn lock_stdio_success_noop_refusal_and_unverified_outcomes() {
         let output = &response["result"]["structuredContent"];
         assert_eq!(output["status"], status, "{scenario}: {response}");
         assert_eq!(output["locked"], locked);
+        assert_eq!(output["profile_refresh"], "not_required");
+        if status == "applied" || status == "incomplete" {
+            assert!(output["observed"].is_null());
+        }
         assert_eq!(
             response["result"]["isError"],
-            !matches!(status, "verified_success" | "verified_noop")
+            !matches!(status, "applied" | "verified_noop")
         );
-        if status == "verified_success" {
+        if status == "applied" && scenario == "success" {
             let repeated = session
                 .call_tool("set_lock_state", json!({"item":item,"locked":locked}))
                 .await;
@@ -321,10 +315,7 @@ async fn lock_stdio_success_noop_refusal_and_unverified_outcomes() {
             let unlock = session
                 .call_tool("set_lock_state", json!({"item":item,"locked":false}))
                 .await;
-            assert_eq!(
-                unlock["result"]["structuredContent"]["status"],
-                "verified_success"
-            );
+            assert_eq!(unlock["result"]["structuredContent"]["status"], "applied");
         }
         session.shutdown().await;
     }

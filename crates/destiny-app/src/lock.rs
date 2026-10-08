@@ -1,9 +1,9 @@
-//! Shared lock-state planning and single-attempt verified execution.
+//! Shared lock-state planning and single-attempt optimistic execution.
 //!
 //! Lock is idempotent state, not equip policy: no class, exotic or equipped
 //! restriction applies. A forced fresh preflight proves a no-op or binds one
-//! dispatch. Every dispatched outcome forces PostAction refresh; never retry an
-//! uncertain attempt or an applied result awaiting provider refresh.
+//! dispatch. Acknowledgement yields Applied without a post-action read. Every
+//! dispatched outcome invalidates local freshness; never blindly retry.
 //!
 //! Vault requests use the first owned character in committed projection order.
 //! This deterministic provider routing choice still needs live validation.
@@ -13,7 +13,7 @@ use destiny_core::{
     CharacterId, DestinationSelector, DestinyMembership, FreshnessPolicy, InventoryRepository,
     InventorySnapshot, ItemInstance, ItemInstanceId, ItemLocation, LockGateway, LockOutcome,
     LockRequest, MoveRequest, PlanId, PlanIdGenerator, PlanLifetime, ProfileGateway,
-    ProfileSyncReason, Resolution, SearchRepository, SetLockStateRequest, SyncRevision, Timestamp,
+    ProfileSyncReason, SearchRepository, SetLockStateRequest, SyncRevision, Timestamp,
 };
 
 /// Opaque bounded plan. Construction is application-owned; callers cannot forge
@@ -47,7 +47,8 @@ impl LockPlan {
 }
 
 /// Bounded evidence: None means no dispatch, Some preserves the exact sanitized
-/// gateway outcome, including a refusal or uncertainty, through verification.
+/// gateway outcome, including a refusal or uncertainty, through classification.
+/// Observed state is populated only by a verified no-op's fresh preflight.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LockExecutionEvidence {
     plan: PlanId,
@@ -114,8 +115,13 @@ impl LockVerificationFailure {
 /// provider refusal/uncertainty without claiming rollback or safe retry.
 #[derive(Debug, Eq, PartialEq)]
 pub enum LockExecutionOutcome {
+    /// Bungie acknowledged the requested state; not a post-action observation.
+    Applied(LockExecutionEvidence),
+    /// Legacy post-action verification variant retained for compatibility, not emitted.
     VerifiedSuccess(LockExecutionEvidence),
+    /// Fresh preflight already proves the requested state; no dispatch.
     VerifiedNoOp(LockExecutionEvidence),
+    /// Legacy provider-lag variant retained for compatibility, not emitted.
     AppliedPendingProviderRefresh(LockExecutionEvidence),
     IncompleteExecution(LockExecutionEvidence),
     VerificationFailed(LockVerificationFailure),
@@ -124,7 +130,8 @@ pub enum LockExecutionOutcome {
 impl LockExecutionOutcome {
     pub fn evidence(&self) -> &LockExecutionEvidence {
         match self {
-            Self::VerifiedSuccess(evidence)
+            Self::Applied(evidence)
+            | Self::VerifiedSuccess(evidence)
             | Self::VerifiedNoOp(evidence)
             | Self::AppliedPendingProviderRefresh(evidence)
             | Self::IncompleteExecution(evidence) => evidence,
@@ -177,8 +184,9 @@ where
         })
     }
 
-    /// Mandatory fresh preflight → no-op or one dispatch → forced refresh and
-    /// concrete state verification. No low-level unverified executor is exposed.
+    /// Fresh preflight → verified no-op or one dispatch → acknowledgement.
+    /// The historical name/timestamps remain compatible, but no post-action
+    /// profile request is issued. Storage invalidation failure fails closed.
     pub fn execute_lock_verified<L: LockGateway>(
         &mut self,
         gateway: &mut L,
@@ -260,83 +268,26 @@ where
             .set_lock_state(&provider_request)
             .map_err(|error| failure(error.into()))?;
         evidence.attempt = Some(attempt);
-        Ok(self.verify_lock(
-            plan,
-            observation.revision(),
-            evidence,
-            policy,
-            post_action_now,
-        ))
+        Ok(self.acknowledge_lock_attempt(evidence))
     }
 
-    fn verify_lock(
+    fn acknowledge_lock_attempt(
         &mut self,
-        plan: &LockPlan,
-        revision: SyncRevision,
-        mut evidence: LockExecutionEvidence,
-        policy: FreshnessPolicy,
-        now: Timestamp,
+        evidence: LockExecutionEvidence,
     ) -> LockExecutionOutcome {
-        let failed = |reason, error, evidence| {
-            LockExecutionOutcome::VerificationFailed(LockVerificationFailure {
-                reason,
-                error,
+        // Refused and uncertain dispatched attempts invalidate pre-action state too.
+        if let Err(error) = self.repository_mut().invalidate_freshness() {
+            return LockExecutionOutcome::VerificationFailed(LockVerificationFailure {
+                reason: LockVerificationFailureReason::RefreshFailed,
+                error: Some(error.into()),
                 evidence,
-            })
-        };
-        let refresh = match self
-            .sync_mut()
-            .sync(ProfileSyncReason::PostAction, policy, now)
-        {
-            Ok(refresh) => refresh,
-            Err(error) => {
-                return failed(
-                    LockVerificationFailureReason::RefreshFailed,
-                    Some(error.into()),
-                    evidence,
-                );
-            }
-        };
-        let instance = match self.repository().lookup_instance(&plan.item) {
-            Ok(Resolution::Unique(instance)) => instance,
-            Ok(_) => {
-                return failed(LockVerificationFailureReason::Unresolved, None, evidence);
-            }
-            Err(error) => {
-                return failed(
-                    LockVerificationFailureReason::RefreshFailed,
-                    Some(error.into()),
-                    evidence,
-                );
-            }
-        };
-        evidence.observed = Some(instance.locked);
-        if evidence.attempt == Some(LockOutcome::AuthenticationRefused) {
-            return LockExecutionOutcome::IncompleteExecution(evidence);
+            });
         }
-        if instance.locked == plan.locked {
-            return LockExecutionOutcome::VerifiedSuccess(evidence);
+        if evidence.attempt == Some(LockOutcome::Applied) {
+            LockExecutionOutcome::Applied(evidence)
+        } else {
+            LockExecutionOutcome::IncompleteExecution(evidence)
         }
-        if evidence.attempt == Some(LockOutcome::Applied) && refresh.revision() == revision {
-            // Bracket lookup with revision equality, as equip verification does.
-            match self.committed_snapshot() {
-                Ok(snapshot) if snapshot.metadata.revision == refresh.revision() => {
-                    return LockExecutionOutcome::AppliedPendingProviderRefresh(evidence);
-                }
-                Err(error) => {
-                    return failed(
-                        LockVerificationFailureReason::RefreshFailed,
-                        Some(error),
-                        evidence,
-                    );
-                }
-                Ok(_) => {}
-            }
-        }
-        if evidence.attempt != Some(LockOutcome::Applied) {
-            return LockExecutionOutcome::IncompleteExecution(evidence);
-        }
-        failed(LockVerificationFailureReason::Contradiction, None, evidence)
     }
 }
 

@@ -16,7 +16,7 @@ weekly_reset      predict weekly rotations and observe current-week milestones
 weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
 equip_item        transfer if necessary, equip on an explicit character, return acceptance
-set_lock_state    lock or unlock one explicitly selected owned item and verify
+set_lock_state    lock or unlock one explicitly selected owned item, return acceptance
 pull_item         pull one genuine Postmaster equipment instance to its owner
 pull_stack        pull an explicit amount of a non-instanced Postmaster stack
 ```
@@ -48,18 +48,22 @@ receipts, not an observation.
 use `false` to unlock. Both fields are required, `locked` must be a boolean, and
 unknown fields, controls, and overlong selectors are rejected before I/O.
 Item resolution matches move/equip; ambiguous names require an instance ID.
-One call is explicit intent for shared fresh preflight, at most one dispatch,
-mandatory post-action refresh, and verification of `instance.locked`. Already
+One call is explicit intent for shared fresh preflight and at most one dispatch.
+Bungie acknowledgement returns `applied` (CLI 0), not observed lock state, with no
+post-action profile request. Dispatched attempts invalidate local freshness so
+the next ordinary read forces sync; no guessed state is written. Already
 satisfied is a verified no-op, with no provider mutation. Vault items use one
 owned character for the provider call; live validation remains pending.
 
 Lock JSON matches `ghostlink lock` / `ghostlink unlock`: `status`, `item`,
 requested `locked`, sanitized `attempt` and `reason`, `profile_refresh`, and
-`observed` lock state. Only verified success/no-op have `isError=false`.
-Refusal, incomplete, verification-failed and applied-pending-refresh results
-have `isError=true`. No stale observation is presented as fresh after a failed
-refresh. Never blindly retry uncertain outcomes or applied-pending-refresh;
-sync later to confirm. See [Lock or unlock one item](cli.md#lock-or-unlock-one-item).
+`observed` lock state (only fresh preflight for no-op, otherwise null).
+`applied` and `verified_noop` have `isError=false`. Refusals and incomplete
+attempts (CLI 41), including auth refusal and transient/uncertain transport,
+have `isError=true`. Invalidation storage failure after dispatch fails closed
+(CLI 42): "local state could not be updated after the action". Provider-lag
+verification exits 42/43 are no longer emitted. Never blindly retry; sync later
+to confirm. See [Lock or unlock one item](cli.md#lock-or-unlock-one-item).
 All publishing reads and mutations share the same server operation guard.
 
 Install both binaries from a release and run `ghostlink` for setup (or

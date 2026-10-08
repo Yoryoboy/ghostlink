@@ -419,7 +419,8 @@ fn dispatch_mutation_locked(
             .map_or_else(tool_error, |output| {
                 let is_error = !matches!(
                     output.status,
-                    destiny_output::lock::LockStatus::VerifiedSuccess
+                    destiny_output::lock::LockStatus::Applied
+                        | destiny_output::lock::LockStatus::VerifiedSuccess
                         | destiny_output::lock::LockStatus::VerifiedNoop
                 );
                 let mut result = CallToolResult::structured(output.json());

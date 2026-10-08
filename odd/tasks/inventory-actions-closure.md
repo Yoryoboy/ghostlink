@@ -52,7 +52,7 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   verification in the move/equip path with acknowledgement-based success;
   invalidate local freshness; CLI exit 0 and MCP success on acknowledgement;
   keep incomplete/refusal/preflight failures.
-- [ ] **IAX-002 — Optimistic lock/unlock.**
+- [x] **IAX-002 — Optimistic lock/unlock.**
 - [ ] **IAX-003 — Optimistic Postmaster pull and pull-stack.**
 - [ ] **IAX-004 — EquipLoadout adapter and port** (allowlist, request, receipt).
 - [ ] **IAX-005 — Apply loadout service, CLI and MCP** (resolve slot and
@@ -87,3 +87,17 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   stale doc comment and RefreshFailed wording ("local state could not be
   updated after the action"; storage failure after acknowledgement still exits
   42, fail-closed). Lock/pull unchanged.
+- IAX-002 implementation progress: lock/unlock now return acknowledgement-based
+  `Applied` (CLI 0 / MCP success) without post-action profile verification, and
+  reuse repository-owned durable freshness invalidation after dispatched attempts.
+  Fresh no-op remains verified; refusal/auth/transient/uncertainty remain failures
+  (41), with no retry. Invalidation storage failure fails closed (42), preserving
+  the receipt and reporting "local state could not be updated after the action".
+  RED observed stale-profile CLI pending/43 and MCP verified-success instead of
+  `applied`; offline workspace GREEN: 1,843 passed / 0 failed. Docs/skill updated;
+  checkbox intentionally remains open. No live account action or commit.
+- IAX-001 committed as `635a552`.
+- IAX-002 independent verification: fmt, clippy, all-features and default
+  workspace tests (0 failures), diff check PASS; Applied only on HTTP 200 +
+  ErrorCode 1; no post-action request; Vault routing via first committed
+  character preserved; move/equip/pull untouched. No findings.

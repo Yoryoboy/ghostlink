@@ -288,7 +288,7 @@ impl SetLockStateArgs {
     }
 }
 pub fn set_lock_state_tool() -> Tool {
-    Tool::new(SET_LOCK_STATE_TOOL, "Set one explicitly selected owned item's lock state (locked=true locks, false unlocks). One call is explicit intent for fresh preflight, at most one dispatch, mandatory refresh and lock-state verification; already satisfied is a verified no-op. Ambiguity refuses. Never blindly retry uncertain or applied-pending-refresh outcomes; sync later to confirm. Vault items use one owned character for the provider call.", JsonObject::new())
+    Tool::new(SET_LOCK_STATE_TOOL, "Set one explicitly selected owned item's lock state (locked=true locks, false unlocks). One call is explicit intent for fresh preflight and at most one dispatch. Bungie acknowledgement returns applied (success), not observed lock state, without post-action verification. Local freshness is invalidated so the next read syncs; already satisfied is a verified no-op. Ambiguity refuses. Refused and uncertain attempts fail; never blindly retry. Vault items use one owned character for the provider call.", JsonObject::new())
         .with_input_schema::<SetLockStateArgs>()
 }
 
