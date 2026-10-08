@@ -288,6 +288,120 @@ cargo-dist handling of the libdbus runtime dependency.
     needs two releases: install `rc.1`, publish `rc.2`, run `ghostlink update`
     and `ghostlink update --version`, then restart MCP and check the installed
     version. Windows: confirm both commands refuse with manual guidance.
+  Live log (2026-10-08, `v0.1.0-rc.1`, Linux): repo made public temporarily
+  (installer assets 404 while private); owner installed via the versioned
+  `installer.sh` into `~/.cargo/bin`, login authorized, manifest auto-synced.
+  CLI reads on the Hunter all exit 0 and fresh: list-characters, loadouts,
+  postmaster, subclass, artifact, weekly, weekly-reset, search-inventory.
+  Findings to file as one issue after the live test:
+  - F1 (blocker) MCP clients reject `tools/list`: `inspect_item` and
+    `move_item` output schemas are top-level `oneOf` without `type: object`
+    (`crates/destiny-mcp/src/schema.rs`); Pi fails to connect at all.
+  - F2 `search-inventory --character hunter` silently returns 0 hits; the
+    flag accepts only an exact ID while other commands accept a class.
+  - F3 `weekly-reset` prints `unresolved #1783825372` modifiers.
+  - F4 README install uses `releases/latest`, which 404s while only
+    prereleases exist.
+  - F5 README does not say a new shell is needed after install
+    (`~/.cargo/bin` PATH).
+  Filed as #66; uninstall abort on an active `ghostlink://` handler filed as #67.
+  Live log (2026-10-08, `v0.1.0-rc.2`, Linux): rc.1 removed manually, rc.2
+  installed with the versioned `installer.sh`. Pi MCP connects (17 tools;
+  #66 F1 fixed). F2 fixed (class accepted, invalid value errors), F3 fixed
+  (0 unresolved modifiers), F4/F5 README fixed. MCP reads OK: list_characters,
+  get_postmaster, inspect_item.
+  New findings:
+  - G1 MCP `get_loadouts` for one character returns ~110 KB JSON (~250 KB
+    with text + structuredContent), 4 loadouts; Pi truncates it. Owner's
+    direction (separate work): `get_loadouts` lists summaries only (index,
+    name, subclass) and a per-loadout call returns one loadout's detail.
+    Also review the duplicate payload: every tool returns the same JSON as
+    text content and as `structuredContent`, doubling context cost.
+  - G2 Back-to-back moves read a stale profile: CLI move to Vault (applied),
+    MCP move back to Hunter (applied, confirmed in game), then a CLI move's
+    fresh preflight and a forced `sync` still showed the item in the Vault,
+    so the planned Vault -> Hunter step ended `uncertain` (exit 41).
+    Root cause (confirmed later): mostly our local projection, not Bungie.
+    After an MCP `applied` move, `inspect-item` and the CLI move preflight
+    still saw the old location for 90+ s (CLI refused: "already in Vault",
+    exit 40), yet one explicit `ghostlink sync` showed the new location at
+    once. Optimistic actions neither apply their effect to the shared SQLite
+    projection nor invalidate it. Owner wants chained actions fast: apply
+    acknowledged effects locally (DIM-style), or at least invalidate so the
+    next read/preflight forces a sync. Bungie also lags: after a CLI move to
+    Vault (confirmed in game), forced syncs showed the old location for
+    ~20-30 s. So invalidation alone is not enough; chained actions need the
+    acknowledged effect applied locally. Owner priority: HIGH, actions must
+    feel as fast as possible; no cache-induced waits between chained actions.
+  - G3 (correctness) False `verified_noop`: MCP `set_lock_state` unlock
+    returned `applied` (confirmed in game); an immediate lock call returned
+    `status: verified_noop`, `observed: {locked: true}` from the stale
+    projection, while the item was actually unlocked. A "verified" claim
+    must never come from data older than our own acknowledged action. Both
+    responses also said `profile_refresh: not_required`, contradicting the
+    tool description ("local freshness is invalidated").
+  Observed Bungie read lag after acknowledged actions (forced sync, item
+  confirmed in game): moves ~20-30 s; lock/unlock <10 s to ~70 s; Vault item
+  lock ~120 s. Move and lock/unlock validated live via MCP and CLI on a
+  character item and a Vault item (MIDA Mini-Tool: MCP lock, CLI unlock).
+  Extra G2 evidence: right after the Vault unlock, consecutive forced syncs
+  flapped locked true/false/true (inconsistent Bungie API cache nodes) before
+  settling. (A suspected CLI unlock failure was a misread item in game, not
+  a defect.)
+  - G4 Postmaster pulls (MCP and CLI) refused with an opaque
+    `definition_version_mismatch` because the owner's old dev `config.env`
+    set `DESTINY_DEFINITION_VERSION=live-v1`, which stamps profile snapshots
+    while definitions carry the real Manifest version. The refusal should
+    name both versions and point at the override; consider warning on (or
+    ignoring) a label override that differs from the stored Manifest.
+    Owner commented the line out (backup `config.env.bak`); `destiny-mcp`
+    needed a restart to pick it up (config is read once at startup).
+    Note: this machine's config also sets `BUNGIE_CLIENT_SECRET` and
+    callbacks, so it is not a fresh-user (broker) setup.
+  - G5 CLI `pull` text output prints raw JSON fields (`Plan: null`,
+    `Failure: {"capacity_reason":...}`) instead of a human sentence such as
+    "Power weapons slot is full (10/10); free a slot and retry". The
+    capacity refusal itself is correct (planning stage, no dispatch).
+  Postmaster pull validated live: MCP `pull_item` Frozen Orbit applied and
+  arrived in game.
+  G2 impact on capacity safety: right after that pull filled the Hunter's
+  energy slot (10/10), Bungie still reported Frozen Orbit in the Postmaster
+  and 9 energy weapons, so the CLI pull of Trust (energy) passed the
+  capacity proof on stale data, dispatched, and ended `uncertain` (exit 41).
+  Applying acknowledged effects locally would have refused it at planning.
+  After moving Frozen Orbit to the Vault, Bungie reads flapped
+  character/postmaster/character for ~128 s before showing the Vault; then
+  CLI `pull` of Trust applied (exit 0).
+  - G6 (blocker) `pull_stack` / `pull-stack` always refuse ordinary stacks:
+    Enhancement Core (3853748946) refused at planning with
+    `capacity_reason: unknown_uniqueness` on MCP and CLI (exit 40). Bungie's
+    live definition has `stackUniqueLabel: null` (`maxStackSize` 9999);
+    `crates/destiny-app/src/stack_pull.rs:352` maps an absent label to
+    `None` (unknown) instead of `Some(false)` (not unique). Most items have
+    no label, so non-instanced pulls are effectively unusable.
+  - G7 `pull-stack` CLI: `--character` requires an exact ID (class not
+    accepted, unlike other commands since #66 F2); an `--item-hash` flag is
+    rejected with "argument is not valid here" instead of hinting that the
+    hash is positional. Text output also prints raw JSON (same as G5).
+  Equip: MCP `equip_item` correctly refused two exotics while Wavesplitter
+  (exotic) was equipped. Equipping legendary Rose first refused with "local
+  state changed after the plan was created" (nothing ran; likely G2 read
+  flapping between plan and execution), then applied on one retry. CLI
+  `equip` Better Devils applied. Loadouts: MCP `apply_loadout` PvP (by
+  name, slot 3) and CLI `apply-loadout` Stasis (slot 1) applied, confirmed
+  in game. CLI takes the loadout positionally while MCP uses `name`/`slot`
+  (G7 consistency). `equip_items` (multi) not exercised.
+  G1-G7 filed as #71. Repo made private again.
+  Uninstall on the owner's machine (rc.2, #67 recheck): `--dry-run` now warns
+  that handler skips will end partial (exit 41); `--yes` removed the three
+  binaries, the receipt and the `~/.agents` skill, exit 41 `partial` with
+  step-by-step `xdg-mime` follow-ups. Preserved: handler `.desktop`,
+  `previous-uri-handler`, config, DB, `~/.cargo/bin/.ghostlink-lifecycle.lock`,
+  and the Pi `mcp.json` entry (manual follow-up). Report still goes to
+  stderr only. Still pending: broker token refresh, `equip_items`,
+  Windows, update across two releases. Same lag made an MCP `move_item` to Vault fail
+    with a generic `unsupported_operation` (stale "already in Vault"); the
+    error should say the item is already at the destination.
 
 ## Follow-ups (out of scope)
 - Windows `ghostlink://` handler (next feature, developed on Windows).
