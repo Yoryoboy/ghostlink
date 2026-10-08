@@ -21,6 +21,11 @@ pub mod auth_ux;
 mod config;
 mod defaults;
 pub mod instanced_pull;
+pub mod stack_pull;
+pub use destiny_core::{
+    StackBucketCapacityEvidence, StackBucketCapacityPolicy, StackPullGateway, StackPullOutcome,
+    StackPullRequest,
+};
 pub use instanced_pull::{
     InstancedPullExecutionFailure, InstancedPullExecutionFailureReason,
     InstancedPullExecutionOutcome, InstancedPullPlan, InstancedPullPlanRequest,
@@ -28,6 +33,7 @@ pub use instanced_pull::{
     PullArrival, PullAttempt, PullContext, PullDisposition, PullObservation,
     PullObservationAttempt, PullObservationFailure,
 };
+pub use stack_pull::*;
 pub mod lock;
 pub mod manifest;
 pub mod mutation;

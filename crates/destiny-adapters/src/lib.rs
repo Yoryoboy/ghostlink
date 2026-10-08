@@ -8,6 +8,12 @@ pub mod credential_store;
 pub mod equip;
 pub mod equipment_capacity_policy;
 pub mod instanced_pull;
+pub mod stack_pull;
+pub use stack_pull::{
+    BungieStackPullGateway, HttpStackPullTransport, STACK_PULL_ENDPOINT, STACK_PULL_RESPONSE_LIMIT,
+    StackPullApiKey, StackPullBearerToken, StackPullHttpRequest, StackPullHttpResponse,
+    StackPullTransport, StackPullTransportError, is_allowed_stack_pull_url,
+};
 pub mod loadout;
 pub mod lock;
 pub mod manifest;

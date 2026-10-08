@@ -340,17 +340,17 @@ pub enum PullObservationFailure {
 /// Check `failure()` even when `observation()` exists: a backwards publication
 /// timestamp preserves the pair but invalidates its otherwise exact arrival.
 #[derive(Debug, Eq, PartialEq)]
-pub struct PullObservationAttempt {
+pub struct PullObservationAttempt<O = PullObservation> {
     checked_at: Option<Timestamp>,
-    result: Result<PullObservation, PullObservationFailure>,
+    result: Result<O, PullObservationFailure>,
     // A publication time fault retains the pair as well as the failure.
     publication_failure: Option<PullObservationFailure>,
 }
-impl PullObservationAttempt {
+impl<O> PullObservationAttempt<O> {
     pub fn checked_at(&self) -> Option<Timestamp> {
         self.checked_at
     }
-    pub fn observation(&self) -> Option<&PullObservation> {
+    pub fn observation(&self) -> Option<&O> {
         self.result.as_ref().ok()
     }
     pub fn failure(&self) -> Option<&PullObservationFailure> {
@@ -570,67 +570,14 @@ where
                 | InstancedPullOutcome::Transient
         );
         let acknowledged = matches!(receipt, InstancedPullOutcome::Acknowledged);
-        let mut observations = Vec::with_capacity(3);
-        let mut previous = dispatch.dispatch_at;
-        for index in 0..3 {
-            if index > 0 {
-                delay.wait(Duration::from_secs(2));
-            }
-            let now = match self.clock.now() {
-                Ok(now) => now,
-                Err(error) => {
-                    observations.push(PullObservationAttempt {
-                        checked_at: None,
-                        result: Err(PullObservationFailure::Clock(error)),
-                        publication_failure: None,
-                    });
-                    break;
-                }
-            };
-            if now < previous {
-                observations.push(PullObservationAttempt {
-                    checked_at: Some(now),
-                    result: Err(PullObservationFailure::BackwardsClock),
-                    publication_failure: None,
-                });
-                break;
-            }
-            previous = now;
-            let result = match self.sync.sync_with_observations(
-                ProfileSyncReason::PostAction,
-                freshness,
-                now,
-            ) {
-                Ok(ProfileSyncWithObservationsOutcome::Refreshed(pair)) => {
-                    Ok(classify_pull_observation(&dispatch.context, pair))
-                }
-                Ok(ProfileSyncWithObservationsOutcome::SkippedFresh { .. }) => {
-                    Err(PullObservationFailure::SkippedFresh)
-                }
-                Err(error) => Err(PullObservationFailure::Refresh(error)),
-            };
-            let publication_failure = match &result {
-                Ok(observation) if observation.metadata.checked_at < previous => {
-                    Some(PullObservationFailure::BackwardsClock)
-                }
-                Ok(observation) => {
-                    previous = observation.metadata.checked_at;
-                    None
-                }
-                Err(_) => None,
-            };
-            let stop = publication_failure.is_some()
-                || matches!(&result, Ok(observation) if matches!(observation.classification,
-                PullArrival::VerifiedArrival | PullArrival::MembershipMismatch | PullArrival::DefinitionVersionDrift | PullArrival::HashDrift));
-            observations.push(PullObservationAttempt {
-                checked_at: Some(now),
-                result,
-                publication_failure,
-            });
-            if stop {
-                break;
-            }
-        }
+        let observations = observe_pull(
+            &mut self.sync,
+            &self.clock,
+            delay,
+            freshness,
+            dispatch.dispatch_at,
+            |pair| classify_pull_observation(&dispatch.context, pair),
+        );
         let last = observations
             .last()
             .filter(|attempt| attempt.failure().is_none())
@@ -843,6 +790,98 @@ where
         }
         Ok(())
     }
+}
+
+/// Shared bounded published-evidence loop. There is deliberately no action port.
+pub(crate) trait PullObservationEvidence {
+    fn metadata(&self) -> &SnapshotMetadata;
+    fn stop(&self) -> bool;
+}
+impl PullObservationEvidence for PullObservation {
+    fn metadata(&self) -> &SnapshotMetadata {
+        &self.metadata
+    }
+    fn stop(&self) -> bool {
+        matches!(
+            self.classification,
+            PullArrival::VerifiedArrival
+                | PullArrival::MembershipMismatch
+                | PullArrival::DefinitionVersionDrift
+                | PullArrival::HashDrift
+        )
+    }
+}
+pub(crate) fn observe_pull<G, R, C, W, O>(
+    sync: &mut ProfileSyncService<G, R>,
+    clock: &C,
+    delay: &mut W,
+    freshness: FreshnessPolicy,
+    dispatch_at: Timestamp,
+    classify: impl Fn(PublishedProfileAcquisition) -> O,
+) -> Vec<PullObservationAttempt<O>>
+where
+    G: ProfileGateway,
+    R: InventoryRepository,
+    C: Clock,
+    W: RetryDelay,
+    O: PullObservationEvidence,
+{
+    let mut observations = Vec::with_capacity(3);
+    let mut previous = dispatch_at;
+    for index in 0..3 {
+        if index > 0 {
+            delay.wait(Duration::from_secs(2));
+        }
+        let now = match clock.now() {
+            Ok(now) => now,
+            Err(error) => {
+                observations.push(PullObservationAttempt {
+                    checked_at: None,
+                    result: Err(PullObservationFailure::Clock(error)),
+                    publication_failure: None,
+                });
+                break;
+            }
+        };
+        if now < previous {
+            observations.push(PullObservationAttempt {
+                checked_at: Some(now),
+                result: Err(PullObservationFailure::BackwardsClock),
+                publication_failure: None,
+            });
+            break;
+        }
+        previous = now;
+        let result =
+            match sync.sync_with_observations(ProfileSyncReason::PostAction, freshness, now) {
+                Ok(ProfileSyncWithObservationsOutcome::Refreshed(pair)) => Ok(classify(pair)),
+                Ok(ProfileSyncWithObservationsOutcome::SkippedFresh { .. }) => {
+                    Err(PullObservationFailure::SkippedFresh)
+                }
+                Err(error) => Err(PullObservationFailure::Refresh(error)),
+            };
+        let publication_failure = match &result {
+            Ok(observation) if observation.metadata().checked_at < previous => {
+                Some(PullObservationFailure::BackwardsClock)
+            }
+            Ok(observation) => {
+                previous = observation.metadata().checked_at;
+                None
+            }
+            Err(_) => None,
+        };
+        let stop = publication_failure.is_some()
+            || result.as_ref().is_ok_and(PullObservationEvidence::stop);
+        observations.push(PullObservationAttempt {
+            checked_at: Some(now),
+            result,
+            publication_failure,
+        });
+        if stop {
+            break;
+        }
+    }
+    observations
 }
 
 #[cfg(test)]

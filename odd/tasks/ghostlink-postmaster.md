@@ -158,8 +158,13 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   same-hash total -amount. Only these two buckets are supported initially.
   - [x] GPM-006c — Qualify non-equipment bucket capacity from the pinned
     manifest (consumables/modifications/materials) with refusal on unknown.
-  - [ ] GPM-006d — Adapter request body and app service plan/preflight/
+  - [x] GPM-006d — Adapter request body and app service plan/preflight/
     bounded quantity verification reusing GPM-008 machinery.
+    GPM-006d verification also requires the whole-ProfileInventory same-hash
+    total to rise by exactly the amount (not only the destination bucket), so a
+    same-hash change in another profile bucket cannot mask an inexact arrival.
+    Verify PASS: workspace 1713 default / 1732 all-features before that fix;
+    focused core/adapters/app suites and clippy all-features PASS after it.
   - [ ] GPM-006e — CLI `pull` and MCP `pull_item` stack mode (hash + amount),
     parity tests, docs/skill.
 - [x] **GPM-007a — Instanced pull core contract.** Genuine positive int64

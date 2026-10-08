@@ -16,7 +16,41 @@ use destiny_core::{
 use std::collections::{HashSet, VecDeque};
 
 /// Test-support-only re-export so offline fixture binaries can fake pulls.
-pub use destiny_core::InstancedPullRequest;
+pub use destiny_core::{InstancedPullRequest, StackPullRequest};
+
+/// One-shot stack gateway; exhausted queues never invent acknowledgement.
+#[derive(Debug, Default)]
+pub struct QueuedStackPullGateway {
+    outcomes: VecDeque<Result<destiny_core::StackPullOutcome, AppError>>,
+    requests: Vec<StackPullRequest>,
+    calls: usize,
+}
+impl QueuedStackPullGateway {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn queue(&mut self, outcome: Result<destiny_core::StackPullOutcome, AppError>) {
+        self.outcomes.push_back(outcome);
+    }
+    pub const fn calls(&self) -> usize {
+        self.calls
+    }
+    pub fn requests(&self) -> &[StackPullRequest] {
+        &self.requests
+    }
+}
+impl destiny_core::StackPullGateway for QueuedStackPullGateway {
+    fn pull(
+        &mut self,
+        request: &StackPullRequest,
+    ) -> Result<destiny_core::StackPullOutcome, AppError> {
+        self.calls += 1;
+        self.requests.push(request.clone());
+        self.outcomes
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
+    }
+}
 
 /// One coherent sentinel set shared by every cross-boundary leak harness.
 ///
