@@ -452,8 +452,8 @@ impl Journey {
         let outcome = result.unwrap();
         assert_eq!(
             self.world.borrow().profiles.len() - before,
-            2,
-            "only forced preflight; no post-action profile request"
+            0,
+            "fresh committed projection; no pre- or post-action profile request"
         );
         let snapshot = service.repository().load_current().unwrap().unwrap();
         let item = snapshot
@@ -612,6 +612,8 @@ fn rc003_attempt(
     let plan = service
         .plan_equip(&request, PlanLifetime::new(120).unwrap(), TTL, NOW)
         .unwrap();
+    // Exercise ordinary acquisition of an invalidated projection on these paths.
+    service.repository_mut().invalidate_freshness().unwrap();
     world.borrow_mut().profiles.clear();
     let result =
         service.execute_equip_action((&mut transfer, &mut equip), &request, &plan, TTL, NOW, NOW);

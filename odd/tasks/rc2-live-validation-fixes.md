@@ -73,6 +73,16 @@ G5/G7 CLI UX.
     writes nothing; in-memory parity; CLI/MCP wrappers forward. core,
     adapters, app tests + workspace clippy pass. Commit: see git log
     (`feat(inventory): persist acknowledged effects locally`).
+  - [x] C1 move + single equip dispatch from the committed projection:
+    `ExecutionTicket::from_committed_projection`, ordinary sync (fresh = 0
+    acquisitions, stale/invalidated = 1); post-action invalidation kept
+    until C2. RED `fresh_committed_move_dispatches_without_profile_acquisition`
+    (ProviderUnavailable) then GREEN; stdio/CLI tests adapted (local no-op,
+    local drift, typed provider rejection). Workspace tests + clippy pass.
+    Size: +526/-228 (over the ~400 budget; bulk is adapted tests and the
+    stdio fixture, not splittable without red intermediate commits).
+    Commit: see git log (`feat(actions): dispatch move and equip from the
+    local projection`).
 - [ ] **T3 — DIM-style action pipeline.** Remove forced preflight acquisition
   from move, lock, equip, pull item, pull stack and apply loadout; plan and
   execute from the local projection; apply the effect from T2 on

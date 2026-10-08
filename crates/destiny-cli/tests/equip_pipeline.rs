@@ -359,13 +359,18 @@ fn cli_equip_invalid_arguments_stop_before_composition_or_clock() {
 }
 
 #[test]
-fn cli_equip_preflight_change_refuses_before_transfer() {
+fn cli_equip_remote_divergence_is_a_typed_provider_rejection_at_dispatch() {
     let mut service = mutations_with_preflight(
         snapshot(ItemLocation::Vault, false),
         snapshot(target(), false),
         None,
     );
+    // The queued remote projection is not acquired while local state is fresh.
+    // The provider remains the final validator and refuses the transfer source.
     let mut transfer = QueuedTransferGateway::new();
+    transfer.queue(Ok(TransferOutcome::Rejected(
+        TransferRejection::NotTransferable,
+    )));
     let mut equip = QueuedEquipGateway::new();
     let output = equip_item(
         &EquipArgs {
@@ -379,8 +384,11 @@ fn cli_equip_preflight_change_refuses_before_transfer() {
         POLICY,
     )
     .unwrap();
-    assert_eq!(output.status, EquipStatus::Refused);
-    assert!(transfer.requests().is_empty());
+    assert_eq!(output.status, EquipStatus::Incomplete);
+    assert_eq!(output.exit_code(), 41);
+    assert_eq!(transfer.requests().len(), 1);
     assert!(equip.requests().is_empty());
-    assert!(output.steps.iter().all(|step| step.outcome == "not_run"));
+    assert_eq!(output.steps[0].outcome, "rejected");
+    assert_eq!(output.steps[1].outcome, "not_run");
+    assert!(output.render_text().contains("not transferable"));
 }

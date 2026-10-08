@@ -1357,8 +1357,8 @@ async fn move_item_reports_a_verified_no_op_for_an_already_satisfied_destination
     assert_eq!(no_op["observed"]["kind"], "character");
     assert_eq!(no_op["observed"]["character_id"], "warlock");
 
-    // The fresh preflight observed the requested end state, so the plan's only
-    // step stays unattempted and no transfer is dispatched.
+    // A committed local publication already shows the requested end state,
+    // so the plan's only step stays unattempted without acquisition or dispatch.
     let steps = no_op["steps"].as_array().expect("step evidence");
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0]["outcome"]["status"], "unattempted");
@@ -1367,11 +1367,11 @@ async fn move_item_reports_a_verified_no_op_for_an_already_satisfied_destination
 }
 
 #[tokio::test]
-async fn move_item_reports_a_changed_preflight_as_a_typed_sanitized_failure() {
-    let mut session = FixtureSession::spawn(Some("preflight-change")).await;
+async fn move_item_reports_remote_divergence_as_a_typed_sanitized_provider_rejection() {
+    let mut session = FixtureSession::spawn(Some("provider-rejection")).await;
 
-    // The plan was built from the seed source, but the fresh preflight observes
-    // the world's changed location, so the move is rejected before any dispatch.
+    // Remote divergence is not re-read before dispatch. The simulated provider
+    // is the final validator and refuses the locally planned source.
     let moved = session
         .call_tool(
             MOVE_ITEM_TOOL,
@@ -1379,7 +1379,14 @@ async fn move_item_reports_a_changed_preflight_as_a_typed_sanitized_failure() {
         )
         .await;
     assert_eq!(moved["result"]["isError"], true);
-    assert_eq!(structured(&moved)["code"], "stale_state");
+    let incomplete = structured(&moved);
+    assert_eq!(incomplete["status"], "incomplete");
+    assert_eq!(incomplete["partial"], false);
+    assert_eq!(incomplete["steps"][0]["outcome"]["status"], "rejected");
+    assert_eq!(
+        incomplete["steps"][0]["outcome"]["reason"],
+        "not_transferable"
+    );
     assert_no_secret_in(&moved);
 
     session.shutdown().await;

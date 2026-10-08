@@ -11,9 +11,9 @@
 //! # One shared world
 //!
 //! One in-memory [`FixtureWorld`] is the source of truth. The profile gateway
-//! reads it on every forced refresh, and the transfer gateway applies each
-//! accepted transfer to it. The mutation service therefore plans against a
-//! seeded projection, performs a real fresh preflight against the world, then
+//! reads it when the ordinary freshness gate requires acquisition, and the
+//! transfer gateway validates the source and applies each accepted transfer.
+//! The mutation service plans and validates against the committed projection, then
 //! classifies acknowledgement and invalidates local freshness without re-reading.
 //! Reads are served from a separate seeded projection.
 //!
@@ -22,8 +22,9 @@
 //! The initial world and the mutation seed are selected by the
 //! `DESTINY_FIXTURE_SCENARIO` environment variable so a test can spawn a fresh
 //! process per contract. The default `success` scenario seeds the world and the
-//! mutation projection identically; `already-satisfied` and `preflight-change`
-//! place one designated item differently in the world than in the seed, and
+//! mutation projection identically; `already-satisfied` commits a local update
+//! between planning and execution. `provider-rejection` diverges remotely from
+//! the seed and refuses dispatch instead of performing a pre-dispatch read, and
 //! `partial` refuses the second step of the one two-step move.
 //! `equip-provider-stale` and `move-provider-stale` confirm every step without
 //! mutating the world, retaining the pre-dispatch projection. In contrast,
@@ -66,12 +67,12 @@ const TTL: FreshnessPolicy = FreshnessPolicy { ttl_seconds: 300 };
 enum Scenario {
     /// The world and the mutation seed agree: a Vault-to-character move succeeds.
     Success,
-    /// The world already holds the designated item at the requested destination,
-    /// so the fresh preflight reports a verified no-op without dispatching.
+    /// A local publication after planning shows the requested destination,
+    /// so execution reports a verified no-op without acquisition or dispatch.
     AlreadySatisfied,
-    /// The world moved the designated item away from its planned source before
-    /// the fresh preflight, so the plan is rejected as stale without dispatching.
-    PreflightChange,
+    /// The provider moved the item away from its locally planned source;
+    /// dispatch is rejected by the provider, with no pre-dispatch acquisition.
+    ProviderRejection,
     /// The second, Vault-to-character step of a two-step character-to-character
     /// move is refused, honestly stranding the item in the Vault.
     Partial,
@@ -82,7 +83,7 @@ impl Scenario {
     fn from_env() -> Self {
         match std::env::var(SCENARIO_ENV).ok().as_deref() {
             Some("already-satisfied") => Self::AlreadySatisfied,
-            Some("preflight-change") => Self::PreflightChange,
+            Some("provider-rejection") => Self::ProviderRejection,
             Some("partial") => Self::Partial,
             _ => Self::Success,
         }
@@ -90,9 +91,9 @@ impl Scenario {
 
     /// The projection the mutation service plans against.
     ///
-    /// Every scenario seeds the designated item at its planned source; only the
-    /// [`FixtureWorld`] diverges, which is exactly what the fresh preflight
-    /// observes.
+    /// Every scenario initially seeds the planned source. AlreadySatisfied later
+    /// publishes the destination locally; remote divergence remains unobserved
+    /// until the provider validates a dispatched request.
     fn seed_items(self) -> Vec<ItemInstance> {
         base_items()
     }
@@ -102,7 +103,7 @@ impl Scenario {
         let mut items = base_items();
         match self {
             Self::AlreadySatisfied => set_location(&mut items, "inst-d", at_character("warlock")),
-            Self::PreflightChange => set_location(&mut items, "inst-c", at_character("zavala")),
+            Self::ProviderRejection => set_location(&mut items, "inst-c", at_character("zavala")),
             Self::Success | Self::Partial => {}
         }
         items
@@ -144,14 +145,19 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         TTL,
     );
 
-    // Mutation plans against the seed projection and refreshes from the world.
+    // Share the committed store with the clock's deterministic local publication.
+    let mutation_repository = FixtureRepository::seeded(&characters(), &scenario.seed_items());
+    let clock = LocalPublicationClock(Mutex::new((
+        0,
+        (scenario == Scenario::AlreadySatisfied).then(|| mutation_repository.clone()),
+    )));
     let mutations = MutationService::new(
         ProfileSyncService::new(
             WorldGateway {
                 membership: membership(),
                 world: Arc::clone(&world),
             },
-            FixtureRepository::seeded(&characters(), &scenario.seed_items()),
+            mutation_repository,
         ),
         DeterministicPlanIds::starting_at(1),
     );
@@ -254,7 +260,7 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
             world: Arc::clone(&world),
             refuse_vault_route: scenario == Scenario::Partial,
         },
-        FakeClock::fixed(NOW),
+        clock,
         TTL,
         PlanLifetime::MAX,
     )
@@ -807,6 +813,15 @@ impl TransferGateway for WorldTransferGateway {
             .world
             .lock()
             .map_err(|_| AppError::new(ErrorCategory::LocalStorage))?;
+        if !world
+            .items
+            .iter()
+            .any(|item| item.instance_id == *request.item() && item.location == *request.from())
+        {
+            return Ok(TransferOutcome::Rejected(
+                TransferRejection::NotTransferable,
+            ));
+        }
         if !matches!(
             std::env::var(SCENARIO_ENV).ok().as_deref(),
             Some("equip-provider-stale" | "move-provider-stale")
@@ -920,9 +935,36 @@ impl destiny_app::LockGateway for WorldLockGateway {
 /// One composite repository exposing the three read seams over in-memory fakes.
 #[derive(Clone, Debug, Default)]
 struct FixtureRepository {
+    projection: Arc<Mutex<FixtureProjection>>,
+    definitions: InMemoryDefinitionRepository,
+}
+
+#[derive(Debug, Default)]
+struct FixtureProjection {
     inventory: InMemoryInventoryRepository,
     search: InMemorySearchRepository,
-    definitions: InMemoryDefinitionRepository,
+}
+
+/// Publishes a local destination after planning, before execution authorization.
+/// Other scenarios have no hook and retain the fixed fixture clock.
+struct LocalPublicationClock(Mutex<(usize, Option<FixtureRepository>)>);
+
+impl destiny_app::Clock for LocalPublicationClock {
+    fn now(&self) -> Result<Timestamp, AppError> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| AppError::new(ErrorCategory::LocalStorage))?;
+        state.0 += 1;
+        if state.0 == 2
+            && let Some(repository) = &mut state.1
+        {
+            let mut items = base_items();
+            set_location(&mut items, "inst-d", at_character("warlock"));
+            repository.replace_current(snapshot_input(&characters(), &items))?;
+        }
+        Ok(NOW)
+    }
 }
 
 impl FixtureRepository {
@@ -931,26 +973,32 @@ impl FixtureRepository {
         let version = fixture_version();
         let definitions = fixture_definitions();
         let mut repository = Self {
-            inventory: InMemoryInventoryRepository::new(),
-            search: InMemorySearchRepository::with_definitions(definitions.clone()),
+            projection: Arc::new(Mutex::new(FixtureProjection {
+                inventory: InMemoryInventoryRepository::new(),
+                search: InMemorySearchRepository::with_definitions(definitions.clone()),
+            })),
             definitions: InMemoryDefinitionRepository::new(version, definitions),
         };
         let mut input = snapshot_input(characters, items);
         if postmaster_scenario() {
             input.checked_at = Timestamp::new(1);
         }
-        let snapshot = repository
-            .inventory
+        repository
             .replace_current(input)
             .expect("fixture projection is valid");
-        repository.search.set_instances(snapshot.items);
         repository
+    }
+
+    fn projection(&self) -> Result<std::sync::MutexGuard<'_, FixtureProjection>, AppError> {
+        self.projection
+            .lock()
+            .map_err(|_| AppError::new(ErrorCategory::LocalStorage))
     }
 }
 
 impl InventoryRepository for FixtureRepository {
     fn freshness_invalidated(&self) -> Result<bool, AppError> {
-        self.inventory.freshness_invalidated()
+        self.projection()?.inventory.freshness_invalidated()
     }
     fn invalidate_freshness(&mut self) -> Result<(), AppError> {
         if matches!(
@@ -959,21 +1007,22 @@ impl InventoryRepository for FixtureRepository {
         ) {
             return Err(AppError::new(ErrorCategory::LocalStorage));
         }
-        self.inventory.invalidate_freshness()
+        self.projection()?.inventory.invalidate_freshness()
     }
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
         if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("postmaster-local-storage") {
             return Err(AppError::new(ErrorCategory::LocalStorage));
         }
-        self.inventory.load_current()
+        self.projection()?.inventory.load_current()
     }
 
     fn replace_current(
         &mut self,
         input: InventorySnapshotInput,
     ) -> Result<InventorySnapshot, AppError> {
-        let snapshot = self.inventory.replace_current(input)?;
-        self.search.set_instances(snapshot.items.clone());
+        let mut projection = self.projection()?;
+        let snapshot = projection.inventory.replace_current(input)?;
+        projection.search.set_instances(snapshot.items.clone());
         Ok(snapshot)
     }
 }
@@ -986,28 +1035,28 @@ impl SearchRepository for FixtureRepository {
         if kind == "stat" {
             Ok(self.definitions.stat_name_catalog())
         } else {
-            self.search.name_catalog(kind)
+            self.projection()?.search.name_catalog(kind)
         }
     }
     fn search_definitions(
         &self,
         query: &DefinitionSearchQuery,
     ) -> Result<Vec<ItemDefinition>, AppError> {
-        self.search.search_definitions(query)
+        self.projection()?.search.search_definitions(query)
     }
 
     fn search_instances(
         &self,
         query: &destiny_app::InstanceSearchQuery,
     ) -> Result<Vec<ItemInstance>, AppError> {
-        self.search.search_instances(query)
+        self.projection()?.search.search_instances(query)
     }
 
     fn lookup_instance(
         &self,
         instance_id: &ItemInstanceId,
     ) -> Result<Resolution<ItemInstance>, AppError> {
-        self.search.lookup_instance(instance_id)
+        self.projection()?.search.lookup_instance(instance_id)
     }
 }
 

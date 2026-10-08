@@ -59,13 +59,12 @@
 //! provider-neutral [`TransferGateway`] request/outcome pair; the local record is
 //! the bounded, sanitized [`ExecutionEvidence`] the executor fills in one step at
 //! a time; and the single-use [`ExecutionTicket`] is the only authorization to
-//! attempt those steps. A ticket can be minted only from a *refreshed*
-//! [`ProfileSyncOutcome`] whose revision still matches the plan, it is neither
-//! `Clone` nor derivable from an outcome, an error, or evidence, and it therefore
-//! makes a blind retry after an uncertain or partial attempt impossible through
-//! the public API: another attempt needs another forced refresh, and a new plan as
-//! soon as state or binding has changed. No automatic retry, backoff, or recovery
-//! loop exists anywhere in this module.
+//! attempt those steps. A ticket is minted from the current committed profile
+//! projection whose revision still matches the plan, including state reused by
+//! ordinary sync. It is neither `Clone` nor derivable from an outcome, error or
+//! evidence. A changed local revision requires a new plan; a consumed ticket
+//! cannot be replayed. Bungie remains the final validator. No automatic retry,
+//! backoff, or recovery loop exists anywhere in this module.
 //!
 //! [`TransferGateway`]: crate::ports::TransferGateway
 //! [`TransferOutcome`]: crate::ports::TransferOutcome
@@ -648,12 +647,12 @@ impl MovePlan {
         now >= self.expires_at
     }
 
-    /// True when a freshly observed location already satisfies the postcondition.
+    /// True when the locally resolved location already satisfies the postcondition.
     ///
     /// The destination alone decides this, because a plan never binds a source
     /// equal to its destination. An already-satisfied plan is a *verified no-op*:
-    /// the caller must have reached this point through the mandatory fresh
-    /// preflight, and because the provider already holds the item, no transfer
+    /// the caller must validate the current committed projection under the
+    /// ordinary freshness gate. Because local state satisfies intent, no transfer
     /// step may be issued and no [`ExecutionTicket`] may be spent. This predicate
     /// is a pure read, so it can never itself trigger a provider call.
     pub fn already_satisfied(&self, location: &ItemLocation) -> bool {
@@ -1052,11 +1051,10 @@ impl ExecutionEvidence {
 
 /// The single-use authorization to attempt one plan's ordered steps exactly once.
 ///
-/// A ticket is minted only by [`ExecutionTicket::after_fresh_preflight`], which
-/// requires an unexpired plan, an explicit current timestamp, and a *refreshed*
-/// committed profile observation whose membership and revision still match the
-/// plan. That single gate is what makes a blind retry impossible rather than
-/// merely discouraged:
+/// A ticket is minted only by [`ExecutionTicket::from_committed_projection`],
+/// from the current committed profile projection that the unexpired plan was
+/// bound to. Ordinary sync may reuse a fresh projection. Bungie remains the
+/// final validator; local validation does not prove remote state is unchanged.
 ///
 /// - The type is deliberately neither `Clone` nor `Copy`, so a completed attempt
 ///   cannot replay its authorization, and no accessor hands out a reusable one.
@@ -1064,11 +1062,9 @@ impl ExecutionEvidence {
 ///   partial result has no path back to another provider call.
 /// - The revision binding closes the remaining route: once an applied step has
 ///   advanced the committed projection, minting a second ticket for the same plan
-///   against a later fresh preflight fails with [`ErrorCategory::StaleState`]. A
-///   further attempt then requires a new forced refresh and a new plan, never a
-///   replay. When a forced refresh instead retains the revision, state and
-///   binding are unchanged, so the same plan may be attempted again only after
-///   that refresh; a ticket is never minted from state that was not re-read.
+///   against the current projection fails with [`ErrorCategory::StaleState`].
+///   A further attempt against that revision requires a new plan, never replay
+///   of a consumed ticket. An unchanged revision is not an attempt counter.
 /// - The plan window is enforced here, not only in the preflight policy, so a
 ///   composition that skipped that policy cannot spend a ticket on expired state.
 ///
@@ -1098,27 +1094,23 @@ pub struct ExecutionTicket {
 }
 
 impl ExecutionTicket {
-    /// Mints the single-use ticket for one plan from a fresh preflight result.
+    /// Mints a single-use ticket from the current committed projection.
+    /// The caller must re-resolve and validate the plan against this projection.
     ///
     /// The plan must still be inside its window at the supplied `now`. The
-    /// observation must be a committed profile projection that was actually
-    /// refreshed, not one that skipped acquisition as already fresh, and it must
+    /// observation must describe the current committed profile projection and must
     /// describe the same membership and the same committed revision the plan was
     /// bound to. Any other input fails closed with the sanitized
     /// [`ErrorCategory::StaleState`] category, so a plan can never be attempted
-    /// against expired state, state that was not re-read, or state that has
-    /// already moved on.
+    /// against an expired plan or local state that has already moved on.
     ///
     /// [`ErrorCategory::StaleState`]: crate::error::ErrorCategory::StaleState
-    pub fn after_fresh_preflight(
+    pub fn from_committed_projection(
         plan: &MovePlan,
         refreshed: &ProfileSyncOutcome,
         now: Timestamp,
     ) -> Result<Self, AppError> {
         if plan.is_expired(now) {
-            return Err(AppError::new(ErrorCategory::StaleState));
-        }
-        if !refreshed.refreshed() {
             return Err(AppError::new(ErrorCategory::StaleState));
         }
         let metadata = refreshed.metadata();
@@ -1162,7 +1154,7 @@ impl ExecutionTicket {
         &self.destination
     }
 
-    /// The committed revision the plan and the fresh preflight agreed on.
+    /// The committed revision the plan and current projection agreed on.
     pub fn revision(&self) -> SyncRevision {
         self.revision
     }
@@ -2046,23 +2038,23 @@ mod tests {
     }
 
     #[test]
-    fn a_ticket_requires_a_refreshed_revision_bound_observation() {
+    fn a_ticket_requires_a_current_revision_bound_observation() {
         let plan = plan();
 
-        // A projection that skipped acquisition as already fresh authorizes nothing.
-        assert_eq!(
-            ExecutionTicket::after_fresh_preflight(
+        // Ordinary sync may reuse the current fresh committed projection.
+        assert!(
+            ExecutionTicket::from_committed_projection(
                 &plan,
                 &ProfileSyncOutcome::SkippedFresh {
                     metadata: metadata(4)
                 },
                 NOW
-            ),
-            Err(AppError::new(ErrorCategory::StaleState))
+            )
+            .is_ok()
         );
         // A non-profile observation cannot describe the committed projection.
         assert_eq!(
-            ExecutionTicket::after_fresh_preflight(
+            ExecutionTicket::from_committed_projection(
                 &plan,
                 &ProfileSyncOutcome::Refreshed {
                     metadata: SnapshotMetadata {
@@ -2076,7 +2068,7 @@ mod tests {
         );
         // Another membership never authorizes this plan.
         assert_eq!(
-            ExecutionTicket::after_fresh_preflight(
+            ExecutionTicket::from_committed_projection(
                 &plan,
                 &ProfileSyncOutcome::Refreshed {
                     metadata: SnapshotMetadata {
@@ -2090,12 +2082,12 @@ mod tests {
         );
         // A revision the plan was not bound to means state already moved on.
         assert_eq!(
-            ExecutionTicket::after_fresh_preflight(&plan, &refreshed(5), NOW),
+            ExecutionTicket::from_committed_projection(&plan, &refreshed(5), NOW),
             Err(AppError::new(ErrorCategory::StaleState))
         );
 
         let ticket =
-            ExecutionTicket::after_fresh_preflight(&plan, &refreshed(4), NOW).expect("ticket");
+            ExecutionTicket::from_committed_projection(&plan, &refreshed(4), NOW).expect("ticket");
         assert_eq!(ticket.plan_id(), &PlanId::new("plan"));
         assert_eq!(ticket.membership(), &MembershipId::new("membership"));
         assert_eq!(ticket.item(), &ItemInstanceId::new("item"));
@@ -2117,11 +2109,11 @@ mod tests {
         // ticket enforces the plan window here, so a composition that skipped the
         // mandatory preflight policy cannot spend it on expired state.
         assert_eq!(
-            ExecutionTicket::after_fresh_preflight(&plan, &refreshed(4), plan.expires_at()),
+            ExecutionTicket::from_committed_projection(&plan, &refreshed(4), plan.expires_at()),
             Err(AppError::new(ErrorCategory::StaleState))
         );
         assert_eq!(
-            ExecutionTicket::after_fresh_preflight(
+            ExecutionTicket::from_committed_projection(
                 &plan,
                 &refreshed(4),
                 Timestamp::new(plan.expires_at().seconds() + 1)
@@ -2130,7 +2122,7 @@ mod tests {
         );
         // The last second inside the window still mints.
         assert_eq!(
-            ExecutionTicket::after_fresh_preflight(
+            ExecutionTicket::from_committed_projection(
                 &plan,
                 &refreshed(4),
                 Timestamp::new(plan.expires_at().seconds() - 1)
@@ -2144,7 +2136,7 @@ mod tests {
     fn a_ticket_cannot_authorize_a_second_attempt_after_state_advanced() {
         let plan = vault_mediated_plan();
         let ticket =
-            ExecutionTicket::after_fresh_preflight(&plan, &refreshed(4), NOW).expect("ticket");
+            ExecutionTicket::from_committed_projection(&plan, &refreshed(4), NOW).expect("ticket");
 
         let mut evidence = ExecutionEvidence::for_plan(&plan);
         evidence
@@ -2155,7 +2147,7 @@ mod tests {
         // A later fresh preflight with a new committed revision refuses the same
         // plan; another attempt against that state requires a new plan.
         assert_eq!(
-            ExecutionTicket::after_fresh_preflight(
+            ExecutionTicket::from_committed_projection(
                 &plan,
                 &refreshed(plan.revision.value() + 1),
                 NOW
@@ -2165,15 +2157,12 @@ mod tests {
     }
 
     #[test]
-    fn a_forced_refresh_that_retained_the_revision_is_not_a_blind_retry() {
-        // The guard is a fresh, revision-bound observation, not an attempt
-        // counter: a forced refresh that retained the revision proves the
-        // projection really is unchanged, so re-attempting the same plan after
-        // that refresh is a state-refreshed attempt rather than a blind retry.
-        // A changed state or binding needs a new plan, and that case is covered
-        // by the advanced-revision test above.
+    fn an_unchanged_committed_revision_can_mint_a_new_ticket() {
+        // Revision binding is not an attempt counter. A new authorization may
+        // use an unchanged projection, but never replay a consumed ticket.
+        // Changed state needs a new plan (covered above).
         let plan = plan();
-        assert!(ExecutionTicket::after_fresh_preflight(&plan, &refreshed(4), NOW).is_ok());
+        assert!(ExecutionTicket::from_committed_projection(&plan, &refreshed(4), NOW).is_ok());
     }
 
     #[test]

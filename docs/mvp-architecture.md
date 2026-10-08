@@ -10,7 +10,7 @@ This document turns the product vision into one implementable vertical slice: au
 - Authenticate with a local Bungie **Public** OAuth client: system browser, one fixed exactly registered callback URI, random CSRF state, no client secret, and no refresh token.
 - Synchronize Manifest definitions and the authenticated user's profile/inventory into a local cache and search index.
 - Support inventory reads through CLI and MCP; support `ghostlink equip <ITEM> --character <CHARACTER>` and default-enabled MCP `equip_item` through the same application pipeline. `move_item` is MCP-only.
-- Demonstrate the vertical journey: “Move The Last Word to my Warlock,” with semantic resolution, explicit-intent authorization for MCP, fresh preflight, Bungie execution, refresh, and verification.
+- Demonstrate the vertical journey: “Move The Last Word to my Warlock,” with semantic resolution, explicit-intent authorization for MCP, local projection validation, Bungie execution, acknowledgement, and freshness invalidation.
 
 ### Non-goals
 
@@ -96,7 +96,7 @@ Access tokens, authorization codes, API keys, callback query values, and raw cre
 
 Bungie remains the source of truth. SQLite contains a rebuildable cache/search projection, not an authority. Manifest data is synchronized by version: download to temporary storage, validate completeness and version, then replace definitions in one transaction. Profile synchronization fetches the required profile/components, normalizes them, and atomically replaces the affected snapshot plus `fetched_at`, `SyncRevision`, source, and schema version.
 
-Freshness is dataset-specific (Manifest, profile, character inventory) and policy-driven rather than a single global TTL. Reads may use a fresh projection; stale or missing data triggers synchronization before answering. A forced `sync` bypasses freshness. A mutation always performs a mandatory preflight refresh regardless of TTL; after an acknowledged action the projection is durably invalidated instead of re-read, so the next ordinary read syncs. Concurrent syncs use a per-dataset lock or equivalent single-flight policy; an interrupted transaction leaves the prior committed snapshot intact.
+Freshness is dataset-specific (Manifest, profile, character inventory) and policy-driven rather than a single global TTL. Reads may use a fresh projection; stale or missing data triggers synchronization before answering. A forced `sync` bypasses freshness. Move and single-item equip dispatch from the committed local projection after ordinary sync, acquiring only when missing, stale or invalidated; other mutations retain forced preflight. Bungie is the final validator; after an acknowledged action the projection is durably invalidated instead of re-read, so the next ordinary read syncs. Concurrent syncs use a per-dataset lock or equivalent single-flight policy; an interrupted transaction leaves the prior committed snapshot intact.
 
 Repeated syncs are idempotent at the projection level: the same Bungie state produces the same normalized rows and revision semantics. A successful replacement with changed normalized content receives the next repository-generated `SyncRevision`; unchanged normalized content may retain its revision. Remote mutations are not assumed globally idempotent. Each plan has a local `plan_id`, a bounded step identity, and an execution record so retries can re-read current state and avoid replaying a step whose postcondition is already true. Never claim atomicity across multiple Bungie calls.
 
@@ -110,7 +110,7 @@ Repeated syncs are idempotent at the projection level: the same Bungie state pro
 
 1. **Resolve and plan internally:** resolve item and destination semantically; reject ambiguity; validate supported location rules; create a short-lived move/equip plan without remote mutation. Equip requires an explicit character, refuses equipped-elsewhere/class/exotic conflicts, and never guesses.
 2. **Authorization:** one CLI equip invocation or MCP `equip_item`/`move_item` call is intent authorization. No preview, confirmation token/value, approval ceremony, or two-step protocol is required.
-3. **Mandatory fresh preflight:** fetch current profile state, re-resolve the item by stable identity, re-check destination, lock/availability and other applicable constraints, and invalidate the plan if assumptions changed. Revalidate official/current lock, availability, and transfer constraints at implementation time before relying on provider behavior.
+3. **Local validation (move and single equip):** ordinary sync acquires only missing, stale or invalidated state. Re-resolve the item and location against the current committed projection; check expiry, membership, revision binding, request selectors, source/destination, applicable safety constraints and no-op state. A changed binding refuses dispatch. Bungie remains the final validator. Other actions retain forced preflight.
 4. **Execution:** call the minimum Bungie operations, using Vault as an intermediate only when required by Bungie semantics. Record step outcomes without recording secrets.
 5. **Partial failure:** stop on an unsafe failure, report completed and uncompleted steps, and do not claim rollback or atomicity. A retry must refresh and re-plan.
 6. **Acknowledgement (optimistic success):** when Bungie acknowledges every planned step, the outcome is `applied`. The profile is not re-read after the action, because Bungie's profile lags behind accepted actions and a post-action read reported false failures.
@@ -120,9 +120,9 @@ Refused, uncertain and partially executed attempts are never `applied`. No polli
 
 ### MCP mutation contract
 
-MCP move and equip execution are enabled by default and authorized by explicit user intent. The MCP adapter exposes `move_item` and `equip_item`. The tool resolves the item and destination, rejects ambiguity, creates any internal short-lived plan, performs the mandatory fresh preflight, executes the minimum supported remote calls, reports partial failure honestly, refreshes, and verifies before returning.
+MCP move and equip execution are enabled by default and authorized by explicit user intent. The MCP adapter exposes `move_item` and `equip_item`. The tool resolves the item and destination, rejects ambiguity, creates any internal short-lived plan, validates against the committed local projection under ordinary sync, executes the minimum supported remote calls, and reports receipts and partial failure honestly without post-action acquisition.
 
-There is no mandatory preview, confirmation token/value, CLI approval, local web approval, host confirmation ceremony, or two-step MCP protocol. The MCP adapter does not infer authority from vague or ambiguous input: explicit user intent to move an identified item to a destination is sufficient, while semantic resolution and ambiguity rejection remain mandatory. CLI equip uses the same mutation service, preflight, execution, refresh, and equipped-state verification path as MCP equip. `destiny-output` owns their exact shared JSON projection; CLI text and exit codes remain process-specific. Equip uses an exact EquipItem-only endpoint adapter; transfer remains transfer-only. Bungie requires orbit, social space, or offline state; no activity pre-check is implemented. Transfers may succeed before equip refuses, with no rollback or blind retry. Offline fixtures establish pipeline behavior, not live-account success.
+There is no mandatory preview, confirmation token/value, CLI approval, local web approval, host confirmation ceremony, or two-step MCP protocol. The MCP adapter does not infer authority from vague or ambiguous input: explicit user intent to move an identified item to a destination is sufficient, while semantic resolution and ambiguity rejection remain mandatory. CLI equip uses the same ordinary-sync, local-validation, execution and acknowledgement path as MCP equip. `destiny-output` owns their exact shared JSON projection; CLI text and exit codes remain process-specific. Equip uses an exact EquipItem-only endpoint adapter; transfer remains transfer-only. Bungie requires orbit, social space, or offline state; no activity pre-check is implemented. Transfers may succeed before equip refuses, with no rollback or blind retry. Offline fixtures establish pipeline behavior, not live-account success.
 
 ## 8. Errors, retries, and observability
 
@@ -161,13 +161,13 @@ Every use case returns either a typed success containing sanitized domain record
 The following invariants are implementation acceptance rules, not optional optimizations:
 
 1. A query never presents a stale projection as current; it includes freshness or synchronizes first.
-2. A mutation never trusts a plan past its expiry or skips its mandatory preflight refresh.
+2. A mutation never trusts a plan past its expiry. Move and single equip validate the current committed projection under ordinary sync; other actions retain forced preflight.
 3. A mutation never selects an item by display name alone; names resolve to an explicit instance or an ambiguity result.
 4. A failed postcondition never becomes a successful action merely because the provider returned HTTP success.
 5. Local replacement transactions preserve the previous committed snapshot until the new one is complete.
 6. Reauthorization is surfaced to the caller rather than hidden behind repeated transport retries.
 7. All application paths use the same policy service, regardless of whether the request came from terminal input or an MCP host.
-8. MCP execution requires explicit user intent plus semantic resolution, ambiguity rejection, and mandatory fresh preflight; adapters cannot bypass the shared mutation policy.
+8. MCP execution requires explicit user intent plus semantic resolution, ambiguity rejection, and shared mutation validation; adapters cannot bypass local revision binding or the ordinary freshness gate for move/single equip.
 9. Secret-bearing values are opaque at the application boundary and are unavailable to presentation serializers.
 
 A synchronization run records dataset, requested reason (`stale`, `forced`, `preflight`, or `post_action`), start/end time, source revision when available, and outcome. These are operational markers only. A sync marker does not imply the remote state is immutable or that an unrelated dataset is fresh.

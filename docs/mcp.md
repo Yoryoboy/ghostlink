@@ -26,8 +26,9 @@ Mutation is composed by default in the product binary: its profile gateway and
 durable projection are shared with the read path, and one explicit `move_item`
 request is the whole intent authorization. There is no preview tool, confirmation
 token or value, approval ceremony, or second MCP call. The single call plans the
-move, forces a fresh revision-bound preflight, issues only the ordered transfer
-steps, and returns `applied` with `isError=false` when every step is acknowledged.
+move from the committed local projection, uses ordinary sync only when missing,
+stale or invalidated, re-resolves and validates the revision-bound plan locally,
+and issues only the ordered transfer steps. Bungie is the final validator. It returns `applied` with `isError=false` when every step is acknowledged.
 It does not perform post-action verification; the next ordinary read forces sync
 without writing guessed inventory state (see [Equip one item](cli.md#equip-one-item));
 membership and credentials are resolved internally and are never accepted or
@@ -39,8 +40,9 @@ control characters are rejected. One call is the complete intent authorization,
 with no separate token or approval ceremony. It uses the same shared equip
 pipeline and JSON as `ghostlink equip`; see the [equip safety limits](cli.md#equip-one-item).
 Both `equip_item` and `move_item` return `applied` on full acknowledgement,
-without claiming an observed destination/equipped state. Already-satisfied fresh
-preflight remains `verified_noop`. Uncertain, refused and partial results remain
+without claiming an observed destination/equipped state. Both dispatch from the
+local projection under the ordinary freshness gate. Already-satisfied local
+state remains `verified_noop`. Uncertain, refused and partial results remain
 errors with no blind retry. Incomplete move `expected_location` is derived from
 receipts, not an observation.
 `move_item` also has the `ghostlink move` CLI surface.
@@ -370,10 +372,10 @@ binary that composes deterministic in-memory application test doubles, then
 drives complete MCP sessions (initialize, discovery, the three reads, a
 protocol failure, a sanitized tool failure, cancellation, and shutdown) and the
 one-call mutation journey: one `move_item` request performs semantic planning, a
-fresh preflight and the minimum transfer calls, returning acknowledgement without
+local validation under ordinary sync and the minimum transfer calls, returning acknowledgement without
 post-action verification or a second mutation call. It also proves a repeated request
 fails closed without replay, an already-satisfied destination is a verified
-no-op, a changed preflight is a typed stale failure, a refused step is an honest
+no-op, a changed committed revision is a typed stale failure, a refused step is an honest
 partial execution, and stdout is protocol-only with no secret sentinel present.
 Pull scenarios additionally prove canonical validation, deterministic actual-bucket
 arrival, receipt/disposition separation, pending/uncertain/refused outcomes and
