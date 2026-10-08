@@ -32,8 +32,15 @@ each in-game result. Record every result in this file as it happens.
 
 ## 0. Preparation (before the session)
 
-- [ ] Prerelease `v0.1.0-rc.1` exists with Linux tarball,
-  `ghostlink-installer.sh` and `sha256.sum`.
+- [x] Prerelease `v0.1.0-rc.1` exists with Linux tarball,
+  `ghostlink-installer.sh` and `sha256.sum` (published 2026-10-08 from
+  `main` at `678a623`; prerelease, not draft; Linux + Windows artifacts).
+- [x] Offline installer smoke on the dev PC (2026-10-08, throwaway HOME and
+  CARGO_HOME, no account): `gh release download` + checksum OK; the
+  `GHOSTLINK_DOWNLOAD_URL=file://...` install placed `ghostlink`, `destiny-mcp`
+  and `ghostlink-update`; `--version` printed `0.1.0-rc.1`; the receipt was at
+  `$XDG_CONFIG_HOME/ghostlink/ghostlink-receipt.json`; `uninstall --dry-run`
+  exited 0.
 - [ ] Laptop: `gh auth status` OK for `Yoryoboy/ghostlink` (private repo).
 - [ ] Record any existing install: `which -a ghostlink destiny-mcp`,
   `ghostlink --version`. If a dev build lives in `~/.cargo/bin`, back it up
