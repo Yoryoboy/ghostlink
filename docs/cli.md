@@ -109,9 +109,10 @@ path can be edited. Name-only Claude/Codex/Pi registrations always need manual
 inspection and removal; these followups alone are not filesystem failures.
 URI cleanup requires exact desktop ownership, preserves shared MIME files and
 foreign choices, and clears an active Ghostlink selection before deleting its
-entry. Unsafe/ambiguous handler skips or handler errors conservatively retain all
-binaries and receipt. Agent filesystem failures or changed snapshots also retain
-binaries/receipt. Individual completed removals/edits are **not transactional**;
+entry. Unsafe/ambiguous handler skips preserve the listed handler files but do
+**not** block receipt-owned binary/updater/receipt removal; the result is partial
+(exit 41), with completed paths in `removed`. Handler mutation errors, agent
+filesystem failures or changed snapshots still retain remaining binaries/receipt. Individual completed removals/edits are **not transactional**;
 there is no rollback (including for a failure in the final receipt/CLI pair).
 
 Configuration, databases, credentials, runtime sockets, unknown files, backups,
@@ -121,6 +122,18 @@ config/data/runtime paths are not resolved because config is never loaded. XDG
 locations remain preserved except exact previewed integration files. A completed
 binary uninstall does **not** mean all integrations are gone.
 
+When handler cleanup is skipped, `manual_followups` gives concrete MIME, desktop
+entry and record paths (respecting XDG overrides). Select an installed replacement
+with `xdg-mime default <other>.desktop x-scheme-handler/ghostlink`, replacing
+`<other>.desktop` with its desktop ID; verify using
+`xdg-mime query default x-scheme-handler/ghostlink`. Alternatively remove Ghostlink
+from scheme lines in the reported `mimeapps.list`, deleting a whole line only if
+no foreign associations remain. KDE/other desktops may select through a
+higher-priority desktop-specific MIME file or applications `mimeapps.list`;
+inspect those if Ghostlink remains selected. Once no longer selected, verify
+ownership before manually deleting the listed desktop entry and previous-handler
+record. Never delete foreign/modified files merely because they are listed.
+
 JSON emits one result object on stdout for exit 0, or one object on stderr for
 nonzero exits. Preview/result fields include `kind: uninstall`, `status`,
 `planned_removals`, `removed`, `changed`, `agents` (per-path outcomes), `skipped`,
@@ -129,6 +142,9 @@ nonzero exits. Preview/result fields include `kind: uninstall`, `status`,
 include both the report and `error` in that **same object**, never a second object.
 Human output renders the complete structured preview/report. JSON or non-TTY
 mutation without `--yes` is refused without prompting; `--dry-run` needs no consent.
+A preview with handler skips includes `expected_status: "partial"` and `warnings`
+in both JSON and human output, while remaining read-only with status `preview`
+and exit 0. This predicts preserved handlers, not guaranteed successful binary removal.
 
 | Exit | Code / status | Meaning |
 |---:|---|---|

@@ -89,7 +89,11 @@ require an updater. `run_at` injects fixture paths, confirmation and a
 `LinuxUriHandlerRegistrar` with a fake command runner; production uses only
 `current_exe`, never a user-selected install root. Scoped agent and handler APIs
 bind execution to their read-only previews. The kernel lock is acquired after
-consent, snapshots rechecked, and CLI/receipt retained on unsafe integration cleanup.
+consent and snapshots rechecked. Handler skips preserve handler files while allowing
+binary/receipt removal with exit 41; mutation errors and changed snapshots still
+retain CLI/receipt. Tests cover active defaults absent from the owned MIME file,
+missing MIME files, recorded defaults, foreign entries and read-only partial warnings
+in both JSON and human previews.
 No purge, elevation, recursive installation deletion or process termination exists.
 See [uninstall](cli.md#uninstall) for reporting/exit semantics and limitations.
 

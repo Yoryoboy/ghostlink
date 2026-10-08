@@ -341,7 +341,7 @@ mod linux {
     }
 
     #[test]
-    fn owned_active_handler_unsafe_skip_retains_binaries_and_receipt() {
+    fn owned_active_handler_unsafe_skip_removes_binaries_but_preserves_handler() {
         let f = Fixture::new(false);
         f.owned_desktop();
         fs::create_dir_all(f.paths.mimeapps_list.parent().unwrap()).unwrap();
@@ -368,9 +368,116 @@ mod linux {
         assert_eq!(value["status"], "partial");
         assert_eq!(value["error"]["code"], "partial_failure");
         assert!(!value["handler_skips"].as_array().unwrap().is_empty());
-        assert!(f.exe.exists());
-        assert!(f.receipt.exists());
+        assert_eq!(value["removed"].as_array().unwrap().len(), 3);
+        assert!(
+            value["retained_installation_files"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!f.exe.exists());
+        assert!(!f.receipt.exists());
         assert!(f.paths.applications_dir.join(DESKTOP_ID).exists());
+    }
+
+    #[test]
+    fn active_handler_preview_warns_in_json_and_human_without_mutation() {
+        for mode in [OutputMode::Json, OutputMode::Human] {
+            for mime_present in [true, false] {
+                let f = Fixture::new(true);
+                f.owned_desktop();
+                fs::create_dir_all(f.paths.record_file.parent().unwrap()).unwrap();
+                fs::write(&f.paths.record_file, "google-chrome.desktop\n").unwrap();
+                if mime_present {
+                    fs::write(
+                        &f.paths.mimeapps_list,
+                        "[Default Applications]\ntext/html=browser.desktop;\n",
+                    )
+                    .unwrap();
+                }
+                let before = tree(&f.base);
+                let out = destiny_cli::uninstall::run_at(
+                    &UninstallArgs {
+                        dry_run: true,
+                        yes: false,
+                    },
+                    mode,
+                    &f.receipt,
+                    &f.exe,
+                    &f.home,
+                    &mut f.registrar(DESKTOP_ID),
+                    false,
+                    |_| panic!(),
+                );
+                assert_eq!(out.exit_code, 0);
+                let report: Value = serde_json::from_str(&out.stdout).unwrap();
+                assert_eq!(report["status"], "preview");
+                assert_eq!(report["expected_status"], "partial");
+                assert!(
+                    report["warnings"][0]
+                        .as_str()
+                        .unwrap()
+                        .contains("preserved")
+                );
+                let guidance = report["manual_followups"].to_string();
+                assert!(
+                    guidance
+                        .contains("xdg-mime default <other>.desktop x-scheme-handler/ghostlink")
+                );
+                for path in [
+                    &f.paths.mimeapps_list,
+                    &f.paths.record_file,
+                    &f.paths.applications_dir.join(DESKTOP_ID),
+                ] {
+                    assert!(guidance.contains(path.to_str().unwrap()));
+                }
+                assert_eq!(tree(&f.base), before);
+                assert!(!f.lock_path().exists());
+                let out = destiny_cli::uninstall::run_at(
+                    &UninstallArgs {
+                        dry_run: false,
+                        yes: true,
+                    },
+                    mode,
+                    &f.receipt,
+                    &f.exe,
+                    &f.home,
+                    &mut f.registrar(DESKTOP_ID),
+                    false,
+                    |_| panic!(),
+                );
+                assert_eq!(out.exit_code, 41);
+                let report: Value = serde_json::from_str(&out.stderr).unwrap();
+                assert_eq!(report["removed"].as_array().unwrap().len(), 4);
+                assert_eq!(
+                    fs::read_to_string(&f.paths.record_file).unwrap(),
+                    "google-chrome.desktop\n"
+                );
+                assert!(f.paths.applications_dir.join(DESKTOP_ID).exists());
+                if mime_present {
+                    assert_eq!(
+                        fs::read_to_string(&f.paths.mimeapps_list).unwrap(),
+                        "[Default Applications]\ntext/html=browser.desktop;\n"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn foreign_handler_skip_preserves_desktop_but_not_installation() {
+        let f = Fixture::new(true);
+        f.owned_desktop();
+        let desktop = f.paths.applications_dir.join(DESKTOP_ID);
+        fs::write(&desktop, "foreign desktop entry").unwrap();
+        let out = f.run(false, true);
+        assert_eq!(out.exit_code, 41);
+        let report: Value = serde_json::from_str(&out.stderr).unwrap();
+        assert_eq!(report["removed"].as_array().unwrap().len(), 4);
+        assert_eq!(
+            fs::read_to_string(desktop).unwrap(),
+            "foreign desktop entry"
+        );
     }
 
     #[test]

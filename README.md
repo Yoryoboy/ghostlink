@@ -37,6 +37,8 @@ then preview with `ghostlink uninstall --dry-run`. Run `ghostlink uninstall` for
 full preview and default-no confirmation, or explicitly authorize with `--yes`.
 Configuration, databases, credentials and unknown files remain; there is no purge.
 Some integrations require manual followup, and partial cleanup is not rolled back.
+Unsafe handler selections preserve handler files, not receipt-owned binaries: removal
+ends partial (exit 41), with concrete manual steps. Dry-run warns of this outcome.
 Windows self-uninstall safely refuses and provides manual guidance.
 See [uninstall safety and outcomes](docs/cli.md#uninstall).
 

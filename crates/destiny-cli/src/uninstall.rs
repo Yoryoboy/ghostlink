@@ -252,6 +252,18 @@ mod linux {
             "preserved_state":"All config, SQLite databases, credentials/keyring, runtime sockets, Cargo directories, PATH/shell configuration, unknown files and backups. External/custom config/data/runtime paths are untouched (not resolved; configuration is not loaded). XDG overrides remain preserved except the exact previewed integration files.",
             "limitations":"Stop MCP hosts and finish active login first; no process inactivity guarantee, elevation, termination, purge, recursive installation removal or rollback. Lock metadata is retained to avoid splitting live locks. Exact skill identity is not installation provenance. Manual registrations can remain after binary removal."
         });
+        if !handler_plan.skips.is_empty() {
+            report["expected_status"] = json!("partial");
+            report["warnings"] = json!([
+                "Handler cleanup has skips: handler files will be preserved as listed; installation files will still be removed. The run will end partial (exit 41) unless an earlier failure prevents removal."
+            ]);
+            report["manual_followups"].as_array_mut().unwrap().push(json!(format!(
+                "Inspect preserved handler paths and verify ownership before manual deletion. Select an installed replacement with `xdg-mime default <other>.desktop x-scheme-handler/ghostlink` (replace <other>.desktop with its desktop ID), then verify with `xdg-mime query default x-scheme-handler/ghostlink`. Alternatively, remove Ghostlink from x-scheme-handler/ghostlink lines in {} (remove the whole line only if no other associations remain), and inspect higher-priority desktop-specific or applications mimeapps.list files if Ghostlink remains selected. Only after Ghostlink is no longer selected and ownership is verified, delete the desktop entry {} and previous-handler record {} if present. Preserve unrelated MIME associations and foreign files.",
+                handler_plan.paths.mimeapps_list.display(),
+                handler_plan.paths.applications_dir.join("ghostlink-callback.desktop").display(),
+                handler_plan.paths.record_file.display(),
+            )));
+        }
         if args.dry_run {
             return render(mode, &report, 0);
         }
@@ -301,13 +313,13 @@ mod linux {
                 .map(|s| json!({"path":s.path,"reason":s.guidance}))
                 .collect::<Vec<_>>()
         );
-        // Conservative even for ambiguous/foreign handler skips: never claim the
-        // CLI can disappear while an owned active selection might still need it.
-        if !handler.errors.is_empty() || !handler.skips.is_empty() {
+        // Failed mutations/revalidation still abort. Read-only safety skips do
+        // not hold receipt-owned installation files hostage to desktop settings.
+        if !handler.errors.is_empty() {
             return partial(
                 mode,
                 report,
-                "Handler cleanup incomplete or unsafe; binaries and receipt retained. Inspect handler skips/errors manually.",
+                "Handler cleanup failed or changed since preview; binaries and receipt retained. Inspect handler errors manually.",
             );
         }
         let expected_agent: Vec<_> = agent_plan
@@ -369,6 +381,13 @@ mod linux {
                 );
             }
             report["removed"].as_array_mut().unwrap().push(json!(path));
+        }
+        if !handler.skips.is_empty() {
+            return partial(
+                mode,
+                report,
+                "Installation files removed; handler cleanup skipped and listed handler files preserved. Follow manual_followups and handler_skips to finish safely.",
+            );
         }
         report["status"] = json!("removed_with_manual_followups");
         render(mode, &report, 0)
