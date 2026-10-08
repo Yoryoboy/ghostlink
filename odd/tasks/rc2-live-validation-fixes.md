@@ -151,7 +151,9 @@ G5/G7 CLI UX.
   and acknowledged (authority burned): T1 `691ad79..3d5d39c`
   review-d5bfe684fb9934d6; B1+B2 `3d5d39c..5fdc960` review-74b305ea826a912f;
   C1+C2 `5fdc960..2286f97` review-39e8e68a24f8a08f (advisory R3-001 → T5);
-  D `2286f97..8df605d` review-d303c06c0c266e3c.
+  D `2286f97..8df605d` review-d303c06c0c266e3c; A `fd36f4f..5e1e4a3`
+  review-932172cc582153fc (advisory R3-001 stale docs on malformed minted
+  values, fixed in the follow-up docs commit).
 
 - Exploration (2026-10-08): DIM plans from in-memory store with no fetch
   before writes (`item-move-service.ts`, `destiny2-api.ts:186-263`), applies

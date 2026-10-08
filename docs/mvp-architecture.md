@@ -120,9 +120,10 @@ clears it when missing) with the SQLite profile row; effects and invalidation do
 not change it. Minted time is acquisition metadata, excluded from normalized
 content/revision identity, and is not a TTL timestamp. The core stores signed Unix
 seconds plus nanoseconds; the adapter parses RFC 3339 instants with timezone
-normalization, never orders raw strings. Missing fields mean unknown; malformed
-present fields, leap seconds and fractions beyond nanosecond precision are
-provider-validation failures, rather than silently weakening the guard.
+normalization, never orders raw strings. Minted time is ordering evidence only:
+missing fields, malformed values, leap seconds and fractions beyond nanosecond
+precision are treated as unknown (as DIM does), so the profile publishes and the
+sync never fails because of this field.
 
 **Temporary scope:** Forced, Preflight and PostAction acquisitions still publish
 even older/equal minted profiles and store their supplied instant. Pulls and
