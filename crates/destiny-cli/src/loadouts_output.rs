@@ -1,40 +1,25 @@
 //! Shared snake-case saved loadouts projection for CLI and MCP.
 use destiny_app::{BucketHash, ItemSlot};
-use destiny_app::{LoadoutItemView, LoadoutPlugView, LoadoutsResult, SubclassPlugKind};
-use serde_json::{Value, json};
+use destiny_app::{LoadoutItemView, LoadoutPlugView, LoadoutsResult};
 
-/// Stable full result envelope; saved slot and socket indices retain gaps.
-pub fn loadouts_json(result: &LoadoutsResult) -> Value {
-    json!({"kind": "loadouts", "characters": result.characters.iter().map(|character| json!({
-        "character_id": character.character_id.as_str(), "class": character.class,
-        "loadouts": character.loadouts.iter().map(|loadout| json!({
-            "slot": loadout.slot, "name": loadout.name, "name_hash": loadout.name_hash,
-            "color_hash": loadout.color_hash, "icon_hash": loadout.icon_hash,
-            "items": loadout.items.iter().map(|item| json!({
-                "instance_id": item.instance_id.as_str(), "item_hash": item.item_hash.map(|hash| hash.value()),
-                "name": item.name, "item_type": item.item_type, "bucket_hash": item.bucket_hash,
-                "missing": item.missing,
-                "plugs": item.plugs.iter().map(|plug| super::with_insights(json!({
-                    "socket_index": plug.socket_index, "plug_hash": plug.plug_hash.value(),
-                    "name": plug.name, "subclass_kind": plug.subclass_kind.map(kind_json), "empty": plug.empty,
-                }), plug.description.as_deref(), plug.clarity.as_deref(), plug.clarity_match.as_deref())).collect::<Vec<_>>(),
-            })).collect::<Vec<_>>(),
-        })).collect::<Vec<_>>(),
-    })).collect::<Vec<_>>()})
-}
+pub use destiny_output::loadouts::{loadout_json, loadouts_json};
 
-fn kind_json(kind: SubclassPlugKind) -> &'static str {
-    use SubclassPlugKind::*;
-    match kind {
-        Super => "super",
-        ClassAbility => "class_ability",
-        Movement => "movement",
-        Melee => "melee",
-        Grenade => "grenade",
-        Aspect => "aspect",
-        Fragment => "fragment",
-        Transcendence => "transcendence",
+/// Render only the selected loadout, using the unchanged detailed text renderer.
+pub fn render_loadout(
+    mode: super::OutputMode,
+    result: &destiny_app::loadouts::LoadoutDetailResult,
+) -> String {
+    if mode == super::OutputMode::Json {
+        return loadout_json(result).to_string();
     }
+    let envelope = LoadoutsResult {
+        characters: vec![destiny_app::CharacterLoadoutsView {
+            character_id: result.character_id.clone(),
+            class: result.class.clone(),
+            loadouts: vec![result.loadout.clone()],
+        }],
+    };
+    render_loadouts(mode, &envelope, true)
 }
 
 fn item_name(item: &LoadoutItemView) -> String {

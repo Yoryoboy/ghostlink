@@ -134,6 +134,12 @@ impl Cli {
                 Ok(ReadRequest::Loadouts {
                     character_id,
                     detail: arguments.detail,
+                    loadout: arguments
+                        .loadout
+                        .as_deref()
+                        .map(destiny_app::loadouts::parse_loadout_selector)
+                        .transpose()
+                        .map_err(|_| CliError::invalid_request())?,
                 })
             }
             Command::Artifact(arguments) => {
@@ -977,9 +983,11 @@ impl ApplyLoadoutArgs {
     }
 }
 
-/// Arguments for `loadouts`; JSON always includes the full result.
+/// Arguments for `loadouts`; JSON lists summaries unless a saved loadout is selected.
 #[derive(Debug, Args)]
 pub struct LoadoutsArgs {
+    /// One-based saved slot or normalized exact name; selects full detail for ONE loadout.
+    pub loadout: Option<String>,
     /// Exact ID or hunter|titan|warlock (case-insensitive, unique class).
     #[arg(long, value_name = "ID_OR_CLASS")]
     pub character: Option<String>,
@@ -1065,7 +1073,8 @@ mod subclass_tests {
                     .unwrap(),
                 ReadRequest::Loadouts {
                     character_id: selector.map(CharacterId::new),
-                    detail
+                    detail,
+                    loadout: None,
                 }
             );
         }
@@ -1246,6 +1255,7 @@ pub enum ReadRequest {
     Loadouts {
         character_id: Option<CharacterId>,
         detail: bool,
+        loadout: Option<destiny_app::LoadoutSelector>,
     },
 }
 

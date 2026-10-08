@@ -232,6 +232,49 @@ pub fn dispatch_loadouts<S: destiny_app::LoadoutOperations + ?Sized>(
     }
 }
 
+/// Dispatches one saved-loadout detail read with the same freshness and selector policy.
+pub fn dispatch_loadout<S: destiny_app::LoadoutOperations + ?Sized>(
+    service: &mut S,
+    character: Option<&destiny_app::CharacterId>,
+    selector: &destiny_app::LoadoutSelector,
+    mode: OutputMode,
+    freshness: ReadFreshness,
+) -> ProcessOutput {
+    match service.loadouts(character, freshness.policy, freshness.now) {
+        Ok(result) => render_loadouts_selection(mode, &result, true, Some(selector)),
+        Err(error) => ProcessOutput::failure(mode, CliError::from(error)),
+    }
+}
+
+fn render_loadouts_selection(
+    mode: OutputMode,
+    result: &destiny_app::LoadoutsResult,
+    detail: bool,
+    selector: Option<&destiny_app::LoadoutSelector>,
+) -> ProcessOutput {
+    let Some(selector) = selector else {
+        return ProcessOutput::success(crate::output::render_loadouts(mode, result, detail));
+    };
+    match destiny_app::loadouts::select_loadout(result, selector) {
+        Ok(selected) => ProcessOutput::success(crate::output::render_loadout(mode, &selected)),
+        Err(error) => {
+            let output = destiny_output::loadouts::selector_error(error);
+            let body = if mode == OutputMode::Json {
+                output.value.to_string()
+            } else {
+                output
+                    .render_text()
+                    .replacen("Apply loadout:", "Loadout:", 1)
+            };
+            ProcessOutput {
+                stdout: String::new(),
+                stderr: format!("{body}\n"),
+                exit_code: output.exit_code,
+            }
+        }
+    }
+}
+
 /// Dispatches a live artifact read through its sibling service contract.
 pub fn dispatch_artifact<S: destiny_app::ArtifactOperations + ?Sized>(
     service: &mut S,
@@ -579,6 +622,7 @@ where
     if let ReadRequest::Loadouts {
         character_id,
         detail,
+        loadout,
     } = request
     {
         let result = with_definition_retry(manifest_factory, || {
@@ -588,9 +632,7 @@ where
             )
         });
         return match result {
-            Ok(result) => {
-                ProcessOutput::success(crate::output::render_loadouts(mode, &result, detail))
-            }
+            Ok(result) => render_loadouts_selection(mode, &result, detail, loadout.as_ref()),
             Err(error) => ProcessOutput::failure(mode, error),
         };
     }
@@ -1439,6 +1481,7 @@ mod tests {
                 let ReadRequest::Loadouts {
                     character_id,
                     detail,
+                    ..
                 } = cli.into_read_request().unwrap()
                 else {
                     panic!("expected loadouts")

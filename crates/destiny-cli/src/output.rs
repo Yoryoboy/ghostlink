@@ -296,7 +296,7 @@ const SUBCLASS_LABELS: &[(destiny_app::SubclassPlugKind, &str)] = {
 
 #[path = "loadouts_output.rs"]
 mod loadouts_output;
-pub use loadouts_output::{loadouts_json, render_loadouts};
+pub use loadouts_output::{loadout_json, loadouts_json, render_loadout, render_loadouts};
 
 /// Renders equipped subclasses without reordering slots in the machine result.
 pub fn render_subclasses(mode: OutputMode, result: &destiny_app::SubclassResult) -> String {
