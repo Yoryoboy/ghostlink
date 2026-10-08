@@ -187,10 +187,8 @@ pub fn cli_json(scenario: &str, item: &str, character: &str) -> serde_json::Valu
         POLICY,
     )
     .map(|output| {
-        if scenario == "equip-provider-stale" {
-            assert_eq!(output.exit_code(), 43);
-        } else if scenario == "equip-contradiction" {
-            assert_eq!(output.exit_code(), 42);
+        if matches!(scenario, "equip-provider-stale" | "equip-contradiction") {
+            assert_eq!(output.exit_code(), 0);
         }
         if scenario == "equip-auth-concurrent" {
             assert_ne!(output.exit_code(), 0);
@@ -238,6 +236,12 @@ pub fn serialized_publication() {
     #[derive(Clone)]
     struct SharedStore(Arc<Mutex<SqliteStore>>, Option<Publication>);
     impl InventoryRepository for SharedStore {
+        fn freshness_invalidated(&self) -> Result<bool, AppError> {
+            self.0.lock().unwrap().freshness_invalidated()
+        }
+        fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+            self.0.lock().unwrap().invalidate_freshness()
+        }
         fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
             self.0.lock().unwrap().load_current()
         }
@@ -383,7 +387,13 @@ pub fn serialized_publication() {
     }
     for equip in [false, true] {
         let (sync, _, equip_gateway) = sync_service("equip-success");
-        let (mut profile, store) = sync.into_parts();
+        let (_, store) = sync.into_parts();
+        let mut profile = QueuedProfileGateway::new();
+        profile.queue_membership(DestinyMembership::new(
+            MembershipType::new(3),
+            MembershipId::new("789"),
+        ));
+        profile.queue_inventory(Ok(snapshot(false, false, false)));
         profile.queue_membership(DestinyMembership::new(
             MembershipType::new(3),
             MembershipId::new("789"),

@@ -870,6 +870,12 @@ impl FixtureRepository {
 }
 
 impl InventoryRepository for FixtureRepository {
+    fn freshness_invalidated(&self) -> Result<bool, AppError> {
+        self.inventory.freshness_invalidated()
+    }
+    fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        self.inventory.invalidate_freshness()
+    }
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
         if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("postmaster-local-storage") {
             return Err(AppError::new(ErrorCategory::LocalStorage));

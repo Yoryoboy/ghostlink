@@ -127,7 +127,7 @@ fn qualified_metadata_v18_restart_and_content_identity() {
         store.replace_definitions(next.clone()).unwrap()
     };
     let mut store = SqliteStore::open(database.path()).unwrap();
-    assert_eq!(store.schema_version().unwrap(), 18);
+    assert_eq!(store.schema_version().unwrap(), 19);
     assert_eq!(
         store.lookup_definition(ItemHash::new(10)).unwrap(),
         Resolution::Unique(next.definitions.definitions[0].clone())
@@ -169,7 +169,7 @@ fn qualified_metadata_v18_all_publication_paths_and_identity() {
                  INSERT INTO stacks VALUES(1,'profile_inventory',NULL,8,10,2);
                  INSERT INTO stacks VALUES(2,'profile_currencies',NULL,9,10,0);
                  INSERT INTO inventory_coverage VALUES(1,'available');
-                 INSERT INTO sync_metadata VALUES('profile_inventory','100','profile','4','v1');",
+                 INSERT INTO sync_metadata VALUES('profile_inventory','100','profile','4','v1',0);",
                 )
                 .unwrap();
             let inventory = |store: &SqliteStore| {

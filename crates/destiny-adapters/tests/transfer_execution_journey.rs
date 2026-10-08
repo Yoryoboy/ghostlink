@@ -75,7 +75,7 @@ use destiny_adapters::transfer::{
 use destiny_app::test_support::DeterministicPlanIds;
 use destiny_app::{
     MoveExecutionOutcome, MutationError, MutationService, ProfileSyncService, QueryService,
-    SearchInventoryRequest, VerificationFailureReason,
+    SearchInventoryRequest,
 };
 use destiny_core::{
     AccessCredential, AccessCredentialMetadata, AppError, CharacterId, Clock, CredentialMaterial,
@@ -982,8 +982,8 @@ fn direct_move_is_verified_after_a_post_action_refresh() {
         )
         .expect("verified outcome");
     let evidence = match outcome {
-        MoveExecutionOutcome::VerifiedSuccess(evidence) => evidence,
-        other => panic!("expected verified success, got {other:?}"),
+        MoveExecutionOutcome::Applied(evidence) => evidence,
+        other => panic!("expected acknowledgement, got {other:?}"),
     };
     assert_eq!(evidence.completed_count(), 1);
     assert_eq!(evidence.attempted_count(), 1);
@@ -991,18 +991,18 @@ fn direct_move_is_verified_after_a_post_action_refresh() {
     assert_eq!(evidence.steps()[0].outcome, StepOutcome::Completed);
     assert_eq!(service.plan_ids().calls(), 1);
 
-    // The post-action refresh committed the moved item at the destination, which
-    // is what advances the revision from the preflight observation.
+    // Old content is retained but invalidated, never guessed forward.
     let snapshot = committed(&service);
     assert_eq!(
         location_of(&snapshot, LAST_WORD_INSTANCE),
-        warlock_location()
+        ItemLocation::Vault
     );
-    assert_eq!(snapshot.metadata.revision, SyncRevision::new(2));
+    assert_eq!(snapshot.metadata.revision, SyncRevision::new(1));
+    assert!(service.repository().freshness_invalidated().unwrap());
     let requests_after_execution = journey.request_count();
     assert_eq!(
-        requests_after_execution, 8,
-        "seed, explicit preflight, execution preflight, post-action"
+        requests_after_execution, 6,
+        "seed, explicit preflight, execution preflight only"
     );
 
     // A fresh re-inspection is served from the committed projection without
@@ -1023,7 +1023,7 @@ fn direct_move_is_verified_after_a_post_action_refresh() {
     assert_eq!(verified.instance.location, warlock_location());
     assert_eq!(verified.metadata.sync.revision, SyncRevision::new(2));
     assert_eq!(verified.metadata.freshness, FreshnessStatus::Fresh);
-    assert_eq!(journey.request_count(), requests_after_execution);
+    assert_eq!(journey.request_count(), requests_after_execution + 2);
 
     // Once the cached observation is stale, the read path refreshes exactly once
     // and still reads the Warlock at the retained revision 2.
@@ -1050,8 +1050,8 @@ fn direct_move_is_verified_after_a_post_action_refresh() {
     assert_eq!(stale_inspection.metadata.freshness, FreshnessStatus::Fresh);
     assert_eq!(
         journey.request_count(),
-        requests_after_execution + 2,
-        "one stale ordinary refresh"
+        requests_after_execution + 4,
+        "invalidation refresh plus one later stale ordinary refresh"
     );
 
     // Exactly one ordered POST, with the Vault-to-character direction the
@@ -1111,16 +1111,17 @@ fn character_to_character_move_posts_exactly_two_ordered_transfers() {
         )
         .expect("verified outcome");
     let evidence = match outcome {
-        MoveExecutionOutcome::VerifiedSuccess(evidence) => evidence,
-        other => panic!("expected verified success, got {other:?}"),
+        MoveExecutionOutcome::Applied(evidence) => evidence,
+        other => panic!("expected acknowledgement, got {other:?}"),
     };
     assert_eq!(evidence.completed_count(), 2);
     assert_eq!(evidence.steps()[0].outcome, StepOutcome::Completed);
     assert_eq!(evidence.steps()[1].outcome, StepOutcome::Completed);
 
     let snapshot = committed(&service);
-    assert_eq!(location_of(&snapshot, CROTA_INSTANCE), warlock_location());
-    assert_eq!(snapshot.metadata.revision, SyncRevision::new(2));
+    assert_eq!(location_of(&snapshot, CROTA_INSTANCE), hunter_location());
+    assert_eq!(snapshot.metadata.revision, SyncRevision::new(1));
+    assert!(service.repository().freshness_invalidated().unwrap());
 
     // Exactly two ordered POSTs through the Vault, in plan order.
     assert_eq!(journey.transfer_calls(), 2);
@@ -1184,7 +1185,7 @@ fn rc003_move_auth_concurrent_target_remains_non_success() {
             ErrorCategory::ProviderAuthentication
         ))
     );
-    assert_eq!(incomplete.observed(), &warlock_location());
+    assert_eq!(incomplete.observed(), &ItemLocation::Vault);
     assert_eq!(incomplete.evidence().completed_count(), 1);
     assert_eq!(incomplete.evidence().attempted_count(), 2);
     assert_eq!(
@@ -1192,7 +1193,7 @@ fn rc003_move_auth_concurrent_target_remains_non_success() {
         Some(StepOutcome::AuthenticationRefused)
     );
     assert_eq!(journey.transfer_calls(), 2);
-    assert_eq!(journey.request_count() - before, 4);
+    assert_eq!(journey.request_count() - before, 2);
 }
 
 #[test]
@@ -1233,7 +1234,7 @@ fn rc003_move_auth_retains_progress_stops_and_refreshes() {
                 ))
             );
             assert_eq!(journey.transfer_calls(), completed + 1);
-            assert_eq!(journey.request_count() - before, 4);
+            assert_eq!(journey.request_count() - before, 2);
             let expected = if prior_completed {
                 ItemLocation::Vault
             } else {
@@ -1287,7 +1288,7 @@ fn refused_second_step_strands_the_item_in_the_vault() {
     // The item is honestly stranded in the Vault, and step one remains applied.
     assert_eq!(
         location_of(&committed(&service), CROTA_INSTANCE),
-        ItemLocation::Vault
+        hunter_location()
     );
     assert_eq!(journey.transfer_calls(), 2);
 }
@@ -1363,14 +1364,14 @@ fn uncertain_step_confirmed_by_the_post_action_projection_is_a_success() {
         )
         .expect("verified outcome");
     let evidence = match outcome {
-        MoveExecutionOutcome::VerifiedSuccess(evidence) => evidence,
-        other => panic!("expected verified success, got {other:?}"),
+        MoveExecutionOutcome::IncompleteExecution(incomplete) => incomplete.evidence().clone(),
+        other => panic!("uncertainty must not become success: {other:?}"),
     };
     assert_eq!(evidence.steps()[0].outcome, StepOutcome::Uncertain);
     assert_eq!(evidence.completed_count(), 0);
     assert_eq!(
         location_of(&committed(&service), LAST_WORD_INSTANCE),
-        warlock_location()
+        ItemLocation::Vault
     );
 }
 
@@ -1404,15 +1405,11 @@ fn unchanged_post_action_projection_is_pending_provider_refresh() {
         )
         .expect("classified outcome");
     let failure = match outcome {
-        MoveExecutionOutcome::AppliedPendingProviderRefresh(pending) => pending,
+        MoveExecutionOutcome::Applied(pending) => pending,
         other => panic!("expected pending provider refresh, got {other:?}"),
     };
-    assert_eq!(failure.observed(), &ItemLocation::Vault);
-    assert_eq!(failure.evidence().completed_count(), 1);
-    assert_eq!(
-        failure.evidence().steps()[0].outcome,
-        StepOutcome::Completed
-    );
+    assert_eq!(failure.completed_count(), 1);
+    assert_eq!(failure.steps()[0].outcome, StepOutcome::Completed);
 
     assert_eq!(
         location_of(&committed(&service), LAST_WORD_INSTANCE),
@@ -1432,27 +1429,21 @@ fn changed_post_action_revision_with_wrong_location_is_elsewhere() {
         .plan_move(&request, PlanLifetime::MAX, TTL, NOW)
         .unwrap();
     journey.queue_transfer(TransferAction::Contradiction);
-    let MoveExecutionOutcome::VerificationFailed(failure) = service
+    let MoveExecutionOutcome::Applied(failure) = service
         .execute_move_verified(&mut transfer, &request, &plan, TTL, NOW, NOW)
         .unwrap()
     else {
         panic!("changed revision cannot qualify as stale provider refresh");
     };
-    assert_eq!(failure.reason(), VerificationFailureReason::Elsewhere);
-    assert_eq!(failure.observed(), Some(&hunter_location()));
-    assert_eq!(failure.error(), None);
-    assert_eq!(failure.evidence().completed_count(), 1);
-    assert_eq!(
-        failure.evidence().steps()[0].outcome,
-        StepOutcome::Completed
-    );
+    assert_eq!(failure.completed_count(), 1);
+    assert_eq!(failure.steps()[0].outcome, StepOutcome::Completed);
     let snapshot = committed(&service);
-    assert_eq!(snapshot.metadata.revision, SyncRevision::new(2));
+    assert_eq!(snapshot.metadata.revision, SyncRevision::new(1));
     assert_eq!(
         location_of(&snapshot, LAST_WORD_INSTANCE),
-        hunter_location()
+        ItemLocation::Vault
     );
-    assert_eq!(journey.request_count(), 6);
+    assert_eq!(journey.request_count(), 4);
     let recorded = journey.recorded_transfers();
     assert_eq!(recorded.len(), 1);
     assert_eq!(recorded[0].url, TRANSFER_ENDPOINT);
@@ -1503,18 +1494,11 @@ fn failed_post_action_refresh_is_a_verification_failure() {
         )
         .expect("classified outcome");
     let failure = match outcome {
-        MoveExecutionOutcome::VerificationFailed(failure) => failure,
-        other => panic!("expected a verification failure, got {other:?}"),
+        MoveExecutionOutcome::Applied(evidence) => evidence,
+        other => panic!("acknowledged action must not read the failing profile: {other:?}"),
     };
-    assert_eq!(failure.reason(), VerificationFailureReason::RefreshFailed);
-    assert_eq!(failure.observed(), None);
-    assert_eq!(
-        failure.error(),
-        Some(MutationError::Application(
-            ErrorCategory::ProviderUnavailable
-        ))
-    );
-    assert_eq!(failure.evidence().completed_count(), 1);
+    assert_eq!(failure.completed_count(), 1);
+    assert_eq!(journey.request_count(), 4);
 }
 
 /// Scenario 8: an already-satisfied fresh preflight is a verified no-op with zero

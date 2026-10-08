@@ -113,14 +113,14 @@ fn cli_move_verified_outcomes_and_no_retry() {
             (
                 TransferOutcome::Transferred,
                 Ok(snapshot(destination.clone())),
-                MoveStatus::VerifiedSuccess,
+                MoveStatus::Applied,
                 0,
             ),
             (
                 TransferOutcome::Uncertain,
                 Ok(snapshot(destination.clone())),
-                MoveStatus::VerifiedSuccess,
-                0,
+                MoveStatus::Incomplete,
+                41,
             ),
             (
                 TransferOutcome::Rejected(TransferRejection::DestinationFull),
@@ -137,22 +137,22 @@ fn cli_move_verified_outcomes_and_no_retry() {
             (
                 TransferOutcome::Transferred,
                 Ok(snapshot(source.clone())),
-                MoveStatus::AppliedPendingProviderRefresh,
-                43,
+                MoveStatus::Applied,
+                0,
             ),
             (
                 TransferOutcome::Transferred,
                 Err(AppError::new(ErrorCategory::ProviderUnavailable)),
-                MoveStatus::VerificationFailed,
-                42,
+                MoveStatus::Applied,
+                0,
             ),
             (
                 TransferOutcome::Transferred,
                 Ok(snapshot(ItemLocation::Character(CharacterId::new(
                     "elsewhere",
                 )))),
-                MoveStatus::VerificationFailed,
-                42,
+                MoveStatus::Applied,
+                0,
             ),
         ] {
             let initial = snapshot(source.clone());
@@ -177,9 +177,10 @@ fn cli_move_verified_outcomes_and_no_retry() {
             if output.profile_refresh == ProfileRefresh::Failed {
                 assert!(output.observed.is_none());
             }
-            if code == 43 {
-                assert!(output.render_text().contains("ghostlink sync"));
-                assert!(output.render_text().contains("do not retry"));
+            assert_eq!(output.profile_refresh, ProfileRefresh::NotRequired);
+            assert!(output.observed.is_none());
+            if status == MoveStatus::Applied {
+                assert!(output.render_text().contains("not re-read"));
                 assert!(!output.render_text().contains("✔ verified"));
             }
         }
@@ -323,7 +324,7 @@ fn cli_move_equipped_item_is_a_provider_refusal_after_one_dispatch() {
     assert_eq!(transfer.requests().len(), 1);
     assert_eq!(output.steps[0].outcome, "rejected");
     assert!(output.render_text().contains("item is equipped"));
-    assert_eq!(output.profile_refresh, ProfileRefresh::Refreshed);
+    assert_eq!(output.profile_refresh, ProfileRefresh::NotRequired);
 }
 
 #[test]
@@ -362,7 +363,7 @@ fn cli_move_character_route_stops_at_failed_step_without_rollback() {
         assert_eq!(
             output.status,
             if success {
-                MoveStatus::VerifiedSuccess
+                MoveStatus::Applied
             } else {
                 MoveStatus::Incomplete
             }
@@ -388,9 +389,7 @@ fn cli_move_character_route_stops_at_failed_step_without_rollback() {
             output.json()["steps_uncompleted"],
             if success { 0 } else { 1 }
         );
-        if !success {
-            assert_eq!(output.json()["observed"]["location"]["kind"], "vault");
-        }
+        assert!(output.json()["observed"].is_null());
     }
     let mut initial = snapshot(ItemLocation::Character(CharacterId::new("457")));
     initial.characters.push(character("457"));

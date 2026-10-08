@@ -436,7 +436,8 @@ fn dispatch_mutation_locked(
         return Ok(guard.equip_item(&args).map_or_else(tool_error, |output| {
             let is_error = !matches!(
                 output.status,
-                destiny_output::equip::EquipStatus::VerifiedSuccess
+                destiny_output::equip::EquipStatus::Applied
+                    | destiny_output::equip::EquipStatus::VerifiedSuccess
                     | destiny_output::equip::EquipStatus::VerifiedNoop
             );
             let mut result = CallToolResult::structured(output.json());

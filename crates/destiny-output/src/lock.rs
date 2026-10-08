@@ -5,7 +5,30 @@ use destiny_app::{
 };
 use serde_json::{Value, json};
 
-pub use crate::equip::{EquipStatus as LockStatus, ProfileRefresh};
+pub use crate::equip::ProfileRefresh;
+
+/// Lock retains its verification semantics independently of optimistic equip.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LockStatus {
+    VerifiedSuccess,
+    VerifiedNoop,
+    Incomplete,
+    VerificationFailed,
+    AppliedPendingProviderRefresh,
+    Refused,
+}
+impl LockStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::VerifiedSuccess => "verified_success",
+            Self::VerifiedNoop => "verified_noop",
+            Self::Incomplete => "incomplete",
+            Self::VerificationFailed => "verification_failed",
+            Self::AppliedPendingProviderRefresh => "applied_pending_provider_refresh",
+            Self::Refused => "refused",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct LockItem {

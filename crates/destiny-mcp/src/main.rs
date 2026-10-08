@@ -627,6 +627,12 @@ impl SharedRepository {
 }
 
 impl InventoryRepository for SharedRepository {
+    fn freshness_invalidated(&self) -> Result<bool, AppError> {
+        self.lock()?.freshness_invalidated()
+    }
+    fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        self.lock()?.invalidate_freshness()
+    }
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
         self.lock()?.load_current()
     }

@@ -586,6 +586,7 @@ impl destiny_core::ports::DefinitionCatalogRepository for InMemoryDefinitionRepo
 
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryInventoryRepository {
+    invalidated: bool,
     current: Option<InventorySnapshot>,
     previous_input: Option<InventorySnapshotInput>,
 }
@@ -624,6 +625,7 @@ impl InMemoryInventoryRepository {
             plug_set_entries: input.plug_set_entries.clone(),
         };
         Self {
+            invalidated: false,
             current: Some(snapshot),
             previous_input: Some(input),
         }
@@ -636,6 +638,15 @@ impl InMemoryInventoryRepository {
 }
 
 impl InventoryRepository for InMemoryInventoryRepository {
+    fn freshness_invalidated(&self) -> Result<bool, AppError> {
+        Ok(self.invalidated)
+    }
+
+    fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        self.invalidated = true;
+        Ok(())
+    }
+
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
         Ok(self.current.clone())
     }
@@ -697,6 +708,7 @@ impl InventoryRepository for InMemoryInventoryRepository {
             stacks: input.stacks,
             plug_set_entries: input.plug_set_entries,
         };
+        self.invalidated = false;
         self.current = Some(snapshot.clone());
         self.previous_input = Some(InventorySnapshotInput::with_metadata(&snapshot));
         Ok(snapshot)

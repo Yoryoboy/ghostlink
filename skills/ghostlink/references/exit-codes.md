@@ -76,12 +76,11 @@ are neither causal nor atomic proof; offline checks do not establish live readin
 
 | `status` | Exit | Agent action |
 |---|---:|---|
-| `verified_success` | 0 | Freshly observed at the destination; report it. |
+| `applied` | 0 | Every step accepted; not an observed destination. Next ordinary read forces sync. |
 | `verified_noop` | 0 | Reached the destination between planning and fresh preflight; no transfer dispatched. |
 | `refused` | varies | Report `reason` and steps; do not retry. Already in the destination when planning is exit **40** (`unsupported_operation`), not no-op success. Missing item is 32, missing character 2, ambiguity 31, changed preflight 30. |
 | `incomplete` | 41 | Report completed, rejected/uncertain and unrun steps; no rollback. Do not retry. |
-| `verification_failed` | 42 | Run `ghostlink sync`, inspect the item, report uncertainty. |
-| `applied_pending_provider_refresh` | 43 | Provider accepted every step but refreshed profile lags. Not verified; check later, never repeat blindly. |
+Move does not emit provider-lag verification exits 42/43. Never blindly repeat.
 
 Move may be rejected by Bungie for an equipped item or full destination after
 dispatch. A character-to-character route uses the Vault and may stop there.
@@ -100,7 +99,7 @@ automatically retry a failed or uncertain update.
 | 40 | `unsupported_installation` / `updater_missing` | Report the refusal; use the original installation method or official release installer, not a substitute updater from PATH. |
 | 40 | `unsupported_operation` | Windows refuses without launching or deferring anything. Ask the user to close Ghostlink, stop `destiny-mcp`, then run the official sibling `.\ghostlink-update.exe` from its installation directory in a separate PowerShell session. Other platforms outside Linux x86_64 GNU also refuse. |
 | 41 | `updater_failed` | Files may have changed. Inspect the installation first; report and do not automatically retry. No rollback is guaranteed. |
-| 43 | `lifecycle_busy` | Wait for the other lifecycle command or inspect unsafe lock files manually; never automatically delete foreign locks. This is distinct from equip's pending-provider-refresh exit 43. |
+| 43 | `lifecycle_busy` | Wait for the other lifecycle command or inspect unsafe lock files manually; never automatically delete foreign locks. This is unrelated to move/equip acknowledgement outcomes. |
 | 51 | `local_storage` | Check installation ownership and permissions; no automatic elevation. |
 
 ## Uninstall outcomes
@@ -126,11 +125,11 @@ all integrations are gone. Individual changes have no rollback; lock metadata re
 
 | `status` | Exit | Agent action |
 |---|---:|---|
-| `verified_success` / `verified_noop` | 0 | Item is equipped on the target. Report it. |
+| `applied` | 0 | Every step accepted, not observed equipped state. Next ordinary read forces sync. |
+| `verified_noop` | 0 | Fresh preflight already satisfies intent; no dispatch. |
 | `refused` | varies | Report `reason` and `steps`; a refusal during execution can follow a completed transfer, so never assume nothing changed. Do not retry. Exit 32 means the item selector matched nothing, 2 means the character matched nothing, other exits follow the error table. |
 | `incomplete` | 41 | Some steps ran. Report each step; do not retry. |
-| `verification_failed` | 42 | Outcome uncertain. Run `ghostlink sync`, inspect the item, report. |
-| `applied_pending_provider_refresh` | 43 | Bungie accepted it but the profile has not caught up. Not verified; suggest checking later. |
+Equip does not emit provider-lag verification exits 42/43. Never blindly repeat.
 
 Equip requires the character to be in orbit, a social space, or offline;
 Bungie may refuse after a transfer already happened.

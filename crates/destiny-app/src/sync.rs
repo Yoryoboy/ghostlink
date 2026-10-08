@@ -263,7 +263,10 @@ where
         }
         .status();
 
-        if reason == ProfileSyncReason::Ordinary && status == FreshnessStatus::Fresh {
+        if reason == ProfileSyncReason::Ordinary
+            && status == FreshnessStatus::Fresh
+            && !self.repository.freshness_invalidated()?
+        {
             // `Fresh` requires a committed `checked_at`, so a fresh status
             // implies the snapshot is present; moving its metadata avoids
             // cloning the projection. No gateway call and no mutation happen.

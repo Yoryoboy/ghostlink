@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EquipStatus {
+    Applied,
     VerifiedSuccess,
     VerifiedNoop,
     Incomplete,
@@ -17,6 +18,7 @@ pub enum EquipStatus {
 impl EquipStatus {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Applied => "applied",
             Self::VerifiedSuccess => "verified_success",
             Self::VerifiedNoop => "verified_noop",
             Self::Incomplete => "incomplete",
@@ -206,6 +208,10 @@ impl EquipOutput {
         observed: Option<&ItemInstance>,
     ) -> Self {
         let (status, evidence, refresh, reason) = match outcome {
+            MoveExecutionOutcome::Applied(e) => (
+                EquipStatus::Applied, e, ProfileRefresh::NotRequired,
+                Some("Bungie accepted the action; not re-read".into()),
+            ),
             MoveExecutionOutcome::VerifiedSuccess(e) => (
                 EquipStatus::VerifiedSuccess,
                 e,
@@ -227,7 +233,7 @@ impl EquipOutput {
             MoveExecutionOutcome::IncompleteExecution(e) => (
                 EquipStatus::Incomplete,
                 e.evidence(),
-                ProfileRefresh::Refreshed,
+                ProfileRefresh::NotRequired,
                 e.error().map(mutation_reason),
             ),
             MoveExecutionOutcome::VerificationFailed(e) => (
@@ -240,7 +246,7 @@ impl EquipOutput {
                 },
                 Some(match e.reason() {
                     VerificationFailureReason::RefreshFailed => {
-                        "outcome is uncertain: post-action profile refresh failed".into()
+                        "outcome is uncertain: local state could not be updated after the action".into()
                     }
                     VerificationFailureReason::Unresolved => {
                         "outcome is uncertain: refreshed state could not uniquely resolve the item"
@@ -253,7 +259,9 @@ impl EquipOutput {
                 }),
             ),
         };
-        let observation = if refresh == ProfileRefresh::Failed {
+        let observation = if refresh == ProfileRefresh::Failed
+            || matches!(status, EquipStatus::Applied | EquipStatus::Incomplete)
+        {
             None
         } else {
             observed.map(|i| EquipObservation {

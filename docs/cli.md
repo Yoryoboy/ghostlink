@@ -867,19 +867,19 @@ Equipped-item and capacity restrictions can be provider refusals after dispatch;
 the move planner does not apply equip's class/exotic policy.
 
 One invocation explicitly authorizes one item and destination. There are no
-retries or rollback. After any attempted step, the shared pipeline refreshes
-and verifies the destination. Never blindly retry an uncertain result: run
+retries or rollback. Fully acknowledged steps return `applied` (exit 0), without
+post-action refresh/verification. Inventory content, revision and acquisition time
+remain unchanged; a durable invalidation flag forces the next ordinary read to sync. Never blindly retry an uncertain result: run
 `ghostlink sync`, inspect the item, and reassess the user's intent first.
 
 Move has its own transport-neutral text/JSON contract: `status`, `item`,
 `destination`, ordered `steps`, `steps_completed`, `steps_uncompleted`,
 `verification`, `reason`, `profile_refresh`, and `observed`. Completed counts
 are provider-confirmed steps, not inferred completions from verification;
-uncertain steps remain uncertain even if refreshed state verifies success.
-A failed refresh omits the observation rather than presenting stale state as fresh.
-Success/no-op goes to stdout (0); other results go to stderr. Incomplete execution
-exits 41, failed verification 42, and applied-but-pending-provider-refresh 43.
-For exit 43, do not retry; run `ghostlink sync` later to confirm. Missing item
+uncertain steps remain uncertain. Applied/incomplete results omit observations
+rather than labeling pre-action state as fresh. Applied/no-op goes to stdout (0);
+other results go to stderr. Incomplete execution exits 41. Move no longer emits
+provider-lag verification exits 42/43. Do not retry blindly; read fresh state first. Missing item
 exits 32, missing character 2, ambiguity 31; other refusals follow the existing
 category exit mapping. Offline tests establish the pipeline, not live account
 success.
@@ -930,20 +930,18 @@ free space, or change builds/plugs. Bungie requires the target to be in orbit,
 a social space, or offline; there is no activity pre-check, so provider refusal
 may occur after a transfer.
 
-One invocation authorizes the intent. Fresh preflight precedes dispatch; every
-attempted action requires a profile refresh and verification that the item is
-on the target **and equipped**. Partial progress is reported without rollback
+One invocation authorizes the intent. Fresh preflight precedes dispatch; full
+acknowledgement returns `applied` (exit 0), without post-action refresh or claiming
+the item was observed on the target and equipped. A durable invalidation flag
+forces sync on the next ordinary read, preserving real acquisition metadata. Partial progress is reported without rollback
 or multi-call atomicity. Never blindly retry an uncertain outcome: inspect fresh
 state before deciding on another action. Refusal, incomplete execution and
 verification failure return non-zero CLI exits.
 
-`applied_pending_provider_refresh` (CLI exit 43) means the provider confirmed
-every planned step, but the successful post-action refresh retained the
-pre-dispatch revision/content and did not show the target state. Bungie's
-profile can lag mutations by minutes; this is applied per provider, **not verified
-success**. Do not retry; run `ghostlink sync` later to confirm. A changed profile
-that contradicts the target remains `verification_failed` (42). Uncertain
-steps, refusals and partial execution keep their existing outcomes.
+Equip no longer emits provider-lag verification exits 42/43. Bungie's profile
+can lag mutations; accepted steps are not proof of observed in-game state.
+Uncertain steps, refusals and partial execution remain failures. Already-satisfied
+fresh preflight remains `verified_noop` with no dispatch. Never retry blindly.
 
 The CLI JSON and MCP `equip_item` structured content use the same renderer:
 `status`, `item`, `character`, `steps`, `reason`, `profile_refresh`, and `observed`.

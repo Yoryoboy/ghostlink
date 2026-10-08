@@ -382,7 +382,7 @@ async fn equip_stdio_json_matches_cli_for_all_outcomes() {
             result["result"]["isError"],
             !matches!(
                 expected["status"].as_str().unwrap(),
-                "verified_success" | "verified_noop"
+                "applied" | "verified_success" | "verified_noop"
             )
         );
         session.shutdown().await;
@@ -412,10 +412,7 @@ async fn equip_stdio_invalid_arguments_never_mutate() {
     let response = session
         .call_tool("equip_item", json!({"item":"123","character":"warlock"}))
         .await;
-    assert_eq!(
-        response["result"]["structuredContent"]["status"],
-        "verified_success"
-    );
+    assert_eq!(response["result"]["structuredContent"]["status"], "applied");
     assert_eq!(
         response["result"]["structuredContent"]["steps"]
             .as_array()
@@ -1016,19 +1013,15 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
         .await;
     assert_eq!(moved["result"]["isError"], false);
     let success = structured(&moved);
-    assert_eq!(success["status"], "verified_success");
+    assert_eq!(success["status"], "applied");
     assert_eq!(success["effects"]["item_id"], "inst-a");
     assert_eq!(success["effects"]["via_vault"], false);
     assert_eq!(success["effects"]["source"]["kind"], "vault");
     assert_eq!(success["effects"]["destination"]["kind"], "character");
     assert_eq!(success["effects"]["destination"]["character_id"], "warlock");
-    assert_eq!(success["observed"]["kind"], "character");
-    assert_eq!(success["observed"]["character_id"], "warlock");
+    assert!(success.get("observed").is_none());
 
-    // Exactly the planned steps were dispatched: a Vault move is one transfer.
-    // The refresh and verification are proven by the destination being observed
-    // at all: the projection only reflects the transfer through the forced
-    // post-action refresh.
+    // Exactly the planned steps were acknowledged, without claiming observation.
     let steps = success["steps"].as_array().expect("step evidence");
     assert_eq!(
         steps.len(),
@@ -1158,7 +1151,7 @@ async fn move_item_semantic_text_resolves_the_named_instance_through_the_vault()
         .await;
     assert_eq!(moved["result"]["isError"], false);
     let success = structured(&moved);
-    assert_eq!(success["status"], "verified_success");
+    assert_eq!(success["status"], "applied");
 
     // The resolved concrete instance, not the text, is what was moved, and the
     // route is character -> Vault -> character, so the Vault is used exactly once.
@@ -1169,10 +1162,8 @@ async fn move_item_semantic_text_resolves_the_named_instance_through_the_vault()
     assert_eq!(success["effects"]["destination"]["kind"], "character");
     assert_eq!(success["effects"]["destination"]["character_id"], "warlock");
 
-    // Post-refresh verification: only the forced refresh after the transfer can
-    // make the destination observable from the shared world.
-    assert_eq!(success["observed"]["kind"], "character");
-    assert_eq!(success["observed"]["character_id"], "warlock");
+    // Acknowledgement does not claim a refreshed observation.
+    assert!(success.get("observed").is_none());
 
     // Bounded evidence: the two ordered mediated steps, both completed.
     let steps = success["steps"].as_array().expect("step evidence");
@@ -1251,10 +1242,10 @@ async fn move_item_reports_pending_provider_refresh_for_confirmed_stale_profile(
             json!({"instance_id":"inst-a","character_id":"warlock"}),
         )
         .await;
-    assert_eq!(moved["result"]["isError"], true);
+    assert_eq!(moved["result"]["isError"], false);
     let pending = structured(&moved);
-    assert_eq!(pending["status"], "applied_pending_provider_refresh");
-    assert_eq!(pending["observed"]["kind"], "vault");
+    assert_eq!(pending["status"], "applied");
+    assert!(pending.get("observed").is_none());
     assert_eq!(pending["steps"].as_array().unwrap().len(), 1);
     assert_eq!(pending["steps"][0]["outcome"]["status"], "completed");
     assert_no_secret_in(&moved);
@@ -1274,11 +1265,12 @@ async fn move_item_reports_a_partial_execution_honestly() {
             json!({ "instance_id": "inst-e", "character_id": "warlock" }),
         )
         .await;
-    assert_eq!(moved["result"]["isError"], false);
+    assert_eq!(moved["result"]["isError"], true);
     let incomplete = structured(&moved);
     assert_eq!(incomplete["status"], "incomplete");
     assert_eq!(incomplete["partial"], true);
-    assert_eq!(incomplete["observed"]["kind"], "vault");
+    assert_eq!(incomplete["expected_location"]["kind"], "vault");
+    assert!(incomplete.get("observed").is_none());
     assert_eq!(incomplete["effects"]["via_vault"], true);
 
     let steps = incomplete["steps"].as_array().expect("step evidence");

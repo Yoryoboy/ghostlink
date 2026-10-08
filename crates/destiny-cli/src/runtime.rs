@@ -641,6 +641,12 @@ mod pull_store_tests {
     }
 }
 impl InventoryRepository for PullStore {
+    fn freshness_invalidated(&self) -> Result<bool, AppError> {
+        self.0.borrow().freshness_invalidated()
+    }
+    fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        self.0.borrow_mut().invalidate_freshness()
+    }
     fn load_current(&self) -> Result<Option<destiny_app::InventorySnapshot>, AppError> {
         self.0.borrow().load_current()
     }

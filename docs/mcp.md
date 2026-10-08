@@ -15,7 +15,7 @@ get_loadouts      show saved in-game loadouts and configured equipment per chara
 weekly_reset      predict weekly rotations and observe current-week milestones
 weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
-equip_item        transfer if necessary, equip on an explicit character, and verify
+equip_item        transfer if necessary, equip on an explicit character, return acceptance
 set_lock_state    lock or unlock one explicitly selected owned item and verify
 pull_item         pull one genuine Postmaster equipment instance to its owner
 pull_stack        pull an explicit amount of a non-instanced Postmaster stack
@@ -26,9 +26,9 @@ durable projection are shared with the read path, and one explicit `move_item`
 request is the whole intent authorization. There is no preview tool, confirmation
 token or value, approval ceremony, or second MCP call. The single call plans the
 move, forces a fresh revision-bound preflight, issues only the ordered transfer
-steps, refreshes the projection after the action, and verifies the destination
-or reports `applied_pending_provider_refresh` when provider-confirmed steps
-still have an unchanged pre-action profile (see [Equip one item](cli.md#equip-one-item));
+steps, and returns `applied` with `isError=false` when every step is acknowledged.
+It does not perform post-action verification; the next ordinary read forces sync
+without writing guessed inventory state (see [Equip one item](cli.md#equip-one-item));
 membership and credentials are resolved internally and are never accepted or
 emitted through MCP.
 
@@ -37,8 +37,11 @@ emitted through MCP.
 control characters are rejected. One call is the complete intent authorization,
 with no separate token or approval ceremony. It uses the same shared equip
 pipeline and JSON as `ghostlink equip`; see the [equip safety limits](cli.md#equip-one-item).
-Both `equip_item` and `move_item` can return
-`applied_pending_provider_refresh` with `isError=true`, never verified success.
+Both `equip_item` and `move_item` return `applied` on full acknowledgement,
+without claiming an observed destination/equipped state. Already-satisfied fresh
+preflight remains `verified_noop`. Uncertain, refused and partial results remain
+errors with no blind retry. Incomplete move `expected_location` is derived from
+receipts, not an observation.
 `move_item` also has the `ghostlink move` CLI surface.
 
 `set_lock_state` accepts exactly `{"item":"Ace of Spades","locked":true}`;
@@ -312,8 +315,8 @@ binary that composes deterministic in-memory application test doubles, then
 drives complete MCP sessions (initialize, discovery, the three reads, a
 protocol failure, a sanitized tool failure, cancellation, and shutdown) and the
 one-call mutation journey: one `move_item` request performs semantic planning, a
-fresh preflight, the minimum transfer calls, a post-action refresh, and
-destination verification with no second call. It also proves a repeated request
+fresh preflight and the minimum transfer calls, returning acknowledgement without
+post-action verification or a second mutation call. It also proves a repeated request
 fails closed without replay, an already-satisfied destination is a verified
 no-op, a changed preflight is a typed stale failure, a refused step is an honest
 partial execution, and stdout is protocol-only with no secret sentinel present.
@@ -330,8 +333,8 @@ cargo test -p destiny-mcp --all-features --test stdio
 The fixture binary is never reachable from the product `destiny-mcp` binary and
 requires no credential, network, durable database, or native keyring.
 Equip child-process sessions additionally compare complete CLI/MCP JSON for
-success, no-op, refusal, partial progress, uncertainty, pending provider refresh
-and refresh/verification failure, with equipped non-equipment neighbors. These
+applied, no-op, refusal, partial progress and uncertainty, including profiles that
+would lag or fail on a subsequent read, with equipped non-equipment neighbors. These
 are offline observations, not a live-provider verification claim.
 Postmaster child sessions additionally refresh stale synthetic seeds through the
 real query service and committed in-memory repository, preserving owned gear,

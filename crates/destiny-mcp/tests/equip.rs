@@ -10,20 +10,10 @@ fn rc002_local_publication_cannot_overtake_dispatch() {
 #[test]
 fn equip_json_matches_cli_for_every_execution_shape() {
     for (scenario, item, character, status) in [
-        ("equip-success", "123", "warlock", "verified_success"),
-        (
-            "equip-success",
-            "Ace of Spades",
-            "WaRlOcK",
-            "verified_success",
-        ),
+        ("equip-success", "123", "warlock", "applied"),
+        ("equip-success", "Ace of Spades", "WaRlOcK", "applied"),
         ("equip-noop", "123", "warlock", "verified_noop"),
-        (
-            "equip-provider-stale",
-            "123",
-            "warlock",
-            "applied_pending_provider_refresh",
-        ),
+        ("equip-provider-stale", "123", "warlock", "applied"),
         ("equip-success", "missing", "warlock", "refused"),
         ("equip-success", "123", "missing", "refused"),
         ("equip-ambiguous", "Ace of Spades", "warlock", "refused"),
@@ -34,28 +24,13 @@ fn equip_json_matches_cli_for_every_execution_shape() {
             "equip-auth-unavailable-refresh",
             "123",
             "warlock",
-            "verification_failed",
+            "incomplete",
         ),
-        (
-            "equip-auth-refresh-failure",
-            "123",
-            "warlock",
-            "verification_failed",
-        ),
-        ("equip-uncertain", "123", "warlock", "verified_success"),
+        ("equip-auth-refresh-failure", "123", "warlock", "incomplete"),
+        ("equip-uncertain", "123", "warlock", "incomplete"),
         ("equip-uncertain-no-effect", "123", "warlock", "incomplete"),
-        (
-            "equip-refresh-failure",
-            "123",
-            "warlock",
-            "verification_failed",
-        ),
-        (
-            "equip-contradiction",
-            "123",
-            "warlock",
-            "verification_failed",
-        ),
+        ("equip-refresh-failure", "123", "warlock", "applied"),
+        ("equip-contradiction", "123", "warlock", "applied"),
     ] {
         let cli = support::cli_json(scenario, item, character);
         let mcp = support::mcp_json(scenario, item, character);
@@ -69,9 +44,8 @@ fn equip_json_matches_cli_for_every_execution_shape() {
         }
         if scenario == "equip-auth-concurrent" {
             assert!(mcp["reason"].as_str().unwrap().contains("authentication"));
-            assert_eq!(mcp["profile_refresh"], "refreshed");
-            assert_eq!(mcp["observed"]["equipped"], true);
-            assert_eq!(mcp["observed"]["location"]["character_id"], "warlock");
+            assert_eq!(mcp["profile_refresh"], "not_required");
+            assert!(mcp["observed"].is_null());
         }
         if matches!(
             scenario,
@@ -79,7 +53,7 @@ fn equip_json_matches_cli_for_every_execution_shape() {
                 | "equip-auth-refresh-failure"
                 | "equip-auth-unavailable-refresh"
         ) {
-            assert_eq!(mcp["profile_refresh"], "failed");
+            assert_eq!(mcp["profile_refresh"], "not_required");
             assert!(mcp["observed"].is_null());
         }
     }

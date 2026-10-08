@@ -68,7 +68,7 @@ const SEARCH_INVENTORY_DESCRIPTION: &str = "Search item definitions and, when re
 const INSPECT_ITEM_DESCRIPTION: &str =
     "Inspect exactly one concrete inventory instance by its instance identifier.";
 
-const MOVE_ITEM_DESCRIPTION: &str = "Move one concrete inventory instance to the Vault or to a character. One call plans the move, forces a fresh preflight, issues only the ordered steps, refreshes the projection after the action, and verifies the destination.";
+const MOVE_ITEM_DESCRIPTION: &str = "Move one concrete inventory instance to the Vault or to a character. One call plans the move, forces a fresh preflight, and issues only the ordered steps. Full acknowledgement returns applied without post-action verification; the next ordinary read forces sync. Never blindly retry partial or uncertain results.";
 
 /// Maximum accepted MCP identifier length, in characters.
 ///
@@ -264,7 +264,7 @@ impl EquipItemArgs {
     }
 }
 pub fn equip_item_tool() -> Tool {
-    Tool::new(EQUIP_ITEM_TOOL, "Equip one explicitly selected item on one explicitly selected character, automatically transferring if necessary. One call authorizes fresh preflight, ordered mutation, mandatory refresh and equipped-state verification. Ambiguity refuses; partial progress is not rolled back; never blindly retry uncertain outcomes. Character must be in orbit, a social space, or offline.", JsonObject::new())
+    Tool::new(EQUIP_ITEM_TOOL, "Equip one explicitly selected item on one explicitly selected character, automatically transferring if necessary. One call authorizes fresh preflight and ordered mutation. Full acknowledgement returns applied without post-action verification; the next ordinary read forces sync. Ambiguity refuses; partial progress is not rolled back; never blindly retry uncertain outcomes. Character must be in orbit, a social space, or offline.", JsonObject::new())
         .with_input_schema::<EquipItemArgs>()
 }
 
@@ -1325,7 +1325,8 @@ pub struct MoveSuccessView {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct IncompleteMoveView {
     pub effects: MoveEffectsView,
-    pub observed: LocationView,
+    /// Receipt-derived expected location, not an observation.
+    pub expected_location: LocationView,
     pub partial: bool,
     pub steps: Vec<StepEvidenceView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1365,11 +1366,21 @@ pub struct VerificationFailureView {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum MoveItemOutput {
+    /// Bungie acknowledged all steps; the resulting profile was not re-read.
+    Applied(AppliedMoveView),
     AppliedPendingProviderRefresh(PendingProviderRefreshView),
     VerifiedSuccess(MoveSuccessView),
     VerifiedNoOp(MoveSuccessView),
     Incomplete(IncompleteMoveView),
     VerificationFailed(VerificationFailureView),
+}
+
+/// Acknowledged move with no claimed post-action observation.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct AppliedMoveView {
+    pub effects: MoveEffectsView,
+    pub steps: Vec<StepEvidenceView>,
+    pub reason: String,
 }
 
 /// Provider-confirmed effects with a stale, unconfirmed observation.
@@ -1476,11 +1487,12 @@ impl InspectItemOutput {
 impl MoveItemOutput {
     /// Renders this output as a structured tool result.
     pub fn into_call_tool_result(self) -> CallToolResult {
-        let pending = matches!(self, Self::AppliedPendingProviderRefresh(_));
+        let success = matches!(
+            self,
+            Self::Applied(_) | Self::VerifiedSuccess(_) | Self::VerifiedNoOp(_)
+        );
         let mut result = structured_result(self);
-        if pending {
-            result.is_error = Some(true);
-        }
+        result.is_error = Some(!success);
         result
     }
 }
@@ -1860,6 +1872,31 @@ mod tests {
         assert_eq!(args.limit, 100);
         assert_eq!(args.tags, Vec::<String>::new());
         assert_eq!(args.instances, None);
+    }
+
+    #[test]
+    fn applied_move_schema_is_success_without_observation() {
+        use super::{AppliedMoveView, LocationView, MoveEffectsView, MoveItemOutput};
+        let output = MoveItemOutput::Applied(AppliedMoveView {
+            effects: MoveEffectsView {
+                item_id: "1".into(),
+                via_vault: false,
+                source: LocationView::Vault,
+                destination: LocationView::Character {
+                    character_id: "2".into(),
+                },
+            },
+            steps: vec![],
+            reason: "Bungie accepted the action; not re-read".into(),
+        });
+        let value = serde_json::to_value(&output).unwrap();
+        assert_eq!(value["status"], "applied");
+        assert!(value.get("observed").is_none());
+        assert_eq!(
+            serde_json::from_value::<MoveItemOutput>(value).unwrap(),
+            output
+        );
+        assert_eq!(output.into_call_tool_result().is_error, Some(false));
     }
 
     #[test]

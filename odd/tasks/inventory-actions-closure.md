@@ -48,7 +48,7 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
 
 ## Tasks
 
-- [ ] **IAX-001 — Optimistic move and equip.** Replace post-action
+- [x] **IAX-001 — Optimistic move and equip.** Replace post-action
   verification in the move/equip path with acknowledgement-based success;
   invalidate local freshness; CLI exit 0 and MCP success on acknowledgement;
   keep incomplete/refusal/preflight failures.
@@ -69,3 +69,21 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
 ## Progress and evidence
 
 - 2026-10-08: worktree and branch created; tracker written.
+- IAX-001 implementation progress: move/equip return acknowledgement-based
+  `Applied` (CLI 0 / MCP success), without mandatory post-action verification.
+  Replaced the provisional timestamp marker with repository-owned invalidation:
+  SQLite migration 19 preserves content, revision and real acquisition time;
+  reopen retains invalidation, ordinary reads force sync, successful publication
+  clears it. Uncertain/refused/partial steps remain failures; lock/pull unchanged.
+  Incomplete move `expected_location` is receipt-derived, not observed state.
+  Offline workspace GREEN: 1,837 tests passed, zero failed, 66 result suites
+  (including empty suites and doctests). Documentation/skill updated; checkbox
+  remains open for parent review. No live account validation or commit.
+- IAX-001 independent verification (gentle-ai-verify): fmt, clippy `-D warnings`,
+  `cargo test --workspace --all-features` 1,837 passed / 0 failed, default
+  features 1,816 / 0, `git diff --check` all PASS. Applied only when every step
+  is Completed (`mutation.rs:1258–1277`); no post-action profile request;
+  migration 19 additive with downgrade refusal while invalidated. Parent fixed
+  stale doc comment and RefreshFailed wording ("local state could not be
+  updated after the action"; storage failure after acknowledgement still exits
+  42, fail-closed). Lock/pull unchanged.

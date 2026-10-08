@@ -87,9 +87,11 @@ including empty character groups, with ordinary freshness synchronization. Curre
 coverage qualifies currency data only, not Postmaster completeness. No pull feature
 or synthetic instance IDs are exposed.
 
-Actions use fresh preflight checks and post-action verification. Bungie can lag
-in reflecting a change: an "applied but pending refresh" outcome is not verified
-success. Do not blindly retry; run `ghostlink sync` later to check.
+Move/equip use fresh preflight checks and return `applied` (exit 0) when Bungie
+acknowledges every step, without post-action verification. The next ordinary read
+forces sync; no guessed state is written. Acceptance is not an observed in-game
+state. Never blindly retry uncertain or partial results. Lock and pull retain
+their existing verification behavior.
 
 ## Use it from an AI agent
 

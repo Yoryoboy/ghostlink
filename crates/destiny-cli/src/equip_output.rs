@@ -66,7 +66,7 @@ impl EquipOutput {
     }
     pub fn exit_code(&self) -> i32 {
         match self.status {
-            EquipStatus::VerifiedSuccess | EquipStatus::VerifiedNoop => 0,
+            EquipStatus::Applied | EquipStatus::VerifiedSuccess | EquipStatus::VerifiedNoop => 0,
             EquipStatus::Incomplete => 41,
             EquipStatus::VerificationFailed => 42,
             EquipStatus::AppliedPendingProviderRefresh => 43,

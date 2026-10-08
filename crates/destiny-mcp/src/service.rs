@@ -2272,6 +2272,11 @@ pub fn inspect_item_output(
 pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> MoveItemOutput {
     let effects = plan.effects();
     match outcome {
+        MoveExecutionOutcome::Applied(evidence) => MoveItemOutput::Applied(crate::schema::AppliedMoveView {
+            effects: effects_view(effects),
+            steps: step_views(evidence),
+            reason: "Bungie accepted the action; not re-read".into(),
+        }),
         // The refreshed projection proves the item at the requested
         // destination, so the observed location is that proven destination.
         MoveExecutionOutcome::VerifiedSuccess(evidence) => {
@@ -2301,7 +2306,7 @@ pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> Move
         MoveExecutionOutcome::IncompleteExecution(incomplete) => {
             MoveItemOutput::Incomplete(IncompleteMoveView {
                 effects: effects_view(effects),
-                observed: location_view(incomplete.observed()),
+                expected_location: location_view(incomplete.expected_location()),
                 partial: incomplete.is_partial(),
                 steps: step_views(incomplete.evidence()),
                 failure: incomplete.error().map(mutation_failure),
@@ -2594,7 +2599,7 @@ mod tests {
     use crate::schema::{
         InspectItemArgs, InspectItemOutput, InstanceQueryArgs, LocationView, MAX_IDENTIFIER_LENGTH,
         MoveEffectsView, MoveItemArgs, MoveItemOutput, SearchInventoryArgs, StepOutcomeView,
-        TransferRejectionView, VerificationFailureReasonView,
+        TransferRejectionView,
     };
     use destiny_app::test_support::{
         DeterministicPlanIds, FakeClock, InMemoryDefinitionRepository, InMemoryInventoryRepository,
@@ -2659,6 +2664,12 @@ mod tests {
     }
 
     impl InventoryRepository for CompositeRepository {
+        fn freshness_invalidated(&self) -> Result<bool, AppError> {
+            self.inventory.freshness_invalidated()
+        }
+        fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+            self.inventory.invalidate_freshness()
+        }
         fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
             self.record("load_current");
             self.inventory.load_current()
@@ -3812,7 +3823,7 @@ mod tests {
             character_id: "warlock".to_owned(),
         };
         match &output {
-            MoveItemOutput::VerifiedSuccess(success) => {
+            MoveItemOutput::Applied(success) => {
                 assert_eq!(
                     success.effects,
                     MoveEffectsView {
@@ -3822,7 +3833,6 @@ mod tests {
                         destination: destination.clone(),
                     }
                 );
-                assert_eq!(success.observed, destination);
                 assert_eq!(success.steps.len(), 1);
                 assert_eq!(success.steps[0].ordinal, 1);
                 assert_eq!(success.steps[0].from, LocationView::Vault);
@@ -3832,10 +3842,9 @@ mod tests {
             other => panic!("expected a verified success, got {other:?}"),
         }
 
-        // Exactly one fresh preflight, one ordered transfer, and one post-action
-        // refresh, all inside the single MCP call.
-        assert_eq!(shared.borrow().membership_calls(), 2);
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        // One fresh preflight and one ordered transfer, without a post-action read.
+        assert_eq!(shared.borrow().membership_calls(), 1);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
         assert_eq!(service.mutations().plan_ids().calls(), 1);
 
         let queue = transfer.borrow();
@@ -3855,7 +3864,7 @@ mod tests {
 
         // No membership identifier, credential, or provider text crosses MCP.
         let rendered = serde_json::to_string(&output).expect("output serializes");
-        assert!(rendered.contains("verified_success"));
+        assert!(rendered.contains("applied"));
         assert!(!rendered.contains(MEMBERSHIP_IDENTIFIER), "{rendered}");
     }
 
@@ -3933,7 +3942,7 @@ mod tests {
 
         match &output {
             MoveItemOutput::Incomplete(incomplete) => {
-                assert_eq!(incomplete.observed, LocationView::Vault);
+                assert_eq!(incomplete.expected_location, LocationView::Vault);
                 assert!(!incomplete.partial);
                 assert!(incomplete.failure.is_none());
                 assert_eq!(incomplete.steps.len(), 1);
@@ -3948,7 +3957,7 @@ mod tests {
         }
 
         assert_eq!(transfer.borrow().calls(), 1);
-        assert_eq!(shared.borrow().inventory_calls(), 2);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
     #[test]
@@ -3987,7 +3996,7 @@ mod tests {
 
         match &output {
             MoveItemOutput::Incomplete(incomplete) => {
-                assert_eq!(incomplete.observed, LocationView::Vault);
+                assert_eq!(incomplete.expected_location, LocationView::Vault);
                 assert!(incomplete.partial, "one applied step is a partial write");
                 assert!(incomplete.effects.via_vault);
                 assert_eq!(incomplete.steps.len(), 2);
@@ -4032,7 +4041,7 @@ mod tests {
 
         match &output {
             MoveItemOutput::Incomplete(incomplete) => {
-                assert_eq!(incomplete.observed, LocationView::Vault);
+                assert_eq!(incomplete.expected_location, LocationView::Vault);
                 assert!(!incomplete.partial);
                 assert_eq!(incomplete.steps[0].outcome, StepOutcomeView::Uncertain);
             }
@@ -4109,19 +4118,15 @@ mod tests {
             .expect("a contradiction is an outcome, not a tool error");
 
         match &output {
-            MoveItemOutput::VerificationFailed(failure) => {
-                assert!(matches!(
-                    failure.reason,
-                    VerificationFailureReasonView::Elsewhere
-                ));
-                assert_eq!(
-                    failure.observed,
-                    Some(LocationView::Character {
-                        character_id: "warlock".to_owned(),
-                    })
+            MoveItemOutput::Applied(applied) => {
+                assert_eq!(applied.steps.len(), 2);
+                assert!(
+                    applied
+                        .steps
+                        .iter()
+                        .all(|step| step.outcome == StepOutcomeView::Completed)
                 );
-                assert!(failure.failure.is_none());
-                assert_eq!(failure.steps.len(), 2);
+                assert_eq!(shared.borrow().inventory_calls(), 1);
             }
             other => panic!("expected a verification failure, got {other:?}"),
         }
@@ -4150,17 +4155,17 @@ mod tests {
             .queue(Ok(TransferOutcome::Transferred));
         let mut service = composed_service(&shared, &transfer, repository);
         let output = service.move_item(&exact_move("inst-a", "warlock")).unwrap();
-        let MoveItemOutput::AppliedPendingProviderRefresh(pending) = &output else {
-            panic!("expected pending, got {output:?}");
+        let MoveItemOutput::Applied(pending) = &output else {
+            panic!("expected applied, got {output:?}");
         };
-        assert_eq!(pending.observed, LocationView::Vault);
+        assert_eq!(shared.borrow().inventory_calls(), 1);
         assert_eq!(pending.steps.len(), 1);
         assert_eq!(pending.steps[0].outcome, StepOutcomeView::Completed);
-        assert!(pending.reason.contains("stale/unconfirmed"));
-        assert!(pending.reason.contains("ghostlink sync"));
+        assert!(pending.reason.contains("not re-read"));
         let json = serde_json::to_value(&output).unwrap();
-        assert_eq!(json["status"], "applied_pending_provider_refresh");
-        assert_eq!(output.into_call_tool_result().is_error, Some(true));
+        assert_eq!(json["status"], "applied");
+        assert!(json.get("observed").is_none());
+        assert_eq!(output.into_call_tool_result().is_error, Some(false));
     }
 
     #[test]
@@ -4194,16 +4199,10 @@ mod tests {
             .expect("a refresh failure keeps its bounded evidence");
 
         match &output {
-            MoveItemOutput::VerificationFailed(failure) => {
-                assert!(matches!(
-                    failure.reason,
-                    VerificationFailureReasonView::RefreshFailed
-                ));
-                assert!(failure.observed.is_none());
-                let typed = failure.failure.as_ref().expect("a typed refresh failure");
-                assert_eq!(typed.code(), "provider_unavailable");
-                assert_eq!(failure.steps.len(), 1);
-                assert_eq!(failure.steps[0].outcome, StepOutcomeView::Completed);
+            MoveItemOutput::Applied(applied) => {
+                assert_eq!(applied.steps.len(), 1);
+                assert_eq!(applied.steps[0].outcome, StepOutcomeView::Completed);
+                assert_eq!(shared.borrow().inventory_calls(), 1);
             }
             other => panic!("expected a verification failure, got {other:?}"),
         }
@@ -4314,7 +4313,7 @@ mod tests {
             .expect("the semantic term and label resolve uniquely");
 
         match &output {
-            MoveItemOutput::VerifiedSuccess(success) => {
+            MoveItemOutput::Applied(success) => {
                 assert_eq!(success.effects.item_id, "inst-a");
             }
             other => panic!("expected a verified success, got {other:?}"),
@@ -4461,6 +4460,6 @@ mod tests {
             .move_item(&exact_move("inst-a", "warlock"))
             .expect("injected mutation succeeds");
 
-        assert!(matches!(output, MoveItemOutput::VerifiedSuccess(_)));
+        assert!(matches!(output, MoveItemOutput::Applied(_)));
     }
 }

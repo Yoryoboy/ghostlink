@@ -385,7 +385,7 @@ impl Journey {
         }
     }
 
-    fn run(&self, transfers: usize, no_op: bool, equipped: bool) -> MoveExecutionOutcome {
+    fn run(&self, transfers: usize, no_op: bool, _equipped: bool) -> MoveExecutionOutcome {
         let profile = BungieProfileGateway::new(
             Http(self.world.clone()),
             TestClock,
@@ -452,8 +452,8 @@ impl Journey {
         let outcome = result.unwrap();
         assert_eq!(
             self.world.borrow().profiles.len() - before,
-            if no_op { 2 } else { 4 },
-            "forced preflight plus mandatory post-action membership/profile refresh"
+            2,
+            "only forced preflight; no post-action profile request"
         );
         let snapshot = service.repository().load_current().unwrap().unwrap();
         let item = snapshot
@@ -461,29 +461,16 @@ impl Journey {
             .iter()
             .find(|item| item.instance_id.as_str() == ITEM)
             .unwrap();
-        let expected_location = match self.world.borrow().reply {
-            Reply::ProviderStale => ItemLocation::Vault,
-            Reply::Contradiction => ItemLocation::Character(CharacterId::new(OTHER)),
-            _ => ItemLocation::Character(CharacterId::new(TARGET)),
-        };
-        assert_eq!(item.location, expected_location);
-        match self.world.borrow().reply {
-            Reply::ProviderStale => assert_eq!(snapshot, pre_dispatch),
-            Reply::Contradiction => {
-                assert!(snapshot.metadata.revision > pre_dispatch.metadata.revision);
-            }
-            _ => {}
+        assert_eq!(snapshot.items, pre_dispatch.items);
+        assert_eq!(snapshot.metadata.revision, pre_dispatch.metadata.revision);
+        assert_eq!(item.equipped, no_op);
+        if !no_op {
+            assert_eq!(
+                snapshot.metadata.checked_at,
+                pre_dispatch.metadata.checked_at
+            );
+            assert!(service.repository().freshness_invalidated().unwrap());
         }
-        assert_eq!(item.equipped, equipped);
-        assert_eq!(
-            snapshot
-                .items
-                .iter()
-                .filter(|item| item.equipped
-                    && item.location == ItemLocation::Character(CharacterId::new(TARGET)))
-                .count(),
-            10 + usize::from(equipped)
-        );
         drop(service);
         // Independently reopen the durable repository, not just the gateway world.
         assert_eq!(
@@ -656,7 +643,7 @@ fn assert_rc003_equip_auth(status: u16, on_target: bool) {
                 .to_string()
                 .contains("authentication")
         );
-        assert_eq!(world.borrow().profiles.len(), 4);
+        assert_eq!(world.borrow().profiles.len(), 2);
         assert_eq!(
             world.borrow().mutations.len(),
             if on_target { 1 } else { 2 }
@@ -693,7 +680,7 @@ fn rc003_auth_concurrent_target_remains_non_success() {
             incomplete.stop_outcome(),
             Some(StepOutcome::AuthenticationRefused)
         );
-        assert_eq!(world.borrow().profiles.len(), 4);
+        assert_eq!(world.borrow().profiles.len(), 2);
         assert_eq!(
             world.borrow().profile["Response"]["itemComponents"]["instances"]["data"][ITEM]["isEquipped"],
             true
@@ -704,8 +691,8 @@ fn rc003_auth_concurrent_target_remains_non_success() {
 #[test]
 fn rc003_auth_unavailable_refresh_preserves_prior_progress() {
     let (result, world) = rc003_attempt(Reply::AuthUnavailableRefresh, false, false, None, false);
-    let MoveExecutionOutcome::VerificationFailed(failure) = result.unwrap() else {
-        panic!("refresh failure must remain visible");
+    let MoveExecutionOutcome::IncompleteExecution(failure) = result.unwrap() else {
+        panic!("authentication refusal must remain visible without refresh");
     };
     assert_eq!(failure.evidence().attempted_count(), 2);
     assert_eq!(failure.evidence().completed_count(), 1);
@@ -716,15 +703,10 @@ fn rc003_auth_unavailable_refresh_preserves_prior_progress() {
     assert_eq!(
         failure.error(),
         Some(destiny_app::MutationError::Application(
-            destiny_core::ErrorCategory::ProviderUnavailable
+            destiny_core::ErrorCategory::ProviderAuthentication
         ))
     );
-    assert_eq!(
-        failure.reason(),
-        destiny_app::VerificationFailureReason::RefreshFailed
-    );
-    assert!(failure.observed().is_none());
-    assert_eq!(world.borrow().profiles.len(), 3);
+    assert_eq!(world.borrow().profiles.len(), 2);
 }
 
 #[test]
@@ -763,7 +745,7 @@ fn assert_rc003_transfer_auth(status: u16) {
                 .contains("authentication")
         );
         assert_eq!(world.borrow().mutations.len(), 1);
-        assert_eq!(world.borrow().profiles.len(), 4);
+        assert_eq!(world.borrow().profiles.len(), 2);
     }
 }
 #[test]
@@ -798,7 +780,7 @@ fn rc003_predispatch_stays_unattempted_but_prior_transfer_requires_refresh() {
                 assert_eq!(incomplete.evidence().attempted_count(), 1);
                 assert_eq!(incomplete.evidence().completed_count(), 1);
                 assert_eq!(incomplete.evidence().unattempted_count(), 1);
-                assert_eq!(world.borrow().profiles.len(), 4);
+                assert_eq!(world.borrow().profiles.len(), 2);
                 assert_eq!(world.borrow().mutations.len(), 1);
             }
         }
@@ -808,8 +790,9 @@ fn rc003_predispatch_stays_unattempted_but_prior_transfer_requires_refresh() {
 #[test]
 fn rc003_auth_failed_refresh_preserves_original_attempt_without_observation() {
     let (result, world) = rc003_attempt(Reply::Auth(403), true, false, None, true);
-    let MoveExecutionOutcome::VerificationFailed(failure) = result.expect("auth dispatched") else {
-        panic!("refresh failed");
+    let MoveExecutionOutcome::IncompleteExecution(failure) = result.expect("auth dispatched")
+    else {
+        panic!("authentication refused");
     };
     assert_eq!(failure.evidence().attempted_count(), 1);
     assert_eq!(failure.evidence().completed_count(), 0);
@@ -818,33 +801,26 @@ fn rc003_auth_failed_refresh_preserves_original_attempt_without_observation() {
         Some(StepOutcome::AuthenticationRefused)
     );
     assert_eq!(
-        failure.reason(),
-        destiny_app::VerificationFailureReason::RefreshFailed
-    );
-    assert_eq!(
         failure.error(),
         Some(destiny_app::MutationError::Application(
             destiny_core::ErrorCategory::ProviderAuthentication
         ))
     );
-    assert!(failure.observed().is_none());
-    assert_eq!(world.borrow().profiles.len(), 3);
+    assert_eq!(world.borrow().profiles.len(), 2);
 }
 
 #[test]
 fn confirmed_transfer_and_equip_with_stale_profile_are_pending() {
-    let MoveExecutionOutcome::AppliedPendingProviderRefresh(pending) =
+    let MoveExecutionOutcome::Applied(pending) =
         Journey::new(Reply::ProviderStale).run(1, false, false)
     else {
         panic!("expected pending provider refresh");
     };
-    assert_eq!(pending.observed(), &ItemLocation::Vault);
-    assert_eq!(pending.evidence().attempted_count(), 2);
-    assert_eq!(pending.evidence().completed_count(), 2);
-    assert_eq!(pending.evidence().unattempted_count(), 0);
+    assert_eq!(pending.attempted_count(), 2);
+    assert_eq!(pending.completed_count(), 2);
+    assert_eq!(pending.unattempted_count(), 0);
     assert!(
         pending
-            .evidence()
             .steps()
             .iter()
             .all(|step| step.outcome == StepOutcome::Completed)
@@ -853,28 +829,20 @@ fn confirmed_transfer_and_equip_with_stale_profile_are_pending() {
 
 #[test]
 fn confirmed_equip_with_changed_wrong_state_is_elsewhere() {
-    let MoveExecutionOutcome::VerificationFailed(failure) =
+    let MoveExecutionOutcome::Applied(failure) =
         Journey::new(Reply::Contradiction).run(1, false, false)
     else {
         panic!("expected genuine contradiction");
     };
-    assert_eq!(
-        failure.reason(),
-        destiny_app::VerificationFailureReason::Elsewhere
-    );
-    assert_eq!(
-        failure.observed(),
-        Some(&ItemLocation::Character(CharacterId::new(OTHER)))
-    );
-    assert_eq!(failure.evidence().attempted_count(), 2);
-    assert_eq!(failure.evidence().completed_count(), 2);
+    assert_eq!(failure.attempted_count(), 2);
+    assert_eq!(failure.completed_count(), 2);
 }
 
 #[test]
 fn vault_transfer_then_equip_is_verified() {
     assert!(matches!(
         Journey::new(Reply::Applied).run(1, false, true),
-        MoveExecutionOutcome::VerifiedSuccess(_)
+        MoveExecutionOutcome::Applied(_)
     ));
 }
 
@@ -884,7 +852,7 @@ fn other_character_transfers_via_vault_then_equips() {
     journey.world.borrow_mut().place(Some(OTHER), false);
     assert!(matches!(
         journey.run(2, false, true),
-        MoveExecutionOutcome::VerifiedSuccess(_)
+        MoveExecutionOutcome::Applied(_)
     ));
 }
 
@@ -932,10 +900,10 @@ fn social_space_refusal_is_typed_and_refreshes() {
 #[test]
 fn uncertain_equip_is_verified_only_when_refresh_proves_equipped() {
     let journey = Journey::new(Reply::Uncertain { lands: true });
-    let MoveExecutionOutcome::VerifiedSuccess(evidence) = journey.run(1, false, true) else {
+    let MoveExecutionOutcome::IncompleteExecution(incomplete) = journey.run(1, false, true) else {
         panic!("expected verified success");
     };
-    assert_eq!(evidence.stop_outcome(), Some(StepOutcome::Uncertain));
+    assert_eq!(incomplete.stop_outcome(), Some(StepOutcome::Uncertain));
 }
 
 #[test]

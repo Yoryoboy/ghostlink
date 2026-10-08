@@ -12,6 +12,7 @@ pub use crate::equip::{
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MoveStatus {
+    Applied,
     VerifiedSuccess,
     VerifiedNoop,
     Incomplete,
@@ -22,6 +23,7 @@ pub enum MoveStatus {
 impl MoveStatus {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Applied => "applied",
             Self::VerifiedSuccess => "verified_success",
             Self::VerifiedNoop => "verified_noop",
             Self::Incomplete => "incomplete",
@@ -93,6 +95,10 @@ impl MoveOutput {
         observed: Option<&ItemInstance>,
     ) -> Self {
         let (status, evidence, refresh, reason) = match outcome {
+            MoveExecutionOutcome::Applied(e) => (
+                MoveStatus::Applied, e, ProfileRefresh::NotRequired,
+                Some("Bungie accepted the action; not re-read".into()),
+            ),
             MoveExecutionOutcome::VerifiedSuccess(e) => (
                 MoveStatus::VerifiedSuccess, e, ProfileRefresh::Refreshed, None,
             ),
@@ -104,7 +110,7 @@ impl MoveOutput {
                 Some("the provider confirmed every step, but its profile still shows the pre-action state; observed location is stale/unconfirmed; do not retry, run `ghostlink sync` later to confirm".into()),
             ),
             MoveExecutionOutcome::IncompleteExecution(e) => (
-                MoveStatus::Incomplete, e.evidence(), ProfileRefresh::Refreshed,
+                MoveStatus::Incomplete, e.evidence(), ProfileRefresh::NotRequired,
                 e.error().map(crate::equip::mutation_reason),
             ),
             MoveExecutionOutcome::VerificationFailed(e) => (
@@ -113,7 +119,7 @@ impl MoveOutput {
                     ProfileRefresh::Failed
                 } else { ProfileRefresh::Refreshed },
                 Some(match e.reason() {
-                    VerificationFailureReason::RefreshFailed => "outcome is uncertain: post-action profile refresh failed",
+                    VerificationFailureReason::RefreshFailed => "outcome is uncertain: local state could not be updated after the action",
                     VerificationFailureReason::Unresolved => "outcome is uncertain: refreshed state could not uniquely resolve the item",
                     VerificationFailureReason::Elsewhere => "refreshed state contradicts the reported progress; move was not verified",
                 }.into()),
@@ -127,7 +133,9 @@ impl MoveOutput {
             reason,
             profile_refresh: refresh,
             // Never label a stale repository projection as a fresh observation.
-            observed: if refresh == ProfileRefresh::Failed {
+            observed: if refresh == ProfileRefresh::Failed
+                || matches!(status, MoveStatus::Applied | MoveStatus::Incomplete)
+            {
                 None
             } else {
                 observed.map(|i| MoveObservation {
