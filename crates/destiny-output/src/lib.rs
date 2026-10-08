@@ -3,3 +3,4 @@ pub mod equip;
 pub mod instanced_pull;
 pub mod lock;
 pub mod move_item;
+pub mod stack_pull;

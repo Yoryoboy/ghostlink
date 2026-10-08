@@ -165,8 +165,18 @@ instance identifiers or claiming verification from an API acknowledgement alone.
     same-hash change in another profile bucket cannot mask an inexact arrival.
     Verify PASS: workspace 1713 default / 1732 all-features before that fix;
     focused core/adapters/app suites and clippy all-features PASS after it.
-  - [ ] GPM-006e — CLI `pull` and MCP `pull_item` stack mode (hash + amount),
-    parity tests, docs/skill.
+  - [ ] GPM-006e — CLI and MCP stack pull exposure, split by review size:
+    - [x] GPM-006e1 — Shared destiny-output StackPullOutput (JSON + ordered
+      sanitized text, three quantity scopes, exhaustive refusal codes, success
+      only when Verified); app re-exports refusal enums and exposes existing
+      whole-profile totals read-only.
+    - [ ] GPM-006e2 — CLI stack pull (hash + amount) with pipeline tests,
+      docs/cli.md, skill and exit codes.
+    - [ ] GPM-006e3 — MCP stack pull tool with parity/stdio tests, docs/mcp.md.
+  - GPM-006d review advisories (non-blocking follow-ups): adapter outcome
+    mapping (adapters stack_pull.rs:60-83), execution time boundaries
+    (app stack_pull.rs:549-571), policy version/artifact refusal attribution
+    (app stack_pull.rs:387-393).
 - [x] **GPM-007a — Instanced pull core contract.** Genuine positive int64
   IDs, uint32 reference hash, representable membership type, fixed quantity one;
   immutable request and one-shot gateway/outcomes. No anonymous stack request.

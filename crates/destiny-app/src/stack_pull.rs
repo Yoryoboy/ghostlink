@@ -113,6 +113,10 @@ impl StackPullContext {
     pub fn pre_destination_quantity(&self) -> u64 {
         self.pre_destination_quantity
     }
+    /// Same-hash quantity across the whole ProfileInventory before dispatch.
+    pub fn pre_profile_quantity(&self) -> u64 {
+        self.pre_profile_quantity
+    }
     pub fn pre_postmaster_quantity(&self) -> u64 {
         self.pre_postmaster_quantity
     }
@@ -151,6 +155,7 @@ pub struct StackPullObservation {
     metadata: SnapshotMetadata,
     stacks: Vec<StackObservation>,
     destination_quantity: Option<u64>,
+    profile_quantity: Option<u64>,
     postmaster_quantity: Option<u64>,
     classification: StackPullArrival,
 }
@@ -163,6 +168,10 @@ impl StackPullObservation {
     }
     pub fn destination_quantity(&self) -> Option<u64> {
         self.destination_quantity
+    }
+    /// Same-hash quantity across the whole ProfileInventory in this publication.
+    pub fn profile_quantity(&self) -> Option<u64> {
+        self.profile_quantity
     }
     pub fn postmaster_quantity(&self) -> Option<u64> {
         self.postmaster_quantity
@@ -627,6 +636,7 @@ fn classify(context: &StackPullContext, pair: PublishedProfileAcquisition) -> St
         metadata: snapshot.metadata,
         stacks: snapshot.stacks,
         destination_quantity: destination,
+        profile_quantity: profile,
         postmaster_quantity: postmaster,
         classification,
     }

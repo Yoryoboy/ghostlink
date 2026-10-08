@@ -24,7 +24,7 @@ pub mod instanced_pull;
 pub mod stack_pull;
 pub use destiny_core::{
     StackBucketCapacityEvidence, StackBucketCapacityPolicy, StackPullGateway, StackPullOutcome,
-    StackPullRequest,
+    StackPullRefusal, StackPullRejection, StackPullRequest,
 };
 pub use instanced_pull::{
     InstancedPullExecutionFailure, InstancedPullExecutionFailureReason,
