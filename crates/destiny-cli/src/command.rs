@@ -37,8 +37,8 @@ pub const SUCCESS_EXIT_CODE: i32 = 0;
     override_usage = "ghostlink [OPTIONS] <COMMAND>",
     name = "ghostlink",
     version,
-    about = "Destiny profile, inventory, verified item move/equip/lock, and safe interactive login",
-    long_about = "Read Destiny profile, inventory, and item data, move or equip one item with explicit destination intent and verification, lock or unlock one explicitly selected item, or authorize this machine against the provider."
+    about = "Destiny profile, inventory, item move/equip/lock, loadouts, and safe interactive login",
+    long_about = "Read Destiny profile, inventory, and item data, move or equip items with explicit destination intent, apply saved loadouts, lock or unlock one explicitly selected item, or authorize this machine against the provider."
 )]
 struct ParsedCli {
     /// Emit exactly one bounded JSON object instead of human text.
@@ -251,7 +251,7 @@ pub enum Command {
     Equip(EquipArgs),
     #[command(skip)]
     EquipItems(EquipItemsArgs),
-    /// Move one item to an explicit character or Vault, then refresh and verify.
+    /// Move one item to an explicit character or Vault; acknowledgement is applied.
     #[command(name = "move")]
     Move(MoveArgs),
     /// Pull one genuine Postmaster equipment instance into its owner's inventory.
@@ -264,9 +264,9 @@ pub enum Command {
         long_about = "Pull a non-instanced Postmaster stack using a canonical uint32 decimal ITEM_HASH, canonical positive int32 --amount, and canonical positive int64 --character owner ID. Requires login and qualified stored Manifest definitions. Bungie acknowledgement returns applied (exit 0), not observed quantity arrival, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail. No names, destination overrides, redispatch or atomic guarantees."
     )]
     PullStack(PullStackArgs),
-    /// Lock one explicitly selected owned item, then refresh and verify.
+    /// Lock one explicitly selected owned item; acknowledgement is applied.
     Lock(LockArgs),
-    /// Unlock one explicitly selected owned item, then refresh and verify.
+    /// Unlock one explicitly selected owned item; acknowledgement is applied.
     Unlock(LockArgs),
 
     /// Force profile acquisition and publish the local inventory projection.
