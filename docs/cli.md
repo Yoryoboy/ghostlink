@@ -646,8 +646,50 @@ stderr with a nonzero exit. Never blindly retry: sync, inspect the instance and
 reassess explicit intent first. One invocation owns local inventory publication
 and definition use throughout the pipeline, not game or other-process activity.
 Observed arrival is neither causal proof nor an atomic guarantee. Anonymous
-stacks remain contract-gated; this is not full Postmaster support or a live-readiness
-claim. MCP pull is not available yet.
+stacks use the separate bounded `pull-stack` command below; this is not full
+Postmaster support or a live-readiness claim.
+
+## Pull a non-instanced Postmaster stack
+
+```sh
+ghostlink pull-stack 123456789 --amount 3 --character 700000000000000001 --json
+```
+
+`ITEM_HASH` is canonical uint32 decimal (0–4294967295), `--amount` is
+canonical positive int32 decimal (1–2147483647), and `--character` is the
+canonical positive int64 decimal Postmaster owner ID (1–9223372036854775807).
+All three are required. No signs, leading zeros, whitespace, names, class labels,
+instance IDs, membership overrides or alternative destinations. Invalid input
+fails before authentication, storage or service access.
+
+Requires login with `MoveEquipDestinyItems` and qualified stored Manifest
+metadata. One invocation-owned SQLite connection serializes local inventory
+publication and definition use, with authenticated membership, fresh planning
+and preflight, and fresh public Manifest index capacity evidence. Only pinned
+audited account-wide Consumables and Modifications buckets are supported.
+Unknown metadata, side effects, instanced items, capacity or policy drift refuse.
+Duplicate anonymous rows remain significant: amount must not exceed the smallest
+matching owner Postmaster stack, not their sum. The owner selects the source;
+the destination is the qualified normal account-wide ProfileInventory bucket,
+not an arbitrary character or Vault.
+
+One consumed plan dispatches at most once; at most three forced observations
+follow a received receipt, separated by two seconds. No automatic definition
+download, recompose, freeing space, reminting, redispatch or rollback.
+JSON uses shared `kind: "stack_pull"`, independent `disposition`, `receipt`,
+`dispatch`, `failure`, `plan_id` and ordered `observations`. Text uses the shared
+ordered sanitized renderer. Quantity evidence includes pre/post destination,
+whole-profile and owner Postmaster totals; null means unknown, never zero.
+Only `verified` exits 0 on stdout. Lag/uncertainty exits 42 on stderr; the current
+stack service does not emit `not_yet_observed` (reserved mapping 43). Received
+refusal stays refused even with arrival: auth 11, transient 21, otherwise 40.
+Missing definition is 33, ambiguous definition 31, preflight drift/expiry 30;
+other infrastructure failures use existing category exits. No new exit code.
+
+Never blindly retry. Sync and re-read `postmaster` later, then reassess explicit
+hash/amount/owner intent. Observed quantities are not causal or atomic proof;
+local serialization does not cover the game or other processes. Offline tests
+are not live-account or full Postmaster readiness claims.
 
 ## Move one item
 

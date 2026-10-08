@@ -151,7 +151,8 @@ impl Cli {
             // A `login` command line carries no read, and the hidden `callback`
             // handler is not a read either, so both report the stable
             // unsupported-operation outcome instead of guessing at a read.
-            Command::Pull(_)
+            Command::PullStack(_)
+            | Command::Pull(_)
             | Command::Equip(_)
             | Command::Move(_)
             | Command::Lock(_)
@@ -223,6 +224,11 @@ pub enum Command {
         long_about = "Pull one genuine Postmaster equipment instance using a canonical positive int64 instance ID only. Requires login and qualified stored Manifest definitions. Names, hashes, anonymous stacks, quantity and destination arguments are unsupported. Only verified arrival succeeds; pending, uncertain and refused outcomes are nonzero. Observations are not causal or atomic guarantees."
     )]
     Pull(PullArgs),
+    /// Pull a non-instanced Postmaster stack amount from its explicit owner.
+    #[command(
+        long_about = "Pull a non-instanced Postmaster stack using a canonical uint32 decimal ITEM_HASH, canonical positive int32 --amount, and canonical positive int64 --character owner ID. Requires login and qualified stored Manifest definitions. Only verified quantity arrival succeeds. No names, destination overrides, redispatch or atomic guarantees."
+    )]
+    PullStack(PullStackArgs),
     /// Lock one explicitly selected owned item, then refresh and verify.
     Lock(LockArgs),
     /// Unlock one explicitly selected owned item, then refresh and verify.
@@ -800,6 +806,48 @@ impl PullArgs {
             return Err(CliError::invalid_request());
         }
         Ok(ItemInstanceId::new(self.item.clone()))
+    }
+}
+
+/// Explicit anonymous-stack selection, validated before any acquisition.
+#[derive(Debug, Args)]
+pub struct PullStackArgs {
+    /// Canonical uint32 decimal definition hash (including zero).
+    #[arg(value_name = "ITEM_HASH")]
+    pub item_hash: String,
+    /// Canonical positive int32 decimal quantity.
+    #[arg(long, value_name = "N")]
+    pub amount: String,
+    /// Canonical positive int64 decimal Postmaster owner ID; never a class.
+    #[arg(long, value_name = "CHARACTER_ID")]
+    pub character: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StackPullSelection {
+    pub item_hash: ItemHash,
+    pub amount: i64,
+    pub owner: CharacterId,
+}
+impl PullStackArgs {
+    pub fn selection(&self) -> Result<StackPullSelection, CliError> {
+        fn canonical(value: &str, max: u64, positive: bool) -> Result<u64, CliError> {
+            if value.is_empty() || value.len() > 19 {
+                return Err(CliError::invalid_request());
+            }
+            let parsed = value
+                .parse::<u64>()
+                .map_err(|_| CliError::invalid_request())?;
+            if parsed > max || (positive && parsed == 0) || parsed.to_string() != value {
+                return Err(CliError::invalid_request());
+            }
+            Ok(parsed)
+        }
+        Ok(StackPullSelection {
+            item_hash: ItemHash::new(canonical(&self.item_hash, u32::MAX as u64, false)? as i64),
+            amount: canonical(&self.amount, i32::MAX as u64, true)? as i64,
+            owner: CharacterId::new(canonical(&self.character, i64::MAX as u64, true)?.to_string()),
+        })
     }
 }
 

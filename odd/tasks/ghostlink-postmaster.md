@@ -170,7 +170,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
       sanitized text, three quantity scopes, exhaustive refusal codes, success
       only when Verified); app re-exports refusal enums and exposes existing
       whole-profile totals read-only.
-    - [ ] GPM-006e2 — CLI stack pull (hash + amount) with pipeline tests,
+    - [x] GPM-006e2 — CLI stack pull (hash + amount) with pipeline tests,
       docs/cli.md, skill and exit codes.
     - [ ] GPM-006e3 — MCP stack pull tool with parity/stdio tests, docs/mcp.md.
   - GPM-006d review advisories (non-blocking follow-ups): adapter outcome

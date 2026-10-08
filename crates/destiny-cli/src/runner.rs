@@ -370,6 +370,9 @@ where
             })
         });
     }
+    if let Command::PullStack(arguments) = &cli.command {
+        return dispatch_pull_stack(arguments, mode, crate::runtime::compose_pull_stack);
+    }
     if let Command::Pull(arguments) = &cli.command {
         // One composition only: never retry/remint a pull after any outcome.
         return dispatch_pull(arguments, mode, crate::runtime::compose_pull);
@@ -575,6 +578,62 @@ fn with_definitions<M: crate::runtime::ManifestFactory>(
 ) -> ProcessOutput {
     match ensure_definitions(factory) {
         Ok(()) => operation(),
+        Err(error) => ProcessOutput::failure(mode, error),
+    }
+}
+
+/// Injectable parser-to-runner stack boundary; invalid inputs never acquire I/O.
+pub fn run_pull_stack_with<I, T, F>(args: I, operation: F) -> ProcessOutput
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString>,
+    F: FnOnce(
+        crate::command::StackPullSelection,
+    ) -> Result<crate::pull_stack_output::StackPullOutput, CliError>,
+{
+    let cli = match parse_process(args) {
+        Ok(cli) => cli,
+        Err(output) => return output,
+    };
+    let mode = cli.output_mode();
+    match cli.command {
+        Command::PullStack(arguments) => dispatch_pull_stack(&arguments, mode, operation),
+        _ => ProcessOutput::failure(
+            mode,
+            CliError::from_category(ErrorCategory::UnsupportedOperation),
+        ),
+    }
+}
+fn dispatch_pull_stack<F>(
+    arguments: &crate::command::PullStackArgs,
+    mode: OutputMode,
+    operation: F,
+) -> ProcessOutput
+where
+    F: FnOnce(
+        crate::command::StackPullSelection,
+    ) -> Result<crate::pull_stack_output::StackPullOutput, CliError>,
+{
+    let selection = match arguments.selection() {
+        Ok(selection) => selection,
+        Err(error) => return ProcessOutput::failure(mode, error),
+    };
+    match operation(selection) {
+        Ok(output) => {
+            let body = match mode {
+                OutputMode::Human => output.render_text(),
+                OutputMode::Json => output.json().to_string(),
+            };
+            if output.exit_code() == SUCCESS_EXIT_CODE {
+                ProcessOutput::success(body)
+            } else {
+                ProcessOutput {
+                    stdout: String::new(),
+                    stderr: format!("{body}\n"),
+                    exit_code: output.exit_code(),
+                }
+            }
+        }
         Err(error) => ProcessOutput::failure(mode, error),
     }
 }

@@ -719,6 +719,63 @@ pub fn compose_pull(
     ))
 }
 
+/// One invocation-owned connection, authenticated membership and fresh Manifest
+/// capacity evidence. No recompose, automatic download or action retry.
+pub fn compose_pull_stack(
+    selection: crate::command::StackPullSelection,
+) -> Result<crate::pull_stack_output::StackPullOutput, CliError> {
+    use destiny_adapters::manifest::{
+        BungieManifestGateway, HttpManifestTransport, ManifestApiKey,
+    };
+    use destiny_adapters::stack_pull::{
+        BungieStackPullGateway, HttpStackPullTransport, StackPullApiKey,
+    };
+    use destiny_app::ProfileGateway;
+    let mut foundations = ProductionFoundations;
+    let config = ReadFoundations::config(&mut foundations)?;
+    let source = foundations.credential_source(&config)?;
+    let clock = ReadFoundations::clock(&mut foundations)?;
+    let repository = PullStore(std::rc::Rc::new(std::cell::RefCell::new(
+        ReadFoundations::store(&mut foundations, &config)?,
+    )));
+    let mut profile = BungieProfileGateway::new(
+        ReadFoundations::transport(&mut foundations)?,
+        clock,
+        source.clone(),
+        ProfileApiKey::new(config.api_key().expose_secret())?,
+        config.resolve_definition_version(&repository)?,
+    )?;
+    let membership =
+        profile.resolve_membership_scoped(destiny_app::ProfileSyncReason::Preflight)?;
+    let manifest = BungieManifestGateway::new(
+        ManifestApiKey::new(config.api_key().expose_secret())?,
+        HttpManifestTransport::new()?,
+        SystemClock::new(),
+    );
+    let mut gateway = BungieStackPullGateway::new(
+        HttpStackPullTransport::new()?,
+        SystemClock::new(),
+        source,
+        StackPullApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let mut service = destiny_app::StackPullService::new(
+        ProfileSyncService::new_with_definitions(profile, repository.clone()),
+        repository,
+        manifest,
+        destiny_adapters::stack_bucket_capacity_policy::pinned_stack_bucket_capacity_policy(),
+        SystemClock::new(),
+        crate::pull::InvocationPlanId::new(),
+    );
+    Ok(crate::pull_stack::pull_stack(
+        selection,
+        membership,
+        &mut service,
+        &mut gateway,
+        &mut PullDelay,
+        config.freshness_policy(),
+    ))
+}
+
 /// Compose all three gateways over one lock-backed credential session, so a
 /// confidential refresh cannot race or rotate independently between actions.
 pub fn compose_equip(

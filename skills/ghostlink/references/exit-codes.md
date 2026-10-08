@@ -5,7 +5,7 @@ one object on stderr. (`ghostlink login` also prints an `authorizing`
 instruction object on stdout before waiting.) The failure object is either:
 
 - `{"error":{"code":"...","message":"..."}}` for every command, including
-  `pull` / `move` / `equip` / `lock` / `unlock` argument, configuration and authorization failures; or
+  `pull-stack` / `pull` / `move` / `equip` / `lock` / `unlock` argument, configuration and authorization failures; or
 - a mutation result with `status` and `reason`, after argument validation; or
 - `kind: "instanced_pull"` with independent `disposition`, `receipt`, `failure`
   and ordered `observations` for pull planning/execution evidence.
@@ -52,6 +52,25 @@ quantity, destination overrides or anonymous stacks. Requires authenticated
 membership and freshly eligible original Postmaster ownership, stored definitions
 and fresh pinned Manifest capacity qualification. No full-stack/live-readiness
 claim and no MCP pull tool yet.
+
+## Stack pull `disposition`
+
+`ghostlink pull-stack <ITEM_HASH> --amount <N> --character <CHARACTER_ID>`
+uses `kind: "stack_pull"` with independent receipt, disposition, failure and
+ordered observations. Canonical uint32 hash, positive int32 amount and positive
+int64 owner ID are required; invalid input exits 2 before any I/O.
+Only `verified` exits 0. Lag and uncertain evidence exit 42; sync and read
+Postmaster later, never blindly repeat. The current service does not emit
+`not_yet_observed`; its reserved mapping is 43, not confirmed application.
+Refusal defaults to 40; received auth 11, transient 21. Missing definition 33,
+ambiguous definition 31, preflight drift/expiry 30; infrastructure uses the
+existing category table. No new exit codes. Nonzero evidence stays on stderr.
+Report all quantity classifications AND failures; null quantity is unknown.
+Confirmed refusal remains refused even with arrival. Requires authenticated
+membership, qualified non-instanced metadata and fresh pinned account-wide
+capacity evidence. Owner selects the Postmaster source, not a destination.
+Reassess explicit hash/amount/owner intent after fresh reads. Observed quantities
+are neither causal nor atomic proof; offline checks do not establish live readiness.
 
 ## Move `status`
 

@@ -26,6 +26,8 @@ pub mod output;
 pub mod postmaster_output;
 pub mod pull;
 pub mod pull_output;
+pub mod pull_stack;
+pub mod pull_stack_output;
 pub mod runner;
 pub mod runtime;
 pub mod setup;
