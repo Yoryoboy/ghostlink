@@ -25,8 +25,16 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Yoryoboy/ghostlink/rele
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/Yoryoboy/ghostlink/releases/latest/download/ghostlink-installer.ps1 | iex"
 ```
 
+These commands install the latest stable release. GitHub never treats a
+prerelease as "latest", so to install a release candidate use its versioned URL
+instead, for example
+`https://github.com/Yoryoboy/ghostlink/releases/download/v0.1.0-rc.1/ghostlink-installer.sh`
+(or `ghostlink-installer.ps1` on Windows).
+
 The installer puts **`ghostlink`** (CLI) and **`destiny-mcp`** (AI-agent server)
-side by side. Follow its PATH instructions if needed. On Linux, run
+side by side in `$CARGO_HOME/bin` (normally `~/.cargo/bin`) and adds that directory to your shell profile.
+The shell you installed from keeps its old `PATH`: open a new terminal (or run
+`source ~/.cargo/env` on Linux) before running `ghostlink`. On Linux, run
 `ghostlink update` (or `ghostlink update --version 0.1.0`) to invoke the validated
 sibling updater. Restart MCP hosts afterward. On Windows, close Ghostlink and
 stop its MCP server first, then run `.\ghostlink-update.exe` from the installation
