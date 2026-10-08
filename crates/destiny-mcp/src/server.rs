@@ -60,7 +60,7 @@ const READ_ONLY_INSTRUCTIONS: &str =
 /// The text must not claim the server is read-only: composing the seam adds the
 /// single intent-authorized `move_item` mutation, so the advertised capability
 /// has to match the discovery set.
-const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item`, `equip_item`, and `set_lock_state`, and `pull_item` mutations.";
+const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item`, `equip_item`, and `set_lock_state`, `pull_item`, and `pull_stack` mutations.";
 
 /// The tools-only RMCP server over one shared read service and an optional
 /// mutation seam.
@@ -122,6 +122,7 @@ impl ReadToolServer {
             tools.push(crate::schema::equip_item_tool());
             tools.push(crate::schema::set_lock_state_tool());
             tools.push(crate::schema::pull_item_tool());
+            tools.push(crate::schema::pull_stack_tool());
         }
         ListToolsResult {
             tools,
@@ -153,6 +154,7 @@ impl ReadToolServer {
             || name == crate::schema::EQUIP_ITEM_TOOL
             || name == crate::schema::SET_LOCK_STATE_TOOL
             || name == crate::schema::PULL_ITEM_TOOL
+            || name == crate::schema::PULL_STACK_TOOL
         {
             self.mutation.as_ref()
         } else {
@@ -382,6 +384,18 @@ fn dispatch_mutation_locked(
     name: &str,
     arguments: JsonObject,
 ) -> Result<CallToolResult, ErrorData> {
+    if name == crate::schema::PULL_STACK_TOOL {
+        let args: crate::schema::PullStackArgs = deserialize(arguments)?;
+        if let Err(error) = args.validate() {
+            return Ok(error.into_call_tool_result());
+        }
+        let mut guard = mutation.lock().map_err(|_| internal_error())?;
+        return Ok(guard.pull_stack(&args).map_or_else(tool_error, |output| {
+            let mut result = CallToolResult::structured(output.json());
+            result.is_error = Some(!output.is_success());
+            result
+        }));
+    }
     if name == crate::schema::PULL_ITEM_TOOL {
         let args: crate::schema::PullItemArgs = deserialize(arguments)?;
         if let Err(error) = args.instance_id() {
@@ -902,6 +916,84 @@ mod tests {
     }
 
     #[test]
+    fn stack_dispatch_validates_and_holds_operation_guard() {
+        use std::sync::{TryLockError, mpsc};
+        const BOUND: Duration = Duration::from_secs(5);
+        struct PausedStack(mpsc::Sender<String>, mpsc::Receiver<()>);
+        impl MutationToolService for PausedStack {
+            fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+                panic!("not move")
+            }
+            fn pull_stack(
+                &mut self,
+                request: &crate::schema::PullStackArgs,
+            ) -> Result<destiny_output::stack_pull::StackPullOutput, McpError> {
+                self.0.send(request.amount.clone()).unwrap();
+                self.1.recv_timeout(BOUND).unwrap();
+                Err(McpError::new(ErrorCategory::ProviderUnavailable))
+            }
+        }
+        let (tx, rx) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let server = Arc::new(ReadToolServer::with_mutation(
+            Box::new(RecordingService::new()),
+            Box::new(PausedStack(tx, wait)),
+        ));
+        let result = server
+            .dispatch(
+                "pull_stack",
+                args(json!({"item_hash":"7","amount":"0","character":"2"})),
+            )
+            .unwrap();
+        assert_eq!(structured(&result)["code"], "provider_validation");
+        assert!(rx.try_recv().is_err());
+        let cloned = server.clone();
+        let worker = std::thread::spawn(move || {
+            cloned.dispatch(
+                "pull_stack",
+                args(json!({"item_hash":"7","amount":"3","character":"2"})),
+            )
+        });
+        assert_eq!(rx.recv_timeout(BOUND).unwrap(), "3");
+        assert!(matches!(
+            server.operation.try_lock(),
+            Err(TryLockError::WouldBlock)
+        ));
+        release.send(()).unwrap();
+        assert_eq!(worker.join().unwrap().unwrap().is_error, Some(true));
+        assert!(rx.try_recv().is_err());
+        assert!(server.operation.try_lock().is_ok());
+    }
+
+    #[test]
+    fn stack_discovery_mutation_only_and_default_fails_closed() {
+        let (configured, _, mutation) = mutation_server(RecordingService::new());
+        let tool = configured.get_tool("pull_stack").unwrap();
+        assert_eq!(tool.schema_as_json_value()["additionalProperties"], false);
+        let result = configured
+            .dispatch(
+                "pull_stack",
+                args(json!({"item_hash":"7","amount":"3","character":"2"})),
+            )
+            .unwrap();
+        assert_eq!(structured(&result)["code"], "configuration_error");
+        assert!(mutation.recorded().is_empty());
+        let (readonly, _) = server(RecordingService::new());
+        assert!(readonly.get_tool("pull_stack").is_none());
+        assert_eq!(
+            readonly
+                .dispatch(
+                    "pull_stack",
+                    args(json!({"item_hash":"7","amount":"3","character":"2"}))
+                )
+                .unwrap_err()
+                .code
+                .0,
+            -32601
+        );
+    }
+
+    #[test]
     fn legacy_mutation_fake_pull_default_fails_closed_without_moving() {
         let (server, _, mutation) = mutation_server(RecordingService::new());
         let result = server
@@ -1417,7 +1509,8 @@ mod tests {
                 MOVE_ITEM_TOOL,
                 crate::schema::EQUIP_ITEM_TOOL,
                 crate::schema::SET_LOCK_STATE_TOOL,
-                crate::schema::PULL_ITEM_TOOL
+                crate::schema::PULL_ITEM_TOOL,
+                crate::schema::PULL_STACK_TOOL
             ]
         );
         let tool = server

@@ -172,6 +172,42 @@ pub fn move_item_tool() -> Tool {
         .with_output_schema::<MoveItemOutput>()
 }
 
+pub const PULL_STACK_TOOL: &str = "pull_stack";
+
+/// Exact non-instanced stack selection; provider identity is derived internally.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PullStackArgs {
+    #[schemars(length(min = 1, max = 10), regex(pattern = "^(0|[1-9][0-9]{0,9})$"))]
+    pub item_hash: String,
+    #[schemars(length(min = 1, max = 10), regex(pattern = "^[1-9][0-9]{0,9}$"))]
+    pub amount: String,
+    #[schemars(length(min = 1, max = 19), regex(pattern = "^[1-9][0-9]{0,18}$"))]
+    pub character: String,
+}
+impl PullStackArgs {
+    pub fn validate(&self) -> Result<(), McpError> {
+        let invalid = || McpError::new(ErrorCategory::ProviderValidation);
+        let hash = self.item_hash.parse::<u32>().map_err(|_| invalid())?;
+        let amount = self.amount.parse::<i32>().map_err(|_| invalid())?;
+        let character = self.character.parse::<i64>().map_err(|_| invalid())?;
+        if hash.to_string() != self.item_hash
+            || amount <= 0
+            || amount.to_string() != self.amount
+            || character <= 0
+            || character.to_string() != self.character
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+}
+pub fn pull_stack_tool() -> Tool {
+    Tool::new(PULL_STACK_TOOL, "Pull an exact amount of one non-instanced Postmaster stack for an owned character. Canonical decimal strings only: uint32 item_hash, positive int32 amount, positive int64 character. Requires authentication, qualified definitions and fresh capacity proof. One action, bounded observation; only Verified succeeds. Never blindly retry unconfirmed outcomes. Observations are not causal or atomic guarantees.", JsonObject::new())
+        .with_input_schema::<PullStackArgs>()
+        .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
+}
+
 pub const PULL_ITEM_TOOL: &str = "pull_item";
 
 /// One canonical genuine instance ID; every provider-bound value is derived.

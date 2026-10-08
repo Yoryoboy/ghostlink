@@ -118,7 +118,7 @@ instance identifiers or claiming verification from an API acknowledgement alone.
   nullable columns, all publication/readback/catalog/equality paths, metadata-only
   change detection and guarded downgrade/preservation tests. No readiness claim
   between acquisition and durable support; no pull eligibility from unknown data.
-- [ ] **GPM-006 — Resolve pull wire contracts.** Primary-source contract
+- [x] **GPM-006 — Resolve pull wire contracts.** Primary-source contract
   evidence, explicit stack ambiguity/capacity rules, request fixtures. Non-instance
   itemId, partial/duplicate selection and per-material coverage remain unresolved;
   this task is not complete just because a limited instanced slice is possible.
@@ -165,14 +165,21 @@ instance identifiers or claiming verification from an API acknowledgement alone.
     same-hash change in another profile bucket cannot mask an inexact arrival.
     Verify PASS: workspace 1713 default / 1732 all-features before that fix;
     focused core/adapters/app suites and clippy all-features PASS after it.
-  - [ ] GPM-006e — CLI and MCP stack pull exposure, split by review size:
+  - [x] GPM-006e — CLI and MCP stack pull exposure, split by review size:
     - [x] GPM-006e1 — Shared destiny-output StackPullOutput (JSON + ordered
       sanitized text, three quantity scopes, exhaustive refusal codes, success
       only when Verified); app re-exports refusal enums and exposes existing
       whole-profile totals read-only.
     - [x] GPM-006e2 — CLI stack pull (hash + amount) with pipeline tests,
       docs/cli.md, skill and exit codes.
-    - [ ] GPM-006e3 — MCP stack pull tool with parity/stdio tests, docs/mcp.md.
+    - [x] GPM-006e3 — MCP stack pull tool with parity/stdio tests, docs/mcp.md.
+  - GPM-006 COMPLETE 2026-10-07: core c2002b0, capacity 75e0682, service e3ffcdf,
+    output c6ab5c7, CLI 62914fe, MCP pull_stack (this commit). Independent
+    verify PASS: fmt, clippy default/all-features, workspace tests 1740 default /
+    1760 all-features, manifests/lockfile unchanged, CLI invalid input exit 2
+    before I/O, MCP isError unless Verified, mutex reused. Pending owner-run live
+    checks: pull-stack / pull_stack against a real Consumables or Modifications
+    Postmaster stack, partial amount, duplicate stacks and provider lag.
   - GPM-006d review advisories (non-blocking follow-ups): adapter outcome
     mapping (adapters stack_pull.rs:60-83), execution time boundaries
     (app stack_pull.rs:549-571), policy version/artifact refusal attribution

@@ -150,7 +150,7 @@ fn compose_server<S: CredentialStore + Send + 'static>(
     let pull = destiny_adapters::instanced_pull::BungieInstancedPullGateway::new(
         destiny_adapters::instanced_pull::HttpInstancedPullTransport::new()?,
         SystemClock::new(),
-        transfer_source,
+        transfer_source.clone(),
         destiny_adapters::instanced_pull::InstancedPullApiKey::new(
             config.api_key().expose_secret(),
         )?,
@@ -160,10 +160,21 @@ fn compose_server<S: CredentialStore + Send + 'static>(
         destiny_adapters::manifest::HttpManifestTransport::new()?,
         SystemClock::new(),
     );
+    let stack = destiny_adapters::stack_pull::BungieStackPullGateway::new(
+        destiny_adapters::stack_pull::HttpStackPullTransport::new()?,
+        SystemClock::new(),
+        transfer_source,
+        destiny_adapters::stack_pull::StackPullApiKey::new(config.api_key().expose_secret())?,
+    )?;
+    let stack_manifest = destiny_adapters::manifest::BungieManifestGateway::new(
+        destiny_adapters::manifest::ManifestApiKey::new(config.api_key().expose_secret())?,
+        destiny_adapters::manifest::HttpManifestTransport::new()?,
+        SystemClock::new(),
+    );
     let repository = SqliteStore::open(config.database_path())?;
     Ok(assemble_server(
         profile_gateway,
-        (transfer, equip, lock, pull, manifest),
+        (transfer, equip, lock, pull, manifest, stack, stack_manifest),
         repository,
         policy,
         weekly_service(config)?,
@@ -274,6 +285,15 @@ type MutationPorts<C> = (
         destiny_adapters::manifest::HttpManifestTransport,
         SystemClock,
     >,
+    destiny_adapters::stack_pull::BungieStackPullGateway<
+        destiny_adapters::stack_pull::HttpStackPullTransport,
+        SystemClock,
+        C,
+    >,
+    destiny_adapters::manifest::BungieManifestGateway<
+        destiny_adapters::manifest::HttpManifestTransport,
+        SystemClock,
+    >,
 );
 
 struct PullDelay;
@@ -355,6 +375,20 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         PullDelay,
         policy,
     );
+    let stack = crate::service::StackPullToolService::new(
+        gateway.clone(),
+        destiny_app::StackPullService::new(
+            ProfileSyncService::new_with_definitions(gateway.clone(), repository.clone()),
+            repository.clone(),
+            ports.6,
+            destiny_adapters::stack_bucket_capacity_policy::pinned_stack_bucket_capacity_policy(),
+            SystemClock::new(),
+            SystemPlanIds::new(SystemClock::new()),
+        ),
+        ports.5,
+        PullDelay,
+        policy,
+    );
     let mutations = MutationService::new(
         ProfileSyncService::new_with_definitions(gateway, repository),
         SystemPlanIds::new(SystemClock::new()),
@@ -368,7 +402,8 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     )
     .with_equip(ports.1)
     .with_lock(ports.2)
-    .with_pull(pull);
+    .with_pull(pull)
+    .with_stack(stack);
 
     // Every publishing read decorator and all mutations enter the same outer
     // operation boundary. Do not expose a second unguarded dispatch path for
@@ -1296,7 +1331,7 @@ mod tests {
         let pull = destiny_adapters::instanced_pull::BungieInstancedPullGateway::new(
             destiny_adapters::instanced_pull::HttpInstancedPullTransport::new().unwrap(),
             SystemClock::new(),
-            destiny_app::StaticCredentialSource::new(credential),
+            destiny_app::StaticCredentialSource::new(credential.clone()),
             destiny_adapters::instanced_pull::InstancedPullApiKey::new(API_KEY_SENTINEL).unwrap(),
         )
         .unwrap();
@@ -1305,9 +1340,21 @@ mod tests {
             destiny_adapters::manifest::HttpManifestTransport::new().unwrap(),
             SystemClock::new(),
         );
+        let stack = destiny_adapters::stack_pull::BungieStackPullGateway::new(
+            destiny_adapters::stack_pull::HttpStackPullTransport::new().unwrap(),
+            SystemClock::new(),
+            destiny_app::StaticCredentialSource::new(credential),
+            destiny_adapters::stack_pull::StackPullApiKey::new(API_KEY_SENTINEL).unwrap(),
+        )
+        .unwrap();
+        let stack_manifest = destiny_adapters::manifest::BungieManifestGateway::new(
+            destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL).unwrap(),
+            destiny_adapters::manifest::HttpManifestTransport::new().unwrap(),
+            SystemClock::new(),
+        );
         let server = assemble_server(
             profile_gateway,
-            (transfer, equip, lock, pull, manifest),
+            (transfer, equip, lock, pull, manifest, stack, stack_manifest),
             store,
             FreshnessPolicy { ttl_seconds: 900 },
             destiny_app::weekly_reset::WeeklyResetService::new(
@@ -1339,7 +1386,8 @@ mod tests {
                 "move_item",
                 "equip_item",
                 "set_lock_state",
-                "pull_item"
+                "pull_item",
+                "pull_stack"
             ],
             "mutation must be default-enabled in the product composition"
         );

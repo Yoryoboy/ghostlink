@@ -124,6 +124,7 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         characters: characters(),
         items: scenario.world_items(),
         refresh_failed: false,
+        stack_arrived: false,
     }));
 
     // Reads are served from a projection seeded from the world's initial state.
@@ -187,6 +188,47 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         FixturePullDelay,
         TTL,
     );
+    let mut stack_manifest = destiny_app::test_support::QueuedManifestGateway::new();
+    for _ in 0..2 {
+        stack_manifest.queue_capacity_evidence(Ok(destiny_app::EquipmentCapacityEvidence::new(
+            fixture_version(),
+            "stack-fixture",
+        )
+        .unwrap()));
+    }
+    let stack = destiny_mcp::service::StackPullToolService::new(
+        WorldGateway {
+            membership: membership(),
+            world: Arc::clone(&world),
+        },
+        destiny_app::StackPullService::new(
+            ProfileSyncService::new(
+                WorldGateway {
+                    membership: membership(),
+                    world: Arc::clone(&world),
+                },
+                FixtureRepository::seeded(&characters(), &scenario.seed_items()),
+            ),
+            InMemoryDefinitionRepository::new(fixture_version(), fixture_definitions()),
+            stack_manifest,
+            destiny_app::StackBucketCapacityPolicy::new(
+                fixture_version(),
+                "stack-fixture",
+                vec![
+                    (destiny_app::BucketHash::new(1469714392), 50, true),
+                    (destiny_app::BucketHash::new(3313201758), 50, true),
+                ],
+            )
+            .unwrap(),
+            FakeClock::fixed(NOW),
+            DeterministicPlanIds::starting_at(1),
+        ),
+        WorldStackGateway {
+            world: Arc::clone(&world),
+        },
+        FixturePullDelay,
+        TTL,
+    );
     let mutation_service = ComposedMutationService::new(
         mutations,
         WorldTransferGateway {
@@ -201,7 +243,8 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         world: Arc::clone(&world),
     })
     .with_lock(WorldLockGateway { world })
-    .with_pull(pull);
+    .with_pull(pull)
+    .with_stack(stack);
 
     let read_service = destiny_mcp::service::PersonalWeeklyReadService::new(
         destiny_app::WeeklyPersonalService::new(
@@ -456,12 +499,36 @@ struct FixtureWorld {
     characters: Vec<Character>,
     items: Vec<ItemInstance>,
     refresh_failed: bool,
+    stack_arrived: bool,
 }
 
 impl FixtureWorld {
     /// One complete candidate for the current world state.
     fn snapshot_input(&self) -> InventorySnapshotInput {
-        snapshot_input(&self.characters, &self.items)
+        let mut input = snapshot_input(&self.characters, &self.items);
+        if std::env::var(SCENARIO_ENV)
+            .unwrap_or_default()
+            .starts_with("stack-")
+        {
+            input.items.clear();
+            input.stacks = vec![
+                destiny_app::StackObservation::new(
+                    destiny_app::ItemHash::new(7),
+                    destiny_app::BucketHash::new(1469714392),
+                    if self.stack_arrived { 23 } else { 20 },
+                    destiny_app::StackContainer::ProfileInventory,
+                )
+                .unwrap(),
+                destiny_app::StackObservation::new(
+                    destiny_app::ItemHash::new(7),
+                    destiny_app::BucketHash::new(215593132),
+                    if self.stack_arrived { 7 } else { 10 },
+                    destiny_app::StackContainer::Postmaster(CharacterId::new("2")),
+                )
+                .unwrap(),
+            ];
+        }
+        input
     }
 
     /// Applies one accepted transfer to the concrete item's location.
@@ -560,6 +627,27 @@ struct FixturePullDelay;
 impl destiny_app::RetryDelay for FixturePullDelay {
     fn wait(&mut self, duration: std::time::Duration) {
         assert_eq!(duration, std::time::Duration::from_secs(2));
+    }
+}
+struct WorldStackGateway {
+    world: Arc<Mutex<FixtureWorld>>,
+}
+impl destiny_app::StackPullGateway for WorldStackGateway {
+    fn pull(
+        &mut self,
+        request: &destiny_app::StackPullRequest,
+    ) -> Result<destiny_app::StackPullOutcome, AppError> {
+        assert_eq!(request.quantity(), 3);
+        self.world.lock().expect("fixture world").stack_arrived = true;
+        Ok(
+            if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("stack-refused") {
+                destiny_app::StackPullOutcome::Rejected(
+                    destiny_app::StackPullRejection::InvalidRequest,
+                )
+            } else {
+                destiny_app::StackPullOutcome::Acknowledged
+            },
+        )
     }
 }
 struct WorldPullGateway {
@@ -934,6 +1022,12 @@ fn snapshot_input(characters: &[Character], items: &[ItemInstance]) -> Inventory
 }
 
 fn characters() -> Vec<Character> {
+    if std::env::var(SCENARIO_ENV)
+        .unwrap_or_default()
+        .starts_with("stack-")
+    {
+        return vec![character("2")];
+    }
     if pull_scenario() {
         return vec![character("2")];
     }
@@ -966,6 +1060,12 @@ fn fixture_version() -> DefinitionVersion {
     })
 }
 fn base_items() -> Vec<ItemInstance> {
+    if std::env::var(SCENARIO_ENV)
+        .unwrap_or_default()
+        .starts_with("stack-")
+    {
+        return vec![];
+    }
     if pull_scenario() {
         return vec![instance(
             "123",
@@ -1041,6 +1141,18 @@ fn set_location(items: &mut [ItemInstance], instance_id: &str, location: ItemLoc
 }
 
 fn fixture_definitions() -> Vec<ItemDefinition> {
+    if std::env::var(SCENARIO_ENV)
+        .unwrap_or_default()
+        .starts_with("stack-")
+    {
+        let mut item = definition(7, "Stack");
+        item.bucket_hash = Some(destiny_app::BucketHash::new(1469714392));
+        item.does_postmaster_pull_have_side_effects = Some(false);
+        item.is_instance_item = Some(false);
+        item.max_stack_size = Some(100);
+        item.stack_unique_label = Some(String::new());
+        return vec![item];
+    }
     if pull_scenario() {
         let mut item = definition(1, "PRIVATE_PULL_NAME");
         item.does_postmaster_pull_have_side_effects = Some(false);

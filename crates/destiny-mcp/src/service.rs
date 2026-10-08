@@ -763,6 +763,12 @@ pub struct MoveItemRequest {
 /// bounded MCP projections defined in [`crate::schema`]; a failure is a stable
 /// sanitized [`McpError`].
 pub trait MutationToolService {
+    fn pull_stack(
+        &mut self,
+        _request: &crate::schema::PullStackArgs,
+    ) -> Result<destiny_output::stack_pull::StackPullOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
     fn pull_item(
         &mut self,
         _request: &crate::schema::PullItemArgs,
@@ -951,6 +957,127 @@ impl<G, R, P, C, T, E, L> LockMutationService<G, R, P, C, T, E, L> {
 pub struct PullMutationService<I, U> {
     inner: I,
     pull: U,
+}
+impl<I, U> PullMutationService<I, U> {
+    pub fn with_stack<S>(self, stack: S) -> StackMutationService<Self, S> {
+        StackMutationService { inner: self, stack }
+    }
+}
+
+/// Additive stack action decorator over the existing mutation composition.
+pub struct StackMutationService<I, S> {
+    inner: I,
+    stack: S,
+}
+impl<I: MutationToolService, S: MutationToolService> MutationToolService
+    for StackMutationService<I, S>
+{
+    fn pull_stack(
+        &mut self,
+        args: &crate::schema::PullStackArgs,
+    ) -> Result<destiny_output::stack_pull::StackPullOutput, McpError> {
+        self.stack.pull_stack(args)
+    }
+    fn pull_item(
+        &mut self,
+        args: &crate::schema::PullItemArgs,
+    ) -> Result<destiny_output::instanced_pull::InstancedPullOutput, McpError> {
+        self.inner.pull_item(args)
+    }
+    fn move_item(&mut self, request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+        self.inner.move_item(request)
+    }
+    fn equip_item(
+        &mut self,
+        args: &crate::schema::EquipItemArgs,
+    ) -> Result<destiny_output::equip::EquipOutput, McpError> {
+        self.inner.equip_item(args)
+    }
+    fn set_lock_state(
+        &mut self,
+        args: &crate::schema::SetLockStateArgs,
+    ) -> Result<destiny_output::lock::LockOutput, McpError> {
+        self.inner.set_lock_state(args)
+    }
+}
+
+/// Shared CLI stack pipeline under the server's existing operation guard.
+pub struct StackPullToolService<G, R, D, M, C, P, T, W> {
+    membership: G,
+    service: destiny_app::StackPullService<G, R, D, M, C, P>,
+    gateway: T,
+    delay: W,
+    freshness: FreshnessPolicy,
+}
+impl<G, R, D, M, C, P, T, W> StackPullToolService<G, R, D, M, C, P, T, W> {
+    pub fn new(
+        membership: G,
+        service: destiny_app::StackPullService<G, R, D, M, C, P>,
+        gateway: T,
+        delay: W,
+        freshness: FreshnessPolicy,
+    ) -> Self {
+        Self {
+            membership,
+            service,
+            gateway,
+            delay,
+            freshness,
+        }
+    }
+}
+impl<G, R, D, M, C, P, T, W> MutationToolService for StackPullToolService<G, R, D, M, C, P, T, W>
+where
+    G: ProfileGateway,
+    R: InventoryRepository,
+    D: DefinitionRepository,
+    M: destiny_app::ManifestGateway,
+    C: Clock,
+    P: PlanIdGenerator,
+    T: destiny_app::StackPullGateway,
+    W: destiny_app::RetryDelay,
+{
+    fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
+    fn pull_stack(
+        &mut self,
+        args: &crate::schema::PullStackArgs,
+    ) -> Result<destiny_output::stack_pull::StackPullOutput, McpError> {
+        use destiny_output::stack_pull::StackPullOutput;
+        args.validate()?;
+        let invalid = |_| McpError::new(ErrorCategory::ProviderValidation);
+        let item_hash = args.item_hash.parse::<u32>().map_err(invalid)?;
+        let amount = args.amount.parse::<i32>().map_err(invalid)?;
+        let membership = self
+            .membership
+            .resolve_membership()
+            .map_err(McpError::from)?;
+        let plan = match self.service.plan(
+            &destiny_app::StackPullPlanRequest {
+                membership,
+                owner: CharacterId::new(&args.character),
+                item_hash: ItemHash::new(i64::from(item_hash)),
+                amount: i64::from(amount),
+            },
+            PlanLifetime::new(60).expect("fixed positive plan lifetime"),
+            self.freshness,
+        ) {
+            Ok(plan) => plan,
+            Err(error) => return Ok(StackPullOutput::planning_failed(&error)),
+        };
+        Ok(
+            match self.service.execute_verified(
+                plan,
+                &mut self.gateway,
+                &mut self.delay,
+                self.freshness,
+            ) {
+                Ok(outcome) => StackPullOutput::from_outcome(&outcome),
+                Err(failure) => StackPullOutput::execution_failed(&failure),
+            },
+        )
+    }
 }
 impl<I: MutationToolService, U: MutationToolService> MutationToolService
     for PullMutationService<I, U>

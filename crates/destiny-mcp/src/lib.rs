@@ -48,6 +48,7 @@ pub use schema::{
     tool_specs,
 };
 pub use schema::{PULL_ITEM_TOOL, PullItemArgs, pull_item_tool};
+pub use schema::{PULL_STACK_TOOL, PullStackArgs, pull_stack_tool};
 pub use schema::{
     WEEKLY_RESET_TOOL, WeeklyActivityView, WeeklyMilestoneView, WeeklyModifierView,
     WeeklyResetArgs, WeeklyResetOutput,
@@ -62,6 +63,7 @@ pub use service::{
 pub use service::{
     PersonalWeeklyReadService, WeeklyReadService, weekly_output, weekly_reset_output,
 };
+pub use service::{StackMutationService, StackPullToolService};
 
 #[cfg(test)]
 mod tests {

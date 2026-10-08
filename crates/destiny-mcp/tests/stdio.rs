@@ -56,6 +56,56 @@ const MOVE_ITEM_TOOL: &str = "move_item";
 mod equip_support;
 
 #[tokio::test]
+async fn stack_stdio_verified_refused_and_invalid() {
+    for (scenario, disposition) in [("stack-success", "verified"), ("stack-refused", "refused")] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let id = session.next_id();
+        let discovery = session.request(id, "tools/list", None).await;
+        let tools = discovery["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 15);
+        let tool = tools.iter().find(|t| t["name"] == "pull_stack").unwrap();
+        assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+        assert_eq!(tool["annotations"]["readOnlyHint"], false);
+        assert_eq!(tool["annotations"]["destructiveHint"], true);
+        assert_eq!(tool["annotations"]["idempotentHint"], false);
+        assert_eq!(tool["annotations"]["openWorldHint"], true);
+        let response = session
+            .call_tool(
+                "pull_stack",
+                json!({"item_hash":7,"amount":"3","character":"2"}),
+            )
+            .await;
+        assert_eq!(response["error"]["code"], -32602);
+        for (hash, amount, character) in [("01", "3", "2"), ("7", "0", "2"), ("7", "3", "0")] {
+            let response = session
+                .call_tool(
+                    "pull_stack",
+                    json!({"item_hash":hash,"amount":amount,"character":character}),
+                )
+                .await;
+            assert_eq!(response["result"]["isError"], true);
+            assert_eq!(structured(&response)["code"], "provider_validation");
+        }
+        let response = session
+            .call_tool(
+                "pull_stack",
+                json!({"item_hash":"7","amount":"3","character":"2"}),
+            )
+            .await;
+        let output = structured(&response);
+        assert_eq!(output["kind"], "stack_pull");
+        assert_eq!(output["disposition"], disposition, "{response}");
+        assert_eq!(response["result"]["isError"], disposition != "verified");
+        assert_eq!(
+            output["observations"][0]["classification"],
+            "verified_arrival"
+        );
+        assert_eq!(output["observations"].as_array().unwrap().len(), 1);
+        session.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
     for (scenario, disposition, receipt) in [
         ("pull-success", "verified", "acknowledged"),
@@ -67,7 +117,7 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 14);
+        assert_eq!(tools.len(), 15);
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == "pull_item")
@@ -763,7 +813,8 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             MOVE_ITEM_TOOL,
             "equip_item",
             "set_lock_state",
-            "pull_item"
+            "pull_item",
+            "pull_stack"
         ],
         "the product-equivalent server discovers all reads plus move_item and equip_item"
     );

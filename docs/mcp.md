@@ -18,6 +18,7 @@ move_item         move one concrete instance to the Vault or to a character
 equip_item        transfer if necessary, equip on an explicit character, and verify
 set_lock_state    lock or unlock one explicitly selected owned item and verify
 pull_item         pull one genuine Postmaster equipment instance to its owner
+pull_stack        pull an explicit amount of a non-instanced Postmaster stack
 ```
 
 Mutation is composed by default in the product binary: its profile gateway and
@@ -159,8 +160,36 @@ observed arrival cannot turn a refusal or timestamp failure into success.
 
 Never blindly retry an unconfirmed outcome. Re-read state later and report receipt
 separately from arrival. Local serialization excludes neither other processes nor
-game activity; observations are not causal or atomic guarantees. Anonymous-stack
-pulls remain contract-gated, and live account validation is still pending.
+game activity; observations are not causal or atomic guarantees. Non-instanced stacks use `pull_stack`; live account validation is still pending.
+
+## Pull a non-instanced Postmaster stack
+
+With explicit hash, amount and owner intent, call:
+
+```json
+{"name":"pull_stack","arguments":{"item_hash":"7","amount":"3","character":"2"}}
+```
+
+All three fields are required decimal strings: `item_hash` is canonical uint32
+(0–4294967295), `amount` positive int32 (1–2147483647), and `character` positive
+int64 (1–9223372036854775807). No leading zeros (except hash `"0"`), signs,
+whitespace, classes, numeric JSON values or extra fields. Invalid inputs are
+rejected before I/O. Use committed stack observations, never synthesize instance
+IDs or choose a destination.
+
+Only qualified non-instanced account-wide Consumables/Modifications are supported.
+Fresh planning and preflight prove eligibility and capacity; duplicate Postmaster
+rows bound the amount by the smallest matching stack, not their sum. The adapter
+uses the existing operation guard and production gateway/repository clones.
+
+`structuredContent` is the shared `ghostlink pull-stack --json` shape: `kind:
+"stack_pull"`, `disposition`, `plan_id`, `dispatch`, independent `receipt` and
+`failure`, and ordered `observations`. One action, at most three fresh observations,
+two seconds between attempts. Arrival requires an exact amount increase in the
+destination and decrease in Postmaster. Only `verified` has `isError=false`;
+refusal stays an error even if arrival is observed. Never blindly retry uncertain
+or refused outcomes. Re-read later; observations are not causal or atomic proof.
+Live account validation remains pending.
 
 ## Inventory search and inspection
 
