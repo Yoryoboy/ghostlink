@@ -57,7 +57,7 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
 - [x] **IAX-004 — EquipLoadout adapter and port** (allowlist, request, receipt).
 - [x] **IAX-005 — Apply loadout service, CLI and MCP** (resolve slot and
   character, optimistic outcome, docs/skill).
-- [ ] **IAX-006 — EquipItems batch adapter and port** (per-item results).
+- [x] **IAX-006 — EquipItems batch adapter and port** (per-item results).
 - [ ] **IAX-007 — Batch equip service, CLI and MCP** (combined plan, transfers
   from Vault first, one EquipItems call, per-item outcomes, docs/skill).
 - [ ] **IAX-008 — Cleanups.** Close Postmaster tracker status; replace
@@ -149,6 +149,19 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   `loadout_action` suite 7 passed. Writer full suite 1,829 / 0. Independent
   full verification deferred to the IAX-005 verifier (covers both).
 - IAX-004 committed as `6448ba3`.
+- IAX-006 implementation progress: validated 1–17 unique decimal instance IDs,
+  core batch port and typed per-item receipts, isolated exact EquipItems allowlist,
+  hardened bounded/redacted transport and queued fake. Parent-confirmed official
+  shape accepts int64 JSON numbers or decimal strings without floating conversion;
+  absent requested IDs become typed NotReported results while reported statuses
+  are preserved in an acknowledged receipt; extra, duplicate or malformed results
+  remain Uncertain. Fully applied requires every item to report success. Scope
+  MoveEquipDestinyItems; caller owns character preflight and 0.1s pacing. RED:
+  missing types/port, then missing-results regression returned Uncertain;
+  offline GREEN: 1,849 passed / 0 failed, including missing/all-omitted IDs,
+  exact dispatch, mixed results, malformed and
+  oversized responses, credential boundaries and validation. No service/CLI/MCP,
+  network, live action or commit; checkbox intentionally remains open.
 - IAX-005 independent verification (covers IAX-004): fmt, clippy, all-features
   1,838 / 0, default 1,815 / 0, diff check PASS; adapter, slot conversion
   (+1 presentation / -1 dispatch), exact name resolution, single dispatch,
@@ -157,3 +170,12 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   Shared HTTP affinity was deliberately DROPPED (`ghostlink-http-affinity.md`,
   2026-10-05), and per-action clients match the lock wiring. MCP pacing is
   process-local.
+- IAX-005 committed as `940181f`.
+- IAX-006: official docs confirmed by parent (throttle 0.1s; items not on the
+  character are ignored; itemInstanceId int64, equipStatus int32). Parent
+  requested per-item `NotReported` for omitted ids, instead of marking the
+  whole receipt Uncertain. Extra, duplicate or malformed entries remain
+  Uncertain. `fully_applied` requires every requested id Success. Parent spot
+  check: focused `equip_items` 9 passed; the single-item equip allowlist still
+  rejects EquipItems. Writer full suite 1,849 / 0. Independent verification is
+  deferred to IAX-007.

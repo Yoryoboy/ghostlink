@@ -7,6 +7,12 @@ pub mod clarity;
 pub mod clock;
 pub mod credential_store;
 pub mod equip;
+pub mod equip_items;
+pub use equip_items::{
+    BungieEquipItemsGateway, EQUIP_ITEMS_ENDPOINT, EQUIP_ITEMS_RESPONSE_LIMIT, EquipItemsApiKey,
+    EquipItemsBearerToken, EquipItemsHttpRequest, EquipItemsHttpResponse, EquipItemsTransport,
+    EquipItemsTransportError, HttpEquipItemsTransport, is_allowed_equip_items_url,
+};
 pub mod equipment_capacity_policy;
 pub mod instanced_pull;
 pub mod stack_pull;
