@@ -131,6 +131,7 @@ where
             snapshot.metadata.membership_id.clone(),
         )
         .map_err(MutationError::from)?;
+        let mut equip_effects = Vec::new();
         let mut resolved = Vec::new();
         let mut slots = Vec::new();
         let mut buckets = Vec::new();
@@ -186,6 +187,7 @@ where
                     BatchItemStatus::NotAttempted
                 },
             });
+            equip_effects.push(self.equip_effect(&item, &character.id, &snapshot)?);
             resolved.push(item);
         }
         // Remove equipped items in replaced slots, then insert the intended set.
@@ -294,11 +296,18 @@ where
             }
         }
         let mut dispatched = false;
+        let mut effects = Vec::new();
         for transfer in transfers {
             pace();
             let outcome = gateways.0.transfer(&transfer);
             if outcome.is_ok() {
                 dispatched = true;
+            }
+            if matches!(outcome, Ok(destiny_core::TransferOutcome::Transferred)) {
+                effects.push(destiny_core::InventoryEffect::Relocate {
+                    item: transfer.item().clone(),
+                    to: transfer.to().clone(),
+                });
             }
             if !outcome.is_ok_and(|o| StepOutcome::from_transfer(o).continues()) {
                 result.transfer_failed = true;
@@ -336,8 +345,15 @@ where
                 Err(_) => result.transfer_failed = true,
             }
         }
+        for (item, effect) in result.items.iter().zip(equip_effects) {
+            if item.status == BatchItemStatus::Success {
+                effects.push(effect);
+            }
+        }
         if dispatched {
-            result.local_state_updated = self.repository_mut().invalidate_freshness().is_ok();
+            result.local_state_updated = self
+                .persist_attempt_effects(&membership, &effects, result.applied())
+                .is_ok();
         }
         Ok(result)
     }

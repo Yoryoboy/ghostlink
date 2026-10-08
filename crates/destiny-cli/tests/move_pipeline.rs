@@ -180,6 +180,15 @@ fn cli_move_verified_outcomes_and_no_retry() {
             assert_eq!(output.profile_refresh, ProfileRefresh::NotRequired);
             assert!(output.observed.is_none());
             if status == MoveStatus::Applied {
+                let Resolution::Unique(moved) = service
+                    .repository()
+                    .lookup_instance(&ItemInstanceId::new("123"))
+                    .unwrap()
+                else {
+                    panic!("moved instance must remain visible");
+                };
+                assert_eq!(moved.location, destination);
+                assert!(!service.repository().freshness_invalidated().unwrap());
                 assert!(output.render_text().contains("not re-read"));
                 assert!(!output.render_text().contains("✔ verified"));
             }

@@ -2693,6 +2693,17 @@ mod tests {
     }
 
     impl InventoryRepository for CompositeRepository {
+        fn apply_acknowledged_effects(
+            &mut self,
+            membership: &DestinyMembership,
+            effects: &[destiny_app::InventoryEffect],
+        ) -> Result<InventorySnapshot, AppError> {
+            let snapshot = self
+                .inventory
+                .apply_acknowledged_effects(membership, effects)?;
+            self.search.set_instances(snapshot.items.clone());
+            Ok(snapshot)
+        }
         fn freshness_invalidated(&self) -> Result<bool, AppError> {
             self.inventory.freshness_invalidated()
         }

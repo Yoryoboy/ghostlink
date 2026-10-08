@@ -983,14 +983,14 @@ fn direct_move_is_acknowledged_then_observed_by_an_ordinary_read() {
     assert_eq!(evidence.steps()[0].outcome, StepOutcome::Completed);
     assert_eq!(service.plan_ids().calls(), 1);
 
-    // Old content is retained but invalidated, never guessed forward.
+    // The acknowledged effect is durable and retains freshness.
     let snapshot = committed(&service);
     assert_eq!(
         location_of(&snapshot, LAST_WORD_INSTANCE),
-        ItemLocation::Vault
+        warlock_location()
     );
-    assert_eq!(snapshot.metadata.revision, SyncRevision::new(1));
-    assert!(service.repository().freshness_invalidated().unwrap());
+    assert_eq!(snapshot.metadata.revision, SyncRevision::new(2));
+    assert!(!service.repository().freshness_invalidated().unwrap());
     let requests_after_execution = journey.request_count();
     assert_eq!(
         requests_after_execution, 4,
@@ -1015,7 +1015,7 @@ fn direct_move_is_acknowledged_then_observed_by_an_ordinary_read() {
     assert_eq!(verified.instance.location, warlock_location());
     assert_eq!(verified.metadata.sync.revision, SyncRevision::new(2));
     assert_eq!(verified.metadata.freshness, FreshnessStatus::Fresh);
-    assert_eq!(journey.request_count(), requests_after_execution + 2);
+    assert_eq!(journey.request_count(), requests_after_execution);
 
     // Once the cached observation is stale, the read path refreshes exactly once
     // and still reads the Warlock at the retained revision 2.
@@ -1042,8 +1042,8 @@ fn direct_move_is_acknowledged_then_observed_by_an_ordinary_read() {
     assert_eq!(stale_inspection.metadata.freshness, FreshnessStatus::Fresh);
     assert_eq!(
         journey.request_count(),
-        requests_after_execution + 4,
-        "invalidation refresh plus one later stale ordinary refresh"
+        requests_after_execution + 2,
+        "one later stale ordinary refresh"
     );
 
     // Exactly one ordered POST, with the Vault-to-character direction the
@@ -1110,9 +1110,9 @@ fn character_to_character_move_posts_exactly_two_ordered_transfers() {
     assert_eq!(evidence.steps()[1].outcome, StepOutcome::Completed);
 
     let snapshot = committed(&service);
-    assert_eq!(location_of(&snapshot, CROTA_INSTANCE), hunter_location());
-    assert_eq!(snapshot.metadata.revision, SyncRevision::new(1));
-    assert!(service.repository().freshness_invalidated().unwrap());
+    assert_eq!(location_of(&snapshot, CROTA_INSTANCE), warlock_location());
+    assert_eq!(snapshot.metadata.revision, SyncRevision::new(2));
+    assert!(!service.repository().freshness_invalidated().unwrap());
 
     // Exactly two ordered POSTs through the Vault, in plan order.
     assert_eq!(journey.transfer_calls(), 2);
@@ -1278,8 +1278,10 @@ fn refused_second_step_strands_the_item_in_the_vault() {
     // The item is honestly stranded in the Vault, and step one remains applied.
     assert_eq!(
         location_of(&committed(&service), CROTA_INSTANCE),
-        hunter_location()
+        ItemLocation::Vault
     );
+    assert!(service.repository().freshness_invalidated().unwrap());
+    assert_eq!(committed(&service).metadata.revision, SyncRevision::new(2));
     assert_eq!(journey.transfer_calls(), 2);
 }
 
@@ -1402,9 +1404,9 @@ fn unchanged_provider_content_does_not_block_acknowledgement() {
 
     assert_eq!(
         location_of(&committed(&service), LAST_WORD_INSTANCE),
-        ItemLocation::Vault
+        warlock_location()
     );
-    assert_eq!(committed(&service).metadata.revision, SyncRevision::new(1));
+    assert_eq!(committed(&service).metadata.revision, SyncRevision::new(2));
 }
 
 #[test]
@@ -1427,10 +1429,10 @@ fn changed_scripted_state_does_not_block_acknowledgement() {
     assert_eq!(failure.completed_count(), 1);
     assert_eq!(failure.steps()[0].outcome, StepOutcome::Completed);
     let snapshot = committed(&service);
-    assert_eq!(snapshot.metadata.revision, SyncRevision::new(1));
+    assert_eq!(snapshot.metadata.revision, SyncRevision::new(2));
     assert_eq!(
         location_of(&snapshot, LAST_WORD_INSTANCE),
-        ItemLocation::Vault
+        warlock_location()
     );
     assert_eq!(journey.request_count(), 2);
     let recorded = journey.recorded_transfers();

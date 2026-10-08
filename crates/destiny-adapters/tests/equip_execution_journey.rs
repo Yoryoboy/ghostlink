@@ -461,15 +461,49 @@ impl Journey {
             .iter()
             .find(|item| item.instance_id.as_str() == ITEM)
             .unwrap();
-        assert_eq!(snapshot.items, pre_dispatch.items);
-        assert_eq!(snapshot.metadata.revision, pre_dispatch.metadata.revision);
-        assert_eq!(item.equipped, no_op);
+        let mut expected = pre_dispatch.clone();
+        let evidence = match &outcome {
+            MoveExecutionOutcome::Applied(e) | MoveExecutionOutcome::VerifiedNoOp(e) => e,
+            MoveExecutionOutcome::IncompleteExecution(e) => e.evidence(),
+            MoveExecutionOutcome::VerificationFailed(e) => e.evidence(),
+        };
+        for record in evidence.steps() {
+            if record.outcome == StepOutcome::Completed {
+                let subject = expected
+                    .items
+                    .iter_mut()
+                    .find(|item| item.instance_id.as_str() == ITEM)
+                    .unwrap();
+                match &record.step.action {
+                    destiny_app::StepAction::Transfer { to, .. } => {
+                        subject.location = to.clone();
+                        subject.equipped = false;
+                    }
+                    destiny_app::StepAction::Equip { character } => {
+                        subject.location = ItemLocation::Character(character.clone());
+                        subject.equipped = true;
+                    }
+                }
+            }
+        }
+        assert_eq!(snapshot.items, expected.items);
+        assert_eq!(
+            snapshot.metadata.revision == pre_dispatch.metadata.revision,
+            snapshot.items == pre_dispatch.items
+        );
+        assert_eq!(
+            item.equipped,
+            no_op || matches!(outcome, MoveExecutionOutcome::Applied(_))
+        );
         if !no_op {
             assert_eq!(
                 snapshot.metadata.checked_at,
                 pre_dispatch.metadata.checked_at
             );
-            assert!(service.repository().freshness_invalidated().unwrap());
+            assert_eq!(
+                service.repository().freshness_invalidated().unwrap(),
+                !matches!(outcome, MoveExecutionOutcome::Applied(_))
+            );
         }
         drop(service);
         // Independently reopen the durable repository, not just the gateway world.

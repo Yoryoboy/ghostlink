@@ -108,9 +108,10 @@
 //! [`MutationService::execute_move_action`] classifies provider receipts without
 //! a post-action request. Every planned
 //! step must be acknowledged for [`MoveExecutionOutcome::Applied`]; uncertainty,
-//! refusal and partial progress remain incomplete. Dispatched attempts durably
-//! invalidate freshness without guessing inventory content. The next ordinary
-//! read forces sync. Already-satisfied local state remains a verified no-op.
+//! refusal and partial progress remain incomplete. Acknowledged effects update
+//! the committed projection. Complete success retains freshness; incomplete
+//! attempts or local persistence failures invalidate it so ordinary sync re-reads.
+//! Already-satisfied local state remains a verified no-op.
 //! Bungie is the final validator of move and single-item equip dispatch.
 
 use std::fmt;
@@ -485,7 +486,7 @@ impl IncompleteExecution {
     }
 }
 
-/// Why local freshness could not be invalidated after a dispatched attempt.
+/// Why local state could not be updated after a dispatched attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VerificationFailureReason {
     /// Local state could not be updated. The historical wire reason is retained.
@@ -555,7 +556,7 @@ pub enum MoveExecutionOutcome {
     VerifiedNoOp(ExecutionEvidence),
     /// A dispatched sequence stopped short; receipts preserve its progress.
     IncompleteExecution(IncompleteExecution),
-    /// Local freshness could not be invalidated after dispatch.
+    /// Local effects or freshness could not be persisted after dispatch.
     VerificationFailed(VerificationFailure),
 }
 
@@ -1033,7 +1034,8 @@ where
     /// [`StepOutcome::Uncertain`], never collapsed into a success or a clean
     /// failure. This narrow seam never refreshes or verifies the final
     /// destination on its own; [`MutationService::execute_move_action`] classifies
-    /// the receipts and invalidates freshness. One local authorization is bound
+    /// the receipts, applies acknowledged effects, and invalidates incomplete attempts.
+    /// One local authorization is bound
     /// to one ordered attempt.
     pub fn execute_move<T: TransferGateway>(
         &mut self,
@@ -1055,8 +1057,8 @@ where
     ///
     /// Timestamp arguments retain their ordering contract.
     /// `post_action_now` must not precede preflight, but no post-action read is
-    /// issued. Dispatched attempts invalidate repository freshness; complete
-    /// receipts yield `Applied`. Incomplete/uncertain evidence never claims
+    /// issued. Acknowledged effects update the projection; complete receipts
+    /// retain freshness and yield `Applied`. Incomplete/uncertain evidence never claims
     /// observed state or rollback. A zero-attempt pre-dispatch error remains Err.
     pub fn execute_move_action<T: TransferGateway>(
         &mut self,
@@ -1095,7 +1097,19 @@ where
             ExecutionAuthorization::Authorized(ticket) => ticket,
         };
 
-        let revision = ticket.revision();
+        let snapshot = self
+            .committed_snapshot()
+            .map_err(|error| ExecutionFailure::new(error, ExecutionEvidence::for_plan(plan)))?;
+        let membership = DestinyMembership::new(
+            snapshot.metadata.membership_type,
+            snapshot.metadata.membership_id.clone(),
+        )
+        .map_err(|error| {
+            ExecutionFailure::new(
+                MutationError::from(error),
+                ExecutionEvidence::for_plan(plan),
+            )
+        })?;
         let (evidence, attempt_error) = match self.execute_move(transfer, plan, ticket) {
             Ok(evidence) => (evidence, None),
             Err(failure) => {
@@ -1112,8 +1126,7 @@ where
             }
         };
 
-        let _ = revision;
-        Ok(self.acknowledge_attempt(plan, evidence, attempt_error))
+        Ok(self.acknowledge_attempt(plan, &membership, None, evidence, attempt_error))
     }
 
     /// Executes an equip intent with acknowledgement-based (optimistic) success.
@@ -1121,7 +1134,8 @@ where
     /// The gateway pair is (transfer, equip). Ordinary sync and local validation either
     /// proves a no-op or authorizes one ordered attempt. The outcome is Applied
     /// only when every planned step is acknowledged; the profile is not re-read,
-    /// and local freshness is invalidated so the next read syncs. No retry occurs.
+    /// and acknowledged effects update the projection. Only incomplete attempts
+    /// or local persistence failures invalidate freshness. No retry occurs.
     pub fn execute_equip_action<T: TransferGateway, E: destiny_core::EquipGateway>(
         &mut self,
         gateways: (&mut T, &mut E),
@@ -1156,7 +1170,23 @@ where
         let ticket =
             ExecutionTicket::from_committed_projection(mutation, &observation, preflight_now)
                 .map_err(|error| failure(MutationError::from(error)))?;
-        let revision = ticket.revision();
+        let snapshot = self.committed_snapshot().map_err(failure)?;
+        let membership = DestinyMembership::new(
+            snapshot.metadata.membership_type,
+            snapshot.metadata.membership_id.clone(),
+        )
+        .map_err(|error| failure(MutationError::from(error)))?;
+        let item = snapshot
+            .items
+            .iter()
+            .find(|item| item.instance_id == mutation.item)
+            .ok_or_else(|| failure(MutationError::MissingResolution))?;
+        let ItemLocation::Character(character) = &mutation.destination else {
+            return Err(failure(MutationError::InvalidEquipTarget));
+        };
+        let effect = self
+            .equip_effect(item, character, &snapshot)
+            .map_err(failure)?;
         let (evidence, attempt_error) = match self.execute_equip(gateways, plan, ticket) {
             Ok(evidence) => (evidence, None),
             Err(failure) => {
@@ -1166,8 +1196,7 @@ where
                 (*failure.evidence, Some(failure.error))
             }
         };
-        let _ = revision;
-        Ok(self.acknowledge_attempt(mutation, evidence, attempt_error))
+        Ok(self.acknowledge_attempt(mutation, &membership, Some(effect), evidence, attempt_error))
     }
 
     /// Consumes one fresh ticket and dispatches transfers before equip, without retries.
@@ -1194,11 +1223,31 @@ where
     fn acknowledge_attempt(
         &mut self,
         plan: &MovePlan,
+        membership: &DestinyMembership,
+        equip_effect: Option<destiny_core::InventoryEffect>,
         evidence: ExecutionEvidence,
         attempt_error: Option<MutationError>,
     ) -> MoveExecutionOutcome {
-        // Even refusals and uncertain attempts invalidate the pre-action cache.
-        if let Err(error) = self.repository_mut().invalidate_freshness() {
+        let applied = evidence.completed_count() == plan.steps().len()
+            && evidence
+                .steps()
+                .iter()
+                .all(|step| step.outcome == StepOutcome::Completed)
+            && attempt_error.is_none();
+        let effects: Vec<_> = plan
+            .steps()
+            .iter()
+            .zip(evidence.steps())
+            .filter(|(_, record)| record.outcome == StepOutcome::Completed)
+            .filter_map(|(step, _)| match &step.action {
+                StepAction::Transfer { to, .. } => Some(destiny_core::InventoryEffect::Relocate {
+                    item: plan.item.clone(),
+                    to: to.clone(),
+                }),
+                StepAction::Equip { .. } => equip_effect.clone(),
+            })
+            .collect();
+        if let Err(error) = self.persist_attempt_effects(membership, &effects, applied) {
             return MoveExecutionOutcome::VerificationFailed(VerificationFailure::new(
                 VerificationFailureReason::RefreshFailed,
                 None,
@@ -1206,13 +1255,7 @@ where
                 evidence,
             ));
         }
-        if evidence.completed_count() == plan.steps().len()
-            && evidence
-                .steps()
-                .iter()
-                .all(|step| step.outcome == StepOutcome::Completed)
-            && attempt_error.is_none()
-        {
+        if applied {
             MoveExecutionOutcome::Applied(evidence)
         } else {
             MoveExecutionOutcome::IncompleteExecution(IncompleteExecution::new(
@@ -1221,6 +1264,66 @@ where
                 evidence,
             ))
         }
+    }
+
+    /// Writes only acknowledged effects. Failure never replays a provider action.
+    pub(crate) fn persist_attempt_effects(
+        &mut self,
+        membership: &DestinyMembership,
+        effects: &[destiny_core::InventoryEffect],
+        applied: bool,
+    ) -> Result<(), AppError> {
+        let persistence = if effects.is_empty() {
+            Ok(())
+        } else {
+            self.repository_mut()
+                .apply_acknowledged_effects(membership, effects)
+                .map(|_| ())
+        };
+        if !applied || persistence.is_err() {
+            let invalidation = self.repository_mut().invalidate_freshness();
+            // Preserve the original local persistence category even if fallback fails.
+            persistence.and(invalidation)
+        } else {
+            persistence
+        }
+    }
+
+    /// Resolves replacement subjects from definitions, never instance heuristics.
+    pub(crate) fn equip_effect(
+        &self,
+        item: &ItemInstance,
+        character: &destiny_core::CharacterId,
+        snapshot: &InventorySnapshot,
+    ) -> Result<destiny_core::InventoryEffect, MutationError>
+    where
+        R: destiny_core::DefinitionRepository,
+    {
+        let target = self.equip_definition(item.item_hash)?;
+        let slot = target
+            .slot
+            .filter(|slot| is_equipment_slot(*slot))
+            .ok_or(MutationError::NotEquippable)?;
+        let mut unequip = Vec::new();
+        for other in snapshot.items.iter().filter(|other| {
+            other.equipped
+                && other.location == ItemLocation::Character(character.clone())
+                && other.instance_id != item.instance_id
+        }) {
+            let definition = self.equip_definition(other.item_hash)?;
+            let same_bucket = match (target.bucket_hash, definition.bucket_hash) {
+                (Some(target), Some(other)) => target == other,
+                _ => definition.slot == Some(slot),
+            };
+            if same_bucket {
+                unequip.push(other.instance_id.clone());
+            }
+        }
+        Ok(destiny_core::InventoryEffect::Equip {
+            item: item.instance_id.clone(),
+            character: character.clone(),
+            unequip,
+        })
     }
 
     /// Runs the ticket's ordered steps in place, stopping at the first that does
@@ -1712,6 +1815,7 @@ mod tests {
         catalog: crate::test_support::InMemoryDefinitionRepository,
         hides_current: bool,
         fails_invalidation: bool,
+        fails_effects: bool,
         calls: RefCell<Vec<&'static str>>,
     }
 
@@ -1727,6 +1831,7 @@ mod tests {
                 ),
                 hides_current: false,
                 fails_invalidation: false,
+                fails_effects: false,
                 calls: RefCell::new(Vec::new()),
             }
         }
@@ -1769,6 +1874,21 @@ mod tests {
     }
 
     impl InventoryRepository for CompositeRepository {
+        fn apply_acknowledged_effects(
+            &mut self,
+            membership: &destiny_core::DestinyMembership,
+            effects: &[destiny_core::InventoryEffect],
+        ) -> Result<InventorySnapshot, AppError> {
+            if self.fails_effects {
+                return Err(AppError::new(ErrorCategory::LocalStorage));
+            }
+            let snapshot = self
+                .inventory
+                .get_mut()
+                .apply_acknowledged_effects(membership, effects)?;
+            self.search.set_instances(snapshot.items.clone());
+            Ok(snapshot)
+        }
         fn freshness_invalidated(&self) -> Result<bool, AppError> {
             self.inventory.borrow().freshness_invalidated()
         }
@@ -2067,7 +2187,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_equip_acknowledges_once_and_invalidates() {
+    fn batch_equip_acknowledges_once_and_updates_projection() {
         use destiny_core::{EquipItemResult, EquipItemStatus, EquipItemsOutcome};
         let shared = gateway();
         let mut first = equip_definition(1, destiny_core::domain::ItemSlot::Kinetic);
@@ -2114,7 +2234,15 @@ mod tests {
         assert!(result.applied());
         assert_eq!(equip.requests().len(), 1);
         assert!(transfer.requests().is_empty());
-        assert!(service.repository().freshness_invalidated().unwrap());
+        assert!(!service.repository().freshness_invalidated().unwrap());
+        assert!(
+            service
+                .committed_snapshot()
+                .unwrap()
+                .items
+                .iter()
+                .all(|item| item.equipped)
+        );
         assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
@@ -2139,7 +2267,7 @@ mod tests {
             equip_definition(3, destiny_core::domain::ItemSlot::Energy),
         ]);
         repo.commit(input.clone());
-        repo.fails_invalidation = storage_failure;
+        repo.fails_effects = storage_failure;
         queue_refresh(&shared, input);
         service(&shared, repo)
     }
@@ -2300,6 +2428,9 @@ mod tests {
                 assert_eq!(paced, transfer.requests().len() + equip.requests().len());
                 if case == "mixed" {
                     assert_eq!(result.items[1].status, crate::BatchItemStatus::Failure(99));
+                    let snapshot = service.committed_snapshot().unwrap();
+                    assert!(snapshot.items[0].equipped);
+                    assert!(!snapshot.items[1].equipped);
                 }
                 if case == "omitted" {
                     assert_eq!(result.items[1].status, crate::BatchItemStatus::NotReported);
@@ -2312,11 +2443,18 @@ mod tests {
                     assert!(!result.local_state_updated);
                     assert!(result.receipt.is_some());
                 } else {
-                    assert!(service.repository().freshness_invalidated().unwrap());
+                    assert_eq!(
+                        service.repository().freshness_invalidated().unwrap(),
+                        !matches!(case, "success_transfers" | "replaced_exotic")
+                    );
                 }
                 assert_eq!(equip.requests().len(), usize::from(case != "transfer_stop"));
                 if case == "transfer_stop" {
                     assert_eq!(transfer.requests().len(), 2);
+                    assert_eq!(
+                        service.committed_snapshot().unwrap().items[0].location,
+                        ItemLocation::Vault
+                    );
                 }
             }
         }
@@ -5450,17 +5588,33 @@ mod tests {
         repository.commit(fresh_vault_projection());
         let mut service = service(&shared, repository);
         let (move_request, plan) = direct_plan(&mut service);
-        let ticket = authorized_ticket(&mut service, &move_request, &plan);
+        let revision = plan.revision;
         let mut transfer = QueuedTransferGateway::new();
         transfer.queue(Ok(TransferOutcome::Transferred));
-
-        assert!(
+        assert!(matches!(
             service
-                .execute_move(&mut transfer, &plan, ticket)
-                .unwrap()
-                .is_complete()
-        );
-        assert_eq!(transfer.calls(), 1);
+                .execute_move_action(&mut transfer, &move_request, &plan, TTL, NOW, NOW)
+                .unwrap(),
+            MoveExecutionOutcome::Applied(_)
+        ));
+        let snapshot = service.committed_snapshot().unwrap();
+        assert_eq!(snapshot.items[0].location, warlock());
+        assert_ne!(snapshot.metadata.revision, revision);
+        assert!(!service.repository().freshness_invalidated().unwrap());
+        let next_request = request(exact("item-1"), DestinationSelector::vault());
+        let next = service
+            .plan_move(&next_request, LIFETIME, TTL, NOW)
+            .unwrap();
+        assert_eq!(next.source, warlock());
+        transfer.queue(Ok(TransferOutcome::Transferred));
+        assert!(matches!(
+            service
+                .execute_move_action(&mut transfer, &next_request, &next, TTL, NOW, NOW)
+                .unwrap(),
+            MoveExecutionOutcome::Applied(_)
+        ));
+        assert_eq!(transfer.requests()[1].from(), &warlock());
+        assert_eq!(transfer.calls(), 2);
         assert_eq!(shared.borrow().membership_calls(), 0);
         assert_eq!(shared.borrow().inventory_calls(), 0);
     }
@@ -5888,7 +6042,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_move_action_classifies_receipts_and_invalidates_freshness() {
+    fn execute_move_action_updates_acknowledgements_and_invalidates_incomplete_attempts() {
         for step in [
             TransferOutcome::Transferred,
             TransferOutcome::Uncertain,
@@ -5917,21 +6071,145 @@ mod tests {
                             POST_ACTION_NOW,
                         )
                         .unwrap();
-                    assert_eq!(shared.borrow().inventory_calls(), 2);
+                    assert_eq!(shared.borrow().inventory_calls(), 1);
                     assert!(!service.repository().freshness_invalidated().unwrap());
+                    let snapshot = service.committed_snapshot().unwrap();
+                    assert_eq!(snapshot.items[0].location, warlock());
+                    assert_ne!(snapshot.metadata.revision, plan.revision);
+                    let next_request =
+                        super::tests::request(exact("item-1"), DestinationSelector::vault());
+                    let next = service
+                        .plan_move(&next_request, LIFETIME, TTL, POST_ACTION_NOW)
+                        .unwrap();
+                    assert_eq!(next.source, warlock());
+                    transfer.queue(Ok(TransferOutcome::Transferred));
+                    assert!(matches!(
+                        service
+                            .execute_move_action(
+                                &mut transfer,
+                                &next_request,
+                                &next,
+                                TTL,
+                                POST_ACTION_NOW,
+                                POST_ACTION_NOW
+                            )
+                            .unwrap(),
+                        MoveExecutionOutcome::Applied(_)
+                    ));
                     assert_eq!(
-                        service.committed_snapshot().unwrap().metadata.checked_at,
-                        POST_ACTION_NOW
+                        service.committed_snapshot().unwrap().items[0].location,
+                        ItemLocation::Vault
                     );
+                    assert_eq!(shared.borrow().inventory_calls(), 1);
                 }
                 MoveExecutionOutcome::IncompleteExecution(incomplete) => {
                     assert_ne!(step, TransferOutcome::Transferred);
                     assert_eq!(incomplete.observed(), &ItemLocation::Vault);
                     assert_eq!(incomplete.evidence().completed_count(), 0);
+                    assert!(service.repository().freshness_invalidated().unwrap());
+                    assert_eq!(
+                        service.committed_snapshot().unwrap().items[0].location,
+                        ItemLocation::Vault
+                    );
                 }
                 other => panic!("unexpected outcome: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn acknowledged_effect_storage_failure_retains_receipt_without_retry() {
+        let (shared, mut service, request, plan) = direct_service_with_plan();
+        service.repository_mut().fails_effects = true;
+        queue_refresh(&shared, fresh_vault_projection());
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Transferred));
+        let outcome = service
+            .execute_move_action(&mut transfer, &request, &plan, TTL, NOW, POST_ACTION_NOW)
+            .unwrap();
+        let MoveExecutionOutcome::VerificationFailed(failure) = outcome else {
+            panic!("expected local failure");
+        };
+        assert_eq!(
+            failure.error(),
+            Some(MutationError::Application(ErrorCategory::LocalStorage))
+        );
+        assert_eq!(failure.evidence().completed_count(), 1);
+        assert_eq!(transfer.calls(), 1);
+        assert!(service.repository().freshness_invalidated().unwrap());
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+    }
+
+    #[test]
+    fn acknowledged_equip_replaces_same_slot_only() {
+        use destiny_core::domain::ItemSlot;
+        let shared = gateway();
+        let mut previous = instance("previous", 2, warlock());
+        previous.equipped = true;
+        let mut other = instance("other", 3, warlock());
+        other.equipped = true;
+        let mut repo = CompositeRepository::with_definitions(vec![
+            equip_definition(1, ItemSlot::Kinetic),
+            equip_definition(2, ItemSlot::Kinetic),
+            equip_definition(3, ItemSlot::Helmet),
+        ]);
+        repo.commit(projection(
+            NOW,
+            vec![warlock_character()],
+            vec![
+                instance("candidate", 1, ItemLocation::Vault),
+                previous,
+                other,
+            ],
+        ));
+        let mut service = service(&shared, repo);
+        let plan = service
+            .plan_equip(&equip_request(), LIFETIME, TTL, NOW)
+            .unwrap();
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Transferred));
+        let mut equip = crate::test_support::QueuedEquipGateway::new();
+        equip.queue(Ok(destiny_core::EquipOutcome::Equipped));
+        assert!(matches!(
+            service
+                .execute_equip_action(
+                    (&mut transfer, &mut equip),
+                    &equip_request(),
+                    &plan,
+                    TTL,
+                    NOW,
+                    POST_ACTION_NOW
+                )
+                .unwrap(),
+            MoveExecutionOutcome::Applied(_)
+        ));
+        let snapshot = service.committed_snapshot().unwrap();
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .find(|i| i.instance_id == item_id("candidate"))
+                .unwrap()
+                .equipped
+        );
+        assert!(
+            !snapshot
+                .items
+                .iter()
+                .find(|i| i.instance_id == item_id("previous"))
+                .unwrap()
+                .equipped
+        );
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .find(|i| i.instance_id == item_id("other"))
+                .unwrap()
+                .equipped
+        );
+        assert!(!service.repository().freshness_invalidated().unwrap());
+        assert_eq!(shared.borrow().inventory_calls(), 0);
     }
 
     #[test]

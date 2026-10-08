@@ -997,6 +997,21 @@ impl FixtureRepository {
 }
 
 impl InventoryRepository for FixtureRepository {
+    fn apply_acknowledged_effects(
+        &mut self,
+        membership: &DestinyMembership,
+        effects: &[destiny_app::InventoryEffect],
+    ) -> Result<InventorySnapshot, AppError> {
+        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("batch-storage") {
+            return Err(AppError::new(ErrorCategory::LocalStorage));
+        }
+        let mut projection = self.projection()?;
+        let snapshot = projection
+            .inventory
+            .apply_acknowledged_effects(membership, effects)?;
+        projection.search.set_instances(snapshot.items.clone());
+        Ok(snapshot)
+    }
     fn freshness_invalidated(&self) -> Result<bool, AppError> {
         self.projection()?.inventory.freshness_invalidated()
     }
