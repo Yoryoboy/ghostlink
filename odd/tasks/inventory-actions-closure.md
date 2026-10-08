@@ -53,7 +53,7 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   invalidate local freshness; CLI exit 0 and MCP success on acknowledgement;
   keep incomplete/refusal/preflight failures.
 - [x] **IAX-002 — Optimistic lock/unlock.**
-- [ ] **IAX-003 — Optimistic Postmaster pull and pull-stack.**
+- [x] **IAX-003 — Optimistic Postmaster pull and pull-stack.**
 - [ ] **IAX-004 — EquipLoadout adapter and port** (allowlist, request, receipt).
 - [ ] **IAX-005 — Apply loadout service, CLI and MCP** (resolve slot and
   character, optimistic outcome, docs/skill).
@@ -96,8 +96,34 @@ in-game loadouts, batch equip, cleanups, and a final interactive live validation
   RED observed stale-profile CLI pending/43 and MCP verified-success instead of
   `applied`; offline workspace GREEN: 1,843 passed / 0 failed. Docs/skill updated;
   checkbox intentionally remains open. No live account action or commit.
+- IAX-003 RED progress: added stale-Postmaster acknowledgement regressions for
+  both pull services. Offline `cargo test --workspace --all-features` observed
+  `NotYetObserved` (instanced) and `Uncertain` (stack) instead of `Applied`;
+  destiny-app had 439 passed / 2 failed. Implementation and CLI/MCP regressions
+  remain pending; checkbox intentionally stays open. No live account action.
+- IAX-003 implementation progress: pull and pull-stack return receipt-based
+  `Applied` (CLI 0 / MCP success), with no post-action profile request, wait or
+  retry. Every dispatched outcome invalidates repository freshness; invalidation
+  failure retains the receipt and fails closed (CLI 42 / MCP error). Refusals and
+  transport uncertainty remain failures (41). Storage-failure behavior is covered
+  for both services, CLI pipelines and MCP stdio tools. Deleted tests covered
+  arrival classification, observation ordering/timestamps, refresh retries and
+  quantity-delta verification; preflight, membership/definition safety, capacity,
+  quantity selection and single-dispatch coverage remain. Receipt/refusal,
+  uncertainty and sanitized failure-output cases were replaced for the new contract.
+  Offline GREEN: 1,818 passed / 0 failed / 0 ignored across 66 result suites;
+  fmt check, clippy `-D warnings` and diff check PASS. Docs/skill and pull help
+  updated. Checkbox intentionally stays open for parent review; no live action
+  or commit.
+- IAX-003 coverage follow-up: restored exact refusal receipts, applied dispatch/redaction and hostile control cleaning; retained stack equivalents and restored text control safety; workspace 1,820 passed / 0 failed.
 - IAX-001 committed as `635a552`.
 - IAX-002 independent verification: fmt, clippy, all-features and default
   workspace tests (0 failures), diff check PASS; Applied only on HTTP 200 +
   ErrorCode 1; no post-action request; Vault routing via first committed
   character preserved; move/equip/pull untouched. No findings.
+- IAX-002 committed as `0bf420f`.
+- IAX-003 independent verification: first pass FAIL on deleted-test audit
+  (44 deleted/renamed: 21 observation-only, 23 safety/mixed; three output safety
+  tests only partially replaced). Coverage restored (test-only); narrow
+  re-verification PASS: 1,820 passed / 0 failed, clippy and fmt PASS, production
+  unchanged. Default features 1,796 / 0.

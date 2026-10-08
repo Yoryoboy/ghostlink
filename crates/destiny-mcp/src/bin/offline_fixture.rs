@@ -185,7 +185,6 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         WorldPullGateway {
             world: Arc::clone(&world),
         },
-        FixturePullDelay,
         TTL,
     );
     let mut stack_manifest = destiny_app::test_support::QueuedManifestGateway::new();
@@ -226,7 +225,6 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         WorldStackGateway {
             world: Arc::clone(&world),
         },
-        FixturePullDelay,
         TTL,
     );
     let mutation_service = ComposedMutationService::new(
@@ -653,12 +651,6 @@ impl ProfileGateway for WorldGateway {
     }
 }
 
-struct FixturePullDelay;
-impl destiny_app::RetryDelay for FixturePullDelay {
-    fn wait(&mut self, duration: std::time::Duration) {
-        assert_eq!(duration, std::time::Duration::from_secs(2));
-    }
-}
 struct WorldStackGateway {
     world: Arc<Mutex<FixtureWorld>>,
 }
@@ -668,16 +660,17 @@ impl destiny_app::StackPullGateway for WorldStackGateway {
         request: &destiny_app::StackPullRequest,
     ) -> Result<destiny_app::StackPullOutcome, AppError> {
         assert_eq!(request.quantity(), 3);
-        self.world.lock().expect("fixture world").stack_arrived = true;
-        Ok(
-            if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("stack-refused") {
-                destiny_app::StackPullOutcome::Rejected(
-                    destiny_app::StackPullRejection::InvalidRequest,
-                )
-            } else {
-                destiny_app::StackPullOutcome::Acknowledged
-            },
-        )
+        let scenario = std::env::var(SCENARIO_ENV).unwrap_or_default();
+        if scenario != "stack-pending" && scenario != "stack-uncertain" {
+            self.world.lock().expect("fixture world").stack_arrived = true;
+        }
+        Ok(match scenario.as_str() {
+            "stack-refused" => destiny_app::StackPullOutcome::Rejected(
+                destiny_app::StackPullRejection::InvalidRequest,
+            ),
+            "stack-uncertain" => destiny_app::StackPullOutcome::Uncertain,
+            _ => destiny_app::StackPullOutcome::Acknowledged,
+        })
     }
 }
 struct WorldPullGateway {
@@ -874,6 +867,12 @@ impl InventoryRepository for FixtureRepository {
         self.inventory.freshness_invalidated()
     }
     fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        if matches!(
+            std::env::var(SCENARIO_ENV).ok().as_deref(),
+            Some("pull-storage" | "stack-storage")
+        ) {
+            return Err(AppError::new(ErrorCategory::LocalStorage));
+        }
         self.inventory.invalidate_freshness()
     }
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {

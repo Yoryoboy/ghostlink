@@ -303,13 +303,6 @@ type MutationPorts<C> = (
     >,
 );
 
-struct PullDelay;
-impl destiny_app::RetryDelay for PullDelay {
-    fn wait(&mut self, duration: std::time::Duration) {
-        std::thread::sleep(duration);
-    }
-}
-
 /// Wires the concrete adapters into one read-plus-mutation tool server.
 ///
 /// The read service and the mutation service share the profile gateway and the
@@ -391,7 +384,6 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
             SystemPlanIds::new(SystemClock::new()),
         ),
         ports.3,
-        PullDelay,
         policy,
     );
     let stack = crate::service::StackPullToolService::new(
@@ -405,7 +397,6 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
             SystemPlanIds::new(SystemClock::new()),
         ),
         ports.5,
-        PullDelay,
         policy,
     );
     let mutations = MutationService::new(

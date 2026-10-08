@@ -1,15 +1,15 @@
 //! Shared presentation of anonymous-stack Postmaster pulls, not genuine instances.
 //! Callers must serialize local inventory publication and definition use through
-//! execution. Published quantities are neither causal proof nor an atomic guarantee.
+//! execution. Acknowledgement is not a quantity observation or atomic guarantee.
 //! This module makes no live or full-stack readiness claim.
 //! Quantities are same-hash totals: destination means the normal bucket in
 //! ProfileInventory; profile means all ProfileInventory buckets; postmaster
 //! means all Postmaster buckets of the owner character.
 use destiny_app::{
-    AppError, ErrorCategory, PullDisposition, PullObservationFailure, SourceMarker,
-    StackPullArrival, StackPullAttempt, StackPullExecutionFailure, StackPullExecutionFailureReason,
-    StackPullExecutionOutcome, StackPullOutcome, StackPullPlanningError, StackPullPlanningRefusal,
-    StackPullPreDispatchError, StackPullRefusal, StackPullRejection,
+    AppError, ErrorCategory, PullDisposition, StackPullAttempt, StackPullExecutionFailure,
+    StackPullExecutionFailureReason, StackPullExecutionOutcome, StackPullOutcome,
+    StackPullPlanningError, StackPullPlanningRefusal, StackPullPreDispatchError, StackPullRefusal,
+    StackPullRejection,
 };
 use serde_json::{Value, json};
 
@@ -20,35 +20,8 @@ pub struct StackPullOutput {
     value: Value,
 }
 impl StackPullOutput {
-    /// Copy the domain disposition independently of receipt and quantity evidence.
+    /// Copy the domain disposition and exact receipt without inventing post quantities.
     pub fn from_outcome(outcome: &StackPullExecutionOutcome) -> Self {
-        let context = outcome.context();
-        let observations: Vec<_> = outcome.observations().iter().map(|attempt| {
-            let observation = attempt.observation();
-            json!({
-                "checked_at": attempt.checked_at().map(|time| time.seconds()),
-                "classification": observation.map(|pair| arrival_kind(pair.classification())),
-                "failure": attempt.failure().map(observation_failure),
-                "publication": observation.map(|pair| {
-                    let metadata = pair.metadata();
-                    json!({
-                        "checked_at": metadata.checked_at.seconds(),
-                        "revision": metadata.revision.value(),
-                        "definition_version": clean(metadata.definition_version.as_str()),
-                        "dataset": "profile_inventory",
-                        "source": match metadata.source {
-                            SourceMarker::Profile => "profile",
-                            SourceMarker::Manifest => "manifest",
-                        },
-                    })
-                }),
-                "quantities": {
-                    "destination": {"pre": context.pre_destination_quantity(), "post": observation.and_then(|pair| pair.destination_quantity())},
-                    "profile": {"pre": context.pre_profile_quantity(), "post": observation.and_then(|pair| pair.profile_quantity())},
-                    "postmaster": {"pre": context.pre_postmaster_quantity(), "post": observation.and_then(|pair| pair.postmaster_quantity())},
-                },
-            })
-        }).collect();
         let disposition = outcome.disposition();
         Self {
             disposition,
@@ -57,7 +30,7 @@ impl StackPullOutput {
                 "plan_id": clean(outcome.plan_id().as_str()),
                 "dispatch": dispatch(outcome.dispatch()),
                 "receipt": receipt(outcome.gateway_outcome()),
-                "failure": null, "observations": observations,
+                "failure": outcome.local_state_error().map(local_state_failure),
             }),
         }
     }
@@ -88,7 +61,7 @@ impl StackPullOutput {
             value: json!({
                 "kind":"stack_pull", "disposition":"refused",
                 "plan_id":plan_id.map(clean), "dispatch":dispatch,
-                "receipt":null, "failure":failure, "observations":[],
+                "receipt":null, "failure":failure,
             }),
         }
     }
@@ -96,13 +69,12 @@ impl StackPullOutput {
         self.disposition
     }
     pub fn is_success(&self) -> bool {
-        self.disposition == PullDisposition::Verified
+        self.disposition == PullDisposition::Applied
     }
     pub fn json(&self) -> Value {
         self.value.clone()
     }
-    /// Fixed field order and original attempt order, including equal timestamps.
-    /// Unknown evidence is printed as null, never as a fabricated zero.
+    /// Fixed field order; no invented post-action quantity evidence.
     pub fn render_text(&self) -> String {
         let value = &self.value;
         let mut lines = vec![format!(
@@ -147,32 +119,6 @@ impl StackPullOutput {
             lines.push(format!("receipt_reason: {}", text(&receipt["reason"])));
         }
         lines.push(format!("failure: {}", text(&value["failure"])));
-        if let Some(observations) = value["observations"].as_array() {
-            for (index, observation) in observations.iter().enumerate() {
-                lines.push(format!("observation {}:", index + 1));
-                lines.push(format!(
-                    "  checked_at: {}",
-                    text(&observation["checked_at"])
-                ));
-                lines.push(format!(
-                    "  classification: {}",
-                    text(&observation["classification"])
-                ));
-                for scope in ["destination", "profile", "postmaster"] {
-                    let quantity = &observation["quantities"][scope];
-                    lines.push(format!(
-                        "  {scope}_quantity: {} -> {}",
-                        text(&quantity["pre"]),
-                        text(&quantity["post"])
-                    ));
-                }
-                lines.push(format!(
-                    "  publication: {}",
-                    text(&observation["publication"])
-                ));
-                lines.push(format!("  failure: {}", text(&observation["failure"])));
-            }
-        }
         lines.join("\n")
     }
 }
@@ -243,17 +189,9 @@ fn pre_dispatch_failure(error: &StackPullPreDispatchError) -> Value {
     };
     json!({"stage":"pre_dispatch", "kind":kind})
 }
-fn observation_failure(error: &PullObservationFailure) -> Value {
-    match error {
-        PullObservationFailure::Clock(error) => infrastructure(error, "observation", "clock"),
-        PullObservationFailure::Refresh(error) => infrastructure(error, "observation", "refresh"),
-        PullObservationFailure::BackwardsClock => {
-            json!({"stage":"observation", "kind":"backwards_clock"})
-        }
-        PullObservationFailure::SkippedFresh => {
-            json!({"stage":"observation", "kind":"skipped_fresh"})
-        }
-    }
+fn local_state_failure(error: &AppError) -> Value {
+    json!({"stage":"local_state", "kind":"invalidation_failed", "category":category_kind(error.category()),
+        "message":"local state could not be updated after the action; do not blindly retry"})
 }
 // Exhaustive closed mappings intentionally reject new variants at compile time,
 // rather than serializing debug names or untrusted provider strings.
@@ -265,13 +203,7 @@ macro_rules! kinds {
     };
 }
 kinds!(disposition_kind, PullDisposition, {
-    Verified => "verified", NotYetObserved => "not_yet_observed",
-    Uncertain => "uncertain", Refused => "refused"
-});
-kinds!(arrival_kind, StackPullArrival, {
-    VerifiedArrival => "verified_arrival", QuantityMismatch => "quantity_mismatch",
-    MembershipMismatch => "membership_mismatch", DefinitionVersionDrift => "definition_version_drift",
-    ArithmeticOverflow => "arithmetic_overflow"
+    Applied => "applied", Uncertain => "uncertain", Refused => "refused", LocalStateFailed => "local_state_failed"
 });
 kinds!(capacity_kind, StackPullRefusal, {
     NoPostmasterStack => "no_postmaster_stack", ExceedsSmallestPostmasterStack => "exceeds_smallest_postmaster_stack",

@@ -56,8 +56,13 @@ const MOVE_ITEM_TOOL: &str = "move_item";
 mod equip_support;
 
 #[tokio::test]
-async fn stack_stdio_verified_refused_and_invalid() {
-    for (scenario, disposition) in [("stack-success", "verified"), ("stack-refused", "refused")] {
+async fn stack_stdio_acknowledged_refused_uncertain_and_invalid() {
+    for (scenario, disposition) in [
+        ("stack-success", "applied"),
+        ("stack-pending", "applied"),
+        ("stack-refused", "refused"),
+        ("stack-uncertain", "uncertain"),
+    ] {
         let mut session = FixtureSession::spawn(Some(scenario)).await;
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
@@ -95,12 +100,8 @@ async fn stack_stdio_verified_refused_and_invalid() {
         let output = structured(&response);
         assert_eq!(output["kind"], "stack_pull");
         assert_eq!(output["disposition"], disposition, "{response}");
-        assert_eq!(response["result"]["isError"], disposition != "verified");
-        assert_eq!(
-            output["observations"][0]["classification"],
-            "verified_arrival"
-        );
-        assert_eq!(output["observations"].as_array().unwrap().len(), 1);
+        assert_eq!(response["result"]["isError"], disposition != "applied");
+        assert!(output.get("observations").is_none());
         session.shutdown().await;
     }
 }
@@ -108,8 +109,8 @@ async fn stack_stdio_verified_refused_and_invalid() {
 #[tokio::test]
 async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
     for (scenario, disposition, receipt) in [
-        ("pull-success", "verified", "acknowledged"),
-        ("pull-pending", "not_yet_observed", "acknowledged"),
+        ("pull-success", "applied", "acknowledged"),
+        ("pull-pending", "applied", "acknowledged"),
         ("pull-uncertain", "uncertain", "uncertain"),
         ("pull-refused-arrival", "refused", "rejected"),
     ] {
@@ -143,24 +144,11 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
         assert_eq!(output["kind"], "instanced_pull");
         assert_eq!(output["disposition"], disposition, "{scenario}: {response}");
         assert_eq!(output["receipt"]["kind"], receipt);
-        assert_eq!(response["result"]["isError"], disposition != "verified");
+        assert_eq!(response["result"]["isError"], disposition != "applied");
         assert_eq!(output["dispatch"]["item"]["instance_id"], "123");
         assert_eq!(output["dispatch"]["destination"]["character_id"], "2");
-        let observations = output["observations"].as_array().unwrap();
+        assert!(output.get("observations").is_none());
         let arrived = matches!(scenario, "pull-success" | "pull-refused-arrival");
-        assert_eq!(observations.len(), if arrived { 1 } else { 3 });
-        assert_eq!(
-            observations[0]["classification"],
-            if arrived {
-                "verified_arrival"
-            } else {
-                "still_in_postmaster"
-            }
-        );
-        assert_eq!(
-            observations[0]["target"]["runtime_bucket"],
-            if arrived { 1498876634 } else { 215593132 }
-        );
         if arrived {
             let repeated = session.call_tool("pull_item", json!({"item":"123"})).await;
             assert_eq!(repeated["result"]["isError"], true);
@@ -175,6 +163,34 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
     assert_eq!(structured(&response)["failure"]["stage"], "gateway");
     assert!(structured(&response)["receipt"].is_null());
     session.shutdown().await;
+}
+
+#[tokio::test]
+async fn pull_storage_failure_is_error_even_after_acknowledgement() {
+    for (scenario, tool, args) in [
+        ("pull-storage", "pull_item", json!({"item":"123"})),
+        (
+            "stack-storage",
+            "pull_stack",
+            json!({"item_hash":"7", "amount":"3", "character":"2"}),
+        ),
+    ] {
+        let mut session = FixtureSession::spawn(Some(scenario)).await;
+        let response = session.call_tool(tool, args).await;
+        assert_eq!(response["result"]["isError"], true);
+        let output = structured(&response);
+        assert_eq!(output["disposition"], "local_state_failed");
+        assert_eq!(output["receipt"]["kind"], "acknowledged");
+        assert_eq!(output["failure"]["category"], "local_storage");
+        assert!(
+            output["failure"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("local state could not be updated after the action")
+        );
+        assert!(output.get("observations").is_none());
+        session.shutdown().await;
+    }
 }
 
 #[tokio::test]

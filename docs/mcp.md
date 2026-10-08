@@ -158,16 +158,19 @@ No inventory clearing, arbitrary destination, preview, rollback or redispatch.
 
 `structuredContent` is the same shared JSON as `ghostlink pull --json`:
 `kind: "instanced_pull"`, `disposition`, `plan_id`, `dispatch`, independent
-`receipt` and `failure`, and ordered `observations`. Each observation retains its
-classification, failure and publication/target evidence separately. There is at
-most one action and three post-action observations, two seconds between attempts.
-Only `disposition: "verified"` has `isError=false`; `not_yet_observed`, `uncertain`
-and `refused` have `isError=true`. Acknowledgement is not application proof; even
-observed arrival cannot turn a refusal or timestamp failure into success.
+`receipt` and `failure`. Bungie acknowledgement yields `disposition: "applied"`
+with `isError=false` (CLI 0), not observed arrival. There is at most one action,
+no post-action profile request or wait, and no `observations` field. Dispatched
+attempts durably invalidate local freshness so the next ordinary read forces sync;
+no guessed arrival state is published. `uncertain` and received `refused` remain
+errors (CLI 41). Invalidation storage failure returns `local_state_failed` with
+`isError=true` (CLI 42), retaining the receipt and reporting "local state could
+not be updated after the action". Pre-action refusals retain category exits.
 
-Never blindly retry an unconfirmed outcome. Re-read state later and report receipt
-separately from arrival. Local serialization excludes neither other processes nor
-game activity; observations are not causal or atomic guarantees. Non-instanced stacks use `pull_stack`; live account validation is still pending.
+Never blindly retry. Re-read state and reassess explicit intent first. Local
+serialization excludes neither other processes nor game activity; acknowledgement
+is not an atomic or observed-state guarantee. Non-instanced stacks use `pull_stack`;
+live account validation is still pending.
 
 ## Pull a non-instanced Postmaster stack
 
@@ -191,12 +194,17 @@ uses the existing operation guard and production gateway/repository clones.
 
 `structuredContent` is the shared `ghostlink pull-stack --json` shape: `kind:
 "stack_pull"`, `disposition`, `plan_id`, `dispatch`, independent `receipt` and
-`failure`, and ordered `observations`. One action, at most three fresh observations,
-two seconds between attempts. Arrival requires an exact amount increase in the
-destination and decrease in Postmaster. Only `verified` has `isError=false`;
-refusal stays an error even if arrival is observed. Never blindly retry uncertain
-or refused outcomes. Re-read later; observations are not causal or atomic proof.
-Live account validation remains pending.
+`failure`; dispatch retains preflight totals, not invented post quantities.
+Acknowledgement returns `applied`, with `isError=false` (CLI 0), not observed
+quantity arrival. There is no post-action request, wait or `observations` field.
+Dispatched attempts durably invalidate local freshness; the next ordinary read
+forces sync without publishing guessed quantities. Transport uncertainty and
+received refusals remain errors (CLI 41); invalidation storage failure returns
+`local_state_failed` (CLI 42 / `isError=true`) with the exact receipt and "local
+state could not be updated after the action". Pre-action refusals retain category
+exits. There are no provider-lag failures or exit 43. Never blindly retry: re-read
+and reassess explicit hash/amount/owner intent. Acceptance is not an atomic or
+observed-state guarantee. Live account validation remains pending.
 
 ## Inventory search and inspection
 

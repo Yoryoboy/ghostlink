@@ -7,8 +7,8 @@ instruction object on stdout before waiting.) The failure object is either:
 - `{"error":{"code":"...","message":"..."}}` for every command, including
   `pull-stack` / `pull` / `move` / `equip` / `lock` / `unlock` argument, configuration and authorization failures; or
 - a mutation result with `status` and `reason`, after argument validation; or
-- `kind: "instanced_pull"` with independent `disposition`, `receipt`, `failure`
-  and ordered `observations` for pull planning/execution evidence.
+- `kind: "instanced_pull"` or `kind: "stack_pull"` with independent
+  `disposition`, `receipt` and `failure` for pull planning/execution evidence.
 
 ## Error codes
 
@@ -35,17 +35,17 @@ instruction object on stdout before waiting.) The failure object is either:
 
 | `disposition` | Exit | Agent action |
 |---|---:|---|
-| `verified` | 0 | Report exact arrival separately from the received receipt; observation is not causal proof. |
-| `not_yet_observed` | 43 | Acknowledged but no verified arrival; do not claim application. Check later with sync/inspect, never blindly repeat. |
-| `uncertain` | 42 | Report all ordered classifications AND failures, then sync/inspect. Arrival plus timestamp failure remains unverified. |
-| `refused` | varies | Report `failure` or received refusal and any arrival separately; do not work around or retry. |
+| `applied` | 0 | Bungie acknowledged the action, not observed arrival. Next ordinary read forces sync. |
+| `uncertain` | 41 | No clear acknowledgement; sync/inspect and reassess intent, never blindly retry. |
+| `refused` | 41 / varies | Received refusal exits 41; pre-action refusal retains category exits. Report without working around it. |
+| `local_state_failed` | 42 | Local state could not be updated after the action; receipt retained. Sync/inspect, do not retry. |
 
-Refusal defaults to 40. Received authentication refusal is 11, transient refusal
-21. Planning missing target is 32, ambiguity 31, missing definition 33; preflight
-drift/expiry is 30. Typed infrastructure errors use the category table above.
-Pre-action failures have no receipt or post-action observations. Confirmed refusal
-remains refused even if arrival is observed. All nonzero results stay on stderr
-as complete structured evidence, not a generic error replacing that evidence.
+Planning missing target is 32, ambiguity 31, missing definition 33; preflight
+drift/expiry is 30, other eligibility refusals default to 40. Typed pre-action
+infrastructure errors use the category table above. No post-action profile request,
+wait or observations; no provider-lag exit 43. Dispatched receipts invalidate local
+freshness durably, without guessed state. Pre-action failures have no receipt.
+All nonzero results stay on stderr as complete structured evidence.
 
 Pull accepts only a canonical positive int64 instance ID, not names, hashes,
 quantity, destination overrides or anonymous stacks. Requires authenticated
@@ -56,21 +56,19 @@ claim. MCP `pull_item` uses the same shared output.
 ## Stack pull `disposition`
 
 `ghostlink pull-stack <ITEM_HASH> --amount <N> --character <CHARACTER_ID>`
-uses `kind: "stack_pull"` with independent receipt, disposition, failure and
-ordered observations. Canonical uint32 hash, positive int32 amount and positive
-int64 owner ID are required; invalid input exits 2 before any I/O.
-Only `verified` exits 0. Lag and uncertain evidence exit 42; sync and read
-Postmaster later, never blindly repeat. The current service does not emit
-`not_yet_observed`; its reserved mapping is 43, not confirmed application.
-Refusal defaults to 40; received auth 11, transient 21. Missing definition 33,
-ambiguous definition 31, preflight drift/expiry 30; infrastructure uses the
-existing category table. No new exit codes. Nonzero evidence stays on stderr.
-Report all quantity classifications AND failures; null quantity is unknown.
-Confirmed refusal remains refused even with arrival. Requires authenticated
-membership, qualified non-instanced metadata and fresh pinned account-wide
-capacity evidence. Owner selects the Postmaster source, not a destination.
-Reassess explicit hash/amount/owner intent after fresh reads. Observed quantities
-are neither causal nor atomic proof; offline checks do not establish live readiness.
+uses `kind: "stack_pull"` with independent receipt, disposition and failure.
+Canonical uint32 hash, positive int32 amount and positive int64 owner ID are
+required; invalid input exits 2 before any I/O. The pull disposition table above
+also applies: `applied` is 0, received refusal/transport uncertainty 41, local
+invalidation storage failure 42. No provider-lag exit 43, post-action request,
+wait or observations; preflight totals are not invented post quantities.
+Missing definition is 33, ambiguous definition 31, preflight drift/expiry 30;
+other pre-action failures retain category exits. Nonzero evidence stays on stderr.
+Requires authenticated membership, qualified non-instanced metadata and fresh
+pinned account-wide capacity evidence. Owner selects the Postmaster source, not
+a destination. Sync/read Postmaster and reassess explicit hash/amount/owner intent
+before another action. Acknowledgement is not an atomic or observed-state guarantee;
+offline checks do not establish live readiness.
 
 ## Move `status`
 

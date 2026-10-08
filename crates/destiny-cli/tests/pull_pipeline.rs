@@ -12,7 +12,7 @@ use destiny_cli::{
     pull::pull_item,
     runner::{parse_process, run_pull_with},
 };
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{cell::RefCell, rc::Rc};
 
 const NOW: Timestamp = Timestamp::new(100);
 const FRESHNESS: FreshnessPolicy = FreshnessPolicy { ttl_seconds: 300 };
@@ -111,13 +111,6 @@ impl ProfileGateway for Profile {
             .load_inventory_with_observations_scoped(membership, reason)
     }
 }
-#[derive(Default)]
-struct Delay(Vec<Duration>);
-impl RetryDelay for Delay {
-    fn wait(&mut self, delay: Duration) {
-        self.0.push(delay);
-    }
-}
 type Service = InstancedPullService<
     Profile,
     InMemoryInventoryRepository,
@@ -130,7 +123,6 @@ struct Fixture {
     service: Service,
     profile: Profile,
     action: QueuedInstancedPullGateway,
-    delay: Delay,
     constructions: usize,
 }
 impl Fixture {
@@ -141,6 +133,25 @@ impl Fixture {
         receipt: Result<InstancedPullOutcome, AppError>,
         safe: Option<bool>,
         evidence_version: DefinitionVersion,
+    ) -> Self {
+        Self::with_repository(
+            pre,
+            execution_pre,
+            posts,
+            receipt,
+            safe,
+            evidence_version,
+            InMemoryInventoryRepository::new(),
+        )
+    }
+    fn with_repository(
+        pre: InventorySnapshotInput,
+        execution_pre: InventorySnapshotInput,
+        posts: Vec<Result<ProfileAcquisition, AppError>>,
+        receipt: Result<InstancedPullOutcome, AppError>,
+        safe: Option<bool>,
+        evidence_version: DefinitionVersion,
+        repository: InMemoryInventoryRepository,
     ) -> Self {
         let mut profile = QueuedProfileGateway::new();
         // Production resolves authenticated context once before planning. Every
@@ -180,7 +191,7 @@ impl Fixture {
             .unwrap()));
         }
         let service = InstancedPullService::new(
-            ProfileSyncService::new(profile.clone(), InMemoryInventoryRepository::new()),
+            ProfileSyncService::new(profile.clone(), repository),
             InMemoryDefinitionRepository::new(version(), vec![definition]),
             manifest,
             pinned_equipment_capacity_policy(),
@@ -193,7 +204,6 @@ impl Fixture {
             service,
             profile,
             action,
-            delay: Delay::default(),
             constructions: 0,
         }
     }
@@ -221,7 +231,6 @@ impl Fixture {
                 membership,
                 &mut self.service,
                 &mut self.action,
-                &mut self.delay,
                 FRESHNESS,
             ))
         })
@@ -238,6 +247,34 @@ fn body(output: &destiny_cli::ProcessOutput) -> serde_json::Value {
     })
     .unwrap()
 }
+#[test]
+fn acknowledged_pull_storage_failure_exits_42_and_retains_receipt() {
+    let mut fixture = Fixture::with_repository(
+        input(postmaster(), 100),
+        input(postmaster(), 100),
+        vec![],
+        Ok(InstancedPullOutcome::Acknowledged),
+        Some(false),
+        version(),
+        InMemoryInventoryRepository::new().with_invalidation_failure(),
+    );
+    let output = fixture.run(&["ghostlink", "pull", ITEM, "--json"]);
+    assert_eq!(output.exit_code, 42);
+    assert!(output.stdout.is_empty());
+    let value = body(&output);
+    assert_eq!(value["disposition"], "local_state_failed");
+    assert_eq!(value["receipt"]["kind"], "acknowledged");
+    assert_eq!(value["failure"]["category"], "local_storage");
+    assert!(
+        value["failure"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("local state could not be updated after the action")
+    );
+    assert_eq!(fixture.action.calls(), 1);
+    assert_eq!(fixture.reasons(), [ProfileSyncReason::Preflight; 2]);
+}
+
 #[test]
 fn canonical_pull_command_is_accepted() {
     assert!(parse_process(["ghostlink", "pull", ITEM, "--json"]).is_ok());
@@ -266,7 +303,6 @@ fn invalid_selection_has_zero_auth_service_and_action_work() {
         assert_eq!(fixture.profile.0.borrow().membership_calls(), 0);
         assert_eq!(fixture.profile.0.borrow().observed_acquisition_calls(), 0);
         assert_eq!(fixture.action.calls(), 0);
-        assert!(fixture.delay.0.is_empty());
         assert!(!output.stderr.contains("PRIVATE"));
     }
     for flag in [
@@ -284,36 +320,25 @@ fn invalid_selection_has_zero_auth_service_and_action_work() {
     }
 }
 #[test]
-fn verified_receipt_and_arrival_propagate_canonical_id_and_only_one_action() {
+fn acknowledged_stale_profile_propagates_applied_and_only_one_action() {
     let mut fixture = Fixture::standard(
-        vec![Ok(acquisition(input(arrival(), 100)))],
+        vec![Ok(acquisition(input(postmaster(), 100)))],
         Ok(InstancedPullOutcome::Acknowledged),
     );
     let output = fixture.run(&["ghostlink", "pull", ITEM, "--json"]);
     assert_eq!(output.exit_code, 0);
     assert!(output.stderr.is_empty());
     let value = body(&output);
-    assert_eq!(value["disposition"], "verified");
+    assert_eq!(value["disposition"], "applied");
     assert_eq!(value["receipt"]["kind"], "acknowledged");
-    assert_eq!(
-        value["observations"][0]["classification"],
-        "verified_arrival"
-    );
+    assert!(value.get("observations").is_none());
     assert_eq!(value["dispatch"]["item"]["instance_id"], ITEM);
     assert_eq!(value["dispatch"]["destination"]["character_id"], "2");
     assert_eq!(fixture.action.calls(), 1);
     assert_eq!(fixture.action.requests()[0].item().as_str(), ITEM);
     assert_eq!(fixture.action.requests()[0].item_hash().value(), 7);
-    assert_eq!(
-        fixture.reasons(),
-        [
-            ProfileSyncReason::Preflight,
-            ProfileSyncReason::Preflight,
-            ProfileSyncReason::PostAction
-        ]
-    );
-    assert_eq!(fixture.profile.0.borrow().membership_calls(), 4);
-    assert!(fixture.delay.0.is_empty());
+    assert_eq!(fixture.reasons(), [ProfileSyncReason::Preflight; 2]);
+    assert_eq!(fixture.profile.0.borrow().membership_calls(), 3);
 }
 #[test]
 fn eligibility_capacity_and_preflight_drift_refuse_without_dispatch_or_observation() {
@@ -388,127 +413,32 @@ fn eligibility_capacity_and_preflight_drift_refuse_without_dispatch_or_observati
         assert_eq!(value["failure"]["stage"], stage);
         assert_eq!(value["failure"]["reason"], reason);
         assert!(value["receipt"].is_null());
-        assert_eq!(value["observations"], serde_json::json!([]));
+        assert!(value.get("observations").is_none());
         assert_eq!(fixture.action.calls(), 0);
         assert!(!fixture.reasons().contains(&ProfileSyncReason::PostAction));
     }
 }
 #[test]
-fn pending_uncertain_and_refused_even_with_arrival_are_nonzero() {
-    for (receipt, location, disposition, code, count) in [
-        (
-            InstancedPullOutcome::Acknowledged,
-            postmaster(),
-            "not_yet_observed",
-            43,
-            3,
-        ),
-        (
-            InstancedPullOutcome::Uncertain,
-            postmaster(),
-            "uncertain",
-            42,
-            3,
-        ),
+fn uncertain_and_refused_receipts_are_nonzero_without_observation() {
+    for (receipt, disposition) in [
+        (InstancedPullOutcome::Uncertain, "uncertain"),
         (
             InstancedPullOutcome::Rejected(InstancedPullRejection::InvalidRequest),
-            arrival(),
             "refused",
-            40,
-            1,
         ),
-        (
-            InstancedPullOutcome::AuthenticationRefused,
-            arrival(),
-            "refused",
-            11,
-            1,
-        ),
-        (InstancedPullOutcome::Transient, arrival(), "refused", 21, 1),
+        (InstancedPullOutcome::AuthenticationRefused, "refused"),
+        (InstancedPullOutcome::Transient, "refused"),
     ] {
-        let posts = (0..3)
-            .map(|_| Ok(acquisition(input(location.clone(), 100))))
-            .collect();
-        let mut fixture = Fixture::standard(posts, Ok(receipt));
+        let mut fixture =
+            Fixture::standard(vec![Ok(acquisition(input(arrival(), 100)))], Ok(receipt));
         let output = fixture.run(&["ghostlink", "pull", ITEM, "--json"]);
-        assert_eq!(output.exit_code, code);
+        assert_eq!(output.exit_code, 41);
         assert!(output.stdout.is_empty());
-        let value = body(&output);
-        assert_eq!(value["disposition"], disposition);
-        assert!(!value["receipt"].is_null());
-        assert_eq!(value["observations"].as_array().unwrap().len(), count);
-        if location == arrival() {
-            assert_eq!(
-                value["observations"][0]["classification"],
-                "verified_arrival"
-            );
-        }
+        assert_eq!(body(&output)["disposition"], disposition);
+        assert!(!body(&output)["receipt"].is_null());
+        assert!(body(&output).get("observations").is_none());
         assert_eq!(fixture.action.calls(), 1);
-        assert_eq!(fixture.delay.0, vec![Duration::from_secs(2); count - 1]);
-    }
-}
-#[test]
-fn ordered_prior_failure_and_arrival_timestamp_failure_remain_nonzero_and_visible() {
-    let posts = vec![
-        Err(AppError::invalid_argument("test", "PRIVATE_PROVIDER_BODY")),
-        Ok(acquisition(input(arrival(), 99))),
-    ];
-    let mut fixture = Fixture::standard(posts, Ok(InstancedPullOutcome::Acknowledged));
-    let output = fixture.run(&["ghostlink", "pull", ITEM, "--json"]);
-    assert_eq!(output.exit_code, 42);
-    let value = body(&output);
-    assert_eq!(value["observations"].as_array().unwrap().len(), 2);
-    assert!(value["observations"][0]["classification"].is_null());
-    assert_eq!(value["observations"][0]["failure"]["kind"], "refresh");
-    assert_eq!(
-        value["observations"][1]["classification"],
-        "verified_arrival"
-    );
-    assert_eq!(
-        value["observations"][1]["failure"]["kind"],
-        "backwards_clock"
-    );
-    assert_eq!(value["observations"][1]["publication"]["checked_at"], 99);
-    assert!(!output.stderr.contains("PRIVATE_PROVIDER_BODY"));
-    assert_eq!(fixture.action.calls(), 1);
-    assert_eq!(fixture.delay.0, [Duration::from_secs(2)]);
-}
-#[test]
-fn wrong_owner_bucket_and_unavailable_observations_never_verify() {
-    let mut other_owner = input(ItemLocation::Postmaster(CharacterId::new("3")), 100);
-    let mut other_character = other_owner.characters[0].clone();
-    other_character.id = CharacterId::new("3");
-    other_owner.characters.push(other_character);
-    let wrong_bucket_input = input(arrival(), 100);
-    let wrong_bucket = ProfileAcquisition::new(
-        wrong_bucket_input.clone(),
-        Some(vec![
-            InstancedBucketObservation::new(
-                ItemInstanceId::new(ITEM),
-                BucketHash::new(2465295065),
-                arrival(),
-            )
-            .unwrap(),
-        ]),
-    )
-    .unwrap();
-    let unavailable = ProfileAcquisition::new(wrong_bucket_input, None).unwrap();
-    for (post, classification) in [
-        (acquisition(other_owner), "wrong_character_owner"),
-        (wrong_bucket, "wrong_actual_bucket"),
-        (unavailable, "observations_unavailable"),
-    ] {
-        let mut fixture = Fixture::standard(
-            vec![Ok(post.clone()); 3],
-            Ok(InstancedPullOutcome::Acknowledged),
-        );
-        let output = fixture.run(&["ghostlink", "pull", ITEM, "--json"]);
-        assert_eq!(output.exit_code, 42);
-        assert_eq!(
-            body(&output)["observations"][0]["classification"],
-            classification
-        );
-        assert_eq!(fixture.action.calls(), 1);
+        assert_eq!(fixture.reasons(), [ProfileSyncReason::Preflight; 2]);
     }
 }
 #[test]
@@ -538,13 +468,12 @@ fn typed_gateway_error_has_no_observations_or_receipt() {
     assert_eq!(value["failure"]["stage"], "gateway");
     assert_eq!(value["failure"]["category"], "provider_authentication");
     assert!(value["receipt"].is_null());
-    assert_eq!(value["observations"], serde_json::json!([]));
+    assert!(value.get("observations").is_none());
     assert_eq!(fixture.action.calls(), 1);
     assert_eq!(
         fixture.reasons(),
         [ProfileSyncReason::Preflight, ProfileSyncReason::Preflight]
     );
-    assert!(fixture.delay.0.is_empty());
 }
 #[test]
 fn json_is_shared_mapper_exactly_and_text_retains_all_sanitized_evidence() {
@@ -569,12 +498,7 @@ fn json_is_shared_mapper_exactly_and_text_retains_all_sanitized_evidence() {
         .unwrap();
     let outcome = expected_fixture
         .service
-        .execute_verified(
-            plan,
-            &mut expected_fixture.action,
-            &mut expected_fixture.delay,
-            FRESHNESS,
-        )
+        .execute_verified(plan, &mut expected_fixture.action, FRESHNESS)
         .unwrap();
     let shared = destiny_output::instanced_pull::InstancedPullOutput::from_outcome(&outcome);
     let mut fixture = Fixture::standard(posts(), Ok(InstancedPullOutcome::Acknowledged));
@@ -584,19 +508,11 @@ fn json_is_shared_mapper_exactly_and_text_retains_all_sanitized_evidence() {
     );
     let mut fixture = Fixture::standard(posts(), Ok(InstancedPullOutcome::Acknowledged));
     let text = fixture.run(&["ghostlink", "pull", ITEM]);
-    assert_eq!(text.exit_code, 42);
-    for evidence in [
-        "uncertain",
-        "acknowledged",
-        "Observation 1:",
-        "Observation 2:",
-        "refresh",
-        "verified_arrival",
-        "backwards_clock",
-    ] {
-        assert!(text.stderr.contains(evidence), "{evidence}");
+    assert_eq!(text.exit_code, 0);
+    for evidence in ["applied", "acknowledged"] {
+        assert!(text.stdout.contains(evidence), "{evidence}");
     }
-    assert!(!text.stderr.contains("PRIVATE"));
-    assert!(!text.stderr.contains('\u{1b}'));
-    assert!(text.stdout.is_empty());
+    assert!(!text.stdout.contains("PRIVATE"));
+    assert!(!text.stdout.contains('\u{1b}'));
+    assert!(text.stderr.is_empty());
 }

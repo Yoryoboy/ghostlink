@@ -774,31 +774,30 @@ instanced-equipment metadata and target-bucket capacity, then dispatches at most
 one action. The pinned audited capacity policy must match the freshly fetched
 public Manifest index version and bucket artifact; changed or missing evidence
 refuses the proof. No freeing space, redemption, redispatch, reminting or rollback.
-After a received receipt, at most three forced observations run, with two seconds
-between attempts, stopping at the first valid arrival or integrity/time failure.
+Bungie acknowledgement returns `applied` without post-action profile requests
+or waits. Every dispatched outcome invalidates local freshness durably; the next
+ordinary read forces provider sync. Inventory content, revision and real acquisition
+time remain unchanged, rather than writing guessed arrival state.
 
 JSON reuses the shared `kind: "instanced_pull"` projection: independent
-`disposition`, `receipt`, `dispatch`, `failure`, `plan_id` and ordered
-`observations`. Each observation retains classification AND failure, publication
-metadata and selected target/bucket evidence. A timestamp failure may coexist
-with `verified_arrival` without proving success. Confirmed refusal remains
-`refused` even with arrival. Typed pre-action failures have null receipt and no
-observations; no acknowledgement alone is success.
+`disposition`, `receipt`, `dispatch`, `failure` and `plan_id`. There is no
+post-action `observations` field. Typed pre-action failures have null receipt.
 
 | Disposition | Exit | Meaning |
 | --- | ---: | --- |
-| `verified` | 0 | Exact instance observed at the owner's character in the normal destination bucket. |
-| `not_yet_observed` | 43 | Acknowledged but arrival not yet observed; not proof of application. |
-| `uncertain` | 42 | Unverified or invalid observation evidence. |
-| `refused` | varies | Eligibility/preflight refusal or received refusal; 40 by default, auth 11, transient 21, typed infrastructure category exits. |
+| `applied` | 0 | Bungie acknowledged the action; not observed arrival. |
+| `uncertain` | 41 | Dispatched attempt without a clear acknowledgement; never success. |
+| `refused` | 41 / varies | Received refusal exits 41; pre-action refusals retain category exits. |
+| `local_state_failed` | 42 | Local freshness invalidation failed after dispatch; receipt retained. |
 
-Only verified output goes to stdout; every other structured outcome goes to
-stderr with a nonzero exit. Never blindly retry: sync, inspect the instance and
-reassess explicit intent first. One invocation owns local inventory publication
-and definition use throughout the pipeline, not game or other-process activity.
-Observed arrival is neither causal proof nor an atomic guarantee. Anonymous
-stacks use the separate bounded `pull-stack` command below; this is not full
-Postmaster support or a live-readiness claim.
+Only applied output goes to stdout; failures go to stderr. Storage failure reports
+"local state could not be updated after the action" and fails closed even after
+acknowledgement. Pull no longer emits provider-lag exit 43. Planning missing target
+is 32, ambiguity 31, missing definition 33; preflight drift/expiry is 30, other
+pre-action failures retain category exits. Never blindly retry: sync, inspect and
+reassess explicit intent first. Local serialization excludes neither game nor
+other-process activity. Anonymous stacks use `pull-stack` below; live validation
+and full Postmaster support remain pending.
 
 ## Pull a non-instanced Postmaster stack
 
@@ -824,21 +823,23 @@ matching owner Postmaster stack, not their sum. The owner selects the source;
 the destination is the qualified normal account-wide ProfileInventory bucket,
 not an arbitrary character or Vault.
 
-One consumed plan dispatches at most once; at most three forced observations
-follow a received receipt, separated by two seconds. No automatic definition
+One consumed plan dispatches at most once. Acknowledgement returns `applied`
+(exit 0 / stdout), not observed quantity arrival, without post-action requests or
+waits. Dispatched attempts durably invalidate local freshness so the next ordinary
+read forces sync; no guessed quantities are published. No automatic definition
 download, recompose, freeing space, reminting, redispatch or rollback.
 JSON uses shared `kind: "stack_pull"`, independent `disposition`, `receipt`,
-`dispatch`, `failure`, `plan_id` and ordered `observations`. Text uses the shared
-ordered sanitized renderer. Quantity evidence includes pre/post destination,
-whole-profile and owner Postmaster totals; null means unknown, never zero.
-Only `verified` exits 0 on stdout. Lag/uncertainty exits 42 on stderr; the current
-stack service does not emit `not_yet_observed` (reserved mapping 43). Received
-refusal stays refused even with arrival: auth 11, transient 21, otherwise 40.
+`dispatch`, `failure` and `plan_id`; dispatch includes preflight quantity totals,
+not invented post quantities. There is no post-action `observations` field.
+Received refusals remain `refused`; transport uncertainty remains `uncertain`:
+both exit 41 on stderr. Invalidation storage failure is `local_state_failed` (42),
+retaining the receipt and reporting "local state could not be updated after the
+action". There is no provider-lag failure or exit 43.
 Missing definition is 33, ambiguous definition 31, preflight drift/expiry 30;
-other infrastructure failures use existing category exits. No new exit code.
+other pre-action failures use existing category exits.
 
-Never blindly retry. Sync and re-read `postmaster` later, then reassess explicit
-hash/amount/owner intent. Observed quantities are not causal or atomic proof;
+Never blindly retry. Sync and re-read `postmaster`, then reassess explicit
+hash/amount/owner intent. Acceptance is not an atomic or observed-state guarantee;
 local serialization does not cover the game or other processes. Offline tests
 are not live-account or full Postmaster readiness claims.
 

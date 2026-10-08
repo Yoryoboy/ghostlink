@@ -30,8 +30,7 @@ pub use instanced_pull::{
     InstancedPullExecutionFailure, InstancedPullExecutionFailureReason,
     InstancedPullExecutionOutcome, InstancedPullPlan, InstancedPullPlanRequest,
     InstancedPullPlanningError, InstancedPullRefusal, InstancedPullService, PreDispatchError,
-    PullArrival, PullAttempt, PullContext, PullDisposition, PullObservation,
-    PullObservationAttempt, PullObservationFailure,
+    PullAttempt, PullContext, PullDisposition,
 };
 pub use stack_pull::*;
 pub mod lock;

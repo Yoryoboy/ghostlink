@@ -84,16 +84,23 @@ the [CLI reference](docs/cli.md) for all commands.
 
 `ghostlink postmaster` lists committed Postmaster instances and anonymous stacks,
 including empty character groups, with ordinary freshness synchronization. Currency
-coverage qualifies currency data only, not Postmaster completeness. No pull feature
-or synthetic instance IDs are exposed.
+coverage qualifies currency data only, not Postmaster completeness. This read
+never pulls items or exposes synthetic instance IDs. For explicit recovery intent,
+use `ghostlink pull <INSTANCE_ID>` or `ghostlink pull-stack <ITEM_HASH> --amount <N>
+--character <OWNER_ID>` (MCP `pull_item` / `pull_stack`). Fresh preflight proves
+eligibility and capacity; acknowledgement returns `applied` (CLI 0 / MCP success),
+not observed arrival or quantities. Refused/transport-uncertain dispatched attempts
+exit 41; local invalidation storage failure fails closed (42), retaining the receipt
+and reporting "local state could not be updated after the action". There are no
+post-action profile requests or waits; the next ordinary read forces provider sync.
+Never blindly retry.
 
 Move/equip use fresh preflight checks and return `applied` (exit 0) when Bungie
 acknowledges every step, without post-action verification. The next ordinary read
 forces sync; no guessed state is written. Acceptance is not an observed in-game
 state. Never blindly retry uncertain or partial results. Lock/unlock also return
 `applied` (exit 0) on acknowledgement; incomplete attempts exit 41. Their next
-read forces sync without a post-action verification request. Pull retains its
-existing verification behavior.
+read forces sync without a post-action verification request, as do pull/pull-stack.
 
 ## Use it from an AI agent
 

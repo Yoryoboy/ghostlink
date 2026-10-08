@@ -56,11 +56,6 @@ fn input(destination: i64, postmaster: i64) -> InventorySnapshotInput {
         profile_currencies_coverage: ProfileCurrenciesCoverage::NotObserved,
     }
 }
-#[derive(Default)]
-struct Delay;
-impl RetryDelay for Delay {
-    fn wait(&mut self, _: std::time::Duration) {}
-}
 type Service = StackPullService<
     QueuedProfileGateway,
     InMemoryInventoryRepository,
@@ -145,9 +140,7 @@ fn execute(
     let (mut service, plan) = armed(input(20, 10), posts);
     let mut gateway = QueuedStackPullGateway::new();
     gateway.queue(Ok(receipt));
-    let outcome = service
-        .execute_verified(plan, &mut gateway, &mut Delay, FRESH)
-        .unwrap();
+    let outcome = service.execute_verified(plan, &mut gateway, FRESH).unwrap();
     assert_eq!(gateway.calls(), 1);
     StackPullOutput::from_outcome(&outcome)
 }
@@ -168,12 +161,12 @@ fn every_received_outcome_has_independent_receipt_and_disposition() {
         (
             StackPullOutcome::Acknowledged,
             json!({"kind":"acknowledged"}),
-            PullDisposition::Verified,
+            PullDisposition::Applied,
         ),
         (
             StackPullOutcome::Uncertain,
             json!({"kind":"uncertain"}),
-            PullDisposition::Verified,
+            PullDisposition::Uncertain,
         ),
         (
             StackPullOutcome::Transient,
@@ -193,10 +186,7 @@ fn every_received_outcome_has_independent_receipt_and_disposition() {
     ] {
         let output = execute(receipt, vec![Ok(input(23, 7))]);
         assert_eq!(output.disposition(), disposition);
-        assert_eq!(
-            output.is_success(),
-            disposition == PullDisposition::Verified
-        );
+        assert_eq!(output.is_success(), disposition == PullDisposition::Applied);
         let v = output.json();
         assert_eq!(v["kind"], "stack_pull");
         assert_eq!(v["plan_id"], "plan-1");
@@ -211,142 +201,25 @@ fn every_received_outcome_has_independent_receipt_and_disposition() {
             v["dispatch"]["pre_quantities"],
             json!({"destination":20,"profile":25,"postmaster":10})
         );
-        assert_eq!(
-            v["observations"][0]["quantities"],
-            json!({"destination":{"pre":20,"post":23},"profile":{"pre":25,"post":28},"postmaster":{"pre":10,"post":7}})
-        );
-        assert_eq!(v["observations"][0]["classification"], "verified_arrival");
-        assert_eq!(
-            v["observations"][0]["publication"]["definition_version"],
-            "v1??"
-        );
+        assert!(v.get("observations").is_none());
+        assert_eq!(v["dispatch"]["definition_version"], "v1??");
         assert_eq!(serde_json::from_str::<Value>(&v.to_string()).unwrap(), v);
-        assert_eq!(
-            v["observations"][0]["publication"]["dataset"],
-            "profile_inventory"
-        );
         no_secrets(&output);
     }
 }
 #[test]
-fn equal_timestamp_observations_stay_ordered_in_json_and_text() {
-    let output = execute(
-        StackPullOutcome::Acknowledged,
-        vec![Ok(input(21, 9)), Ok(input(23, 7))],
-    );
-    let v = output.json();
-    assert_eq!(v["observations"].as_array().unwrap().len(), 2);
-    assert_eq!(v["observations"][0]["classification"], "quantity_mismatch");
-    assert_eq!(v["observations"][1]["classification"], "verified_arrival");
-    let text = output.render_text();
-    let markers = [
-        "stack_pull: verified",
-        "plan_id: plan-1",
-        "item_hash: 7",
-        "amount: 3",
-        "owner_character: 2",
-        "destination_bucket: 1469714392",
-        "receipt: acknowledged",
-        "observation 1:",
-        "classification: quantity_mismatch",
-        "destination_quantity: 20 -> 21",
-        "profile_quantity: 25 -> 26",
-        "postmaster_quantity: 10 -> 9",
-        "observation 2:",
-        "classification: verified_arrival",
-        "destination_quantity: 20 -> 23",
-        "profile_quantity: 25 -> 28",
-        "postmaster_quantity: 10 -> 7",
-    ];
-    let mut start = 0;
-    for marker in markers {
-        start += text[start..]
-            .find(marker)
-            .unwrap_or_else(|| panic!("missing ordered {marker}: {text}"))
-            + marker.len();
-    }
-    assert!(!text.chars().any(|c| c.is_control() && c != '\n'));
-    no_secrets(&output);
-}
-#[test]
-fn unverified_acknowledgement_and_uncertain_receipt_never_succeed() {
-    for receipt in [StackPullOutcome::Acknowledged, StackPullOutcome::Uncertain] {
-        let output = execute(receipt, vec![Ok(input(20, 10)); 3]);
-        assert_eq!(output.disposition(), PullDisposition::Uncertain);
-        assert!(!output.is_success());
-        assert_eq!(output.json()["disposition"], "uncertain");
-        no_secrets(&output);
-    }
-}
-#[test]
-fn refresh_failure_preserves_nulls_and_later_arrival() {
-    let output = execute(
-        StackPullOutcome::Acknowledged,
-        vec![
-            Err(AppError::invalid_argument(API_KEY, RAW_PAYLOAD)),
-            Ok(input(23, 7)),
-        ],
-    );
-    let v = output.json();
+fn acknowledged_stale_stack_is_applied_without_invented_quantities() {
+    let output = execute(StackPullOutcome::Acknowledged, vec![Ok(input(20, 10)); 3]);
     assert!(output.is_success());
-    assert_eq!(
-        v["observations"][0]["failure"],
-        json!({"stage":"observation","kind":"refresh","category":"provider_validation"})
-    );
-    assert!(v["observations"][0]["publication"].is_null());
-    assert!(v["observations"][0]["classification"].is_null());
-    assert_eq!(
-        v["observations"][0]["quantities"],
-        json!({"destination":{"pre":20,"post":null},"profile":{"pre":25,"post":null},"postmaster":{"pre":10,"post":null}})
-    );
-    no_secrets(&output);
-}
-#[test]
-fn whole_profile_contradiction_is_visible_even_when_destination_arrives() {
-    let mut post = input(23, 7);
-    post.stacks[1] = StackObservation::new(
-        ItemHash::new(7),
-        BucketHash::new(3313201758),
-        2,
-        StackContainer::ProfileInventory,
-    )
-    .unwrap();
-    let output = execute(StackPullOutcome::Acknowledged, vec![Ok(post); 3]);
-    assert!(!output.is_success());
-    let observation = &output.json()["observations"][0];
-    assert_eq!(observation["classification"], "quantity_mismatch");
-    assert_eq!(
-        observation["quantities"]["destination"],
-        json!({"pre":20,"post":23})
-    );
-    assert_eq!(
-        observation["quantities"]["profile"],
-        json!({"pre":25,"post":25})
-    );
-    assert!(output.render_text().contains("profile_quantity: 25 -> 25"));
-}
-#[test]
-fn unavailable_observations_never_fabricate_zero_quantities() {
-    let output = execute(StackPullOutcome::Uncertain, vec![]);
-    assert!(!output.is_success());
-    let v = output.json();
-    assert_eq!(v["observations"].as_array().unwrap().len(), 3);
-    for observation in v["observations"].as_array().unwrap() {
-        assert!(observation["publication"].is_null());
-        assert!(observation["classification"].is_null());
-        for scope in ["destination", "profile", "postmaster"] {
-            assert!(observation["quantities"][scope]["post"].is_null());
-        }
-        assert_eq!(
-            observation["failure"],
-            json!({"stage":"observation","kind":"refresh","category":"provider_unavailable"})
-        );
+    assert_eq!(output.json()["disposition"], "applied");
+    assert!(output.json().get("observations").is_none());
+    let text = output.render_text();
+    assert!(text.contains("stack_pull: applied"));
+    assert!(!text.chars().any(|c| c.is_control() && c != '\n'));
+    for forbidden in ["membership_id", "characters", "plugs", "perks", "stats"] {
+        assert!(!output.json().to_string().contains(forbidden));
     }
-    assert!(
-        output
-            .render_text()
-            .contains("destination_quantity: 20 -> null")
-    );
+    no_secrets(&output);
 }
 #[test]
 fn pre_dispatch_and_gateway_errors_never_invent_receipts() {
@@ -362,14 +235,14 @@ fn pre_dispatch_and_gateway_errors_never_invent_receipts() {
         let mut gateway = QueuedStackPullGateway::new();
         gateway.queue(Err(AppError::invalid_argument(BEARER_TOKEN, RAW_PAYLOAD)));
         let failure = service
-            .execute_verified(plan, &mut gateway, &mut Delay, FRESH)
+            .execute_verified(plan, &mut gateway, FRESH)
             .unwrap_err();
         let output = StackPullOutput::execution_failed(&failure);
         let v = output.json();
         assert!(!output.is_success());
         assert_eq!(v["plan_id"], "plan-1");
         assert_eq!(v["disposition"], "refused");
-        assert_eq!(v["observations"], json!([]));
+        assert!(v.get("observations").is_none());
         assert!(v["receipt"].is_null());
         assert_eq!(gateway.calls(), usize::from(gateway_failure));
         assert_eq!(v["dispatch"].is_null(), !gateway_failure);
@@ -405,7 +278,7 @@ fn every_planning_and_capacity_refusal_has_a_stable_code() {
         let output = StackPullOutput::planning_failed(&StackPullPlanningError::Refused(reason));
         assert_eq!(
             output.json(),
-            json!({"kind":"stack_pull","disposition":"refused","plan_id":null,"dispatch":null,"receipt":null,"failure":{"stage":"planning","kind":"eligibility_refused","reason":code},"observations":[]})
+            json!({"kind":"stack_pull","disposition":"refused","plan_id":null,"dispatch":null,"receipt":null,"failure":{"stage":"planning","kind":"eligibility_refused","reason":code}})
         );
         assert!(output.render_text().contains(code));
         assert!(!output.is_success());
@@ -446,28 +319,4 @@ fn every_planning_and_capacity_refusal_has_a_stable_code() {
         json!({"stage":"planning","kind":"infrastructure","category":"provider_validation"})
     );
     no_secrets(&output);
-}
-#[test]
-fn drift_and_backwards_publication_remain_unsuccessful() {
-    for (kind, expected) in [
-        (0, "membership_mismatch"),
-        (1, "definition_version_drift"),
-        (2, "verified_arrival"),
-    ] {
-        let mut post = input(23, 7);
-        match kind {
-            0 => post.membership_id = MembershipId::new("999"),
-            1 => post.definition_version = DefinitionVersion::new("other"),
-            _ => post.checked_at = Timestamp::new(99),
-        }
-        let output = execute(StackPullOutcome::Acknowledged, vec![Ok(post)]);
-        assert!(!output.is_success());
-        assert_eq!(output.json()["observations"][0]["classification"], expected);
-        if kind == 2 {
-            assert_eq!(
-                output.json()["observations"][0]["failure"],
-                json!({"stage":"observation","kind":"backwards_clock"})
-            );
-        }
-    }
 }

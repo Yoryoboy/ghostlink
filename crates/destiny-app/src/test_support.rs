@@ -587,6 +587,7 @@ impl destiny_core::ports::DefinitionCatalogRepository for InMemoryDefinitionRepo
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryInventoryRepository {
     invalidated: bool,
+    fail_invalidation: bool,
     current: Option<InventorySnapshot>,
     previous_input: Option<InventorySnapshotInput>,
 }
@@ -594,6 +595,12 @@ pub struct InMemoryInventoryRepository {
 impl InMemoryInventoryRepository {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Injects a storage failure only at the post-dispatch invalidation boundary.
+    pub fn with_invalidation_failure(mut self) -> Self {
+        self.fail_invalidation = true;
+        self
     }
 
     /// Constructs an overflow boundary state for repository contract tests.
@@ -626,6 +633,7 @@ impl InMemoryInventoryRepository {
         };
         Self {
             invalidated: false,
+            fail_invalidation: false,
             current: Some(snapshot),
             previous_input: Some(input),
         }
@@ -643,6 +651,9 @@ impl InventoryRepository for InMemoryInventoryRepository {
     }
 
     fn invalidate_freshness(&mut self) -> Result<(), AppError> {
+        if self.fail_invalidation {
+            return Err(AppError::new(ErrorCategory::LocalStorage));
+        }
         self.invalidated = true;
         Ok(())
     }

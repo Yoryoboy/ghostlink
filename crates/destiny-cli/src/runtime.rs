@@ -677,12 +677,6 @@ impl DefinitionRepository for PullStore {
         self.0.borrow_mut().replace_definitions(input)
     }
 }
-struct PullDelay;
-impl destiny_app::RetryDelay for PullDelay {
-    fn wait(&mut self, delay: std::time::Duration) {
-        std::thread::sleep(delay);
-    }
-}
 
 /// Authenticated membership and fresh Postmaster ownership, never CLI overrides.
 /// One store, fresh concrete Manifest qualification, and one consumed plan. No
@@ -737,7 +731,6 @@ pub fn compose_pull(
         membership,
         &mut service,
         &mut gateway,
-        &mut PullDelay,
         config.freshness_policy(),
     ))
 }
@@ -794,7 +787,6 @@ pub fn compose_pull_stack(
         membership,
         &mut service,
         &mut gateway,
-        &mut PullDelay,
         config.freshness_policy(),
     ))
 }

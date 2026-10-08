@@ -1,10 +1,7 @@
 //! Fresh, consumed-plan non-instanced Postmaster pulls.
-//! Quantities are published observations, not causal or atomic guarantees.
-use crate::instanced_pull::{
-    PullDisposition, PullObservationAttempt, PullObservationEvidence, observe_pull,
-};
+//! Acknowledgement is success, not a quantity observation or atomic guarantee.
+use crate::instanced_pull::PullDisposition;
 use crate::{ProfileSyncService, ProfileSyncWithObservationsOutcome, PublishedProfileAcquisition};
-use destiny_core::ports::RetryDelay;
 use destiny_core::*;
 
 #[derive(Debug, Eq, PartialEq)]
@@ -142,63 +139,11 @@ impl StackPullAttempt {
         &self.outcome
     }
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StackPullArrival {
-    VerifiedArrival,
-    QuantityMismatch,
-    MembershipMismatch,
-    DefinitionVersionDrift,
-    ArithmeticOverflow,
-}
-#[derive(Debug, Eq, PartialEq)]
-pub struct StackPullObservation {
-    metadata: SnapshotMetadata,
-    stacks: Vec<StackObservation>,
-    destination_quantity: Option<u64>,
-    profile_quantity: Option<u64>,
-    postmaster_quantity: Option<u64>,
-    classification: StackPullArrival,
-}
-impl StackPullObservation {
-    pub fn metadata(&self) -> &SnapshotMetadata {
-        &self.metadata
-    }
-    pub fn stacks(&self) -> &[StackObservation] {
-        &self.stacks
-    }
-    pub fn destination_quantity(&self) -> Option<u64> {
-        self.destination_quantity
-    }
-    /// Same-hash quantity across the whole ProfileInventory in this publication.
-    pub fn profile_quantity(&self) -> Option<u64> {
-        self.profile_quantity
-    }
-    pub fn postmaster_quantity(&self) -> Option<u64> {
-        self.postmaster_quantity
-    }
-    pub fn classification(&self) -> StackPullArrival {
-        self.classification
-    }
-}
-impl PullObservationEvidence for StackPullObservation {
-    fn metadata(&self) -> &SnapshotMetadata {
-        &self.metadata
-    }
-    fn stop(&self) -> bool {
-        matches!(
-            self.classification,
-            StackPullArrival::VerifiedArrival
-                | StackPullArrival::MembershipMismatch
-                | StackPullArrival::DefinitionVersionDrift
-        )
-    }
-}
-pub type StackPullObservationAttempt = PullObservationAttempt<StackPullObservation>;
 #[derive(Debug, Eq, PartialEq)]
 pub struct StackPullExecutionOutcome {
     plan_id: PlanId,
     dispatch: StackPullAttempt,
-    observations: Vec<StackPullObservationAttempt>,
+    local_state_error: Option<AppError>,
     disposition: PullDisposition,
 }
 impl StackPullExecutionOutcome {
@@ -217,8 +162,8 @@ impl StackPullExecutionOutcome {
             .as_ref()
             .expect("received outcome required")
     }
-    pub fn observations(&self) -> &[StackPullObservationAttempt] {
-        &self.observations
+    pub fn local_state_error(&self) -> Option<&AppError> {
+        self.local_state_error.as_ref()
     }
     pub fn disposition(&self) -> PullDisposition {
         self.disposition
@@ -456,13 +401,13 @@ impl<
             fingerprint,
         })
     }
-    /// Consume on every path. Reprove before one dispatch, then reuse the bounded
-    /// published-evidence loop. Acknowledgement alone always remains Uncertain.
-    pub fn execute_verified<T: StackPullGateway, W: RetryDelay>(
+    /// Consume intent, renew preflight proof, dispatch once and invalidate local
+    /// freshness. Acknowledgement yields Applied; storage failure fails closed.
+    /// The historical method name remains; no post-action read or retry occurs.
+    pub fn execute_verified<T: StackPullGateway>(
         &mut self,
         plan: StackPullPlan,
         gateway: &mut T,
-        delay: &mut W,
         freshness: FreshnessPolicy,
     ) -> Result<StackPullExecutionOutcome, StackPullExecutionFailure> {
         let plan_id = plan.id.clone();
@@ -487,32 +432,21 @@ impl<
                 | StackPullOutcome::AuthenticationRefused
                 | StackPullOutcome::Transient
         );
-        let observations = observe_pull(
-            &mut self.sync,
-            &self.clock,
-            delay,
-            freshness,
-            dispatch.dispatch_at,
-            |pair| classify(&dispatch.context, pair),
-        );
-        let verified = observations
-            .last()
-            .filter(|a| a.failure().is_none())
-            .and_then(PullObservationAttempt::observation)
-            .is_some_and(|o| o.classification == StackPullArrival::VerifiedArrival);
-        // Confirmed refusals stay Refused even if arrival is later observed: this
-        // request did not apply, so that arrival has another cause (GPM-008f2).
-        let disposition = if refused {
+        let acknowledged = matches!(receipt, StackPullOutcome::Acknowledged);
+        let local_state_error = self.sync.repository_mut().invalidate_freshness().err();
+        let disposition = if local_state_error.is_some() {
+            PullDisposition::LocalStateFailed
+        } else if refused {
             PullDisposition::Refused
-        } else if verified {
-            PullDisposition::Verified
+        } else if acknowledged {
+            PullDisposition::Applied
         } else {
             PullDisposition::Uncertain
         };
         Ok(StackPullExecutionOutcome {
             plan_id,
             dispatch,
-            observations,
+            local_state_error,
             disposition,
         })
     }
@@ -612,40 +546,6 @@ fn totals(
             None,
         ),
     )
-}
-fn classify(context: &StackPullContext, pair: PublishedProfileAcquisition) -> StackPullObservation {
-    let (snapshot, _) = pair.into_parts();
-    let (destination, profile, postmaster) = totals(
-        &context.request,
-        context.destination_bucket,
-        &snapshot.stacks,
-    );
-    let amount = context.request.quantity() as u64;
-    let classification = if snapshot.metadata.membership_id
-        != *context.request.membership().membership_id()
-        || snapshot.metadata.membership_type != context.request.membership().membership_type()
-    {
-        StackPullArrival::MembershipMismatch
-    } else if snapshot.metadata.definition_version != context.definition_version {
-        StackPullArrival::DefinitionVersionDrift
-    } else if destination.is_none() || profile.is_none() || postmaster.is_none() {
-        StackPullArrival::ArithmeticOverflow
-    } else if destination == context.pre_destination_quantity.checked_add(amount)
-        && profile == context.pre_profile_quantity.checked_add(amount)
-        && postmaster == context.pre_postmaster_quantity.checked_sub(amount)
-    {
-        StackPullArrival::VerifiedArrival
-    } else {
-        StackPullArrival::QuantityMismatch
-    };
-    StackPullObservation {
-        metadata: snapshot.metadata,
-        stacks: snapshot.stacks,
-        destination_quantity: destination,
-        profile_quantity: profile,
-        postmaster_quantity: postmaster,
-        classification,
-    }
 }
 #[cfg(test)]
 mod tests;

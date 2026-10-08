@@ -1,7 +1,7 @@
 //! CLI exits over shared sanitized stack-pull presentation.
 use destiny_app::{
     PullDisposition, StackPullExecutionFailure, StackPullExecutionFailureReason,
-    StackPullExecutionOutcome, StackPullOutcome, StackPullPlanningError, StackPullPlanningRefusal,
+    StackPullExecutionOutcome, StackPullPlanningError, StackPullPlanningRefusal,
     StackPullPreDispatchError,
 };
 
@@ -17,14 +17,10 @@ impl StackPullOutput {
             0
         } else {
             match outcome.disposition() {
-                PullDisposition::Verified => unreachable!("shared mapper preserves disposition"),
-                PullDisposition::NotYetObserved => 43,
-                PullDisposition::Uncertain => 42,
-                PullDisposition::Refused => match outcome.gateway_outcome() {
-                    StackPullOutcome::AuthenticationRefused => 11,
-                    StackPullOutcome::Transient => 21,
-                    _ => 40,
-                },
+                PullDisposition::Applied => unreachable!("shared mapper preserves disposition"),
+                PullDisposition::LocalStateFailed => 42,
+                PullDisposition::Uncertain => 41,
+                PullDisposition::Refused => 41,
             }
         };
         Self { shared, exit_code }

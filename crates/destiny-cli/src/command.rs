@@ -227,12 +227,12 @@ pub enum Command {
     Move(MoveArgs),
     /// Pull one genuine Postmaster equipment instance into its owner's inventory.
     #[command(
-        long_about = "Pull one genuine Postmaster equipment instance using a canonical positive int64 instance ID only. Requires login and qualified stored Manifest definitions. Names, hashes, anonymous stacks, quantity and destination arguments are unsupported. Only verified arrival succeeds; pending, uncertain and refused outcomes are nonzero. Observations are not causal or atomic guarantees."
+        long_about = "Pull one genuine Postmaster equipment instance using a canonical positive int64 instance ID only. Requires login and qualified stored Manifest definitions. Names, hashes, anonymous stacks, quantity and destination arguments are unsupported. Bungie acknowledgement returns applied (exit 0), not observed arrival, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail; never blindly retry."
     )]
     Pull(PullArgs),
     /// Pull a non-instanced Postmaster stack amount from its explicit owner.
     #[command(
-        long_about = "Pull a non-instanced Postmaster stack using a canonical uint32 decimal ITEM_HASH, canonical positive int32 --amount, and canonical positive int64 --character owner ID. Requires login and qualified stored Manifest definitions. Only verified quantity arrival succeeds. No names, destination overrides, redispatch or atomic guarantees."
+        long_about = "Pull a non-instanced Postmaster stack using a canonical uint32 decimal ITEM_HASH, canonical positive int32 --amount, and canonical positive int64 --character owner ID. Requires login and qualified stored Manifest definitions. Bungie acknowledgement returns applied (exit 0), not observed quantity arrival, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail. No names, destination overrides, redispatch or atomic guarantees."
     )]
     PullStack(PullStackArgs),
     /// Lock one explicitly selected owned item, then refresh and verify.

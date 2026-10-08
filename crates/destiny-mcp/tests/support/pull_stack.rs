@@ -86,12 +86,6 @@ impl StackPullGateway for Action {
         self.0.borrow_mut().pull(request)
     }
 }
-struct Delay;
-impl RetryDelay for Delay {
-    fn wait(&mut self, duration: std::time::Duration) {
-        assert_eq!(duration.as_secs(), 2);
-    }
-}
 type Pipeline = StackPullService<
     Profile,
     InMemoryInventoryRepository,
@@ -176,7 +170,7 @@ impl Fixture {
         let action = self.action.clone();
         let profile = self.profile.clone();
         let mut service =
-            StackPullToolService::new(self.profile, self.pipeline, self.action, Delay, POLICY);
+            StackPullToolService::new(self.profile, self.pipeline, self.action, POLICY);
         let output = service
             .pull_stack(&PullStackArgs {
                 item_hash: "7".into(),
@@ -188,14 +182,10 @@ impl Fixture {
         assert_eq!(action.0.borrow().calls(), 1);
         let reasons = profile.0.borrow().requested_reasons().to_vec();
         assert_eq!(
-            &reasons[..2],
+            &reasons,
             &[ProfileSyncReason::Preflight, ProfileSyncReason::Preflight]
         );
-        assert!(
-            reasons[2..]
-                .iter()
-                .all(|r| *r == ProfileSyncReason::PostAction)
-        );
+        assert!(output.get("observations").is_none());
         output
     }
     fn cli(mut self) -> serde_json::Value {
@@ -209,7 +199,6 @@ impl Fixture {
             membership,
             &mut self.pipeline,
             &mut self.action,
-            &mut Delay,
             POLICY,
         )
         .json()
@@ -217,9 +206,9 @@ impl Fixture {
 }
 pub fn parity() {
     for (arrived, receipt, failed, disposition) in [
-        (true, StackPullOutcome::Acknowledged, false, "verified"),
-        (true, StackPullOutcome::Uncertain, false, "verified"),
-        (false, StackPullOutcome::Acknowledged, false, "uncertain"),
+        (true, StackPullOutcome::Acknowledged, false, "applied"),
+        (true, StackPullOutcome::Uncertain, false, "uncertain"),
+        (false, StackPullOutcome::Acknowledged, false, "applied"),
         (false, StackPullOutcome::Uncertain, false, "uncertain"),
         (
             true,
@@ -227,7 +216,7 @@ pub fn parity() {
             false,
             "refused",
         ),
-        (false, StackPullOutcome::Acknowledged, true, "uncertain"),
+        (false, StackPullOutcome::Acknowledged, true, "applied"),
     ] {
         let cli = Fixture::new(arrived, receipt, failed).cli();
         let mcp = Fixture::new(arrived, receipt, failed).mcp();
@@ -239,7 +228,7 @@ pub fn reject_before_io() {
     let f = Fixture::new(true, StackPullOutcome::Acknowledged, false);
     let profile = f.profile.clone();
     let action = f.action.clone();
-    let mut service = StackPullToolService::new(f.profile, f.pipeline, f.action, Delay, POLICY);
+    let mut service = StackPullToolService::new(f.profile, f.pipeline, f.action, POLICY);
     for (hash, amount, character) in [("01", "3", "2"), ("7", "0", "2"), ("7", "3", "0")] {
         assert!(
             service

@@ -203,7 +203,7 @@ impl PullStackArgs {
     }
 }
 pub fn pull_stack_tool() -> Tool {
-    Tool::new(PULL_STACK_TOOL, "Pull an exact amount of one non-instanced Postmaster stack for an owned character. Canonical decimal strings only: uint32 item_hash, positive int32 amount, positive int64 character. Requires authentication, qualified definitions and fresh capacity proof. One action, bounded observation; only Verified succeeds. Never blindly retry unconfirmed outcomes. Observations are not causal or atomic guarantees.", JsonObject::new())
+    Tool::new(PULL_STACK_TOOL, "Pull an exact amount of one non-instanced Postmaster stack for an owned character. Canonical decimal strings only: uint32 item_hash, positive int32 amount, positive int64 character. Requires authentication, qualified definitions and fresh capacity proof. One action; Bungie acknowledgement returns applied (success), not observed quantities, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail; never blindly retry.", JsonObject::new())
         .with_input_schema::<PullStackArgs>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
 }
@@ -231,7 +231,7 @@ impl PullItemArgs {
     }
 }
 pub fn pull_item_tool() -> Tool {
-    Tool::new(PULL_ITEM_TOOL, "Pull one genuine Postmaster equipment instance into its freshly derived owner's inventory. Requires authentication, qualified definitions and fresh capacity proof. No names, hashes, stacks, quantity or destination. One action, bounded observation; only Verified succeeds. Never blindly retry unconfirmed outcomes. Observations are not causal or atomic guarantees.", JsonObject::new())
+    Tool::new(PULL_ITEM_TOOL, "Pull one genuine Postmaster equipment instance into its freshly derived owner's inventory. Requires authentication, qualified definitions and fresh capacity proof. No names, hashes, stacks, quantity or destination. One action; Bungie acknowledgement returns applied (success), not observed arrival, without post-action verification. Local freshness is invalidated so the next read syncs. Refused and transport-uncertain attempts fail; never blindly retry.", JsonObject::new())
         .with_input_schema::<PullItemArgs>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
 }

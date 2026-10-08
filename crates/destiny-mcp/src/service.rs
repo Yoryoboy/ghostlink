@@ -1071,31 +1071,28 @@ impl<I: MutationToolService, S: MutationToolService> MutationToolService
 }
 
 /// Shared CLI stack pipeline under the server's existing operation guard.
-pub struct StackPullToolService<G, R, D, M, C, P, T, W> {
+pub struct StackPullToolService<G, R, D, M, C, P, T> {
     membership: G,
     service: destiny_app::StackPullService<G, R, D, M, C, P>,
     gateway: T,
-    delay: W,
     freshness: FreshnessPolicy,
 }
-impl<G, R, D, M, C, P, T, W> StackPullToolService<G, R, D, M, C, P, T, W> {
+impl<G, R, D, M, C, P, T> StackPullToolService<G, R, D, M, C, P, T> {
     pub fn new(
         membership: G,
         service: destiny_app::StackPullService<G, R, D, M, C, P>,
         gateway: T,
-        delay: W,
         freshness: FreshnessPolicy,
     ) -> Self {
         Self {
             membership,
             service,
             gateway,
-            delay,
             freshness,
         }
     }
 }
-impl<G, R, D, M, C, P, T, W> MutationToolService for StackPullToolService<G, R, D, M, C, P, T, W>
+impl<G, R, D, M, C, P, T> MutationToolService for StackPullToolService<G, R, D, M, C, P, T>
 where
     G: ProfileGateway,
     R: InventoryRepository,
@@ -1104,7 +1101,6 @@ where
     C: Clock,
     P: PlanIdGenerator,
     T: destiny_app::StackPullGateway,
-    W: destiny_app::RetryDelay,
 {
     fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
         Err(McpError::new(ErrorCategory::ConfigurationError))
@@ -1136,12 +1132,10 @@ where
             Err(error) => return Ok(StackPullOutput::planning_failed(&error)),
         };
         Ok(
-            match self.service.execute_verified(
-                plan,
-                &mut self.gateway,
-                &mut self.delay,
-                self.freshness,
-            ) {
+            match self
+                .service
+                .execute_verified(plan, &mut self.gateway, self.freshness)
+            {
                 Ok(outcome) => StackPullOutput::from_outcome(&outcome),
                 Err(failure) => StackPullOutput::execution_failed(&failure),
             },
@@ -1174,34 +1168,30 @@ impl<I: MutationToolService, U: MutationToolService> MutationToolService
     }
 }
 
-/// Owns the authenticated membership resolver and shared verified-pull pipeline.
+/// Owns the authenticated membership resolver and shared optimistic-pull pipeline.
 /// The server's existing outer guard must span this entire synchronous invocation.
-pub struct InstancedPullToolService<G, R, D, M, C, P, T, W> {
+pub struct InstancedPullToolService<G, R, D, M, C, P, T> {
     membership: G,
     service: destiny_app::InstancedPullService<G, R, D, M, C, P>,
     gateway: T,
-    delay: W,
     freshness: FreshnessPolicy,
 }
-impl<G, R, D, M, C, P, T, W> InstancedPullToolService<G, R, D, M, C, P, T, W> {
+impl<G, R, D, M, C, P, T> InstancedPullToolService<G, R, D, M, C, P, T> {
     pub fn new(
         membership: G,
         service: destiny_app::InstancedPullService<G, R, D, M, C, P>,
         gateway: T,
-        delay: W,
         freshness: FreshnessPolicy,
     ) -> Self {
         Self {
             membership,
             service,
             gateway,
-            delay,
             freshness,
         }
     }
 }
-impl<G, R, D, M, C, P, T, W> MutationToolService
-    for InstancedPullToolService<G, R, D, M, C, P, T, W>
+impl<G, R, D, M, C, P, T> MutationToolService for InstancedPullToolService<G, R, D, M, C, P, T>
 where
     G: ProfileGateway,
     R: InventoryRepository,
@@ -1210,7 +1200,6 @@ where
     C: Clock,
     P: PlanIdGenerator,
     T: destiny_app::InstancedPullGateway,
-    W: destiny_app::RetryDelay,
 {
     fn move_item(&mut self, _request: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
         Err(McpError::new(ErrorCategory::ConfigurationError))
@@ -1235,12 +1224,10 @@ where
             Err(error) => return Ok(InstancedPullOutput::planning_failed(&error)),
         };
         Ok(
-            match self.service.execute_verified(
-                plan,
-                &mut self.gateway,
-                &mut self.delay,
-                self.freshness,
-            ) {
+            match self
+                .service
+                .execute_verified(plan, &mut self.gateway, self.freshness)
+            {
                 Ok(outcome) => InstancedPullOutput::from_outcome(&outcome),
                 Err(failure) => InstancedPullOutput::execution_failed(&failure),
             },

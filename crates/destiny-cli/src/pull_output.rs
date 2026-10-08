@@ -1,8 +1,8 @@
 //! CLI exit and text policy over the committed transport-neutral pull mapper.
 use destiny_app::{
     InstancedPullExecutionFailure, InstancedPullExecutionFailureReason,
-    InstancedPullExecutionOutcome, InstancedPullOutcome, InstancedPullPlanningError,
-    InstancedPullRefusal, PreDispatchError, PullDisposition,
+    InstancedPullExecutionOutcome, InstancedPullPlanningError, InstancedPullRefusal,
+    PreDispatchError, PullDisposition,
 };
 use destiny_output::instanced_pull::InstancedPullOutput;
 
@@ -18,14 +18,10 @@ impl PullOutput {
             0
         } else {
             match outcome.disposition() {
-                PullDisposition::Verified => unreachable!("shared mapper preserves disposition"),
-                PullDisposition::NotYetObserved => 43,
-                PullDisposition::Uncertain => 42,
-                PullDisposition::Refused => match outcome.gateway_outcome() {
-                    InstancedPullOutcome::AuthenticationRefused => 11,
-                    InstancedPullOutcome::Transient => 21,
-                    _ => 40,
-                },
+                PullDisposition::Applied => unreachable!("shared mapper preserves disposition"),
+                PullDisposition::LocalStateFailed => 42,
+                PullDisposition::Uncertain => 41,
+                PullDisposition::Refused => 41,
             }
         };
         Self { shared, exit_code }
@@ -60,11 +56,10 @@ impl PullOutput {
     pub fn exit_code(&self) -> i32 {
         self.exit_code
     }
-    /// Format only the sanitized shared projection, retaining independent receipt,
-    /// disposition, every ordered classification AND failure (including timestamps).
+    /// Format only the sanitized shared projection and retained receipt/failure.
     pub fn render_text(&self) -> String {
         let value = self.shared.json();
-        let mut text = format!(
+        let text = format!(
             "Postmaster pull: {}\nPlan: {}\nReceipt: {}\nDispatch: {}\nFailure: {}",
             value["disposition"].as_str().unwrap_or("refused"),
             value["plan_id"],
@@ -72,11 +67,6 @@ impl PullOutput {
             value["dispatch"],
             value["failure"],
         );
-        if let Some(observations) = value["observations"].as_array() {
-            for (index, observation) in observations.iter().enumerate() {
-                text.push_str(&format!("\nObservation {}: {}", index + 1, observation));
-            }
-        }
         text
     }
 }
