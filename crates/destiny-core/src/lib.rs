@@ -24,6 +24,10 @@ pub use equipment_capacity::{
 pub mod ids;
 pub mod instanced_pull;
 pub use instanced_pull::{InstancedPullOutcome, InstancedPullRejection, InstancedPullRequest};
+pub mod inventory_effects;
+pub use inventory_effects::{
+    InventoryEffect, InventoryEffectError, InventoryEffectsResult, apply_inventory_effects,
+};
 pub mod mutation;
 pub mod name_matching;
 pub mod ports;

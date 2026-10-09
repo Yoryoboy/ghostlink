@@ -425,6 +425,22 @@ pub trait InventoryRepository {
         Err(AppError::new(ErrorCategory::UnsupportedOperation))
     }
 
+    /// Atomically loads the current projection for this membership, applies
+    /// acknowledged effects, and persists only a net change. Missing projections,
+    /// membership mismatches, storage failures and revision overflow fail closed
+    /// with LocalStorage; invalid effects fail with ProviderValidation.
+    /// A net change advances the revision exactly once; a no-op writes nothing.
+    /// Acquisition time, source, definition version and freshness invalidation
+    /// are preserved: this is not a profile publication or acquisition.
+    /// Unsupported repositories fail closed without applying any effects.
+    fn apply_acknowledged_effects(
+        &mut self,
+        _membership: &DestinyMembership,
+        _effects: &[crate::InventoryEffect],
+    ) -> Result<InventorySnapshot, AppError> {
+        Err(AppError::new(ErrorCategory::UnsupportedOperation))
+    }
+
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError>;
     /// The repository assigns or retains the revision and publishes only on success.
     fn replace_current(

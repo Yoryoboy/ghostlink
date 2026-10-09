@@ -658,6 +658,43 @@ impl InventoryRepository for InMemoryInventoryRepository {
         Ok(())
     }
 
+    fn apply_acknowledged_effects(
+        &mut self,
+        membership: &destiny_core::DestinyMembership,
+        effects: &[destiny_core::InventoryEffect],
+    ) -> Result<InventorySnapshot, AppError> {
+        let prior = self
+            .current
+            .as_ref()
+            .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))?;
+        if &prior.metadata.membership_id != membership.membership_id()
+            || prior.metadata.membership_type != membership.membership_type()
+        {
+            return Err(AppError::new(ErrorCategory::LocalStorage));
+        }
+        let mut result = destiny_core::apply_inventory_effects(prior, effects)
+            .map_err(|_| AppError::new(ErrorCategory::ProviderValidation))?;
+        if !InventorySnapshotInput::with_metadata(&result.snapshot).is_structurally_valid() {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        if !result.changed {
+            return Ok(prior.clone());
+        }
+        result.snapshot.metadata.revision = SyncRevision::new(
+            prior
+                .metadata
+                .revision
+                .value()
+                .checked_add(1)
+                .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))?,
+        );
+        // Keep the publication comparison baseline in step with the projection,
+        // but do not clear invalidation or refresh acquisition metadata.
+        self.previous_input = Some(InventorySnapshotInput::with_metadata(&result.snapshot));
+        self.current = Some(result.snapshot.clone());
+        Ok(result.snapshot)
+    }
+
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
         Ok(self.current.clone())
     }
@@ -1880,6 +1917,142 @@ mod tests {
                 snapshot.metadata.revision
             );
         }
+    }
+
+    #[test]
+    fn acknowledged_effects_memory_contract() {
+        use destiny_core::{DestinyMembership, InventoryEffect, apply_inventory_effects};
+        let membership =
+            DestinyMembership::new(MembershipType::new(1), MembershipId::new("123")).unwrap();
+        let mut seed = multi_input();
+        seed.membership_id = membership.membership_id().clone();
+        let target = seed.items[0].instance_id.clone();
+        let character = seed.characters[0].id.clone();
+        let effects = vec![
+            InventoryEffect::Relocate {
+                item: target.clone(),
+                to: ItemLocation::Character(character.clone()),
+            },
+            InventoryEffect::SetLocked {
+                item: target.clone(),
+                locked: true,
+            },
+            InventoryEffect::Equip {
+                item: target.clone(),
+                character,
+                unequip: vec![],
+            },
+        ];
+        let mut empty = InMemoryInventoryRepository::new();
+        assert_eq!(
+            empty
+                .apply_acknowledged_effects(&membership, &[])
+                .unwrap_err()
+                .category(),
+            ErrorCategory::LocalStorage
+        );
+        for invalidated in [false, true] {
+            let mut repository = InMemoryInventoryRepository::new();
+            let before = repository.replace_current(seed.clone()).unwrap();
+            if invalidated {
+                repository.invalidate_freshness().unwrap();
+            }
+            let after = repository
+                .apply_acknowledged_effects(&membership, &effects)
+                .unwrap();
+            let mut expected = apply_inventory_effects(&before, &effects).unwrap().snapshot;
+            expected.metadata.revision = SyncRevision::new(before.metadata.revision.value() + 1);
+            assert_eq!(after, expected);
+            assert_eq!(repository.freshness_invalidated().unwrap(), invalidated);
+            for no_op in [
+                vec![],
+                effects.clone(),
+                vec![
+                    InventoryEffect::SetLocked {
+                        item: target.clone(),
+                        locked: false,
+                    },
+                    InventoryEffect::SetLocked {
+                        item: target.clone(),
+                        locked: true,
+                    },
+                ],
+            ] {
+                assert_eq!(
+                    repository
+                        .apply_acknowledged_effects(&membership, &no_op)
+                        .unwrap(),
+                    after
+                );
+            }
+            let bad = [
+                InventoryEffect::SetLocked {
+                    item: target.clone(),
+                    locked: false,
+                },
+                InventoryEffect::SetLocked {
+                    item: "missing".into(),
+                    locked: true,
+                },
+            ];
+            assert_eq!(
+                repository
+                    .apply_acknowledged_effects(&membership, &bad)
+                    .unwrap_err()
+                    .category(),
+                ErrorCategory::ProviderValidation
+            );
+            for wrong in [
+                DestinyMembership::new(MembershipType::new(2), MembershipId::new("123")).unwrap(),
+                DestinyMembership::new(MembershipType::new(1), MembershipId::new("456")).unwrap(),
+            ] {
+                assert_eq!(
+                    repository
+                        .apply_acknowledged_effects(&wrong, &effects)
+                        .unwrap_err()
+                        .category(),
+                    ErrorCategory::LocalStorage
+                );
+            }
+            let dangling = [InventoryEffect::Relocate {
+                item: target.clone(),
+                to: ItemLocation::Character("missing".into()),
+            }];
+            assert_eq!(
+                repository
+                    .apply_acknowledged_effects(&membership, &dangling)
+                    .unwrap_err()
+                    .category(),
+                ErrorCategory::ProviderValidation
+            );
+            assert_eq!(repository.load_current().unwrap(), Some(after.clone()));
+            assert_eq!(repository.freshness_invalidated().unwrap(), invalidated);
+            assert_eq!(
+                repository
+                    .replace_current(InventorySnapshotInput::with_metadata(&after))
+                    .unwrap()
+                    .metadata
+                    .revision,
+                after.metadata.revision
+            );
+        }
+        let mut overflow =
+            InMemoryInventoryRepository::with_revision_for_test(seed, SyncRevision::new(u64::MAX));
+        let before = overflow.load_current().unwrap().unwrap();
+        assert_eq!(
+            overflow
+                .apply_acknowledged_effects(&membership, &[])
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            overflow
+                .apply_acknowledged_effects(&membership, &effects)
+                .unwrap_err()
+                .category(),
+            ErrorCategory::LocalStorage
+        );
+        assert_eq!(overflow.load_current().unwrap(), Some(before));
     }
 
     fn input(quantity: u32) -> InventorySnapshotInput {

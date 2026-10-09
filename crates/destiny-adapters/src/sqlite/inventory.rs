@@ -91,6 +91,71 @@ impl InventoryRepository for SqliteStore {
         Ok(())
     }
 
+    fn apply_acknowledged_effects(
+        &mut self,
+        membership: &destiny_core::DestinyMembership,
+        effects: &[destiny_core::InventoryEffect],
+    ) -> Result<InventorySnapshot, AppError> {
+        let transaction = self
+            .connection_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| storage_failure())?;
+        let prior = read_projection(&transaction)?.ok_or_else(storage_failure)?;
+        if &prior.metadata.membership_id != membership.membership_id()
+            || prior.metadata.membership_type != membership.membership_type()
+        {
+            return Err(storage_failure());
+        }
+        let mut result = destiny_core::apply_inventory_effects(&prior, effects)
+            .map_err(|_| provider_validation())?;
+        // The pure reducer does not resolve character ownership. Reject dangling
+        // destinations before writes, just as complete publication does.
+        if !InventorySnapshotInput::with_metadata(&result.snapshot).is_structurally_valid() {
+            return Err(provider_validation());
+        }
+        if !result.changed {
+            return Ok(prior);
+        }
+        let revision = next_revision(prior.metadata.revision)?;
+        for (before, after) in prior.items.iter().zip(&result.snapshot.items) {
+            if before == after {
+                continue;
+            }
+            let (kind, character, other) = encode_location(&after.location);
+            // Search and inspection read these same rows and their unchanged
+            // child tables; no independent derived state needs publication.
+            let rows = transaction
+                .execute(
+                    "UPDATE items SET location_kind = ?1, location_character_id = ?2, \
+                 location_other = ?3, equipped = ?4, locked = ?5 WHERE instance_id = ?6",
+                    params![
+                        kind,
+                        character,
+                        other,
+                        encode_boolean(after.equipped),
+                        encode_boolean(after.locked),
+                        after.instance_id.as_str()
+                    ],
+                )
+                .map_err(|_| storage_failure())?;
+            if rows != 1 {
+                return Err(storage_failure());
+            }
+        }
+        let rows = transaction
+            .execute(
+                "UPDATE sync_metadata SET revision = ?1 WHERE dataset = 'profile_inventory'",
+                [encode_decimal(revision.value())],
+            )
+            .map_err(|_| storage_failure())?;
+        if rows != 1 {
+            return Err(storage_failure());
+        }
+        transaction.commit().map_err(|_| storage_failure())?;
+        result.snapshot.metadata.revision = revision;
+        Ok(result.snapshot)
+    }
+
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
         read_projection(self.connection())
     }
@@ -139,14 +204,7 @@ impl InventoryRepository for SqliteStore {
                 .ok_or_else(storage_failure)?
         } else {
             match prior.as_ref() {
-                Some(snapshot) => SyncRevision::new(
-                    snapshot
-                        .metadata
-                        .revision
-                        .value()
-                        .checked_add(1)
-                        .ok_or_else(storage_failure)?,
-                ),
+                Some(snapshot) => next_revision(snapshot.metadata.revision)?,
                 None => SyncRevision::new(1),
             }
         };
@@ -180,6 +238,24 @@ impl InventoryRepository for SqliteStore {
             characters: ordered.characters,
             items: ordered.items,
         })
+    }
+}
+
+fn next_revision(revision: SyncRevision) -> Result<SyncRevision, AppError> {
+    Ok(SyncRevision::new(
+        revision
+            .value()
+            .checked_add(1)
+            .ok_or_else(storage_failure)?,
+    ))
+}
+
+fn encode_location(location: &ItemLocation) -> (&str, Option<&str>, Option<&str>) {
+    match location {
+        ItemLocation::Vault => ("vault", None, None),
+        ItemLocation::Character(id) => ("character", Some(id.as_str()), None),
+        ItemLocation::Postmaster(id) => ("postmaster", Some(id.as_str()), None),
+        ItemLocation::Other(other) => ("other", None, Some(other.as_str())),
     }
 }
 
@@ -959,16 +1035,8 @@ fn replace_projection(
     }
 
     for item in &input.items {
-        let (location_kind, location_character_id, location_other) = match &item.location {
-            ItemLocation::Vault => ("vault", None, None),
-            ItemLocation::Character(character_id) => {
-                ("character", Some(character_id.as_str()), None)
-            }
-            ItemLocation::Postmaster(character_id) => {
-                ("postmaster", Some(character_id.as_str()), None)
-            }
-            ItemLocation::Other(other) => ("other", None, Some(other.as_str())),
-        };
+        let (location_kind, location_character_id, location_other) =
+            encode_location(&item.location);
         connection
             .execute(
                 "INSERT INTO items \

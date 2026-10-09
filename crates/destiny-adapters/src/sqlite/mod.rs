@@ -36,6 +36,8 @@ mod world;
 #[cfg(test)]
 mod definition_tests;
 #[cfg(test)]
+mod inventory_effects_tests;
+#[cfg(test)]
 mod inventory_tests;
 #[cfg(test)]
 mod tests;

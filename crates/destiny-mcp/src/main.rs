@@ -667,6 +667,13 @@ impl InventoryRepository for SharedRepository {
     fn invalidate_freshness(&mut self) -> Result<(), AppError> {
         self.lock()?.invalidate_freshness()
     }
+    fn apply_acknowledged_effects(
+        &mut self,
+        membership: &destiny_app::DestinyMembership,
+        effects: &[destiny_app::InventoryEffect],
+    ) -> Result<InventorySnapshot, AppError> {
+        self.lock()?.apply_acknowledged_effects(membership, effects)
+    }
     fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
         self.lock()?.load_current()
     }

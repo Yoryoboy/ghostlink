@@ -647,6 +647,15 @@ impl InventoryRepository for PullStore {
     fn invalidate_freshness(&mut self) -> Result<(), AppError> {
         self.0.borrow_mut().invalidate_freshness()
     }
+    fn apply_acknowledged_effects(
+        &mut self,
+        membership: &destiny_app::DestinyMembership,
+        effects: &[destiny_app::InventoryEffect],
+    ) -> Result<destiny_app::InventorySnapshot, AppError> {
+        self.0
+            .borrow_mut()
+            .apply_acknowledged_effects(membership, effects)
+    }
     fn load_current(&self) -> Result<Option<destiny_app::InventorySnapshot>, AppError> {
         self.0.borrow().load_current()
     }
