@@ -1760,6 +1760,24 @@ mod tests {
     }
 
     #[test]
+    fn no_advertised_input_schema_uses_top_level_combinators() {
+        // The Anthropic API rejects every request when any tool input schema has a
+        // top-level oneOf/anyOf/allOf, which would break whole client sessions.
+        let (server, _read, _mutation) = mutation_server(RecordingService::new());
+        let tools = server.discover_tools().tools;
+        assert!(tools.iter().any(|tool| tool.name == "apply_loadout"));
+        for tool in tools {
+            for keyword in ["oneOf", "anyOf", "allOf"] {
+                assert!(
+                    !tool.input_schema.contains_key(keyword),
+                    "{} input schema has top-level {keyword}",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[test]
     fn inspect_item_requires_exactly_one_selector_at_runtime() {
         let (server, handle) = server(RecordingService::new());
         for arguments in [

@@ -105,20 +105,14 @@ impl ApplyLoadoutArgs {
     }
 }
 pub fn apply_loadout_tool() -> Tool {
-    let mut tool = Tool::new(
+    let tool = Tool::new(
         APPLY_LOADOUT_TOOL,
         "Apply one saved in-game loadout. Required character is an exact id or unique class; supply exactly one of one-based slot or normalized exact name. Unknown or ambiguous names list candidates, never guess. Go to orbit or a social space first (offline also allowed). Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Missing/unsupported items, incomplete effects or persistence failures also require refresh. Never retry an uncertain outcome. Ordinary sync resolves cached loadouts without profile/206 reads while fresh and cached. Held subclasses switch locally; a subclass not held on the target is skipped with refresh pending. Mods/plugs, including subclass aspects/fragments, are not updated (Bungie limitation). Single-item equip validation is unchanged.",
         JsonObject::new(),
     ).with_input_schema::<ApplyLoadoutArgs>();
-    let mut schema = (*tool.input_schema).clone();
-    schema.insert(
-        "oneOf".into(),
-        serde_json::json!([
-            {"required":["slot"],"not":{"required":["name"]}},
-            {"required":["name"],"not":{"required":["slot"]}}
-        ]),
-    );
-    tool.input_schema = std::sync::Arc::new(schema);
+    // No top-level oneOf: the Anthropic API rejects tool input schemas that use
+    // oneOf/anyOf/allOf at the root. Exactly one of slot or name is enforced at
+    // runtime by `ApplyLoadoutArgs`.
     tool
 }
 

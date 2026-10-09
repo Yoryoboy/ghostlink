@@ -147,6 +147,13 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   rejects tool input schemas with top-level oneOf/anyOf/allOf (400 on every
   request; anthropics/claude-code #4886, #45106). Workspace: 1999 passed,
   0 failed; owned search timings unchanged.
+- [x] **Fix — `apply_loadout` top-level `oneOf` (found during U2).** The
+  shipped rc.3 `apply_loadout` input schema had a top-level `oneOf`, which
+  the Anthropic API rejects with a 400 on every request (unusable sessions in
+  Claude clients). Removed; slot/name exclusivity stays enforced at runtime
+  (`ApplyLoadoutArgs::request`, covered by `tests/stdio.rs`). New guard test:
+  no advertised tool input schema may use top-level oneOf/anyOf/allOf (RED on
+  the previous code). Workspace: 2001 passed, 0 failed.
 - [ ] **U3 — DIM search language (A3).** Query AST (`is:`, `perk:`,
   `stat:`, negation, parentheses, `or`, DIM precedence) driven by one filter
   registry that also provides validation and help; invalid queries fail
