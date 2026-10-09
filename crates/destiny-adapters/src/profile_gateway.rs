@@ -358,7 +358,7 @@ const PROFILE_PATH_PREFIX: &str = "/Platform/Destiny2/";
 const PROFILE_PATH_INFIX: &str = "/Profile/";
 
 /// The exact, ordered profile component query this adapter may request.
-const PROFILE_COMPONENTS_QUERY: &str = "components=102,103,200,201,205,300,302,304,305,310";
+const PROFILE_COMPONENTS_QUERY: &str = "components=102,103,200,201,205,206,300,302,304,305,310";
 
 /// Strict upper bound on the current-user membership response body (256 KiB).
 pub const MEMBERSHIP_RESPONSE_LIMIT: usize = 256 * 1024;
@@ -1190,6 +1190,7 @@ where
             observed_at,
         )?;
         let minted = pair.minted_at().copied();
+        let loadouts = pair.saved_loadouts().map(<[_]>::to_vec);
         let (mut candidate, observations) = pair.into_parts();
         // Unlike legacy pure decoding, this authenticated request explicitly
         // asks for 103. Its omission is unavailable coverage, not unobserved.
@@ -1200,7 +1201,7 @@ where
                 destiny_core::ProfileCurrenciesCoverage::Unavailable;
         }
         destiny_core::ProfileAcquisition::new(candidate, observations)
-            .map(|pair| pair.with_minted_at(minted))
+            .map(|pair| pair.with_minted_at(minted).with_saved_loadouts(loadouts))
     }
 }
 
@@ -1289,6 +1290,18 @@ where
         reason: ProfileSyncReason,
     ) -> Result<DestinyMembership, AppError> {
         self.resolve_membership_with_scope(ReadRetryScope::for_profile_reason(reason))
+    }
+
+    fn load_inventory_profile_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: destiny_core::ProfileSyncReason,
+    ) -> Result<destiny_core::ProfileInventoryRead, AppError> {
+        let pair = self
+            .acquire_inventory_with_scope(membership, ReadRetryScope::for_profile_reason(reason))?;
+        let minted = pair.minted_at().copied();
+        let loadouts = pair.saved_loadouts().map(<[_]>::to_vec);
+        Ok((pair.into_parts().0, minted, loadouts))
     }
 
     fn load_inventory_minted_scoped(
@@ -1981,7 +1994,7 @@ mod tests {
 
     const API_KEY_SENTINEL: &str = "sentinel-profile-api-key";
     const BEARER_SENTINEL: &str = "sentinel-profile-bearer-token";
-    const PROFILE_QUERY: &str = "?components=102,103,200,201,205,300,302,304,305,310";
+    const PROFILE_QUERY: &str = "?components=102,103,200,201,205,206,300,302,304,305,310";
     const PROFILE_PREFIX: &str =
         "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/";
     const RESPONSE_BODY: &str = "{\"ErrorCode\":1,\"Response\":{}}";
@@ -2507,7 +2520,7 @@ mod tests {
         assert!(is_allowed_profile_url(&url));
         assert_eq!(
             url,
-            "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/?components=102,103,200,201,205,300,302,304,305,310"
+            "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/?components=102,103,200,201,205,206,300,302,304,305,310"
         );
     }
 

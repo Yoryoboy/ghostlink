@@ -108,8 +108,10 @@ where
             snapshot.metadata.membership_type,
             snapshot.metadata.membership_id,
         )?;
-        // Component 206 is always live, never resolved from cached loadouts.
-        let live = self.sync.gateway_mut().load_loadouts(&membership)?;
+        let live = match self.sync.repository().saved_loadouts()? {
+            Some(characters) => destiny_core::LoadoutSnapshot { characters },
+            None => self.sync.gateway_mut().load_loadouts(&membership)?,
+        };
         live.validate()?;
         let mut candidates = Vec::new();
         if let Some(saved) = live

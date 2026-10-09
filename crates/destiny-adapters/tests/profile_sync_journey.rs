@@ -357,6 +357,7 @@ fn ordinary_minted_guard_survives_effects_reopen_and_keeps_stale_freshness() {
     let journey = Journey::new();
     let mut value: Value = serde_json::from_slice(FIXTURE).unwrap();
     value["Response"]["responseMintedTimestamp"] = json!("2026-10-08T21:09:13.123Z");
+    value["Response"]["characterLoadouts"] = json!({"data":{"1":{"loadouts":[{"nameHash":10,"colorHash":20,"iconHash":30,"items":[{"itemInstanceId":"456","plugItemHashes":[42]}]}]}}});
     journey.queue_membership();
     journey.queue_profile(&serde_json::to_vec(&value).unwrap());
     let mut service = journey.service();
@@ -371,6 +372,7 @@ fn ordinary_minted_guard_survives_effects_reopen_and_keeps_stale_freshness() {
         .profile_minted_at()
         .unwrap()
         .expect("gateway forwarded minted evidence");
+    let saved = service.repository().saved_loadouts().unwrap().unwrap();
     let effected = service
         .repository_mut()
         .apply_acknowledged_effects(
@@ -383,6 +385,11 @@ fn ordinary_minted_guard_survives_effects_reopen_and_keeps_stale_freshness() {
         .unwrap();
     drop(service);
     let mut service = journey.service();
+    assert_eq!(
+        service.repository().saved_loadouts().unwrap(),
+        Some(saved.clone())
+    );
+    value["Response"]["characterLoadouts"] = json!({"data":{}});
     let stale_now = Timestamp::new(NOW.seconds() + 301);
     journey.at(stale_now);
     for time in [
@@ -399,6 +406,10 @@ fn ordinary_minted_guard_survives_effects_reopen_and_keeps_stale_freshness() {
             ProfileSyncOutcome::DiscardedNotNewer { .. }
         ));
         assert_eq!(committed(&service), effected);
+        assert_eq!(
+            service.repository().saved_loadouts().unwrap(),
+            Some(saved.clone())
+        );
         assert_eq!(
             service.repository().profile_minted_at().unwrap(),
             Some(minted)
@@ -615,7 +626,8 @@ fn profile_currency_coverage_balances_and_atomic_rejection_survive_reopen() {
     let legacy = committed(&service);
     assert_eq!(legacy.profile_currencies_coverage, Coverage::Unavailable);
     assert!(
-        journey.recorded_urls()[1].ends_with("?components=102,103,200,201,205,300,302,304,305,310")
+        journey.recorded_urls()[1]
+            .ends_with("?components=102,103,200,201,205,206,300,302,304,305,310")
     );
     drop(service);
     let mut service = journey.service();

@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 23] = [
+const EXPECTED_TABLE_NAMES: [&str; 24] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -30,6 +30,7 @@ const EXPECTED_TABLE_NAMES: [&str; 23] = [
     "loadout_name_definitions",
     "milestone_definitions",
     "objective_definitions",
+    "saved_loadouts",
     "stacks",
     "stat_definitions",
     "subclass_plug_options",
@@ -46,7 +47,9 @@ const EXPECTED_INDEX_NAMES: [&str; 3] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 112] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 114] = [
+    ("saved_loadouts", "singleton", "INTEGER"),
+    ("saved_loadouts", "normalized_loadouts", "TEXT"),
     ("inventory_coverage", "id", "INTEGER"),
     ("inventory_coverage", "profile_currencies", "TEXT"),
     ("stacks", "ordinal", "INTEGER"),
@@ -829,7 +832,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 20);
+    assert_eq!(LATEST_SCHEMA_VERSION, 21);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION

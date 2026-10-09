@@ -626,6 +626,14 @@ impl<G: ProfileGateway> ProfileGateway for SharedGateway<G> {
         self.lock()?.load_inventory_scoped(membership, reason)
     }
 
+    fn load_inventory_profile_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: destiny_app::ProfileSyncReason,
+    ) -> Result<destiny_app::ProfileInventoryRead, AppError> {
+        self.lock()?
+            .load_inventory_profile_scoped(membership, reason)
+    }
     fn load_inventory_minted_scoped(
         &mut self,
         membership: &DestinyMembership,
@@ -673,6 +681,18 @@ impl SharedRepository {
 }
 
 impl InventoryRepository for SharedRepository {
+    fn saved_loadouts(&self) -> Result<Option<Vec<destiny_app::CharacterLoadouts>>, AppError> {
+        self.lock()?.saved_loadouts()
+    }
+    fn replace_current_profile(
+        &mut self,
+        input: InventorySnapshotInput,
+        minted: Option<destiny_app::ProfileMintedAt>,
+        loadouts: Option<Vec<destiny_app::CharacterLoadouts>>,
+    ) -> Result<InventorySnapshot, AppError> {
+        self.lock()?
+            .replace_current_profile(input, minted, loadouts)
+    }
     fn profile_minted_at(&self) -> Result<Option<destiny_app::ProfileMintedAt>, AppError> {
         self.lock()?.profile_minted_at()
     }

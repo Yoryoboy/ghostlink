@@ -413,6 +413,20 @@ pub trait StatDefinitionRepository {
 
 /// Reads and atomically replaces the current normalized inventory projection.
 pub trait InventoryRepository {
+    /// Saved component 206 from the active profile; None means unavailable.
+    fn saved_loadouts(&self) -> Result<Option<Vec<crate::CharacterLoadouts>>, AppError> {
+        Ok(None)
+    }
+
+    /// Publishes optional saved loadouts atomically with profile metadata.
+    fn replace_current_profile(
+        &mut self,
+        input: InventorySnapshotInput,
+        minted: Option<crate::ProfileMintedAt>,
+        _loadouts: Option<Vec<crate::CharacterLoadouts>>,
+    ) -> Result<InventorySnapshot, AppError> {
+        self.replace_current_minted(input, minted)
+    }
     /// The minted instant of the active profile. Legacy repositories have none.
     fn profile_minted_at(&self) -> Result<Option<crate::ProfileMintedAt>, AppError> {
         Ok(None)
@@ -655,6 +669,17 @@ pub trait ProfileGateway {
 
     /// Inventory-only acquisition with optional minted evidence. The default
     /// preserves legacy loader ordering and does not invent provider metadata.
+    /// Ordinary acquisition retaining optional profile side projections. Legacy
+    /// gateways preserve their scoped inventory path and validation ordering.
+    fn load_inventory_profile_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<crate::ProfileInventoryRead, AppError> {
+        let (input, minted) = self.load_inventory_minted_scoped(membership, reason)?;
+        Ok((input, minted, None))
+    }
+
     fn load_inventory_minted_scoped(
         &mut self,
         membership: &DestinyMembership,

@@ -202,11 +202,25 @@ impl InventoryRepository for SqliteStore {
         self.replace_current_minted(input, None)
     }
 
+    fn saved_loadouts(&self) -> Result<Option<Vec<destiny_core::CharacterLoadouts>>, AppError> {
+        super::loadouts::read(self.connection())
+    }
+
     fn replace_current_minted(
         &mut self,
         input: InventorySnapshotInput,
         minted: Option<destiny_core::ProfileMintedAt>,
     ) -> Result<InventorySnapshot, AppError> {
+        self.replace_current_profile(input, minted, None)
+    }
+
+    fn replace_current_profile(
+        &mut self,
+        input: InventorySnapshotInput,
+        minted: Option<destiny_core::ProfileMintedAt>,
+        loadouts: Option<Vec<destiny_core::CharacterLoadouts>>,
+    ) -> Result<InventorySnapshot, AppError> {
+        let payload = loadouts.map(super::loadouts::encode).transpose()?;
         // Provenance and structural validity need no storage, so they are
         // rejected here before the transaction is opened and no write is ever
         // attempted.
@@ -264,6 +278,17 @@ impl InventoryRepository for SqliteStore {
                 [minted.map(encode_minted)],
             )
             .map_err(|_| storage_failure())?;
+        transaction
+            .execute("DELETE FROM saved_loadouts", [])
+            .map_err(|_| storage_failure())?;
+        if let Some(payload) = payload {
+            transaction
+                .execute(
+                    "INSERT INTO saved_loadouts (singleton, normalized_loadouts) VALUES (1, ?1)",
+                    [payload],
+                )
+                .map_err(|_| storage_failure())?;
+        }
         transaction.commit().map_err(|_| storage_failure())?;
 
         Ok(InventorySnapshot {

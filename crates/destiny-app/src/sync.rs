@@ -302,18 +302,19 @@ where
         }
 
         let membership = self.gateway.resolve_membership_scoped(reason)?;
-        let (mut candidate, observations, minted) = if with_observations {
+        let (mut candidate, observations, minted, loadouts) = if with_observations {
             let pair = self
                 .gateway
                 .load_inventory_with_observations_scoped(&membership, reason)?;
             let minted = pair.minted_at().copied();
+            let loadouts = pair.saved_loadouts().map(<[_]>::to_vec);
             let (input, observations) = pair.into_parts();
-            (input, observations, minted)
+            (input, observations, minted, loadouts)
         } else {
-            let (input, minted) = self
+            let (input, minted, loadouts) = self
                 .gateway
-                .load_inventory_minted_scoped(&membership, reason)?;
-            (input, None, minted)
+                .load_inventory_profile_scoped(&membership, reason)?;
+            (input, None, minted, loadouts)
         };
         // The candidate must belong to the membership it was resolved for, so a
         // mismatched or partial provider response can never be published.
@@ -387,7 +388,9 @@ where
         // Preserve only the observed route's POST-FILTER candidate. Ordinary
         // success still moves its input without cloning a projection.
         let expected = with_observations.then(|| candidate.clone());
-        let snapshot = self.repository.replace_current_minted(candidate, minted)?;
+        let snapshot = self
+            .repository
+            .replace_current_profile(candidate, minted, loadouts)?;
         let publication = match expected {
             Some(candidate) => SyncPublication::Observed(PublishedProfileAcquisition::new(
                 &candidate,

@@ -1,4 +1,4 @@
-//! Live-only, provider-neutral saved loadouts.
+//! Provider-neutral saved loadouts, acquired with a profile or via live fallback.
 use crate::{AppError, CharacterId, DestinyMembership, ErrorCategory, ItemHash, ItemInstanceId};
 use std::collections::HashSet;
 

@@ -5,6 +5,14 @@ use crate::{
 };
 use std::collections::HashMap;
 
+/// Inventory-only acquisition with optional metadata. Unlike ProfileAcquisition,
+/// legacy inputs are validated after application plug filtering.
+pub type ProfileInventoryRead = (
+    InventorySnapshotInput,
+    Option<crate::ProfileMintedAt>,
+    Option<Vec<crate::CharacterLoadouts>>,
+);
+
 /// A gateway-supplied actual runtime bucket for one exact instance and location.
 /// This is not a definition bucket, capacity fact, or action-target authorization.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,6 +84,7 @@ pub struct ProfileAcquisition {
     input: InventorySnapshotInput,
     observations: Option<Vec<InstancedBucketObservation>>,
     minted_at: Option<crate::ProfileMintedAt>,
+    saved_loadouts: Option<Vec<crate::CharacterLoadouts>>,
 }
 
 impl ProfileAcquisition {
@@ -108,7 +117,17 @@ impl ProfileAcquisition {
             input,
             observations,
             minted_at: None,
+            saved_loadouts: None,
         })
+    }
+
+    pub fn with_saved_loadouts(mut self, loadouts: Option<Vec<crate::CharacterLoadouts>>) -> Self {
+        self.saved_loadouts = loadouts;
+        self
+    }
+
+    pub fn saved_loadouts(&self) -> Option<&[crate::CharacterLoadouts]> {
+        self.saved_loadouts.as_deref()
     }
 
     pub fn with_minted_at(mut self, minted: Option<crate::ProfileMintedAt>) -> Self {

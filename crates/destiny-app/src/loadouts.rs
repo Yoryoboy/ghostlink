@@ -224,7 +224,10 @@ where
             snapshot.metadata.membership_type,
             snapshot.metadata.membership_id,
         )?;
-        let live = self.sync.gateway_mut().load_loadouts(&membership)?;
+        let live = match self.sync.repository().saved_loadouts()? {
+            Some(characters) => destiny_core::LoadoutSnapshot { characters },
+            None => self.sync.gateway_mut().load_loadouts(&membership)?,
+        };
         live.validate()?;
         let repository = self.sync.repository();
         let instances: std::collections::HashMap<_, _> = snapshot
@@ -401,6 +404,18 @@ mod tests {
         definitions: InMemoryDefinitionRepository,
     }
     impl InventoryRepository for Repository {
+        fn saved_loadouts(&self) -> Result<Option<Vec<CharacterLoadouts>>, AppError> {
+            self.inventory.saved_loadouts()
+        }
+        fn replace_current_profile(
+            &mut self,
+            input: InventorySnapshotInput,
+            minted: Option<ProfileMintedAt>,
+            loadouts: Option<Vec<CharacterLoadouts>>,
+        ) -> Result<InventorySnapshot, AppError> {
+            self.inventory
+                .replace_current_profile(input, minted, loadouts)
+        }
         fn invalidate_freshness(&mut self) -> Result<(), AppError> {
             self.inventory.invalidate_freshness()
         }
@@ -506,11 +521,30 @@ mod tests {
         }
     }
     struct Gateway {
+        cache: bool,
         input: InventorySnapshotInput,
         live: LoadoutSnapshot,
         calls: Rc<RefCell<Vec<&'static str>>>,
     }
     impl ProfileGateway for Gateway {
+        fn load_inventory_profile_scoped(
+            &mut self,
+            membership: &DestinyMembership,
+            reason: ProfileSyncReason,
+        ) -> Result<ProfileInventoryRead, AppError> {
+            let pair = self.load_inventory_with_observations_scoped(membership, reason)?;
+            let rows = pair.saved_loadouts().map(<[_]>::to_vec);
+            Ok((pair.into_parts().0, None, rows))
+        }
+        fn load_inventory_with_observations_scoped(
+            &mut self,
+            membership: &DestinyMembership,
+            _: ProfileSyncReason,
+        ) -> Result<ProfileAcquisition, AppError> {
+            let input = self.load_inventory(membership)?;
+            Ok(ProfileAcquisition::new(input, None)?
+                .with_saved_loadouts(self.cache.then(|| self.live.characters.clone())))
+        }
         fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
             self.calls.borrow_mut().push("membership");
             DestinyMembership::new(self.input.membership_type, self.input.membership_id.clone())
@@ -667,6 +701,7 @@ mod tests {
         };
         let calls = Rc::new(RefCell::new(vec![]));
         let gateway = Gateway {
+            cache: false,
             input,
             live,
             calls: calls.clone(),
@@ -683,6 +718,43 @@ mod tests {
             character: CharacterId::new("HuNtEr"),
             loadout,
             intent: MoveIntentAuthorization::Explicit,
+        }
+    }
+
+    #[test]
+    fn fresh_cached_loadouts_are_gateway_free_and_legacy_falls_back_once() {
+        let (mut service, calls) = fixture(false);
+        service.loadouts(None, TTL, NOW).unwrap();
+        assert_eq!(&*calls.borrow(), &["loadouts"]);
+        calls.borrow_mut().clear();
+        let rows = service.sync.gateway_mut().live.characters.clone();
+        let input = service.sync.gateway_mut().input.clone();
+        service
+            .sync
+            .repository_mut()
+            .replace_current_profile(input, None, Some(rows))
+            .unwrap();
+        service.loadouts(None, TTL, NOW).unwrap();
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn apply_resolves_cached_slot_and_name_without_live_read() {
+        for selector in [
+            crate::LoadoutSelector::Slot(3),
+            crate::LoadoutSelector::Name("PvE".into()),
+        ] {
+            let (mut read, calls) = fixture(false);
+            read.sync.gateway_mut().cache = true;
+            let mut service = crate::ApplyLoadoutService::new(read.sync);
+            let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+            action.queue(Ok(LoadoutActionOutcome::Applied));
+            let result = service
+                .apply(&mut action, &apply_request(selector), TTL, NOW)
+                .unwrap();
+            assert_eq!(result.slot, 3);
+            assert_eq!(&*calls.borrow(), &["membership", "inventory"]);
+            assert_eq!(action.calls(), 1);
         }
     }
 
