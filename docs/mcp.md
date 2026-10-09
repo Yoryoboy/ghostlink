@@ -84,14 +84,24 @@ invalid selectors are rejected before service I/O. Requires login and loaded
 Manifest definitions; orbit, a social space, or an offline character is required.
 Location refusal says "go to orbit or a social space and retry".
 
-One call performs fresh preflight, a live component-206 read, and exactly one
-EquipLoadout action. JSON matches `ghostlink apply-loadout --json`: `kind:
-"apply_loadout"`, `character`, one-based `slot`, `name`, `outcome`, bounded
-`receipt`, and `reason`. `applied` is acknowledgement (`isError=false`, CLI 0),
-not observed state. Refusal/auth/transient/uncertain attempts are errors (CLI 41),
-and durable invalidation failure fails closed (CLI 42), retaining the receipt:
-"local state could not be updated after the action". Every dispatched attempt
-invalidates freshness; the next ordinary read forces sync. No post-action request
+One call uses ordinary sync and cached slot/name resolution, then exactly one
+EquipLoadout action. A fresh cached projection needs zero profile/206 reads;
+legacy projections without the cache use one 206 read. Acknowledged saved items
+found locally move to the character, equip and unequip same-bucket replacements.
+Complete local persistence retains freshness, including subclass switches:
+the saved subclass must already be held on the target character and replaces
+other equipped subclass-bucket items. Missing items, subclasses not held on the
+target, or rejected local effects apply the rest and invalidate freshness;
+non-applied receipts and persistence failures also invalidate it. The next read
+then syncs. Mods/plugs, including subclass aspects/fragments, remain unchanged
+(DIM/Bungie API limitation). Single-item equip validation is unchanged.
+JSON matches `ghostlink apply-loadout --json`: `kind: "apply_loadout"`,
+`character`, one-based `slot`, `name`, `outcome`, bounded `receipt`, `reason`, and
+`local_state_updated` (true only for complete effects without invalidation).
+`applied` is acknowledgement (`isError=false`, CLI 0), not observed state.
+Refusal/auth/transient/uncertain attempts are errors (CLI 41). Applied receipts
+with incomplete local effects or persistence failure fail closed (CLI 42),
+retaining the receipt: "local state could not be updated after the action". No post-action request
 or retry; process-local loadout attempts are paced at one per second. No global
 cross-process throttle guarantee. Never blindly repeat an uncertain action.
 

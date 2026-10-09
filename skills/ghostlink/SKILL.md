@@ -114,14 +114,22 @@ required: exact owned id or unique class; never default. Slots are one-based
 within that character; unknown/ambiguous names list candidates, never guess.
 Requires login and loaded Manifest definitions. Ask the user to go to orbit or
 a social space first (offline is also allowed); location refusal explicitly says
-"go to orbit or a social space and retry". One fresh live read precedes one action.
+"go to orbit or a social space and retry". Ordinary sync resolves the cached
+slot/name before one action (zero profile/206 reads while fresh and cached).
 Report `kind: "apply_loadout"`, `character`, `slot`, `name`, `outcome`, `receipt`
-and `reason`. `applied` (CLI 0 / MCP success) means acknowledged, not observed.
-Failure/refusal/auth/transient/uncertain is 41; local invalidation failure is 42,
-retaining the receipt: "local state could not be updated after the action".
-No post-action request, provider-lag exit 43 or automatic retry. Every dispatched
-attempt invalidates freshness; read later and reassess intent, never blindly
-repeat `apply-loadout`, including after nonzero exit.
+and `reason`, plus JSON `local_state_updated` (true only for complete local
+equipment effects without invalidation). `applied` (CLI 0 / MCP success) means
+acknowledged, not observed. Known saved items move/equip locally and replace
+same-bucket equipment; complete persistence retains freshness. Missing items,
+subclasses not held on the target or rejected effects apply the rest and invalidate.
+Held subclasses switch locally, unequipping the previous subclass without
+invalidation; single-item equip validation is unchanged. Mods/plugs, including
+subclass aspects/fragments, stay unchanged (DIM/Bungie limitation). Non-applied receipts invalidate
+and fail (41); an applied receipt with incomplete local effects or persistence
+failure is 42, retaining the receipt: "local state could not be updated after the action".
+No post-action request, provider-lag exit 43 or automatic retry. After invalidation,
+read later and reassess intent, never blindly repeat `apply-loadout`, including
+after nonzero exit.
 
 ## Postmaster limits
 

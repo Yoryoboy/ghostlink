@@ -689,16 +689,25 @@ Requires login and loaded Manifest definitions. Go to orbit or a social space
 first; offline characters are also permitted. A location refusal says
 "go to orbit or a social space and retry".
 
-Fresh profile preflight and a live component-206 loadout read confirm the saved
-slot before exactly one official EquipLoadout call; no item-by-item emulation,
-post-action profile request, or automatic retry. JSON (`kind: "apply_loadout"`)
-and human output show `character`, one-based `slot`, `name`, `outcome`, `receipt`
-and `reason`. `applied` is acknowledgement, not observed game state (exit 0).
-Refusal/auth/transient/uncertain attempts fail (41); invalidation storage failure
-is `local_state_failed` (42), preserving the receipt and reporting
-"local state could not be updated after the action". All dispatched outcomes
-invalidate freshness durably; the next ordinary read syncs, never writes guessed
-state. Nonzero action output is on stderr; startup/argument errors retain the
+Ordinary sync resolves the saved slot/name from the committed cache: a fresh
+cached projection needs zero profile or component-206 reads. Legacy projections
+without the cache use one 206 read. Exactly one official EquipLoadout call follows;
+no item-by-item provider emulation, post-action request, or automatic retry.
+Acknowledged saved items found locally move to the character, become equipped,
+and unequip same-bucket replacements. Complete persistence retains freshness;
+missing items, subclasses not held on the target, or rejected local effects apply the rest
+and invalidate freshness so the next ordinary read syncs. Mods/plugs remain
+unchanged, including subclass aspects/fragments, matching DIM's Bungie API
+limitation. Held subclasses switch locally and unequip the previous subclass;
+this loadout-only path does not change single-item equip validation.
+JSON (`kind: "apply_loadout"`) shows `character`, one-based `slot`, `name`,
+`outcome`, `receipt`, `reason`, and `local_state_updated` (true only for complete
+local effects without invalidation). `applied` is acknowledgement, not observed
+game state (exit 0). Refusal/auth/transient/uncertain attempts invalidate freshness
+and fail (41). An applied receipt with incomplete local effects or persistence
+failure is `local_state_failed` (42), preserving the receipt and reporting
+"local state could not be updated after the action". Persistence failure also
+attempts invalidation and never retries. Nonzero action output is on stderr; startup/argument errors retain the
 ordinary error envelope. No provider-lag exit 43. Never blindly retry uncertainty.
 MCP `apply_loadout` uses the same service and output.
 

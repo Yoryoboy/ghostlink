@@ -1273,20 +1273,7 @@ where
         effects: &[destiny_core::InventoryEffect],
         applied: bool,
     ) -> Result<(), AppError> {
-        let persistence = if effects.is_empty() {
-            Ok(())
-        } else {
-            self.repository_mut()
-                .apply_acknowledged_effects(membership, effects)
-                .map(|_| ())
-        };
-        if !applied || persistence.is_err() {
-            let invalidation = self.repository_mut().invalidate_freshness();
-            // Preserve the original local persistence category even if fallback fails.
-            persistence.and(invalidation)
-        } else {
-            persistence
-        }
+        persist_attempt_effects(self.repository_mut(), membership, effects, applied)
     }
 
     /// Resolves replacement subjects from definitions, never instance heuristics.
@@ -1299,31 +1286,7 @@ where
     where
         R: destiny_core::DefinitionRepository,
     {
-        let target = self.equip_definition(item.item_hash)?;
-        let slot = target
-            .slot
-            .filter(|slot| is_equipment_slot(*slot))
-            .ok_or(MutationError::NotEquippable)?;
-        let mut unequip = Vec::new();
-        for other in snapshot.items.iter().filter(|other| {
-            other.equipped
-                && other.location == ItemLocation::Character(character.clone())
-                && other.instance_id != item.instance_id
-        }) {
-            let definition = self.equip_definition(other.item_hash)?;
-            let same_bucket = match (target.bucket_hash, definition.bucket_hash) {
-                (Some(target), Some(other)) => target == other,
-                _ => definition.slot == Some(slot),
-            };
-            if same_bucket {
-                unequip.push(other.instance_id.clone());
-            }
-        }
-        Ok(destiny_core::InventoryEffect::Equip {
-            item: item.instance_id.clone(),
-            character: character.clone(),
-            unequip,
-        })
+        equip_effect(self.repository(), item, character, snapshot)
     }
 
     /// Runs the ticket's ordered steps in place, stopping at the first that does
@@ -1695,6 +1658,68 @@ where
 enum EquipmentCategory {
     Weapon,
     Armor,
+}
+
+/// Shared persistence boundary: retain receipts and never replay remote actions.
+pub(crate) fn persist_attempt_effects<R: InventoryRepository>(
+    repository: &mut R,
+    membership: &DestinyMembership,
+    effects: &[destiny_core::InventoryEffect],
+    complete: bool,
+) -> Result<(), AppError> {
+    let persistence = if effects.is_empty() {
+        Ok(())
+    } else {
+        repository
+            .apply_acknowledged_effects(membership, effects)
+            .map(|_| ())
+    };
+    if !complete || persistence.is_err() {
+        let invalidation = repository.invalidate_freshness();
+        // Preserve the persistence category even if fallback invalidation fails.
+        persistence.and(invalidation)
+    } else {
+        persistence
+    }
+}
+
+/// Resolve same-bucket replacement subjects; subclasses are not supported.
+pub(crate) fn equip_effect<R: destiny_core::DefinitionRepository>(
+    repository: &R,
+    item: &ItemInstance,
+    character: &destiny_core::CharacterId,
+    snapshot: &InventorySnapshot,
+) -> Result<destiny_core::InventoryEffect, MutationError> {
+    let lookup = |hash| match repository.lookup_definition(hash)? {
+        Resolution::Unique(definition) => Ok(definition),
+        Resolution::Missing => Err(MutationError::NotEquippable),
+        Resolution::Ambiguous(_) => Err(MutationError::InvalidProjection),
+    };
+    let target = lookup(item.item_hash)?;
+    let slot = target
+        .slot
+        .filter(|slot| is_equipment_slot(*slot))
+        .ok_or(MutationError::NotEquippable)?;
+    let mut unequip = Vec::new();
+    for other in snapshot.items.iter().filter(|other| {
+        other.equipped
+            && other.location == ItemLocation::Character(character.clone())
+            && other.instance_id != item.instance_id
+    }) {
+        let definition = lookup(other.item_hash)?;
+        let same_bucket = match (target.bucket_hash, definition.bucket_hash) {
+            (Some(target), Some(other)) => target == other,
+            _ => definition.slot == Some(slot),
+        };
+        if same_bucket {
+            unequip.push(other.instance_id.clone());
+        }
+    }
+    Ok(destiny_core::InventoryEffect::Equip {
+        item: item.instance_id.clone(),
+        character: character.clone(),
+        unequip,
+    })
 }
 
 /// Weapon and armor exotic limits are independent; unsupported slots are not

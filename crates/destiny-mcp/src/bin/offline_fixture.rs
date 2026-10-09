@@ -320,10 +320,12 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
     let mut loadout_character = character("1");
     loadout_character.id = CharacterId::new("1");
     loadout_character.class = Some("Hunter".into());
-    let loadout_repository = FixtureRepository::seeded(&[loadout_character.clone()], &[]);
+    let loadout_items = vec![instance("123", 1, ItemLocation::Vault, vec![])];
+    let loadout_repository =
+        FixtureRepository::seeded(&[loadout_character.clone()], &loadout_items);
     let loadout_world = Arc::new(Mutex::new(FixtureWorld {
         characters: vec![loadout_character],
-        items: vec![],
+        items: loadout_items,
         refresh_failed: false,
         stack_arrived: false,
     }));
@@ -1054,7 +1056,7 @@ impl InventoryRepository for FixtureRepository {
     ) -> Result<InventorySnapshot, AppError> {
         if matches!(
             std::env::var(SCENARIO_ENV).ok().as_deref(),
-            Some("batch-storage" | "pull-storage" | "stack-storage")
+            Some("batch-storage" | "pull-storage" | "stack-storage" | "loadout-storage")
         ) {
             return Err(AppError::new(ErrorCategory::LocalStorage));
         }
@@ -1407,6 +1409,14 @@ fn set_location(items: &mut [ItemInstance], instance_id: &str, location: ItemLoc
 }
 
 fn fixture_definitions() -> Vec<ItemDefinition> {
+    if std::env::var(SCENARIO_ENV)
+        .ok()
+        .is_some_and(|s| s.starts_with("loadout-"))
+    {
+        let mut weapon = definition(1, "Weapon");
+        weapon.slot = Some(destiny_app::ItemSlot::Kinetic);
+        return vec![weapon];
+    }
     if batch_scenario() {
         return [
             (100, "First", destiny_app::ItemSlot::Kinetic),

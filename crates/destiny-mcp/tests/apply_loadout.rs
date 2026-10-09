@@ -83,7 +83,7 @@ fn shared_output_preserves_receipts_exits_and_sanitizes_human_and_json() {
             }));
             assert_eq!(
                 output.exit_code,
-                if !local_state_updated {
+                if receipt.applied() && !local_state_updated {
                     42
                 } else if receipt.applied() {
                     0
@@ -95,7 +95,8 @@ fn shared_output_preserves_receipts_exits_and_sanitizes_human_and_json() {
             assert!(!output.render_text().contains('\u{1b}'));
             assert!(!output.render_text().contains('\n'));
             assert!(output.value.get("membership").is_none());
-            if !local_state_updated {
+            assert_eq!(output.value["local_state_updated"], local_state_updated);
+            if receipt.applied() && !local_state_updated {
                 assert_eq!(
                     output.value["reason"],
                     "local state could not be updated after the action"

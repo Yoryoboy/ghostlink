@@ -46,21 +46,23 @@ impl ApplyLoadoutOutput {
                         }),
                     ),
                 };
-                let (outcome, exit_code, reason) = if !result.local_state_updated {
-                    (
-                        "local_state_failed",
-                        42,
-                        Some("local state could not be updated after the action"),
-                    )
-                } else if result.receipt.applied() {
-                    ("applied", 0, reason)
-                } else {
-                    ("failed", 41, reason)
-                };
+                let (outcome, exit_code, reason) =
+                    if result.receipt.applied() && !result.local_state_updated {
+                        (
+                            "local_state_failed",
+                            42,
+                            Some("local state could not be updated after the action"),
+                        )
+                    } else if result.receipt.applied() {
+                        ("applied", 0, reason)
+                    } else {
+                        ("failed", 41, reason)
+                    };
                 Self {
                     value: json!({"kind":"apply_loadout", "character":clean(result.character.as_str()),
                         "slot":result.slot, "name":result.name.as_deref().map(clean),
-                        "outcome":outcome, "receipt":receipt, "reason":reason}),
+                        "outcome":outcome, "receipt":receipt, "reason":reason,
+                        "local_state_updated":result.local_state_updated}),
                     exit_code,
                 }
             }
@@ -99,7 +101,7 @@ impl ApplyLoadoutOutput {
                 };
                 Self {
                     value: json!({"kind":"apply_loadout", "character":null, "slot":null, "name":null,
-                        "outcome":"refused", "receipt":null, "code":code, "reason":clean(&reason),
+                        "outcome":"refused", "receipt":null, "local_state_updated":false, "code":code, "reason":clean(&reason),
                         "candidates":candidates.iter().map(|c| json!({"slot":c.slot,"name":c.name.as_deref().map(clean)})).collect::<Vec<_>>()}),
                     exit_code: 41,
                 }

@@ -107,7 +107,7 @@ impl ApplyLoadoutArgs {
 pub fn apply_loadout_tool() -> Tool {
     let mut tool = Tool::new(
         APPLY_LOADOUT_TOOL,
-        "Apply one saved in-game loadout. Required character is an exact id or unique class; supply exactly one of one-based slot or normalized exact name. Unknown or ambiguous names list candidates, never guess. Go to orbit or a social space first (offline also allowed). Acknowledgement returns applied without a post-action profile request; freshness is invalidated. No retry on failure or uncertainty.",
+        "Apply one saved in-game loadout. Required character is an exact id or unique class; supply exactly one of one-based slot or normalized exact name. Unknown or ambiguous names list candidates, never guess. Go to orbit or a social space first (offline also allowed). Ordinary sync resolves the cached loadout (zero profile/206 reads while fresh and cached). Acknowledged items update local location/equipment and unequip same-bucket replacements without a post-action request. Complete persistence retains freshness; missing/unsupported items, incomplete receipts or storage failure invalidate it. Held subclasses switch locally and unequip other subclass-bucket items on the target; a subclass not held on that character is skipped with invalidation. Mods/plugs, including subclass aspects/fragments, are not updated (Bungie limitation). Single-item equip validation is unchanged. No retry on failure or uncertainty.",
         JsonObject::new(),
     ).with_input_schema::<ApplyLoadoutArgs>();
     let mut schema = (*tool.input_schema).clone();
