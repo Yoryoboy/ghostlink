@@ -8,6 +8,11 @@ fn rc002_local_publication_cannot_overtake_dispatch() {
 }
 
 #[test]
+fn rc002_following_equip_can_precede_read_publication() {
+    support::equip_before_publication();
+}
+
+#[test]
 fn equip_json_matches_cli_for_every_execution_shape() {
     for (scenario, item, character, status) in [
         ("equip-success", "123", "warlock", "applied"),

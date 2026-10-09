@@ -35,7 +35,9 @@ pub mod ports;
 pub mod postmaster;
 pub mod profile_observations;
 pub use postmaster::{CharacterPostmaster, PostmasterInstance, PostmasterResult, PostmasterStack};
-pub use profile_observations::{InstancedBucketObservation, ProfileAcquisition};
+pub use profile_observations::{
+    InstancedBucketObservation, ProfileAcquisition, ProfileInventoryRead,
+};
 pub mod public_milestones;
 pub mod query;
 pub use ports::PublicMilestonesGateway;

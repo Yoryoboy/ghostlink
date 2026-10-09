@@ -224,7 +224,10 @@ where
             snapshot.metadata.membership_type,
             snapshot.metadata.membership_id,
         )?;
-        let live = self.sync.gateway_mut().load_loadouts(&membership)?;
+        let live = match self.sync.repository().saved_loadouts()? {
+            Some(characters) => destiny_core::LoadoutSnapshot { characters },
+            None => self.sync.gateway_mut().load_loadouts(&membership)?,
+        };
         live.validate()?;
         let repository = self.sync.repository();
         let instances: std::collections::HashMap<_, _> = snapshot
@@ -397,10 +400,35 @@ mod tests {
     const TTL: FreshnessPolicy = FreshnessPolicy { ttl_seconds: 300 };
     struct Repository {
         description_error: bool,
+        effects_failure: bool,
+        duplicate_neighbor_observation: bool,
         inventory: InMemoryInventoryRepository,
         definitions: InMemoryDefinitionRepository,
     }
     impl InventoryRepository for Repository {
+        fn apply_acknowledged_effects(
+            &mut self,
+            membership: &DestinyMembership,
+            effects: &[InventoryEffect],
+        ) -> Result<InventorySnapshot, AppError> {
+            if self.effects_failure {
+                return Err(AppError::new(ErrorCategory::LocalStorage));
+            }
+            self.inventory
+                .apply_acknowledged_effects(membership, effects)
+        }
+        fn saved_loadouts(&self) -> Result<Option<Vec<CharacterLoadouts>>, AppError> {
+            self.inventory.saved_loadouts()
+        }
+        fn replace_current_profile(
+            &mut self,
+            input: InventorySnapshotInput,
+            minted: Option<ProfileMintedAt>,
+            loadouts: Option<Vec<CharacterLoadouts>>,
+        ) -> Result<InventorySnapshot, AppError> {
+            self.inventory
+                .replace_current_profile(input, minted, loadouts)
+        }
         fn invalidate_freshness(&mut self) -> Result<(), AppError> {
             self.inventory.invalidate_freshness()
         }
@@ -408,13 +436,66 @@ mod tests {
             self.inventory.freshness_invalidated()
         }
         fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
-            self.inventory.load_current()
+            let mut snapshot = self.inventory.load_current()?;
+            // Fault injection: the reducer must reject duplicate referenced subjects.
+            if self.duplicate_neighbor_observation {
+                let snapshot = snapshot.as_mut().unwrap();
+                let neighbor = snapshot
+                    .items
+                    .iter()
+                    .find(|item| item.instance_id.as_str() == "91")
+                    .unwrap()
+                    .clone();
+                snapshot.items.push(neighbor);
+            }
+            Ok(snapshot)
         }
         fn replace_current(
             &mut self,
             input: InventorySnapshotInput,
         ) -> Result<InventorySnapshot, AppError> {
             self.inventory.replace_current(input)
+        }
+    }
+    impl SearchRepository for Repository {
+        fn search_definitions(
+            &self,
+            query: &DefinitionSearchQuery,
+        ) -> Result<Vec<ItemDefinition>, AppError> {
+            self.search_projection()?.search_definitions(query)
+        }
+        fn search_instances(
+            &self,
+            query: &InstanceSearchQuery,
+        ) -> Result<Vec<ItemInstance>, AppError> {
+            self.search_projection()?.search_instances(query)
+        }
+        fn lookup_instance(
+            &self,
+            id: &ItemInstanceId,
+        ) -> Result<Resolution<ItemInstance>, AppError> {
+            self.search_projection()?.lookup_instance(id)
+        }
+    }
+    impl Repository {
+        fn search_projection(
+            &self,
+        ) -> Result<crate::test_support::InMemorySearchRepository, AppError> {
+            let definitions = [1, 2]
+                .into_iter()
+                .filter_map(
+                    |hash| match self.definitions.lookup_definition(ItemHash::new(hash)) {
+                        Ok(Resolution::Unique(definition)) => Some(definition),
+                        _ => None,
+                    },
+                )
+                .collect();
+            Ok(
+                crate::test_support::InMemorySearchRepository::with_projection(
+                    definitions,
+                    &self.inventory.load_current()?.unwrap(),
+                ),
+            )
         }
     }
     impl DefinitionRepository for Repository {
@@ -506,11 +587,30 @@ mod tests {
         }
     }
     struct Gateway {
+        cache: bool,
         input: InventorySnapshotInput,
         live: LoadoutSnapshot,
         calls: Rc<RefCell<Vec<&'static str>>>,
     }
     impl ProfileGateway for Gateway {
+        fn load_inventory_profile_scoped(
+            &mut self,
+            membership: &DestinyMembership,
+            reason: ProfileSyncReason,
+        ) -> Result<ProfileInventoryRead, AppError> {
+            let pair = self.load_inventory_with_observations_scoped(membership, reason)?;
+            let rows = pair.saved_loadouts().map(<[_]>::to_vec);
+            Ok((pair.into_parts().0, None, rows))
+        }
+        fn load_inventory_with_observations_scoped(
+            &mut self,
+            membership: &DestinyMembership,
+            _: ProfileSyncReason,
+        ) -> Result<ProfileAcquisition, AppError> {
+            let input = self.load_inventory(membership)?;
+            Ok(ProfileAcquisition::new(input, None)?
+                .with_saved_loadouts(self.cache.then(|| self.live.characters.clone())))
+        }
         fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
             self.calls.borrow_mut().push("membership");
             DestinyMembership::new(self.input.membership_type, self.input.membership_id.clone())
@@ -612,6 +712,8 @@ mod tests {
         };
         let mut repository = Repository {
             description_error: false,
+            effects_failure: false,
+            duplicate_neighbor_observation: false,
             inventory: InMemoryInventoryRepository::new(),
             definitions: InMemoryDefinitionRepository::new(
                 DefinitionVersion::new("v1"),
@@ -667,6 +769,7 @@ mod tests {
         };
         let calls = Rc::new(RefCell::new(vec![]));
         let gateway = Gateway {
+            cache: false,
             input,
             live,
             calls: calls.clone(),
@@ -687,6 +790,413 @@ mod tests {
     }
 
     #[test]
+    fn fresh_cached_loadouts_are_gateway_free_and_legacy_falls_back_once() {
+        let (mut service, calls) = fixture(false);
+        service.loadouts(None, TTL, NOW).unwrap();
+        assert_eq!(&*calls.borrow(), &["loadouts"]);
+        calls.borrow_mut().clear();
+        let rows = service.sync.gateway_mut().live.characters.clone();
+        let input = service.sync.gateway_mut().input.clone();
+        service
+            .sync
+            .repository_mut()
+            .replace_current_profile(input, None, Some(rows))
+            .unwrap();
+        service.loadouts(None, TTL, NOW).unwrap();
+        assert!(calls.borrow().is_empty());
+    }
+
+    fn cached_apply_fixture() -> (
+        LoadoutService<Gateway, Repository>,
+        Rc<RefCell<Vec<&'static str>>>,
+    ) {
+        let (mut read, calls) = fixture(false);
+        let mut definitions = vec![
+            definition(1, "Weapon", Some(ItemSlot::Kinetic), None),
+            definition(2, "Armor", Some(ItemSlot::Helmet), None),
+        ];
+        for definition in &mut definitions {
+            definition.tier = Some("Legendary".into());
+            definition.class_type = Some(domain::ClassType::Any);
+        }
+        read.sync.repository_mut().definitions =
+            InMemoryDefinitionRepository::new(DefinitionVersion::new("v1"), definitions);
+        let mut input = read.sync.gateway_mut().input.clone();
+        input.items[0].plugs = vec![domain::PlugSummary {
+            plug_hash: ItemHash::new(99),
+            enabled: true,
+        }];
+        // One Vault item and one item on another character, plus equipped replacements.
+        input.items[1].location = ItemLocation::Character(CharacterId::new("2"));
+        for item in input.items.clone() {
+            let mut previous = item;
+            previous.instance_id =
+                ItemInstanceId::new(format!("9{}", previous.instance_id.as_str()));
+            previous.location = ItemLocation::Character(CharacterId::new("1"));
+            previous.equipped = true;
+            input.items.push(previous);
+        }
+        let mut rows = read.sync.gateway_mut().live.characters.clone();
+        rows[0].loadouts[0]
+            .items
+            .retain(|item| item.instance_id.as_str() != "404");
+        read.sync
+            .repository_mut()
+            .replace_current_profile(input, None, Some(rows))
+            .unwrap();
+        (read, calls)
+    }
+
+    #[test]
+    fn acknowledged_cached_apply_updates_equipment_revision_and_preserves_plugs() {
+        let (read, calls) = cached_apply_fixture();
+        let before = read.sync.repository().load_current().unwrap().unwrap();
+        let mut service = crate::ApplyLoadoutService::new(read.sync);
+        let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+        action.queue(Ok(LoadoutActionOutcome::Applied));
+        let result = service
+            .apply(
+                &mut action,
+                &apply_request(crate::LoadoutSelector::Slot(3)),
+                TTL,
+                NOW,
+            )
+            .unwrap();
+        assert!(result.local_state_updated);
+        assert!(calls.borrow().is_empty());
+        assert_eq!(action.calls(), 1);
+        let sync = service.into_sync();
+        assert!(!sync.repository().freshness_invalidated().unwrap());
+        let after = sync.repository().load_current().unwrap().unwrap();
+        assert_eq!(
+            after.metadata.revision.value(),
+            before.metadata.revision.value() + 1
+        );
+        assert_eq!(after.metadata.checked_at, before.metadata.checked_at);
+        for item in &after.items {
+            assert_eq!(
+                item.location,
+                ItemLocation::Character(CharacterId::new("1"))
+            );
+            assert_eq!(item.equipped, !item.instance_id.as_str().starts_with('9'));
+            let prior = before
+                .items
+                .iter()
+                .find(|prior| prior.instance_id == item.instance_id)
+                .unwrap();
+            assert_eq!(item.plugs, prior.plugs);
+            assert_eq!(item.available_plugs, prior.available_plugs);
+        }
+        let mut mutation = crate::MutationService::new(
+            sync,
+            crate::test_support::DeterministicPlanIds::starting_at(1),
+        );
+        let move_request = MoveRequest {
+            intent: MoveIntentAuthorization::Explicit,
+            membership: after.metadata.membership_id.clone(),
+            item: ItemSelector::Instance(ItemInstanceId::new("91")),
+            destination: DestinationSelector::Vault,
+        };
+        let lifetime = PlanLifetime::new(60).unwrap();
+        let plan = mutation
+            .plan_move(&move_request, lifetime, TTL, NOW)
+            .unwrap();
+        assert_eq!(plan.source, ItemLocation::Character(CharacterId::new("1")));
+        assert_eq!(plan.revision, after.metadata.revision);
+        let equip = EquipRequest {
+            intent: MoveIntentAuthorization::Explicit,
+            membership: after.metadata.membership_id,
+            item: ItemSelector::Instance(ItemInstanceId::new("1")),
+            destination: DestinationSelector::Character(CharacterId::new("1")),
+        };
+        let plan = mutation.plan_equip(&equip, lifetime, TTL, NOW).unwrap();
+        assert!(plan.is_already_satisfied());
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn cached_apply_reducer_rejection_applies_remaining_effects_and_invalidates() {
+        let (mut read, calls) = cached_apply_fixture();
+        read.sync.repository_mut().duplicate_neighbor_observation = true;
+        let mut service = crate::ApplyLoadoutService::new(read.sync);
+        let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+        action.queue(Ok(LoadoutActionOutcome::Applied));
+        let result = service
+            .apply(
+                &mut action,
+                &apply_request(crate::LoadoutSelector::Slot(3)),
+                TTL,
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(result.receipt, LoadoutActionOutcome::Applied);
+        assert!(!result.local_state_updated);
+        assert_eq!(action.calls(), 1);
+        assert!(calls.borrow().is_empty());
+        let sync = service.into_sync();
+        assert!(sync.repository().freshness_invalidated().unwrap());
+        let snapshot = sync.repository().inventory.load_current().unwrap().unwrap();
+        let item = |id| {
+            snapshot
+                .items
+                .iter()
+                .find(|item| item.instance_id.as_str() == id)
+                .unwrap()
+        };
+        assert_eq!(item("1").location, ItemLocation::Vault);
+        assert!(!item("1").equipped);
+        assert!(item("91").equipped);
+        assert_eq!(
+            item("2").location,
+            ItemLocation::Character(CharacterId::new("1"))
+        );
+        assert!(item("2").equipped);
+        assert!(!item("92").equipped);
+    }
+
+    #[test]
+    fn cached_apply_switches_subclass_without_reads_or_invalidation() {
+        let (mut read, calls) = cached_apply_fixture();
+        let mut input = InventorySnapshotInput::with_metadata(
+            &read.sync.repository().load_current().unwrap().unwrap(),
+        );
+        let mut subclass = input.items[0].clone();
+        subclass.instance_id = ItemInstanceId::new("3");
+        subclass.item_hash = ItemHash::new(3);
+        subclass.location = ItemLocation::Character(CharacterId::new("1"));
+        let mut old = subclass.clone();
+        old.instance_id = ItemInstanceId::new("93");
+        old.item_hash = ItemHash::new(4);
+        old.equipped = true;
+        input.items.extend([subclass, old]);
+        let mut rows = read.sync.repository().saved_loadouts().unwrap().unwrap();
+        rows[0].loadouts[0].items.push(LoadoutItem {
+            instance_id: ItemInstanceId::new("3"),
+            plugs: vec![LoadoutPlug {
+                socket_index: 1,
+                plug_hash: ItemHash::new(10),
+            }],
+        });
+        let mut definitions = [1, 2]
+            .into_iter()
+            .map(|hash| {
+                let Resolution::Unique(definition) = read
+                    .sync
+                    .repository()
+                    .lookup_definition(ItemHash::new(hash))
+                    .unwrap()
+                else {
+                    panic!("fixture definition missing")
+                };
+                definition
+            })
+            .collect::<Vec<_>>();
+        for hash in [3, 4] {
+            let mut definition = definition(hash, "Subclass", None, None);
+            definition.bucket_hash = Some(SUBCLASS_BUCKET_HASH);
+            definitions.push(definition);
+        }
+        read.sync.repository_mut().definitions =
+            InMemoryDefinitionRepository::new(DefinitionVersion::new("v1"), definitions);
+        let before = read
+            .sync
+            .repository_mut()
+            .replace_current_profile(input, None, Some(rows))
+            .unwrap();
+        // Single-item equip continues to reject subclass items.
+        assert_eq!(
+            crate::mutation::equip_effect(
+                read.sync.repository(),
+                before
+                    .items
+                    .iter()
+                    .find(|item| item.instance_id.as_str() == "3")
+                    .unwrap(),
+                &CharacterId::new("1"),
+                &before
+            ),
+            Err(crate::MutationError::NotEquippable)
+        );
+        let mut service = crate::ApplyLoadoutService::new(read.sync);
+        let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+        action.queue(Ok(LoadoutActionOutcome::Applied));
+        let result = service
+            .apply(
+                &mut action,
+                &apply_request(crate::LoadoutSelector::Slot(3)),
+                TTL,
+                NOW,
+            )
+            .unwrap();
+        assert!(result.local_state_updated);
+        assert_eq!(action.calls(), 1);
+        assert!(calls.borrow().is_empty());
+        let sync = service.into_sync();
+        assert!(!sync.repository().freshness_invalidated().unwrap());
+        let after = sync.repository().load_current().unwrap().unwrap();
+        assert_eq!(
+            after.metadata.revision.value(),
+            before.metadata.revision.value() + 1
+        );
+        for id in ["3", "93"] {
+            let item = after
+                .items
+                .iter()
+                .find(|item| item.instance_id.as_str() == id)
+                .unwrap();
+            let prior = before
+                .items
+                .iter()
+                .find(|item| item.instance_id.as_str() == id)
+                .unwrap();
+            assert_eq!(item.equipped, id == "3");
+            assert_eq!(item.location, prior.location);
+            assert_eq!(item.plugs, prior.plugs);
+            assert_eq!(item.available_plugs, prior.available_plugs);
+        }
+        let mut mutation = crate::MutationService::new(
+            sync,
+            crate::test_support::DeterministicPlanIds::starting_at(1),
+        );
+        let request = MoveRequest {
+            intent: MoveIntentAuthorization::Explicit,
+            membership: after.metadata.membership_id,
+            item: ItemSelector::Instance(ItemInstanceId::new("91")),
+            destination: DestinationSelector::Vault,
+        };
+        let plan = mutation
+            .plan_move(&request, PlanLifetime::new(60).unwrap(), TTL, NOW)
+            .unwrap();
+        assert_eq!(plan.revision, after.metadata.revision);
+        assert!(calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn cached_apply_subclass_not_on_target_applies_other_items_and_invalidates() {
+        for location in [
+            Some(ItemLocation::Vault),
+            Some(ItemLocation::Character(CharacterId::new("2"))),
+            None,
+        ] {
+            let (mut read, calls) = cached_apply_fixture();
+            let mut input = InventorySnapshotInput::with_metadata(
+                &read.sync.repository().load_current().unwrap().unwrap(),
+            );
+            let mut subclass = input.items[0].clone();
+            subclass.instance_id = ItemInstanceId::new("3");
+            subclass.item_hash = ItemHash::new(3);
+            if let Some(location) = &location {
+                subclass.location = location.clone();
+                input.items.push(subclass);
+            }
+            let mut rows = read.sync.repository().saved_loadouts().unwrap().unwrap();
+            rows[0].loadouts[0].items.push(LoadoutItem {
+                instance_id: ItemInstanceId::new("3"),
+                plugs: vec![],
+            });
+            let mut subclass = definition(3, "Subclass", None, None);
+            subclass.bucket_hash = Some(SUBCLASS_BUCKET_HASH);
+            read.sync.repository_mut().definitions = InMemoryDefinitionRepository::new(
+                DefinitionVersion::new("v1"),
+                vec![
+                    definition(1, "Weapon", Some(ItemSlot::Kinetic), None),
+                    definition(2, "Armor", Some(ItemSlot::Helmet), None),
+                    subclass,
+                ],
+            );
+            read.sync
+                .repository_mut()
+                .replace_current_profile(input, None, Some(rows))
+                .unwrap();
+            let mut service = crate::ApplyLoadoutService::new(read.sync);
+            let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+            action.queue(Ok(LoadoutActionOutcome::Applied));
+            let result = service
+                .apply(
+                    &mut action,
+                    &apply_request(crate::LoadoutSelector::Slot(3)),
+                    TTL,
+                    NOW,
+                )
+                .unwrap();
+            assert!(!result.local_state_updated);
+            assert!(calls.borrow().is_empty());
+            let sync = service.into_sync();
+            assert!(sync.repository().freshness_invalidated().unwrap());
+            let snapshot = sync.repository().load_current().unwrap().unwrap();
+            let subclass = snapshot
+                .items
+                .iter()
+                .find(|item| item.instance_id.as_str() == "3");
+            match &location {
+                Some(location) => {
+                    let subclass = subclass.unwrap();
+                    assert!(!subclass.equipped);
+                    assert_eq!(&subclass.location, location);
+                }
+                None => assert!(subclass.is_none()),
+            }
+            assert!(
+                snapshot
+                    .items
+                    .iter()
+                    .filter(|item| ["1", "2"].contains(&item.instance_id.as_str()))
+                    .all(|item| item.equipped)
+            );
+        }
+    }
+
+    #[test]
+    fn cached_apply_persistence_failure_keeps_receipt_invalidates_and_never_retries() {
+        let (mut read, calls) = cached_apply_fixture();
+        read.sync.repository_mut().effects_failure = true;
+        let before = read.sync.repository().load_current().unwrap();
+        let mut service = crate::ApplyLoadoutService::new(read.sync);
+        let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+        action.queue(Ok(LoadoutActionOutcome::Applied));
+        let result = service
+            .apply(
+                &mut action,
+                &apply_request(crate::LoadoutSelector::Slot(3)),
+                TTL,
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(result.receipt, LoadoutActionOutcome::Applied);
+        assert!(!result.local_state_updated);
+        assert_eq!(action.calls(), 1);
+        assert!(calls.borrow().is_empty());
+        let sync = service.into_sync();
+        assert!(sync.repository().freshness_invalidated().unwrap());
+        assert_eq!(sync.repository().load_current().unwrap(), before);
+    }
+
+    #[test]
+    fn apply_resolves_cached_slot_and_name_without_live_read() {
+        for selector in [
+            crate::LoadoutSelector::Slot(3),
+            crate::LoadoutSelector::Name("PvE".into()),
+        ] {
+            let (mut read, calls) = fixture(false);
+            let rows = read.sync.gateway_mut().live.characters.clone();
+            let input = read.sync.gateway_mut().input.clone();
+            read.sync
+                .repository_mut()
+                .replace_current_profile(input, None, Some(rows))
+                .unwrap();
+            let mut service = crate::ApplyLoadoutService::new(read.sync);
+            let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+            action.queue(Ok(LoadoutActionOutcome::Applied));
+            let result = service
+                .apply(&mut action, &apply_request(selector), TTL, NOW)
+                .unwrap();
+            assert_eq!(result.slot, 3);
+            assert!(calls.borrow().is_empty());
+            assert_eq!(action.calls(), 1);
+        }
+    }
+
+    #[test]
     fn apply_saved_loadout_acknowledges_once_without_post_action_read() {
         for selector in [
             crate::LoadoutSelector::Slot(3),
@@ -700,19 +1210,24 @@ mod tests {
                 .apply(&mut action, &apply_request(selector), TTL, NOW)
                 .unwrap();
             assert_eq!(result.receipt, LoadoutActionOutcome::Applied);
-            assert!(result.local_state_updated);
+            assert!(!result.local_state_updated); // Missing saved item: known effects still apply.
             assert_eq!(result.character, CharacterId::new("1"));
             assert_eq!((result.slot, result.name.as_deref()), (3, Some("PvE")));
             assert_eq!(action.calls(), 1);
             assert_eq!(action.requests()[0].loadout_index(), 2);
-            assert_eq!(&*calls.borrow(), &["membership", "inventory", "loadouts"]);
+            assert_eq!(&*calls.borrow(), &["loadouts"]);
+            let sync = service.into_sync();
             assert!(
-                service
-                    .into_sync()
-                    .repository()
-                    .freshness_invalidated()
+                sync.repository()
+                    .load_current()
                     .unwrap()
+                    .unwrap()
+                    .items
+                    .iter()
+                    .all(|item| item.equipped
+                        && item.location == ItemLocation::Character(CharacterId::new("1")))
             );
+            assert!(sync.repository().freshness_invalidated().unwrap());
         }
     }
 
@@ -743,9 +1258,9 @@ mod tests {
                     )
                     .unwrap();
                 assert_eq!(result.receipt, receipt);
-                assert_eq!(result.local_state_updated, !storage_failure);
+                assert!(!result.local_state_updated);
                 assert_eq!(action.calls(), 1);
-                assert_eq!(&*calls.borrow(), &["membership", "inventory", "loadouts"]);
+                assert_eq!(&*calls.borrow(), &["loadouts"]);
                 assert_eq!(
                     service
                         .into_sync()
@@ -816,7 +1331,7 @@ mod tests {
                 }
             );
             assert_eq!(action.calls(), 0);
-            assert_eq!(calls.borrow().len(), if slot == 1 { 3 } else { 0 });
+            assert_eq!(calls.borrow().len(), if slot == 1 { 1 } else { 0 });
         }
         let (read, calls) = fixture(false);
         let mut service = crate::ApplyLoadoutService::new(read.sync);

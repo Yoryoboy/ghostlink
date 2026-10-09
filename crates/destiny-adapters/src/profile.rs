@@ -353,7 +353,23 @@ pub fn decode_profile_with_observations(
         items,
     };
 
-    ProfileAcquisition::new(snapshot, observations).map(|pair| pair.with_minted_at(minted))
+    // Optional 206 follows minted-time leniency: unavailable or malformed data
+    // must not prevent publishing an otherwise valid inventory profile.
+    let loadouts = response
+        .get("characterLoadouts")
+        .filter(|component| component.get("disabled") != Some(&Value::Bool(true)))
+        .filter(|component| component.get("data").is_some_and(|data| !data.is_null()))
+        // Apply the 206 decoder's response bound to 206, not the larger profile.
+        .and_then(|component| {
+            serde_json::to_vec(&serde_json::json!({
+                "ErrorCode": 1, "Response": {"characterLoadouts": component}
+            }))
+            .ok()
+        })
+        .and_then(|bytes| crate::loadout::decode_loadouts(&bytes).ok())
+        .map(|snapshot| snapshot.characters);
+    ProfileAcquisition::new(snapshot, observations)
+        .map(|pair| pair.with_minted_at(minted).with_saved_loadouts(loadouts))
 }
 
 /// Optional owner-only components can be absent or withheld for privacy.
@@ -1137,6 +1153,35 @@ mod tests {
             DefinitionVersion::new(DEFINITION_VERSION),
             Timestamp::new(CHECKED_AT),
         )
+    }
+
+    #[test]
+    fn saved_loadouts_decode_present_absent_private_and_malformed() {
+        let mut value = fixture_value();
+        assert_eq!(
+            observed(&serde_json::to_vec(&value).unwrap())
+                .unwrap()
+                .saved_loadouts(),
+            None
+        );
+        for component in [
+            serde_json::json!({"privacy":2}),
+            serde_json::json!({"data":null}),
+            serde_json::json!({"data":"invalid"}),
+        ] {
+            value["Response"]["characterLoadouts"] = component;
+            assert_eq!(
+                observed(&serde_json::to_vec(&value).unwrap())
+                    .unwrap()
+                    .saved_loadouts(),
+                None
+            );
+        }
+        value["Response"]["characterLoadouts"] = serde_json::json!({"privacy":2,"data":{"1":{"loadouts":[{"nameHash":10,"colorHash":20,"iconHash":30,"items":[{"itemInstanceId":"456","plugItemHashes":[42,2166136261u32]}]}]}}});
+        let pair = observed(&serde_json::to_vec(&value).unwrap()).unwrap();
+        let rows = pair.saved_loadouts().unwrap();
+        assert_eq!(rows[0].loadouts[0].name_hash, 10);
+        assert_eq!(rows[0].loadouts[0].items[0].plugs.len(), 1);
     }
 
     #[test]

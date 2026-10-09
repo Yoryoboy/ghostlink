@@ -647,6 +647,19 @@ mod pull_store_tests {
     }
 }
 impl InventoryRepository for PullStore {
+    fn saved_loadouts(&self) -> Result<Option<Vec<destiny_app::CharacterLoadouts>>, AppError> {
+        self.0.borrow().saved_loadouts()
+    }
+    fn replace_current_profile(
+        &mut self,
+        input: destiny_app::InventorySnapshotInput,
+        minted: Option<destiny_app::ProfileMintedAt>,
+        loadouts: Option<Vec<destiny_app::CharacterLoadouts>>,
+    ) -> Result<destiny_app::InventorySnapshot, AppError> {
+        self.0
+            .borrow_mut()
+            .replace_current_profile(input, minted, loadouts)
+    }
     fn profile_minted_at(&self) -> Result<Option<destiny_app::ProfileMintedAt>, AppError> {
         self.0.borrow().profile_minted_at()
     }

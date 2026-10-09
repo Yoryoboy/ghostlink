@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 20;
+pub(crate) const LATEST_VERSION: u32 = 21;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 20] = [
+const MIGRATIONS: [Migration; 21] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -153,6 +153,11 @@ const MIGRATIONS: [Migration; 20] = [
         version: 20,
         up: SCHEMA_V20_UP,
         down: SCHEMA_V20_DOWN,
+    },
+    Migration {
+        version: 21,
+        up: "CREATE TABLE saved_loadouts (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), normalized_loadouts TEXT NOT NULL) STRICT;",
+        down: "CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1)); INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM saved_loadouts) THEN 0 ELSE 1 END; DROP TABLE downgrade_guard; DROP TABLE saved_loadouts;",
     },
 ];
 

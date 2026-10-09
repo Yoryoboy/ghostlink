@@ -217,13 +217,26 @@ pub fn mcp_json(scenario: &str, item: &str, character: &str) -> serde_json::Valu
 }
 
 /// Exercise the production server boundary with real planning, SQLite publication,
-/// ordered execution and freshness invalidation. Channels pause immediately
+/// ordered execution and local acknowledged effects. Channels pause immediately
 /// before the first provider effect (after ticket validation), never sleeps.
 #[allow(
     dead_code,
     reason = "shared helper module is also compiled by stdio parity tests"
 )]
 pub fn serialized_publication() {
+    publication_order(true);
+}
+
+/// The operation mutex is not FIFO: a following equip may precede the read.
+#[allow(
+    dead_code,
+    reason = "shared helper module is also compiled by stdio parity tests"
+)]
+pub fn equip_before_publication() {
+    publication_order(false);
+}
+
+fn publication_order(read_first: bool) {
     use serde_json::json;
     use std::sync::{Arc, Mutex, mpsc};
     use std::time::Duration;
@@ -381,6 +394,18 @@ pub fn serialized_publication() {
             Ok(TransferOutcome::Transferred)
         }
     }
+    struct TrackedProfile(Arc<Mutex<QueuedProfileGateway>>);
+    impl ProfileGateway for TrackedProfile {
+        fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
+            self.0.lock().unwrap().resolve_membership()
+        }
+        fn load_inventory(
+            &mut self,
+            membership: &DestinyMembership,
+        ) -> Result<InventorySnapshotInput, AppError> {
+            self.0.lock().unwrap().load_inventory(membership)
+        }
+    }
     struct PublishingProfile;
     impl ProfileGateway for PublishingProfile {
         fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
@@ -411,6 +436,7 @@ pub fn serialized_publication() {
         let mut noop_snapshot = snapshot(true, true, false);
         noop_snapshot.items[0].locked = true;
         profile.queue_inventory(Ok(noop_snapshot));
+        let profile = Arc::new(Mutex::new(profile));
         let store = SharedStore(Arc::new(Mutex::new(store)), None);
         let events = Arc::new(Mutex::new(Vec::new()));
         let (entered_tx, entered_rx) = mpsc::channel();
@@ -424,7 +450,10 @@ pub fn serialized_publication() {
             events: events.clone(),
         };
         let mutations = MutationService::new(
-            ProfileSyncService::new_with_definitions(profile, store.clone()),
+            ProfileSyncService::new_with_definitions(
+                TrackedProfile(profile.clone()),
+                store.clone(),
+            ),
             DeterministicPlanIds::starting_at(1),
         );
         let mutation = ComposedMutationService::new(
@@ -452,6 +481,7 @@ pub fn serialized_publication() {
             Box::new(read),
             Box::new(mutation),
         ));
+        let (mutation_finished_tx, mutation_finished_rx) = mpsc::channel();
         let mutation_server = server.clone();
         let mutation_done = done_tx.clone();
         let mutation_thread = std::thread::spawn(move || {
@@ -467,28 +497,61 @@ pub fn serialized_publication() {
                 .dispatch(name, arguments.as_object().unwrap().clone())
                 .unwrap();
             mutation_done.send(()).unwrap();
+            mutation_finished_tx.send(()).unwrap();
             output
         });
         entered_rx
             .recv_timeout(BOUND)
             .expect("ticket validated and first dispatch reached");
+        let (noop_finished_tx, noop_finished_rx) = mpsc::channel();
+        let (read_finished_tx, read_finished_rx) = mpsc::channel();
         let read_server = server.clone();
         let read_thread = std::thread::spawn(move || {
             attempt_tx.send(()).unwrap();
+            if !read_first {
+                noop_finished_rx.recv_timeout(BOUND).unwrap();
+            }
             let output = read_server
                 .dispatch("list_characters", Default::default())
                 .unwrap();
             done_tx.send(()).unwrap();
+            if read_first {
+                read_finished_tx.send(()).unwrap();
+            }
             output
         });
         attempt_rx.recv_timeout(BOUND).unwrap();
-        // Queue a no-op behind the active mutation as well as a publishing read.
-        // Its own mandatory preflight must not recursively take the outer guard.
+        // Thread-start signals do not establish mutex acquisition order. Sequence
+        // the read and following equip explicitly, outside the operation guard.
+        // Ordinary sync in the following equip must not reenter that guard.
         let (noop_tx, noop_rx) = mpsc::channel();
         let (noop_attempt_tx, noop_attempt_rx) = mpsc::channel();
         let noop_server = server.clone();
+        let noop_store = store.clone();
         let noop_thread = std::thread::spawn(move || {
             noop_attempt_tx.send(()).unwrap();
+            mutation_finished_rx.recv_timeout(BOUND).unwrap();
+            if read_first {
+                read_finished_rx.recv_timeout(BOUND).unwrap();
+            }
+            let before = noop_store.load_current().unwrap().unwrap();
+            let item = before
+                .items
+                .iter()
+                .find(|item| item.instance_id.as_str() == "123")
+                .unwrap();
+            assert_eq!(item.location, target());
+            assert_eq!(item.equipped, read_first || equip);
+            assert_eq!(item.locked, read_first);
+            assert_eq!(
+                before.metadata.revision.value(),
+                if read_first { 3 } else { 2 }
+            );
+            assert_eq!(before.metadata.checked_at, NOW);
+            assert!(!noop_store.freshness_invalidated().unwrap());
+            assert_eq!(noop_store.profile_minted_at().unwrap(), None);
+            // At mutation NOW=100, checked_at=100 is fresh. Neither queued
+            // profile entry is consumed; the equip plans from this local state.
             let noop = noop_server
                 .dispatch(
                     "equip_item",
@@ -498,7 +561,25 @@ pub fn serialized_publication() {
                         .clone(),
                 )
                 .unwrap();
+            let after = noop_store.load_current().unwrap().unwrap();
+            assert_eq!(
+                after.metadata.revision.value(),
+                before.metadata.revision.value() + u64::from(!read_first && !equip)
+            );
+            assert!(
+                after
+                    .items
+                    .iter()
+                    .find(|item| item.instance_id.as_str() == "123")
+                    .unwrap()
+                    .equipped
+            );
+            assert_eq!(after.metadata.checked_at, NOW);
+            assert!(!noop_store.freshness_invalidated().unwrap());
             noop_tx.send(noop).unwrap();
+            if !read_first {
+                noop_finished_tx.send(()).unwrap();
+            }
         });
         noop_attempt_rx.recv_timeout(BOUND).unwrap();
         // Bounded timeout detects the old independent service locks. Release
@@ -529,7 +610,21 @@ pub fn serialized_publication() {
             .recv_timeout(BOUND)
             .expect("no-op completed without reentrant deadlock");
         noop_thread.join().unwrap();
-        assert_eq!(noop.structured_content.unwrap()["status"], "verified_noop");
+        assert_eq!(
+            noop.structured_content.unwrap()["status"],
+            if read_first || equip {
+                "verified_noop"
+            } else {
+                "applied"
+            }
+        );
+        assert_eq!(
+            current.metadata.revision.value(),
+            if !read_first && !equip { 4 } else { 3 }
+        );
+        let profile = profile.lock().unwrap();
+        assert_eq!(profile.membership_calls(), 0);
+        assert_eq!(profile.inventory_calls(), 0);
     }
 }
 

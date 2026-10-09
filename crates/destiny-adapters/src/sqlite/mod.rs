@@ -29,6 +29,7 @@
 mod clarity;
 mod definitions;
 mod inventory;
+mod loadouts;
 mod migrations;
 mod search;
 mod world;

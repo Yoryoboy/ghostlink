@@ -586,6 +586,7 @@ impl destiny_core::ports::DefinitionCatalogRepository for InMemoryDefinitionRepo
 
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryInventoryRepository {
+    saved_loadouts: Option<Vec<destiny_core::CharacterLoadouts>>,
     minted: Option<destiny_core::ProfileMintedAt>,
     invalidated: bool,
     fail_invalidation: bool,
@@ -633,6 +634,7 @@ impl InMemoryInventoryRepository {
             plug_set_entries: input.plug_set_entries.clone(),
         };
         Self {
+            saved_loadouts: None,
             minted: None,
             invalidated: false,
             fail_invalidation: false,
@@ -648,6 +650,19 @@ impl InMemoryInventoryRepository {
 }
 
 impl InventoryRepository for InMemoryInventoryRepository {
+    fn saved_loadouts(&self) -> Result<Option<Vec<destiny_core::CharacterLoadouts>>, AppError> {
+        Ok(self.saved_loadouts.clone())
+    }
+    fn replace_current_profile(
+        &mut self,
+        input: InventorySnapshotInput,
+        minted: Option<destiny_core::ProfileMintedAt>,
+        loadouts: Option<Vec<destiny_core::CharacterLoadouts>>,
+    ) -> Result<InventorySnapshot, AppError> {
+        let snapshot = self.replace_current_minted(input, minted)?;
+        self.saved_loadouts = loadouts;
+        Ok(snapshot)
+    }
     fn profile_minted_at(&self) -> Result<Option<destiny_core::ProfileMintedAt>, AppError> {
         Ok(self.minted)
     }

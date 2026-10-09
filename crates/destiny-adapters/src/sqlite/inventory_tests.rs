@@ -15,12 +15,75 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
+fn saved_loadouts_publication_and_reopen() {
+    let database = TempDatabase::new();
+    let mut store = SqliteStore::open(database.path()).unwrap();
+    let legacy = store.replace_current(full_input()).unwrap();
+    super::migrations::migrate_to(store.connection_mut(), 20).unwrap();
+    super::migrations::migrate_to(store.connection_mut(), 21).unwrap();
+    assert_eq!(store.load_current().unwrap(), Some(legacy));
+    assert_eq!(store.saved_loadouts().unwrap(), None);
+    let rows = vec![destiny_core::CharacterLoadouts {
+        character_id: destiny_core::CharacterId::new("123"),
+        loadouts: vec![destiny_core::Loadout {
+            slot_index: 3,
+            name_hash: 10,
+            color_hash: 20,
+            icon_hash: 30,
+            items: vec![destiny_core::LoadoutItem {
+                instance_id: destiny_core::ItemInstanceId::new("456"),
+                plugs: vec![destiny_core::LoadoutPlug {
+                    socket_index: 2,
+                    plug_hash: ItemHash::new(42),
+                }],
+            }],
+        }],
+    }];
+    store
+        .replace_current_profile(full_input(), None, Some(rows.clone()))
+        .unwrap();
+    assert_eq!(store.saved_loadouts().unwrap(), Some(rows.clone()));
+    store.invalidate_freshness().unwrap();
+    drop(store);
+    let mut reopened = SqliteStore::open(database.path()).unwrap();
+    assert_eq!(reopened.saved_loadouts().unwrap(), Some(rows.clone()));
+    let mut invalid = full_input();
+    invalid.source = SourceMarker::Manifest;
+    assert!(
+        reopened
+            .replace_current_profile(invalid, None, Some(vec![]))
+            .is_err()
+    );
+    assert_eq!(reopened.saved_loadouts().unwrap(), Some(rows.clone()));
+    assert!(super::migrations::migrate_to(reopened.connection_mut(), 20).is_err());
+    let before = reopened.load_current().unwrap();
+    reopened.connection().execute_batch("CREATE TRIGGER reject_saved BEFORE INSERT ON saved_loadouts BEGIN SELECT RAISE(ABORT, 'test'); END;").unwrap();
+    let mut changed = full_input();
+    changed.checked_at = Timestamp::new(9999);
+    assert!(
+        reopened
+            .replace_current_profile(changed, None, Some(vec![]))
+            .is_err()
+    );
+    assert_eq!(reopened.load_current().unwrap(), before);
+    assert_eq!(reopened.saved_loadouts().unwrap(), Some(rows));
+    reopened
+        .connection()
+        .execute_batch("DROP TRIGGER reject_saved;")
+        .unwrap();
+    reopened
+        .replace_current_profile(full_input(), None, Some(vec![]))
+        .unwrap();
+    assert_eq!(reopened.saved_loadouts().unwrap(), Some(vec![]));
+}
+
+#[test]
 fn minted_publication_migration_and_reopen() {
     let database = TempDatabase::new();
     let mut store = SqliteStore::open(database.path()).unwrap();
     let legacy = store.replace_current(full_input()).unwrap();
     super::migrations::migrate_to(store.connection_mut(), 19).unwrap();
-    super::migrations::migrate_to(store.connection_mut(), 20).unwrap();
+    super::migrations::migrate_to(store.connection_mut(), 21).unwrap();
     assert_eq!(store.profile_minted_at().unwrap(), None);
     assert_eq!(store.load_current().unwrap(), Some(legacy.clone()));
     let minted = destiny_core::ProfileMintedAt::new(1_800_000_000, 123456789).unwrap();
@@ -40,6 +103,7 @@ fn minted_publication_migration_and_reopen() {
     assert!(reopened.replace_current_minted(invalid, None).is_err());
     assert_eq!(reopened.profile_minted_at().unwrap(), Some(minted));
     assert!(super::migrations::migrate_to(reopened.connection_mut(), 19).is_err());
+    super::migrations::migrate_to(reopened.connection_mut(), 21).unwrap();
     reopened.replace_current(full_input()).unwrap();
     assert_eq!(reopened.profile_minted_at().unwrap(), None);
 }

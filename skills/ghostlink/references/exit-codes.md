@@ -35,19 +35,25 @@ instruction object on stdout before waiting.) The failure object is either:
 
 `ghostlink apply-loadout <slot|name> --character <class|id> --json` and MCP
 `apply_loadout` share `kind: "apply_loadout"`, character, one-based slot, name,
-outcome, receipt and reason. Exactly one MCP slot/name; names are normalized exact
+outcome, receipt, reason and `local_state_updated` (true only for complete local
+equipment effects without invalidation). Exactly one MCP slot/name; names are normalized exact
 matches within that character. Unknown/ambiguous names list candidates; select
 explicitly, never guess. Empty/unavailable slots refuse without an action.
 
 | `outcome` | Exit | Agent action |
 |---|---:|---|
-| `applied` | 0 | Acknowledged, not observed. Next ordinary read forces sync. |
+| `applied` | 0 | Acknowledged, not observed. Local equipment effects persisted; freshness retained. |
 | `refused` / `failed` | 41 | Report reason/receipt/candidates; no automatic retry. Location refusal: go to orbit or a social space and retry only with reassessed intent. |
-| `local_state_failed` | 42 | Local state could not be updated after the action; receipt retained. Sync/read, never blindly repeat. |
+| `local_state_failed` | 42 | Applied receipt retained, but local effects are incomplete or persistence failed. Known effects may have applied; sync/read, never blindly repeat. |
 
 Startup/argument errors use the usual error envelope and exits. Requires login,
 Manifest definitions and orbit/social space/offline. No post-action request,
-provider-lag exit 43 or retry; every dispatched attempt invalidates freshness.
+provider-lag exit 43 or retry. Missing/unsupported items, rejected effects,
+non-applied receipts or storage failures invalidate freshness; complete effects
+retain it, including switches between subclasses already held on the target.
+A subclass not held on that character is skipped with invalidation. Mods/plugs,
+including subclass aspects/fragments, stay unchanged. Single-item equip slot
+validation is unchanged.
 
 ## Pull `disposition` (CLI genuine-instance equipment only)
 

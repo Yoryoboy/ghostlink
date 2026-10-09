@@ -119,6 +119,17 @@ G5/G7 CLI UX.
   - [x] E3 stack pulls from the local projection (`1d858b2`): ordinary sync,
     audited capacities, 1642 mapping, `PullStack` applied once, expansion
     bound (≤50 new rows). Capacity-evidence port kept for compatibility.
+  - [x] F1 saved loadouts (component 206) requested with the profile and
+    cached in SQLite (migration 21, atomic with publication; discarded
+    profiles keep it); loadout reads/apply resolve from the cache, live 206
+    only as legacy fallback (`212b270`, review-f77fd1df9dc937b0).
+  - [x] F2 `apply_loadout` via ordinary sync + cached loadouts; acknowledged
+    apply equips every known saved item locally (Vault items and the
+    subclass included, same-bucket unequip), as DIM
+    `updateAfterInGameLoadoutApply`; missing items/rejected effects keep the
+    rest + invalidate; plugs unchanged (`65dfbaf`, review-8ed7ccbf2e7e4d12).
+    Branch `feat/loadout-local` merges `feat/compact-loadouts` (T6) to avoid
+    later conflicts.
 - [ ] **T3 — DIM-style action pipeline.** Remove forced preflight acquisition
   from move, lock, equip, pull item, pull stack and apply loadout; plan and
   execute from the local projection; apply the effect from T2 on
