@@ -47,9 +47,18 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   | full committed snapshot | 8.4 |
   | publish unchanged | 9.4 |
   | publish one changed item | 80.1 |
-- [ ] **P1 — Indexed definition search (B7).** Resolve name/perk/type text
+- [x] **P1 — Indexed definition search (B7).** Resolve name/perk/type text
   through an indexed normalized column (or FTS5) and batched tag reads instead
-  of reconstructing every definition.
+  of reconstructing every definition. Done: migration 22 adds the STRICT
+  `definition_search` companion (Rust-normalized name/type/tier/tags,
+  attributes, name-kind flags), maintained inside catalog publication and
+  backfilled atomically; search prefilters in one cached SQL statement
+  (`instr` substring, exact attributes, delimited tag membership) and
+  reconstructs only candidates, with `definition_matches` as final arbiter;
+  `name_catalog` reads names from the companion. Coverage mismatch fails
+  closed (`LocalStorage`). DIM equivalent: linear predicate over compact
+  normalized data. Definition name search 131.5 ms -> 0.94 ms; no-match
+  132.1 ms -> 0.90 ms. Workspace: 1966 passed, 0 failed.
 - [ ] **P2 — Owned search in SQL (B8).** Push filters, ordering and limit to
   SQL (or bounded top-k), memoize base definitions per search.
 - [ ] **P3 — Batched component reads (B9).** Read plugs/stats/sockets for

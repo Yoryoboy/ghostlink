@@ -203,6 +203,9 @@ impl SqliteStore {
                 super::world::replace_item_descriptions(&transaction, &descriptions)?;
             }
         }
+        if super::migrations::read_user_version(&transaction)? >= 22 {
+            super::search::validate_search_coverage(&transaction)?;
+        }
         upsert_metadata(&transaction, &replacement, revision)?;
         transaction.commit().map_err(|_| storage_failure())?;
 
@@ -362,7 +365,56 @@ fn replace_catalog(
                 .map_err(|_| storage_failure())?;
         }
     }
+    if schema >= 22 {
+        write_search_rows(connection, definitions)?;
+    }
     Ok(())
+}
+
+/// Rust normalization and name-kind classification are shared with the arbiter.
+fn write_search_rows(
+    connection: &Connection,
+    definitions: &[ItemDefinition],
+) -> Result<(), AppError> {
+    use destiny_core::{name_matching::is_name_kind, normalize_search_text};
+    let mut insert = connection.prepare_cached(
+        "INSERT INTO definition_search (hash, name, name_norm, item_type_norm, tier_norm, tags_norm, element, slot, class_type, perk, mod, archetype) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+    ).map_err(|_| storage_failure())?;
+    for definition in definitions {
+        // Normalization collapses all whitespace, including newline, so newline
+        // delimiters cannot occur inside a token. No LIKE wildcards are involved.
+        let mut tags = String::from("\n");
+        for tag in &definition.tags {
+            tags.push_str(&normalize_search_text(tag));
+            tags.push('\n');
+        }
+        insert
+            .execute(params![
+                definition.hash.value(),
+                definition.name,
+                normalize_search_text(&definition.name),
+                definition.item_type.as_deref().map(normalize_search_text),
+                definition.tier.as_deref().map(normalize_search_text),
+                tags,
+                definition
+                    .element
+                    .as_deref()
+                    .and_then(|v| v.parse::<DamageType>().ok())
+                    .map(|v| v.as_str()),
+                definition.slot.map(|v| v.as_str()),
+                definition.class_type.map(|v| v.as_str()),
+                is_name_kind(definition, "perk"),
+                is_name_kind(definition, "mod"),
+                is_name_kind(definition, "archetype"),
+            ])
+            .map_err(|_| storage_failure())?;
+    }
+    Ok(())
+}
+
+/// Called exactly once in the migration transaction; corruption aborts the step.
+pub(super) fn backfill_search(connection: &Connection) -> Result<(), AppError> {
+    write_search_rows(connection, &read_committed_content(connection)?)
 }
 
 /// Inserts or refreshes the committed Manifest metadata row.

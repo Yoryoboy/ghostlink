@@ -15,6 +15,76 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
 
+#[test]
+fn compact_search_missing_rows_and_table_fail_closed() {
+    use destiny_core::{DefinitionSearchQuery, SearchRepository};
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let input = replacement("v1", base_manifest().definitions);
+    store.replace_definitions(input.clone()).unwrap();
+    store
+        .connection()
+        .execute("DELETE FROM definition_search", [])
+        .unwrap();
+    let query = DefinitionSearchQuery {
+        text: None,
+        item_type: None,
+        tier: None,
+        tags: vec![],
+        element: None,
+        slot: None,
+        class_type: None,
+        limit: 10,
+    };
+    assert_eq!(
+        store.search_definitions(&query).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    assert!(store.name_catalog("perk").is_err());
+    assert_eq!(
+        store
+            .replace_definitions(input.clone())
+            .unwrap_err()
+            .category(),
+        ErrorCategory::LocalStorage
+    );
+    // A changed publication atomically replaces the incomplete projection.
+    let mut changed = input;
+    changed.definitions.definitions[0].name.push_str(" changed");
+    store.replace_definitions(changed).unwrap();
+    assert!(!store.search_definitions(&query).unwrap().is_empty());
+    store.migrate_to(21).unwrap();
+    assert_eq!(
+        store.search_definitions(&query).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+}
+
+#[test]
+fn compact_search_failed_backfill_rolls_back_schema_and_version() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(21).unwrap();
+    store
+        .replace_definitions(replacement("v1", base_manifest().definitions))
+        .unwrap();
+    store
+        .connection()
+        .execute_batch(
+            "PRAGMA ignore_check_constraints = ON; UPDATE definitions SET slot = 'corrupt';",
+        )
+        .unwrap();
+    assert_eq!(
+        store.migrate_to(22).unwrap_err().category(),
+        ErrorCategory::LocalStorage
+    );
+    assert_eq!(store.schema_version().unwrap(), 21);
+    assert!(
+        store
+            .connection()
+            .prepare("SELECT * FROM definition_search")
+            .is_err()
+    );
+}
+
 /// A private temporary database path plus cleanup of its SQLite sidecars.
 struct TempDatabase {
     path: PathBuf,

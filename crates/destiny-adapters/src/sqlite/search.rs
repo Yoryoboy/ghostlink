@@ -1,10 +1,10 @@
 //! Durable, bounded search over the SQLite projection.
 //!
 //! This module implements [`destiny_core::SearchRepository`] on the
-//! application-owned [`SqliteStore`] without adding any schema: it reads only the
-//! existing version-2 source-of-truth tables (`definitions`, `definition_tags`,
-//! `items`, and `item_perks`). It performs no provider I/O, no async work, and no
-//! serialization, and it returns the same bounded, deterministic, provider-neutral
+//! application-owned [`SqliteStore`] using the normalized definition-search
+//! companion and the source-of-truth definition and inventory tables. It performs
+//! no provider I/O, no async work, and no serialization, and it returns the same
+//! bounded, deterministic, provider-neutral
 //! core records the in-memory fake returns.
 //!
 //! # Matching parity
@@ -13,10 +13,9 @@
 //! Rust predicate directly, so the durable result can never drift from the
 //! in-memory contract on case, whitespace, Unicode, type equality, or
 //! all-tag containment. Definitions are enumerated in deterministic [`ItemHash`]
-//! ascending order, reconstructed through the same reader the
-//! [`destiny_core::DefinitionRepository`] exact lookup uses, and filtered in Rust;
-//! no SQLite `lower()` or precomputed normalized value is involved, so there is no
-//! derived structure that could become corrupt or diverge.
+//! ascending order. SQL preselects candidates using Rust-normalized companion
+//! columns; the exact lookup reader reconstructs candidates and Rust makes the
+//! final decision. Incomplete companion coverage fails closed.
 //!
 //! Instance search preselects exact hash, perk and character constraints in
 //! parameterized SQL, then applies the shared Rust instance/definition predicate
@@ -37,17 +36,17 @@
 //! never by interpolating a value into SQL text. Every storage failure maps to the
 //! single sanitized [`destiny_core::ErrorCategory::LocalStorage`] category.
 //!
-//! # Performance tradeoff and future index seam
+//! # Compact search projection and future index seam
 //!
-//! Definition search is a bounded sequential scan of the definition primary key
-//! plus one ordered tag lookup per visited definition, and it stops at the limit.
-//! That is deliberately chosen over a precomputed normalized projection or a
-//! full-text index: the architecture keeps semantic behavior stable while indexes
-//! evolve, and an MVP correctness slice should not carry a derived structure whose
-//! corruption handling and migration cost outweigh the benefit. When the catalog
-//! grows, the seam is the enumeration query itself and the per-definition tag
-//! lookup: a future migration can add an index (or a normalized companion table)
-//! behind this same `SearchRepository` contract without changing any answer.
+//! Migration 22 backfills a compact companion atomically. Publication maintains
+//! it in the catalog transaction using the core Rust normalizer and name-kind
+//! predicates. One cached SQL statement scans compact rows for necessary filter
+//! conditions (substring via `instr`, exact type/attributes and delimited tags).
+//! Only candidates incur reconstruction; the shared predicate remains authoritative
+//! and truncation happens afterwards. Tier preselection checks presence only,
+//! preserving resolved multi-name terms. Name catalogs read display names and
+//! precomputed kind flags without reconstruction. Coverage counts fail closed
+//! rather than silently omitting results. Future indexes can refine this seam.
 
 use super::{SqliteStore, storage_failure};
 use destiny_core::query::instance_matches_with_definition;
@@ -58,6 +57,21 @@ use destiny_core::{
 };
 use rusqlite::types::Value;
 use rusqlite::{Connection, Error as SqlError, params_from_iter};
+
+/// An absent table or incomplete derived catalog must never omit answers.
+pub(super) fn validate_search_coverage(connection: &Connection) -> Result<(), AppError> {
+    let complete: bool = connection
+        .prepare_cached(
+            "SELECT (SELECT count(*) FROM definition_search) = (SELECT count(*) FROM definitions)",
+        )
+        .map_err(|_| storage_failure())?
+        .query_row([], |row| row.get(0))
+        .map_err(|_| storage_failure())?;
+    if !complete {
+        return Err(storage_failure());
+    }
+    Ok(())
+}
 
 /// The raw column tuple one `items` row decodes into before it is validated.
 type RawInstance = (
@@ -77,36 +91,22 @@ impl SearchRepository for SqliteStore {
         &self,
         kind: &str,
     ) -> Result<destiny_core::name_matching::NameCatalog, AppError> {
-        let mut names = Vec::new();
-        if kind == "stat" {
-            names = super::world::read_stats(self.connection())?
+        let names: Vec<String> = if kind == "stat" {
+            super::world::read_stats(self.connection())?
                 .into_iter()
                 .map(|(stat, _)| stat.name().to_owned())
-                .collect();
+                .collect()
         } else {
-            // Only plug definitions need reconstruction; ordinary item definitions
-            // are never visited during name resolution.
-            let mut statement = self
-                .connection()
-                .prepare(
-                    "SELECT hash FROM definitions WHERE plug_category IS NOT NULL ORDER BY hash",
-                )
-                .map_err(|_| storage_failure())?;
-            let hashes = statement
-                .query_map([], |row| row.get::<_, i64>(0))
-                .map_err(|_| storage_failure())?;
-            for hash in hashes {
-                let definition = match self
-                    .lookup_definition(ItemHash::new(hash.map_err(|_| storage_failure())?))?
-                {
-                    Resolution::Unique(definition) => definition,
-                    _ => return Err(storage_failure()),
-                };
-                if destiny_core::name_matching::is_name_kind(&definition, kind) {
-                    names.push(definition.name);
-                }
-            }
-        }
+            validate_search_coverage(self.connection())?;
+            let mut statement = self.connection().prepare_cached(
+                "SELECT name FROM definition_search WHERE (?1 = 'perk' AND perk = 1) OR (?1 = 'mod' AND mod = 1) OR (?1 = 'archetype' AND archetype = 1) ORDER BY hash"
+            ).map_err(|_| storage_failure())?;
+            statement
+                .query_map([kind], |row| row.get::<_, String>(0))
+                .map_err(|_| storage_failure())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| storage_failure())?
+        };
         Ok(destiny_core::name_matching::NameCatalog::new(
             names.iter().map(String::as_str),
         ))
@@ -118,19 +118,44 @@ impl SearchRepository for SqliteStore {
     ) -> Result<Vec<ItemDefinition>, AppError> {
         query.validate()?;
 
-        // Enumerate the source-of-truth definitions in deterministic hash order
-        // and stop as soon as the validated limit is reached. Only the bounded
-        // match set is materialized, and each definition is reconstructed by the
-        // definition repository's own reader, so the corruption defenses of the
-        // exact lookup path apply unchanged.
+        validate_search_coverage(self.connection())?;
+        let mut sql = String::from("SELECT hash FROM definition_search WHERE 1 = 1");
+        let mut parameters: Vec<Value> = Vec::new();
+        if let Some(term) = &query.text {
+            sql.push_str(" AND instr(name_norm, ?) > 0");
+            parameters.push(term.as_str().to_owned().into());
+        }
+        if let Some(term) = &query.item_type {
+            sql.push_str(" AND item_type_norm = ?");
+            parameters.push(term.as_str().to_owned().into());
+        }
+        if query.tier.is_some() {
+            sql.push_str(" AND tier_norm IS NOT NULL");
+        }
+        for (column, value) in [
+            ("element", query.element.map(|v| v.as_str())),
+            ("slot", query.slot.map(|v| v.as_str())),
+            ("class_type", query.class_type.map(|v| v.as_str())),
+        ] {
+            if let Some(value) = value {
+                sql.push_str(&format!(" AND {column} = ?"));
+                parameters.push(value.to_owned().into());
+            }
+        }
+        for tag in &query.tags {
+            sql.push_str(" AND instr(tags_norm, ?) > 0");
+            parameters.push(format!("\n{}\n", tag.as_str()).into());
+        }
+        sql.push_str(" ORDER BY hash");
+        // No SQL LIMIT: the Rust predicate decides before truncation.
         let mut matches: Vec<ItemDefinition> = Vec::new();
         {
             let mut statement = self
                 .connection()
-                .prepare("SELECT hash FROM definitions ORDER BY hash")
+                .prepare_cached(&sql)
                 .map_err(|_| storage_failure())?;
             let rows = statement
-                .query_map([], |row| row.get::<_, i64>(0))
+                .query_map(params_from_iter(parameters), |row| row.get::<_, i64>(0))
                 .map_err(|_| storage_failure())?;
 
             for row in rows {
