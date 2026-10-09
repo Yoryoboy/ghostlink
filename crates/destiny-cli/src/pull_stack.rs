@@ -20,20 +20,16 @@ where
     P: PlanIdGenerator,
     T: StackPullGateway,
 {
-    let owner = if ["hunter", "titan", "warlock"]
-        .iter()
-        .any(|class| selection.owner.as_str().eq_ignore_ascii_case(class))
-    {
-        match service.resolve_owner(&selection.owner, freshness) {
-            Ok(owner) => owner,
-            Err(error) => {
-                return StackPullOutput::planning_failed(&StackPullPlanningError::Infrastructure(
-                    error,
-                ));
-            }
+    let owner = match service.resolve_owner(&selection.owner, freshness) {
+        Ok(owner) => owner,
+        Err(destiny_app::stack_pull::StackPullOwnerError::Selection(error)) => {
+            return StackPullOutput::selection_failed(error);
         }
-    } else {
-        selection.owner
+        Err(destiny_app::stack_pull::StackPullOwnerError::Infrastructure(error)) => {
+            return StackPullOutput::planning_failed(&StackPullPlanningError::Infrastructure(
+                error,
+            ));
+        }
     };
     let request = StackPullPlanRequest {
         membership,

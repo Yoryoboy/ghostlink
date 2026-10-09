@@ -43,6 +43,18 @@ impl From<StackPullPlanningRefusal> for StackPullPlanningError {
         Self::Refused(e)
     }
 }
+/// Character selection keeps caller input failures separate from acquisition failures.
+#[derive(Debug, Eq, PartialEq)]
+pub enum StackPullOwnerError {
+    Selection(crate::weekly_selection::WeeklySelectionError),
+    Infrastructure(AppError),
+}
+impl From<AppError> for StackPullOwnerError {
+    fn from(error: AppError) -> Self {
+        Self::Infrastructure(error)
+    }
+}
+
 /// Opaque intent; no Clone, public constructor, ticket or reminting API.
 /// ```compile_fail
 /// use destiny_app::StackPullPlan;
@@ -252,21 +264,12 @@ impl<
         &mut self,
         selector: &CharacterId,
         freshness: FreshnessPolicy,
-    ) -> Result<CharacterId, AppError> {
+    ) -> Result<CharacterId, StackPullOwnerError> {
         let now = self.clock.now()?;
         let snapshot = self.committed_snapshot(freshness, now)?;
         crate::weekly_selection::select_weekly_character(&snapshot.characters, Some(selector))
             .map(|character| character.id)
-            .map_err(|error| {
-                AppError::new(match error {
-                    crate::weekly_selection::WeeklySelectionError::InvalidRequest => {
-                        ErrorCategory::ProviderValidation
-                    }
-                    crate::weekly_selection::WeeklySelectionError::AmbiguousMatch => {
-                        ErrorCategory::AmbiguousMatch
-                    }
-                })
-            })
+            .map_err(StackPullOwnerError::Selection)
     }
 
     fn committed_snapshot(
