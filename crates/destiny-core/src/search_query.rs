@@ -1,10 +1,13 @@
-//! Bounded DIM-style query syntax and typed filter validation, without execution.
+//! Bounded DIM-style query syntax, typed validation, and pure execution primitives.
 //!
 //! Spans are half-open byte ranges in the original UTF-8 input. Groups expand
 //! their root node's span to include the parentheses; no separate group node is
 //! retained. Values preserve case, while curly quotes normalize to straight ones.
 
+mod eval;
 mod lexer;
+
+pub use eval::{ItemView, Lowering, lower, matches, referenced_stats};
 mod parser;
 mod registry;
 

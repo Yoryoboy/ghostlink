@@ -274,6 +274,18 @@ pub enum StatOp {
     Equals,
 }
 
+impl StatOp {
+    pub(crate) fn matches(self, value: i64, target: i64) -> bool {
+        match self {
+            Self::AtLeast => value >= target,
+            Self::AtMost => value <= target,
+            Self::GreaterThan => value > target,
+            Self::LessThan => value < target,
+            Self::Equals => value == target,
+        }
+    }
+}
+
 /// A validated exact normalized stat name and signed integer comparison.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatCondition {
@@ -330,13 +342,9 @@ pub fn instance_matches_stats(
             definitions.iter().any(|definition| {
                 definition.hash() == stat.stat_hash
                     && condition.name.matches_name(definition.name())
-            }) && match condition.op {
-                StatOp::AtLeast => stat.value >= condition.value,
-                StatOp::AtMost => stat.value <= condition.value,
-                StatOp::GreaterThan => stat.value > condition.value,
-                StatOp::LessThan => stat.value < condition.value,
-                StatOp::Equals => stat.value == condition.value,
-            }
+            }) && condition
+                .op
+                .matches(i64::from(stat.value), i64::from(condition.value))
         })
     })
 }
@@ -694,14 +702,14 @@ pub fn instance_matches_perk_name(query: &InstanceSearchQuery, plugs: &[ItemDefi
     })
 }
 
-fn is_weapon_slot(slot: Option<ItemSlot>) -> bool {
+pub(crate) fn is_weapon_slot(slot: Option<ItemSlot>) -> bool {
     matches!(
         slot,
         Some(ItemSlot::Kinetic | ItemSlot::Energy | ItemSlot::Power)
     )
 }
 
-fn is_armor_slot(slot: Option<ItemSlot>) -> bool {
+pub(crate) fn is_armor_slot(slot: Option<ItemSlot>) -> bool {
     matches!(
         slot,
         Some(

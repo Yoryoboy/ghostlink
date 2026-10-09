@@ -197,6 +197,16 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
     tags). Unsupported (needs unstored data) and unknown filters, and invalid
     values, are explicit errors; every OR branch is validated. Workspace:
     2024 passed, 0 failed.
+  - [x] U3b1 evaluator: `search_query/eval.rs` `ItemView` (instance,
+    definition, selected/available plugs, stats by normalized name,
+    caller-resolved `character:` selectors) reusing core matchers so each
+    leaf matches its structured flag; `power:` excludes absent/zero power
+    (DIM `range-overload.ts:68-76`); absent stat fails; NOT is plain
+    negation. Conservative lowering: only non-overwriting positive
+    conjunctions lower fully; plug-name substrings, characters, OR/NOT and
+    collisions stay residual with a provably-necessary prefilter (200-context
+    superset check). Character selectors are resolved in destiny-app
+    (`select_weekly_character`) by U3b2. Workspace: 2028 passed, 0 failed.
 - [ ] **U4 — Loadout apply phases (A5).** Compare `apply_loadout` with DIM
   (dequip → moves → bulk equip → subclass/mods, per-item partial failure);
   implement the gaps.
