@@ -210,6 +210,71 @@ fn catalog() -> Vec<StatDefinition> {
     ]
 }
 #[test]
+fn batched_projection_and_top_k_match_stable_reference() {
+    let (mut store, _) = seeded(catalog());
+    let snapshot = store.load_current().unwrap().unwrap();
+    let mut items = Vec::new();
+    for index in (0..620).rev() {
+        let mut item = snapshot.items[index % 2].clone();
+        item.instance_id = format!("item-{index:04}").into();
+        for stat in &mut item.stats {
+            stat.value = (index % 7) as i32;
+        }
+        items.push(item);
+    }
+    let expected_items = {
+        let mut sorted = items.clone();
+        sorted.sort_by(|a, b| a.instance_id.cmp(&b.instance_id));
+        sorted
+    };
+    let committed = store
+        .replace_current(InventorySnapshotInput {
+            profile_currencies_coverage: snapshot.profile_currencies_coverage,
+            stacks: snapshot.stacks,
+            plug_set_entries: snapshot.plug_set_entries,
+            membership_id: snapshot.metadata.membership_id,
+            membership_type: snapshot.metadata.membership_type,
+            definition_version: snapshot.metadata.definition_version,
+            checked_at: snapshot.metadata.checked_at,
+            source: snapshot.metadata.source,
+            characters: snapshot.characters,
+            items,
+        })
+        .unwrap();
+    assert_eq!(committed.items, expected_items);
+    assert_eq!(store.load_current().unwrap(), Some(committed.clone()));
+    let (definitions, _) = definitions(catalog());
+    let mut fake =
+        InMemorySearchRepository::with_projection(definitions.definitions.definitions, &committed);
+    fake.set_stat_definitions(catalog());
+    for conditions in [
+        vec![],
+        vec!["Class>=3"],
+        vec!["Health<=2"],
+        vec!["Missing=1"],
+    ] {
+        for sort in [
+            None,
+            Some("Class"),
+            Some("Class:asc"),
+            Some("Health"),
+            Some("Health:asc"),
+        ] {
+            for limit in [1, 5, 31, 620, 1000] {
+                let mut q = query(&conditions);
+                q.sort = sort.map(|s| s.parse().unwrap());
+                q.limit = limit;
+                assert_eq!(
+                    store.search_instances(&q).unwrap(),
+                    fake.search_instances(&q).unwrap(),
+                    "{q:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn stat_sort_precedes_limit_with_sqlite_fake_parity() {
     let (store, fake) = seeded(catalog());
     for expression in ["Class", "Class:asc"] {

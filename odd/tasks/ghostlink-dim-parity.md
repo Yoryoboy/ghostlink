@@ -59,11 +59,22 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   closed (`LocalStorage`). DIM equivalent: linear predicate over compact
   normalized data. Definition name search 131.5 ms -> 0.94 ms; no-match
   132.1 ms -> 0.90 ms. Workspace: 1966 passed, 0 failed.
-- [ ] **P2 — Owned search in SQL (B8).** Push filters, ordering and limit to
+- [x] **P2 — Owned search in SQL (B8).** Push filters, ordering and limit to
   SQL (or bounded top-k), memoize base definitions per search.
-- [ ] **P3 — Batched component reads (B9).** Read plugs/stats/sockets for
+- [x] **P3 — Batched component reads (B9).** Read plugs/stats/sockets for
   many items in one query; `prepare_cached` on hot statements; narrow read
   surfaces for queries that rebuild full snapshots.
+  P2+P3 done together (same root cause: per-item reconstruction). DIM
+  equivalent: predicate over items already loaded with their components.
+  Set-based component reconstruction with shared validation (full reads also
+  fail closed on orphan component rows, which FK cascades make impossible
+  outside corruption); instance search reads 64-candidate batches (500 when
+  sorting), memoizes base definitions, keeps a stable bounded top-k with the
+  existing comparator; `prepare_cached` on hot statements; 620-item parity
+  matrix in `tests/stat_search.rs`. Release medians vs P0: owned text
+  2.3 -> 1.6, stat sort 10.7 -> 5.1, perk name 16.1 -> 10.9, inspect
+  8.7 -> 5.0, snapshot 8.4 -> 4.7, publish unchanged 9.4 -> 5.7 ms.
+  Workspace: 1968 passed, 0 failed.
 - [ ] **P4 — Diff sync writes (B10).** Write only changed rows on sync;
   skip the saved-loadout rewrite when unchanged.
 - [ ] **R1 — Bungie read errors and throttling (A1).** Classify body

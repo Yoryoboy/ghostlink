@@ -52,8 +52,8 @@ use super::{SqliteStore, storage_failure};
 use destiny_core::query::instance_matches_with_definition;
 use destiny_core::{
     AppError, DefinitionRepository, DefinitionSearchQuery, InstanceSearchQuery, ItemDefinition,
-    ItemHash, ItemHashFilter, ItemInstance, ItemInstanceId, ItemLocation, PerkHash, PerkSummary,
-    Resolution, SearchRepository, definition_matches,
+    ItemHash, ItemHashFilter, ItemInstance, ItemInstanceId, ItemLocation, PerkSummary, Resolution,
+    SearchRepository, definition_matches,
 };
 use rusqlite::types::Value;
 use rusqlite::{Connection, Error as SqlError, params_from_iter};
@@ -236,98 +236,127 @@ impl SearchRepository for SqliteStore {
         // Resolve each distinct plug hash at most once across candidate rows.
         // Rust applies the Unicode-aware exact match before truncation.
         let mut plug_definitions = std::collections::HashMap::new();
+        let mut base_definitions = std::collections::HashMap::new();
         {
             let mut statement = self
                 .connection()
-                .prepare(&sql)
+                .prepare_cached(&sql)
                 .map_err(|_| storage_failure())?;
             let rows = statement
                 .query_map(params_from_iter(parameters), decode_instance_row)
                 .map_err(|_| storage_failure())?;
 
-            for row in rows {
-                let raw: RawInstance = row.map_err(|_| storage_failure())?;
-                let instance = read_instance(self.connection(), raw)?;
-                let definition = if query
-                    .definitions
-                    .as_ref()
-                    .is_some_and(|criteria| criteria.has_filters())
-                    || query.perk_name.is_some()
-                    || query.mod_name.is_some()
-                    || query.archetype.is_some()
-                {
-                    match self.lookup_definition(instance.item_hash)? {
-                        Resolution::Unique(definition) => Some(definition),
-                        Resolution::Missing => None,
-                        Resolution::Ambiguous(_) => return Err(storage_failure()),
-                    }
-                } else {
-                    None
-                };
-                let mut plugs = Vec::new();
-                if query.perk_name.is_some()
-                    || query.mod_name.is_some()
-                    || query.archetype.is_some()
-                {
-                    for plug in &instance.plugs {
+            let mut candidates = rows;
+            let batch_size = if query.sort.is_some() { 500 } else { 64 };
+            'batches: loop {
+                let mut batch = candidates
+                    .by_ref()
+                    .take(batch_size)
+                    .map(|row| read_instance_base(row.map_err(|_| storage_failure())?))
+                    .collect::<Result<Vec<_>, AppError>>()?;
+                if batch.is_empty() {
+                    break;
+                }
+                super::inventory::attach_components(self.connection(), &mut batch, false)?;
+                for instance in batch {
+                    let definition = if query
+                        .definitions
+                        .as_ref()
+                        .is_some_and(|criteria| criteria.has_filters())
+                        || query.perk_name.is_some()
+                        || query.mod_name.is_some()
+                        || query.archetype.is_some()
+                    {
                         if let std::collections::hash_map::Entry::Vacant(entry) =
-                            plug_definitions.entry(plug.plug_hash)
+                            base_definitions.entry(instance.item_hash)
                         {
-                            let resolved = match self.lookup_definition(plug.plug_hash)? {
+                            let resolved = match self.lookup_definition(instance.item_hash)? {
                                 Resolution::Unique(definition) => Some(definition),
                                 Resolution::Missing => None,
                                 Resolution::Ambiguous(_) => return Err(storage_failure()),
                             };
                             entry.insert(resolved);
                         }
-                        if let Some(definition) = &plug_definitions[&plug.plug_hash] {
-                            plugs.push(definition.clone());
+                        base_definitions[&instance.item_hash].as_ref()
+                    } else {
+                        None
+                    };
+                    let mut plugs = Vec::new();
+                    if query.perk_name.is_some()
+                        || query.mod_name.is_some()
+                        || query.archetype.is_some()
+                    {
+                        for plug in &instance.plugs {
+                            if let std::collections::hash_map::Entry::Vacant(entry) =
+                                plug_definitions.entry(plug.plug_hash)
+                            {
+                                let resolved = match self.lookup_definition(plug.plug_hash)? {
+                                    Resolution::Unique(definition) => Some(definition),
+                                    Resolution::Missing => None,
+                                    Resolution::Ambiguous(_) => return Err(storage_failure()),
+                                };
+                                entry.insert(resolved);
+                            }
+                            if let Some(definition) = &plug_definitions[&plug.plug_hash] {
+                                plugs.push(definition.clone());
+                            }
                         }
                     }
-                }
-                let mut available = Vec::new();
-                if query.include_available
-                    && (query.perk_name.is_some() || query.mod_name.is_some())
-                {
-                    for plug in &instance.available_plugs {
-                        if let std::collections::hash_map::Entry::Vacant(entry) =
-                            plug_definitions.entry(plug.plug_hash)
-                        {
-                            let resolved = match self.lookup_definition(plug.plug_hash)? {
-                                Resolution::Unique(definition) => Some(definition),
-                                Resolution::Missing => None,
-                                Resolution::Ambiguous(_) => return Err(storage_failure()),
-                            };
-                            entry.insert(resolved);
-                        }
-                        if let Some(definition) = &plug_definitions[&plug.plug_hash] {
-                            available.push(definition.clone());
+                    let mut available = Vec::new();
+                    if query.include_available
+                        && (query.perk_name.is_some() || query.mod_name.is_some())
+                    {
+                        for plug in &instance.available_plugs {
+                            if let std::collections::hash_map::Entry::Vacant(entry) =
+                                plug_definitions.entry(plug.plug_hash)
+                            {
+                                let resolved = match self.lookup_definition(plug.plug_hash)? {
+                                    Resolution::Unique(definition) => Some(definition),
+                                    Resolution::Missing => None,
+                                    Resolution::Ambiguous(_) => return Err(storage_failure()),
+                                };
+                                entry.insert(resolved);
+                            }
+                            if let Some(definition) = &plug_definitions[&plug.plug_hash] {
+                                available.push(definition.clone());
+                            }
                         }
                     }
-                }
-                if destiny_core::query::instance_matches_stats(query, &instance, &stat_definitions)
-                    && instance_matches_with_definition(query, &instance, definition.as_ref())
-                    && destiny_core::query::instance_matches_available_names(
-                        query, &plugs, &available,
-                    )
-                {
-                    instances.push(instance);
-                    if query.sort.is_none() && instances.len() == query.limit {
-                        break;
+                    if destiny_core::query::instance_matches_stats(
+                        query,
+                        &instance,
+                        &stat_definitions,
+                    ) && instance_matches_with_definition(query, &instance, definition)
+                        && destiny_core::query::instance_matches_available_names(
+                            query, &plugs, &available,
+                        )
+                    {
+                        if query.sort.is_some() {
+                            // Keep at most k matches, ordered by the shared comparator.
+                            // Insert after equal records, exactly like the old stable sort.
+                            let position = instances.partition_point(|existing| {
+                                destiny_core::query::compare_instances(
+                                    query.sort.as_ref(),
+                                    existing,
+                                    &instance,
+                                    &stat_definitions,
+                                ) != std::cmp::Ordering::Greater
+                            });
+                            if position < query.limit {
+                                instances.insert(position, instance);
+                                if instances.len() > query.limit {
+                                    instances.pop();
+                                }
+                            }
+                        } else {
+                            instances.push(instance);
+                            if instances.len() == query.limit {
+                                break 'batches;
+                            }
+                        }
                     }
                 }
             }
-        }
-        if query.sort.is_some() {
-            instances.sort_by(|left, right| {
-                destiny_core::query::compare_instances(
-                    query.sort.as_ref(),
-                    left,
-                    right,
-                    &stat_definitions,
-                )
-            });
-            instances.truncate(query.limit);
         }
         Ok(instances)
     }
@@ -340,13 +369,15 @@ impl SearchRepository for SqliteStore {
         // valid projection carries at most one row and `Ambiguous` is
         // unreachable here. It stays a documented outcome of the shared
         // `Resolution` type rather than a silently collapsing branch.
-        let raw = self.connection().query_row(
-            "SELECT instance_id, item_hash, location_kind, location_character_id, \
-             location_other, quantity, equipped, locked, power \
-             FROM items WHERE instance_id = ?1",
-            [instance_id.as_str()],
-            decode_instance_row,
-        );
+        let raw = self
+            .connection()
+            .prepare_cached(
+                "SELECT instance_id, item_hash, location_kind, location_character_id, \
+                 location_other, quantity, equipped, locked, power \
+                 FROM items WHERE instance_id = ?1",
+            )
+            .map_err(|_| storage_failure())?
+            .query_row([instance_id.as_str()], decode_instance_row);
 
         match raw {
             Ok(raw) => Ok(Resolution::Unique(read_instance(self.connection(), raw)?)),
@@ -380,6 +411,16 @@ fn decode_instance_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawInstance>
 /// fails closed as a sanitized local-storage error rather than returning a
 /// partially constructed record.
 fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstance, AppError> {
+    let mut instance = read_instance_base(raw)?;
+    let id = instance.instance_id.as_str();
+    instance.perks = read_perks(connection, id)?;
+    instance.plugs = super::inventory::read_plugs(connection, id)?;
+    instance.stats = super::inventory::read_stats(connection, id)?;
+    instance.available_plugs = super::inventory::read_available_plugs(connection, id)?;
+    Ok(instance)
+}
+
+fn read_instance_base(raw: RawInstance) -> Result<ItemInstance, AppError> {
     let (
         instance_id,
         item_hash,
@@ -405,13 +446,8 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
         ("other", None, Some(other)) => ItemLocation::Other(other),
         _ => return Err(storage_failure()),
     };
-    let perks = read_perks(connection, instance_id.as_str())?;
-    let plugs = super::inventory::read_plugs(connection, instance_id.as_str())?;
-    let stats = super::inventory::read_stats(connection, instance_id.as_str())?;
-
-    let available_plugs = super::inventory::read_available_plugs(connection, instance_id.as_str())?;
     Ok(ItemInstance {
-        available_plugs,
+        available_plugs: Vec::new(),
         instance_id: instance_id.into(),
         item_hash: ItemHash::new(item_hash),
         location,
@@ -419,16 +455,16 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
         equipped: decode_boolean(equipped)?,
         locked: decode_boolean(locked)?,
         power: decode_optional_u16(power)?,
-        plugs,
-        stats,
-        perks,
+        plugs: Vec::new(),
+        stats: Vec::new(),
+        perks: Vec::new(),
     })
 }
 
 /// Reads one instance's perk summaries in ordinal order, requiring `0..n`.
 fn read_perks(connection: &Connection, instance_id: &str) -> Result<Vec<PerkSummary>, AppError> {
     let mut statement = connection
-        .prepare(
+        .prepare_cached(
             "SELECT ordinal, perk_hash, active, visible FROM item_perks \
              WHERE instance_id = ?1 ORDER BY ordinal",
         )
@@ -444,20 +480,10 @@ fn read_perks(connection: &Connection, instance_id: &str) -> Result<Vec<PerkSumm
         })
         .map_err(|_| storage_failure())?;
 
-    let mut perks = Vec::new();
-    for (position, row) in rows.enumerate() {
-        let (ordinal, perk_hash, active, visible) = row.map_err(|_| storage_failure())?;
-        let expected = i64::try_from(position).map_err(|_| storage_failure())?;
-        if ordinal != expected {
-            return Err(storage_failure());
-        }
-        perks.push(PerkSummary {
-            perk_hash: PerkHash::new(u32::try_from(perk_hash).map_err(|_| storage_failure())?),
-            active: decode_boolean(active)?,
-            visible: decode_boolean(visible)?,
-        });
-    }
-    Ok(perks)
+    super::inventory::decode_perks(
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| storage_failure())?,
+    )
 }
 
 /// Decodes one stored integer boolean, accepting only the exact values `0`/`1`.
@@ -485,7 +511,7 @@ mod tests {
         BucketHash, Character, CharacterId, DefinitionReplacementInput, DefinitionVersion,
         ErrorCategory, InventoryRepository, InventorySnapshot, InventorySnapshotInput,
         MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_TAG_FILTERS, ManifestDefinitions, MembershipId,
-        MembershipType, SearchTerm, SourceMarker, Timestamp,
+        MembershipType, PerkHash, SearchTerm, SourceMarker, Timestamp,
     };
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -699,6 +725,93 @@ mod tests {
             // A whitespace-only name normalizes to the empty string.
             definition(17, "   ", None, &[]),
         ]
+    }
+
+    #[test]
+    fn owned_projection_and_search_matrix_match_reference() {
+        use destiny_core::{AvailablePlug, LocationFilter, PlugSummary, StatSummary};
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let mut weapon = definition(1, "İrem Cannon", Some("Weapon"), &[]);
+        weapon.slot = Some(destiny_core::domain::ItemSlot::Energy);
+        let mut perk = definition(60, "Rampage", None, &[]);
+        perk.plug_category = Some("frames".into());
+        let definitions = vec![weapon, perk];
+        seed_definitions(&mut store, &definitions);
+        let mut items = Vec::new();
+        for index in (0..24).rev() {
+            let location = match index % 4 {
+                0 => ItemLocation::Vault,
+                1 => ItemLocation::Character(CHARACTER_ID.into()),
+                2 => ItemLocation::Character("hunter".into()),
+                _ => ItemLocation::Postmaster("hunter".into()),
+            };
+            let mut item = instance(&format!("item-{index:02}"), 1, location, &[10, 20]);
+            item.power = Some(1800 + index % 3);
+            if index % 3 != 0 {
+                item.stats = vec![StatSummary {
+                    stat_hash: 1,
+                    value: i32::from(index % 5),
+                }];
+                item.plugs = vec![PlugSummary {
+                    plug_hash: ItemHash::new(60),
+                    enabled: true,
+                }];
+                item.available_plugs = vec![AvailablePlug {
+                    socket_index: 2,
+                    plug_hash: ItemHash::new(60),
+                }];
+            }
+            items.push(item);
+        }
+        let mut input = snapshot(items);
+        let mut hunter = input.characters[0].clone();
+        hunter.id = "hunter".into();
+        input.characters.push(hunter);
+        let committed = store.replace_current(input).unwrap();
+        assert_eq!(store.load_current().unwrap(), Some(committed.clone()));
+        let fake = InMemorySearchRepository::with_projection(definitions, &committed);
+        let mut queries = Vec::new();
+        for limit in [1, 5, 24, 100] {
+            let q = instance_query(ItemHashFilter::Any, None, None, limit);
+            queries.push(q.clone());
+            for sort in ["power", "power:asc", "Missing", "Missing:asc"] {
+                let mut q = q.clone();
+                q.sort = Some(sort.parse().unwrap());
+                queries.push(q);
+            }
+            let mut text = q.clone();
+            text.definitions = Some(Box::new(definition_query(
+                Some("i\u{307}rem"),
+                None,
+                &[],
+                limit,
+            )));
+            queries.push(text);
+            let mut perk = q.clone();
+            perk.perk_name = Some(vec![term("rampage")]);
+            queries.push(perk);
+            let mut stat = q.clone();
+            stat.stats = vec!["Missing>=1".parse().unwrap()];
+            queries.push(stat);
+            queries.push(instance_query(
+                ItemHashFilter::Any,
+                Some(20),
+                Some("hunter"),
+                limit,
+            ));
+            for location in [LocationFilter::Vault, LocationFilter::Character] {
+                let mut q = q.clone();
+                q.location = Some(location);
+                queries.push(q);
+            }
+        }
+        for q in queries {
+            assert_eq!(
+                store.search_instances(&q).unwrap(),
+                fake.search_instances(&q).unwrap(),
+                "{q:?}"
+            );
+        }
     }
 
     #[test]

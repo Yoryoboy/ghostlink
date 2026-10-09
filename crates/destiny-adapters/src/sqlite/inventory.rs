@@ -421,7 +421,7 @@ fn read_projection(connection: &Connection) -> Result<Option<InventorySnapshot>,
 /// Validate every row rather than filtering by id and hiding corrupt markers.
 fn read_coverage(connection: &Connection) -> Result<Option<ProfileCurrenciesCoverage>, AppError> {
     let mut statement = connection
-        .prepare("SELECT id, profile_currencies FROM inventory_coverage")
+        .prepare_cached("SELECT id, profile_currencies FROM inventory_coverage")
         .map_err(|_| storage_failure())?;
     let mut rows = statement.query([]).map_err(|_| storage_failure())?;
     let Some(row) = rows.next().map_err(|_| storage_failure())? else {
@@ -494,7 +494,7 @@ fn read_anchor(
     connection: &Connection,
 ) -> Result<Option<(MembershipId, MembershipType)>, AppError> {
     let mut statement = connection
-        .prepare("SELECT singleton, membership_id, membership_type FROM active_profile")
+        .prepare_cached("SELECT singleton, membership_id, membership_type FROM active_profile")
         .map_err(|_| storage_failure())?;
     let rows = statement
         .query_map([], |row| {
@@ -576,7 +576,7 @@ fn read_stacks(
     connection: &Connection,
     characters: &[Character],
 ) -> Result<Vec<StackObservation>, AppError> {
-    let mut statement = connection.prepare(
+    let mut statement = connection.prepare_cached(
         "SELECT ordinal, container, owner, bucket_hash, item_hash, quantity FROM stacks ORDER BY ordinal"
     ).map_err(|_| storage_failure())?;
     let rows = statement
@@ -633,7 +633,7 @@ fn read_subclass_options(
     characters: &[Character],
 ) -> Result<Vec<PlugSetEntry>, AppError> {
     let mut statement = connection
-        .prepare("SELECT scope, plug_hash, can_insert, enabled FROM subclass_plug_options")
+        .prepare_cached("SELECT scope, plug_hash, can_insert, enabled FROM subclass_plug_options")
         .map_err(|_| storage_failure())?;
     let rows = statement
         .query_map([], |row| {
@@ -684,7 +684,7 @@ fn read_subclass_options(
 /// Reconstructs every stored character with its optional fields, checked.
 fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> {
     let mut statement = connection
-        .prepare(
+        .prepare_cached(
             "SELECT character_id, name, class_name, race, gender, light, date_last_played \
              FROM characters ORDER BY character_id",
         )
@@ -734,7 +734,7 @@ fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> 
 /// value is corrupt local state and fails closed.
 fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
     let mut statement = connection
-        .prepare(
+        .prepare_cached(
             "SELECT instance_id, item_hash, location_kind, location_character_id, \
              location_other, quantity, equipped, locked, power \
              FROM items ORDER BY instance_id",
@@ -784,10 +784,8 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
             _ => return Err(storage_failure()),
         };
 
-        let plugs = read_plugs(connection, &instance_id)?;
-        let stats = read_stats(connection, &instance_id)?;
         items.push(ItemInstance {
-            available_plugs: read_available_plugs(connection, &instance_id)?,
+            available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
             location,
@@ -795,13 +793,13 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
             equipped: decode_boolean(equipped)?,
             locked: decode_boolean(locked)?,
             power: decode_optional_u16(power)?,
-            plugs,
-            stats,
+            plugs: Vec::new(),
+            stats: Vec::new(),
             perks: Vec::new(),
         });
     }
 
-    attach_perks(connection, &mut items)?;
+    attach_components(connection, &mut items, true)?;
     let orphan: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM item_plugs p LEFT JOIN items i \
@@ -825,7 +823,7 @@ pub(super) fn read_available_plugs(
     connection: &Connection,
     instance_id: &str,
 ) -> Result<Vec<destiny_core::AvailablePlug>, AppError> {
-    let mut statement = connection.prepare("SELECT socket_index, ordinal, plug_hash FROM item_available_plugs WHERE instance_id=?1 ORDER BY socket_index, ordinal").map_err(|_| storage_failure())?;
+    let mut statement = connection.prepare_cached("SELECT socket_index, ordinal, plug_hash FROM item_available_plugs WHERE instance_id=?1 ORDER BY socket_index, ordinal").map_err(|_| storage_failure())?;
     let rows = statement
         .query_map([instance_id], |row| {
             Ok((
@@ -835,13 +833,22 @@ pub(super) fn read_available_plugs(
             ))
         })
         .map_err(|_| storage_failure())?;
+    decode_available_plugs(
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| storage_failure())?,
+    )
+}
+
+fn decode_available_plugs(
+    rows: Vec<(i64, i64, i64)>,
+) -> Result<Vec<destiny_core::AvailablePlug>, AppError> {
     let mut plugs = Vec::new();
     let mut previous = None;
     let mut expected = 0;
     let mut sockets = 0;
     let mut seen = HashSet::new();
     for row in rows {
-        let (index, ordinal, hash) = row.map_err(|_| storage_failure())?;
+        let (index, ordinal, hash) = row;
         let index = u8::try_from(index).map_err(|_| storage_failure())?;
         if previous != Some(index) {
             sockets += 1;
@@ -867,7 +874,7 @@ pub(super) fn read_stats(
     instance_id: &str,
 ) -> Result<Vec<destiny_core::StatSummary>, AppError> {
     let mut statement = connection
-        .prepare(
+        .prepare_cached(
             "SELECT stat_hash, value FROM item_stats WHERE instance_id = ?1 ORDER BY stat_hash",
         )
         .map_err(|_| storage_failure())?;
@@ -876,10 +883,17 @@ pub(super) fn read_stats(
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
         })
         .map_err(|_| storage_failure())?;
+    decode_stats(
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| storage_failure())?,
+    )
+}
+
+fn decode_stats(rows: Vec<(i64, i64)>) -> Result<Vec<destiny_core::StatSummary>, AppError> {
     let mut stats = Vec::new();
     let mut previous = None;
     for row in rows {
-        let (hash, value) = row.map_err(|_| storage_failure())?;
+        let (hash, value) = row;
         let hash = u32::try_from(hash).map_err(|_| storage_failure())?;
         if stats.len() >= 64 || previous.is_some_and(|previous| previous >= hash) {
             return Err(storage_failure());
@@ -899,7 +913,7 @@ pub(super) fn read_plugs(
     instance_id: &str,
 ) -> Result<Vec<PlugSummary>, AppError> {
     let mut statement = connection
-        .prepare(
+        .prepare_cached(
             "SELECT ordinal, plug_hash FROM item_plugs WHERE instance_id = ?1 ORDER BY ordinal",
         )
         .map_err(|_| storage_failure())?;
@@ -908,9 +922,15 @@ pub(super) fn read_plugs(
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
         })
         .map_err(|_| storage_failure())?;
+    decode_plugs(
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| storage_failure())?,
+    )
+}
+
+fn decode_plugs(rows: Vec<(i64, i64)>) -> Result<Vec<PlugSummary>, AppError> {
     let mut plugs = Vec::new();
-    for (position, row) in rows.enumerate() {
-        let (ordinal, hash) = row.map_err(|_| storage_failure())?;
+    for (position, (ordinal, hash)) in rows.into_iter().enumerate() {
         if position >= 32 || ordinal != i64::try_from(position).map_err(|_| storage_failure())? {
             return Err(storage_failure());
         }
@@ -923,75 +943,134 @@ pub(super) fn read_plugs(
     Ok(plugs)
 }
 
-/// One stored perk row before it is attached to its item.
-struct StoredPerk {
-    instance_id: String,
-    ordinal: i64,
-    perk_hash: i64,
-    active: i64,
-    visible: i64,
-}
-
-/// Reads every perk row in `(instance_id, ordinal)` order.
-fn read_perk_rows(connection: &Connection) -> Result<Vec<StoredPerk>, AppError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT instance_id, ordinal, perk_hash, active, visible \
-             FROM item_perks ORDER BY instance_id, ordinal",
-        )
-        .map_err(|_| storage_failure())?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok(StoredPerk {
-                instance_id: row.get(0)?,
-                ordinal: row.get(1)?,
-                perk_hash: row.get(2)?,
-                active: row.get(3)?,
-                visible: row.get(4)?,
-            })
-        })
-        .map_err(|_| storage_failure())?;
-
-    let mut perks = Vec::new();
-    for row in rows {
-        perks.push(row.map_err(|_| storage_failure())?);
-    }
-    Ok(perks)
-}
-
-/// Attaches each stored perk row to its item, preserving ordinal order.
-///
-/// Both collections are ordered by instance identifier, so one forward walk is
-/// enough. Every item's ordinals must be exactly `0..n-1`; a row whose instance
-/// has no item, or a stored order that skips or repeats an ordinal, is corrupt
-/// local state and fails closed.
-fn attach_perks(connection: &Connection, items: &mut [ItemInstance]) -> Result<(), AppError> {
-    let rows = read_perk_rows(connection)?;
-    let mut index = 0;
-    for item in items.iter_mut() {
-        let mut expected = 0_i64;
-        while index < rows.len() && rows[index].instance_id == item.instance_id.as_str() {
-            let row = &rows[index];
-            if row.ordinal != expected {
-                return Err(storage_failure());
+/// Set-based component reconstruction. Full reads include orphan rows so they
+/// fail closed; candidate reads use bounded IN chunks below SQLite's bind limit.
+fn attach_component<T>(
+    connection: &Connection,
+    items: &mut [ItemInstance],
+    full: bool,
+    select: &str,
+    order: &str,
+    decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    attach: impl Fn(&mut ItemInstance, Vec<T>) -> Result<(), AppError>,
+) -> Result<(), AppError> {
+    let chunk_size = if full { items.len().max(1) } else { 500 };
+    // An empty full projection must still detect orphan component rows.
+    let chunks = items.len().max(1).div_ceil(chunk_size);
+    for chunk in 0..chunks {
+        let start = (chunk * chunk_size).min(items.len());
+        let end = (start + chunk_size).min(items.len());
+        let items = &mut items[start..end];
+        let mut sql = select.to_owned();
+        if !full {
+            if items.is_empty() {
+                continue;
             }
-            item.perks.push(PerkSummary {
-                perk_hash: PerkHash::new(
-                    u32::try_from(row.perk_hash).map_err(|_| storage_failure())?,
-                ),
-                active: decode_boolean(row.active)?,
-                visible: decode_boolean(row.visible)?,
-            });
-            expected += 1;
-            index += 1;
+            sql.push_str(" WHERE instance_id IN (");
+            sql.push_str(&vec!["?"; items.len()].join(","));
+            sql.push(')');
+        }
+        sql.push_str(" ORDER BY instance_id, ");
+        sql.push_str(order);
+        let mut statement = connection
+            .prepare_cached(&sql)
+            .map_err(|_| storage_failure())?;
+        let ids: Vec<&str> = if full {
+            Vec::new()
+        } else {
+            items.iter().map(|item| item.instance_id.as_str()).collect()
+        };
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(ids), |row| {
+                Ok((row.get::<_, String>(0)?, decode(row)?))
+            })
+            .map_err(|_| storage_failure())?;
+        let mut grouped = std::collections::HashMap::<String, Vec<T>>::new();
+        for row in rows {
+            let (id, value) = row.map_err(|_| storage_failure())?;
+            grouped.entry(id).or_default().push(value);
+        }
+        for item in items {
+            let rows = grouped
+                .remove(item.instance_id.as_str())
+                .unwrap_or_default();
+            attach(item, rows)?;
+        }
+        if !grouped.is_empty() {
+            return Err(storage_failure());
         }
     }
-    if index != rows.len() {
-        // At least one perk row references an item instance this projection does
-        // not carry, so the rows do not form a complete projection.
-        return Err(storage_failure());
-    }
     Ok(())
+}
+
+pub(super) fn attach_components(
+    connection: &Connection,
+    items: &mut [ItemInstance],
+    full: bool,
+) -> Result<(), AppError> {
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, ordinal, plug_hash FROM item_plugs",
+        "ordinal",
+        |row| Ok((row.get(1)?, row.get(2)?)),
+        |item, rows| {
+            item.plugs = decode_plugs(rows)?;
+            Ok(())
+        },
+    )?;
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, stat_hash, value FROM item_stats",
+        "stat_hash",
+        |row| Ok((row.get(1)?, row.get(2)?)),
+        |item, rows| {
+            item.stats = decode_stats(rows)?;
+            Ok(())
+        },
+    )?;
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, socket_index, ordinal, plug_hash FROM item_available_plugs",
+        "socket_index, ordinal",
+        |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?)),
+        |item, rows| {
+            item.available_plugs = decode_available_plugs(rows)?;
+            Ok(())
+        },
+    )?;
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, ordinal, perk_hash, active, visible FROM item_perks",
+        "ordinal",
+        |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        |item, rows| {
+            item.perks = decode_perks(rows)?;
+            Ok(())
+        },
+    )
+}
+
+pub(super) fn decode_perks(rows: Vec<(i64, i64, i64, i64)>) -> Result<Vec<PerkSummary>, AppError> {
+    let mut perks = Vec::new();
+    for (position, (ordinal, hash, active, visible)) in rows.into_iter().enumerate() {
+        if ordinal != i64::try_from(position).map_err(|_| storage_failure())? {
+            return Err(storage_failure());
+        }
+        perks.push(PerkSummary {
+            perk_hash: PerkHash::new(u32::try_from(hash).map_err(|_| storage_failure())?),
+            active: decode_boolean(active)?,
+            visible: decode_boolean(visible)?,
+        });
+    }
+    Ok(perks)
 }
 
 /// Decodes one stored integer boolean, accepting only the exact values `0`/`1`.
