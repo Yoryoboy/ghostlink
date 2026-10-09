@@ -45,6 +45,7 @@ pub mod query;
 pub use ports::PublicMilestonesGateway;
 pub use public_milestones::{PublicMilestone, PublicMilestoneActivity, PublicMilestonesSnapshot};
 pub mod redact;
+pub mod search_query;
 pub mod stack_bucket_capacity;
 pub use stack_bucket_capacity::{
     QualifiedStackBucketCapacityPolicy, StackBucketCapacityEvidence, StackBucketCapacityPolicy,

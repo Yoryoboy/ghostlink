@@ -182,6 +182,12 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   registry + typed validation + listing; U3b1 evaluator + AND lowering;
   U3b2 repository execution seam (SQLite + fake); U3c CLI positional query +
   MCP `query` + registry help; U3d docs/compatibility matrix.
+  - [x] U3a1 parser: `destiny-core/src/search_query{.rs,/lexer.rs,/parser.rs}`
+    spanned AST (And/Or/Not/Filter/empty), DIM precedence by precedence
+    climbing with DIM's flattening, quotes/escapes/comments/curly quotes,
+    `not:x` = `-is:x`; twelve stable error kinds with byte spans (never echo
+    query text); bounds 1024 bytes / depth 32 / 128 nodes. Pure module, no
+    execution yet. Workspace: 2016 passed, 0 failed.
 - [ ] **U4 — Loadout apply phases (A5).** Compare `apply_loadout` with DIM
   (dequip → moves → bulk equip → subclass/mods, per-item partial failure);
   implement the gaps.
