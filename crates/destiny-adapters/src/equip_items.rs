@@ -108,6 +108,9 @@ impl<T: EquipItemsTransport, C: Clock, S: CredentialSource> EquipItemsGateway
         );
         let mut response = match self.transport.post(&http) {
             Ok(response) => response,
+            Err(EquipItemsTransportError::Throttled(seconds)) => {
+                return Err(AppError::bungie_rate_limit(seconds));
+            }
             Err(EquipItemsTransportError::NotDispatched) => {
                 return Err(AppError::new(ErrorCategory::ProviderUnavailable));
             }

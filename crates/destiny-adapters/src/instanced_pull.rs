@@ -125,6 +125,9 @@ impl<T: InstancedPullTransport, C: Clock, S: CredentialSource> InstancedPullGate
         );
         let mut response = match self.transport.post(&http) {
             Ok(response) => response,
+            Err(InstancedPullTransportError::Throttled(seconds)) => {
+                return Err(AppError::bungie_rate_limit(seconds));
+            }
             Err(InstancedPullTransportError::NotDispatched) => {
                 return Err(AppError::new(ErrorCategory::ProviderUnavailable));
             }

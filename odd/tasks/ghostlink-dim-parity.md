@@ -87,10 +87,27 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   removed option is now a single DELETE. DIM replaces its store wholesale in
   memory; on SQLite the equivalent is a row diff. Publish one changed item
   75.0 -> 5.9 ms. Workspace: 1971 passed, 0 failed.
-- [ ] **R1 — Bungie read errors and throttling (A1).** Classify body
-  `ErrorCode` on reads (throttle 1672/36/51, maintenance, auth) into typed
+- [x] **R1 — Bungie read errors and throttling (A1).** Classify body
+  `ErrorCode` on reads (throttle, maintenance, auth) into typed
   errors with clear messages; DIM adaptive backoff (1 s → 5 min, success
   halves) shared per process; never auto-retry writes.
+  Owner decision (2026-10-09): DIM's 5-minute wait does not fit a CLI/MCP
+  tool call; cap the pre-request wait at 30 s and, when the computed wait
+  exceeds it, fail fast with ProviderRateLimit and an English message with
+  the retry time (from `ThrottleSeconds` when present). Throttle code set =
+  DIM's (35, 36, 37, 54, 55, 56, 57, 1672); 5 maintenance; 99/22/2111/2123/
+  2124 reauthorization; 2101/2102 configuration.
+  Done: `bungie_throttle.rs` shared process-wide counter (mutex, injectable
+  clock/sleeper) used by the profile, membership, Manifest and action
+  transports; OAuth token requests excluded as in DIM (`oauth.ts` plain
+  fetch). Waits above 30 s refuse without dispatch; after the computed
+  cooldown (or a longer `ThrottleSeconds`) a caller-driven probe is allowed,
+  since DIM always sends after waiting and the counter only heals on
+  success. Pre-dispatch refusal of an action is definitive (zero attempts,
+  no invalidation) and keeps the "retry in about N seconds" diagnostic
+  through `MutationError`. Reads keep the existing bounded retry caps;
+  writes are never retried; auth codes are classified only (no new
+  refresh/replay). Workspace: 1983 passed, 0 failed.
 - [ ] **R2 — MCP read concurrency (A2).** Reads run concurrently against the
   projection; only mutations (and syncs) serialize, as DIM's action queue.
 - [ ] **U1 — Compact item summary (A4).** DIM-style list summary (id, name,

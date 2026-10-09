@@ -70,9 +70,6 @@ use std::time::Duration;
 
 use crate::profile::decode_profile_with_observations;
 
-/// The only success code Bungie returns for a fulfilled request.
-const SUCCESS_ERROR_CODE: u64 = 1;
-
 /// Bungie's reserved "None" membership type.
 const MEMBERSHIP_TYPE_NONE: u32 = 254;
 
@@ -96,9 +93,7 @@ pub fn decode_effective_membership(bytes: &[u8]) -> Result<DestinyMembership, Ap
     let value: Value = serde_json::from_slice(bytes).map_err(|_| provider_validation())?;
     let root = value.as_object().ok_or_else(provider_validation)?;
 
-    if root.get("ErrorCode").and_then(Value::as_u64) != Some(SUCCESS_ERROR_CODE) {
-        return Err(provider_validation());
-    }
+    crate::bungie_errors::read_error(root)?;
 
     let response = root
         .get("Response")
@@ -600,6 +595,7 @@ pub struct ProfileHttpResponse {
     content_type: Option<String>,
     retry_after: RetryAfterHeader,
     body: Box<dyn Read>,
+    throttle: Option<std::sync::Arc<crate::bungie_throttle::BungieThrottle>>,
 }
 
 impl ProfileHttpResponse {
@@ -622,6 +618,7 @@ impl ProfileHttpResponse {
             content_type,
             retry_after: RetryAfterHeader::Absent,
             body,
+            throttle: None,
         }
     }
 
@@ -672,6 +669,8 @@ impl fmt::Debug for ProfileHttpResponse {
 /// The variants are intentionally coarse so that no upstream text can escape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProfileTransportError {
+    /// Adaptive pacing refused dispatch; carries only a numeric retry hint.
+    Throttled(u64),
     /// The request exceeded the total timeout.
     Timeout,
     /// DNS, connection, TLS, or body-transfer failure.
@@ -698,9 +697,19 @@ pub trait ProfileTransport {
 /// both the total request and the connection phase.
 pub struct HttpProfileTransport {
     client: reqwest::blocking::Client,
+    throttle: std::sync::Arc<crate::bungie_throttle::BungieThrottle>,
 }
 
 impl HttpProfileTransport {
+    /// Injects isolated pacing/time for deterministic transport tests.
+    pub fn with_throttle(
+        mut self,
+        throttle: std::sync::Arc<crate::bungie_throttle::BungieThrottle>,
+    ) -> Self {
+        self.throttle = throttle;
+        self
+    }
+
     /// Builds a hardened client for the fixed profile endpoints.
     pub fn new() -> Result<Self, AppError> {
         let client = reqwest::blocking::Client::builder()
@@ -710,7 +719,10 @@ impl HttpProfileTransport {
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .map_err(|_| configuration())?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            throttle: crate::bungie_throttle::shared(),
+        })
     }
 }
 
@@ -740,6 +752,9 @@ impl ProfileTransport for HttpProfileTransport {
     ) -> Result<ProfileHttpResponse, ProfileTransportError> {
         // The allowlist runs first so a rejected URL can never receive a secret.
         ensure_allowlisted(request.url())?;
+        self.throttle
+            .before_request()
+            .map_err(ProfileTransportError::Throttled)?;
         let api_key = request
             .api_key()
             .ok_or(ProfileTransportError::Configuration)?;
@@ -785,6 +800,7 @@ impl ProfileTransport for HttpProfileTransport {
             content_type,
             retry_after,
             body: Box::new(response),
+            throttle: Some(self.throttle.clone()),
         })
     }
 }
@@ -856,10 +872,16 @@ where
     T: ProfileTransport,
     F: FnOnce() -> Option<Timestamp>,
 {
-    let mut response = transport
-        .get(request)
-        .map_err(map_transport_error)
-        .map_err(ReadFailure::terminal)?;
+    let mut response = transport.get(request).map_err(|error| {
+        if let ProfileTransportError::Throttled(seconds) = error {
+            ReadFailure::with_retry_after(
+                AppError::bungie_rate_limit(seconds),
+                destiny_core::ports::RetryAfterHint::Unusable,
+            )
+        } else {
+            ReadFailure::terminal(map_transport_error(error))
+        }
+    })?;
     if response.status != 200 {
         let hint = response.retry_after().resolve(retry_after_now);
         return Err(ReadFailure::with_retry_after(
@@ -870,8 +892,13 @@ where
     if !response.content_type().is_some_and(is_json_content_type) {
         return Err(ReadFailure::terminal(provider_validation()));
     }
-    read_bounded_body(&mut response.body, response.content_length, limit)
-        .map_err(ReadFailure::terminal)
+    let bytes = read_bounded_body(&mut response.body, response.content_length, limit)
+        .map_err(ReadFailure::terminal)?;
+    if let Some(throttle) = &response.throttle {
+        throttle.observe_bytes(&bytes);
+    }
+    crate::bungie_errors::check_read_body(&bytes)?;
+    Ok(bytes)
 }
 
 fn map_transport_error(error: ProfileTransportError) -> AppError {
@@ -880,6 +907,7 @@ fn map_transport_error(error: ProfileTransportError) -> AppError {
             provider_unavailable()
         }
         ProfileTransportError::Configuration => configuration(),
+        ProfileTransportError::Throttled(seconds) => AppError::bungie_rate_limit(seconds),
     }
 }
 
@@ -2280,6 +2308,60 @@ mod tests {
                 delay.clone(),
             ));
         (gateway, delay)
+    }
+
+    #[test]
+    fn body_throttle_uses_existing_retry_after_caps() {
+        for seconds in [1, 7] {
+            let delay = RecordingDelay::default();
+            let mut gateway = gateway(
+                vec![
+                    Ok(json_response_bytes(
+                        200,
+                        format!("{{\"ErrorCode\":36,\"ThrottleSeconds\":{seconds}}}").as_bytes(),
+                    )),
+                    Ok(json_response_bytes(200, &membership_body())),
+                ],
+                GATEWAY_NOW,
+                GATEWAY_EXPIRES_AT,
+            )
+            .with_read_retry(ReadRetry::new(ReadRetryPolicy::default(), delay.clone()));
+            let result = gateway.resolve_membership();
+            if seconds == 1 {
+                result.unwrap();
+                assert_eq!(delay.waits(), vec![Duration::from_secs(1)]);
+                assert_eq!(gateway.transport().recorded().len(), 2);
+            } else {
+                let error = result.unwrap_err();
+                assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+                assert!(error.to_string().contains("7 seconds"));
+                assert!(delay.waits().is_empty());
+                assert_eq!(gateway.transport().recorded().len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn pre_dispatch_fail_fast_is_not_retried_even_with_a_short_hint() {
+        let (mut gateway, delay) = retrying_gateway(vec![Err(ProfileTransportError::Throttled(1))]);
+        assert_eq!(
+            gateway.resolve_membership().unwrap_err().category(),
+            ErrorCategory::ProviderRateLimit
+        );
+        assert_eq!(gateway.transport().recorded().len(), 1);
+        assert!(delay.waits().is_empty());
+    }
+
+    #[test]
+    fn body_auth_does_not_replay_or_refresh() {
+        let (mut gateway, delay) =
+            retrying_gateway(vec![Ok(json_response_bytes(200, b"{\"ErrorCode\":2111}"))]);
+        assert_eq!(
+            gateway.resolve_membership().unwrap_err().category(),
+            ErrorCategory::ReauthorizationRequired
+        );
+        assert_eq!(gateway.transport().recorded().len(), 1);
+        assert!(delay.waits().is_empty());
     }
 
     /// A retrying gateway whose clock reports scripted readings, so a paced repeat
