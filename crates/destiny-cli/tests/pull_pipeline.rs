@@ -487,6 +487,26 @@ fn typed_gateway_error_has_no_observations_or_receipt() {
     assert!(fixture.reasons().is_empty());
 }
 #[test]
+fn mismatch_pipeline_reports_snapshot_and_stored_versions_without_dispatch() {
+    let mut pre = input(postmaster(), 100);
+    pre.definition_version = DefinitionVersion::new("snapshot-other");
+    let mut fixture = Fixture::new(
+        pre.clone(),
+        pre,
+        vec![],
+        Ok(InstancedPullOutcome::Acknowledged),
+        Some(false),
+        version(),
+    );
+    let output = fixture.run(&["ghostlink", "pull", ITEM]);
+    assert_ne!(output.exit_code, 0);
+    for expected in ["snapshot-other", version().as_str(), "ghostlink sync"] {
+        assert!(output.stderr.contains(expected), "{}", output.stderr);
+    }
+    assert_eq!(fixture.action.calls(), 0);
+}
+
+#[test]
 fn json_is_shared_mapper_exactly_and_text_retains_all_sanitized_evidence() {
     let posts = || {
         vec![
@@ -520,7 +540,7 @@ fn json_is_shared_mapper_exactly_and_text_retains_all_sanitized_evidence() {
     let mut fixture = Fixture::standard(posts(), Ok(InstancedPullOutcome::Acknowledged));
     let text = fixture.run(&["ghostlink", "pull", ITEM]);
     assert_eq!(text.exit_code, 0);
-    for evidence in ["applied", "acknowledged"] {
+    for evidence in ["applied", "Bungie accepted the pull; not re-read."] {
         assert!(text.stdout.contains(evidence), "{evidence}");
     }
     assert!(!text.stdout.contains("PRIVATE"));

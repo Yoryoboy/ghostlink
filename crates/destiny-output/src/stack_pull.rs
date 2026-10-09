@@ -27,6 +27,7 @@ impl StackPullOutput {
             disposition,
             value: json!({
                 "kind": "stack_pull", "disposition": disposition_kind(disposition),
+                "local_state":if disposition == PullDisposition::Applied { "updated" } else { "refresh_pending" },
                 "plan_id": clean(outcome.plan_id().as_str()),
                 "dispatch": dispatch(outcome.dispatch()),
                 "receipt": receipt(outcome.gateway_outcome()),
@@ -59,7 +60,7 @@ impl StackPullOutput {
         Self {
             disposition: PullDisposition::Refused,
             value: json!({
-                "kind":"stack_pull", "disposition":"refused",
+                "kind":"stack_pull", "disposition":"refused", "local_state":"unchanged",
                 "plan_id":plan_id.map(clean), "dispatch":dispatch,
                 "receipt":null, "failure":failure,
             }),
@@ -81,7 +82,9 @@ impl StackPullOutput {
             "stack_pull: {}",
             disposition_kind(self.disposition)
         )];
-        lines.push(format!("plan_id: {}", text(&value["plan_id"])));
+        if !value["plan_id"].is_null() {
+            lines.push(format!("plan_id: {}", text(&value["plan_id"])));
+        }
         let dispatch = &value["dispatch"];
         if !dispatch.is_null() {
             for (label, field) in [
@@ -106,19 +109,8 @@ impl StackPullOutput {
                 ));
             }
         }
-        let receipt = &value["receipt"];
-        lines.push(format!(
-            "receipt: {}",
-            if receipt.is_null() {
-                "null".into()
-            } else {
-                text(&receipt["kind"])
-            }
-        ));
-        if !receipt["reason"].is_null() {
-            lines.push(format!("receipt_reason: {}", text(&receipt["reason"])));
-        }
-        lines.push(format!("failure: {}", text(&value["failure"])));
+        let human = crate::instanced_pull::render_pull_text(value);
+        lines.extend(human.lines().skip(1).map(str::to_owned));
         lines.join("\n")
     }
 }
@@ -153,12 +145,14 @@ fn receipt(value: &StackPullOutcome) -> Value {
         StackPullOutcome::Uncertain => json!({"kind":"uncertain"}),
         StackPullOutcome::Transient => json!({"kind":"transient"}),
         StackPullOutcome::AuthenticationRefused => json!({"kind":"authentication_refused"}),
-        StackPullOutcome::Rejected(reason) => {
-            let reason = match reason {
-                StackPullRejection::InvalidRequest => "invalid_request",
-                StackPullRejection::DestinationFull => "destination_full",
-            };
-            json!({"kind":"rejected", "reason":reason})
+        StackPullOutcome::Rejected(StackPullRejection::Provider(reason)) => {
+            json!({"kind":"rejected", "reason":reason.reason(), "message":reason.message()})
+        }
+        StackPullOutcome::Rejected(StackPullRejection::InvalidRequest) => {
+            json!({"kind":"rejected", "reason":"invalid_request"})
+        }
+        StackPullOutcome::Rejected(StackPullRejection::DestinationFull) => {
+            json!({"kind":"rejected", "reason":"destination_full"})
         }
     }
 }

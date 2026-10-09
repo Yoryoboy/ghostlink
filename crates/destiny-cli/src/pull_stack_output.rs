@@ -7,8 +7,12 @@ use destiny_app::{
 
 #[derive(Clone, Debug)]
 pub struct StackPullOutput {
-    shared: destiny_output::stack_pull::StackPullOutput,
+    shared: Result<destiny_output::stack_pull::StackPullOutput, crate::command::CliError>,
     exit_code: i32,
+    versions: Option<(
+        destiny_app::DefinitionVersion,
+        destiny_app::DefinitionVersion,
+    )>,
 }
 impl StackPullOutput {
     pub fn from_outcome(outcome: &StackPullExecutionOutcome) -> Self {
@@ -23,12 +27,32 @@ impl StackPullOutput {
                 PullDisposition::Refused => 41,
             }
         };
-        Self { shared, exit_code }
+        Self {
+            shared: Ok(shared),
+            exit_code,
+            versions: None,
+        }
+    }
+    pub fn selection_failed(error: destiny_app::weekly_selection::WeeklySelectionError) -> Self {
+        let error = match error {
+            destiny_app::weekly_selection::WeeklySelectionError::InvalidRequest => {
+                crate::command::CliError::invalid_request()
+            }
+            destiny_app::weekly_selection::WeeklySelectionError::AmbiguousMatch => {
+                crate::command::CliError::from_category(destiny_app::ErrorCategory::AmbiguousMatch)
+            }
+        };
+        Self {
+            exit_code: error.exit_code(),
+            shared: Err(error),
+            versions: None,
+        }
     }
     pub fn planning_failed(error: &StackPullPlanningError) -> Self {
         Self {
-            shared: destiny_output::stack_pull::StackPullOutput::planning_failed(error),
+            shared: Ok(destiny_output::stack_pull::StackPullOutput::planning_failed(error)),
             exit_code: planning_exit(error),
+            versions: None,
         }
     }
     pub fn execution_failed(failure: &StackPullExecutionFailure) -> Self {
@@ -45,15 +69,43 @@ impl StackPullOutput {
                 .unwrap_or(40),
         };
         Self {
-            shared: destiny_output::stack_pull::StackPullOutput::execution_failed(failure),
+            shared: Ok(destiny_output::stack_pull::StackPullOutput::execution_failed(failure)),
             exit_code,
+            versions: None,
         }
     }
+    pub fn with_versions(
+        mut self,
+        versions: Option<(
+            destiny_app::DefinitionVersion,
+            destiny_app::DefinitionVersion,
+        )>,
+    ) -> Self {
+        self.versions = versions;
+        self
+    }
     pub fn json(&self) -> serde_json::Value {
-        self.shared.json()
+        match &self.shared {
+            Ok(shared) => shared.json(),
+            Err(error) => serde_json::json!({
+                "error": { "code": error.code(), "message": error.to_string() }
+            }),
+        }
     }
     pub fn render_text(&self) -> String {
-        self.shared.render_text()
+        let shared = match &self.shared {
+            Ok(shared) => shared,
+            Err(error) => {
+                return crate::output::render_error(crate::output::OutputMode::Human, error);
+            }
+        };
+        if self.versions.is_some()
+            && shared.json()["failure"]["reason"] == "definition_version_mismatch"
+        {
+            crate::pull_output::render_with_versions(&shared.json(), self.versions.as_ref())
+        } else {
+            shared.render_text()
+        }
     }
     pub fn exit_code(&self) -> i32 {
         self.exit_code

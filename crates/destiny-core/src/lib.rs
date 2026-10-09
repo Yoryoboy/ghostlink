@@ -30,6 +30,8 @@ pub use inventory_effects::{
     InventoryEffect, InventoryEffectError, InventoryEffectsResult, apply_inventory_effects,
 };
 pub mod mutation;
+pub mod provider_rejection;
+pub use provider_rejection::ProviderRejection;
 pub mod name_matching;
 pub mod ports;
 pub mod postmaster;

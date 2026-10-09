@@ -134,11 +134,19 @@ G5/G7 CLI UX.
   from move, lock, equip, pull item, pull stack and apply loadout; plan and
   execute from the local projection; apply the effect from T2 on
   acknowledgement. Keep pull capacity checks local (with effects applied).
-- [ ] **T4 — Bungie error mapping.** Map stale-state errors (item not found,
+- [x] **T4 — Bungie error mapping.** `617ed7d` (review-9a6bc1009b35cd43):
+  numeric PlatformErrorCodes 1623/1632/1634/1640/1641/1642/1648/1656/1660/
+  1663/1671/1672 → typed rejections with actionable messages, CLI exit 41,
+  MCP rejected; invalidate, never retry; unknown codes stay uncertain.
+  Original scope: Map stale-state errors (item not found,
   already at destination, `DestinyNoRoomInDestination`, equipped-item
   conflicts) to clear refusals and invalidate the projection; never retry
   blindly. Check DIM's blind-move/no-room handling for pulls.
-- [ ] **T5 — Honest no-op and response fields (G3).** Includes native-review
+- [x] **T5 — Honest no-op and response fields (G3).** `6d5b4ed`
+  (review-42df8c2f987870de): `local_state` updated|unchanged|refresh_pending
+  on every action; honest `verified_noop`; descriptions rewritten (R3-001
+  fixed). Advisory R3-gateway-failure-state checked: pre-dispatch only, so
+  `unchanged` is correct. Original scope: Includes native-review
   advisory R3-001 (`crates/destiny-mcp/src/schema.rs:379`): the `equip_item`
   description still says "the next ordinary read forces sync", false after C2
   when fully applied. `verified_noop` only
@@ -157,11 +165,24 @@ G5/G7 CLI UX.
   Original scope: Remove `DESTINY_DEFINITION_VERSION`
   (config, docs, example env, tests); mismatch refusals name both versions.
   Review whether `DESTINY_FRESHNESS_TTL_SECONDS` should remain user-facing.
-- [ ] **T8 — G5/G7 CLI UX.** Human sentences for `pull`/`pull-stack`
+- [x] **T8 — G5/G7 CLI UX.** `01ab52f` (review-af3a48945ab908fe): sentence
+  refusals for pull/pull-stack (JSON unchanged), mismatch names both
+  versions, `pull-stack --character <class>`, `--item-hash` alias,
+  `apply-loadout --slot/--name`. MCP vs CLI move JSON differences
+  documented (schema migration needed). Follow-up for T9: advisory R3-001 —
+  pull-stack class resolution uses a fixed class list and maps
+  ambiguity/unknown to an infrastructure error. Original scope: Human sentences for `pull`/`pull-stack`
   refusals; `pull-stack --character` accepts a class; `--item-hash` hint;
   `apply-loadout` selector consistency with MCP `name`/`slot`.
-- [ ] **T9 — Docs, skill and live re-validation.** Update `docs/`,
-  `skills/ghostlink/SKILL.md`; cut rc.3 and re-run chained actions live.
+- [ ] **T9 — Docs, skill and live re-validation.**
+  - [x] T9a code polish: shared character selector for `pull-stack`, commit
+    `c9e6fd2` (review-05ce862f3133df57).
+  - [x] T9b documentation consistency pass: README, CLI/MCP references,
+    architecture and implementation guidance, skill and exit-code reference now
+    describe the DIM local-projection contract; rc.3 live checklist added to
+    PR-011 in `odd/tasks/ghostlink-public-release.md`. Definition-version
+    override text is left for PR #76 to avoid cross-branch conflicts.
+  - [ ] Cut rc.3 and run the PR-011 live checklist; this is the remaining T9 item.
 
 ## Delivery
 

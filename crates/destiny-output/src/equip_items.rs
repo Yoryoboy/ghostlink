@@ -17,7 +17,7 @@ impl EquipItemsOutput {
     pub fn from_result(result: Result<BatchEquipResult, MutationError>) -> Self {
         match result {
             Err(error) => Self {
-                value: json!({"kind":"equip_items", "outcome":"refused", "items":[],
+                value: json!({"kind":"equip_items", "outcome":"refused", "local_state":"unchanged", "items":[],
                     "reason":clean(&error.to_string())}),
                 exit_code: 41,
             },
@@ -34,6 +34,7 @@ impl EquipItemsOutput {
                     ("applied", 0, None)
                 } else {
                     let reason = match &result.receipt {
+                        Some(EquipItemsOutcome::Rejected(reason)) => reason.reason(),
                         Some(EquipItemsOutcome::Refused) => "provider refused batch equip",
                         Some(EquipItemsOutcome::RestrictedLocation) => {
                             "go to orbit or a social space and retry"
@@ -66,7 +67,8 @@ impl EquipItemsOutput {
                     .collect();
                 Self {
                     value: json!({"kind":"equip_items", "outcome":outcome,
-                        "items":items, "reason":reason}),
+                        "local_state":if result.no_op() && result.local_state_updated { "unchanged" } else if result.applied() { "updated" } else { "refresh_pending" },
+                        "items":items, "reason":reason, "message":reason.and_then(crate::rejection_message)}),
                     exit_code,
                 }
             }
@@ -78,7 +80,13 @@ impl EquipItemsOutput {
             self.value["outcome"].as_str().unwrap_or("incomplete")
         );
         if let Some(reason) = self.value["reason"].as_str() {
-            text.push_str(&format!("; {reason}"));
+            text.push_str(&format!("; {}", crate::reason_text(reason)));
+        }
+        if self.value["local_state"] == "refresh_pending" {
+            text.push_str("; local state refresh pending");
+        }
+        if self.value["outcome"] == "verified_no_op" {
+            text.push_str("; local state already matches; nothing sent to Bungie");
         }
         if let Some(items) = self.value["items"].as_array() {
             for item in items {

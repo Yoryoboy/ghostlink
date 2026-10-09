@@ -31,11 +31,54 @@ instruction object on stdout before waiting.) The failure object is either:
 | 50–52 | `credential_store_unavailable` / `local_storage` / `configuration_error` | Local setup problem; report to the user. |
 | 70 | `internal_error` | Report and stop. |
 
+## Definitive Bungie action rejections
+
+Actions plan from the local projection; Bungie is the final validator. Only the
+exact numeric code classifies a rejection, never `ErrorStatus` text. These
+received refusals prove the rejected action did not apply, invalidate freshness
+so the next action/read syncs, and are never retried automatically. Earlier
+acknowledged transfer legs remain applied; there is no rollback.
+
+All rows use CLI **41** and MCP **error (`isError=true`)** under the existing
+incomplete/failed/refused action contract. Receipts/steps classify them as
+`rejected`, not `uncertain`; `reason` is stable snake_case and `message` is
+sanitized actionable text. This is distinct from pre-action category exits
+(e.g. missing local item 32 or rate limiting a read 20).
+
+| Bungie code | `reason` | User action |
+|---:|---|---|
+| 1623 | `item_not_found` | Item is no longer where Ghostlink thought; the next read refreshes local state. Reassess and retry. |
+| 1632 | `already_in_inventory` | Already there; read its location before retrying. |
+| 1634 / 1671 | `not_in_social_space` | Go to orbit or a social space. |
+| 1640 | `unequippable` | Choose an item equippable on this character. |
+| 1641 | `exotic_limit` | Choose a different item; the exotic equip rule prevents this. |
+| 1642 | `destination_full` | Free a destination slot. |
+| 1648 | `uniqueness_violation` | Choose a different item; it conflicts with a uniqueness rule. |
+| 1656 | `equipped` | Unequip it first; Ghostlink does not equip a replacement or retry. |
+| 1660 | `not_transferable` | Choose a different item. |
+| 1663 | `action_forbidden` | Report; do not work around Bungie's restriction. |
+| 1672 | `throttled` | Bungie is throttling; wait and retry only after reassessing intent. |
+
+Unknown, malformed or absent codes remain uncertain even with recognized status
+text. These rules apply to move, equip, batch equip, lock/unlock, apply-loadout
+and both Postmaster pulls. Acknowledgement remains distinct from observed state.
+
+## Shared action `local_state`
+
+All seven action outputs use `local_state`: `updated` for acknowledged effects
+persisted with freshness retained, `unchanged` for no-op or refusal before
+dispatch, `refresh_pending` for invalidated state (incomplete, rejected, uncertain
+or persistence failure). The next ordinary read re-syncs only when stale or
+invalidated. Human output adds a short phrase only for refresh pending.
+`verified_noop` means local state (including Ghostlink's acknowledged actions)
+already matches; nothing was sent to Bungie, not Bungie verification.
+Never retry an uncertain outcome.
+
 ## Apply loadout `outcome`
 
 `ghostlink apply-loadout <slot|name> --character <class|id> --json` and MCP
 `apply_loadout` share `kind: "apply_loadout"`, character, one-based slot, name,
-outcome, receipt, reason and `local_state_updated` (true only for complete local
+outcome, receipt, reason and `local_state` (`updated` only for complete local
 equipment effects without invalidation). Exactly one MCP slot/name; names are normalized exact
 matches within that character. Unknown/ambiguous names list candidates; select
 explicitly, never guess. Empty/unavailable slots refuse without an action.
@@ -64,7 +107,7 @@ validation is unchanged.
 | `refused` | 41 / varies | Received refusal exits 41; pre-action refusal retains category exits. Report without working around it. |
 | `local_state_failed` | 42 | Local state could not be updated after the action; receipt retained. Sync/inspect, do not retry. |
 
-Planning missing target is 32, ambiguity 31, missing definition 33; preflight
+Planning missing target is 32, ambiguity 31, missing definition 33; local revision
 drift/expiry is 30, other eligibility refusals default to 40. Typed pre-action
 infrastructure errors use the category table above. No post-action profile request,
 wait or observations; no provider-lag exit 43. Acknowledged instanced pulls update
@@ -82,14 +125,15 @@ claim. MCP `pull_item` uses the same shared output.
 
 ## Stack pull `disposition`
 
-`ghostlink pull-stack <ITEM_HASH> --amount <N> --character <CHARACTER_ID>`
+`ghostlink pull-stack <ITEM_HASH> --amount <N> --character <id|class>`
 uses `kind: "stack_pull"` with independent receipt, disposition and failure.
-Canonical uint32 hash, positive int32 amount and positive int64 owner ID are
-required; invalid input exits 2 before any I/O. The pull disposition table above
+Canonical uint32 hash and positive int32 amount are required. CLI resolves an
+exact owner ID or unique class; MCP requires a positive int64 owner ID.
+Invalid input exits 2 before dispatch. The pull disposition table above
 also applies: `applied` is 0, received refusal/transport uncertainty 41, local
 persistence or invalidation failure 42. No provider-lag exit 43, post-action request,
-wait or observations; preflight totals are not invented post quantities.
-Missing definition is 33, ambiguous definition 31, preflight drift/expiry 30;
+wait or observations; pre-action totals are not invented post quantities.
+Missing definition is 33, ambiguous definition 31, local revision drift/expiry 30;
 other pre-action failures retain category exits. Nonzero evidence stays on stderr.
 Requires authenticated membership, qualified non-instanced metadata and pinned
 audited account-wide local capacity (unchanged stack arithmetic). Ordinary sync
@@ -108,9 +152,9 @@ offline checks do not establish live readiness.
 
 | `status` | Exit | Agent action |
 |---|---:|---|
-| `applied` | 0 | Every step accepted; not an observed destination. Next ordinary read forces sync. |
-| `verified_noop` | 0 | Reached the destination between planning and fresh preflight; no transfer dispatched. |
-| `refused` | varies | Report `reason` and steps; do not retry. Already in the destination when planning is exit **40** (`unsupported_operation`), not no-op success. Missing item is 32, missing character 2, ambiguity 31, changed preflight 30. |
+| `applied` | 0 | Every step accepted; not an observed destination. Local effects persisted; freshness retained. |
+| `verified_noop` | 0 | Local state already matches the destination; nothing sent to Bungie. |
+| `refused` | varies | Report `reason` and steps; do not retry. Already in the destination when planning is exit **40** (`unsupported_operation`), not no-op success. Missing item is 32, missing character 2, ambiguity 31, changed local revision 30. |
 | `incomplete` | 41 | Report completed, rejected/uncertain and unrun steps; no rollback. Do not retry. |
 Move does not emit provider-lag verification exits 42/43. Never blindly repeat.
 
@@ -163,8 +207,8 @@ selected and verify ownership before deleting the listed desktop entry/record.
 
 | `status` | Exit | Agent action |
 |---|---:|---|
-| `applied` | 0 | Every step accepted, not observed equipped state. Next ordinary read forces sync. |
-| `verified_noop` | 0 | Fresh preflight already satisfies intent; no dispatch. |
+| `applied` | 0 | Every step accepted, not observed equipped state. Local effects persisted; freshness retained. |
+| `verified_noop` | 0 | Local state already matches intent; nothing sent to Bungie. |
 | `refused` | varies | Report `reason` and `steps`; a refusal during execution can follow a completed transfer, so never assume nothing changed. Do not retry. Exit 32 means the item selector matched nothing, 2 means the character matched nothing, other exits follow the error table. |
 | `incomplete` | 41 | Some steps ran. Report each step; do not retry. |
 Equip does not emit provider-lag verification exits 42/43. Never blindly repeat.
@@ -176,14 +220,15 @@ Bungie may refuse after a transfer already happened.
 
 | `status` | Exit | Agent action |
 |---|---:|---|
-| `applied` | 0 | Bungie acknowledged requested lock state, not a post-action observation. Next ordinary read forces sync. |
-| `verified_noop` | 0 | Fresh preflight already satisfies requested state; no dispatch. |
+| `applied` | 0 | Bungie acknowledged requested lock state, not a post-action observation. Local effects persisted; freshness retained. |
+| `verified_noop` | 0 | Local state already matches requested state; nothing sent to Bungie. |
 | `refused` | varies | Report `reason`; missing item 32, ambiguity 31, stale state 30, otherwise category exit. No dispatch; do not work around refusal. |
 | `incomplete` | 41 | Refused, auth-refused, transient or uncertain attempt; no post-action observation. Never blindly retry. |
 | `verification_failed` | 42 | Local invalidation storage failed after dispatch: local state could not be updated after the action. Sync and inspect; do not retry. |
 
-Lock/unlock no longer emit provider-lag verification exits 42/43. Dispatched
-attempts invalidate freshness, not guessed state; already-satisfied no-ops do not.
+Lock/unlock no longer emit provider-lag verification exits 42/43. Acknowledged
+lock effects persist locally with freshness retained; incomplete attempts or
+persistence failures invalidate. Already-satisfied local no-ops leave state unchanged.
 
 Vault items use one owned character for the provider call. Lock/unlock do not
 apply equip class, exotic, or equipped-state policy.

@@ -19,6 +19,7 @@ impl InstancedPullOutput {
             disposition,
             value: json!({
                 "kind":"instanced_pull", "disposition":disposition_kind(disposition),
+                "local_state":if disposition == PullDisposition::Applied { "updated" } else { "refresh_pending" },
                 "plan_id":clean(outcome.plan_id().as_str()),
                 "dispatch":dispatch(outcome.dispatch()), "receipt":receipt(outcome.gateway_outcome()),
                 "failure":outcome.local_state_error().map(local_state_failure),
@@ -48,7 +49,7 @@ impl InstancedPullOutput {
         if let Some(error) = failure.local_state_error() {
             return Self {
                 disposition: PullDisposition::LocalStateFailed,
-                value: json!({"kind":"instanced_pull", "disposition":"local_state_failed",
+                value: json!({"kind":"instanced_pull", "disposition":"local_state_failed", "local_state":"refresh_pending",
                     "plan_id":clean(failure.plan_id().as_str()), "dispatch":dispatch,
                     "receipt":null, "failure":local_state_failure(error)}),
             };
@@ -58,7 +59,7 @@ impl InstancedPullOutput {
     fn failed(plan_id: Option<&str>, dispatch: Value, failure: Value) -> Self {
         Self {
             disposition: PullDisposition::Refused,
-            value: json!({"kind":"instanced_pull", "disposition":"refused",
+            value: json!({"kind":"instanced_pull", "disposition":"refused", "local_state":"unchanged",
                 "plan_id":plan_id.map(clean), "dispatch":dispatch, "receipt":null, "failure":failure}),
         }
     }
@@ -72,6 +73,62 @@ impl InstancedPullOutput {
         self.value.clone()
     }
 }
+/// Human-only presentation over the unchanged sanitized pull projection.
+pub fn render_pull_text(value: &Value) -> String {
+    let failure = &value["failure"];
+    let receipt = &value["receipt"];
+    let capacity = &failure["capacity_reason"];
+    let reason = capacity["kind"]
+        .as_str()
+        .or(capacity.as_str())
+        .or(failure["reason"].as_str())
+        .or(receipt["reason"].as_str())
+        .or(failure["kind"].as_str())
+        .or(receipt["kind"].as_str())
+        .unwrap_or("refused");
+    let sentence = match reason {
+        "at_capacity" => format!(
+            "Destination slot is full ({}/{}); free a slot and retry.",
+            capacity["occupied"], capacity["capacity"]
+        ),
+        "destination_full" | "insufficient_capacity" => {
+            "Destination is full; free a slot and retry.".into()
+        }
+        "unknown_uniqueness" => {
+            "Stack uniqueness is unknown; this pull cannot be safely planned.".into()
+        }
+        "side_effects" | "pull_has_side_effects" => {
+            "This pull has side effects; it cannot be safely performed.".into()
+        }
+        "side_effects_unknown" | "unknown_side_effects" => {
+            "Pull side effects are unknown; this pull cannot be safely performed.".into()
+        }
+        "definition_version_mismatch" | "definition_version_drift" | "policy_version_mismatch" => {
+            "Snapshot and stored definitions have different versions; run ghostlink sync and retry."
+                .into()
+        }
+        "acknowledged" => "Bungie accepted the pull; not re-read.".into(),
+        "uncertain" => "The pull outcome is uncertain; check inventory before retrying.".into(),
+        "invalidation_failed" => {
+            "Local state could not be updated after the pull; do not blindly retry.".into()
+        }
+        _ => receipt["message"].as_str().map(clean).unwrap_or_else(|| {
+            format!(
+                "Pull refused: {}; check inventory and sync before retrying.",
+                reason.replace('_', " ")
+            )
+        }),
+    };
+    let mut text = format!(
+        "Postmaster pull: {}\n{sentence}",
+        value["disposition"].as_str().unwrap_or("refused")
+    );
+    if value["local_state"] == "refresh_pending" {
+        text.push_str("\nlocal state refresh pending");
+    }
+    text
+}
+
 fn clean(value: &str) -> String {
     value
         .chars()
@@ -93,6 +150,9 @@ fn receipt(value: &InstancedPullOutcome) -> Value {
         InstancedPullOutcome::Uncertain => json!({"kind":"uncertain"}),
         InstancedPullOutcome::Transient => json!({"kind":"transient"}),
         InstancedPullOutcome::AuthenticationRefused => json!({"kind":"authentication_refused"}),
+        InstancedPullOutcome::Rejected(InstancedPullRejection::Provider(reason)) => {
+            json!({"kind":"rejected", "reason":reason.reason(), "message":reason.message()})
+        }
         InstancedPullOutcome::Rejected(InstancedPullRejection::DestinationFull) => {
             json!({"kind":"rejected", "reason":"destination_full", "message":"destination full; free a slot and retry"})
         }
@@ -318,6 +378,7 @@ mod tests {
         assert!(output.is_success());
         let value = output.json();
         assert_eq!(value["disposition"], "applied");
+        assert_eq!(value["local_state"], "updated");
         assert_eq!(value["receipt"], json!({"kind":"acknowledged"}));
         assert_eq!(
             value["dispatch"],
@@ -381,6 +442,14 @@ mod tests {
             assert_eq!(output.disposition(), disposition);
             assert_eq!(output.is_success(), disposition == PullDisposition::Applied);
             assert_eq!(output.json()["receipt"], expected);
+            assert_eq!(
+                output.json()["local_state"],
+                if disposition == PullDisposition::Applied {
+                    "updated"
+                } else {
+                    "refresh_pending"
+                }
+            );
             assert!(output.json().get("observations").is_none());
         }
     }
@@ -410,6 +479,7 @@ mod tests {
                 InstancedPullOutput::planning_failed(&InstancedPullPlanningError::Refused(reason));
             assert!(!output.is_success());
             assert_eq!(output.json()["failure"]["reason"], code);
+            assert_eq!(output.json()["local_state"], "unchanged");
             assert!(output.json()["receipt"].is_null());
         }
         let output = InstancedPullOutput::planning_failed(&InstancedPullPlanningError::Refused(

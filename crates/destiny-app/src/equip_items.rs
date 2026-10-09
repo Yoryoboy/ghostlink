@@ -1,6 +1,7 @@
 //! Combined-state batch equip: one fresh preflight and one EquipItems attempt.
 use crate::MutationService;
 use crate::{ItemSlot, MutationError};
+pub use destiny_core::ProviderRejection;
 use destiny_core::{
     DefinitionRepository, DestinationSelector, DestinyMembership, EquipItemsGateway,
     EquipItemsOutcome, EquipItemsRequest, EquipPlan, EquipRequest, FreshnessPolicy,

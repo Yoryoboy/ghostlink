@@ -2301,15 +2301,17 @@ pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> Move
     match outcome {
         MoveExecutionOutcome::Applied(evidence) => {
             MoveItemOutput::Applied(crate::schema::AppliedMoveView {
+                local_state: crate::schema::LocalStateView::Updated,
                 effects: effects_view(effects),
                 steps: step_views(evidence),
                 reason: "Bungie accepted the action; not re-read".into(),
             })
         }
-        // The mandatory fresh preflight observed the item already at the
-        // destination and dispatched nothing.
+        // Local state, including acknowledged actions, already matches;
+        // ordinary sync refreshes invalidated projections before this decision.
         MoveExecutionOutcome::VerifiedNoOp(evidence) => {
             MoveItemOutput::VerifiedNoOp(MoveSuccessView {
+                local_state: crate::schema::LocalStateView::Unchanged,
                 effects: effects_view(effects),
                 observed: location_view(&effects.destination),
                 steps: step_views(evidence),
@@ -2317,6 +2319,7 @@ pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> Move
         }
         MoveExecutionOutcome::IncompleteExecution(incomplete) => {
             MoveItemOutput::Incomplete(IncompleteMoveView {
+                local_state: crate::schema::LocalStateView::RefreshPending,
                 effects: effects_view(effects),
                 expected_location: location_view(incomplete.expected_location()),
                 partial: incomplete.is_partial(),
@@ -2326,6 +2329,7 @@ pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> Move
         }
         MoveExecutionOutcome::VerificationFailed(failure) => {
             MoveItemOutput::VerificationFailed(VerificationFailureView {
+                local_state: crate::schema::LocalStateView::RefreshPending,
                 effects: effects_view(effects),
                 observed: failure.observed().map(location_view),
                 reason: verification_reason_view(failure.reason()),
@@ -2374,10 +2378,21 @@ fn step_outcome_view(outcome: StepOutcome) -> StepOutcomeView {
         StepOutcome::Unattempted => StepOutcomeView::Unattempted,
         StepOutcome::Completed => StepOutcomeView::Completed,
         StepOutcome::Rejected(rejection) => StepOutcomeView::Rejected {
+            message: match rejection {
+                TransferRejection::Provider(reason) => Some(reason.message().into()),
+                _ => None,
+            },
             reason: rejection_view(rejection),
         },
         StepOutcome::EquipRejected(rejection) => StepOutcomeView::EquipRejected {
+            message: match rejection {
+                destiny_app::EquipRejection::Provider(reason) => Some(reason.message().into()),
+                _ => None,
+            },
             reason: match rejection {
+                destiny_app::EquipRejection::Provider(reason) => {
+                    provider_equip_rejection_view(reason)
+                }
                 destiny_app::EquipRejection::NotInSocialSpace => {
                     crate::schema::EquipRejectionView::NotInSocialSpace
                 }
@@ -2405,10 +2420,69 @@ fn step_outcome_view(outcome: StepOutcome) -> StepOutcomeView {
 
 fn rejection_view(rejection: TransferRejection) -> TransferRejectionView {
     match rejection {
+        TransferRejection::Provider(reason) => provider_transfer_rejection_view(reason),
         TransferRejection::NotTransferable => TransferRejectionView::NotTransferable,
         TransferRejection::Equipped => TransferRejectionView::Equipped,
         TransferRejection::DestinationFull => TransferRejectionView::DestinationFull,
         TransferRejection::InvalidRequest => TransferRejectionView::InvalidRequest,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn provider_rejections_are_typed_mcp_rejections_not_uncertainty() {
+    for reason in destiny_app::ProviderRejection::ALL {
+        let value = serde_json::to_value(step_outcome_view(StepOutcome::Rejected(
+            TransferRejection::Provider(reason),
+        )))
+        .unwrap();
+        assert_eq!(value["status"], "rejected");
+        assert_eq!(value["reason"], reason.reason());
+        assert_eq!(value["message"], reason.message());
+        let value = serde_json::to_value(step_outcome_view(StepOutcome::EquipRejected(
+            destiny_app::EquipRejection::Provider(reason),
+        )))
+        .unwrap();
+        assert_eq!(value["status"], "equip_rejected");
+        assert_eq!(value["reason"], reason.reason());
+    }
+}
+
+fn provider_transfer_rejection_view(
+    reason: destiny_app::ProviderRejection,
+) -> TransferRejectionView {
+    use destiny_app::ProviderRejection as R;
+    match reason {
+        R::ItemNotFound => TransferRejectionView::ItemNotFound,
+        R::AlreadyInInventory => TransferRejectionView::AlreadyInInventory,
+        R::NotInSocialSpace => TransferRejectionView::NotInSocialSpace,
+        R::Unequippable => TransferRejectionView::Unequippable,
+        R::ExoticLimit => TransferRejectionView::ExoticLimit,
+        R::DestinationFull => TransferRejectionView::DestinationFull,
+        R::UniquenessViolation => TransferRejectionView::UniquenessViolation,
+        R::Equipped => TransferRejectionView::Equipped,
+        R::NotTransferable => TransferRejectionView::NotTransferable,
+        R::ActionForbidden => TransferRejectionView::ActionForbidden,
+        R::Throttled => TransferRejectionView::Throttled,
+    }
+}
+fn provider_equip_rejection_view(
+    reason: destiny_app::ProviderRejection,
+) -> crate::schema::EquipRejectionView {
+    use crate::schema::EquipRejectionView as V;
+    use destiny_app::ProviderRejection as R;
+    match reason {
+        R::ItemNotFound => V::ItemNotFound,
+        R::AlreadyInInventory => V::AlreadyInInventory,
+        R::NotInSocialSpace => V::NotInSocialSpace,
+        R::Unequippable => V::Unequippable,
+        R::ExoticLimit => V::ExoticLimit,
+        R::DestinationFull => V::DestinationFull,
+        R::UniquenessViolation => V::UniquenessViolation,
+        R::Equipped => V::Equipped,
+        R::NotTransferable => V::NotTransferable,
+        R::ActionForbidden => V::ActionForbidden,
+        R::Throttled => V::Throttled,
     }
 }
 
@@ -3992,6 +4066,7 @@ mod tests {
                 assert_eq!(
                     incomplete.steps[0].outcome,
                     StepOutcomeView::Rejected {
+                        message: None,
                         reason: TransferRejectionView::DestinationFull,
                     }
                 );

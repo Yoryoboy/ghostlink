@@ -72,6 +72,7 @@ pub struct EquipItemResult {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EquipItemsOutcome {
     Acknowledged(Vec<EquipItemResult>),
+    Rejected(crate::ProviderRejection),
     Refused,
     RestrictedLocation,
     AuthenticationRefused,

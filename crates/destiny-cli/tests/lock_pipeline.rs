@@ -314,6 +314,15 @@ fn lock_pipeline_covers_both_states_locations_and_all_terminal_outcomes() {
                 )
                 .unwrap();
                 assert_eq!(output.status, status, "{}", output.render_text());
+                assert_eq!(
+                    output.json()["local_state"],
+                    if reply == LockOutcome::Applied {
+                        "updated"
+                    } else {
+                        "refresh_pending"
+                    }
+                );
+                assert!(output.json().get("profile_refresh").is_none());
                 assert_eq!(output.exit_code(), code);
                 assert_eq!(gateway.requests().len(), 1);
                 assert_eq!(gateway.requests()[0].character().as_str(), "456");
@@ -349,6 +358,7 @@ fn lock_pipeline_covers_both_states_locations_and_all_terminal_outcomes() {
             )
             .unwrap();
             assert_eq!(output.status, LockStatus::VerifiedNoop);
+            assert_eq!(output.json()["local_state"], "unchanged");
             assert_eq!(output.exit_code(), 0);
             assert!(output.render_text().contains("already"));
             assert!(gateway.requests().is_empty());

@@ -43,6 +43,7 @@ pub use stack_bucket_capacity_policy::{
     StackBucketCapacityQualificationError, pinned_stack_bucket_capacity_policy,
     qualify_pinned_stack_bucket_capacity,
 };
+mod bungie_errors;
 pub mod token;
 pub mod transfer;
 pub mod uri_handler;

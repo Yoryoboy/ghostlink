@@ -137,27 +137,18 @@ fn classify_response(response: &mut LockHttpResponse) -> Result<LockOutcome, App
     };
     match value.get("ErrorCode").and_then(Value::as_u64) {
         Some(1) => Ok(LockOutcome::Applied),
-        Some(_) => Ok(classify_error_status(
-            value.get("ErrorStatus").and_then(Value::as_str),
+        Some(code) => Ok(crate::bungie_errors::rejection(code).map_or(
+            LockOutcome::Uncertain,
+            |reason| {
+                LockOutcome::Rejected(if reason == destiny_core::ProviderRejection::ItemNotFound {
+                    LockRejection::ItemNotFound
+                } else {
+                    LockRejection::Provider(reason)
+                })
+            },
         )),
         None => Ok(LockOutcome::Uncertain),
     }
-}
-
-fn classify_error_status(status: Option<&str>) -> LockOutcome {
-    let rejection = match status {
-        Some(
-            "DestinyCharacterNotInTower"
-            | "DestinyCannotPerformActionAtThisLocation"
-            | "DestinyCanOnlyEquipInGame"
-            | "DestinyAccountMustBeOffline",
-        ) => LockRejection::NotInSocialSpace,
-        Some("DestinyItemNotFound") => LockRejection::ItemNotFound,
-        Some("DestinyCharacterNotFound") => LockRejection::CharacterNotFound,
-        Some("DestinyThrottledByGameServer") => return LockOutcome::Transient,
-        _ => return LockOutcome::Uncertain,
-    };
-    LockOutcome::Rejected(rejection)
 }
 
 #[cfg(test)]
@@ -241,6 +232,19 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn numeric_action_rejections() {
+        crate::bungie_errors::assert_action_codes(|value| {
+            match classify_response(&mut response(200, value)).unwrap() {
+                LockOutcome::Rejected(LockRejection::Provider(reason)) => Some(reason),
+                LockOutcome::Rejected(LockRejection::ItemNotFound) => {
+                    Some(destiny_core::ProviderRejection::ItemNotFound)
+                }
+                LockOutcome::Uncertain => None,
+                other => panic!("unexpected {other:?}"),
+            }
+        });
+    }
     fn response(status: u16, body: Value) -> LockHttpResponse {
         let bytes = body.to_string().into_bytes();
         LockHttpResponse::new(
@@ -309,33 +313,15 @@ mod tests {
     }
     #[test]
     fn sanitized_envelope_mapping() {
-        for (status, outcome) in [
-            (
-                "DestinyCharacterNotInTower",
-                LockOutcome::Rejected(LockRejection::NotInSocialSpace),
-            ),
-            (
-                "DestinyCannotPerformActionAtThisLocation",
-                LockOutcome::Rejected(LockRejection::NotInSocialSpace),
-            ),
-            (
-                "DestinyCanOnlyEquipInGame",
-                LockOutcome::Rejected(LockRejection::NotInSocialSpace),
-            ),
-            (
-                "DestinyAccountMustBeOffline",
-                LockOutcome::Rejected(LockRejection::NotInSocialSpace),
-            ),
-            (
-                "DestinyItemNotFound",
-                LockOutcome::Rejected(LockRejection::ItemNotFound),
-            ),
-            (
-                "DestinyCharacterNotFound",
-                LockOutcome::Rejected(LockRejection::CharacterNotFound),
-            ),
-            ("DestinyThrottledByGameServer", LockOutcome::Transient),
-            ("unknown-canary", LockOutcome::Uncertain),
+        for status in [
+            "DestinyCharacterNotInTower",
+            "DestinyCannotPerformActionAtThisLocation",
+            "DestinyCanOnlyEquipInGame",
+            "DestinyAccountMustBeOffline",
+            "DestinyItemNotFound",
+            "DestinyCharacterNotFound",
+            "DestinyThrottledByGameServer",
+            "unknown-canary",
         ] {
             let mut gateway = gateway(
                 Ok(response(
@@ -344,7 +330,10 @@ mod tests {
                 )),
                 true,
             );
-            assert_eq!(gateway.set_lock_state(&request(true)).unwrap(), outcome);
+            assert_eq!(
+                gateway.set_lock_state(&request(true)).unwrap(),
+                LockOutcome::Uncertain
+            );
             assert_eq!(gateway.transport().calls, 1);
         }
         for body in [

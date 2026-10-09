@@ -107,7 +107,7 @@ impl ApplyLoadoutArgs {
 pub fn apply_loadout_tool() -> Tool {
     let mut tool = Tool::new(
         APPLY_LOADOUT_TOOL,
-        "Apply one saved in-game loadout. Required character is an exact id or unique class; supply exactly one of one-based slot or normalized exact name. Unknown or ambiguous names list candidates, never guess. Go to orbit or a social space first (offline also allowed). Ordinary sync resolves the cached loadout (zero profile/206 reads while fresh and cached). Acknowledged items update local location/equipment and unequip same-bucket replacements without a post-action request. Complete persistence retains freshness; missing/unsupported items, incomplete receipts or storage failure invalidate it. Held subclasses switch locally and unequip other subclass-bucket items on the target; a subclass not held on that character is skipped with invalidation. Mods/plugs, including subclass aspects/fragments, are not updated (Bungie limitation). Single-item equip validation is unchanged. No retry on failure or uncertainty.",
+        "Apply one saved in-game loadout. Required character is an exact id or unique class; supply exactly one of one-based slot or normalized exact name. Unknown or ambiguous names list candidates, never guess. Go to orbit or a social space first (offline also allowed). Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Missing/unsupported items, incomplete effects or persistence failures also require refresh. Never retry an uncertain outcome. Ordinary sync resolves cached loadouts without profile/206 reads while fresh and cached. Held subclasses switch locally; a subclass not held on the target is skipped with refresh pending. Mods/plugs, including subclass aspects/fragments, are not updated (Bungie limitation). Single-item equip validation is unchanged.",
         JsonObject::new(),
     ).with_input_schema::<ApplyLoadoutArgs>();
     let mut schema = (*tool.input_schema).clone();
@@ -136,7 +136,7 @@ const SEARCH_INVENTORY_DESCRIPTION: &str = "Search item definitions and, when re
 const INSPECT_ITEM_DESCRIPTION: &str =
     "Inspect exactly one concrete inventory instance by its instance identifier.";
 
-const MOVE_ITEM_DESCRIPTION: &str = "Move one concrete inventory instance to the Vault or to a character. One call plans and validates against the local projection, refreshed by ordinary sync only when stale or invalidated, and issues only the ordered steps. Bungie remains the final validator. Full acknowledgement returns applied without post-action verification; the next ordinary read forces sync. Never blindly retry partial or uncertain results.";
+const MOVE_ITEM_DESCRIPTION: &str = "Move one concrete inventory instance to the Vault or to a character, using only ordered transfer steps. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Incomplete effects or persistence failures also require refresh. Never retry an uncertain outcome. verified_noop means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie.";
 
 /// Maximum accepted MCP identifier length, in characters.
 ///
@@ -278,7 +278,7 @@ impl PullStackArgs {
     }
 }
 pub fn pull_stack_tool() -> Tool {
-    Tool::new(PULL_STACK_TOOL, "Pull an exact amount of one non-instanced Postmaster stack for an owned character. Canonical decimal strings only: uint32 item_hash, positive int32 amount, positive int64 character. Requires authentication and qualified definitions. Ordinary sync reuses fresh committed stacks without profile acquisitions or Manifest capacity fetches. Pinned audited account-wide capacities use unchanged stack arithmetic; locally full refuses, Bungie is the final validator (1642 is destination full). One action; acknowledgement returns applied (success), applies the requested quantity locally once, advances revision and retains freshness, not observed quantities. No post-action verification. Incomplete receipts or persistence failures invalidate; never retry. Refused and transport-uncertain attempts fail; never blindly retry.", JsonObject::new())
+    Tool::new(PULL_STACK_TOOL, "Pull an exact amount of one non-instanced Postmaster stack for an owned character. Canonical decimal strings only: uint32 item_hash, positive int32 amount, positive int64 character. Requires authentication and qualified definitions. Pinned audited account-wide capacities use unchanged stack arithmetic; locally full refuses (1642 is destination full). Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Persistence failures also require refresh. Never retry an uncertain outcome. Requested quantities apply locally once, not as observed quantities.", JsonObject::new())
         .with_input_schema::<PullStackArgs>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
 }
@@ -306,7 +306,7 @@ impl PullItemArgs {
     }
 }
 pub fn pull_item_tool() -> Tool {
-    Tool::new(PULL_ITEM_TOOL, "Pull one genuine Postmaster equipment instance into its committed owner's inventory. Requires authentication and qualified definitions. Ordinary sync reuses fresh local state without profile or Manifest-index capacity fetches. Known full definition buckets refuse locally; unknown occupancy permits Bungie's final validation. No names, hashes, stacks, quantity or destination. One action; acknowledgement returns applied (success), updates local inventory without equipping and retains freshness, not observed arrival. Incomplete attempts or persistence failure invalidate freshness. Numeric error 1642 means destination full; free a slot and reassess. Never blindly retry.", JsonObject::new())
+    Tool::new(PULL_ITEM_TOOL, "Pull one genuine Postmaster equipment instance into its committed owner's inventory without equipping. Requires authentication and qualified definitions. Known full buckets refuse locally; unknown occupancy permits dispatch. No names, hashes, stacks, quantity or destination. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Persistence failures also require refresh. Never retry an uncertain outcome. Numeric error 1642 means destination full; free a slot and reassess.", JsonObject::new())
         .with_input_schema::<PullItemArgs>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
 }
@@ -343,7 +343,7 @@ impl EquipItemsArgs {
 pub fn equip_items_tool() -> Tool {
     Tool::new(
         EQUIP_ITEMS_TOOL,
-        "Equip 2–17 items on one explicit character. Validate combined slots, class and exotic limits before transferring via Vault and making one EquipItems call. Per-item failures or omitted results are incomplete. No retries; local freshness is invalidated after dispatch.",
+        "Equip 2–17 items on one explicit character. Validate combined slots, class and exotic limits before transferring via Vault and making one EquipItems call. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Per-item failures, omitted results or persistence failures also require refresh. Never retry an uncertain outcome. All-no-op means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie.",
         JsonObject::new(),
     )
     .with_input_schema::<EquipItemsArgs>()
@@ -384,7 +384,7 @@ impl EquipItemArgs {
     }
 }
 pub fn equip_item_tool() -> Tool {
-    Tool::new(EQUIP_ITEM_TOOL, "Equip one explicitly selected item on one explicitly selected character, automatically transferring if necessary. One call validates against the local projection, refreshed by ordinary sync only when stale or invalidated, and authorizes ordered mutation. Bungie remains the final validator. Full acknowledgement returns applied without post-action verification; the next ordinary read forces sync. Ambiguity refuses; partial progress is not rolled back; never blindly retry uncertain outcomes. Character must be in orbit, a social space, or offline.", JsonObject::new())
+    Tool::new(EQUIP_ITEM_TOOL, "Equip one explicitly selected item on one explicitly selected character, automatically transferring if necessary. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Incomplete effects or persistence failures also require refresh. Never retry an uncertain outcome. verified_noop means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie. Ambiguity refuses; partial progress is not rolled back. Character must be in orbit, a social space, or offline.", JsonObject::new())
         .with_input_schema::<EquipItemArgs>()
 }
 
@@ -408,7 +408,7 @@ impl SetLockStateArgs {
     }
 }
 pub fn set_lock_state_tool() -> Tool {
-    Tool::new(SET_LOCK_STATE_TOOL, "Set one explicitly selected owned item's lock state (locked=true locks, false unlocks). One call is explicit intent for ordinary sync and committed-projection validation with at most one dispatch; a fresh projection requires no profile acquisition. Bungie remains the final validator. Acknowledgement returns applied (success), not observed lock state, without post-action verification, and updates local lock state while retaining freshness. Refused or uncertain attempts and local persistence failures invalidate freshness; already satisfied is a verified no-op. Ambiguity refuses. Refused and uncertain attempts fail; never blindly retry. Vault items use one owned character for the provider call.", JsonObject::new())
+    Tool::new(SET_LOCK_STATE_TOOL, "Set one explicitly selected owned item's lock state (locked=true locks, false unlocks), with at most one dispatch. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Persistence failures also require refresh. Never retry an uncertain outcome. verified_noop means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie. Ambiguity refuses. Vault items use one owned character for the provider call.", JsonObject::new())
         .with_input_schema::<SetLockStateArgs>()
 }
 
@@ -1447,9 +1447,13 @@ pub enum StepOutcomeView {
     Unattempted,
     Completed,
     Rejected {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
         reason: TransferRejectionView,
     },
     EquipRejected {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
         reason: EquipRejectionView,
     },
     /// Received authentication refusal: attempted, not applied.
@@ -1462,6 +1466,14 @@ pub enum StepOutcomeView {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferRejectionView {
+    ItemNotFound,
+    AlreadyInInventory,
+    NotInSocialSpace,
+    Unequippable,
+    ExoticLimit,
+    UniquenessViolation,
+    ActionForbidden,
+    Throttled,
     NotTransferable,
     Equipped,
     DestinationFull,
@@ -1472,6 +1484,13 @@ pub enum TransferRejectionView {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EquipRejectionView {
+    AlreadyInInventory,
+    DestinationFull,
+    UniquenessViolation,
+    Equipped,
+    NotTransferable,
+    ActionForbidden,
+    Throttled,
     NotInSocialSpace,
     ExoticLimit,
     Unequippable,
@@ -1480,9 +1499,19 @@ pub enum EquipRejectionView {
     InvalidRequest,
 }
 
-/// A completed attempt whose destination the refreshed projection proves.
+/// Persisted action state shared with CLI JSON.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalStateView {
+    Updated,
+    Unchanged,
+    RefreshPending,
+}
+
+/// Local state already matches; no action was sent to Bungie.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct MoveSuccessView {
+    pub local_state: LocalStateView,
     pub effects: MoveEffectsView,
     pub observed: LocationView,
     pub steps: Vec<StepEvidenceView>,
@@ -1496,6 +1525,7 @@ pub struct MoveSuccessView {
 /// only when the sequence stopped on an error rather than on a classified step.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct IncompleteMoveView {
+    pub local_state: LocalStateView,
     pub effects: MoveEffectsView,
     /// Receipt-derived expected location, not an observation.
     pub expected_location: LocationView,
@@ -1516,6 +1546,7 @@ pub enum VerificationFailureReasonView {
 /// The legacy `observed` field is not populated; `failure` is sanitized.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct VerificationFailureView {
+    pub local_state: LocalStateView,
     pub effects: MoveEffectsView,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed: Option<LocationView>,
@@ -1527,7 +1558,8 @@ pub struct VerificationFailureView {
 
 /// Structured result of `move_item`.
 ///
-/// `Applied` acknowledges receipts; `VerifiedNoOp` proves fresh preflight state.
+/// `Applied` acknowledges receipts; `VerifiedNoOp` means local state (including Ghostlink's acknowledged actions)
+/// already matches; nothing was sent to Bungie, not Bungie verification.
 /// `Incomplete` and `VerificationFailed` preserve evidence without claiming success.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -1542,6 +1574,7 @@ pub enum MoveItemOutput {
 /// Acknowledged move with no claimed post-action observation.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct AppliedMoveView {
+    pub local_state: LocalStateView,
     pub effects: MoveEffectsView,
     pub steps: Vec<StepEvidenceView>,
     pub reason: String,
@@ -2083,6 +2116,7 @@ mod tests {
     fn applied_move_schema_is_success_without_observation() {
         use super::{AppliedMoveView, LocationView, MoveEffectsView, MoveItemOutput};
         let output = MoveItemOutput::Applied(AppliedMoveView {
+            local_state: super::LocalStateView::Updated,
             effects: MoveEffectsView {
                 item_id: "1".into(),
                 via_vault: false,
@@ -2096,6 +2130,8 @@ mod tests {
         });
         let value = serde_json::to_value(&output).unwrap();
         assert_eq!(value["status"], "applied");
+        assert_eq!(value["local_state"], "updated");
+        assert!(value.get("profile_refresh").is_none());
         assert!(value.get("observed").is_none());
         assert_eq!(
             serde_json::from_value::<MoveItemOutput>(value).unwrap(),

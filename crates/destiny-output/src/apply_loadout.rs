@@ -36,6 +36,7 @@ impl ApplyLoadoutOutput {
                     LoadoutActionOutcome::Rejected(reason) => (
                         "rejected",
                         Some(match reason {
+                            LoadoutActionRejection::Provider(reason) => reason.reason(),
                             LoadoutActionRejection::RestrictedLocation => {
                                 "go to orbit or a social space and retry"
                             }
@@ -62,7 +63,8 @@ impl ApplyLoadoutOutput {
                     value: json!({"kind":"apply_loadout", "character":clean(result.character.as_str()),
                         "slot":result.slot, "name":result.name.as_deref().map(clean),
                         "outcome":outcome, "receipt":receipt, "reason":reason,
-                        "local_state_updated":result.local_state_updated}),
+                        "message":reason.and_then(crate::rejection_message),
+                        "local_state":if result.receipt.applied() && result.local_state_updated { "updated" } else { "refresh_pending" }}),
                     exit_code,
                 }
             }
@@ -101,7 +103,7 @@ impl ApplyLoadoutOutput {
                 };
                 Self {
                     value: json!({"kind":"apply_loadout", "character":null, "slot":null, "name":null,
-                        "outcome":"refused", "receipt":null, "local_state_updated":false, "code":code, "reason":clean(&reason),
+                        "outcome":"refused", "receipt":null, "local_state":"unchanged", "code":code, "reason":clean(&reason),
                         "candidates":candidates.iter().map(|c| json!({"slot":c.slot,"name":c.name.as_deref().map(clean)})).collect::<Vec<_>>()}),
                     exit_code: 41,
                 }
@@ -127,7 +129,10 @@ impl ApplyLoadoutOutput {
             ));
         }
         if let Some(reason) = self.value["reason"].as_str() {
-            text.push_str(&format!("; {reason}"));
+            text.push_str(&format!("; {}", crate::reason_text(reason)));
+        }
+        if self.value["local_state"] == "refresh_pending" {
+            text.push_str("; local state refresh pending");
         }
         if let Some(candidates) = self.value["candidates"].as_array() {
             for candidate in candidates {

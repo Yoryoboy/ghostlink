@@ -115,22 +115,26 @@ and fill/split profile inventory stacks once. Both advance revision and retain
 freshness. Incomplete attempts or persistence failures invalidate.
 Never blindly retry.
 
-Move/equip use fresh preflight checks and return `applied` (exit 0) when Bungie
-acknowledges every step, without post-action verification. The next ordinary read
-forces sync; no guessed state is written. Acceptance is not an observed in-game
-state. Never blindly retry uncertain or partial results. Lock/unlock also return
-`applied` (exit 0) on acknowledgement; incomplete attempts exit 41. Their next
-read forces sync without a post-action verification request;
-acknowledged Postmaster pulls instead retain freshness after local persistence.
+Move/equip validate the committed local projection and return `applied` (exit 0) when Bungie
+acknowledges every step, without post-action verification. Plans from Ghostlink's
+local projection (synced only when missing, stale or invalidated). Bungie is the final
+validator. Acknowledged actions update local state immediately; rejections and
+uncertain outcomes mark it for refresh. Never retry an uncertain outcome.
+Incomplete effects and persistence failures also require refresh.
+All actions report `local_state`: `updated`, `unchanged` (no-op or refusal before
+dispatch), or `refresh_pending` (the next ordinary read re-syncs).
+`verified_noop` means local state, including Ghostlink's acknowledged actions,
+already matches; nothing was sent to Bungie. It is not Bungie verification.
 
 Apply a saved in-game loadout with `ghostlink apply-loadout <slot|name> --character
 <class|id>` (MCP `apply_loadout`). Slots are one-based as shown by `loadouts`;
 names use normalized exact matching within the selected character, never guesses.
 Requires login, Manifest definitions, and orbit, a social space, or an offline
-character. One fresh live loadout read precedes exactly one EquipLoadout action.
+character. Ordinary sync resolves cached loadouts before one EquipLoadout action.
 Acknowledgement returns `applied` (0 / MCP success); refusal/auth/transient/uncertain
 attempts fail (41), and local invalidation storage failure fails closed (42) with
-the receipt retained. No post-action request or retry; the next read forces sync.
+the receipt retained. No post-action request or retry; complete local persistence
+retains freshness, while incomplete effects or failures require refresh.
 
 ## Use it from an AI agent
 

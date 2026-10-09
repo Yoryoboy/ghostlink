@@ -147,27 +147,10 @@ fn classify_response(
         return O::Uncertain;
     }
     if code != 1 {
-        return match value.get("ErrorStatus").and_then(Value::as_str) {
-            Some("WebAuthRequired" | "AccessTokenHasExpired" | "AccessTokenInvalid") => {
-                O::AuthenticationRefused
-            }
-            Some("DestinyThrottledByGameServer" | "ThrottleLimitExceeded") => O::Transient,
-            Some(
-                "DestinyCharacterNotInTower"
-                | "DestinyCannotPerformActionAtThisLocation"
-                | "DestinyCanOnlyEquipInGame"
-                | "DestinyAccountMustBeOffline",
-            ) => O::RestrictedLocation,
-            Some(
-                "DestinyCharacterNotFound"
-                | "DestinyItemNotFound"
-                | "DestinyItemUniqueEquipRestricted"
-                | "DestinyItemUnequippable"
-                | "DestinyItemFailedLevelCheck"
-                | "DestinyItemFailedUnlockCheck",
-            ) => O::Refused,
-            _ => O::Uncertain,
-        };
+        return u64::try_from(code)
+            .ok()
+            .and_then(crate::bungie_errors::rejection)
+            .map_or(O::Uncertain, O::Rejected);
     }
     decode_results(&value, request).unwrap_or(O::Uncertain)
 }
@@ -216,6 +199,33 @@ fn decode_results(value: &Value, request: &EquipItemsRequest) -> Option<EquipIte
 mod tests {
     use super::*;
 
+    #[test]
+    fn numeric_action_rejections() {
+        let request = EquipItemsRequest::new(
+            destiny_core::DestinyMembership::new(
+                destiny_core::MembershipType::new(3),
+                destiny_core::MembershipId::new("123"),
+            )
+            .unwrap(),
+            destiny_core::CharacterId::new("2"),
+            vec![destiny_core::ItemInstanceId::new("7")],
+        )
+        .unwrap();
+        crate::bungie_errors::assert_action_codes(|value| {
+            let body = value.to_string().into_bytes();
+            let mut response = EquipItemsHttpResponse::new(
+                200,
+                Some(body.len() as u64),
+                Some("application/json".into()),
+                Box::new(std::io::Cursor::new(body)),
+            );
+            match classify_response(&mut response, &request) {
+                EquipItemsOutcome::Rejected(reason) => Some(reason),
+                EquipItemsOutcome::Uncertain => None,
+                other => panic!("unexpected {other:?}"),
+            }
+        });
+    }
     #[test]
     fn allowlist_rejects_before_credentials() {
         let mut transport = HttpEquipItemsTransport::new().unwrap();

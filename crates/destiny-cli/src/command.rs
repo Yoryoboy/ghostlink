@@ -267,7 +267,7 @@ pub enum Command {
     Pull(PullArgs),
     /// Pull a non-instanced Postmaster stack amount from its explicit owner.
     #[command(
-        long_about = "Pull a non-instanced Postmaster stack using a canonical uint32 decimal ITEM_HASH, canonical positive int32 --amount, and canonical positive int64 --character owner ID. Requires login and qualified stored Manifest definitions. Ordinary sync reuses fresh committed stacks without profile acquisitions or Manifest capacity fetches. Pinned audited account-wide capacities use unchanged stack arithmetic; locally full refuses, Bungie is the final validator (1642 is destination full). Bungie acknowledgement returns applied (exit 0), applies the requested quantity locally once, advances revision and retains freshness, not observed quantity arrival. No post-action verification. Incomplete receipts or persistence failures invalidate; never retry. Refused and transport-uncertain attempts fail. No names, destination overrides, redispatch or atomic guarantees."
+        long_about = "Pull a non-instanced Postmaster stack using a canonical uint32 decimal ITEM_HASH, canonical positive int32 --amount, and --character with a canonical positive int64 owner ID or unique hunter|titan|warlock class. Requires login and qualified stored Manifest definitions. Ordinary sync reuses fresh committed stacks without profile acquisitions or Manifest capacity fetches. Pinned audited account-wide capacities use unchanged stack arithmetic; locally full refuses, Bungie is the final validator (1642 is destination full). Bungie acknowledgement returns applied (exit 0), applies the requested quantity locally once, advances revision and retains freshness, not observed quantity arrival. No post-action verification. Incomplete receipts or persistence failures invalidate; never retry. Refused and transport-uncertain attempts fail. No names, destination overrides, redispatch or atomic guarantees."
     )]
     PullStack(PullStackArgs),
     /// Lock one explicitly selected owned item; acknowledgement is applied.
@@ -913,13 +913,20 @@ impl PullArgs {
 #[derive(Debug, Args)]
 pub struct PullStackArgs {
     /// Canonical uint32 decimal definition hash (including zero).
-    #[arg(value_name = "ITEM_HASH")]
-    pub item_hash: String,
+    #[arg(
+        value_name = "ITEM_HASH",
+        required_unless_present = "item_hash_alias",
+        conflicts_with = "item_hash_alias"
+    )]
+    pub item_hash: Option<String>,
+    /// Alternative spelling for the positional hash.
+    #[arg(long = "item-hash", hide = true)]
+    pub item_hash_alias: Option<String>,
     /// Canonical positive int32 decimal quantity.
     #[arg(long, value_name = "N")]
     pub amount: String,
-    /// Canonical positive int64 decimal Postmaster owner ID; never a class.
-    #[arg(long, value_name = "CHARACTER_ID")]
+    /// Exact ID or unique hunter|titan|warlock Postmaster owner.
+    #[arg(long, value_name = "ID_OR_CLASS")]
     pub character: String,
 }
 
@@ -943,10 +950,21 @@ impl PullStackArgs {
             }
             Ok(parsed)
         }
+        let hash = self
+            .item_hash
+            .as_ref()
+            .or(self.item_hash_alias.as_ref())
+            .ok_or_else(CliError::invalid_request)?;
+        if !["hunter", "titan", "warlock"]
+            .iter()
+            .any(|class| self.character.eq_ignore_ascii_case(class))
+        {
+            canonical(&self.character, i64::MAX as u64, true)?;
+        }
         Ok(StackPullSelection {
-            item_hash: ItemHash::new(canonical(&self.item_hash, u32::MAX as u64, false)? as i64),
+            item_hash: ItemHash::new(canonical(hash, u32::MAX as u64, false)? as i64),
             amount: canonical(&self.amount, i32::MAX as u64, true)? as i64,
-            owner: CharacterId::new(canonical(&self.character, i64::MAX as u64, true)?.to_string()),
+            owner: CharacterId::new(&self.character),
         })
     }
 }
@@ -954,7 +972,14 @@ impl PullStackArgs {
 #[derive(Debug, Args)]
 pub struct ApplyLoadoutArgs {
     /// One-based slot shown by loadouts, or a normalized exact loadout name.
-    pub loadout: String,
+    #[arg(required_unless_present_any = ["slot", "name"], conflicts_with_all = ["slot", "name"])]
+    pub loadout: Option<String>,
+    /// One-based saved loadout slot (1..12).
+    #[arg(long, conflicts_with = "name")]
+    pub slot: Option<u8>,
+    /// Normalized exact saved loadout name.
+    #[arg(long)]
+    pub name: Option<String>,
     /// Exact ID or unique hunter|titan|warlock class.
     #[arg(long, required = true)]
     pub character: String,
@@ -962,18 +987,24 @@ pub struct ApplyLoadoutArgs {
 impl ApplyLoadoutArgs {
     pub fn request(&self) -> Result<destiny_app::ApplyLoadoutRequest, CliError> {
         SearchTerm::new(&self.character).map_err(|_| CliError::invalid_request())?;
-        let loadout = if self.loadout.chars().all(|c| c.is_ascii_digit()) {
+        let selector = self.loadout.as_ref().or(self.name.as_ref());
+        let loadout = if self.slot.is_some()
+            || (self.name.is_none()
+                && selector.is_some_and(|s| s.chars().all(|c| c.is_ascii_digit())))
+        {
             let slot = self
-                .loadout
-                .parse()
+                .slot
+                .map(Ok)
+                .unwrap_or_else(|| selector.unwrap().parse())
                 .map_err(|_| CliError::invalid_request())?;
             if !(1..=12).contains(&slot) {
                 return Err(CliError::invalid_request());
             }
             destiny_app::LoadoutSelector::Slot(slot)
         } else {
-            SearchTerm::new(&self.loadout).map_err(|_| CliError::invalid_request())?;
-            destiny_app::LoadoutSelector::Name(self.loadout.clone())
+            let name = selector.ok_or_else(CliError::invalid_request)?;
+            SearchTerm::new(name).map_err(|_| CliError::invalid_request())?;
+            destiny_app::LoadoutSelector::Name(name.clone())
         };
         Ok(destiny_app::ApplyLoadoutRequest {
             character: CharacterId::new(&self.character),

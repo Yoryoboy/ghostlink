@@ -49,10 +49,15 @@ where
         freshness,
     ) {
         Ok(plan) => plan,
-        Err(error) => return PullOutput::planning_failed(&error),
+        Err(error) => {
+            return PullOutput::planning_failed(&error)
+                .with_versions(service.definition_versions());
+        }
     };
     match service.execute(plan, gateway, freshness) {
         Ok(outcome) => PullOutput::from_outcome(&outcome),
-        Err(failure) => PullOutput::execution_failed(&failure),
+        Err(failure) => {
+            PullOutput::execution_failed(&failure).with_versions(service.definition_versions())
+        }
     }
 }

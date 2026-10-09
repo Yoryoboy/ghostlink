@@ -167,6 +167,25 @@ fn subcommands_accept_global_but_not_root_only_flags() {
 }
 
 #[test]
+fn action_contract_describes_local_state_not_post_action_sync() {
+    let skill = read_skill();
+    let exits = std::fs::read_to_string(
+        skill_path()
+            .parent()
+            .unwrap()
+            .join("references/exit-codes.md"),
+    )
+    .unwrap();
+    for text in [&skill, &exits] {
+        assert!(text.contains("`local_state`"));
+        assert!(text.contains("Ghostlink's acknowledged actions"));
+        assert!(text.contains("nothing was sent to Bungie"));
+        assert!(!text.contains("forces sync"));
+        assert!(!text.contains("local_state_updated"));
+    }
+}
+
+#[test]
 fn snippet_parser_reads_spans_and_fences() {
     let markdown = "Run `ghostlink sync --json` first.\n```sh\nghostlink equip X --character hunter\n```\n`ghostlink <cmd> --help`";
     let parsed = invocations(markdown);

@@ -49,7 +49,7 @@ fn equip_json_matches_cli_for_every_execution_shape() {
         }
         if scenario == "equip-auth-concurrent" {
             assert!(mcp["reason"].as_str().unwrap().contains("authentication"));
-            assert_eq!(mcp["profile_refresh"], "not_required");
+            assert_eq!(mcp["local_state"], "refresh_pending");
             assert!(mcp["observed"].is_null());
         }
         if matches!(
@@ -58,7 +58,14 @@ fn equip_json_matches_cli_for_every_execution_shape() {
                 | "equip-auth-refresh-failure"
                 | "equip-auth-unavailable-refresh"
         ) {
-            assert_eq!(mcp["profile_refresh"], "not_required");
+            assert_eq!(
+                mcp["local_state"],
+                if status == "applied" {
+                    "updated"
+                } else {
+                    "refresh_pending"
+                }
+            );
             assert!(mcp["observed"].is_null());
         }
     }

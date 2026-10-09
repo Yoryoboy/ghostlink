@@ -1027,6 +1027,7 @@ fn validate_endpoints(from: &ItemLocation, to: &ItemLocation) -> Result<(), AppE
 /// refusal can smuggle provider copy into a product surface.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransferRejection {
+    Provider(crate::ProviderRejection),
     /// The provider reports the item can never be transferred.
     NotTransferable,
     /// The provider reports the item is equipped and must be unequipped first.
@@ -1045,6 +1046,7 @@ impl TransferRejection {
     /// the submitted request, so they keep the provider-validation category.
     pub const fn category(self) -> ErrorCategory {
         match self {
+            Self::Provider(reason) => reason.category(),
             Self::NotTransferable | Self::Equipped => ErrorCategory::UnsupportedOperation,
             Self::DestinationFull | Self::InvalidRequest => ErrorCategory::ProviderValidation,
         }
@@ -1205,6 +1207,7 @@ impl EquipItemRequest {
 /// Bounded provider refusals; no provider text or identifiers cross the seam.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EquipRejection {
+    Provider(crate::ProviderRejection),
     /// The character's current location or online state disallows this action.
     NotInSocialSpace,
     ExoticLimit,
@@ -1217,6 +1220,7 @@ pub enum EquipRejection {
 impl EquipRejection {
     pub const fn category(self) -> ErrorCategory {
         match self {
+            Self::Provider(reason) => reason.category(),
             Self::NotInSocialSpace | Self::ExoticLimit | Self::Unequippable => {
                 ErrorCategory::UnsupportedOperation
             }
@@ -1306,6 +1310,7 @@ impl SetLockStateRequest {
 /// Bounded provider refusals; no provider text or identifiers cross the seam.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LockRejection {
+    Provider(crate::ProviderRejection),
     NotInSocialSpace,
     ItemNotFound,
     CharacterNotFound,
@@ -1315,6 +1320,7 @@ pub enum LockRejection {
 impl LockRejection {
     pub const fn category(self) -> ErrorCategory {
         match self {
+            Self::Provider(reason) => reason.category(),
             Self::NotInSocialSpace => ErrorCategory::UnsupportedOperation,
             Self::ItemNotFound | Self::CharacterNotFound | Self::InvalidRequest => {
                 ErrorCategory::ProviderValidation

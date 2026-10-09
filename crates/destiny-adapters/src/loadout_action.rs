@@ -147,35 +147,37 @@ fn classify_response(
     };
     match value.get("ErrorCode").and_then(Value::as_u64) {
         Some(1) => Ok(Outcome::Applied),
-        Some(_) => Ok(classify_error_status(
-            value.get("ErrorStatus").and_then(Value::as_str),
-        )),
+        Some(code) => Ok(crate::bungie_errors::rejection(code)
+            .map_or(Outcome::Uncertain, |reason| {
+                Outcome::Rejected(LoadoutActionRejection::Provider(reason))
+            })),
         None => Ok(Outcome::Uncertain),
     }
-}
-
-fn classify_error_status(status: Option<&str>) -> LoadoutActionOutcome {
-    use LoadoutActionOutcome as Outcome;
-    let rejection = match status {
-        Some(
-            "DestinyCharacterNotInTower"
-            | "DestinyCannotPerformActionAtThisLocation"
-            | "DestinyCanOnlyEquipInGame"
-            | "DestinyAccountMustBeOffline",
-        ) => LoadoutActionRejection::RestrictedLocation,
-        Some("DestinyCharacterNotFound") => LoadoutActionRejection::CharacterNotFound,
-        Some("DestinyThrottledByGameServer" | "ThrottleLimitExceeded") => {
-            return Outcome::Transient;
-        }
-        _ => return Outcome::Uncertain,
-    };
-    Outcome::Rejected(rejection)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn numeric_action_rejections() {
+        crate::bungie_errors::assert_action_codes(|value| {
+            let body = value.to_string().into_bytes();
+            let mut response = LoadoutActionHttpResponse::new(
+                200,
+                Some(body.len() as u64),
+                Some("application/json".into()),
+                Box::new(std::io::Cursor::new(body)),
+            );
+            match classify_response(&mut response).unwrap() {
+                LoadoutActionOutcome::Rejected(LoadoutActionRejection::Provider(reason)) => {
+                    Some(reason)
+                }
+                LoadoutActionOutcome::Uncertain => None,
+                other => panic!("unexpected {other:?}"),
+            }
+        });
+    }
     #[test]
     fn allowlist_rejects_before_reading_credentials() {
         let mut transport = HttpLoadoutActionTransport::new().unwrap();

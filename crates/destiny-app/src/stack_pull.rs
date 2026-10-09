@@ -43,6 +43,18 @@ impl From<StackPullPlanningRefusal> for StackPullPlanningError {
         Self::Refused(e)
     }
 }
+/// Character selection keeps caller input failures separate from acquisition failures.
+#[derive(Debug, Eq, PartialEq)]
+pub enum StackPullOwnerError {
+    Selection(crate::weekly_selection::WeeklySelectionError),
+    Infrastructure(AppError),
+}
+impl From<AppError> for StackPullOwnerError {
+    fn from(error: AppError) -> Self {
+        Self::Infrastructure(error)
+    }
+}
+
 /// Opaque intent; no Clone, public constructor, ticket or reminting API.
 /// ```compile_fail
 /// use destiny_app::StackPullPlan;
@@ -240,6 +252,26 @@ impl<
             plan_ids,
         }
     }
+    /// Diagnostic-only versions; never acquire or mutate inventory for presentation.
+    pub fn definition_versions(&self) -> Option<(DefinitionVersion, DefinitionVersion)> {
+        let snapshot = self.sync.repository().load_current().ok()??;
+        let stored = self.definitions.current_definition_version().ok()?;
+        Some((snapshot.metadata.definition_version, stored))
+    }
+
+    /// Resolve an explicit CLI owner using the same committed snapshot as planning.
+    pub fn resolve_owner(
+        &mut self,
+        selector: &CharacterId,
+        freshness: FreshnessPolicy,
+    ) -> Result<CharacterId, StackPullOwnerError> {
+        let now = self.clock.now()?;
+        let snapshot = self.committed_snapshot(freshness, now)?;
+        crate::weekly_selection::select_weekly_character(&snapshot.characters, Some(selector))
+            .map(|character| character.id)
+            .map_err(StackPullOwnerError::Selection)
+    }
+
     fn committed_snapshot(
         &mut self,
         freshness: FreshnessPolicy,

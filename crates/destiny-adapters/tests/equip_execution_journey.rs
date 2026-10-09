@@ -920,7 +920,7 @@ fn exotic_refusal_preserves_completed_transfer_and_refreshes() {
     assert_refusal(
         1641,
         "DestinyItemUniqueEquipRestricted",
-        EquipRejection::ExoticLimit,
+        EquipRejection::Provider(destiny_core::ProviderRejection::ExoticLimit),
     );
 }
 
@@ -929,7 +929,7 @@ fn social_space_refusal_is_typed_and_refreshes() {
     assert_refusal(
         1634,
         "DestinyCharacterNotInTower",
-        EquipRejection::NotInSocialSpace,
+        EquipRejection::Provider(destiny_core::ProviderRejection::NotInSocialSpace),
     );
 }
 

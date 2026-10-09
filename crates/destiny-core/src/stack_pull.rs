@@ -81,6 +81,7 @@ impl StackPullRequest {
 /// Minimal deterministic provider refusal; no transfer-specific code assumptions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StackPullRejection {
+    Provider(crate::ProviderRejection),
     /// Received rejection with proven non-application.
     InvalidRequest,
     /// Bungie rejected the pull because the destination is full (1642).
@@ -89,6 +90,7 @@ pub enum StackPullRejection {
 impl StackPullRejection {
     pub const fn category(self) -> ErrorCategory {
         match self {
+            Self::Provider(reason) => reason.category(),
             Self::InvalidRequest | Self::DestinationFull => ErrorCategory::ProviderValidation,
         }
     }

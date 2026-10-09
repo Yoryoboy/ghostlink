@@ -59,6 +59,15 @@ fn move_status_rendering_exit_codes_and_streams() {
         });
         assert_eq!(output.exit_code(), code);
         assert_eq!(output.json()["status"], status.as_str());
+        assert_eq!(
+            output.json()["local_state"],
+            match status {
+                MoveStatus::Applied => "updated",
+                MoveStatus::VerifiedNoop | MoveStatus::Refused => "unchanged",
+                _ => "refresh_pending",
+            }
+        );
+        assert!(output.json().get("profile_refresh").is_none());
         assert_eq!(output.json()["destination"]["kind"], "vault");
         assert!(output.json().get("character").is_none());
         let text = output.render_text();
@@ -66,7 +75,7 @@ fn move_status_rendering_exit_codes_and_streams() {
         assert!(!text.contains("Ace\n"));
         assert!(!text.contains("equipped"));
         assert_eq!(
-            text.contains("✔ verified"),
+            text.contains("according to local state; nothing sent to Bungie"),
             status == MoveStatus::VerifiedNoop
         );
         for mode in [OutputMode::Human, OutputMode::Json] {

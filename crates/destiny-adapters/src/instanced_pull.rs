@@ -197,11 +197,16 @@ fn classify_response(response: &mut InstancedPullHttpResponse) -> InstancedPullO
         envelope.message_data,
         envelope.detailed_error_trace,
     );
-    // Bungie Platform DestinyNoRoomInDestination = 1642. There is no local
-    // PlatformErrorCodes table; never infer this refusal from provider text.
-    if envelope.error_code == 1642 {
+    if let Some(reason) = u64::try_from(envelope.error_code)
+        .ok()
+        .and_then(crate::bungie_errors::rejection)
+    {
         return InstancedPullOutcome::Rejected(
-            destiny_core::InstancedPullRejection::DestinationFull,
+            if reason == destiny_core::ProviderRejection::DestinationFull {
+                destiny_core::InstancedPullRejection::DestinationFull
+            } else {
+                destiny_core::InstancedPullRejection::Provider(reason)
+            },
         );
     }
     if envelope.error_code == 1
@@ -231,6 +236,28 @@ mod tests {
         rc::Rc,
     };
 
+    #[test]
+    fn numeric_action_rejections() {
+        crate::bungie_errors::assert_action_codes(|value| {
+            let body = value.to_string().into_bytes();
+            let mut response = InstancedPullHttpResponse::new(
+                200,
+                Some(body.len() as u64),
+                Some("application/json".into()),
+                Box::new(Cursor::new(body)),
+            );
+            match classify_response(&mut response) {
+                InstancedPullOutcome::Rejected(destiny_core::InstancedPullRejection::Provider(
+                    reason,
+                )) => Some(reason),
+                InstancedPullOutcome::Rejected(
+                    destiny_core::InstancedPullRejection::DestinationFull,
+                ) => Some(destiny_core::ProviderRejection::DestinationFull),
+                InstancedPullOutcome::Uncertain => None,
+                other => panic!("unexpected {other:?}"),
+            }
+        });
+    }
     const ACK: &str = r#"{"Response":0,"ErrorCode":1,"ThrottleSeconds":0,"ErrorStatus":"Success"}"#;
     fn request(hash: i64, kind: u32) -> InstancedPullRequest {
         InstancedPullRequest::new(
@@ -384,7 +411,7 @@ mod tests {
                 ),
             );
         }
-        for code in [1641, 1643, 999] {
+        for code in [1643, 999] {
             let body = json!({"Response":0,"ErrorCode":code,"ThrottleSeconds":0,"ErrorStatus":"DestinyNoRoomInDestination"});
             assert_outcome(
                 response(200, &body.to_string()),

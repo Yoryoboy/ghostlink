@@ -231,6 +231,14 @@ fn every_received_outcome_has_independent_receipt_and_disposition() {
         assert_eq!(v["kind"], "stack_pull");
         assert_eq!(v["plan_id"], "plan-1");
         assert_eq!(v["receipt"], expected);
+        assert_eq!(
+            v["local_state"],
+            if disposition == PullDisposition::Applied {
+                "updated"
+            } else {
+                "refresh_pending"
+            }
+        );
         assert!(v["failure"].is_null());
         assert_eq!(v["dispatch"]["item"], json!({"item_hash":7,"amount":3}));
         assert_eq!(
@@ -280,6 +288,7 @@ fn pre_dispatch_and_gateway_errors_never_invent_receipts() {
         assert!(!output.is_success());
         assert_eq!(v["plan_id"], "plan-1");
         assert_eq!(v["disposition"], "refused");
+        assert_eq!(v["local_state"], "unchanged");
         assert!(v.get("observations").is_none());
         assert!(v["receipt"].is_null());
         assert_eq!(gateway.calls(), usize::from(gateway_failure));
@@ -316,9 +325,10 @@ fn every_planning_and_capacity_refusal_has_a_stable_code() {
         let output = StackPullOutput::planning_failed(&StackPullPlanningError::Refused(reason));
         assert_eq!(
             output.json(),
-            json!({"kind":"stack_pull","disposition":"refused","plan_id":null,"dispatch":null,"receipt":null,"failure":{"stage":"planning","kind":"eligibility_refused","reason":code}})
+            json!({"kind":"stack_pull","disposition":"refused","local_state":"unchanged","plan_id":null,"dispatch":null,"receipt":null,"failure":{"stage":"planning","kind":"eligibility_refused","reason":code}})
         );
-        assert!(output.render_text().contains(code));
+        assert!(!output.render_text().contains('{'));
+        assert!(!output.render_text().contains("null"));
         assert!(!output.is_success());
     }
     use StackPullRefusal::*;
@@ -346,7 +356,8 @@ fn every_planning_and_capacity_refusal_has_a_stable_code() {
             output.json()["failure"],
             json!({"stage":"planning","kind":"eligibility_refused","reason":"capacity","capacity_reason":{"kind":code}})
         );
-        assert!(output.render_text().contains(code));
+        assert!(!output.render_text().contains('{'));
+        assert!(!output.render_text().contains("null"));
         assert!(!output.is_success());
     }
     let output = StackPullOutput::planning_failed(&StackPullPlanningError::Infrastructure(

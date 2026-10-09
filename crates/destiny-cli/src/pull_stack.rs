@@ -20,9 +20,20 @@ where
     P: PlanIdGenerator,
     T: StackPullGateway,
 {
+    let owner = match service.resolve_owner(&selection.owner, freshness) {
+        Ok(owner) => owner,
+        Err(destiny_app::stack_pull::StackPullOwnerError::Selection(error)) => {
+            return StackPullOutput::selection_failed(error);
+        }
+        Err(destiny_app::stack_pull::StackPullOwnerError::Infrastructure(error)) => {
+            return StackPullOutput::planning_failed(&StackPullPlanningError::Infrastructure(
+                error,
+            ));
+        }
+    };
     let request = StackPullPlanRequest {
         membership,
-        owner: selection.owner,
+        owner,
         item_hash: selection.item_hash,
         amount: selection.amount,
     };
@@ -32,10 +43,15 @@ where
         freshness,
     ) {
         Ok(plan) => plan,
-        Err(error) => return StackPullOutput::planning_failed(&error),
+        Err(error) => {
+            return StackPullOutput::planning_failed(&error)
+                .with_versions(service.definition_versions());
+        }
     };
     match service.execute(plan, gateway, freshness) {
         Ok(outcome) => StackPullOutput::from_outcome(&outcome),
-        Err(failure) => StackPullOutput::execution_failed(&failure),
+        Err(failure) => {
+            StackPullOutput::execution_failed(&failure).with_versions(service.definition_versions())
+        }
     }
 }

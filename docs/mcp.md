@@ -30,8 +30,8 @@ token or value, approval ceremony, or second MCP call. The single call plans the
 move from the committed local projection, uses ordinary sync only when missing,
 stale or invalidated, re-resolves and validates the revision-bound plan locally,
 and issues only the ordered transfer steps. Bungie is the final validator. It returns `applied` with `isError=false` when every step is acknowledged.
-It does not perform post-action verification; the next ordinary read forces sync
-without writing guessed inventory state (see [Equip one item](cli.md#equip-one-item));
+It does not perform post-action verification; acknowledged effects persist locally
+with freshness retained (see [Equip one item](cli.md#equip-one-item));
 membership and credentials are resolved internally and are never accepted or
 emitted through MCP.
 
@@ -40,6 +40,25 @@ emitted through MCP.
 control characters are rejected. One call is the complete intent authorization,
 with no separate token or approval ceremony. It uses the same shared equip
 pipeline and JSON as `ghostlink equip`; see the [equip safety limits](cli.md#equip-one-item).
+### Shared action contract
+
+Move, equip, batch equip, lock, pull, stack pull and apply-loadout use the same
+contract: Plans from Ghostlink's local projection (synced only when missing, stale or
+invalidated). Bungie is the final validator. Acknowledged actions update local
+state immediately; rejections and uncertain outcomes mark it for refresh.
+Never retry an uncertain outcome. Incomplete effects or persistence failures
+also require refresh.
+
+Their CLI JSON and MCP structured output share `local_state`: `updated` means
+acknowledged effects persisted and freshness retained; `unchanged` means no-op
+or refusal before dispatch; `refresh_pending` means invalidated state that the
+next ordinary read re-syncs from Bungie. Human output adds a short refresh-pending
+phrase only for that last value. This replaces `profile_refresh` and
+`local_state_updated`. Compatibility status `verified_noop` means local state
+(including Ghostlink's acknowledged actions) already matches; nothing was sent
+to Bungie. It is not Bungie verification; invalidated projections re-sync before
+planning or deciding a no-op.
+
 Both `equip_item` and `move_item` return `applied` on full acknowledgement,
 without claiming an observed destination/equipped state. Both dispatch from the
 local projection under the ordinary freshness gate. Already-satisfied local
@@ -47,6 +66,16 @@ state remains `verified_noop`. Uncertain, refused and partial results remain
 errors with no blind retry. Incomplete move `expected_location` is derived from
 receipts, not an observation.
 `move_item` also has the `ghostlink move` CLI surface.
+
+Move JSON is not currently identical across transports. MCP retains its typed
+`effects` (source/destination/item ID/via-vault), flat transfer step evidence,
+and variant-specific failure/expected-location fields. CLI JSON instead has
+`item` display metadata, labeled `destination`, action-tagged steps, completed
+and uncompleted counts, `verification`, `reason`, and `observed`. Both share
+acknowledgement semantics and `local_state`, but their top-level status vocabulary
+also differs (`verified_no_op` in MCP versus `verified_noop` in CLI).
+Unifying this is a schema migration, not a presentation-only change; consumers
+must not assume move parity. Pull and stack-pull JSON remain unchanged.
 
 `set_lock_state` accepts exactly `{"item":"Ace of Spades","locked":true}`;
 use `false` to unlock. Both fields are required, `locked` must be a boolean, and
@@ -58,12 +87,12 @@ Bungie remains the final validator. Acknowledgement returns `applied` (CLI 0), n
 observed lock state, with no post-action profile request. The acknowledged lock
 state updates the local projection and advances its revision, retaining freshness.
 Refused or uncertain attempts and local persistence failures invalidate freshness
-so the next ordinary read syncs. Already satisfied is a verified no-op, with no
+so the next ordinary read syncs. Already satisfied according to local state is `verified_noop`, with no
 provider mutation. Vault items use one
 owned character for the provider call; live validation remains pending.
 
 Lock JSON matches `ghostlink lock` / `ghostlink unlock`: `status`, `item`,
-requested `locked`, sanitized `attempt` and `reason`, `profile_refresh`, and
+requested `locked`, sanitized `attempt` and `reason`, `local_state`, and
 `observed` lock state (only local validation for no-op, otherwise null).
 `applied` and `verified_noop` have `isError=false`. Refusals and incomplete
 attempts (CLI 41), including auth refusal and transient/uncertain transport,
@@ -97,7 +126,7 @@ then syncs. Mods/plugs, including subclass aspects/fragments, remain unchanged
 (DIM/Bungie API limitation). Single-item equip validation is unchanged.
 JSON matches `ghostlink apply-loadout --json`: `kind: "apply_loadout"`,
 `character`, one-based `slot`, `name`, `outcome`, bounded `receipt`, `reason`, and
-`local_state_updated` (true only for complete effects without invalidation).
+`local_state` (`updated` only for complete effects without invalidation).
 `applied` is acknowledgement (`isError=false`, CLI 0), not observed state.
 Refusal/auth/transient/uncertain attempts are errors (CLI 41). Applied receipts
 with incomplete local effects or persistence failure fail closed (CLI 42),
@@ -126,6 +155,16 @@ to stdout. A missing stored credential fails closed with `authorization is
 required`, a legacy raw-material credential with `reauthorization is required`,
 and neither path guesses an expiry or falls back to an environment value.
 
+## Bungie action rejections
+
+All action adapters share exact numeric rejection classification; provider
+status text never decides. See the [canonical reason table](../skills/ghostlink/references/exit-codes.md#definitive-bungie-action-rejections)
+for stable snake_case reasons and user actions. Rejected receipts/steps are
+errors (`isError=true`), not uncertain outcomes. They invalidate freshness so
+the next action/read syncs, without automatic retry or rollback of earlier
+acknowledged transfer legs. Unknown codes remain uncertain. New typed reasons
+include sanitized actionable `message` text alongside `reason`.
+
 ## Batch equip
 
 `equip_items` accepts exactly `{"character":"hunter","items":["123456789","234567890"]}`
@@ -133,16 +172,16 @@ with 2–17 items. Character is an explicit unique class or owned ID; item ID/na
 resolution matches CLI `ghostlink equip <ITEM>... --character <class|id>`.
 The existing single-item `equip_item` tool is unchanged.
 
-One fresh preflight validates the combined equipment state: unique items and
+Committed-projection validation checks the combined equipment state: unique items and
 slots, class compatibility, equippability, and at most one exotic weapon and
 one exotic armor including equipped slots not replaced. Invalid batches dispatch
 nothing. Required transfers use Vault-mediated routing, stop on first failure,
 and precede exactly one EquipItems call; actions are paced at 0.1s minimum.
 Already-equipped requested items are per-item no-ops; all-no-op batches are
-verified without dispatch. Only every per-item success (or no-op) is MCP success.
+already satisfied according to local state without dispatch. Only every per-item success (or no-op) is MCP success.
 Failures, omitted `not_reported` results and envelope refusal/auth/transient/
 uncertainty remain errors. Structured output lists item, slot, status and numeric
-code, matching CLI JSON. Every dispatched attempt invalidates local freshness;
+code, matching CLI JSON. Acknowledged effects persist locally with freshness retained; incomplete attempts require refresh;
 storage failure is fail-closed with "local state could not be updated after the
 action". Restricted location says "go to orbit or a social space and retry".
 Never blindly retry; read state and reassess user intent.
@@ -260,7 +299,7 @@ uses the existing operation guard and production gateway/repository clones.
 
 `structuredContent` is the shared `ghostlink pull-stack --json` shape: `kind:
 "stack_pull"`, `disposition`, `plan_id`, `dispatch`, independent `receipt` and
-`failure`; dispatch retains preflight totals, not invented post quantities.
+`failure`; dispatch retains pre-action totals, not invented post quantities.
 Acknowledgement returns `applied`, with `isError=false` (CLI 0), not observed
 quantity arrival. There is no post-action request, wait or `observations` field.
 Acknowledged pulls apply the requested quantity locally once: decrement a
@@ -316,6 +355,8 @@ when unavailable.
 For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
 
 Call `get_loadouts` first for compact discovery, then `get_loadout` for detail.
+Both use ordinary sync and saved loadouts cached with the profile (component 206);
+a live 206 read is only a legacy fallback when the cache is unavailable.
 `get_loadouts` accepts an optional bounded `character` (exact id or unique class),
 with omission selecting all characters. Its structured output matches
 `ghostlink --json loadouts` exactly: `kind: "loadouts"`, character ID/class, and
