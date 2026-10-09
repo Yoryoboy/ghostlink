@@ -6,6 +6,7 @@ pub mod instanced_pull;
 pub mod loadouts;
 pub mod lock;
 pub mod move_item;
+pub mod search;
 pub mod stack_pull;
 
 /// Actionable text for stable, sanitized provider rejection reasons.

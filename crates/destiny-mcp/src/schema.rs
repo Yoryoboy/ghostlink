@@ -131,7 +131,7 @@ pub const WEEKLY_TOOL: &str = "weekly";
 
 const LIST_CHARACTERS_DESCRIPTION: &str = "List the signed-in account's characters with the freshness metadata of the committed profile projection.";
 
-const SEARCH_INVENTORY_DESCRIPTION: &str = "Search item definitions and, when requested, concrete inventory instances with bounded filters.";
+const SEARCH_INVENTORY_DESCRIPTION: &str = "Search definitions and inventory with bounded filters. Hits are compact tiles by default; detail=true returns full instance details.";
 
 const INSPECT_ITEM_DESCRIPTION: &str =
     "Inspect exactly one concrete inventory instance by its instance identifier.";
@@ -656,6 +656,9 @@ impl WeeklyResetOutput {
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchInventoryArgs {
+    /// Return full instance details instead of compact tiles (default false).
+    #[serde(default)]
+    pub detail: bool,
     /// Match socketed or selectable perks and mods; default is socketed only.
     #[serde(default)]
     pub include_available: bool,
@@ -1325,11 +1328,45 @@ pub struct NamedStatView {
     pub value: i32,
 }
 
+/// Wire schema for compact hits; projection is shared in destiny-output.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+pub struct CompactSearchHitSchema {
+    pub instance_id: String,
+    pub item_hash: i64,
+    pub name: String,
+    pub item_type: Option<String>,
+    pub tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub element: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power: Option<u16>,
+    pub location: LocationView,
+    pub equipped: bool,
+    pub locked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantity: Option<u32>,
+    pub perk_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mods: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stats: Vec<NamedStatView>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+#[serde(untagged)]
+enum SearchHitSchema {
+    Compact(Box<CompactSearchHitSchema>),
+    Detail(Box<InventorySearchHitView>),
+}
+
 /// Structured result of `search_inventory`.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct SearchInventoryOutput {
     pub resolved: ResolvedNamesView,
     pub candidates: Vec<DefinitionView>,
+    #[schemars(with = "Vec<SearchHitSchema>")]
     pub hits: Vec<InventorySearchHitView>,
     pub metadata: QueryMetadataView,
 }
@@ -1659,8 +1696,18 @@ impl ListCharactersOutput {
 }
 
 impl SearchInventoryOutput {
-    /// Renders this output as a structured tool result.
+    /// Renders compact inventory tiles by default.
     pub fn into_call_tool_result(self) -> CallToolResult {
+        match serde_json::to_value(self) {
+            Ok(value) => structured_result(destiny_output::search::compact_search(value)),
+            Err(_) => {
+                CallToolResult::error(vec![ContentBlock::text("result serialization failed")])
+            }
+        }
+    }
+
+    /// Renders the unchanged full hit shape for explicit detail requests.
+    pub fn into_detail_call_tool_result(self) -> CallToolResult {
         structured_result(self)
     }
 }

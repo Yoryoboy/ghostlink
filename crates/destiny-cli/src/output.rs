@@ -17,6 +17,9 @@ use destiny_app::{
 use crate::command::{CallbackMode, CliError};
 use crate::login::LoginInstruction;
 
+#[path = "search_output.rs"]
+mod search_output;
+
 #[cfg(test)]
 #[path = "artifact_output_tests.rs"]
 mod artifact_tests;
@@ -768,7 +771,18 @@ pub fn render_characters(mode: OutputMode, result: &CharacterListResult) -> Stri
 /// Renders one inventory search in the selected mode.
 pub fn render_search(mode: OutputMode, result: &InventorySearchResult) -> String {
     match mode {
-        OutputMode::Human => search_human(result),
+        OutputMode::Human => search_human(result, false),
+        OutputMode::Json => destiny_output::search::compact_search(
+            serde_json::from_str(&search_json(result)).expect("search JSON is generated locally"),
+        )
+        .to_string(),
+    }
+}
+
+/// Renders the unchanged full search output for explicit detail requests.
+pub fn render_search_detail(mode: OutputMode, result: &InventorySearchResult) -> String {
+    match mode {
+        OutputMode::Human => search_human(result, true),
         OutputMode::Json => search_json(result),
     }
 }
@@ -871,7 +885,7 @@ fn characters_human(result: &CharacterListResult) -> String {
     lines.join("\n")
 }
 
-fn search_human(result: &InventorySearchResult) -> String {
+fn search_human(result: &InventorySearchResult, detail: bool) -> String {
     let mut lines = Vec::new();
     for (kind, flat, terms) in [
         ("perk", &result.resolved.perk, &result.resolved.perk_terms),
@@ -909,8 +923,17 @@ fn search_human(result: &InventorySearchResult) -> String {
         lines.push(format!("- {}", definition_line(candidate)));
     }
     lines.push(format!("hits: {}", result.hits.len()));
-    for hit in &result.hits {
-        lines.push(instance_line(hit));
+    if detail {
+        for hit in &result.hits {
+            lines.push(instance_line(hit));
+        }
+    } else {
+        let compact = destiny_output::search::compact_search(
+            serde_json::from_str(&search_json(result)).expect("search JSON is generated locally"),
+        );
+        for hit in compact["hits"].as_array().into_iter().flatten() {
+            lines.push(search_output::compact_line(hit));
+        }
     }
     lines.push(metadata_text(&result.metadata));
     lines.join("\n")
@@ -1410,7 +1433,7 @@ mod weekly_levels_tests;
 mod tests {
     use super::{
         OutputMode, render_characters, render_error, render_inspection, render_login_authorized,
-        render_login_instruction, render_search,
+        render_login_instruction, render_search, render_search_detail,
     };
     use crate::command::CallbackMode;
     use crate::command::CliError;
@@ -2009,7 +2032,7 @@ mod tests {
     fn search_outputs_socket_ordered_perk_names_without_hashes() {
         let mut result = search_result();
         result.hits[0].perk_names = vec!["Barrel".into(), "Rampage".into()];
-        assert!(super::search_human(&result).contains("perks: Barrel, Rampage"));
+        assert!(super::search_human(&result, true).contains("perks: Barrel, Rampage"));
         let value: serde_json::Value = serde_json::from_str(&super::search_json(&result)).unwrap();
         assert_eq!(
             value["hits"][0]["perk_names"],
@@ -2024,7 +2047,7 @@ mod tests {
         result.hits[0].definition.slot = Some("helmet".parse().unwrap());
         result.hits[0].mod_names = vec!["Harmonic Siphon".into(), "Safe\nMod".into()];
         result.hits[0].archetype = Some("Safe\nArchetype".into());
-        let human = super::search_human(&result);
+        let human = super::search_human(&result, true);
         assert!(human.contains("mods: Harmonic Siphon, Safe?Mod"));
         assert!(human.contains("archetype: Safe?Archetype"));
         assert!(!human.contains("perks:"));
@@ -2046,12 +2069,12 @@ mod tests {
         result.candidates[0].class_type = Some(class_type);
         result.hits[0].definition.slot = Some(slot);
         result.hits[0].definition.class_type = Some(class_type);
-        let human = render_search(OutputMode::Human, &result);
+        let human = render_search_detail(OutputMode::Human, &result);
         assert_eq!(human.matches("element: Solar").count(), 2);
         assert_eq!(human.matches("slot: power").count(), 2);
         assert_eq!(human.matches("class: any").count(), 2);
         let json: serde_json::Value =
-            serde_json::from_str(&render_search(OutputMode::Json, &result)).unwrap();
+            serde_json::from_str(&render_search_detail(OutputMode::Json, &result)).unwrap();
         for definition in [&json["candidates"][0], &json["hits"][0]["definition"]] {
             assert_eq!(definition["slot"], "power");
             assert_eq!(definition["class_type"], "any");
@@ -2072,7 +2095,10 @@ mod tests {
             "checked_at: 100\n",
             "freshness: fresh",
         );
-        assert_eq!(render_search(OutputMode::Human, &search_result()), expected);
+        assert_eq!(
+            render_search_detail(OutputMode::Human, &search_result()),
+            expected
+        );
 
         let empty = InventorySearchResult {
             resolved: Default::default(),
@@ -2091,7 +2117,10 @@ mod tests {
         let expected = format!(
             r#"{{"candidates":[{DEFINITION_JSON}],"hits":[{{"archetype":null,"available_mods":[],"available_perks":[],"definition":{DEFINITION_JSON},"instance":{INSTANCE_JSON},"mods":[],"perk_names":[],"stats":[]}}],"kind":"inventory_search","metadata":{METADATA_JSON},"resolved":{{}}}}"#
         );
-        assert_eq!(render_search(OutputMode::Json, &search_result()), expected);
+        assert_eq!(
+            render_search_detail(OutputMode::Json, &search_result()),
+            expected
+        );
     }
 
     #[test]

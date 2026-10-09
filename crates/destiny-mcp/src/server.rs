@@ -418,13 +418,20 @@ fn dispatch_search_inventory(
     arguments: JsonObject,
 ) -> Result<CallToolResult, ErrorData> {
     let arguments: SearchInventoryArgs = deserialize(arguments)?;
+    let detail = arguments.detail;
     let request = match arguments.into_request() {
         Ok(request) => request,
         Err(error) => return Ok(error.into_call_tool_result()),
     };
     Ok(service
         .search_inventory(&request)
-        .map_or_else(tool_error, |output| output.into_call_tool_result()))
+        .map_or_else(tool_error, |output| {
+            if detail {
+                output.into_detail_call_tool_result()
+            } else {
+                output.into_call_tool_result()
+            }
+        }))
 }
 
 fn dispatch_get_subclass(
@@ -620,6 +627,7 @@ mod tests {
         max_inflight: Arc<AtomicUsize>,
         delay: Duration,
         failure: Option<ErrorCategory>,
+        search_output: Option<SearchInventoryOutput>,
     }
 
     impl RecordingService {
@@ -630,6 +638,7 @@ mod tests {
                 max_inflight: Arc::new(AtomicUsize::new(0)),
                 delay: Duration::ZERO,
                 failure: None,
+                search_output: None,
             }
         }
 
@@ -765,12 +774,15 @@ mod tests {
             self.enter("search_inventory");
             let result = match self.failure {
                 Some(category) => Err(McpError::new(category)),
-                None => Ok(SearchInventoryOutput {
-                    resolved: Default::default(),
-                    candidates: Vec::new(),
-                    hits: Vec::new(),
-                    metadata: metadata(),
-                }),
+                None => Ok(self
+                    .search_output
+                    .clone()
+                    .unwrap_or_else(|| SearchInventoryOutput {
+                        resolved: Default::default(),
+                        candidates: Vec::new(),
+                        hits: Vec::new(),
+                        metadata: metadata(),
+                    })),
             };
             self.leave();
             result
@@ -1348,6 +1360,51 @@ mod tests {
 
         // A malformed request never reaches the shared service.
         assert!(handle.recorded().is_empty());
+    }
+
+    #[test]
+    fn search_detail_dispatch_preserves_full_output_and_defaults_to_tiles() {
+        let full: SearchInventoryOutput = serde_json::from_value(json!({
+            "resolved": {"stats":{"mobility":["Mobility"]}}, "candidates": [],
+            "hits": [{
+                "definition": {"hash":42,"bucket_hash":null,"name":"Test Helmet","item_type":"Helmet","tier":"Legendary","element":"Arc","tags":[],"definition_version":"v1"},
+                "instance": {"instance_id":"123","item_hash":42,"location":{"kind":"vault"},"quantity":1,"equipped":false,"locked":true,"power":2010,"perks":[{"perk_hash":99,"active":true,"visible":true}]},
+                "perk_names":["Plugged Perk"], "mods":[], "available_perks":["Alternative"], "available_mods":[], "archetype":null,
+                "stats":[{"name":"Mobility","value":30},{"name":"Recovery","value":20}]
+            }], "metadata": metadata()
+        })).unwrap();
+        let mut service = RecordingService::new();
+        service.search_output = Some(full.clone());
+        let (server, handle) = self::server(service);
+        for arguments in [json!({}), json!({"detail":false}), json!({"detail":true})] {
+            let detail = arguments["detail"] == true;
+            let result = server
+                .dispatch(SEARCH_INVENTORY_TOOL, args(arguments))
+                .unwrap();
+            assert_ne!(result.is_error, Some(true));
+            let value = structured(&result);
+            if detail {
+                assert_eq!(
+                    value.to_string(),
+                    serde_json::to_value(&full).unwrap().to_string()
+                );
+            } else {
+                assert_eq!(value["hits"][0]["instance_id"], "123");
+                assert!(value["hits"][0].get("instance").is_none());
+                assert_eq!(
+                    value["hits"][0]["stats"],
+                    json!([{"name":"Mobility","value":30}])
+                );
+                assert!(!value["hits"][0].to_string().contains("Alternative"));
+            }
+        }
+        assert_eq!(handle.recorded(), ["search_inventory"; 3]);
+        assert!(
+            server
+                .dispatch(SEARCH_INVENTORY_TOOL, args(json!({"detail":"true"})))
+                .is_err()
+        );
+        assert_eq!(handle.recorded().len(), 3);
     }
 
     #[test]

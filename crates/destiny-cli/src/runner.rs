@@ -153,6 +153,7 @@ pub fn dispatch<S>(
 where
     S: QueryOperations + ?Sized,
 {
+    let search_detail = matches!(&request, ReadRequest::SearchInventoryDetail(_));
     let rendered: Result<String, CliError> = match request {
         // Live sibling services are composed separately at the binary boundary.
         ReadRequest::Artifact { .. } | ReadRequest::Loadouts { .. } => {
@@ -183,7 +184,8 @@ where
             .list_characters(freshness.policy, freshness.now)
             .map(|result| render_characters(mode, &result))
             .map_err(CliError::from),
-        ReadRequest::SearchInventory(mut request) => {
+        ReadRequest::SearchInventory(mut request)
+        | ReadRequest::SearchInventoryDetail(mut request) => {
             let selection = match request
                 .instances
                 .as_mut()
@@ -201,7 +203,13 @@ where
             selection.and_then(|()| {
                 service
                     .search_inventory(&request, freshness.policy, freshness.now)
-                    .map(|result| render_search(mode, &result))
+                    .map(|result| {
+                        if search_detail {
+                            crate::output::render_search_detail(mode, &result)
+                        } else {
+                            render_search(mode, &result)
+                        }
+                    })
                     .map_err(CliError::from)
             })
         }
@@ -2609,6 +2617,37 @@ mod tests {
             "error: the requested item instance was not found\n"
         );
         assert_eq!(service.recorded().len(), 1);
+    }
+
+    #[test]
+    fn search_detail_flag_dispatches_once_and_preserves_legacy_output() {
+        for mode in [OutputMode::Json, OutputMode::Human] {
+            for detail in [false, true] {
+                let mut service = RecordingService::new();
+                let mut args = vec!["search-inventory"];
+                if mode == OutputMode::Json {
+                    args.push("--json");
+                }
+                if detail {
+                    args.push("--detail");
+                }
+                let output = run(&mut service, argv(&args), freshness());
+                assert_eq!(output.exit_code, 0);
+                assert!(output.stderr.is_empty());
+                let expected = if detail {
+                    crate::output::render_search_detail(mode, &search_result())
+                } else {
+                    crate::output::render_search(mode, &search_result())
+                };
+                assert_eq!(output.stdout.trim_end(), expected);
+                assert_eq!(service.recorded().len(), 1);
+                if mode == OutputMode::Json {
+                    let value: serde_json::Value = serde_json::from_str(&output.stdout).unwrap();
+                    assert_eq!(value["hits"][0].get("instance").is_some(), detail);
+                    assert_eq!(value["hits"][0].get("instance_id").is_some(), !detail);
+                }
+            }
+        }
     }
 
     #[test]

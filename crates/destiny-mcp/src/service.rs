@@ -3123,6 +3123,7 @@ mod tests {
         limit: usize,
     ) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            detail: false,
             tier: None,
             location: None,
             equipped: None,
@@ -3154,6 +3155,7 @@ mod tests {
 
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            detail: false,
             sort: None,
             tier: None,
             location: None,
@@ -3437,6 +3439,7 @@ mod tests {
             instance("inst-b", 2, ItemLocation::Vault, vec![perk(20)]),
         ];
         let args = SearchInventoryArgs {
+            detail: true,
             tier: None,
             location: None,
             equipped: None,
@@ -3668,6 +3671,7 @@ mod tests {
         let mut mcp = mcp_service(app);
 
         let args = SearchInventoryArgs {
+            detail: false,
             text: None,
             item_type: None,
             element: None,
@@ -3720,6 +3724,7 @@ mod tests {
         let mut mcp = mcp_service(app);
 
         let args = SearchInventoryArgs {
+            detail: false,
             text: None,
             item_type: None,
             element: None,

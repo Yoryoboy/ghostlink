@@ -159,7 +159,14 @@ impl Cli {
             }
             Command::ListCharacters => Ok(ReadRequest::ListCharacters),
             Command::SearchInventory(arguments) => {
-                arguments.into_request().map(ReadRequest::SearchInventory)
+                let detail = arguments.detail;
+                arguments.into_request().map(|request| {
+                    if detail {
+                        ReadRequest::SearchInventoryDetail(request)
+                    } else {
+                        ReadRequest::SearchInventory(request)
+                    }
+                })
             }
             Command::InspectItem(arguments) => {
                 arguments.into_request().map(ReadRequest::InspectItem)
@@ -476,6 +483,9 @@ impl CallbackMode {
 /// concrete instances without silently choosing one.
 #[derive(Debug, Args)]
 pub struct SearchInventoryArgs {
+    /// Return full instance details instead of compact inventory tiles.
+    #[arg(long)]
+    pub detail: bool,
     /// Match socketed or selectable perks and mods (default: socketed only).
     #[arg(long)]
     pub include_available: bool,
@@ -1273,6 +1283,8 @@ pub enum ReadRequest {
     Postmaster(Option<CharacterId>),
     ListCharacters,
     SearchInventory(SearchInventoryRequest),
+    /// Full legacy search hit output, explicitly requested with --detail.
+    SearchInventoryDetail(SearchInventoryRequest),
     InspectItem(InspectItemRequest),
     Subclass(Option<CharacterId>),
     SubclassOptions {

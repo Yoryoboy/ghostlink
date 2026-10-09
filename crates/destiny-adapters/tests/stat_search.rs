@@ -461,14 +461,14 @@ fn stat_names_are_validated_before_sync_and_named_hits_are_ordered() {
         inspect_json["stats"],
         serde_json::json!([{"name":"Class","value":5},{"name":"Class","value":35},{"name":"Health","value":20}])
     );
-    let cli = destiny_cli::output::render_search(destiny_cli::output::OutputMode::Human, &result);
+    let cli =
+        destiny_cli::output::render_search_detail(destiny_cli::output::OutputMode::Human, &result);
     assert!(cli.contains("stats: Class 5, Class 35, Health 20"));
     let mcp = destiny_mcp::service::search_inventory_output(&result);
     assert_eq!(mcp.hits[0].stats[1].value, 35);
-    let cli_json: serde_json::Value = serde_json::from_str(&destiny_cli::output::render_search(
-        destiny_cli::output::OutputMode::Json,
-        &result,
-    ))
+    let cli_json: serde_json::Value = serde_json::from_str(
+        &destiny_cli::output::render_search_detail(destiny_cli::output::OutputMode::Json, &result),
+    )
     .unwrap();
     let mcp_json = serde_json::to_value(mcp).unwrap();
     assert_eq!(cli_json["hits"][0]["stats"], mcp_json["hits"][0]["stats"]);

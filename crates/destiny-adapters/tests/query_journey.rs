@@ -1080,7 +1080,7 @@ fn type_filter_constrains_owned_hits_through_service_cli_and_reopen() {
     assert_eq!(hit_instances(&result), [INSTANCE_CHAR_ONE]);
     let output = cli_json(
         &mut service,
-        &["--json", "search-inventory", "--type", "Sword"],
+        &["--json", "search-inventory", "--detail", "--type", "Sword"],
     );
     let hits = output["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 2);
@@ -1523,6 +1523,7 @@ fn cli_search_inventory_reports_bounded_candidates_and_paired_hits() {
         &[
             "--json",
             "search-inventory",
+            "--detail",
             "--text",
             "gjallar",
             "--item-hash",
@@ -1717,6 +1718,7 @@ fn cli_and_mcp_reads_share_semantics_with_pinned_key_output() {
         &[
             "--json",
             "search-inventory",
+            "--detail",
             "--item-hash",
             "1001",
             "--item-hash",
@@ -1727,7 +1729,7 @@ fn cli_and_mcp_reads_share_semantics_with_pinned_key_output() {
     );
     let mcp_search = mcp_read_search(
         &mut mcp,
-        json!({"instances": {"item_hashes": [1001, 1003, 3001]}}),
+        json!({"detail": true, "instances": {"item_hashes": [1001, 1003, 3001]}}),
     );
     assert_shared(&cli_search, &mcp_search, "search");
     assert_eq!(cli_search["metadata"], metadata);

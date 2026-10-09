@@ -1341,6 +1341,52 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
     session.shutdown().await;
 }
 
+#[tokio::test]
+async fn search_inventory_stdio_defaults_to_compact_and_accepts_detail() {
+    let mut session = FixtureSession::spawn(None).await;
+    let query = json!({"text":"The Last Word", "instances":{"item_hashes":[5]}});
+    let default = session
+        .call_tool(SEARCH_INVENTORY_TOOL, query.clone())
+        .await;
+    let mut explicit = query.clone();
+    explicit["detail"] = json!(false);
+    let compact = session.call_tool(SEARCH_INVENTORY_TOOL, explicit).await;
+    let mut detailed = query;
+    detailed["detail"] = json!(true);
+    let detail = session.call_tool(SEARCH_INVENTORY_TOOL, detailed).await;
+    for result in [&default, &compact, &detail] {
+        assert_eq!(result["result"]["isError"], false);
+        assert_no_secret_in(result);
+    }
+    assert_eq!(structured(&default), structured(&compact));
+    let tile = &structured(&default)["hits"][0];
+    assert_eq!(tile["instance_id"], "inst-e");
+    assert_eq!(tile["name"], "The Last Word");
+    assert_eq!(
+        tile["location"],
+        json!({"kind":"character", "character_id":"zavala"})
+    );
+    for omitted in [
+        "instance",
+        "definition",
+        "available_perks",
+        "available_mods",
+        "archetype",
+        "stats",
+    ] {
+        assert!(tile.get(omitted).is_none(), "{omitted}");
+    }
+    assert_eq!(
+        structured(&detail)["hits"][0]["instance"]["instance_id"],
+        "inst-e"
+    );
+    assert_eq!(
+        structured(&default)["candidates"],
+        structured(&detail)["candidates"]
+    );
+    session.shutdown().await;
+}
+
 /// The named semantic journey: one `item_text` request, not an exact instance.
 ///
 /// This is the in-memory MCP fixture, not the real-adapter journey composed in
@@ -1365,7 +1411,7 @@ async fn move_item_semantic_text_resolves_the_named_instance_through_the_vault()
     let search = session
         .call_tool(
             SEARCH_INVENTORY_TOOL,
-            json!({ "text": "The Last Word", "instances": { "item_hashes": [5] } }),
+            json!({ "detail": true, "text": "The Last Word", "instances": { "item_hashes": [5] } }),
         )
         .await;
     assert_eq!(search["result"]["isError"], false);

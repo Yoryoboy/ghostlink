@@ -121,9 +121,19 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   suite 20/20 clean runs. Workspace: 1986 passed, 0 failed.
   Also: R1 follow-up `65def0c` caps the throttle cooldown at five minutes
   (DIM cap; review advisory found ~6 days after 20 throttles).
-- [ ] **U1 — Compact item summary (A4).** DIM-style list summary (id, name,
+- [x] **U1 — Compact item summary (A4).** DIM-style list summary (id, name,
   power, rarity/tier, plugged perks) across CLI/MCP list surfaces; detail on
-  inspect.
+  inspect. Done: inventory search hits default to a shared compact tile
+  (`destiny-output` projection: instance_id, item_hash, name, item_type,
+  tier, element, power, location, equipped, locked, quantity when > 1,
+  plugged perk/mod names, and only the stats referenced by the query's
+  filters/sort); CLI `--detail` and MCP `detail: true` keep the previous full
+  shape. CLI default is one line per hit. Candidates, inspect, loadout
+  detail, subclass/artifact and Postmaster unchanged (Postmaster has no
+  power/perks to summarize). Enriched fixture hit 617 -> 310 B. Existing
+  full-output pins now opt into detail. Workspace: 1992 passed, 0 failed.
+  Open (not U1): MCP text + structuredContent duplication is by spec (G1);
+  revisit with client support evidence.
 - [ ] **U2 — Search continuation and inspect by name.** Cursor/offset for
   truncated results; `inspect-item` accepts a name and returns candidates when
   ambiguous.
