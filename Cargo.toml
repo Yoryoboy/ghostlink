@@ -12,7 +12,7 @@ members = [
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-version = "0.1.0-rc.2"
+version = "0.1.0-rc.3"
 repository = "https://github.com/Yoryoboy/ghostlink"
 homepage = "https://github.com/Yoryoboy/ghostlink"
 description = "Destiny inventory tools for the command line and AI agents"
