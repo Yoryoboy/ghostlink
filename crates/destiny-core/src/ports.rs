@@ -413,6 +413,22 @@ pub trait StatDefinitionRepository {
 
 /// Reads and atomically replaces the current normalized inventory projection.
 pub trait InventoryRepository {
+    /// The minted instant of the active profile. Legacy repositories have none.
+    fn profile_minted_at(&self) -> Result<Option<crate::ProfileMintedAt>, AppError> {
+        Ok(None)
+    }
+
+    /// Publishes content and its minted instant together. Durable implementations
+    /// must override atomically; legacy repositories discard this optional metadata.
+    /// Missing minted evidence clears the prior instant on successful publication.
+    fn replace_current_minted(
+        &mut self,
+        input: InventorySnapshotInput,
+        _minted: Option<crate::ProfileMintedAt>,
+    ) -> Result<InventorySnapshot, AppError> {
+        self.replace_current(input)
+    }
+
     /// Read-only repositories default to valid acquisition metadata.
     fn freshness_invalidated(&self) -> Result<bool, AppError> {
         Ok(false)
@@ -637,6 +653,17 @@ pub trait ProfileGateway {
         self.load_inventory(membership)
     }
 
+    /// Inventory-only acquisition with optional minted evidence. The default
+    /// preserves legacy loader ordering and does not invent provider metadata.
+    fn load_inventory_minted_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<(InventorySnapshotInput, Option<crate::ProfileMintedAt>), AppError> {
+        self.load_inventory_scoped(membership, reason)
+            .map(|input| (input, None))
+    }
+
     /// Acquires an immutable input/observation pair with the original retry scope.
     ///
     /// The compatibility default calls the existing scoped loader exactly once
@@ -650,8 +677,8 @@ pub trait ProfileGateway {
         membership: &DestinyMembership,
         reason: ProfileSyncReason,
     ) -> Result<crate::ProfileAcquisition, AppError> {
-        let input = self.load_inventory_scoped(membership, reason)?;
-        crate::ProfileAcquisition::new(input, None)
+        let (input, minted) = self.load_inventory_minted_scoped(membership, reason)?;
+        crate::ProfileAcquisition::new(input, None).map(|pair| pair.with_minted_at(minted))
     }
 }
 

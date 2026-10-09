@@ -62,6 +62,7 @@ pub use destiny_core::{
     AvailableActivity, ChallengeProgress, CharacterWeeklySnapshot, WeeklyProfileGateway,
 };
 pub mod weekly_reset;
+pub use destiny_core::ProfileMintedAt;
 pub use destiny_core::calendar;
 
 #[cfg(any(test, feature = "test-support"))]

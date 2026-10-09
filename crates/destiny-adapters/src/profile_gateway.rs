@@ -1183,13 +1183,14 @@ where
         let url = profile_endpoint(membership);
         let (bytes, observed_at) =
             self.read_with_live_credential(&url, PROFILE_RESPONSE_LIMIT, scope)?;
-        let (mut candidate, observations) = decode_profile_with_observations(
+        let pair = decode_profile_with_observations(
             &bytes,
             membership,
             self.definition_version.clone(),
             observed_at,
-        )?
-        .into_parts();
+        )?;
+        let minted = pair.minted_at().copied();
+        let (mut candidate, observations) = pair.into_parts();
         // Unlike legacy pure decoding, this authenticated request explicitly
         // asks for 103. Its omission is unavailable coverage, not unobserved.
         if candidate.profile_currencies_coverage
@@ -1199,6 +1200,7 @@ where
                 destiny_core::ProfileCurrenciesCoverage::Unavailable;
         }
         destiny_core::ProfileAcquisition::new(candidate, observations)
+            .map(|pair| pair.with_minted_at(minted))
     }
 }
 
@@ -1287,6 +1289,23 @@ where
         reason: ProfileSyncReason,
     ) -> Result<DestinyMembership, AppError> {
         self.resolve_membership_with_scope(ReadRetryScope::for_profile_reason(reason))
+    }
+
+    fn load_inventory_minted_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<
+        (
+            InventorySnapshotInput,
+            Option<destiny_core::ProfileMintedAt>,
+        ),
+        AppError,
+    > {
+        let pair = self
+            .acquire_inventory_with_scope(membership, ReadRetryScope::for_profile_reason(reason))?;
+        let minted = pair.minted_at().copied();
+        Ok((pair.into_parts().0, minted))
     }
 
     fn load_inventory_with_observations_scoped(

@@ -208,6 +208,23 @@ pub fn decode_profile_with_observations(
         .and_then(Value::as_object)
         .ok_or_else(provider_validation)?;
 
+    // Minted time is ordering evidence only. Like DIM, an absent or unusable value
+    // never fails the sync; it is treated as unknown, so the profile publishes.
+    let minted = response
+        .get("responseMintedTimestamp")
+        .and_then(Value::as_str)
+        .and_then(|raw| {
+            // Chrono truncates fractions beyond nanoseconds. Treat the value as
+            // unknown rather than equate two distinct upstream instants.
+            if let Some((_, fraction)) = raw.split_once('.')
+                && fraction.bytes().take_while(u8::is_ascii_digit).count() > 9
+            {
+                return None;
+            }
+            let date = chrono::DateTime::parse_from_rfc3339(raw).ok()?;
+            destiny_core::ProfileMintedAt::new(date.timestamp(), date.timestamp_subsec_nanos()).ok()
+        });
+
     let characters = decode_characters(required_component(response, "characters")?)?;
     let character_ids: BTreeSet<String> = characters
         .iter()
@@ -336,7 +353,7 @@ pub fn decode_profile_with_observations(
         items,
     };
 
-    ProfileAcquisition::new(snapshot, observations)
+    ProfileAcquisition::new(snapshot, observations).map(|pair| pair.with_minted_at(minted))
 }
 
 /// Optional owner-only components can be absent or withheld for privacy.
@@ -1120,6 +1137,53 @@ mod tests {
             DefinitionVersion::new(DEFINITION_VERSION),
             Timestamp::new(CHECKED_AT),
         )
+    }
+
+    #[test]
+    fn minted_time_decode_preserves_fraction_and_ignores_unusable_values() {
+        let mut value = fixture_value();
+        value["Response"]
+            .as_object_mut()
+            .unwrap()
+            .remove("responseMintedTimestamp");
+        assert_eq!(
+            observed(&serde_json::to_vec(&value).unwrap())
+                .unwrap()
+                .minted_at(),
+            None
+        );
+        for (text, nanos) in [
+            ("2026-10-08T21:09:13.6826469Z", 682646900),
+            ("2026-10-08T21:09:13.123456789Z", 123456789),
+            ("2026-10-08T23:09:13.123456789+02:00", 123456789),
+        ] {
+            value["Response"]["responseMintedTimestamp"] = json!(text);
+            let pair = observed(&serde_json::to_vec(&value).unwrap()).unwrap();
+            let minted = pair.minted_at().expect("present instant");
+            assert_eq!(minted.nanoseconds(), nanos);
+            assert_eq!(
+                minted.seconds(),
+                chrono::DateTime::parse_from_rfc3339("2026-10-08T21:09:13Z")
+                    .unwrap()
+                    .timestamp()
+            );
+        }
+        for malformed in [
+            json!("not-a-time"),
+            json!(null),
+            json!(42),
+            json!("2026-10-08T21:09:13.1234567891Z"),
+            json!("2016-12-31T23:59:60Z"),
+        ] {
+            // Ordering evidence only: an unusable value never fails the sync.
+            value["Response"]["responseMintedTimestamp"] = malformed;
+            assert_eq!(
+                observed(&serde_json::to_vec(&value).unwrap())
+                    .unwrap()
+                    .minted_at(),
+                None
+            );
+        }
     }
 
     fn bucket_fixture() -> Value {

@@ -16,6 +16,35 @@ impl Timestamp {
     }
 }
 
+/// A provider-neutral UTC instant used to order profile acquisitions, not TTL age.
+/// Seconds are signed Unix seconds; nanoseconds preserve sub-second ordering.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ProfileMintedAt {
+    seconds: i64,
+    nanoseconds: u32,
+}
+
+impl ProfileMintedAt {
+    pub fn new(seconds: i64, nanoseconds: u32) -> Result<Self, crate::AppError> {
+        if nanoseconds >= 1_000_000_000 {
+            return Err(crate::AppError::new(
+                crate::ErrorCategory::ProviderValidation,
+            ));
+        }
+        Ok(Self {
+            seconds,
+            nanoseconds,
+        })
+    }
+
+    pub const fn seconds(self) -> i64 {
+        self.seconds
+    }
+    pub const fn nanoseconds(self) -> u32 {
+        self.nanoseconds
+    }
+}
+
 /// Explicit freshness policy; providers do not choose a TTL in the core.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FreshnessPolicy {
@@ -182,15 +211,16 @@ impl ProfileSyncReason {
 
 /// The result of one profile synchronization decision.
 ///
-/// The two variants are the only terminal shapes: `SkippedFresh` means the
-/// committed projection was fresh enough for an `Ordinary` request and no
-/// acquisition or repository mutation happened, while `Refreshed` means one
-/// complete candidate was acquired and committed. Both carry the
+/// `SkippedFresh` means the projection was fresh and no acquisition happened.
+/// `DiscardedNotNewer` means an Ordinary acquisition was not newer than the
+/// retained profile; it is not a publication or new freshness evidence.
+/// `Refreshed` means a complete candidate was acquired and committed. All carry the
 /// [`SnapshotMetadata`] the repository reports, so revision, freshness, and
 /// provenance stay repository-owned and this type invents no parallel metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProfileSyncOutcome {
     SkippedFresh { metadata: SnapshotMetadata },
+    DiscardedNotNewer { metadata: SnapshotMetadata },
     Refreshed { metadata: SnapshotMetadata },
 }
 
@@ -198,7 +228,9 @@ impl ProfileSyncOutcome {
     /// The committed metadata that describes the projection after this decision.
     pub fn metadata(&self) -> &SnapshotMetadata {
         match self {
-            Self::SkippedFresh { metadata } | Self::Refreshed { metadata } => metadata,
+            Self::SkippedFresh { metadata }
+            | Self::DiscardedNotNewer { metadata }
+            | Self::Refreshed { metadata } => metadata,
         }
     }
 
@@ -210,7 +242,7 @@ impl ProfileSyncOutcome {
     /// True only when one complete candidate was acquired and committed.
     pub fn refreshed(&self) -> bool {
         match self {
-            Self::SkippedFresh { metadata: _ } => false,
+            Self::SkippedFresh { .. } | Self::DiscardedNotNewer { .. } => false,
             Self::Refreshed { metadata: _ } => true,
         }
     }

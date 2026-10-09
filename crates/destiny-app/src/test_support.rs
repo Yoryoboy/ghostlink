@@ -586,6 +586,7 @@ impl destiny_core::ports::DefinitionCatalogRepository for InMemoryDefinitionRepo
 
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryInventoryRepository {
+    minted: Option<destiny_core::ProfileMintedAt>,
     invalidated: bool,
     fail_invalidation: bool,
     current: Option<InventorySnapshot>,
@@ -632,6 +633,7 @@ impl InMemoryInventoryRepository {
             plug_set_entries: input.plug_set_entries.clone(),
         };
         Self {
+            minted: None,
             invalidated: false,
             fail_invalidation: false,
             current: Some(snapshot),
@@ -646,6 +648,20 @@ impl InMemoryInventoryRepository {
 }
 
 impl InventoryRepository for InMemoryInventoryRepository {
+    fn profile_minted_at(&self) -> Result<Option<destiny_core::ProfileMintedAt>, AppError> {
+        Ok(self.minted)
+    }
+
+    fn replace_current_minted(
+        &mut self,
+        input: InventorySnapshotInput,
+        minted: Option<destiny_core::ProfileMintedAt>,
+    ) -> Result<InventorySnapshot, AppError> {
+        let snapshot = self.replace_current(input)?;
+        self.minted = minted;
+        Ok(snapshot)
+    }
+
     fn freshness_invalidated(&self) -> Result<bool, AppError> {
         Ok(self.invalidated)
     }
@@ -757,6 +773,7 @@ impl InventoryRepository for InMemoryInventoryRepository {
             plug_set_entries: input.plug_set_entries,
         };
         self.invalidated = false;
+        self.minted = None;
         self.current = Some(snapshot.clone());
         self.previous_input = Some(InventorySnapshotInput::with_metadata(&snapshot));
         Ok(snapshot)

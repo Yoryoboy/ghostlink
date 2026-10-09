@@ -46,7 +46,7 @@ const EXPECTED_INDEX_NAMES: [&str; 3] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 111] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 112] = [
     ("inventory_coverage", "id", "INTEGER"),
     ("inventory_coverage", "profile_currencies", "TEXT"),
     ("stacks", "ordinal", "INTEGER"),
@@ -166,6 +166,7 @@ const EXPECTED_COLUMNS: [(&str, &str, &str); 111] = [
     ("sync_metadata", "revision", "TEXT"),
     ("sync_metadata", "definition_version", "TEXT"),
     ("sync_metadata", "invalidated", "INTEGER"),
+    ("sync_metadata", "profile_minted_at", "TEXT"),
 ];
 
 /// Vocabulary that must never appear in the schema, so the projection can never
@@ -828,7 +829,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 19);
+    assert_eq!(LATEST_SCHEMA_VERSION, 20);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION
@@ -1037,7 +1038,10 @@ fn v2_down_drops_only_item_perks_then_reapply_up_preserves_v1_rows() {
 
     // The entire v1 -> v2 -> v1 -> v2 cycle stays durable across a reopen.
     let store = SqliteStore::open(temp.path()).expect("reopen after the cycle");
-    assert_eq!(store.schema_version().expect("read schema version"), 19);
+    assert_eq!(
+        store.schema_version().expect("read schema version"),
+        LATEST_SCHEMA_VERSION
+    );
     assert_eq!(row_count(&store, "items"), 1);
     assert_eq!(row_count(&store, "item_perks"), 0);
 }

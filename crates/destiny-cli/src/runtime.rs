@@ -285,7 +285,8 @@ where
                 },
                 previous_revision,
             }),
-            destiny_app::ProfileSyncOutcome::SkippedFresh { .. } => {
+            destiny_app::ProfileSyncOutcome::SkippedFresh { .. }
+            | destiny_app::ProfileSyncOutcome::DiscardedNotNewer { .. } => {
                 Err(AppError::new(ErrorCategory::StaleState))
             }
         }
@@ -631,16 +632,31 @@ mod pull_store_tests {
             plug_set_entries: vec![],
             profile_currencies_coverage: Default::default(),
         };
-        let first = inventory.replace_current(input.clone()).unwrap();
+        let minted = destiny_app::ProfileMintedAt::new(100, 123456789).unwrap();
+        let first = inventory
+            .replace_current_minted(input.clone(), Some(minted))
+            .unwrap();
+        assert_eq!(definitions.profile_minted_at().unwrap(), Some(minted));
         assert_eq!(definitions.load_current().unwrap(), Some(first.clone()));
         let mut refreshed = input;
         refreshed.checked_at = Timestamp::new(101);
         let second = definitions.replace_current(refreshed).unwrap();
+        assert_eq!(inventory.profile_minted_at().unwrap(), None);
         assert_eq!(second.metadata.revision, first.metadata.revision);
         assert_eq!(inventory.load_current().unwrap(), Some(second));
     }
 }
 impl InventoryRepository for PullStore {
+    fn profile_minted_at(&self) -> Result<Option<destiny_app::ProfileMintedAt>, AppError> {
+        self.0.borrow().profile_minted_at()
+    }
+    fn replace_current_minted(
+        &mut self,
+        input: destiny_app::InventorySnapshotInput,
+        minted: Option<destiny_app::ProfileMintedAt>,
+    ) -> Result<destiny_app::InventorySnapshot, AppError> {
+        self.0.borrow_mut().replace_current_minted(input, minted)
+    }
     fn freshness_invalidated(&self) -> Result<bool, AppError> {
         self.0.borrow().freshness_invalidated()
     }

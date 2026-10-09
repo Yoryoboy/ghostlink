@@ -45,6 +45,25 @@ fn observation(item: &ItemInstance, bucket: i64) -> InstancedBucketObservation {
 }
 
 #[test]
+fn minted_instants_order_precisely_without_changing_input_or_observations() {
+    let first = ProfileMintedAt::new(-1, 999_999_999).unwrap();
+    let next = ProfileMintedAt::new(0, 0).unwrap();
+    assert!(first < next);
+    assert!(next < ProfileMintedAt::new(0, 1).unwrap());
+    assert_eq!(
+        ProfileMintedAt::new(0, 1_000_000_000)
+            .unwrap_err()
+            .category(),
+        ErrorCategory::ProviderValidation
+    );
+    let original = ProfileAcquisition::new(input(), None).unwrap();
+    assert_eq!(original.minted_at(), None);
+    let minted = original.clone().with_minted_at(Some(first));
+    assert_eq!(minted.minted_at(), Some(&first));
+    assert_eq!(minted.into_parts(), original.into_parts());
+}
+
+#[test]
 fn complete_pair_preserves_all_input_and_same_hash_instances() {
     let mut snapshot = input();
     let mut second = snapshot.items[0].clone();

@@ -86,10 +86,15 @@ impl PublishedProfileAcquisition {
     }
 }
 
-/// Fresh skips carry metadata, never a fabricated unavailable publication pair.
+/// Non-publications carry metadata, never a fabricated observation pair.
+/// `discarded` distinguishes an Ordinary not-newer acquisition from a fresh
+/// skip. On discard the retained metadata may still be stale.
 #[derive(Debug, Eq, PartialEq)]
 pub enum ProfileSyncWithObservationsOutcome {
-    SkippedFresh { metadata: SnapshotMetadata },
+    SkippedFresh {
+        metadata: SnapshotMetadata,
+        discarded: bool,
+    },
     Refreshed(PublishedProfileAcquisition),
 }
 
@@ -101,6 +106,7 @@ enum SyncPublication {
 }
 enum SyncDecision {
     SkippedFresh(SnapshotMetadata),
+    DiscardedNotNewer(SnapshotMetadata),
     Refreshed(SyncPublication),
 }
 
@@ -194,6 +200,12 @@ where
     /// committed through the repository, which owns revision retention and
     /// advancement. The outcome carries repository metadata only.
     ///
+    /// An Ordinary same-membership candidate whose minted instant is not newer
+    /// is discarded before filtering/publication. The caller may use the retained
+    /// projection for this call, but its freshness and invalidation are unchanged;
+    /// subsequent stale Ordinary calls can acquire again. Explicit observation
+    /// and forced reasons still publish until their callers adopt local sync.
+    ///
     /// This method never sets or overrides `checked_at`, `source`, or
     /// `definition_version`, and never computes a revision. It returns the
     /// [`ProfileSyncOutcome`] the repository reports, and clones no projection
@@ -214,6 +226,9 @@ where
             SyncDecision::SkippedFresh(metadata) => {
                 Ok(ProfileSyncOutcome::SkippedFresh { metadata })
             }
+            SyncDecision::DiscardedNotNewer(metadata) => {
+                Ok(ProfileSyncOutcome::DiscardedNotNewer { metadata })
+            }
             SyncDecision::Refreshed(SyncPublication::Legacy(snapshot)) => {
                 Ok(ProfileSyncOutcome::Refreshed {
                     metadata: snapshot.metadata,
@@ -224,7 +239,9 @@ where
     }
 
     /// Acquires ephemeral observations and releases them only after successful
-    /// publication, associated with exactly the returned snapshot. No reload,
+    /// publication, associated with exactly the returned snapshot. An Ordinary
+    /// discard returns the skip shape with `discarded: true`, without observations.
+    /// Preflight/Forced/PostAction cannot return that discard marker. No reload,
     /// retry, bucket persistence, or revision-based authority is introduced.
     /// A mismatched successful repository return is rejected, not rolled back.
     pub fn sync_with_observations(
@@ -235,7 +252,16 @@ where
     ) -> Result<ProfileSyncWithObservationsOutcome, AppError> {
         match self.sync_inner(reason, policy, now, true)? {
             SyncDecision::SkippedFresh(metadata) => {
-                Ok(ProfileSyncWithObservationsOutcome::SkippedFresh { metadata })
+                Ok(ProfileSyncWithObservationsOutcome::SkippedFresh {
+                    metadata,
+                    discarded: false,
+                })
+            }
+            SyncDecision::DiscardedNotNewer(metadata) => {
+                Ok(ProfileSyncWithObservationsOutcome::SkippedFresh {
+                    metadata,
+                    discarded: true,
+                })
             }
             SyncDecision::Refreshed(SyncPublication::Observed(pair)) => {
                 Ok(ProfileSyncWithObservationsOutcome::Refreshed(pair))
@@ -276,15 +302,18 @@ where
         }
 
         let membership = self.gateway.resolve_membership_scoped(reason)?;
-        let (mut candidate, observations) = if with_observations {
-            self.gateway
-                .load_inventory_with_observations_scoped(&membership, reason)?
-                .into_parts()
+        let (mut candidate, observations, minted) = if with_observations {
+            let pair = self
+                .gateway
+                .load_inventory_with_observations_scoped(&membership, reason)?;
+            let minted = pair.minted_at().copied();
+            let (input, observations) = pair.into_parts();
+            (input, observations, minted)
         } else {
-            (
-                self.gateway.load_inventory_scoped(&membership, reason)?,
-                None,
-            )
+            let (input, minted) = self
+                .gateway
+                .load_inventory_minted_scoped(&membership, reason)?;
+            (input, None, minted)
         };
         // The candidate must belong to the membership it was resolved for, so a
         // mismatched or partial provider response can never be published.
@@ -292,6 +321,20 @@ where
             || candidate.membership_type != membership.membership_type()
         {
             return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        // Ordinary reads keep locally acknowledged effects when Bungie's
+        // profile lags. Do not look up definitions, publish observations, clear
+        // invalidation or advance checked_at for a discarded acquisition.
+        // Forced/preflight/post-action routes intentionally retain publication
+        // until the remaining mutation pipelines adopt ordinary local sync.
+        if reason == ProfileSyncReason::Ordinary
+            && let Some(prior) = committed
+            && prior.metadata.membership_id == candidate.membership_id
+            && prior.metadata.membership_type == candidate.membership_type
+            && let (Some(next), Some(previous)) = (minted, self.repository.profile_minted_at()?)
+            && next <= previous
+        {
+            return Ok(SyncDecision::DiscardedNotNewer(prior.metadata));
         }
         // Resolve each distinct plug once before publication. Lookup failures
         // abort without writing; missing or ambiguous definitions are unknown
@@ -344,7 +387,7 @@ where
         // Preserve only the observed route's POST-FILTER candidate. Ordinary
         // success still moves its input without cloning a projection.
         let expected = with_observations.then(|| candidate.clone());
-        let snapshot = self.repository.replace_current(candidate)?;
+        let snapshot = self.repository.replace_current_minted(candidate, minted)?;
         let publication = match expected {
             Some(candidate) => SyncPublication::Observed(PublishedProfileAcquisition::new(
                 &candidate,
@@ -454,6 +497,176 @@ mod tests {
                     plugs: Vec::new(),
                     perks: Vec::new(),
                 }],
+            }
+        }
+
+        struct MintedGateway(destiny_core::ProfileAcquisition);
+        impl ProfileGateway for MintedGateway {
+            fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
+                let input = self.0.input();
+                DestinyMembership::new(input.membership_type, input.membership_id.clone())
+            }
+            fn load_inventory(
+                &mut self,
+                _: &DestinyMembership,
+            ) -> Result<InventorySnapshotInput, AppError> {
+                Ok(self.0.input().clone())
+            }
+            fn load_inventory_minted_scoped(
+                &mut self,
+                _: &DestinyMembership,
+                _: ProfileSyncReason,
+            ) -> Result<
+                (
+                    InventorySnapshotInput,
+                    Option<destiny_core::ProfileMintedAt>,
+                ),
+                AppError,
+            > {
+                Ok((self.0.input().clone(), self.0.minted_at().copied()))
+            }
+            fn load_inventory_with_observations_scoped(
+                &mut self,
+                _: &DestinyMembership,
+                _: ProfileSyncReason,
+            ) -> Result<destiny_core::ProfileAcquisition, AppError> {
+                Ok(self.0.clone())
+            }
+        }
+
+        #[test]
+        fn minted_guard_preserves_effects_and_discards_observations_only_on_ordinary() {
+            use destiny_core::{InventoryEffect, ProfileMintedAt};
+            for observed in [false, true] {
+                for invalidated in [false, true] {
+                    for (prior_minted, next_minted, switch, reason, discarded) in [
+                        (
+                            Some(200),
+                            Some(199),
+                            false,
+                            ProfileSyncReason::Ordinary,
+                            true,
+                        ),
+                        (
+                            Some(200),
+                            Some(200),
+                            false,
+                            ProfileSyncReason::Ordinary,
+                            true,
+                        ),
+                        (
+                            Some(200),
+                            Some(201),
+                            false,
+                            ProfileSyncReason::Ordinary,
+                            false,
+                        ),
+                        (None, Some(199), false, ProfileSyncReason::Ordinary, false),
+                        (Some(200), None, false, ProfileSyncReason::Ordinary, false),
+                        (
+                            Some(200),
+                            Some(199),
+                            true,
+                            ProfileSyncReason::Ordinary,
+                            false,
+                        ),
+                        (
+                            Some(200),
+                            Some(199),
+                            false,
+                            ProfileSyncReason::Preflight,
+                            false,
+                        ),
+                        (
+                            Some(200),
+                            Some(200),
+                            false,
+                            ProfileSyncReason::Preflight,
+                            false,
+                        ),
+                        (
+                            Some(200),
+                            Some(199),
+                            false,
+                            ProfileSyncReason::Forced,
+                            false,
+                        ),
+                    ] {
+                        let instant = |n| ProfileMintedAt::new(1_800_000_000, n).unwrap();
+                        let mut repo = InMemoryInventoryRepository::new();
+                        repo.replace_current_minted(
+                            inventory(&membership(), Timestamp::new(1), 1),
+                            prior_minted.map(instant),
+                        )
+                        .unwrap();
+                        let effected = repo
+                            .apply_acknowledged_effects(
+                                &membership(),
+                                &[InventoryEffect::SetLocked {
+                                    item: "instance-1".into(),
+                                    locked: true,
+                                }],
+                            )
+                            .unwrap();
+                        if invalidated {
+                            repo.invalidate_freshness().unwrap();
+                        }
+                        let target = if switch {
+                            membership_with("4611686018484639000", 2)
+                        } else {
+                            membership()
+                        };
+                        let input = inventory(&target, NOW, 2);
+                        let pair = acquisition(input, 99).with_minted_at(next_minted.map(instant));
+                        let mut service = ProfileSyncService::new(MintedGateway(pair), repo);
+                        if observed {
+                            let outcome = service.sync_with_observations(reason, TTL, NOW).unwrap();
+                            if discarded {
+                                assert!(matches!(outcome, crate::sync::ProfileSyncWithObservationsOutcome::SkippedFresh { discarded: true, .. }), "discard must not release observations");
+                            } else {
+                                assert!(matches!(
+                                    outcome,
+                                    crate::sync::ProfileSyncWithObservationsOutcome::Refreshed(_)
+                                ));
+                            }
+                        } else {
+                            let outcome = service.sync(reason, TTL, NOW).unwrap();
+                            assert_eq!(outcome.refreshed(), !discarded);
+                            assert_eq!(
+                                matches!(
+                                    outcome,
+                                    destiny_core::ProfileSyncOutcome::DiscardedNotNewer { .. }
+                                ),
+                                discarded
+                            );
+                        }
+                        let repo = service.repository();
+                        let after = repo.load_current().unwrap().unwrap();
+                        if discarded {
+                            assert_eq!(after, effected);
+                            assert_eq!(
+                                repo.profile_minted_at().unwrap(),
+                                prior_minted.map(instant)
+                            );
+                            assert_eq!(repo.freshness_invalidated().unwrap(), invalidated);
+                            // No TTL advancement: another stale ordinary call fetches and
+                            // discards again, rather than treating retained data as fresh.
+                            let outcome = service
+                                .sync_with_observations(ProfileSyncReason::Ordinary, TTL, NOW)
+                                .unwrap();
+                            assert!(matches!(
+                                outcome,
+                                crate::sync::ProfileSyncWithObservationsOutcome::SkippedFresh { .. }
+                            ));
+                        } else {
+                            assert_eq!(after.items[0].quantity, 2);
+                            assert!(!after.items[0].locked);
+                            assert_eq!(after.metadata.checked_at, NOW);
+                            assert_eq!(repo.profile_minted_at().unwrap(), next_minted.map(instant));
+                            assert!(!repo.freshness_invalidated().unwrap());
+                        }
+                    }
+                }
             }
         }
 

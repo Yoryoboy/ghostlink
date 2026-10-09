@@ -351,6 +351,72 @@ fn committed(service: &Service) -> InventorySnapshot {
 /// The vaulted gear instance used by the existing quantity-change journey.
 const CHANGED_INSTANCE: &str = "700000000000000001";
 
+#[test]
+fn ordinary_minted_guard_survives_effects_reopen_and_keeps_stale_freshness() {
+    use destiny_core::{InventoryEffect, ProfileSyncOutcome};
+    let journey = Journey::new();
+    let mut value: Value = serde_json::from_slice(FIXTURE).unwrap();
+    value["Response"]["responseMintedTimestamp"] = json!("2026-10-08T21:09:13.123Z");
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    let mut service = journey.service();
+    assert!(
+        service
+            .sync(ProfileSyncReason::Ordinary, TTL, NOW)
+            .unwrap()
+            .refreshed()
+    );
+    let minted = service
+        .repository()
+        .profile_minted_at()
+        .unwrap()
+        .expect("gateway forwarded minted evidence");
+    let effected = service
+        .repository_mut()
+        .apply_acknowledged_effects(
+            &expected_membership(),
+            &[InventoryEffect::SetLocked {
+                item: CHANGED_INSTANCE.into(),
+                locked: true,
+            }],
+        )
+        .unwrap();
+    drop(service);
+    let mut service = journey.service();
+    let stale_now = Timestamp::new(NOW.seconds() + 301);
+    journey.at(stale_now);
+    for time in [
+        "2026-10-08T21:09:13.122999999Z",
+        "2026-10-08T23:09:13.123+02:00",
+    ] {
+        value["Response"]["responseMintedTimestamp"] = json!(time);
+        journey.queue_membership();
+        journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+        assert!(matches!(
+            service
+                .sync(ProfileSyncReason::Ordinary, TTL, stale_now)
+                .unwrap(),
+            ProfileSyncOutcome::DiscardedNotNewer { .. }
+        ));
+        assert_eq!(committed(&service), effected);
+        assert_eq!(
+            service.repository().profile_minted_at().unwrap(),
+            Some(minted)
+        );
+    }
+    value["Response"]["responseMintedTimestamp"] = json!("2026-10-08T21:09:13.123000001Z");
+    journey.queue_membership();
+    journey.queue_profile(&serde_json::to_vec(&value).unwrap());
+    assert!(
+        service
+            .sync(ProfileSyncReason::Ordinary, TTL, stale_now)
+            .unwrap()
+            .refreshed()
+    );
+    assert!(service.repository().profile_minted_at().unwrap().unwrap() > minted);
+    assert_eq!(committed(&service).metadata.checked_at, stale_now);
+}
+
 /// Actual decoder -> injected transport gateway -> sync -> real in-memory SQLite.
 /// Runtime buckets are synthetic, not live-account or capacity evidence.
 #[test]
