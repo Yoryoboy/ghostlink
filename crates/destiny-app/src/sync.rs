@@ -133,6 +133,7 @@ enum SyncDecision {
 /// Gateway and repository errors propagate unchanged, preserving their exact
 /// category and sanitization.
 pub struct ProfileSyncService<G, R> {
+    sync_gate: Option<std::sync::Arc<std::sync::Mutex<()>>>,
     gateway: G,
     repository: R,
     lookup_plug: fn(
@@ -151,6 +152,7 @@ where
         Self {
             gateway,
             repository,
+            sync_gate: None,
             lookup_plug: |_, _| Ok(destiny_core::Resolution::Missing),
         }
     }
@@ -164,8 +166,19 @@ where
         Self {
             gateway,
             repository,
+            sync_gate: None,
             lookup_plug: |repository, hash| repository.lookup_definition(hash),
         }
+    }
+
+    /// Serializes read-triggered refreshes with the caller's mutation boundary.
+    /// Fresh Ordinary reads bypass the gate. Waiters re-check freshness under it.
+    /// Never inject this into a service called while already holding the gate.
+    /// Lock order: read service -> gate -> individual repository/gateway calls;
+    /// repository and gateway locks must be released before acquiring the gate.
+    pub fn with_sync_gate(mut self, gate: std::sync::Arc<std::sync::Mutex<()>>) -> Self {
+        self.sync_gate = Some(gate);
+        self
     }
 
     /// Transfers the authenticated gateway and committed repository together.
@@ -277,6 +290,17 @@ where
         now: Timestamp,
         with_observations: bool,
     ) -> Result<SyncDecision, AppError> {
+        self.sync_inner_gated(reason, policy, now, with_observations, false)
+    }
+
+    fn sync_inner_gated(
+        &mut self,
+        reason: ProfileSyncReason,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+        with_observations: bool,
+        gate_held: bool,
+    ) -> Result<SyncDecision, AppError> {
         let committed = self.repository.load_current()?;
         let status = FreshnessInput {
             dataset: Dataset::ProfileInventory,
@@ -299,6 +323,15 @@ where
             if let Some(snapshot) = committed {
                 return Ok(SyncDecision::SkippedFresh(snapshot.metadata));
             }
+        }
+
+        if !gate_held && let Some(gate) = self.sync_gate.clone() {
+            let _exclusive = gate
+                .lock()
+                .map_err(|_| AppError::new(ErrorCategory::LocalStorage))?;
+            // No transaction/adapter lock survives the first check. Re-check
+            // because another refresher may have published while we waited.
+            return self.sync_inner_gated(reason, policy, now, with_observations, true);
         }
 
         let membership = self.gateway.resolve_membership_scoped(reason)?;
@@ -420,6 +453,109 @@ mod tests {
         const NOW: Timestamp = Timestamp::new(10_000);
         const TTL: FreshnessPolicy = FreshnessPolicy { ttl_seconds: 300 };
         const DEFINITION_VERSION: &str = "definitions-v1";
+
+        #[test]
+        fn concurrent_stale_reads_acquire_once_and_wait_for_mutation() {
+            use std::sync::{
+                Arc, Barrier, Mutex,
+                atomic::{AtomicBool, AtomicUsize, Ordering},
+                mpsc,
+            };
+            use std::time::Duration;
+            struct Store {
+                inner: Arc<Mutex<InMemoryInventoryRepository>>,
+                first: AtomicBool,
+                checked: Arc<Barrier>,
+                ready: mpsc::Sender<()>,
+            }
+            impl InventoryRepository for Store {
+                fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
+                    let current = self.inner.lock().unwrap().load_current()?;
+                    if self.first.swap(false, Ordering::SeqCst) {
+                        self.checked.wait();
+                        self.ready.send(()).unwrap();
+                    }
+                    Ok(current)
+                }
+                fn replace_current(
+                    &mut self,
+                    input: InventorySnapshotInput,
+                ) -> Result<InventorySnapshot, AppError> {
+                    self.inner.lock().unwrap().replace_current(input)
+                }
+            }
+            struct Gateway {
+                calls: Arc<AtomicUsize>,
+                mutation_active: Arc<AtomicBool>,
+                exclusive: Arc<Mutex<()>>,
+            }
+            impl ProfileGateway for Gateway {
+                fn resolve_membership(&mut self) -> Result<DestinyMembership, AppError> {
+                    Ok(membership())
+                }
+                fn load_inventory(
+                    &mut self,
+                    _: &DestinyMembership,
+                ) -> Result<InventorySnapshotInput, AppError> {
+                    assert!(
+                        !self.mutation_active.load(Ordering::SeqCst),
+                        "sync interleaved with mutation"
+                    );
+                    assert!(
+                        matches!(
+                            self.exclusive.try_lock(),
+                            Err(std::sync::TryLockError::WouldBlock)
+                        ),
+                        "profile acquisition must hold the mutation guard"
+                    );
+                    self.calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(inventory(&membership(), NOW, 1))
+                }
+            }
+            for _ in 0..20 {
+                let store = Arc::new(Mutex::new(InMemoryInventoryRepository::new()));
+                let gate = Arc::new(Mutex::new(()));
+                let mutation = gate.lock().unwrap();
+                let active = Arc::new(AtomicBool::new(true));
+                let calls = Arc::new(AtomicUsize::new(0));
+                let checked = Arc::new(Barrier::new(2));
+                let (ready_tx, ready_rx) = mpsc::channel();
+                let workers: Vec<_> = (0..2)
+                    .map(|_| {
+                        let mut service = ProfileSyncService::new(
+                            Gateway {
+                                calls: calls.clone(),
+                                mutation_active: active.clone(),
+                                exclusive: gate.clone(),
+                            },
+                            Store {
+                                inner: store.clone(),
+                                first: AtomicBool::new(true),
+                                checked: checked.clone(),
+                                ready: ready_tx.clone(),
+                            },
+                        )
+                        .with_sync_gate(gate.clone());
+                        std::thread::spawn(move || {
+                            service.sync(ProfileSyncReason::Ordinary, TTL, NOW)
+                        })
+                    })
+                    .collect();
+                for _ in 0..2 {
+                    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                }
+                active.store(false, Ordering::SeqCst);
+                drop(mutation);
+                for worker in workers {
+                    assert!(worker.join().unwrap().unwrap().metadata().checked_at == NOW);
+                }
+                assert_eq!(
+                    calls.load(Ordering::SeqCst),
+                    1,
+                    "duplicate profile acquisition"
+                );
+            }
+        }
 
         /// Counters and `requested_memberships` live in the shared
         /// [`QueuedProfileGateway`], which the service owns by value. This

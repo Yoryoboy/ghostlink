@@ -15,14 +15,15 @@
 //! `main.rs` is compiled as a private library module so both development and
 //! distribution binaries call the same entry point.
 //!
-//! One profile gateway and one durable store are shared by both compositions
-//! through `Arc<Mutex<..>>`, so the read path and the mutation path observe the
-//! same SQLite connection and the same provider transport. `ReadToolServer`
-//! additionally holds one outer operation guard for every read and mutation
-//! request. All local inventory publication in this composition runs beneath
-//! that guard, so no competing refresh can publish between fresh preflight and
-//! the final ordered dispatch and freshness invalidation. Individual adapter
-//! locks remain short-lived and refresh does not reacquire the operation guard.
+//! Four read service slots own independent SQLite connections to the same WAL
+//! database; mutations own another connection. The profile transport is shared
+//! through `Arc<Mutex<..>>`. Fresh projection reads bypass the action queue.
+//! Read sync seams share the server's exclusive mutation guard and re-check
+//! freshness under it, so simultaneous stale reads acquire only once when that
+//! acquisition publishes a fresh projection. Mutation sync seams do not inject
+//! the guard: their entire dispatch already owns it. Lock ordering is read slot
+//! -> exclusive -> adapter, or exclusive -> mutation service -> adapter; adapter
+//! locks never survive a call, and mutations never acquire read slots.
 //! This is a process-local guarantee, not protection against external game
 //! changes or another process writing the database. The mutation path is:
 //!
@@ -94,11 +95,9 @@ async fn serve_runtime() -> Result<(), AppError> {
 /// work is attempted. This makes the composition root's failure paths testable
 /// with an injected store and no live keyring, provider, or database.
 ///
-/// One profile gateway and one durable store are built and shared by the read
-/// service and the mutation service, so the process holds a single provider
-/// transport and a single SQLite connection. The read service keeps the exact
-/// three read tools it always had; composing the mutation service appends the
-/// single `move_item` tool and never changes read behavior.
+/// One profile transport is shared; four independent read compositions and the
+/// mutation composition open the same SQLite database. Read schemas and tool
+/// discovery are unchanged.
 fn compose_server<S: CredentialStore + Send + 'static>(
     config: &ReadRuntimeConfig,
     store: S,
@@ -198,9 +197,16 @@ fn compose_server<S: CredentialStore + Send + 'static>(
         ),
         repository,
         policy,
-        weekly_service(config)?,
-        personal_public(config)?,
-        SqliteStore::open(config.database_path())?,
+        (0..4)
+            .map(|_| {
+                Ok(ReadResources {
+                    repository: SqliteStore::open(config.database_path())?,
+                    weekly: weekly_service(config)?,
+                    personal_public: personal_public(config)?,
+                    personal_repository: SqliteStore::open(config.database_path())?,
+                })
+            })
+            .collect::<Result<Vec<_>, AppError>>()?,
     ))
 }
 
@@ -334,11 +340,17 @@ type MutationPorts<C> = (
     >,
 );
 
+struct ReadResources {
+    repository: SqliteStore,
+    weekly: (PublicWeeklyService, destiny_app::calendar::Calendar),
+    personal_public: PersonalPublicGateway,
+    personal_repository: SqliteStore,
+}
+
 /// Wires the concrete adapters into one read-plus-mutation tool server.
 ///
-/// The read service and the mutation service share the profile gateway and the
-/// durable store, and the mutation service is always composed, so the product
-/// server advertises the single `move_item` tool by default. A plan is created
+/// Read slots and mutations share the profile gateway and exclusive publication
+/// guard, not SQLite connections. Mutations are always composed. A plan is created
 /// and executed inside one request, so the bounded maximum plan lifetime is the
 /// safest accepted window.
 fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
@@ -346,61 +358,79 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     ports: MutationPorts<C>,
     repository: SqliteStore,
     policy: FreshnessPolicy,
-    weekly: (PublicWeeklyService, destiny_app::calendar::Calendar),
-    personal_public: PersonalPublicGateway,
-    personal_repository: SqliteStore,
+    reads: Vec<ReadResources>,
 ) -> ReadToolServer {
     let gateway = SharedGateway::new(profile_gateway);
     let repository = SharedRepository::new(repository);
 
-    let read_sync = ProfileSyncService::new_with_definitions(gateway.clone(), repository.clone());
-    let read_service =
-        QueryReadService::new(QueryService::new(read_sync), SystemClock::new(), policy);
+    let exclusive = Arc::new(Mutex::new(()));
+    let reads = reads
+        .into_iter()
+        .map(|resources| {
+            let ReadResources {
+                repository: read_repository,
+                weekly,
+                personal_public,
+                personal_repository,
+            } = resources;
+            let read_repository = SharedRepository::new(read_repository);
+            let read_sync =
+                ProfileSyncService::new_with_definitions(gateway.clone(), read_repository.clone())
+                    .with_sync_gate(exclusive.clone());
+            let read_service =
+                QueryReadService::new(QueryService::new(read_sync), SystemClock::new(), policy);
 
-    let read_service = crate::service::PersonalWeeklyReadService::new(
-        destiny_app::WeeklyPersonalService::new(
-            personal_public,
-            gateway.clone(),
-            personal_repository,
-        ),
-        read_service,
-    );
+            let read_service = crate::service::PersonalWeeklyReadService::new(
+                destiny_app::WeeklyPersonalService::new(
+                    personal_public,
+                    gateway.clone(),
+                    personal_repository,
+                ),
+                read_service,
+            );
 
-    let read_service = crate::service::WeeklyReadService::new(
-        weekly.0,
-        read_service,
-        |t| destiny_adapters::format_reset_timestamp(t, false),
-        weekly.1,
-        SystemClock::new(),
-        |value| {
-            destiny_adapters::calendar::instant_for_utc_date(value).map_err(|_| {
-                crate::McpError::from(AppError::invalid_argument(
-                    "date",
-                    "expected YYYY-MM-DD (a representable UTC calendar date)",
-                ))
-            })
-        },
-    );
+            let read_service = crate::service::WeeklyReadService::new(
+                weekly.0,
+                read_service,
+                |t| destiny_adapters::format_reset_timestamp(t, false),
+                weekly.1,
+                SystemClock::new(),
+                |value| {
+                    destiny_adapters::calendar::instant_for_utc_date(value).map_err(|_| {
+                        crate::McpError::from(AppError::invalid_argument(
+                            "date",
+                            "expected YYYY-MM-DD (a representable UTC calendar date)",
+                        ))
+                    })
+                },
+            );
 
-    let read_service = crate::service::ArtifactReadService::new(
-        destiny_app::ArtifactService::new(ProfileSyncService::new_with_definitions(
-            gateway.clone(),
-            repository.clone(),
-        )),
-        read_service,
-        SystemClock::new(),
-        policy,
-    );
+            let read_service = crate::service::ArtifactReadService::new(
+                destiny_app::ArtifactService::new(
+                    ProfileSyncService::new_with_definitions(
+                        gateway.clone(),
+                        read_repository.clone(),
+                    )
+                    .with_sync_gate(exclusive.clone()),
+                ),
+                read_service,
+                SystemClock::new(),
+                policy,
+            );
 
-    let read_service = crate::service::LoadoutsReadService::new(
-        destiny_app::LoadoutService::new(ProfileSyncService::new_with_definitions(
-            gateway.clone(),
-            repository.clone(),
-        )),
-        read_service,
-        SystemClock::new(),
-        policy,
-    );
+            let read_service = crate::service::LoadoutsReadService::new(
+                destiny_app::LoadoutService::new(
+                    ProfileSyncService::new_with_definitions(gateway.clone(), read_repository)
+                        .with_sync_gate(exclusive.clone()),
+                ),
+                read_service,
+                SystemClock::new(),
+                policy,
+            );
+
+            Box::new(read_service) as Box<dyn crate::service::InventoryReadService + Send>
+        })
+        .collect();
 
     // Inventory publication and definition use share the EXISTING SQLite handle.
     // The concrete Manifest port fetches fresh policy qualification at plan/preflight.
@@ -458,10 +488,7 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         last_attempt: None,
     };
 
-    // Every publishing read decorator and all mutations enter the same outer
-    // operation boundary. Do not expose a second unguarded dispatch path for
-    // these shared repositories: revision comparison alone is not exclusion.
-    ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
+    ReadToolServer::with_read_pool(reads, Box::new(mutation_service), exclusive)
 }
 
 /// Loads the complete stored credential, failing closed when it is absent.
@@ -1514,19 +1541,23 @@ mod tests {
             ),
             store,
             FreshnessPolicy { ttl_seconds: 900 },
-            (
-                destiny_app::weekly_reset::WeeklyResetService::new(
-                    destiny_adapters::manifest::BungieManifestGateway::new(
-                        destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL).unwrap(),
-                        destiny_adapters::manifest::HttpManifestTransport::new().unwrap(),
-                        SystemClock::new(),
+            vec![super::ReadResources {
+                repository: SqliteStore::open_in_memory().unwrap(),
+                weekly: (
+                    destiny_app::weekly_reset::WeeklyResetService::new(
+                        destiny_adapters::manifest::BungieManifestGateway::new(
+                            destiny_adapters::manifest::ManifestApiKey::new(API_KEY_SENTINEL)
+                                .unwrap(),
+                            destiny_adapters::manifest::HttpManifestTransport::new().unwrap(),
+                            SystemClock::new(),
+                        ),
+                        SqliteStore::open_in_memory().unwrap(),
                     ),
-                    SqliteStore::open_in_memory().unwrap(),
+                    destiny_adapters::calendar::embedded_calendar().unwrap(),
                 ),
-                destiny_adapters::calendar::embedded_calendar().unwrap(),
-            ),
-            personal_public(&config()).unwrap(),
-            SqliteStore::open_in_memory().unwrap(),
+                personal_public: personal_public(&config()).unwrap(),
+                personal_repository: SqliteStore::open_in_memory().unwrap(),
+            }],
         );
         let tools = server.discover_tools().tools;
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();

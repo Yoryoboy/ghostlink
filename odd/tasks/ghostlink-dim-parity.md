@@ -108,8 +108,19 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   through `MutationError`. Reads keep the existing bounded retry caps;
   writes are never retried; auth codes are classified only (no new
   refresh/replay). Workspace: 1983 passed, 0 failed.
-- [ ] **R2 — MCP read concurrency (A2).** Reads run concurrently against the
+- [x] **R2 — MCP read concurrency (A2).** Reads run concurrently against the
   projection; only mutations (and syncs) serialize, as DIM's action queue.
+  Done: four round-robin read slots with their own SQLite connections (WAL
+  snapshots) sharing one profile gateway/session; fresh reads no longer wait
+  for mutations. Read-triggered syncs take the exclusive guard shared with
+  mutations through an optional `ProfileSyncService` sync gate and re-check
+  freshness after acquiring it (single-flight, as DIM's `loading` guard in
+  `d2-stores.ts:122-188`); mutation syncs do not take the gate (they already
+  hold it). Lock order: read slot -> exclusive -> adapter; exclusive ->
+  mutation service -> adapter. rc002 publication-order tests adapted; mcp
+  suite 20/20 clean runs. Workspace: 1986 passed, 0 failed.
+  Also: R1 follow-up `65def0c` caps the throttle cooldown at five minutes
+  (DIM cap; review advisory found ~6 days after 20 throttles).
 - [ ] **U1 — Compact item summary (A4).** DIM-style list summary (id, name,
   power, rarity/tier, plugged perks) across CLI/MCP list surfaces; detail on
   inspect.

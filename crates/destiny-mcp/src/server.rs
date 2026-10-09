@@ -1,8 +1,8 @@
 //! RMCP tools-only server for the Destiny semantic tools.
 //!
 //! [`ReadToolServer`] adapts the provider-neutral [`InventoryReadService`] seam
-//! to an [`rmcp::ServerHandler`]. On its own it exposes exactly the four
-//! bounded read tools, dispatches each `tools/call` through the shared argument
+//! to an [`rmcp::ServerHandler`]. On its own it exposes the bounded read
+//! tools, dispatches each `tools/call` through the shared argument
 //! conversion and service, and returns the structured result or a sanitized tool
 //! error. When constructed with the optional adapter-free [`MutationToolService`]
 //! seam it additionally advertises and dispatches the single intent-authorized
@@ -11,13 +11,13 @@
 //!
 //! # Boundaries
 //!
-//! - The handler holds a `Box<dyn InventoryReadService + Send>` and an optional
-//!   `Box<dyn MutationToolService + Send>` behind `std::sync::Mutex`, so both
-//!   synchronous services can be shared by the [`rmcp::ServerHandler`] without
-//!   introducing a second service contract. A lock is only ever held for one
-//!   synchronous dispatch, never across an `.await`. One outer operation guard
-//!   serializes both seams: local refresh publication cannot overtake mutation
-//!   preflight, ordered dispatch, or freshness invalidation.
+//! - Production uses a fixed pool of independent read services/SQLite connections.
+//!   Fresh projection reads do not acquire the exclusive operation guard. Only
+//!   mutations hold it for their entire dispatch, while read-triggered syncs
+//!   acquire it inside the app sync seam and re-check freshness after waiting.
+//!   This single-flight boundary prevents competing publication from overtaking
+//!   mutation preflight, ordered dispatch, or freshness invalidation. Legacy
+//!   single-service mutation construction retains whole-read exclusion.
 //! - Dispatch is offloaded with [`tokio::task::spawn_blocking`]: the read
 //!   service performs blocking provider and storage work, and the RMCP server
 //!   loop is async. Keeping the blocking work off the async worker is what makes
@@ -45,6 +45,18 @@ use crate::schema::{
 use crate::service::{InventoryReadService, MutationToolService};
 
 type SharedReadService = Arc<Mutex<Box<dyn InventoryReadService + Send>>>;
+
+/// Fixed round-robin slots; each slot owns a distinct synchronous service.
+struct ReadPool {
+    services: Vec<SharedReadService>,
+    next: std::sync::atomic::AtomicUsize,
+}
+impl ReadPool {
+    fn select(&self) -> SharedReadService {
+        let index = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Arc::clone(&self.services[index % self.services.len()])
+    }
+}
 type SharedMutationService = Arc<Mutex<Box<dyn MutationToolService + Send>>>;
 
 /// The instructions a read-only server advertises.
@@ -62,34 +74,39 @@ const READ_ONLY_INSTRUCTIONS: &str =
 /// has to match the discovery set.
 const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item`, `equip_item`, and `set_lock_state`, `pull_item`, `pull_stack`, `apply_loadout`, and `equip_items` mutations.";
 
-/// The tools-only RMCP server over one shared read service and an optional
-/// mutation seam.
+/// The tools-only RMCP server over bounded read slots and an optional mutation seam.
 ///
-/// Each service is shared behind its own mutex. An outer operation guard spans
-/// the entire call on either seam, including all snapshot publication paths.
-/// Lock ordering is operation -> service -> individual gateway/repository calls.
-/// Sync and freshness invalidation never reenter the operation guard. This protects
-/// only this server's local publication, not external game state or other processes.
+/// Lock ordering: reads take slot -> exclusive (only on refresh) -> individual
+/// adapter locks; mutations take exclusive -> mutation service -> adapter locks.
+/// Mutations never take read slots or reenter exclusive. No adapter lock or SQLite
+/// transaction survives the freshness check preceding exclusive acquisition.
+/// All guards live inside synchronous dispatch/spawn_blocking, never across await.
+/// This protects only local publication, not external game state or other processes.
 /// The server is `Send + Sync + 'static`, as
 /// [`rmcp::ServerHandler`] requires.
 pub struct ReadToolServer {
     operation: Arc<Mutex<()>>,
-    service: SharedReadService,
+    service: Arc<ReadPool>,
     mutation: Option<SharedMutationService>,
+    legacy_read_exclusion: bool,
 }
 
 impl ReadToolServer {
     /// Wraps one read service for the stdio server, exposing only the reads.
     ///
     /// This is the read-only construction: the server discovers exactly the
-    /// four read tools and rejects `move_item` as an unknown tool, so an
+    /// bounded read tools and rejects `move_item` as an unknown tool, so an
     /// unconfigured mutation seam cannot be told apart from one that was never
     /// built.
     pub fn new(service: Box<dyn InventoryReadService + Send>) -> Self {
         Self {
             operation: Arc::new(Mutex::new(())),
-            service: Arc::new(Mutex::new(service)),
+            service: Arc::new(ReadPool {
+                services: vec![Arc::new(Mutex::new(service))],
+                next: std::sync::atomic::AtomicUsize::new(0),
+            }),
             mutation: None,
+            legacy_read_exclusion: false,
         }
     }
 
@@ -105,14 +122,43 @@ impl ReadToolServer {
     ) -> Self {
         Self {
             operation: Arc::new(Mutex::new(())),
-            service: Arc::new(Mutex::new(service)),
+            service: Arc::new(ReadPool {
+                services: vec![Arc::new(Mutex::new(service))],
+                next: std::sync::atomic::AtomicUsize::new(0),
+            }),
             mutation: Some(Arc::new(Mutex::new(mutation))),
+            legacy_read_exclusion: true,
+        }
+    }
+
+    /// Composes independent read slots whose publishing sync services all use
+    /// `exclusive` via `ProfileSyncService::with_sync_gate`. Mutation services
+    /// must NOT inject it: dispatch already holds it until the service returns.
+    /// Legacy `with_mutation` keeps whole-read exclusion for arbitrary services
+    /// that have not opted into that publication contract.
+    pub fn with_read_pool(
+        services: Vec<Box<dyn InventoryReadService + Send>>,
+        mutation: Box<dyn MutationToolService + Send>,
+        exclusive: Arc<Mutex<()>>,
+    ) -> Self {
+        assert!(!services.is_empty(), "read pool must not be empty");
+        Self {
+            operation: exclusive,
+            service: Arc::new(ReadPool {
+                services: services
+                    .into_iter()
+                    .map(|s| Arc::new(Mutex::new(s)))
+                    .collect(),
+                next: std::sync::atomic::AtomicUsize::new(0),
+            }),
+            mutation: Some(Arc::new(Mutex::new(mutation))),
+            legacy_read_exclusion: false,
         }
     }
 
     /// The exact tool descriptors this server advertises, in stable order.
     ///
-    /// The four reads are always present and deterministic. `move_item` is
+    /// The reads are always present and deterministic. `move_item` is
     /// appended only when a mutation seam was composed, so the discovery set is
     /// a function of the construction and never of the request.
     pub fn discover_tools(&self) -> ListToolsResult {
@@ -143,7 +189,8 @@ impl ReadToolServer {
     pub fn dispatch(&self, name: &str, arguments: JsonObject) -> Result<CallToolResult, ErrorData> {
         dispatch_operation(
             &self.operation,
-            &self.service,
+            &self.service.select(),
+            self.legacy_read_exclusion,
             self.mutation_for(name),
             name,
             arguments,
@@ -222,10 +269,18 @@ impl ServerHandler for ReadToolServer {
         // everything it needs; the synchronous service runs off the async
         // worker thread. A read-only server keeps the mutation name unknown.
         let operation = Arc::clone(&self.operation);
-        let service = Arc::clone(&self.service);
+        let service = self.service.select();
+        let legacy_read_exclusion = self.legacy_read_exclusion;
         let mutation = self.mutation_for(&name).map(Arc::clone);
         let result = tokio::task::spawn_blocking(move || {
-            dispatch_operation(&operation, &service, mutation.as_ref(), &name, arguments)
+            dispatch_operation(
+                &operation,
+                &service,
+                legacy_read_exclusion,
+                mutation.as_ref(),
+                &name,
+                arguments,
+            )
         })
         .await
         .map_err(|_| internal_error())?;
@@ -233,16 +288,21 @@ impl ServerHandler for ReadToolServer {
     }
 }
 
-/// Single operation boundary for both direct dispatch and the async handler.
-/// Acquire before any service work, release only after verification/no-op/error.
+/// Mutation exclusion for both direct dispatch and the async handler.
+/// Read pool slots guard themselves; their sync seam owns publication exclusion.
 fn dispatch_operation(
     operation: &Mutex<()>,
     service: &SharedReadService,
+    legacy_read_exclusion: bool,
     mutation: Option<&SharedMutationService>,
     name: &str,
     arguments: JsonObject,
 ) -> Result<CallToolResult, ErrorData> {
-    let _operation = operation.lock().map_err(|_| internal_error())?;
+    let _operation = if mutation.is_some() || legacy_read_exclusion {
+        Some(operation.lock().map_err(|_| internal_error())?)
+    } else {
+        None
+    };
     match mutation {
         Some(mutation) => dispatch_mutation_locked(mutation, name, arguments),
         None => dispatch_locked(service, name, arguments),
@@ -859,6 +919,98 @@ mod tests {
     }
 
     #[test]
+    fn fresh_reads_progress_while_exclusive_guard_is_held() {
+        use std::sync::mpsc;
+        struct PausedMutation(mpsc::Sender<()>, mpsc::Receiver<()>);
+        impl MutationToolService for PausedMutation {
+            fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+                self.0.send(()).unwrap();
+                self.1.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(move_success_output())
+            }
+        }
+        for _ in 0..8 {
+            struct RendezvousRead(std::sync::Arc<std::sync::Barrier>, RecordingService);
+            impl InventoryReadService for RendezvousRead {
+                fn list_characters(
+                    &mut self,
+                    request: &ListCharactersRequest,
+                ) -> Result<ListCharactersOutput, McpError> {
+                    self.0.wait();
+                    self.1.list_characters(request)
+                }
+                fn get_postmaster(
+                    &mut self,
+                    c: Option<&destiny_app::CharacterId>,
+                ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+                    self.1.get_postmaster(c)
+                }
+                fn get_subclass(
+                    &mut self,
+                    c: Option<&destiny_app::CharacterId>,
+                ) -> Result<crate::schema::GetSubclassOutput, McpError> {
+                    self.1.get_subclass(c)
+                }
+                fn search_inventory(
+                    &mut self,
+                    r: &destiny_app::SearchInventoryRequest,
+                ) -> Result<crate::schema::SearchInventoryOutput, McpError> {
+                    self.1.search_inventory(r)
+                }
+                fn inspect_item(
+                    &mut self,
+                    r: &destiny_app::InspectItemRequest,
+                ) -> Result<crate::schema::InspectItemOutput, McpError> {
+                    self.1.inspect_item(r)
+                }
+            }
+            let rendezvous = Arc::new(std::sync::Barrier::new(2));
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let server = Arc::new(ReadToolServer::with_read_pool(
+                (0..2)
+                    .map(|_| {
+                        Box::new(RendezvousRead(rendezvous.clone(), RecordingService::new()))
+                            as Box<dyn InventoryReadService + Send>
+                    })
+                    .collect(),
+                Box::new(PausedMutation(entered_tx, release_rx)),
+                Arc::new(std::sync::Mutex::new(())),
+            ));
+            let mutation_server = server.clone();
+            let mutation = std::thread::spawn(move || {
+                mutation_server.dispatch(MOVE_ITEM_TOOL, args(exact_move_arguments()))
+            });
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(server.operation.try_lock().is_err());
+            let (tx, rx) = mpsc::channel();
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    let server = server.clone();
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        tx.send(
+                            server
+                                .dispatch(LIST_CHARACTERS_TOOL, Default::default())
+                                .is_ok(),
+                        )
+                        .unwrap();
+                    })
+                })
+                .collect();
+            let first = rx.recv_timeout(Duration::from_secs(2));
+            let second = rx.recv_timeout(Duration::from_secs(2));
+            release_tx.send(()).unwrap();
+            assert!(mutation.join().unwrap().is_ok());
+            for worker in workers {
+                worker.join().unwrap();
+            }
+            assert_eq!(first, Ok(true), "fresh read queued behind mutation");
+            assert_eq!(second, Ok(true), "second fresh read queued behind mutation");
+        }
+    }
+
+    #[test]
     fn rc002_dispatch_holds_the_actual_operation_guard_until_service_returns() {
         use std::sync::{TryLockError, mpsc};
         const BOUND: Duration = Duration::from_secs(5);
@@ -876,12 +1028,13 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
-        let server = Arc::new(ReadToolServer::with_mutation(
-            Box::new(RecordingService::new()),
+        let server = Arc::new(ReadToolServer::with_read_pool(
+            vec![Box::new(RecordingService::new())],
             Box::new(PausedMutation {
                 entered: entered_tx,
                 release: release_rx,
             }),
+            Arc::new(std::sync::Mutex::new(())),
         ));
         let worker_server = server.clone();
         let worker = std::thread::spawn(move || {
@@ -930,12 +1083,13 @@ mod tests {
         }
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
-        let server = Arc::new(ReadToolServer::with_mutation(
-            Box::new(RecordingService::new()),
+        let server = Arc::new(ReadToolServer::with_read_pool(
+            vec![Box::new(RecordingService::new())],
             Box::new(PausedPull {
                 entered: entered_tx,
                 release: release_rx,
             }),
+            Arc::new(std::sync::Mutex::new(())),
         ));
         for item in ["0", "01", "9223372036854775808"] {
             let result = server
@@ -982,9 +1136,10 @@ mod tests {
         }
         let (tx, rx) = mpsc::channel();
         let (release, wait) = mpsc::channel();
-        let server = Arc::new(ReadToolServer::with_mutation(
-            Box::new(RecordingService::new()),
+        let server = Arc::new(ReadToolServer::with_read_pool(
+            vec![Box::new(RecordingService::new())],
             Box::new(PausedStack(tx, wait)),
+            Arc::new(std::sync::Mutex::new(())),
         ));
         let result = server
             .dispatch(
