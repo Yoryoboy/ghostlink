@@ -951,7 +951,8 @@ impl SearchRepository for InMemorySearchRepository {
                 &self.stat_definitions,
             )
         });
-        let more = matches.len() > query.offset + query.limit;
+        let more = query.offset + query.limit <= destiny_core::MAX_SEARCH_OFFSET
+            && matches.len() > query.offset + query.limit;
         let matches = matches
             .into_iter()
             .skip(query.offset)

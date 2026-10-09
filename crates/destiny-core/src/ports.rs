@@ -538,7 +538,9 @@ pub trait SearchRepository {
         query: &InstanceSearchQuery,
     ) -> Result<(Vec<ItemInstance>, bool), AppError> {
         let instances = self.search_instances(query)?;
-        if instances.len() < query.limit {
+        if instances.len() < query.limit
+            || query.offset + instances.len() > crate::MAX_SEARCH_OFFSET
+        {
             return Ok((instances, false));
         }
         let mut probe = query.clone();

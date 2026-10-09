@@ -47,6 +47,8 @@ use destiny_app::{
     Timestamp, TransferGateway, TransferRejection, VerificationFailureReason,
 };
 
+use destiny_app::MAX_SEARCH_OFFSET;
+
 use crate::schema::{
     CharacterView, DefinitionView, FoundInspection, IncompleteMoveView, InspectItemArgs,
     InspectItemOutput, InstanceQueryArgs, InstanceView, InventorySearchHitView, ListCharactersArgs,
@@ -1675,8 +1677,8 @@ impl SearchInventoryArgs {
                 .into_query()?,
             );
         }
-        if self.offset > MAX_SEARCH_LIMIT {
-            return Err(AppError::invalid_argument("offset", "must be between 0 and 1000").into());
+        if self.offset > MAX_SEARCH_OFFSET {
+            return Err(AppError::invalid_argument("offset", "must be between 0 and 10000").into());
         }
         if let Some(query) = &mut instances {
             query.offset = self.offset;
@@ -3169,6 +3171,25 @@ mod tests {
                 limit,
             }),
         }
+    }
+
+    #[test]
+    fn owned_offset_has_an_independent_bound() {
+        let mut args = instance_search_args(None);
+        args.offset = 10_000;
+        assert_eq!(
+            args.into_request().unwrap().instances.unwrap().offset,
+            10_000
+        );
+        let mut args = instance_search_args(None);
+        args.offset = 10_001;
+        let error = serde_json::to_value(args.into_request().unwrap_err()).unwrap();
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("must be between 0 and 10000")
+        );
     }
 
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {

@@ -819,7 +819,10 @@ where
                 .repository()
                 .search_instance_page(instance_query)?;
             if more {
-                next_offset = Some(instance_query.offset + instances.len());
+                next_offset = instance_query
+                    .offset
+                    .checked_add(instances.len())
+                    .filter(|offset| *offset <= destiny_core::MAX_SEARCH_OFFSET);
             }
             hits.reserve(instances.len());
             let mut enrichment = InstanceEnrichment::default();

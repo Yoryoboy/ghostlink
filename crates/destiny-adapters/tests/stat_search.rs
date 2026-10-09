@@ -309,8 +309,106 @@ fn offset_pages_preserve_order_and_reject_invalid_offset() {
             pages.extend(page);
         }
         assert_eq!(pages, full);
-        q.offset = 1001;
+        q.offset = 10_000;
+        assert!(store.search_instances(&q).unwrap().is_empty());
+        assert!(fake.search_instances(&q).unwrap().is_empty());
+        q.offset = 10_001;
         assert!(store.search_instances(&q).is_err());
+    }
+}
+
+#[test]
+fn owned_continuations_stop_at_the_offset_ceiling() {
+    let (mut store, mut fake) = seeded(vec![]);
+    let template = fake.search_instances(&query(&[])).unwrap().remove(0);
+    let items: Vec<_> = (0..10_003)
+        .map(|index| {
+            let mut item = template.clone();
+            item.instance_id = format!("item-{index:05}").into();
+            item.plugs.clear();
+            item.available_plugs.clear();
+            item
+        })
+        .collect();
+    fake.set_instances(items.clone());
+    store
+        .replace_current(InventorySnapshotInput {
+            profile_currencies_coverage: ProfileCurrenciesCoverage::NotObserved,
+            stacks: Vec::new(),
+            plug_set_entries: Vec::new(),
+            membership_id: MembershipId::new("123"),
+            membership_type: MembershipType::new(3),
+            definition_version: DefinitionVersion::new("v1"),
+            checked_at: Timestamp::new(1),
+            source: SourceMarker::Profile,
+            characters: vec![],
+            items,
+        })
+        .unwrap();
+
+    // Exercise the default trait fallback, not either adapter's override.
+    struct Fallback(InMemorySearchRepository);
+    impl SearchRepository for Fallback {
+        fn search_definitions(
+            &self,
+            q: &DefinitionSearchQuery,
+        ) -> Result<Vec<ItemDefinition>, AppError> {
+            self.0.search_definitions(q)
+        }
+        fn search_instances(&self, q: &InstanceSearchQuery) -> Result<Vec<ItemInstance>, AppError> {
+            q.validate()?;
+            assert!(
+                q.offset <= 10_000,
+                "fallback must not issue an invalid probe"
+            );
+            self.0.search_instances(q)
+        }
+        fn lookup_instance(
+            &self,
+            id: &ItemInstanceId,
+        ) -> Result<Resolution<ItemInstance>, AppError> {
+            self.0.lookup_instance(id)
+        }
+    }
+    let fallback = Fallback(fake.clone());
+    let mut q = query(&[]);
+    q.limit = 2;
+    for (offset, expected_more) in [(9_998, true), (9_999, false), (10_000, false)] {
+        q.offset = offset;
+        let (page, more) = store.search_instance_page(&q).unwrap();
+        assert_eq!(page.len(), 2);
+        assert_eq!(more, expected_more);
+        assert_eq!(
+            fallback.search_instance_page(&q).unwrap(),
+            (page, expected_more)
+        );
+    }
+
+    let mut app = QueryService::new(ProfileSyncService::new(QueuedProfileGateway::new(), store));
+    let definitions = DefinitionSearchQuery {
+        text: None,
+        item_type: None,
+        tier: None,
+        tags: vec![],
+        element: None,
+        slot: None,
+        class_type: None,
+        limit: 2,
+    };
+    for (offset, expected_next) in [(9_998, Some(10_000)), (9_999, None), (10_000, None)] {
+        q.offset = offset;
+        let result = app
+            .search_inventory(
+                &SearchInventoryRequest {
+                    definitions: definitions.clone(),
+                    instances: Some(q.clone()),
+                },
+                FreshnessPolicy { ttl_seconds: 300 },
+                Timestamp::new(1),
+            )
+            .unwrap();
+        assert_eq!(result.hits.len(), 2);
+        assert_eq!(result.next_offset, expected_next);
     }
 }
 

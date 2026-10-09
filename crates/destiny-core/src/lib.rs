@@ -106,10 +106,11 @@ pub use query::{
     ARTIFACT_BUCKET_HASH, CharacterListResult, CharacterSubclass, CharacterSubclassOptions,
     DefinitionSearchQuery, ElementOptions, InspectItemRequest, InstanceSearchQuery,
     InventorySearchHit, InventorySearchResult, ItemHashFilter, ItemInspection, LocationFilter,
-    MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH, MAX_STAT_CONDITIONS,
-    MAX_TAG_FILTERS, NamedStat, OptionGroup, OptionStatus, QueryMetadata, SUBCLASS_BUCKET_HASH,
-    SearchTerm, StatCondition, StatOp, SubclassConfig, SubclassOption, SubclassOptionsResult,
-    SubclassResult, SubclassSlot, definition_matches, instance_matches, normalize_search_text,
+    MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET, MAX_SEARCH_TEXT_LENGTH,
+    MAX_STAT_CONDITIONS, MAX_TAG_FILTERS, NamedStat, OptionGroup, OptionStatus, QueryMetadata,
+    SUBCLASS_BUCKET_HASH, SearchTerm, StatCondition, StatOp, SubclassConfig, SubclassOption,
+    SubclassOptionsResult, SubclassResult, SubclassSlot, definition_matches, instance_matches,
+    normalize_search_text,
 };
 pub use query::{InspectionPlug, InspectionPlugRole};
 pub use redact::{REDACTED, Redacted, opaque, redact_optional};

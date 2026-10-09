@@ -16,7 +16,7 @@ use destiny_app::auth_ux::AuthorizationMode;
 use destiny_app::{
     AppError, CharacterId, DefinitionSearchQuery, ErrorCategory, InspectItemRequest,
     InstanceSearchQuery, ItemHash, ItemHashFilter, ItemInspection, ItemInstanceId,
-    MAX_SEARCH_LIMIT, PerkHash, Resolution, SearchInventoryRequest, SearchTerm,
+    MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET, PerkHash, Resolution, SearchInventoryRequest, SearchTerm,
 };
 
 use crate::output::OutputMode;
@@ -563,7 +563,7 @@ pub struct SearchInventoryArgs {
     #[arg(long, value_name = "N", default_value_t = 100)]
     pub limit: usize,
 
-    /// Skip ordered owned hits (0..1000); definition candidates are unchanged.
+    /// Skip ordered owned hits (0..10000); definition candidates are unchanged.
     #[arg(long, value_name = "N", default_value_t = 0)]
     pub offset: usize,
 }
@@ -571,10 +571,10 @@ pub struct SearchInventoryArgs {
 impl SearchInventoryArgs {
     /// Builds the two shared query shapes this command maps onto.
     fn into_request(self) -> Result<SearchInventoryRequest, CliError> {
-        if self.offset > MAX_SEARCH_LIMIT {
+        if self.offset > MAX_SEARCH_OFFSET {
             return Err(CliError::invalid_argument(
                 "--offset",
-                "must be between 0 and 1000",
+                "must be between 0 and 10000",
             ));
         }
         let definitions = DefinitionSearchQuery {
@@ -2138,6 +2138,18 @@ mod tests {
                 "case: {case:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn owned_offset_has_an_independent_bound() {
+        let request = search_request(
+            parse(["search-inventory", "--offset", "10000"])
+                .into_read_request()
+                .expect("offset ceiling is accepted"),
+        );
+        assert_eq!(request.instances.unwrap().offset, 10_000);
+        let error = rejected(["search-inventory", "--offset", "10001"]);
+        assert!(error.to_string().contains("must be between 0 and 10000"));
     }
 
     #[test]

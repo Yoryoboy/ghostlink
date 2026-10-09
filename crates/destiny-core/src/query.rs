@@ -75,6 +75,9 @@ pub const MAX_SEARCH_TEXT_LENGTH: usize = 256;
 /// Maximum number of matches any single search may return.
 pub const MAX_SEARCH_LIMIT: usize = 1000;
 
+/// Maximum number of ordered owned matches a search may skip.
+pub const MAX_SEARCH_OFFSET: usize = 10_000;
+
 /// Maximum number of tag filters one definition search may carry.
 pub const MAX_TAG_FILTERS: usize = 16;
 
@@ -453,7 +456,7 @@ pub const MAX_NAME_TERMS: usize = 8;
 /// implementation runs before reading the projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstanceSearchQuery {
-    /// Number of ordered owned matches to skip, bounded to 1000.
+    /// Number of ordered owned matches to skip, bounded to [`MAX_SEARCH_OFFSET`].
     pub offset: usize,
     pub sort: Option<StatSort>,
     pub include_available: bool,
@@ -479,10 +482,10 @@ impl InstanceSearchQuery {
     /// Rejects an out-of-range limit or an over-large definition-hash list.
     pub fn validate(&self) -> Result<(), AppError> {
         validate_search_limit(self.limit)?;
-        if self.offset > MAX_SEARCH_LIMIT {
+        if self.offset > MAX_SEARCH_OFFSET {
             return Err(AppError::invalid_argument(
                 "offset",
-                "must be between 0 and 1000",
+                "must be between 0 and 10000",
             ));
         }
         for (kind, terms) in [("perk", &self.perk_name), ("mod", &self.mod_name)] {
@@ -1240,6 +1243,16 @@ mod tests {
             min_power: None,
             limit: MAX_SEARCH_LIMIT,
         }
+    }
+
+    #[test]
+    fn owned_offset_has_an_independent_bound() {
+        let mut query = instance_query(ItemHashFilter::Any, None);
+        query.offset = 10_000;
+        assert!(query.validate().is_ok());
+        query.offset = 10_001;
+        let error = query.validate().unwrap_err();
+        assert!(error.to_string().contains("must be between 0 and 10000"));
     }
 
     #[test]

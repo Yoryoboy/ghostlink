@@ -25,6 +25,7 @@
 //! `ItemLocation::Other` instance is rendered as the opaque
 //! [`LocationView::Other`] shape without its provider text.
 
+use destiny_app::MAX_SEARCH_OFFSET;
 use destiny_app::{
     AppError, ErrorCategory, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH,
     MAX_TAG_FILTERS,
@@ -748,9 +749,9 @@ pub struct SearchInventoryArgs {
     #[schemars(range(min = 1, max = MAX_SEARCH_LIMIT))]
     pub limit: usize,
 
-    /// Skip ordered owned hits (0..1000); definition candidates are unchanged.
+    /// Skip ordered owned hits (0..10000); definition candidates are unchanged.
     #[serde(default)]
-    #[schemars(range(min = 0, max = MAX_SEARCH_LIMIT))]
+    #[schemars(range(min = 0, max = MAX_SEARCH_OFFSET))]
     pub offset: usize,
 
     /// Optional concrete-instance restrictions, combined with definition filters.

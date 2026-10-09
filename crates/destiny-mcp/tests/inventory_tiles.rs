@@ -376,7 +376,7 @@ fn pagination_arguments_and_results_have_cli_mcp_parity() {
             "--text",
             "Helmet",
             "--offset",
-            "1001",
+            "10001",
             "--json",
         ],
         freshness(),
@@ -385,7 +385,7 @@ fn pagination_arguments_and_results_have_cli_mcp_parity() {
     let mcp = mcp_dispatch(
         data,
         "search_inventory",
-        json!({"text":"Helmet","offset":1001}),
+        json!({"text":"Helmet","offset":10001}),
     );
     assert_eq!(mcp["code"], "provider_validation");
 }

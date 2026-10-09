@@ -52,8 +52,8 @@ use super::{SqliteStore, storage_failure};
 use destiny_core::query::instance_matches_with_definition;
 use destiny_core::{
     AppError, DefinitionRepository, DefinitionSearchQuery, InstanceSearchQuery, ItemDefinition,
-    ItemHash, ItemHashFilter, ItemInstance, ItemInstanceId, ItemLocation, PerkSummary, Resolution,
-    SearchRepository, definition_matches,
+    ItemHash, ItemHashFilter, ItemInstance, ItemInstanceId, ItemLocation, MAX_SEARCH_OFFSET,
+    PerkSummary, Resolution, SearchRepository, definition_matches,
 };
 use rusqlite::types::Value;
 use rusqlite::{Connection, Error as SqlError, params_from_iter};
@@ -367,7 +367,8 @@ impl SearchRepository for SqliteStore {
                 }
             }
         }
-        let more = instances.len() > query.offset + query.limit;
+        let more = query.offset + query.limit <= MAX_SEARCH_OFFSET
+            && instances.len() > query.offset + query.limit;
         let page = instances
             .into_iter()
             .skip(query.offset)

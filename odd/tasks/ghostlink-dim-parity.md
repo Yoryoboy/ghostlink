@@ -147,6 +147,11 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   rejects tool input schemas with top-level oneOf/anyOf/allOf (400 on every
   request; anthropics/claude-code #4886, #45106). Workspace: 1999 passed,
   0 failed; owned search timings unchanged.
+  Follow-up (review advisories): offset has its own ceiling
+  `MAX_SEARCH_OFFSET = 10_000` (accounts can exceed 1000 owned instances)
+  across core, CLI and MCP; `next_offset` is only emitted when the next
+  request would be accepted, and the default page fallback never probes past
+  the ceiling. Workspace: 2006 passed, 0 failed.
 - [x] **Fix — `apply_loadout` top-level `oneOf` (found during U2).** The
   shipped rc.3 `apply_loadout` input schema had a top-level `oneOf`, which
   the Anthropic API rejects with a 400 on every request (unusable sessions in
