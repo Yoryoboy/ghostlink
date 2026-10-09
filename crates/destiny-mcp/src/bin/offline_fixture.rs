@@ -385,6 +385,41 @@ impl destiny_app::LoadoutOperations for FixtureLoadouts {
         if selector.is_some_and(|id| id.as_str() == "missing") {
             return Err(AppError::new(ErrorCategory::ProviderValidation));
         }
+        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("loadouts-detail") {
+            let plug = destiny_app::LoadoutPlugView {
+                socket_index: 2,
+                plug_hash: destiny_app::ItemHash::new(10),
+                name: Some("Perk".into()),
+                description: Some("Official text".into()),
+                clarity: Some("Research".into()),
+                clarity_match: None,
+                subclass_kind: None,
+                empty: false,
+            };
+            return Ok(destiny_app::LoadoutsResult {
+                characters: vec![destiny_app::CharacterLoadoutsView {
+                    character_id: destiny_app::CharacterId::new("1"),
+                    class: Some("Hunter".into()),
+                    loadouts: vec![destiny_app::LoadoutView {
+                        slot: 3,
+                        name: Some("PvE".into()),
+                        name_hash: 7,
+                        color_hash: 8,
+                        icon_hash: 9,
+                        items: vec![destiny_app::LoadoutItemView {
+                            instance_id: ItemInstanceId::new("123"),
+                            item_hash: Some(destiny_app::ItemHash::new(1)),
+                            name: Some("Weapon".into()),
+                            item_type: Some("Auto Rifle".into()),
+                            bucket_hash: Some(1498876634),
+                            element: None,
+                            missing: false,
+                            plugs: vec![plug.clone(), plug],
+                        }],
+                    }],
+                }],
+            });
+        }
         Ok(destiny_app::LoadoutsResult { characters: vec![] })
     }
 }

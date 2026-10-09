@@ -174,6 +174,55 @@ async fn apply_loadout_stdio_contract() {
 }
 
 #[tokio::test]
+async fn loadouts_stdio_summary_then_one_detail_by_slot_or_name() {
+    let mut session = FixtureSession::spawn(Some("loadouts-detail")).await;
+    let summary = session
+        .call_tool("get_loadouts", json!({"character":"hunter"}))
+        .await;
+    assert_eq!(summary["result"]["isError"], false);
+    assert_eq!(
+        structured(&summary)["characters"][0]["loadouts"][0],
+        json!({
+            "slot":3,"name":"PvE","subclass":null,"items":[{"slot":"kinetic","name":"Weapon"}]
+        })
+    );
+    let mut previous = None;
+    for selector in [json!(3), json!("3"), json!(" pVe ")] {
+        let response = session
+            .call_tool(
+                "get_loadout",
+                json!({"character":"hunter","loadout":selector}),
+            )
+            .await;
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        let detail = structured(&response);
+        assert_eq!(detail["kind"], "loadout");
+        assert_eq!(
+            detail["plug_insights"],
+            json!([{"description":"Official text","clarity":"Research"}])
+        );
+        for plug in detail["items"][0]["plugs"].as_array().unwrap() {
+            assert_eq!(plug["insight"], 0);
+            assert!(plug.get("description").is_none());
+            assert!(plug.get("clarity").is_none());
+        }
+        if let Some(previous) = &previous {
+            assert_eq!(previous, detail);
+        }
+        previous = Some(detail.clone());
+        // The existing dual text + structuredContent transport remains unchanged.
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                response["result"]["content"][0]["text"].as_str().unwrap()
+            )
+            .unwrap(),
+            *detail
+        );
+    }
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn stack_stdio_acknowledged_refused_uncertain_and_invalid() {
     for (scenario, disposition) in [
         ("stack-success", "applied"),
@@ -185,7 +234,7 @@ async fn stack_stdio_acknowledged_refused_uncertain_and_invalid() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 18);
         let tool = tools.iter().find(|t| t["name"] == "pull_stack").unwrap();
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(tool["annotations"]["readOnlyHint"], false);
@@ -236,7 +285,7 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 18);
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == "pull_item")
@@ -1044,6 +1093,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             GET_SUBCLASS_TOOL,
             GET_ARTIFACT_TOOL,
             GET_LOADOUTS_TOOL,
+            "get_loadout",
             WEEKLY_RESET_TOOL,
             "weekly",
             "get_subclass_options",
@@ -1154,6 +1204,31 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
     for arguments in [json!({"unknown": true}), json!({"character": 1})] {
         let invalid = session.call_tool(GET_LOADOUTS_TOOL, arguments).await;
         assert_eq!(invalid["error"]["code"], -32602);
+    }
+
+    let detail = session.call_tool("get_loadout", json!({"loadout":3})).await;
+    assert_eq!(detail["result"]["isError"], true);
+    assert_eq!(structured(&detail)["code"], "empty_slot");
+    let detail = session
+        .call_tool("get_loadout", json!({"loadout":"Unknown"}))
+        .await;
+    assert_eq!(structured(&detail)["code"], "unknown_loadout_name");
+    for arguments in [
+        json!({}),
+        json!({"loadout":true}),
+        json!({"loadout":3,"unknown":true}),
+    ] {
+        let invalid = session.call_tool("get_loadout", arguments).await;
+        assert_eq!(invalid["error"]["code"], -32602);
+    }
+    for arguments in [
+        json!({"loadout":0}),
+        json!({"loadout":" "}),
+        json!({"loadout":"a".repeat(513)}),
+        json!({"loadout":3,"character":"bad\u{7}"}),
+    ] {
+        let invalid = session.call_tool("get_loadout", arguments).await;
+        assert_eq!(structured(&invalid)["code"], "provider_validation");
     }
 
     // --- one move_item request completes the whole journey -----------------------

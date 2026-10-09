@@ -46,7 +46,8 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 | Current subclass setup and what each equipped plug does | `ghostlink subclass` |
 | Unlockable supers, aspects, fragments | `ghostlink subclass-options` |
 | Artifact points and active perks | `ghostlink artifact` |
-| Saved in-game loadouts | `ghostlink loadouts` |
+| Saved in-game loadouts (compact discovery) | MCP `get_loadouts`; fallback `ghostlink loadouts` |
+| Full detail of one saved loadout | MCP `get_loadout`; fallback `ghostlink loadouts <slot-or-name>` |
 | Apply one saved loadout on an explicit character | MCP `apply_loadout`; fallback `ghostlink apply-loadout` |
 | Weekly rotation predictions (login required) | `ghostlink weekly-reset` |
 | Weekly progress for one character | `ghostlink weekly` |
@@ -78,6 +79,29 @@ equipped is a verified no-op. Full acknowledgement is applied (0 / MCP success),
 not observed state; incomplete is 41 and local invalidation storage failure 42.
 On location refusal ask the user to go to orbit or a social space. Read state
 and reassess intent after failures; never blindly repeat a batch.
+
+## Read saved loadouts
+
+Call MCP `get_loadouts` first (`{}` for all characters or
+`{"character":"hunter"}`). It returns only saved slot/name, subclass name/element
+and equipped item names per slot: no plugs or effect text. Fallback:
+`ghostlink loadouts --json`.
+
+For effects or configuration, select ONE result with MCP `get_loadout`, e.g.
+`{"character":"hunter","loadout":3}` or
+`{"character":"hunter","loadout":"PvE"}`. Fallback:
+`ghostlink loadouts 3 --character hunter --json`. Names resolve exactly after
+whitespace/case normalization, like apply-loadout. Unknown/ambiguous selectors
+return typed errors and candidates; never guess. Omitted character searches all
+characters and must resolve uniquely; specify character if ambiguous.
+
+Detail includes full items, plugs, subclass configuration and artifact perks.
+Read each plug's optional `insight` as a zero-based index into the loadout-level
+`plug_insights` array. Those entries contain optional official `description`,
+community `clarity` and `clarity_match`. Identical content shares one entry,
+even across different hashes; differing parent-specific text remains distinct.
+No index means no insight is available, not no effect. Both JSON shapes match
+MCP exactly; no-selector text and `--detail` remain human-only presentation choices.
 
 ## Apply saved loadouts
 
@@ -161,7 +185,7 @@ explicit intent before another action.
 
 ## Descriptions
 
-- Five plug surfaces expose optional official `description` and community `clarity`: subclass slots, subclass options, artifact slots, loadout plugs and inspect `plug_details` (`hash`, `name`, `role`, optional `description`, `clarity`, `clarity_match`). Missing fields mean no text is available, not no effect.
+- Five plug surfaces expose optional official `description` and community `clarity`: subclass slots, subclass options, artifact slots, saved-loadout detail's referenced `plug_insights`, and inspect `plug_details` (`hash`, `name`, `role`, optional `description`, `clarity`, `clarity_match`). Loadout summaries contain no effect text: call `get_loadout` after `get_loadouts`. Missing fields mean no text is available, not no effect.
 - `ghostlink search-inventory` returns names only. To explain perks, search first, then inspect the chosen instance.
 - Descriptions exist only for plugs present in the user's items, subclass or subclass options; there is no lookup for arbitrary perk names.
 
@@ -177,7 +201,7 @@ explicit intent before another action.
 1. Pick the command from the table; check its `--help` if not yet seen.
 2. Run it with `--json`. Reads refresh a stale profile automatically; use `ghostlink sync` only to force freshness.
 3. On exit 0, answer from the JSON. Mention `metadata.checked_at` when freshness matters.
-4. On non-zero exit, parse stderr. An object with `status` is a move, equip, lock or unlock result: read `status` and `reason`. For `kind: "instanced_pull"` or `kind: "stack_pull"`, read `disposition`, independent `receipt` and `failure`; there are no post-action observations. For `kind: "apply_loadout"`, read `outcome`, `receipt`, `reason` and any name-resolution `candidates`. Otherwise read `error.code`. Then follow `references/exit-codes.md`.
+4. On non-zero exit, parse stderr. An object with `status` is a move, equip, lock or unlock result: read `status` and `reason`. For `kind: "instanced_pull"` or `kind: "stack_pull"`, read `disposition`, independent `receipt` and `failure`; there are no post-action observations. For `kind: "apply_loadout"`, read `outcome`, `receipt`, `reason` and any name-resolution `candidates`. For refused `kind: "loadout"`, read `code`, `reason` and `candidates`. Otherwise read `error.code`. Then follow `references/exit-codes.md`.
 5. For mutations, quote the resolved item and destination (move/equip) or requested lock state (lock/unlock) back to the user if inferred from earlier conversation; obtain explicit intent before acting. For pull, confirm the exact genuine instance ID and its observed Postmaster owner.
 
 ## Output Contract

@@ -291,6 +291,24 @@ fn dispatch_locked(
                 .get_loadouts(character.as_ref())
                 .map_or_else(tool_error, |output| output.into_call_tool_result()))
         }
+        crate::schema::GET_LOADOUT_TOOL => {
+            let arguments: crate::schema::GetLoadoutArgs = deserialize(arguments)?;
+            let (character, selector) = match arguments.into_request() {
+                Ok(request) => request,
+                Err(error) => return Ok(error.into_call_tool_result()),
+            };
+            Ok(guard
+                .get_loadout(character.as_ref(), &selector)
+                .map_or_else(tool_error, |output| match output {
+                    Ok(output) => output.into_call_tool_result(),
+                    Err(error) => {
+                        let output = destiny_output::loadouts::selector_error(error);
+                        let mut result = CallToolResult::structured(output.value);
+                        result.is_error = Some(true);
+                        result
+                    }
+                }))
+        }
         crate::schema::GET_ARTIFACT_TOOL => {
             let arguments: crate::schema::GetArtifactArgs = deserialize(arguments)?;
             let character = match arguments.into_request() {
@@ -1068,6 +1086,7 @@ mod tests {
                 "get_subclass",
                 "get_artifact",
                 "get_loadouts",
+                "get_loadout",
                 "weekly_reset",
                 "weekly",
                 "get_subclass_options"
@@ -1487,6 +1506,7 @@ mod tests {
                 "get_subclass",
                 "get_artifact",
                 "get_loadouts",
+                "get_loadout",
                 "weekly_reset",
                 "weekly",
                 "get_subclass_options"
@@ -1531,6 +1551,7 @@ mod tests {
                 "get_subclass",
                 "get_artifact",
                 "get_loadouts",
+                "get_loadout",
                 "weekly_reset",
                 "weekly",
                 "get_subclass_options",

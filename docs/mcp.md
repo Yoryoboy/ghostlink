@@ -11,7 +11,8 @@ inspect_item      inspect exactly one concrete instance by instance identifier
 get_subclass      show equipped subclass configurations per character
 get_subclass_options list available subclass options with unlock status
 get_artifact      read live seasonal artifact state and per-character perks
-get_loadouts      show saved in-game loadouts and configured equipment per character
+get_loadouts      list compact saved-loadout summaries per character
+get_loadout       read one saved loadout's full detail with deduplicated insights
 weekly_reset      predict weekly rotations and observe current-week milestones
 weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
@@ -289,18 +290,39 @@ Each perk slot includes optional `description` (official Manifest tooltip), omit
 when unavailable.
 For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
 
+Call `get_loadouts` first for compact discovery, then `get_loadout` for detail.
 `get_loadouts` accepts an optional bounded `character` (exact id or unique class),
 with omission selecting all characters. Its structured output matches
-`ghostlink --json loadouts` exactly, including names, equipment, subclass
-configuration, artifact perks and retained slot/socket indices. For example:
-`{"character": "hunter"}`. Requires login and loaded Manifest definitions;
-run `ghostlink sync-manifest` once after upgrading for loadout names. Each saved
-plug includes optional `description` (official Manifest tooltip), omitted when
-unavailable; cosmetic filtering is unchanged. Descriptions preserve multiline
-text across all four tools.
+`ghostlink --json loadouts` exactly: `kind: "loadouts"`, character ID/class, and
+saved loadouts with one-based `slot`, `name`, nullable `subclass` (name/element),
+and `items` (equipment slot/name). It contains no plugs, descriptions or Clarity.
+For example: `{"character":"hunter"}`.
 
-Subclass slots, subclass options, artifact slots, loadout plugs and inspect
-`plug_details` also include optional `clarity`: community research by
+`get_loadout` requires `loadout`: a saved slot number (1–12), decimal slot string,
+or normalized exact name. Optional `character` uses the same selector rules.
+Omission searches all characters, but must resolve exactly one loadout; specify
+character when ambiguous. Examples: `{"character":"hunter","loadout":3}` or
+`{"character":"hunter","loadout":"PvE"}`. Unknown/ambiguous names return typed
+`unknown_loadout_name` / `ambiguous_loadout_name` errors and candidates, matching
+apply-loadout resolution; unavailable slots return `empty_slot`.
+
+Its structured output matches `ghostlink --json loadouts 3 --character hunter`
+exactly: `kind: "loadout"`, character ID/class, slot/name/presentation hashes,
+full `items` including subclass configuration and artifact perks, and
+`plug_insights`. Each plug retains `plug_hash`, `name`, `subclass_kind`,
+`socket_index` and `empty`. Optional `insight` is a zero-based index into the
+loadout-level `plug_insights` array, whose entries contain optional `description`,
+`clarity`, and `clarity_match`. Entries are deduplicated by full content equality
+in deterministic first-occurrence order, not by hash: parent-specific Clarity
+variants survive, and identical insights across different hashes share an entry.
+Plugs without insight text omit `insight`. Text remains verbatim and multiline.
+Cosmetic filtering is unchanged; unknown plugs and missing instances are retained.
+Both tools require login and loaded Manifest definitions; run
+`ghostlink sync-manifest` once after upgrading for loadout names. The existing
+identical text content plus `structuredContent` transport is unchanged.
+
+Subclass slots, subclass options, artifact slots, loadout detail's referenced
+`plug_insights` and inspect `plug_details` also include optional `clarity`: community research by
 [Clarity](https://d2clarity.com), shown verbatim, including whitespace and
 newlines. CLI JSON and MCP expose identical plug fields. Missing insights are
 omitted. Exact hashes win; name fallback is restricted to the same semantic

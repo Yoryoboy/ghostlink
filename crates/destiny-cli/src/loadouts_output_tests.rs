@@ -10,13 +10,17 @@ fn loadout_descriptions_are_optional_and_follow_detail_visibility() {
     let items = &mut result.characters[0].loadouts[0].items;
     items[0].plugs[0].description = Some("Official weapon tooltip.".into());
     items[2].plugs[0].description = Some("Official fragment tooltip.".into());
-    let value = loadouts_json(&result);
-    let items = &value["characters"][0]["loadouts"][0]["items"];
+    let selected =
+        destiny_app::loadouts::select_loadout(&result, &destiny_app::LoadoutSelector::Slot(3))
+            .unwrap();
+    let value = loadout_json(&selected);
+    let items = &value["items"];
+    let insight = items[0]["plugs"][0]["insight"].as_u64().unwrap() as usize;
     assert_eq!(
-        items[0]["plugs"][0]["description"],
+        value["plug_insights"][insight]["description"],
         "Official weapon tooltip."
     );
-    assert!(items[0]["plugs"][1].get("description").is_none());
+    assert!(items[0]["plugs"][1].get("insight").is_none());
     let summary = render_loadouts(OutputMode::Human, &result, false);
     assert!(summary.contains("        F1:\n          Official fragment tooltip."));
     assert!(!summary.contains("Official weapon tooltip."));
@@ -46,16 +50,14 @@ fn loadout_clarity_follows_detail_visibility() {
     assert!(detail.contains(
         "        Countermass:\n          Clarity (variant):\n            Weapon research"
     ));
-    let json = loadouts_json(&result);
-    assert_eq!(
-        json["characters"][0]["loadouts"][0]["items"][0]["plugs"][0]["clarity"],
-        "Weapon research"
-    );
-    assert!(
-        json["characters"][0]["loadouts"][0]["items"][0]["plugs"][1]
-            .get("clarity")
-            .is_none()
-    );
+    let selected =
+        destiny_app::loadouts::select_loadout(&result, &destiny_app::LoadoutSelector::Slot(3))
+            .unwrap();
+    let json = loadout_json(&selected);
+    let insight = json["items"][0]["plugs"][0]["insight"].as_u64().unwrap() as usize;
+    assert_eq!(json["plug_insights"][insight]["clarity"], "Weapon research");
+    assert_eq!(json["plug_insights"][insight]["clarity_match"], "variant");
+    assert!(json["items"][0]["plugs"][1].get("insight").is_none());
 }
 
 fn fixture() -> LoadoutsResult {
@@ -65,6 +67,7 @@ fn fixture() -> LoadoutsResult {
         name: Some(name.into()),
         item_type: Some(item_type.into()),
         bucket_hash: Some(bucket),
+        element: (bucket == 3284755031).then(|| "stasis".into()),
         missing: false,
         plugs,
     };
@@ -130,6 +133,7 @@ fn fixture() -> LoadoutsResult {
                             name: None,
                             item_type: None,
                             bucket_hash: None,
+                            element: None,
                             missing: true,
                             plugs: vec![],
                         },
@@ -178,14 +182,29 @@ fn loadouts_unknown_names_missing_instances_and_empty_results() {
     );
 }
 #[test]
-fn loadouts_json_is_full_snake_case_and_ignores_detail() {
+fn loadouts_json_is_summary_snake_case_and_ignores_detail() {
     let result = fixture();
     let value = loadouts_json(&result);
     assert_eq!(value["kind"], "loadouts");
     let character = &value["characters"][0];
     assert_eq!(character["character_id"], "10");
     assert_eq!(character["class"], "Hunter");
-    let saved = &character["loadouts"][0];
+    let summary = &character["loadouts"][0];
+    assert_eq!(
+        summary["subclass"],
+        json!({"name":"Revenant","element":"stasis"})
+    );
+    assert_eq!(
+        summary["items"][0],
+        json!({"slot":"kinetic","name":"Alethonym"})
+    );
+    assert!(summary.get("name_hash").is_none());
+    assert!(!value.to_string().contains("plugs"));
+    let selected =
+        destiny_app::loadouts::select_loadout(&result, &destiny_app::LoadoutSelector::Slot(3))
+            .unwrap();
+    let full = loadout_json(&selected);
+    let saved = &full;
     assert_eq!(
         (
             saved["slot"].as_u64(),
@@ -198,7 +217,7 @@ fn loadouts_json_is_full_snake_case_and_ignores_detail() {
     assert_eq!(saved["name"], "Stasis");
     assert_eq!(
         saved["items"][0],
-        json!({"instance_id":"w","item_hash":1,"name":"Alethonym","item_type":"Grenade Launcher","bucket_hash":1498876634_u32,"missing":false,"plugs":[
+        json!({"instance_id":"w","item_hash":1,"name":"Alethonym","item_type":"Grenade Launcher","bucket_hash":1498876634_u32,"element":null,"missing":false,"plugs":[
             {"socket_index":2,"plug_hash":11,"name":"Countermass","subclass_kind":null,"empty":false},
             {"socket_index":4,"plug_hash":12,"name":"Empty Mod Socket","subclass_kind":null,"empty":true},
             {"socket_index":5,"plug_hash":13,"name":null,"subclass_kind":null,"empty":false}
@@ -207,7 +226,7 @@ fn loadouts_json_is_full_snake_case_and_ignores_detail() {
     assert_eq!(saved["items"][2]["plugs"][0]["subclass_kind"], "fragment");
     assert_eq!(
         saved["items"][4],
-        json!({"instance_id":"404","item_hash":null,"name":null,"item_type":null,"bucket_hash":null,"missing":true,"plugs":[]})
+        json!({"instance_id":"404","item_hash":null,"name":null,"item_type":null,"bucket_hash":null,"element":null,"missing":true,"plugs":[]})
     );
     assert_eq!(value["characters"][1]["loadouts"], json!([]));
     for detail in [false, true] {

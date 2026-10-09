@@ -71,6 +71,7 @@ pub const GET_ARTIFACT_TOOL: &str = "get_artifact";
 
 /// Stable tool name for saved in-game loadouts.
 pub const GET_LOADOUTS_TOOL: &str = "get_loadouts";
+pub const GET_LOADOUT_TOOL: &str = "get_loadout";
 pub const APPLY_LOADOUT_TOOL: &str = "apply_loadout";
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
@@ -201,11 +202,18 @@ pub fn tool_specs() -> Vec<Tool> {
         .with_object_output_schema::<GetArtifactOutput>(),
         Tool::new(
             GET_LOADOUTS_TOOL,
-            "Return saved in-game loadouts per character with names, weapons, armor, subclass configuration and artifact perks. Omit character for all characters, or select an exact id or unique hunter|titan|warlock class. Requires login and loaded Manifest definitions; run sync-manifest once for loadout names. Reads live state.",
+            "List compact saved-loadout summaries: slot, name, subclass and equipped item names per slot. No plugs or insight text. Call get_loadouts first, then get_loadout for one loadout's full detail. Omit character for all characters, or select an exact id or unique hunter|titan|warlock class. Requires login and loaded Manifest definitions; reads live state.",
             JsonObject::new(),
         )
         .with_input_schema::<GetLoadoutsArgs>()
         .with_object_output_schema::<GetLoadoutsOutput>(),
+        Tool::new(
+            GET_LOADOUT_TOOL,
+            "Read ONE saved loadout's full items, plugs, subclass configuration and artifact perks. Call get_loadouts first. Required loadout accepts a one-based saved slot number or normalized exact name. Optional character is an exact id or unique hunter|titan|warlock class; omitted searches all characters and must resolve uniquely. Unknown or ambiguous selectors return typed errors, never guesses. Plug insight text is deduplicated by content in plug_insights; each occurrence references its insight index. Requires login and loaded Manifest definitions; reads live state.",
+            JsonObject::new(),
+        )
+        .with_input_schema::<GetLoadoutArgs>()
+        .with_object_output_schema::<GetLoadoutOutput>(),
         Tool::new(
             WEEKLY_RESET_TOOL,
             "Predict weekly calendar values from a community-derived rotation. Live milestones are observed data for the current week only. Requires login and `ghostlink sync-manifest` to load the required definitions. Dates use UTC, not the server's local zone.",
@@ -932,7 +940,22 @@ pub struct GetLoadoutsArgs {
     pub character: Option<String>,
 }
 
-/// Full saved loadouts envelope, matching the CLI JSON projection.
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum LoadoutSelectorArg {
+    Slot(#[schemars(range(min = 1, max = 12))] u8),
+    Name(#[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))] String),
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetLoadoutArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub character: Option<String>,
+    pub loadout: LoadoutSelectorArg,
+}
+
+/// Compact saved loadouts envelope, matching the CLI JSON projection.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "kind", rename = "loadouts")]
 pub struct GetLoadoutsOutput {
@@ -943,17 +966,41 @@ pub struct GetLoadoutsOutput {
 pub struct CharacterLoadoutsView {
     pub character_id: String,
     pub class: Option<String>,
-    pub loadouts: Vec<LoadoutView>,
+    pub loadouts: Vec<LoadoutSummaryView>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-pub struct LoadoutView {
+pub struct LoadoutSummaryView {
+    pub slot: u8,
+    pub name: Option<String>,
+    pub subclass: Option<LoadoutSubclassSummaryView>,
+    pub items: Vec<LoadoutItemSummaryView>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct LoadoutSubclassSummaryView {
+    pub name: Option<String>,
+    pub element: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct LoadoutItemSummaryView {
+    pub slot: Option<String>,
+    pub name: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+#[serde(tag = "kind", rename = "loadout")]
+pub struct GetLoadoutOutput {
+    pub character_id: String,
+    pub class: Option<String>,
     pub slot: u8,
     pub name: Option<String>,
     pub name_hash: u32,
     pub color_hash: u32,
     pub icon_hash: u32,
     pub items: Vec<LoadoutItemView>,
+    pub plug_insights: Vec<LoadoutInsightView>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -963,6 +1010,7 @@ pub struct LoadoutItemView {
     pub name: Option<String>,
     pub item_type: Option<String>,
     pub bucket_hash: Option<u32>,
+    pub element: Option<String>,
     pub missing: bool,
     pub plugs: Vec<LoadoutPlugView>,
 }
@@ -972,14 +1020,26 @@ pub struct LoadoutPlugView {
     pub socket_index: u8,
     pub plug_hash: i64,
     pub name: Option<String>,
+    pub subclass_kind: Option<SubclassPlugKindView>,
+    pub empty: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insight: Option<usize>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+pub struct LoadoutInsightView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clarity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clarity_match: Option<String>,
-    pub subclass_kind: Option<SubclassPlugKindView>,
-    pub empty: bool,
+}
+
+impl GetLoadoutOutput {
+    pub fn into_call_tool_result(self) -> CallToolResult {
+        structured_result(self)
+    }
 }
 
 impl GetLoadoutsOutput {
@@ -1724,6 +1784,7 @@ mod tests {
                 super::GET_SUBCLASS_TOOL,
                 super::GET_ARTIFACT_TOOL,
                 super::GET_LOADOUTS_TOOL,
+                super::GET_LOADOUT_TOOL,
                 super::WEEKLY_RESET_TOOL,
                 super::WEEKLY_TOOL,
                 super::GET_SUBCLASS_OPTIONS_TOOL
