@@ -180,6 +180,15 @@ fn cli_move_verified_outcomes_and_no_retry() {
             assert_eq!(output.profile_refresh, ProfileRefresh::NotRequired);
             assert!(output.observed.is_none());
             if status == MoveStatus::Applied {
+                let Resolution::Unique(moved) = service
+                    .repository()
+                    .lookup_instance(&ItemInstanceId::new("123"))
+                    .unwrap()
+                else {
+                    panic!("moved instance must remain visible");
+                };
+                assert_eq!(moved.location, destination);
+                assert!(!service.repository().freshness_invalidated().unwrap());
                 assert!(output.render_text().contains("not re-read"));
                 assert!(!output.render_text().contains("✔ verified"));
             }
@@ -213,13 +222,12 @@ fn cli_move_verified_outcomes_and_no_retry() {
     }
 }
 #[test]
-fn cli_move_refuses_ambiguity_missing_and_preflight_change_without_dispatch() {
+fn cli_move_refuses_ambiguity_and_missing_selectors_without_dispatch() {
     for case in [
         "item",
         "character",
         "missing_item",
         "missing_character",
-        "changed",
         "exact",
     ] {
         let mut initial = snapshot(ItemLocation::Vault);
@@ -241,16 +249,7 @@ fn cli_move_refuses_ambiguity_missing_and_preflight_change_without_dispatch() {
             }
             _ => {}
         }
-        // Changed to a different location, NOT the desired end state: the
-        // latter is the shared executor's legitimate verified-no-op path.
-        let preflight = if case == "changed" {
-            let mut changed = snapshot(ItemLocation::Character(CharacterId::new("457")));
-            changed.characters.push(character("457"));
-            changed
-        } else {
-            initial.clone()
-        };
-        let mut service = mutations(initial, preflight, None);
+        let mut service = mutations(initial.clone(), initial, None);
         let mut transfer = QueuedTransferGateway::new();
         let output = move_item(
             &request,
@@ -272,7 +271,6 @@ fn cli_move_refuses_ambiguity_missing_and_preflight_change_without_dispatch() {
                 "item" | "character" => 31,
                 "missing_item" => 32,
                 "missing_character" => 2,
-                "changed" => 30,
                 "exact" => 40,
                 _ => unreachable!(),
             }
@@ -281,20 +279,67 @@ fn cli_move_refuses_ambiguity_missing_and_preflight_change_without_dispatch() {
     }
 }
 #[test]
-fn cli_move_preflight_satisfied_is_verified_without_dispatch() {
+fn cli_move_local_revision_drift_refuses_before_dispatch() {
+    let initial = snapshot(ItemLocation::Vault);
+    let mut service = mutations(initial.clone(), initial.clone(), None);
+    let request = MoveRequest {
+        membership: MembershipId::new("789"),
+        item: ItemSelector::instance(ItemInstanceId::new("123")),
+        destination: DestinationSelector::character(CharacterId::new("456")),
+        intent: MoveIntentAuthorization::Explicit,
+    };
+    let plan = service
+        .plan_move(&request, PlanLifetime::MAX, POLICY, NOW)
+        .unwrap();
+    let mut changed = initial;
+    changed.items[0].locked = true;
+    service.repository_mut().replace_current(changed).unwrap();
+    let mut transfer = QueuedTransferGateway::new();
+    let failure = service
+        .execute_move_action(&mut transfer, &request, &plan, POLICY, NOW, NOW)
+        .unwrap_err();
+    assert_eq!(failure.error(), MutationError::StaleRevision);
+    let output = destiny_cli::move_output::MoveOutput::refused(failure.error())
+        .with_evidence(failure.evidence(), &[]);
+    assert_eq!(output.status, MoveStatus::Refused);
+    assert_eq!(output.exit_code(), 30);
+    assert!(output.steps.iter().all(|step| step.outcome == "not_run"));
+    assert!(transfer.requests().is_empty());
+}
+
+#[test]
+fn cli_move_committed_local_destination_is_verified_without_dispatch() {
     for vault in [false, true] {
         let source = if vault { target() } else { ItemLocation::Vault };
         let destination = if vault { ItemLocation::Vault } else { target() };
-        let mut service = mutations(snapshot(source), snapshot(destination), None);
+        let mut service = mutations(snapshot(source.clone()), snapshot(source), None);
+        let request = MoveRequest {
+            membership: MembershipId::new("789"),
+            item: ItemSelector::instance(ItemInstanceId::new("123")),
+            destination: if vault {
+                DestinationSelector::vault()
+            } else {
+                DestinationSelector::character(CharacterId::new("456"))
+            },
+            intent: MoveIntentAuthorization::Explicit,
+        };
+        let plan = service
+            .plan_move(&request, PlanLifetime::MAX, POLICY, NOW)
+            .unwrap();
+        // A local publication supersedes the source with the requested end state.
+        let committed = service
+            .repository_mut()
+            .replace_current(snapshot(destination))
+            .unwrap();
         let mut transfer = QueuedTransferGateway::new();
-        let output = move_item(
-            &args(vault),
-            &mut service,
-            &mut transfer,
-            &FakeClock::fixed(NOW),
-            POLICY,
-        )
-        .unwrap();
+        let outcome = service
+            .execute_move_action(&mut transfer, &request, &plan, POLICY, NOW, NOW)
+            .unwrap();
+        let output = destiny_cli::move_output::MoveOutput::from_outcome(
+            &outcome,
+            &committed.characters,
+            committed.items.first(),
+        );
         assert_eq!(output.status, MoveStatus::VerifiedNoop);
         assert_eq!(output.exit_code(), 0);
         assert_eq!(output.profile_refresh, ProfileRefresh::NotRequired);

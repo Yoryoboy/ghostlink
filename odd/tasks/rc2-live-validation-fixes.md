@@ -73,6 +73,26 @@ G5/G7 CLI UX.
     writes nothing; in-memory parity; CLI/MCP wrappers forward. core,
     adapters, app tests + workspace clippy pass. Commit: see git log
     (`feat(inventory): persist acknowledged effects locally`).
+  - [x] C1 move + single equip dispatch from the committed projection:
+    `ExecutionTicket::from_committed_projection`, ordinary sync (fresh = 0
+    acquisitions, stale/invalidated = 1); post-action invalidation kept
+    until C2. RED `fresh_committed_move_dispatches_without_profile_acquisition`
+    (ProviderUnavailable) then GREEN; stdio/CLI tests adapted (local no-op,
+    local drift, typed provider rejection). Workspace tests + clippy pass.
+    Size: +526/-228 (over the ~400 budget; bulk is adapted tests and the
+    stdio fixture, not splittable without red intermediate commits).
+    Commit: see git log (`feat(actions): dispatch move and equip from the
+    local projection`).
+  - [x] C2 move, equip and `equip_items` apply acknowledged effects
+    (each acknowledged transfer leg; equip unequips the same-bucket item via
+    definitions). Fully applied: no invalidation; incomplete/uncertain:
+    acknowledged legs applied + invalidated; local persistence failure keeps
+    the receipt, invalidates, never retries. RED for chained move freshness,
+    equip projection and batch partial success, then GREEN; workspace tests
+    + clippy pass. +435/-60. Note: equip planning already requires a
+    definition for every equipped item (`UnknownRarity`), pre-existing.
+    Commit: see git log (`feat(actions): apply acknowledged move and equip
+    effects locally`).
 - [ ] **T3 — DIM-style action pipeline.** Remove forced preflight acquisition
   from move, lock, equip, pull item, pull stack and apply loadout; plan and
   execute from the local projection; apply the effect from T2 on

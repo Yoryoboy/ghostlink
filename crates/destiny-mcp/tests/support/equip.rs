@@ -236,6 +236,16 @@ pub fn serialized_publication() {
     #[derive(Clone)]
     struct SharedStore(Arc<Mutex<SqliteStore>>, Option<Publication>);
     impl InventoryRepository for SharedStore {
+        fn apply_acknowledged_effects(
+            &mut self,
+            membership: &DestinyMembership,
+            effects: &[destiny_app::InventoryEffect],
+        ) -> Result<InventorySnapshot, AppError> {
+            self.0
+                .lock()
+                .unwrap()
+                .apply_acknowledged_effects(membership, effects)
+        }
         fn freshness_invalidated(&self) -> Result<bool, AppError> {
             self.0.lock().unwrap().freshness_invalidated()
         }

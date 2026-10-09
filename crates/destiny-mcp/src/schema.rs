@@ -136,7 +136,7 @@ const SEARCH_INVENTORY_DESCRIPTION: &str = "Search item definitions and, when re
 const INSPECT_ITEM_DESCRIPTION: &str =
     "Inspect exactly one concrete inventory instance by its instance identifier.";
 
-const MOVE_ITEM_DESCRIPTION: &str = "Move one concrete inventory instance to the Vault or to a character. One call plans the move, forces a fresh preflight, and issues only the ordered steps. Full acknowledgement returns applied without post-action verification; the next ordinary read forces sync. Never blindly retry partial or uncertain results.";
+const MOVE_ITEM_DESCRIPTION: &str = "Move one concrete inventory instance to the Vault or to a character. One call plans and validates against the local projection, refreshed by ordinary sync only when stale or invalidated, and issues only the ordered steps. Bungie remains the final validator. Full acknowledgement returns applied without post-action verification; the next ordinary read forces sync. Never blindly retry partial or uncertain results.";
 
 /// Maximum accepted MCP identifier length, in characters.
 ///
@@ -384,7 +384,7 @@ impl EquipItemArgs {
     }
 }
 pub fn equip_item_tool() -> Tool {
-    Tool::new(EQUIP_ITEM_TOOL, "Equip one explicitly selected item on one explicitly selected character, automatically transferring if necessary. One call authorizes fresh preflight and ordered mutation. Full acknowledgement returns applied without post-action verification; the next ordinary read forces sync. Ambiguity refuses; partial progress is not rolled back; never blindly retry uncertain outcomes. Character must be in orbit, a social space, or offline.", JsonObject::new())
+    Tool::new(EQUIP_ITEM_TOOL, "Equip one explicitly selected item on one explicitly selected character, automatically transferring if necessary. One call validates against the local projection, refreshed by ordinary sync only when stale or invalidated, and authorizes ordered mutation. Bungie remains the final validator. Full acknowledgement returns applied without post-action verification; the next ordinary read forces sync. Ambiguity refuses; partial progress is not rolled back; never blindly retry uncertain outcomes. Character must be in orbit, a social space, or offline.", JsonObject::new())
         .with_input_schema::<EquipItemArgs>()
 }
 

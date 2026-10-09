@@ -1013,8 +1013,8 @@ where
             .plan_move(&move_request, self.lifetime, self.policy, preflight_now)
             .map_err(mutation_failure)?;
 
-        // Preserve timestamp ordering after planning. The executor owns fresh
-        // preflight, ordered dispatch, receipt classification and invalidation.
+        // Preserve timestamp ordering after planning. The executor owns ordinary
+        // sync, local validation, ordered dispatch, receipts and invalidation.
         let post_action_now = self.clock.now().map_err(McpError::from)?;
         let outcome = self
             .mutations
@@ -2674,6 +2674,17 @@ mod tests {
     }
 
     impl InventoryRepository for CompositeRepository {
+        fn apply_acknowledged_effects(
+            &mut self,
+            membership: &DestinyMembership,
+            effects: &[destiny_app::InventoryEffect],
+        ) -> Result<InventorySnapshot, AppError> {
+            let snapshot = self
+                .inventory
+                .apply_acknowledged_effects(membership, effects)?;
+            self.search.set_instances(snapshot.items.clone());
+            Ok(snapshot)
+        }
         fn freshness_invalidated(&self) -> Result<bool, AppError> {
             self.inventory.freshness_invalidated()
         }
@@ -3805,9 +3816,8 @@ mod tests {
             vec![warlock()],
             vec![vault_item("inst-a", 1)],
         ));
-        // The mandatory fresh preflight, then the mandatory post-action
-        // refresh. The plan itself needs no acquisition because the seeded
-        // projection is already fresh.
+        // Neither queued projection is acquired: planning and dispatch reuse
+        // the fresh committed projection, then invalidate it after acknowledgement.
         queue_projection(
             &shared,
             FRESH_CHECKED_AT,
@@ -3852,9 +3862,9 @@ mod tests {
             other => panic!("expected a verified success, got {other:?}"),
         }
 
-        // One fresh preflight and one ordered transfer, without a post-action read.
-        assert_eq!(shared.borrow().membership_calls(), 1);
-        assert_eq!(shared.borrow().inventory_calls(), 1);
+        // Fresh local state dispatches without pre- or post-action acquisition.
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
         assert_eq!(service.mutations().plan_ids().calls(), 1);
 
         let queue = transfer.borrow();
@@ -3888,8 +3898,8 @@ mod tests {
             vec![warlock()],
             vec![vault_item("inst-a", 1)],
         ));
-        // The fresh preflight is the one acquisition, and it already observes
-        // the requested end state.
+        // This remote projection remains queued. The no-op below comes from
+        // a committed local publication after planning.
         queue_projection(
             &shared,
             NOW,
@@ -3898,9 +3908,32 @@ mod tests {
         );
 
         let mut service = composed_service(&shared, &transfer, repository);
-        let output = service
-            .move_item(&exact_move("inst-a", "warlock"))
-            .expect("an already-satisfied move is not an error");
+        let request = destiny_app::MoveRequest {
+            membership: membership().membership_id().clone(),
+            item: destiny_app::ItemSelector::instance(destiny_app::ItemInstanceId::new("inst-a")),
+            destination: destiny_app::DestinationSelector::character(
+                destiny_app::CharacterId::new("warlock"),
+            ),
+            intent: destiny_app::MoveIntentAuthorization::Explicit,
+        };
+        let plan = service
+            .mutations
+            .plan_move(&request, PlanLifetime::MAX, TTL, NOW)
+            .unwrap();
+        service
+            .mutations
+            .repository_mut()
+            .replace_current(snapshot_input(
+                NOW,
+                vec![warlock()],
+                vec![instance("inst-a", 1, at_warlock(), Vec::new())],
+            ))
+            .unwrap();
+        let outcome = service
+            .mutations
+            .execute_move_action(&mut service.transfer, &request, &plan, TTL, NOW, NOW)
+            .unwrap();
+        let output = super::move_item_output(&plan, &outcome);
 
         match &output {
             MoveItemOutput::VerifiedNoOp(no_op) => {
@@ -3916,10 +3949,10 @@ mod tests {
             other => panic!("expected a verified no-op, got {other:?}"),
         }
 
-        // Zero transfer calls and zero post-action refreshes were spent.
+        // Local no-op validation needs no acquisition or transfer.
         assert_eq!(transfer.borrow().calls(), 0);
-        assert_eq!(shared.borrow().membership_calls(), 1);
-        assert_eq!(shared.borrow().inventory_calls(), 1);
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
     }
 
     #[test]
@@ -3967,7 +4000,7 @@ mod tests {
         }
 
         assert_eq!(transfer.borrow().calls(), 1);
-        assert_eq!(shared.borrow().inventory_calls(), 1);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
     }
 
     #[test]
@@ -4060,7 +4093,7 @@ mod tests {
     }
 
     #[test]
-    fn move_item_reports_a_changed_preflight_projection_as_a_typed_stale_failure() {
+    fn move_item_reports_local_revision_drift_as_a_typed_stale_failure() {
         let shared = gateway();
         let transfer = transfer_port();
         let mut repository = CompositeRepository::with_definitions(standard_definitions());
@@ -4069,8 +4102,8 @@ mod tests {
             vec![warlock(), hunter()],
             vec![vault_item("inst-a", 1)],
         ));
-        // The mandatory fresh preflight observes a changed projection: the same
-        // item now sits on another character, so the plan no longer binds.
+        // A queued remote change is not acquired while local state is fresh.
+        // The local publication below supersedes the plan before dispatch.
         queue_projection(
             &shared,
             NOW,
@@ -4079,15 +4112,38 @@ mod tests {
         );
 
         let mut service = composed_service(&shared, &transfer, repository);
-        let error = service
-            .move_item(&exact_move("inst-a", "warlock"))
-            .expect_err("a changed projection must fail closed before dispatch");
+        let request = destiny_app::MoveRequest {
+            membership: membership().membership_id().clone(),
+            item: destiny_app::ItemSelector::instance(destiny_app::ItemInstanceId::new("inst-a")),
+            destination: destiny_app::DestinationSelector::character(
+                destiny_app::CharacterId::new("warlock"),
+            ),
+            intent: destiny_app::MoveIntentAuthorization::Explicit,
+        };
+        let plan = service
+            .mutations
+            .plan_move(&request, PlanLifetime::MAX, TTL, NOW)
+            .unwrap();
+        service
+            .mutations
+            .repository_mut()
+            .replace_current(snapshot_input(
+                NOW,
+                vec![warlock(), hunter()],
+                vec![instance("inst-a", 1, at_hunter(), Vec::new())],
+            ))
+            .unwrap();
+        let failure = service
+            .mutations
+            .execute_move_action(&mut service.transfer, &request, &plan, TTL, NOW, NOW)
+            .expect_err("local revision drift must refuse dispatch");
+        let error = super::mutation_failure(failure.error());
 
         assert_eq!(error.code(), "stale_state");
-        // Nothing reached the provider and no post-action refresh was spent.
+        // Nothing reached the provider; local revision drift needs no acquisition.
         assert_eq!(transfer.borrow().calls(), 0);
-        assert_eq!(shared.borrow().membership_calls(), 1);
-        assert_eq!(shared.borrow().inventory_calls(), 1);
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
     }
 
     #[test]
@@ -4136,7 +4192,7 @@ mod tests {
                         .iter()
                         .all(|step| step.outcome == StepOutcomeView::Completed)
                 );
-                assert_eq!(shared.borrow().inventory_calls(), 1);
+                assert_eq!(shared.borrow().inventory_calls(), 0);
             }
             other => panic!("expected a verification failure, got {other:?}"),
         }
@@ -4168,7 +4224,7 @@ mod tests {
         let MoveItemOutput::Applied(pending) = &output else {
             panic!("expected applied, got {output:?}");
         };
-        assert_eq!(shared.borrow().inventory_calls(), 1);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
         assert_eq!(pending.steps.len(), 1);
         assert_eq!(pending.steps[0].outcome, StepOutcomeView::Completed);
         assert!(pending.reason.contains("not re-read"));
@@ -4212,7 +4268,7 @@ mod tests {
             MoveItemOutput::Applied(applied) => {
                 assert_eq!(applied.steps.len(), 1);
                 assert_eq!(applied.steps[0].outcome, StepOutcomeView::Completed);
-                assert_eq!(shared.borrow().inventory_calls(), 1);
+                assert_eq!(shared.borrow().inventory_calls(), 0);
             }
             other => panic!("expected a verification failure, got {other:?}"),
         }

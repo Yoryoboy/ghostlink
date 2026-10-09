@@ -79,11 +79,11 @@
 //!
 //! # Execution (DTE-003)
 //!
-//! [`MutationService::authorize_execution`] is the mandatory fresh preflight
-//! gate for one attempt. It validates intent first, rejects an expired plan or a
-//! wrong-membership request *before* any provider read, and only then forces the
-//! same acquisition and shared policy evaluation the preflight uses. It either
-//! reports a *verified no-op* when the freshly observed concrete item already
+//! [`MutationService::authorize_execution`] validates the committed projection
+//! for one attempt. It validates intent first, rejects an expired plan or a
+//! wrong-membership request before any provider read, then uses ordinary sync
+//! (no acquisition while fresh) and the shared binding policy. It either
+//! reports a *verified no-op* when the locally resolved concrete item already
 //! sits at the plan's destination, or mints the single-use [`ExecutionTicket`]
 //! that authorizes exactly one ordered attempt sequence.
 //!
@@ -100,7 +100,7 @@
 //! attempts whose cached freshness must be invalidated. The
 //! executor seam itself stays deliberately narrow: [`MutationService::execute_move`]
 //! never refreshes after acting and never verifies the final destination on its
-//! own, which is what keeps one fresh preflight bound to exactly one ordered
+//! own, which keeps one committed-projection authorization bound to one ordered
 //! attempt.
 //!
 //! # Acknowledgement (IAX-001)
@@ -108,9 +108,11 @@
 //! [`MutationService::execute_move_action`] classifies provider receipts without
 //! a post-action request. Every planned
 //! step must be acknowledged for [`MoveExecutionOutcome::Applied`]; uncertainty,
-//! refusal and partial progress remain incomplete. Dispatched attempts durably
-//! invalidate freshness without guessing inventory content. The next ordinary
-//! read forces sync. Already-satisfied fresh preflight remains a verified no-op.
+//! refusal and partial progress remain incomplete. Acknowledged effects update
+//! the committed projection. Complete success retains freshness; incomplete
+//! attempts or local persistence failures invalidate it so ordinary sync re-reads.
+//! Already-satisfied local state remains a verified no-op.
+//! Bungie is the final validator of move and single-item equip dispatch.
 
 use std::fmt;
 
@@ -353,21 +355,21 @@ impl fmt::Display for MutationError {
 
 impl std::error::Error for MutationError {}
 
-/// The result of the mandatory fresh execution preflight gate.
+/// The result of execution validation against the committed projection.
 ///
 /// The gate cannot itself mutate the provider, and it refuses an expired plan or
 /// a request bound to another membership before it produces either variant, so
-/// there are exactly two terminal shapes: either the freshly refreshed
+/// there are exactly two terminal shapes: either the current committed
 /// projection already proved the requested end state, or the gate produced the
 /// single-use ticket that authorizes exactly one ordered attempt sequence.
 #[derive(Debug, Eq, PartialEq)]
 pub enum ExecutionAuthorization {
-    /// The mandatory fresh preflight proved the concrete item already sits at
+    /// The committed projection proved the concrete item already sits at
     /// the plan's destination, so the requested end state already holds. No
     /// transfer step is issued and no [`ExecutionTicket`] is spent; the carried
     /// evidence is the plan's bounded, all-unattempted step skeleton.
     VerifiedNoOp(ExecutionEvidence),
-    /// The mandatory fresh preflight authorized exactly one ordered attempt.
+    /// Local validation authorized exactly one ordered attempt.
     /// The ticket is not `Clone`, so it can be consumed at most once.
     Authorized(ExecutionTicket),
 }
@@ -484,7 +486,7 @@ impl IncompleteExecution {
     }
 }
 
-/// Why local freshness could not be invalidated after a dispatched attempt.
+/// Why local state could not be updated after a dispatched attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VerificationFailureReason {
     /// Local state could not be updated. The historical wire reason is retained.
@@ -549,12 +551,12 @@ impl VerificationFailure {
 pub enum MoveExecutionOutcome {
     /// Every planned step was acknowledged by Bungie; no post-action read.
     Applied(ExecutionEvidence),
-    /// The mandatory fresh preflight proved the concrete item already at the
+    /// The committed projection proved the concrete item already at the
     /// destination, so no transfer step was dispatched.
     VerifiedNoOp(ExecutionEvidence),
     /// A dispatched sequence stopped short; receipts preserve its progress.
     IncompleteExecution(IncompleteExecution),
-    /// Local freshness could not be invalidated after dispatch.
+    /// Local effects or freshness could not be persisted after dispatch.
     VerificationFailed(VerificationFailure),
 }
 
@@ -667,16 +669,17 @@ where
     where
         R: destiny_core::DefinitionRepository,
     {
-        self.fresh_equip_preflight(request, plan, policy, now)
+        self.equip_preflight(request, plan, policy, now, ProfileSyncReason::Preflight)
             .map(|(state, _)| state)
     }
 
-    fn fresh_equip_preflight(
+    fn equip_preflight(
         &mut self,
         request: &destiny_core::EquipRequest,
         plan: &destiny_core::EquipPlan,
         policy: FreshnessPolicy,
         now: Timestamp,
+        reason: ProfileSyncReason,
     ) -> Result<(destiny_core::EquipPreflight, ProfileSyncOutcome), MutationError>
     where
         R: destiny_core::DefinitionRepository,
@@ -694,7 +697,7 @@ where
             return Err(MutationError::InvalidEquipTarget);
         }
         let (outcome, snapshot, resolved_item, current_source) =
-            self.fresh_preflight(mutation, policy, now)?;
+            self.committed_preflight(mutation, policy, now, reason)?;
         let item = self.resolve_item(&request)?;
         if item.instance_id != mutation.item {
             return Err(MutationError::WrongItem);
@@ -929,30 +932,26 @@ where
         Ok(plan)
     }
 
-    /// DTE-003: the mandatory fresh preflight gate for one execution attempt.
+    /// Authorizes one attempt from the current committed projection.
     ///
-    /// Intent is validated first, before any side effect. Expiry and membership
-    /// are known from the plan and the request alone, so both are rejected
-    /// *before* the forced refresh: an expired or wrong-membership plan must not
-    /// reach the provider at all. Only a plan that is still executable and bound
-    /// to the requesting membership forces the same
-    /// [`ProfileSyncReason::Preflight`] acquisition and shared policy evaluation
-    /// [`MutationService::preflight_move`] uses, so execution cannot reach a
-    /// changed plan and this gate does not duplicate that policy. The core
-    /// ticket checks re-verify expiry, revision, and membership from the
-    /// refreshed observation after the refresh.
+    /// Intent, expiry and request membership are checked before any acquisition.
+    /// Ordinary sync refreshes only missing, stale or invalidated state. Then
+    /// the item, source, destination and request selectors are re-resolved and
+    /// the shared binding policy checks the plan against that projection. The
+    /// ticket rechecks expiry, membership, profile source and revision binding.
+    /// Bungie remains the final validator; no forced provider read is required.
     ///
-    /// The refreshed projection is inspected before the binding policy, because
+    /// The committed projection is inspected before the binding policy, because
     /// an already-satisfied destination is the one outcome the strict policy
     /// would otherwise misreport as a stale or changed plan. When the stable
-    /// plan item re-resolves uniquely *and* its freshly observed location is
+    /// plan item re-resolves uniquely *and* its locally resolved location is
     /// already the plan's destination, the requested end state holds: the gate
     /// returns [`ExecutionAuthorization::VerifiedNoOp`] with zero transfer calls
     /// and no ticket, because no provider mutation may be issued. The request's
     /// own item/destination selectors are still enforced on that path.
     ///
     /// Otherwise the plan must survive the full preflight policy, and the gate
-    /// mints the single-use [`ExecutionTicket`] from that same refreshed,
+    /// mints the single-use [`ExecutionTicket`] from that same committed,
     /// revision-bound observation.
     pub fn authorize_execution(
         &mut self,
@@ -966,7 +965,7 @@ where
             return Err(MutationError::EquipNotYetSupported);
         }
         // Expiry and membership need no provider read, so they are rejected
-        // here, before the forced refresh, and a caller cannot spend a provider
+        // here, before ordinary sync, and a caller cannot spend a provider
         // call on a plan that could never execute.
         if plan.is_expired(now) {
             return Err(MutationError::Expired);
@@ -975,7 +974,7 @@ where
             return Err(MutationError::WrongMembership);
         }
         let (outcome, snapshot, resolved_item, current_source) =
-            self.fresh_preflight(plan, policy, now)?;
+            self.committed_preflight(plan, policy, now, ProfileSyncReason::Ordinary)?;
 
         if matches!(&resolved_item, Resolution::Unique(_))
             && plan.already_satisfied(&current_source)
@@ -1008,7 +1007,7 @@ where
             current_source,
             now,
         )?;
-        let ticket = ExecutionTicket::after_fresh_preflight(plan, &outcome, now)
+        let ticket = ExecutionTicket::from_committed_projection(plan, &outcome, now)
             .map_err(MutationError::from)?;
         Ok(ExecutionAuthorization::Authorized(ticket))
     }
@@ -1016,8 +1015,8 @@ where
     /// DTE-003: the narrow executor entry point that consumes one ticket.
     ///
     /// The [`ExecutionTicket`] is taken **by value** and consumed for the whole
-    /// sequence, so a caller cannot borrow, copy, or replay the one fresh
-    /// preflight that authorized this attempt. Only the plan's ordered steps are
+    /// sequence, so a caller cannot borrow, copy, or replay the local
+    /// authorization for this attempt. Only the plan's ordered steps are
     /// issued, through the supplied [`TransferGateway`] one step at a time, and
     /// the loop stops at the first step that does not complete: a later step's
     /// precondition is the previous step's effect, so continuing would act on an
@@ -1035,7 +1034,8 @@ where
     /// [`StepOutcome::Uncertain`], never collapsed into a success or a clean
     /// failure. This narrow seam never refreshes or verifies the final
     /// destination on its own; [`MutationService::execute_move_action`] classifies
-    /// the receipts and invalidates freshness. One fresh preflight remains bound
+    /// the receipts, applies acknowledged effects, and invalidates incomplete attempts.
+    /// One local authorization is bound
     /// to one ordered attempt.
     pub fn execute_move<T: TransferGateway>(
         &mut self,
@@ -1057,8 +1057,8 @@ where
     ///
     /// Timestamp arguments retain their ordering contract.
     /// `post_action_now` must not precede preflight, but no post-action read is
-    /// issued. Dispatched attempts invalidate repository freshness; complete
-    /// receipts yield `Applied`. Incomplete/uncertain evidence never claims
+    /// issued. Acknowledged effects update the projection; complete receipts
+    /// retain freshness and yield `Applied`. Incomplete/uncertain evidence never claims
     /// observed state or rollback. A zero-attempt pre-dispatch error remains Err.
     pub fn execute_move_action<T: TransferGateway>(
         &mut self,
@@ -1076,7 +1076,7 @@ where
                 ExecutionEvidence::for_plan(plan),
             ));
         }
-        // The mandatory fresh preflight, unchanged from DTE-003: expiry or a
+        // Committed-projection authorization: expiry or a
         // membership mismatch is rejected before any provider read, and an
         // already-satisfied destination is a verified no-op with no dispatch.
         let authorization = match self.authorize_execution(request, plan, policy, preflight_now) {
@@ -1097,7 +1097,19 @@ where
             ExecutionAuthorization::Authorized(ticket) => ticket,
         };
 
-        let revision = ticket.revision();
+        let snapshot = self
+            .committed_snapshot()
+            .map_err(|error| ExecutionFailure::new(error, ExecutionEvidence::for_plan(plan)))?;
+        let membership = DestinyMembership::new(
+            snapshot.metadata.membership_type,
+            snapshot.metadata.membership_id.clone(),
+        )
+        .map_err(|error| {
+            ExecutionFailure::new(
+                MutationError::from(error),
+                ExecutionEvidence::for_plan(plan),
+            )
+        })?;
         let (evidence, attempt_error) = match self.execute_move(transfer, plan, ticket) {
             Ok(evidence) => (evidence, None),
             Err(failure) => {
@@ -1114,16 +1126,16 @@ where
             }
         };
 
-        let _ = revision;
-        Ok(self.acknowledge_attempt(plan, evidence, attempt_error))
+        Ok(self.acknowledge_attempt(plan, &membership, None, evidence, attempt_error))
     }
 
     /// Executes an equip intent with acknowledgement-based (optimistic) success.
     ///
-    /// The gateway pair is (transfer, equip). A single fresh preflight either
+    /// The gateway pair is (transfer, equip). Ordinary sync and local validation either
     /// proves a no-op or authorizes one ordered attempt. The outcome is Applied
     /// only when every planned step is acknowledged; the profile is not re-read,
-    /// and local freshness is invalidated so the next read syncs. No retry occurs.
+    /// and acknowledged effects update the projection. Only incomplete attempts
+    /// or local persistence failures invalidate freshness. No retry occurs.
     pub fn execute_equip_action<T: TransferGateway, E: destiny_core::EquipGateway>(
         &mut self,
         gateways: (&mut T, &mut E),
@@ -1142,16 +1154,39 @@ where
             return Err(failure(MutationError::InvalidTimestamps));
         }
         let (state, observation) = self
-            .fresh_equip_preflight(request, plan, policy, preflight_now)
+            .equip_preflight(
+                request,
+                plan,
+                policy,
+                preflight_now,
+                ProfileSyncReason::Ordinary,
+            )
             .map_err(failure)?;
         if state == destiny_core::EquipPreflight::AlreadySatisfied {
             return Ok(MoveExecutionOutcome::VerifiedNoOp(
                 ExecutionEvidence::for_plan(mutation),
             ));
         }
-        let ticket = ExecutionTicket::after_fresh_preflight(mutation, &observation, preflight_now)
-            .map_err(|error| failure(MutationError::from(error)))?;
-        let revision = ticket.revision();
+        let ticket =
+            ExecutionTicket::from_committed_projection(mutation, &observation, preflight_now)
+                .map_err(|error| failure(MutationError::from(error)))?;
+        let snapshot = self.committed_snapshot().map_err(failure)?;
+        let membership = DestinyMembership::new(
+            snapshot.metadata.membership_type,
+            snapshot.metadata.membership_id.clone(),
+        )
+        .map_err(|error| failure(MutationError::from(error)))?;
+        let item = snapshot
+            .items
+            .iter()
+            .find(|item| item.instance_id == mutation.item)
+            .ok_or_else(|| failure(MutationError::MissingResolution))?;
+        let ItemLocation::Character(character) = &mutation.destination else {
+            return Err(failure(MutationError::InvalidEquipTarget));
+        };
+        let effect = self
+            .equip_effect(item, character, &snapshot)
+            .map_err(failure)?;
         let (evidence, attempt_error) = match self.execute_equip(gateways, plan, ticket) {
             Ok(evidence) => (evidence, None),
             Err(failure) => {
@@ -1161,8 +1196,7 @@ where
                 (*failure.evidence, Some(failure.error))
             }
         };
-        let _ = revision;
-        Ok(self.acknowledge_attempt(mutation, evidence, attempt_error))
+        Ok(self.acknowledge_attempt(mutation, &membership, Some(effect), evidence, attempt_error))
     }
 
     /// Consumes one fresh ticket and dispatches transfers before equip, without retries.
@@ -1189,11 +1223,31 @@ where
     fn acknowledge_attempt(
         &mut self,
         plan: &MovePlan,
+        membership: &DestinyMembership,
+        equip_effect: Option<destiny_core::InventoryEffect>,
         evidence: ExecutionEvidence,
         attempt_error: Option<MutationError>,
     ) -> MoveExecutionOutcome {
-        // Even refusals and uncertain attempts invalidate the pre-action cache.
-        if let Err(error) = self.repository_mut().invalidate_freshness() {
+        let applied = evidence.completed_count() == plan.steps().len()
+            && evidence
+                .steps()
+                .iter()
+                .all(|step| step.outcome == StepOutcome::Completed)
+            && attempt_error.is_none();
+        let effects: Vec<_> = plan
+            .steps()
+            .iter()
+            .zip(evidence.steps())
+            .filter(|(_, record)| record.outcome == StepOutcome::Completed)
+            .filter_map(|(step, _)| match &step.action {
+                StepAction::Transfer { to, .. } => Some(destiny_core::InventoryEffect::Relocate {
+                    item: plan.item.clone(),
+                    to: to.clone(),
+                }),
+                StepAction::Equip { .. } => equip_effect.clone(),
+            })
+            .collect();
+        if let Err(error) = self.persist_attempt_effects(membership, &effects, applied) {
             return MoveExecutionOutcome::VerificationFailed(VerificationFailure::new(
                 VerificationFailureReason::RefreshFailed,
                 None,
@@ -1201,13 +1255,7 @@ where
                 evidence,
             ));
         }
-        if evidence.completed_count() == plan.steps().len()
-            && evidence
-                .steps()
-                .iter()
-                .all(|step| step.outcome == StepOutcome::Completed)
-            && attempt_error.is_none()
-        {
+        if applied {
             MoveExecutionOutcome::Applied(evidence)
         } else {
             MoveExecutionOutcome::IncompleteExecution(IncompleteExecution::new(
@@ -1216,6 +1264,66 @@ where
                 evidence,
             ))
         }
+    }
+
+    /// Writes only acknowledged effects. Failure never replays a provider action.
+    pub(crate) fn persist_attempt_effects(
+        &mut self,
+        membership: &DestinyMembership,
+        effects: &[destiny_core::InventoryEffect],
+        applied: bool,
+    ) -> Result<(), AppError> {
+        let persistence = if effects.is_empty() {
+            Ok(())
+        } else {
+            self.repository_mut()
+                .apply_acknowledged_effects(membership, effects)
+                .map(|_| ())
+        };
+        if !applied || persistence.is_err() {
+            let invalidation = self.repository_mut().invalidate_freshness();
+            // Preserve the original local persistence category even if fallback fails.
+            persistence.and(invalidation)
+        } else {
+            persistence
+        }
+    }
+
+    /// Resolves replacement subjects from definitions, never instance heuristics.
+    pub(crate) fn equip_effect(
+        &self,
+        item: &ItemInstance,
+        character: &destiny_core::CharacterId,
+        snapshot: &InventorySnapshot,
+    ) -> Result<destiny_core::InventoryEffect, MutationError>
+    where
+        R: destiny_core::DefinitionRepository,
+    {
+        let target = self.equip_definition(item.item_hash)?;
+        let slot = target
+            .slot
+            .filter(|slot| is_equipment_slot(*slot))
+            .ok_or(MutationError::NotEquippable)?;
+        let mut unequip = Vec::new();
+        for other in snapshot.items.iter().filter(|other| {
+            other.equipped
+                && other.location == ItemLocation::Character(character.clone())
+                && other.instance_id != item.instance_id
+        }) {
+            let definition = self.equip_definition(other.item_hash)?;
+            let same_bucket = match (target.bucket_hash, definition.bucket_hash) {
+                (Some(target), Some(other)) => target == other,
+                _ => definition.slot == Some(slot),
+            };
+            if same_bucket {
+                unequip.push(other.instance_id.clone());
+            }
+        }
+        Ok(destiny_core::InventoryEffect::Equip {
+            item: item.instance_id.clone(),
+            character: character.clone(),
+            unequip,
+        })
     }
 
     /// Runs the ticket's ordered steps in place, stopping at the first that does
@@ -1337,12 +1445,32 @@ where
         ),
         MutationError,
     > {
+        self.committed_preflight(plan, policy, now, ProfileSyncReason::Preflight)
+    }
+
+    /// Re-resolves the item from the committed projection after the sync gate.
+    /// Execution uses Ordinary; explicit forced-preflight APIs retain Preflight.
+    fn committed_preflight(
+        &mut self,
+        plan: &MovePlan,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+        reason: ProfileSyncReason,
+    ) -> Result<
+        (
+            ProfileSyncOutcome,
+            InventorySnapshot,
+            Resolution<ItemInstanceId>,
+            ItemLocation,
+        ),
+        MutationError,
+    > {
         let outcome = self
             .sync
-            .sync(ProfileSyncReason::Preflight, policy, now)
+            .sync(reason, policy, now)
             .map_err(MutationError::from)?;
         let snapshot = self.committed_snapshot()?;
-        // Bind the refreshed account before resolving identities or allowing
+        // Bind the committed account before resolving identities or allowing
         // either equip or move's already-satisfied shortcut.
         if plan.membership != snapshot.metadata.membership_id {
             return Err(MutationError::WrongMembership);
@@ -1687,6 +1815,7 @@ mod tests {
         catalog: crate::test_support::InMemoryDefinitionRepository,
         hides_current: bool,
         fails_invalidation: bool,
+        fails_effects: bool,
         calls: RefCell<Vec<&'static str>>,
     }
 
@@ -1702,6 +1831,7 @@ mod tests {
                 ),
                 hides_current: false,
                 fails_invalidation: false,
+                fails_effects: false,
                 calls: RefCell::new(Vec::new()),
             }
         }
@@ -1744,6 +1874,21 @@ mod tests {
     }
 
     impl InventoryRepository for CompositeRepository {
+        fn apply_acknowledged_effects(
+            &mut self,
+            membership: &destiny_core::DestinyMembership,
+            effects: &[destiny_core::InventoryEffect],
+        ) -> Result<InventorySnapshot, AppError> {
+            if self.fails_effects {
+                return Err(AppError::new(ErrorCategory::LocalStorage));
+            }
+            let snapshot = self
+                .inventory
+                .get_mut()
+                .apply_acknowledged_effects(membership, effects)?;
+            self.search.set_instances(snapshot.items.clone());
+            Ok(snapshot)
+        }
         fn freshness_invalidated(&self) -> Result<bool, AppError> {
             self.inventory.borrow().freshness_invalidated()
         }
@@ -1844,6 +1989,16 @@ mod tests {
             membership: &destiny_core::DestinyMembership,
         ) -> Result<InventorySnapshotInput, AppError> {
             self.0.borrow_mut().load_inventory(membership)
+        }
+
+        fn load_inventory_scoped(
+            &mut self,
+            membership: &destiny_core::DestinyMembership,
+            reason: destiny_core::ProfileSyncReason,
+        ) -> Result<InventorySnapshotInput, AppError> {
+            self.0
+                .borrow_mut()
+                .load_inventory_scoped(membership, reason)
         }
     }
 
@@ -1990,6 +2145,7 @@ mod tests {
                     .unwrap();
                     shared.borrow_mut().queue_membership(Ok(membership));
                     shared.borrow_mut().queue_inventory(Ok(refreshed));
+                    service.repository_mut().invalidate_freshness().unwrap();
                     let mut transfer = QueuedTransferGateway::new();
                     let mut equip_gateway = crate::test_support::QueuedEquipGateway::new();
                     // Same-account dispatch cases are covered by existing execution tests.
@@ -2031,7 +2187,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_equip_acknowledges_once_and_invalidates() {
+    fn batch_equip_acknowledges_once_and_updates_projection() {
         use destiny_core::{EquipItemResult, EquipItemStatus, EquipItemsOutcome};
         let shared = gateway();
         let mut first = equip_definition(1, destiny_core::domain::ItemSlot::Kinetic);
@@ -2078,7 +2234,15 @@ mod tests {
         assert!(result.applied());
         assert_eq!(equip.requests().len(), 1);
         assert!(transfer.requests().is_empty());
-        assert!(service.repository().freshness_invalidated().unwrap());
+        assert!(!service.repository().freshness_invalidated().unwrap());
+        assert!(
+            service
+                .committed_snapshot()
+                .unwrap()
+                .items
+                .iter()
+                .all(|item| item.equipped)
+        );
         assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 
@@ -2103,7 +2267,7 @@ mod tests {
             equip_definition(3, destiny_core::domain::ItemSlot::Energy),
         ]);
         repo.commit(input.clone());
-        repo.fails_invalidation = storage_failure;
+        repo.fails_effects = storage_failure;
         queue_refresh(&shared, input);
         service(&shared, repo)
     }
@@ -2264,6 +2428,9 @@ mod tests {
                 assert_eq!(paced, transfer.requests().len() + equip.requests().len());
                 if case == "mixed" {
                     assert_eq!(result.items[1].status, crate::BatchItemStatus::Failure(99));
+                    let snapshot = service.committed_snapshot().unwrap();
+                    assert!(snapshot.items[0].equipped);
+                    assert!(!snapshot.items[1].equipped);
                 }
                 if case == "omitted" {
                     assert_eq!(result.items[1].status, crate::BatchItemStatus::NotReported);
@@ -2276,11 +2443,18 @@ mod tests {
                     assert!(!result.local_state_updated);
                     assert!(result.receipt.is_some());
                 } else {
-                    assert!(service.repository().freshness_invalidated().unwrap());
+                    assert_eq!(
+                        service.repository().freshness_invalidated().unwrap(),
+                        !matches!(case, "success_transfers" | "replaced_exotic")
+                    );
                 }
                 assert_eq!(equip.requests().len(), usize::from(case != "transfer_stop"));
                 if case == "transfer_stop" {
                     assert_eq!(transfer.requests().len(), 2);
+                    assert_eq!(
+                        service.committed_snapshot().unwrap().items[0].location,
+                        ItemLocation::Vault
+                    );
                 }
             }
         }
@@ -2573,6 +2747,7 @@ mod tests {
                 item.location = warlock();
                 item.equipped = true;
             }
+            svc.repository_mut().invalidate_freshness().unwrap();
             let mut preflight = neighbors.clone();
             preflight.push(item.clone());
             shared
@@ -2742,7 +2917,7 @@ mod tests {
                 .sync(destiny_core::ProfileSyncReason::Preflight, TTL, NOW)
                 .unwrap();
             let ticket =
-                ExecutionTicket::after_fresh_preflight(plan.mutation_plan(), &outcome, NOW)
+                ExecutionTicket::from_committed_projection(plan.mutation_plan(), &outcome, NOW)
                     .unwrap();
             let mut transfer = QueuedTransferGateway::new();
             let failure = svc
@@ -4971,8 +5146,7 @@ mod tests {
         }
     }
 
-    /// Commits a plan whose item moves from the Vault to a character and returns
-    /// the service and its request/plan pair.
+    /// Plans against fresh state, then invalidates it to exercise ordinary acquisition.
     fn direct_service_with_plan() -> (
         Rc<RefCell<QueuedProfileGateway>>,
         Service,
@@ -4985,6 +5159,7 @@ mod tests {
         repository.commit(fresh_vault_projection());
         let mut service = service(&shared, repository);
         let (move_request, plan) = direct_plan(&mut service);
+        service.repository_mut().invalidate_freshness().unwrap();
         (shared, service, move_request, plan)
     }
 
@@ -5014,14 +5189,14 @@ mod tests {
             .plan_move(&move_request, LIFETIME, TTL, NOW)
             .expect("plan");
         queue_refresh(&shared, projection);
+        service.repository_mut().invalidate_freshness().unwrap();
         (shared, service, move_request, plan)
     }
 
     #[test]
-    fn authorize_execution_reuses_the_mandatory_fresh_preflight_and_mints_one_ticket() {
+    fn authorize_execution_refreshes_an_invalidated_projection_and_mints_one_ticket() {
         let (shared, mut service, move_request, plan) = direct_service_with_plan();
-        // The planning gate found the projection fresh and skipped acquisition;
-        // only the mandatory preflight forces one synchronized projection.
+        // Planning skipped acquisition; invalidation requires one ordinary sync.
         assert_eq!(shared.borrow().inventory_calls(), 0);
         queue_refresh(&shared, fresh_vault_projection());
 
@@ -5034,9 +5209,12 @@ mod tests {
         assert_eq!(ticket.revision(), SyncRevision::new(1));
         assert_eq!(ticket.step_count(), 1);
         assert_eq!(ticket.steps(), plan.steps());
-        // Even a fresh projection was refreshed, because an attempt may only
-        // start from a state that was actually re-read.
+        // The invalidated projection acquired exactly once through ordinary sync.
         assert_eq!(shared.borrow().inventory_calls(), 1);
+        assert_eq!(
+            shared.borrow().requested_reasons(),
+            &[destiny_core::ProfileSyncReason::Ordinary]
+        );
     }
 
     #[test]
@@ -5272,11 +5450,20 @@ mod tests {
                     .unwrap();
                 queue_refresh(&shared, input.clone());
                 let (_, observation) = svc
-                    .fresh_equip_preflight(&equip_request(), &plan, TTL, NOW)
+                    .equip_preflight(
+                        &equip_request(),
+                        &plan,
+                        TTL,
+                        NOW,
+                        destiny_core::ProfileSyncReason::Ordinary,
+                    )
                     .unwrap();
-                let ticket =
-                    ExecutionTicket::after_fresh_preflight(plan.mutation_plan(), &observation, NOW)
-                        .unwrap();
+                let ticket = ExecutionTicket::from_committed_projection(
+                    plan.mutation_plan(),
+                    &observation,
+                    NOW,
+                )
+                .unwrap();
                 if drift {
                     let mut newer = input;
                     newer.items[0].locked = true;
@@ -5306,6 +5493,130 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn move_and_single_equip_use_the_ordinary_freshness_gate() {
+        use destiny_core::{ProfileSyncReason, domain::ItemSlot};
+        for equip in [false, true] {
+            for state in ["fresh", "stale", "invalidated"] {
+                let shared = gateway();
+                let input = projection(
+                    fresh_checked_at(),
+                    vec![warlock_character()],
+                    vec![instance("candidate", 1, ItemLocation::Vault)],
+                );
+                let mut repo = CompositeRepository::with_definitions(vec![equip_definition(
+                    1,
+                    ItemSlot::Kinetic,
+                )]);
+                repo.commit(input.clone());
+                let mut svc = service(&shared, repo);
+                let request = equip_request();
+                let plan = svc.plan_equip(&request, LIFETIME, TTL, NOW).unwrap();
+                let move_plan = svc
+                    .plan_move(&request.as_move_request(), LIFETIME, TTL, NOW)
+                    .unwrap();
+                if state == "invalidated" {
+                    svc.repository_mut().invalidate_freshness().unwrap();
+                }
+                let policy = if state == "stale" {
+                    FreshnessPolicy { ttl_seconds: 0 }
+                } else {
+                    TTL
+                };
+                if state != "fresh" {
+                    queue_refresh(&shared, input);
+                }
+                if equip {
+                    let mut transfer = QueuedTransferGateway::new();
+                    transfer.queue(Ok(TransferOutcome::Transferred));
+                    let mut gateway = crate::test_support::QueuedEquipGateway::new();
+                    gateway.queue(Ok(destiny_core::EquipOutcome::Equipped));
+                    assert!(matches!(
+                        svc.execute_equip_action(
+                            (&mut transfer, &mut gateway),
+                            &request,
+                            &plan,
+                            policy,
+                            NOW,
+                            NOW
+                        )
+                        .unwrap(),
+                        MoveExecutionOutcome::Applied(_)
+                    ));
+                    assert_eq!((transfer.calls(), gateway.calls()), (1, 1));
+                } else {
+                    let ticket = authorized(
+                        svc.authorize_execution(
+                            &request.as_move_request(),
+                            &move_plan,
+                            policy,
+                            NOW,
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap();
+                    let mut transfer = QueuedTransferGateway::new();
+                    transfer.queue(Ok(TransferOutcome::Transferred));
+                    assert!(
+                        svc.execute_move(&mut transfer, &move_plan, ticket)
+                            .unwrap()
+                            .is_complete()
+                    );
+                    assert_eq!(transfer.calls(), 1);
+                }
+                let shared = shared.borrow();
+                assert_eq!(shared.inventory_calls(), usize::from(state != "fresh"));
+                assert_eq!(
+                    shared.requested_reasons(),
+                    if state == "fresh" {
+                        &[][..]
+                    } else {
+                        &[ProfileSyncReason::Ordinary][..]
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fresh_committed_move_dispatches_without_profile_acquisition() {
+        let shared = gateway();
+        let mut repository =
+            CompositeRepository::with_definitions(vec![definition(1, "Gjallarhorn")]);
+        repository.commit(fresh_vault_projection());
+        let mut service = service(&shared, repository);
+        let (move_request, plan) = direct_plan(&mut service);
+        let revision = plan.revision;
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Transferred));
+        assert!(matches!(
+            service
+                .execute_move_action(&mut transfer, &move_request, &plan, TTL, NOW, NOW)
+                .unwrap(),
+            MoveExecutionOutcome::Applied(_)
+        ));
+        let snapshot = service.committed_snapshot().unwrap();
+        assert_eq!(snapshot.items[0].location, warlock());
+        assert_ne!(snapshot.metadata.revision, revision);
+        assert!(!service.repository().freshness_invalidated().unwrap());
+        let next_request = request(exact("item-1"), DestinationSelector::vault());
+        let next = service
+            .plan_move(&next_request, LIFETIME, TTL, NOW)
+            .unwrap();
+        assert_eq!(next.source, warlock());
+        transfer.queue(Ok(TransferOutcome::Transferred));
+        assert!(matches!(
+            service
+                .execute_move_action(&mut transfer, &next_request, &next, TTL, NOW, NOW)
+                .unwrap(),
+            MoveExecutionOutcome::Applied(_)
+        ));
+        assert_eq!(transfer.requests()[1].from(), &warlock());
+        assert_eq!(transfer.calls(), 2);
+        assert_eq!(shared.borrow().membership_calls(), 0);
+        assert_eq!(shared.borrow().inventory_calls(), 0);
     }
 
     #[test]
@@ -5731,7 +6042,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_move_action_classifies_receipts_and_invalidates_freshness() {
+    fn execute_move_action_updates_acknowledgements_and_invalidates_incomplete_attempts() {
         for step in [
             TransferOutcome::Transferred,
             TransferOutcome::Uncertain,
@@ -5760,21 +6071,145 @@ mod tests {
                             POST_ACTION_NOW,
                         )
                         .unwrap();
-                    assert_eq!(shared.borrow().inventory_calls(), 2);
+                    assert_eq!(shared.borrow().inventory_calls(), 1);
                     assert!(!service.repository().freshness_invalidated().unwrap());
+                    let snapshot = service.committed_snapshot().unwrap();
+                    assert_eq!(snapshot.items[0].location, warlock());
+                    assert_ne!(snapshot.metadata.revision, plan.revision);
+                    let next_request =
+                        super::tests::request(exact("item-1"), DestinationSelector::vault());
+                    let next = service
+                        .plan_move(&next_request, LIFETIME, TTL, POST_ACTION_NOW)
+                        .unwrap();
+                    assert_eq!(next.source, warlock());
+                    transfer.queue(Ok(TransferOutcome::Transferred));
+                    assert!(matches!(
+                        service
+                            .execute_move_action(
+                                &mut transfer,
+                                &next_request,
+                                &next,
+                                TTL,
+                                POST_ACTION_NOW,
+                                POST_ACTION_NOW
+                            )
+                            .unwrap(),
+                        MoveExecutionOutcome::Applied(_)
+                    ));
                     assert_eq!(
-                        service.committed_snapshot().unwrap().metadata.checked_at,
-                        POST_ACTION_NOW
+                        service.committed_snapshot().unwrap().items[0].location,
+                        ItemLocation::Vault
                     );
+                    assert_eq!(shared.borrow().inventory_calls(), 1);
                 }
                 MoveExecutionOutcome::IncompleteExecution(incomplete) => {
                     assert_ne!(step, TransferOutcome::Transferred);
                     assert_eq!(incomplete.observed(), &ItemLocation::Vault);
                     assert_eq!(incomplete.evidence().completed_count(), 0);
+                    assert!(service.repository().freshness_invalidated().unwrap());
+                    assert_eq!(
+                        service.committed_snapshot().unwrap().items[0].location,
+                        ItemLocation::Vault
+                    );
                 }
                 other => panic!("unexpected outcome: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn acknowledged_effect_storage_failure_retains_receipt_without_retry() {
+        let (shared, mut service, request, plan) = direct_service_with_plan();
+        service.repository_mut().fails_effects = true;
+        queue_refresh(&shared, fresh_vault_projection());
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Transferred));
+        let outcome = service
+            .execute_move_action(&mut transfer, &request, &plan, TTL, NOW, POST_ACTION_NOW)
+            .unwrap();
+        let MoveExecutionOutcome::VerificationFailed(failure) = outcome else {
+            panic!("expected local failure");
+        };
+        assert_eq!(
+            failure.error(),
+            Some(MutationError::Application(ErrorCategory::LocalStorage))
+        );
+        assert_eq!(failure.evidence().completed_count(), 1);
+        assert_eq!(transfer.calls(), 1);
+        assert!(service.repository().freshness_invalidated().unwrap());
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+    }
+
+    #[test]
+    fn acknowledged_equip_replaces_same_slot_only() {
+        use destiny_core::domain::ItemSlot;
+        let shared = gateway();
+        let mut previous = instance("previous", 2, warlock());
+        previous.equipped = true;
+        let mut other = instance("other", 3, warlock());
+        other.equipped = true;
+        let mut repo = CompositeRepository::with_definitions(vec![
+            equip_definition(1, ItemSlot::Kinetic),
+            equip_definition(2, ItemSlot::Kinetic),
+            equip_definition(3, ItemSlot::Helmet),
+        ]);
+        repo.commit(projection(
+            NOW,
+            vec![warlock_character()],
+            vec![
+                instance("candidate", 1, ItemLocation::Vault),
+                previous,
+                other,
+            ],
+        ));
+        let mut service = service(&shared, repo);
+        let plan = service
+            .plan_equip(&equip_request(), LIFETIME, TTL, NOW)
+            .unwrap();
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Ok(TransferOutcome::Transferred));
+        let mut equip = crate::test_support::QueuedEquipGateway::new();
+        equip.queue(Ok(destiny_core::EquipOutcome::Equipped));
+        assert!(matches!(
+            service
+                .execute_equip_action(
+                    (&mut transfer, &mut equip),
+                    &equip_request(),
+                    &plan,
+                    TTL,
+                    NOW,
+                    POST_ACTION_NOW
+                )
+                .unwrap(),
+            MoveExecutionOutcome::Applied(_)
+        ));
+        let snapshot = service.committed_snapshot().unwrap();
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .find(|i| i.instance_id == item_id("candidate"))
+                .unwrap()
+                .equipped
+        );
+        assert!(
+            !snapshot
+                .items
+                .iter()
+                .find(|i| i.instance_id == item_id("previous"))
+                .unwrap()
+                .equipped
+        );
+        assert!(
+            snapshot
+                .items
+                .iter()
+                .find(|i| i.instance_id == item_id("other"))
+                .unwrap()
+                .equipped
+        );
+        assert!(!service.repository().freshness_invalidated().unwrap());
+        assert_eq!(shared.borrow().inventory_calls(), 0);
     }
 
     #[test]
