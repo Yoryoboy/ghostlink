@@ -166,7 +166,7 @@ pub struct ApplyLoadoutCandidateView {
 pub fn apply_loadout_tool() -> Tool {
     let tool = Tool::new(
         APPLY_LOADOUT_TOOL,
-        "Apply one saved in-game loadout. Required character is an exact id or unique class; supply exactly one of one-based slot or normalized exact name. Unknown or ambiguous names list candidates, never guess. Go to orbit or a social space first (offline also allowed). Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Missing/unsupported items, incomplete effects or persistence failures also require refresh. Never retry an uncertain outcome. Ordinary sync resolves cached loadouts without profile/206 reads while fresh and cached. Held subclasses switch locally; a subclass not held on the target is skipped with refresh pending. Mods/plugs, including subclass aspects/fragments, are not updated (Bungie limitation). Single-item equip validation is unchanged.",
+        "Apply a saved loadout: character id/unique class and exactly one slot (1-based) or exact name; ambiguity returns candidates. Orbit/social space/offline only. Mods/plugs are not updated. Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; incomplete, rejected or uncertain outcomes require refresh. Never retry an uncertain outcome. See local_state and docs/mcp.md for skips and persistence.",
         JsonObject::new(),
     ).with_input_schema::<ApplyLoadoutArgs>()
         .with_object_output_schema::<ApplyLoadoutOutputView>();
@@ -189,7 +189,7 @@ const SEARCH_INVENTORY_DESCRIPTION: &str = "Search definitions and inventory wit
 
 const INSPECT_ITEM_DESCRIPTION: &str = "Inspect one owned item by instance_id or exact normalized name (exactly one required). Multiple owned namesakes return compact candidates; fuzzy matches are never inspected.";
 
-const MOVE_ITEM_DESCRIPTION: &str = "Move one concrete inventory instance to the Vault or to a character, using only ordered transfer steps. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Incomplete effects or persistence failures also require refresh. Never retry an uncertain outcome. verified_noop means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie.";
+const MOVE_ITEM_DESCRIPTION: &str = "Move exactly one instance_id/item_text to exactly one to_vault/character_id/character_label destination via ordered transfers. Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; rejection, uncertainty, incomplete effects or persistence failure require refresh. Never retry an uncertain outcome. verified_noop: local state already matches, no dispatch. See docs/mcp.md.";
 
 /// Maximum accepted MCP identifier length, in characters.
 ///
@@ -262,7 +262,7 @@ pub fn tool_specs() -> Vec<Tool> {
         .with_object_output_schema::<GetLoadoutsOutput>(),
         Tool::new(
             GET_LOADOUT_TOOL,
-            "Read ONE saved loadout's full items, plugs, subclass configuration and artifact perks. Call get_loadouts first. Required loadout accepts a one-based saved slot number or normalized exact name. Optional character is an exact id or unique hunter|titan|warlock class; omitted searches all characters and must resolve uniquely. Unknown or ambiguous selectors return typed errors, never guesses. Plug insight text is deduplicated by content in plug_insights; each occurrence references its insight index. Requires login and loaded Manifest definitions; reads live state.",
+            "Read one saved loadout's full items, plugs, subclass and artifact perks; call get_loadouts first. loadout: one-based slot or normalized exact name. Optional character: exact id/unique class; omitted searches all. Unknown/ambiguous selectors return errors, never guesses. plug_insights deduplicates text; occurrences reference its index. Requires login and Manifest; reads live state. See docs/mcp.md.",
             JsonObject::new(),
         )
         .with_input_schema::<GetLoadoutArgs>()
@@ -274,12 +274,12 @@ pub fn tool_specs() -> Vec<Tool> {
         )
         .with_input_schema::<WeeklyResetArgs>()
         .with_object_output_schema::<WeeklyResetOutput>(),
-        Tool::new(WEEKLY_TOOL, "Read reliable per-character weekly content and progress. Requires login and `ghostlink sync-manifest`. Reprise is omitted. Vanguard alerts report GM, challenged Crucible, and challenged Vanguard Op variants with visible reward unions; these are not verified in-game weapon assignments. Character accepts an exact id or unique hunter|titan|warlock class; omitted selects strictly highest light, ties use deterministic first.", JsonObject::new())
+        Tool::new(WEEKLY_TOOL, "Read per-character weekly content/progress. Requires login and sync-manifest. character: exact id/unique class; omitted selects highest light, deterministic first on ties. Reprise omitted. Vanguard alerts: GM, challenged Crucible/Vanguard Op variants and visible reward unions, not verified weapon assignments. See docs/mcp.md.", JsonObject::new())
             .with_input_schema::<WeeklyArgs>()
             .with_object_output_schema::<WeeklyOutput>(),
         Tool::new(
             GET_SUBCLASS_OPTIONS_TOOL,
-            "Return available subclass options (supers, abilities, aspects, fragments) per character with unlocked/locked/unknown status. Status is reliable only for the most recently played character's class; raw can_insert/enabled are included. Omit character for all characters or select an exact id or unique hunter|titan|warlock class; optionally filter element. Requires loaded Manifest definitions.",
+            "Read subclass options (supers, abilities, aspects, fragments) with unlocked/locked/unknown status and raw can_insert/enabled. Status reliable only for the most recently played class. character: exact id/unique class; omit for all. Optional element filter. Requires Manifest. See docs/mcp.md.",
             JsonObject::new(),
         )
         .with_input_schema::<GetSubclassOptionsArgs>()
@@ -331,7 +331,7 @@ impl PullStackArgs {
     }
 }
 pub fn pull_stack_tool() -> Tool {
-    Tool::new(PULL_STACK_TOOL, "Pull an exact amount of one non-instanced Postmaster stack for an owned character. Canonical decimal strings only: uint32 item_hash, positive int32 amount, positive int64 character. Requires authentication and qualified definitions. Pinned audited account-wide capacities use unchanged stack arithmetic; locally full refuses (1642 is destination full). Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Persistence failures also require refresh. Never retry an uncertain outcome. Requested quantities apply locally once, not as observed quantities.", JsonObject::new())
+    Tool::new(PULL_STACK_TOOL, "Pull a Postmaster stack: canonical uint32 item_hash, positive int32 amount/int64 character strings. Requires login/definitions; locally full refuses (1642). Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; rejection, uncertainty or persistence failure require refresh. Never retry an uncertain outcome. Requested amount applies locally once, not as observed quantity. See docs/mcp.md.", JsonObject::new())
         .with_input_schema::<PullStackArgs>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
 }
@@ -359,7 +359,7 @@ impl PullItemArgs {
     }
 }
 pub fn pull_item_tool() -> Tool {
-    Tool::new(PULL_ITEM_TOOL, "Pull one genuine Postmaster equipment instance into its committed owner's inventory without equipping. Requires authentication and qualified definitions. Known full buckets refuse locally; unknown occupancy permits dispatch. No names, hashes, stacks, quantity or destination. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Persistence failures also require refresh. Never retry an uncertain outcome. Numeric error 1642 means destination full; free a slot and reassess.", JsonObject::new())
+    Tool::new(PULL_ITEM_TOOL, "Pull genuine Postmaster item id to its owner's inventory, not equipped. Login/definitions required. Known full refuses; unknown occupancy permits dispatch; 1642 means full. Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; rejection, uncertainty or persistence failure require refresh. Never retry an uncertain outcome. No names, hashes, stacks or destination. See docs/mcp.md.", JsonObject::new())
         .with_input_schema::<PullItemArgs>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
 }
@@ -396,7 +396,7 @@ impl EquipItemsArgs {
 pub fn equip_items_tool() -> Tool {
     Tool::new(
         EQUIP_ITEMS_TOOL,
-        "Equip 2–17 items on one explicit character. Validate combined slots, class and exotic limits before transferring via Vault and making one EquipItems call. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Per-item failures, omitted results or persistence failures also require refresh. Never retry an uncertain outcome. All-no-op means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie.",
+        "Equip 2–17 items on explicit character; validate slots/class/exotics, transfer via Vault, then one EquipItems call. Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; rejection, uncertainty, per-item failure, omitted results or persistence failure require refresh. Never retry an uncertain outcome. All-no-op: local state matches, no dispatch. See docs/mcp.md.",
         JsonObject::new(),
     )
     .with_input_schema::<EquipItemsArgs>()
@@ -437,7 +437,7 @@ impl EquipItemArgs {
     }
 }
 pub fn equip_item_tool() -> Tool {
-    Tool::new(EQUIP_ITEM_TOOL, "Equip one explicitly selected item on one explicitly selected character, automatically transferring if necessary. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Incomplete effects or persistence failures also require refresh. Never retry an uncertain outcome. verified_noop means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie. Ambiguity refuses; partial progress is not rolled back. Character must be in orbit, a social space, or offline.", JsonObject::new())
+    Tool::new(EQUIP_ITEM_TOOL, "Equip item on character; transfer if needed. Ambiguity refuses; partial progress is not rolled back. Orbit/social space/offline only. Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; rejection, uncertainty, incomplete effects or persistence failure require refresh. Never retry an uncertain outcome. verified_noop: local state matches, no dispatch. See docs/mcp.md.", JsonObject::new())
         .with_input_schema::<EquipItemArgs>()
 }
 
@@ -461,7 +461,7 @@ impl SetLockStateArgs {
     }
 }
 pub fn set_lock_state_tool() -> Tool {
-    Tool::new(SET_LOCK_STATE_TOOL, "Set one explicitly selected owned item's lock state (locked=true locks, false unlocks), with at most one dispatch. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Persistence failures also require refresh. Never retry an uncertain outcome. verified_noop means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie. Ambiguity refuses. Vault items use one owned character for the provider call.", JsonObject::new())
+    Tool::new(SET_LOCK_STATE_TOOL, "Set owned item lock via locked boolean; ambiguity refuses, at most one dispatch. Vault uses an owned character. Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; rejection, uncertainty or persistence failure require refresh. Never retry an uncertain outcome. verified_noop: local state matches, no dispatch. See docs/mcp.md.", JsonObject::new())
         .with_input_schema::<SetLockStateArgs>()
 }
 
@@ -1881,6 +1881,29 @@ mod tests {
     };
     use destiny_app::{AppError, ErrorCategory};
     use serde_json::{Value, json};
+
+    #[test]
+    fn every_tool_description_stays_within_byte_budget() {
+        let mut tools = tool_specs();
+        tools.extend([
+            move_item_tool(),
+            super::equip_item_tool(),
+            super::equip_items_tool(),
+            super::set_lock_state_tool(),
+            super::pull_item_tool(),
+            super::pull_stack_tool(),
+            super::apply_loadout_tool(),
+        ]);
+        let total: usize = tools
+            .iter()
+            .map(|tool| tool.description.as_ref().expect("description").len())
+            .sum();
+        println!("{} tool descriptions: {total} bytes", tools.len());
+        for tool in tools {
+            let bytes = tool.description.as_ref().expect("description").len();
+            assert!(bytes <= 500, "{}: {bytes} bytes exceeds 500", tool.name);
+        }
+    }
 
     fn schema_json(tool_name: &str) -> Value {
         tool_specs()

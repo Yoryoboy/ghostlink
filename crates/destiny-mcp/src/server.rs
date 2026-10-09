@@ -1295,7 +1295,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_exposes_exactly_the_four_reads_in_stable_order() {
+    fn discovery_exposes_exactly_the_read_tools_in_stable_order() {
         let (server, _handle) = server(RecordingService::new());
         let tools = server.discover_tools().tools;
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
@@ -1793,7 +1793,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_construction_exposes_exactly_the_four_reads() {
+    fn read_only_construction_exposes_exactly_the_read_tools() {
         let (server, _handle) = server(RecordingService::new());
         let tools = server.discover_tools().tools;
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
@@ -1838,7 +1838,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_mutation_exposes_the_four_reads_plus_move_item() {
+    fn configured_mutation_exposes_the_read_tools_plus_move_item() {
         let (server, _read, _mutation) = mutation_server(RecordingService::new());
         let tools = server.discover_tools().tools;
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();

@@ -252,8 +252,16 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
     checklist: apply a saved loadout with one item in the Vault and one on
     another character (equipped there). If Bungie's `EquipLoadout` does not
     pull them, implement DIM's preparation as a follow-up feature.
-- [ ] **U5 — Small polish (A6).** Manifest small tables with concurrency 4;
+- [x] **U5 — Small polish (A6).** Manifest small tables with concurrency 4;
   shorter MCP tool descriptions; stale "four reads" comment.
+  Manifest concurrency deferred (2026-10-09): runs once per game patch, and
+  `ManifestTransport::get(&mut self)` plus the non-`Send` test fake need a new
+  worker-transport seam that touches retry and shared throttle; DIM gets it
+  for free from its async runtime. Follow-up, not in this feature.
+  Done: 18 MCP tool descriptions 7,951 -> 6,183 bytes (-22%) keeping the
+  asserted safety promises, guarded by a 500-byte-per-tool budget test;
+  three stale "four reads" test names renamed. Workspace: 2040 passed,
+  0 failed.
 - [ ] **D — Docs, skill and live checklist.**
 
 ## Delivery
