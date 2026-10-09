@@ -220,6 +220,14 @@ async fn apply_loadout_stdio_contract() {
         ("loadout-transient", "transient", "failed"),
         ("loadout-uncertain", "uncertain", "failed"),
         ("loadout-storage", "applied", "local_state_failed"),
+        ("loadout-partial", "applied", "local_state_failed"),
+        ("loadout-subclass", "applied", "local_state_failed"),
+        (
+            "loadout-missing-definition",
+            "applied",
+            "local_state_failed",
+        ),
+        ("loadout-unsupported", "applied", "local_state_failed"),
     ] {
         for args in [
             json!({"character":"hunter","slot":3}),
@@ -235,6 +243,40 @@ async fn apply_loadout_stdio_contract() {
             assert_eq!(output["receipt"], receipt);
             assert_eq!(output["outcome"], outcome);
             assert_eq!(response["result"]["isError"], outcome != "applied");
+            let local = &output["local_state"];
+            assert_eq!(local["persisted"], scenario != "loadout-storage");
+            assert_eq!(
+                local["status"],
+                match scenario {
+                    "loadout-success" => "updated",
+                    "loadout-storage" => "failed",
+                    "loadout-partial"
+                    | "loadout-subclass"
+                    | "loadout-missing-definition"
+                    | "loadout-unsupported" => "partial",
+                    _ => "not_attempted",
+                }
+            );
+            match scenario {
+                "loadout-partial" => {
+                    assert_eq!(local["unresolved_items"][0]["item"]["instance_id"], "404");
+                    assert_eq!(local["unresolved_items"][0]["reason"], "not_owned");
+                    assert!(local["unresolved_items"][0]["item"]["item_hash"].is_null());
+                }
+                "loadout-subclass" => {
+                    assert_eq!(local["skipped"][0]["reason"], "subclass_not_held")
+                }
+                "loadout-missing-definition" => {
+                    assert_eq!(local["unresolved_items"][0]["reason"], "missing_definition")
+                }
+                "loadout-unsupported" => {
+                    assert_eq!(local["skipped"][0]["reason"], "unsupported_bucket")
+                }
+                _ => {
+                    assert_eq!(local["unresolved_items"], json!([]));
+                    assert_eq!(local["skipped"], json!([]));
+                }
+            }
             if scenario == "loadout-location" {
                 assert_eq!(output["reason"], "go to orbit or a social space and retry");
             }

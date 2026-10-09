@@ -105,12 +105,71 @@ impl ApplyLoadoutArgs {
         })
     }
 }
+#[derive(JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyLoadoutLocalStatusView {
+    Updated,
+    Partial,
+    Failed,
+    NotAttempted,
+}
+#[derive(JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyLoadoutLocalReasonView {
+    NotOwned,
+    Ambiguous,
+    MissingDefinition,
+    DefinitionUnavailable,
+    SubclassNotHeld,
+    UnsupportedBucket,
+    InvalidProjection,
+}
+#[derive(JsonSchema)]
+pub struct ApplyLoadoutLocalItemView {
+    pub instance_id: String,
+    pub item_hash: Option<i64>,
+    pub bucket: Option<String>,
+    pub name: Option<String>,
+}
+#[derive(JsonSchema)]
+pub struct ApplyLoadoutLocalIssueView {
+    pub item: ApplyLoadoutLocalItemView,
+    pub reason: ApplyLoadoutLocalReasonView,
+}
+#[derive(JsonSchema)]
+pub struct ApplyLoadoutLocalStateView {
+    pub status: ApplyLoadoutLocalStatusView,
+    pub unresolved_items: Vec<ApplyLoadoutLocalIssueView>,
+    pub skipped: Vec<ApplyLoadoutLocalIssueView>,
+    /// True includes cases with no projection effects to write.
+    pub persisted: bool,
+}
+#[derive(JsonSchema)]
+pub struct ApplyLoadoutOutputView {
+    pub kind: String,
+    pub character: Option<String>,
+    pub slot: Option<u8>,
+    pub name: Option<String>,
+    pub outcome: String,
+    pub receipt: Option<String>,
+    pub reason: Option<String>,
+    pub message: Option<String>,
+    pub code: Option<String>,
+    pub candidates: Option<Vec<ApplyLoadoutCandidateView>>,
+    pub local_state: ApplyLoadoutLocalStateView,
+}
+#[derive(JsonSchema)]
+pub struct ApplyLoadoutCandidateView {
+    pub slot: u8,
+    pub name: Option<String>,
+}
 pub fn apply_loadout_tool() -> Tool {
     let tool = Tool::new(
         APPLY_LOADOUT_TOOL,
         "Apply one saved in-game loadout. Required character is an exact id or unique class; supply exactly one of one-based slot or normalized exact name. Unknown or ambiguous names list candidates, never guess. Go to orbit or a social space first (offline also allowed). Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Missing/unsupported items, incomplete effects or persistence failures also require refresh. Never retry an uncertain outcome. Ordinary sync resolves cached loadouts without profile/206 reads while fresh and cached. Held subclasses switch locally; a subclass not held on the target is skipped with refresh pending. Mods/plugs, including subclass aspects/fragments, are not updated (Bungie limitation). Single-item equip validation is unchanged.",
         JsonObject::new(),
-    ).with_input_schema::<ApplyLoadoutArgs>();
+    ).with_input_schema::<ApplyLoadoutArgs>()
+        .with_object_output_schema::<ApplyLoadoutOutputView>();
     // No top-level oneOf: the Anthropic API rejects tool input schemas that use
     // oneOf/anyOf/allOf at the root. Exactly one of slot or name is enforced at
     // runtime by `ApplyLoadoutArgs`.

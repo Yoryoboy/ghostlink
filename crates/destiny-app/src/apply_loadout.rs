@@ -48,6 +48,71 @@ pub struct ApplyLoadoutResult {
     /// True only when acknowledged equipment effects persisted without invalidation.
     /// Missing/unresolved items, non-applied receipts and storage failures are false.
     pub local_state_updated: bool,
+    pub local_state: LoadoutLocalState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadoutLocalStatus {
+    Updated,
+    Partial,
+    Failed,
+    NotAttempted,
+}
+impl LoadoutLocalStatus {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Updated => "updated",
+            Self::Partial => "partial",
+            Self::Failed => "failed",
+            Self::NotAttempted => "not_attempted",
+        }
+    }
+}
+
+/// Identity known from the saved instance id and local catalog. Unowned saved
+/// instances have no hash, bucket or display name in Bungie's saved row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoadoutLocalItem {
+    pub instance_id: destiny_core::ItemInstanceId,
+    pub item_hash: Option<destiny_core::ItemHash>,
+    pub bucket: Option<String>,
+    pub name: Option<String>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoadoutLocalReason {
+    NotOwned,
+    Ambiguous,
+    MissingDefinition,
+    DefinitionUnavailable,
+    SubclassNotHeld,
+    UnsupportedBucket,
+    InvalidProjection,
+}
+impl LoadoutLocalReason {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NotOwned => "not_owned",
+            Self::Ambiguous => "ambiguous",
+            Self::MissingDefinition => "missing_definition",
+            Self::DefinitionUnavailable => "definition_unavailable",
+            Self::SubclassNotHeld => "subclass_not_held",
+            Self::UnsupportedBucket => "unsupported_bucket",
+            Self::InvalidProjection => "invalid_projection",
+        }
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoadoutLocalIssue {
+    pub item: LoadoutLocalItem,
+    pub reason: LoadoutLocalReason,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoadoutLocalState {
+    pub status: LoadoutLocalStatus,
+    pub unresolved_items: Vec<LoadoutLocalIssue>,
+    pub skipped: Vec<LoadoutLocalIssue>,
+    /// False only if writing projected effects failed; true for no effects too.
+    pub persisted: bool,
 }
 /// Loadout acknowledgement may switch an already-held subclass. This does not
 /// loosen the weapon/armor slot checks used by single-item equip.
@@ -177,7 +242,12 @@ where
             i32::from(selected.slot) - 1,
         )?;
         let receipt = action.equip_loadout(&provider)?;
-        let mut complete = receipt.applied();
+        let mut local_state = LoadoutLocalState {
+            status: LoadoutLocalStatus::NotAttempted,
+            unresolved_items: Vec::new(),
+            skipped: Vec::new(),
+            persisted: true,
+        };
         let mut effects = Vec::new();
         let mut projected = snapshot;
         if receipt.applied() {
@@ -198,11 +268,64 @@ where
                     .iter()
                     .filter(|item| item.instance_id == saved_item.instance_id);
                 let Some(item) = matches.next() else {
-                    complete = false;
+                    local_state.unresolved_items.push(LoadoutLocalIssue {
+                        item: LoadoutLocalItem {
+                            instance_id: saved_item.instance_id.clone(),
+                            item_hash: None,
+                            bucket: None,
+                            name: None,
+                        },
+                        reason: LoadoutLocalReason::NotOwned,
+                    });
                     continue;
                 };
-                if matches.next().is_some() {
-                    complete = false;
+                let mut identity = LoadoutLocalItem {
+                    instance_id: saved_item.instance_id.clone(),
+                    item_hash: Some(item.item_hash),
+                    bucket: None,
+                    name: None,
+                };
+                let unresolved_reason = if matches.next().is_some() {
+                    Some(LoadoutLocalReason::Ambiguous)
+                } else {
+                    match self.sync.repository().lookup_definition(item.item_hash) {
+                        Ok(destiny_core::Resolution::Unique(definition)) => {
+                            identity.bucket = definition.slot.map(|slot| {
+                                use destiny_core::domain::ItemSlot;
+                                match slot {
+                                    ItemSlot::Kinetic => "kinetic",
+                                    ItemSlot::Energy => "energy",
+                                    ItemSlot::Power => "power",
+                                    ItemSlot::Helmet => "helmet",
+                                    ItemSlot::Gauntlets => "gauntlets",
+                                    ItemSlot::Chest => "chest",
+                                    ItemSlot::Legs => "legs",
+                                    ItemSlot::ClassItem => "class_item",
+                                    ItemSlot::Other => "other",
+                                    ItemSlot::Unknown => "unknown",
+                                }
+                                .into()
+                            });
+                            if definition.bucket_hash == Some(destiny_core::SUBCLASS_BUCKET_HASH) {
+                                identity.bucket = Some("subclass".into());
+                            }
+                            identity.name = Some(definition.name);
+                            None
+                        }
+                        Ok(destiny_core::Resolution::Missing) => {
+                            Some(LoadoutLocalReason::MissingDefinition)
+                        }
+                        Ok(destiny_core::Resolution::Ambiguous(_)) => {
+                            Some(LoadoutLocalReason::Ambiguous)
+                        }
+                        Err(_) => Some(LoadoutLocalReason::DefinitionUnavailable),
+                    }
+                };
+                if let Some(reason) = unresolved_reason {
+                    local_state.unresolved_items.push(LoadoutLocalIssue {
+                        item: identity,
+                        reason,
+                    });
                     continue;
                 }
                 // Resolve against accepted effects so same-bucket replacements
@@ -219,23 +342,61 @@ where
                         effects.push(effect);
                         projected = updated;
                     }
-                    Err(_) => complete = false,
+                    Err(error) => {
+                        let reason = match error {
+                            crate::MutationError::UnsupportedSource
+                                if identity.bucket.as_deref() == Some("subclass") =>
+                            {
+                                LoadoutLocalReason::SubclassNotHeld
+                            }
+                            crate::MutationError::NotEquippable => {
+                                LoadoutLocalReason::UnsupportedBucket
+                            }
+                            _ => LoadoutLocalReason::InvalidProjection,
+                        };
+                        local_state.skipped.push(LoadoutLocalIssue {
+                            item: identity,
+                            reason,
+                        });
+                    }
                 }
             }
         }
-        let persisted = crate::mutation::persist_attempt_effects(
-            self.sync.repository_mut(),
-            &membership,
-            &effects,
-            complete,
-        );
-        let local_state_updated = complete && persisted.is_ok();
+        let complete = receipt.applied()
+            && local_state.unresolved_items.is_empty()
+            && local_state.skipped.is_empty();
+        // A failed fallback invalidation is not a failed projection write.
+        let persistence = if effects.is_empty() {
+            Ok(())
+        } else {
+            self.sync
+                .repository_mut()
+                .apply_acknowledged_effects(&membership, &effects)
+                .map(|_| ())
+        };
+        local_state.persisted = persistence.is_ok();
+        let invalidation = if !complete || persistence.is_err() {
+            self.sync.repository_mut().invalidate_freshness()
+        } else {
+            Ok(())
+        };
+        let local_state_updated = complete && persistence.is_ok() && invalidation.is_ok();
+        local_state.status = if !receipt.applied() {
+            LoadoutLocalStatus::NotAttempted
+        } else if persistence.is_err() || invalidation.is_err() {
+            LoadoutLocalStatus::Failed
+        } else if complete {
+            LoadoutLocalStatus::Updated
+        } else {
+            LoadoutLocalStatus::Partial
+        };
         Ok(ApplyLoadoutResult {
             character: character.id,
             slot: selected.slot,
             name: selected.name.clone(),
             receipt,
             local_state_updated,
+            local_state,
         })
     }
 }

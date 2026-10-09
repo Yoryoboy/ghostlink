@@ -235,10 +235,17 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   (source dequips with exotic-safe replacements, ordered transfers, space)
   and then calls `equipLoadout`. DIM's arrival bulk equip and socket/mod
   machinery do not apply (Bungie applies the saved configuration).
-  - [ ] U4a outcome clarity: split today's `local_state_failed` into remote
+  - [x] U4a outcome clarity: split today's `local_state_failed` into remote
     acknowledgement vs unresolved items vs projection rejection vs
     persistence failure; stable CLI/MCP fields; no invented per-item
     success; incomplete or uncertain state invalidates freshness.
+    Done: shared `local_state` object (`status` updated/partial/failed/
+    not_attempted, `unresolved_items` and `skipped` with reason codes,
+    `persisted`); Bungie request, dispatch count, receipt classes and exit
+    codes 0/41/42 unchanged. Contract change for D/release notes:
+    `local_state` was a string and is now an object; document statuses,
+    reason codes and nullable item identities in docs/cli.md and
+    docs/mcp.md. Workspace: 2039 passed, 0 failed.
   - [ ] U4b/U4c DIM preparation before `EquipLoadout` (cross-character and
     vault transfers, dequip with replacements, space, grouped equips,
     phases): owner decision (2026-10-09): verify live first. Next RC live

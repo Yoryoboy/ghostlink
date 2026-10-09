@@ -320,7 +320,13 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
     let mut loadout_character = character("1");
     loadout_character.id = CharacterId::new("1");
     loadout_character.class = Some("Hunter".into());
-    let loadout_items = vec![instance("123", 1, ItemLocation::Vault, vec![])];
+    let scenario = std::env::var(SCENARIO_ENV).unwrap_or_default();
+    let loadout_hash = if scenario == "loadout-missing-definition" {
+        999
+    } else {
+        1
+    };
+    let loadout_items = vec![instance("123", loadout_hash, ItemLocation::Vault, vec![])];
     let loadout_repository =
         FixtureRepository::seeded(&[loadout_character.clone()], &loadout_items);
     let loadout_world = Arc::new(Mutex::new(FixtureWorld {
@@ -370,10 +376,18 @@ impl destiny_app::LoadoutGateway for WorldGateway {
                     name_hash: 7,
                     color_hash: 8,
                     icon_hash: 9,
-                    items: vec![destiny_app::LoadoutItem {
-                        instance_id: ItemInstanceId::new("123"),
-                        plugs: vec![],
-                    }],
+                    items:
+                        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("loadout-partial") {
+                            vec!["123", "404"]
+                        } else {
+                            vec!["123"]
+                        }
+                        .into_iter()
+                        .map(|id| destiny_app::LoadoutItem {
+                            instance_id: ItemInstanceId::new(id),
+                            plugs: vec![],
+                        })
+                        .collect(),
                 }],
             }],
         })
@@ -1008,7 +1022,25 @@ impl FixtureRepository {
     /// Seeds one committed projection for the supplied characters and items.
     fn seeded(characters: &[Character], items: &[ItemInstance]) -> Self {
         let version = fixture_version();
-        let definitions = fixture_definitions();
+        let mut definitions = fixture_definitions();
+        match std::env::var(SCENARIO_ENV).ok().as_deref() {
+            Some("loadout-subclass") => {
+                let definition = definitions
+                    .iter_mut()
+                    .find(|d| d.hash == ItemHash::new(1))
+                    .unwrap();
+                definition.bucket_hash = Some(destiny_app::BucketHash::new(3284755031));
+                definition.slot = None;
+            }
+            Some("loadout-unsupported") => {
+                definitions
+                    .iter_mut()
+                    .find(|d| d.hash == ItemHash::new(1))
+                    .unwrap()
+                    .slot = None;
+            }
+            _ => (),
+        }
         let mut repository = Self {
             projection: Arc::new(Mutex::new(FixtureProjection {
                 inventory: InMemoryInventoryRepository::new(),
@@ -1073,7 +1105,7 @@ impl InventoryRepository for FixtureRepository {
     fn invalidate_freshness(&mut self) -> Result<(), AppError> {
         if matches!(
             std::env::var(SCENARIO_ENV).ok().as_deref(),
-            Some("pull-storage" | "stack-storage" | "loadout-storage" | "batch-storage")
+            Some("pull-storage" | "stack-storage" | "batch-storage")
         ) {
             return Err(AppError::new(ErrorCategory::LocalStorage));
         }
