@@ -140,7 +140,7 @@ fn duplicate_selection_uses_smallest_not_sum() {
 #[test]
 fn planning_refuses_each_definition_gate() {
     use StackPullPlanningRefusal::*;
-    for case in 0..12 {
+    for case in 0..11 {
         let mut d = definition();
         let reason = match case {
             0 => {
@@ -179,16 +179,12 @@ fn planning_refuses_each_definition_gate() {
                 d.max_stack_size = Some(0);
                 Capacity(StackPullRefusal::InvalidCapacityMetadata)
             }
-            9 => {
-                d.stack_unique_label = None;
-                Capacity(StackPullRefusal::UnknownUniqueness)
-            }
-            10 => DefinitionMissing,
+            9 => DefinitionMissing,
             _ => DefinitionAmbiguous,
         };
         let definitions = match case {
-            10 => vec![],
-            11 => vec![d.clone(), d],
+            9 => vec![],
+            10 => vec![d.clone(), d],
             _ => vec![d],
         };
         refused(&mut service(input(), definitions), 1, reason);
@@ -264,6 +260,15 @@ fn capacity_counts_profile_rows_and_excludes_overlapping_sources() {
         StackPullPlanningRefusal::Capacity(StackPullRefusal::InsufficientCapacity),
     );
 }
+#[test]
+fn absent_unique_label_means_not_unique() {
+    // Most live Manifest stacks (e.g. Enhancement Core) carry no
+    // `stackUniqueLabel`; like DIM, an absent label means "not unique".
+    let mut d = definition();
+    d.stack_unique_label = None;
+    assert!(plan(&mut service(input(), vec![d]), 3).is_ok());
+}
+
 fn armed() -> (Service, StackPullPlan) {
     let mut s = service(input(), vec![definition()]);
     let p = plan(&mut s, 3).unwrap();
