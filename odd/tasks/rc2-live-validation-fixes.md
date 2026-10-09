@@ -174,8 +174,15 @@ G5/G7 CLI UX.
   ambiguity/unknown to an infrastructure error. Original scope: Human sentences for `pull`/`pull-stack`
   refusals; `pull-stack --character` accepts a class; `--item-hash` hint;
   `apply-loadout` selector consistency with MCP `name`/`slot`.
-- [ ] **T9 — Docs, skill and live re-validation.** Update `docs/`,
-  `skills/ghostlink/SKILL.md`; cut rc.3 and re-run chained actions live.
+- [ ] **T9 — Docs, skill and live re-validation.**
+  - [x] T9a code polish: shared character selector for `pull-stack`, commit
+    `c9e6fd2` (review-05ce862f3133df57).
+  - [x] T9b documentation consistency pass: README, CLI/MCP references,
+    architecture and implementation guidance, skill and exit-code reference now
+    describe the DIM local-projection contract; rc.3 live checklist added to
+    PR-011 in `odd/tasks/ghostlink-public-release.md`. Definition-version
+    override text is left for PR #76 to avoid cross-branch conflicts.
+  - [ ] Cut rc.3 and run the PR-011 live checklist; this is the remaining T9 item.
 
 ## Delivery
 

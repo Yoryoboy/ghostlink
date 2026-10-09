@@ -640,8 +640,10 @@ Legacy artifact tiers and power-bonus fields are not reported.
 names, weapons, armor, subclass configuration and artifact perks per character.
 Omit `--character` for all characters; selection follows the subclass rules above.
 The compact view summarizes equipment; `--detail` adds each item's perks and mods.
-Requires login and Manifest definitions. Run `ghostlink sync-manifest` once after
-upgrading to populate loadout names.
+Requires login and Manifest definitions. Ordinary sync reads saved loadouts cached
+with the profile (component 206); a live 206 read is only a legacy fallback when
+the cache is unavailable. Run `ghostlink sync-manifest` once after upgrading to
+populate loadout names.
 
 Start with `ghostlink --json loadouts`: it returns compact `kind: "loadouts"`
 summaries, regardless of `--detail`. Per character, each saved loadout includes
@@ -885,7 +887,7 @@ post-action `observations` field. Typed pre-action failures have null receipt.
 Only applied output goes to stdout; failures go to stderr. Storage failure reports
 "local state could not be updated after the action" and fails closed even after
 acknowledgement. Pull no longer emits provider-lag exit 43. Planning missing target
-is 32, ambiguity 31, missing definition 33; preflight drift/expiry is 30, other
+is 32, ambiguity 31, missing definition 33; local revision drift/expiry is 30, other
 pre-action failures retain category exits. Never blindly retry: sync, inspect and
 reassess explicit intent first. Local serialization excludes neither game nor
 other-process activity. Anonymous stacks use `pull-stack` below; live validation
@@ -931,13 +933,13 @@ validator; numeric 1642 is a typed destination-full refusal, unknown codes uncer
 Incomplete receipts or persistence failures invalidate. No automatic definition
 download, recompose, freeing space, reminting, redispatch or rollback.
 JSON uses shared `kind: "stack_pull"`, independent `disposition`, `receipt`,
-`dispatch`, `failure` and `plan_id`; dispatch includes preflight quantity totals,
+`dispatch`, `failure` and `plan_id`; dispatch includes pre-action quantity totals,
 not invented post quantities. There is no post-action `observations` field.
 Received refusals remain `refused`; transport uncertainty remains `uncertain`:
 both exit 41 on stderr. Persistence or invalidation failure is `local_state_failed` (42),
 retaining the receipt and reporting "local state could not be updated after the
 action". There is no provider-lag failure or exit 43.
-Missing definition is 33, ambiguous definition 31, preflight drift/expiry 30;
+Missing definition is 33, ambiguous definition 31, local revision drift/expiry 30;
 other pre-action failures use existing category exits.
 
 Never blindly retry. Sync and re-read `postmaster`, then reassess explicit
@@ -972,9 +974,9 @@ The CLI uses the same `plan_move` / `execute_move_verified` pipeline as MCP
 equipping, freeing space, or changing plugs. An item already at the destination
 when planning is **refused**: `already in <destination>`, exit **40**
 (`unsupported_operation`), not a verified no-op. If the item reaches the
-requested destination between planning and mandatory fresh preflight, the
+requested destination between planning and committed-projection validation, the
 shared executor instead reports `verified_noop` (exit 0), with no transfer.
-Other changed preflight locations are refused before dispatch (exit 30).
+Other changed local locations are refused before dispatch (exit 30).
 Equipped-item and capacity restrictions can be provider refusals after dispatch;
 the move planner does not apply equip's class/exotic policy.
 
@@ -999,7 +1001,7 @@ success.
 ### Shared action state contract
 
 Move, equip, batch equip, lock, pull, stack pull and apply-loadout share this contract:
-Plans from Ghostlink's local projection (re-synced only when stale or invalidated).
+Plans from Ghostlink's local projection (synced only when missing, stale or invalidated).
 Bungie is the final validator. Acknowledged actions update local state immediately;
 rejections and uncertain outcomes mark it for refresh. Never retry an uncertain outcome.
 Incomplete effects and persistence failures also require refresh.
@@ -1038,7 +1040,7 @@ with `ghostlink sync` and `ghostlink inspect-item`, not repeat the action.
 
 JSON includes `status`, `item` (name and instance ID), requested `locked`,
 `attempt` (null when not dispatched), sanitized `reason`, `local_state`, and
-`observed` (fresh preflight state for a no-op, otherwise null). Exit 0 means
+`observed` (committed local state for a no-op, otherwise null). Exit 0 means
 `applied` or `verified_noop`; 41 means incomplete. Local invalidation storage
 failure after dispatch fails closed (42), with "local state could not be updated
 after the action". Lock/unlock no longer emit provider-lag exits 42/43.
@@ -1053,7 +1055,7 @@ ghostlink equip 123456789 234567890 --character hunter --json
 
 `equip <ITEM>... --character <class|id>` accepts 1–17 selectors. Exactly one
 item retains the existing single-item behavior and output below. Two or more
-use a fresh combined-state preflight and one batch equip call after necessary
+use combined-state validation of the committed local projection and one batch equip call after necessary
 Vault-mediated transfers, paced at least 0.1s apart. Each selector uses the same
 ID/name and ambiguity rules as single-item equip.
 
@@ -1089,7 +1091,7 @@ free space, or change builds/plugs. Bungie requires the target to be in orbit,
 a social space, or offline; there is no activity pre-check, so provider refusal
 may occur after a transfer.
 
-One invocation authorizes the intent. Fresh preflight precedes dispatch; full
+One invocation authorizes the intent. Ordinary sync and local validation precede dispatch; full
 acknowledgement returns `applied` (exit 0), without post-action refresh or claiming
 the item was observed on the target and equipped. Acknowledged effects persist locally with freshness retained and real acquisition
 metadata preserved; incomplete attempts require refresh. Partial progress is reported without rollback
@@ -1100,7 +1102,7 @@ verification failure return non-zero CLI exits.
 Equip no longer emits provider-lag verification exits 42/43. Bungie's profile
 can lag mutations; accepted steps are not proof of observed in-game state.
 Uncertain steps, refusals and partial execution remain failures. Already-satisfied
-fresh preflight remains `verified_noop` with no dispatch. Never retry blindly.
+local state remains `verified_noop` with no dispatch. Never retry blindly.
 
 The CLI JSON and MCP `equip_item` structured content use the same renderer:
 `status`, `item`, `character`, `steps`, `reason`, `local_state`, and `observed`.

@@ -7,19 +7,20 @@ This plan turns the verified MVP architecture into dependency-correct, independe
 `ghostlink equip <ITEM> --character <CHARACTER> [--json]` and default-enabled MCP
 `equip_item` now share `plan_equip` / `execute_equip_verified`. Both require explicit
 selectors, refuse ambiguity and unsafe class/exotic/equipped-elsewhere cases,
-transfer automatically if needed, force fresh preflight, refresh after attempted
-actions, and verify target location **and equipped state**. One call authorizes
-intent; there is no separate approval artifact.
+transfer automatically if needed, validate the committed local projection after
+ordinary sync, and persist acknowledged location/equipment effects locally.
+One call authorizes intent; there is no separate approval artifact.
 
 `ghostlink move <ITEM> (--character <id|class> | --vault) [--json]` now exposes
 MCP `move_item` semantics through the same `plan_move` / `execute_move_verified`
 pipeline, without a CLI dependency on MCP. Exactly one explicit destination is
 required; IDs take precedence and ambiguous selectors are refused. Already at
 the destination during planning is a `SameLocation` refusal (CLI exit 40), not
-a no-op. Reaching it between planning and forced preflight can be a verified
-no-op (0); other changed preflight locations refuse before dispatch. Provider
+a no-op. Reaching it between planning and local validation can be a verified
+no-op (0); other changed local locations refuse before dispatch. Provider
 restrictions such as equipped items can reject after dispatch. There are no
-retries or rollback; refresh and destination verification follow attempted steps.
+retries or rollback; acknowledged steps persist locally, retaining freshness on
+complete success and invalidating on incomplete outcomes.
 The move text/JSON contract is transport-neutral in `destiny-output`, separate
 from equip; exit policy remains CLI-owned. Offline tests do not prove live success.
 
@@ -31,9 +32,11 @@ pre-check. Partial progress has no rollback; uncertain outcomes must not be
 blindly retried. Offline parity and child-process fixtures are evidence of the
 pipeline, not live-provider success; authorized live smoke remains separate.
 
-Build planning/apply, multi-item execution, and plug/mod/perk mutations remain
-deferred. The original work-unit exclusions below describe those earlier slices,
-not a reversal of this current scope update.
+Batch equip, Postmaster pulls and saved in-game loadout application now use the
+same DIM-style local action model (see [How actions work](mvp-architecture.md#how-actions-work)).
+Build optimization and plug/mod/perk mutations remain deferred. The original
+work-unit exclusions below describe those earlier slices, not a reversal of this
+current scope update.
 
 ## Planning assumptions and principles
 
@@ -43,7 +46,7 @@ not a reversal of this current scope update.
 - Early units use fakes and fixtures. No live Bungie dependency is introduced before the contracts, state machine, persistence, and vertical read path are testable offline.
 - The public OAuth path is explicit: one exact configured case-sensitive callback listener, system browser, no client secret, no refresh token, and explicit reauthorization after expiry or rejected access. No PKCE, wildcard loopback, dynamic port, custom scheme, or device flow is assumed without official-source revalidation.
 - Provider-specific endpoint/component choices, transfer sequencing, rate-limit fields, credential-store libraries, and `rmcp` APIs require implementation-time revalidation against official/current sources. The plan records decisions, not permanent provider guarantees.
-- For MCP, explicit user intent to move an item is sufficient authorization for one direct `move_item` call. Semantic resolution, ambiguity rejection, mandatory fresh preflight, current-state validation, minimum remote calls, partial-failure reporting, post-action refresh, and verification remain mandatory. There is no mandatory preview, confirmation token/value, approval ceremony, or two-step MCP protocol. CLI may retain normal interactive UX without defining MCP authority.
+- For MCP, explicit user intent to move an item is sufficient authorization for one direct `move_item` call. Semantic resolution, ambiguity rejection, ordinary sync, committed-local-state validation, minimum remote calls, partial-failure reporting, and acknowledged-effect persistence remain mandatory. There is no mandatory preview, confirmation token/value, approval ceremony, or two-step MCP protocol. CLI may retain normal interactive UX without defining MCP authority.
 - Approximately 400 authored changed lines is a review heuristic, not a code or documentation cap. A unit that naturally exceeds it becomes a chained review slice rather than losing tests or clarity.
 
 ## Proposed workspace and ownership
@@ -76,6 +79,10 @@ cargo run -p destiny-mcp -- --help
 The scaffold must also document the supported feature/configuration matrix and how offline fixture tests are selected. `cargo test --workspace --all-features` remains credential-free and offline: live integration tests are ignored or excluded from baseline commands and require a separate explicit opt-in command/configuration, defined when those tests are implemented. Later units must not invent unrelated runner commands; they extend these commands with focused package/test filters only when the package exists.
 
 ## Ordered work units
+
+These original MVP slices retain their historical exclusions and dated evidence.
+Their action guidance below reflects the current local-projection contract;
+older fixture evidence involving preflight/post-action refresh is not a current requirement.
 
 ### WU-001 — Workspace, configuration, and error foundations
 
@@ -155,7 +162,7 @@ The scaffold must also document the supported feature/configuration matrix and h
 
 **Likely ownership/edit surfaces:** `destiny-app::sync`; `destiny-adapters::bungie::profile`; normalizers and fixture payloads.
 
-**Behavior and checks:** Unit-test normalization for characters, Vault, equipped items, unknown locations, locks, quantities, perks summaries, and malformed/partial components. Contract-test Bungie gateway requests and normalized outcomes using fakes. Integration-test fixture sync, forced/stale/preflight/post-action reasons, idempotency, changed revisions, and safe partial provider errors. Snapshot-test normalized inventory. Manual/live check is deferred to the live integration checklist.
+**Behavior and checks:** Unit-test normalization for characters, Vault, equipped items, unknown locations, locks, quantities, perks summaries, and malformed/partial components. Contract-test Bungie gateway requests and normalized outcomes using fakes. Integration-test fixture sync, ordinary/forced freshness reasons and non-newer minted-profile discard, idempotency, changed revisions, and safe partial provider errors. Snapshot-test normalized inventory. Manual/live check is deferred to the live integration checklist.
 
 **Exclusions:** No mutation calls, build engine, duplicate ranking, equip, Postmaster, or world-state data.
 
@@ -197,25 +204,25 @@ The scaffold must also document the supported feature/configuration matrix and h
 
 **Likely ownership/edit surfaces:** `destiny-app::mutation::plan` and policy; core plan/mutation types; CLI-neutral result contracts.
 
-**Behavior and checks:** Unit-test direct moves, Vault-mediated moves, unsupported locations, ambiguity rejection, expiry, changed revision, wrong destination/item, and explicit user intent versus absent or ambiguous intent. Contract-test semantic inputs and sanitized effect/result shapes. Integration-test that planning has no remote side effect, MCP has no preview/token/two-step requirement, and the shared policy enforces fresh preflight inputs. Snapshot-test action effects. Revalidate official/current lock, availability, and transfer constraints during implementation planning before finalizing provider assumptions.
+**Behavior and checks:** Unit-test direct moves, Vault-mediated moves, unsupported locations, ambiguity rejection, expiry, changed revision, wrong destination/item, and explicit user intent versus absent or ambiguous intent. Contract-test semantic inputs and sanitized effect/result shapes. Integration-test that planning has no remote side effect, MCP has no preview/token/two-step requirement, and the shared policy enforces committed-projection validation after ordinary sync. Snapshot-test action effects. Revalidate official/current lock, availability, and transfer constraints during implementation planning before finalizing provider assumptions.
 
 **Exclusions:** No Bungie mutation call, no adapter-forged authority, no multi-item plans, equip, dismantle, or rollback claim.
 
 **Review notes:** The internal plan is a safety and state-binding object, not an MCP approval artifact. Rollback boundary: remove mutation planning/policy modules and their tests without touching the transfer adapter.
 
-### WU-010 — Bungie transfer execution with preflight, partial failure, refresh, and verification
+### WU-010 — Bungie transfer execution with local validation, partial failure, and acknowledged effects
 
-**Purpose/outcome:** Implement the shared executor and Bungie adapter boundary for one-item transfer: mandatory fresh preflight, re-resolution, minimum supported calls, step recording, honest partial failure, post-action refresh, and destination verification.
+**Purpose/outcome:** Implement the shared executor and Bungie adapter boundary for one-item transfer: ordinary sync, committed-projection re-resolution, minimum supported calls, step recording, honest partial failure, and local persistence of acknowledged effects.
 
 **Dependencies:** WU-003, WU-006, WU-009.
 
 **Likely ownership/edit surfaces:** `destiny-app::mutation::execute`; `destiny-adapters::bungie::transfer`; execution records and fixture gateway.
 
-**Behavior and checks:** Unit-test preflight invalidation, expired plan, already-satisfied postcondition, step ordering, transient/non-transient errors, partial failure, retry refusal without refresh, and verification failure. Contract-test Bungie gateway request/response mapping with a fake. Integration-test the complete transfer against a deterministic fake, including post-refresh and changed state. Snapshot-test semantic outcomes and bounded step results. Manual/live test only with a non-production account after official endpoint/component revalidation.
+**Behavior and checks:** Unit-test local revision drift, expired plan, already-satisfied local state, step ordering, transient/non-transient errors, partial failure, no blind retry, and persistence failure. Contract-test Bungie gateway request/response mapping with a fake. Integration-test the complete transfer against a deterministic fake, including chained acknowledged effects and changed local state. Snapshot-test semantic outcomes and bounded step results. Manual/live test only with a non-production account after official endpoint/component revalidation.
 
 **Exclusions:** No claim of multi-call atomicity or automatic rollback; no broad action framework, equip, locking, or multi-item execution.
 
-**Review notes:** This is the highest-risk unit. Keep remote calls behind one narrow gateway and preserve evidence of completed/uncompleted steps. Revalidate official/current lock, availability, and transfer constraints immediately before implementation and record source/version evidence. Internal review slices: (a) preflight and provider-call sequencing, then (b) partial-failure recording, post-action refresh, and verification. Each slice is independently revertible at the executor/adapter boundary.
+**Review notes:** This is the highest-risk unit. Keep remote calls behind one narrow gateway and preserve evidence of completed/uncompleted steps. Revalidate official/current lock, availability, and transfer constraints immediately before implementation and record source/version evidence. Internal review slices: (a) local validation and provider-call sequencing, then (b) partial-failure recording and acknowledged-effect persistence. Each slice is independently revertible at the executor/adapter boundary.
 
 ### WU-011 — MCP stdio read tools
 
@@ -233,15 +240,15 @@ The scaffold must also document the supported feature/configuration matrix and h
 
 ### WU-012 — MCP single-call intent-authorized mutation tool
 
-**Purpose/outcome:** Expose one semantic `move_item` tool through MCP using the shared planner/executor. Explicit user intent to move an identified item to a destination is sufficient authorization; the service still performs semantic resolution, ambiguity rejection, fresh preflight, minimum remote calls, partial-failure reporting, refresh, and verification. No mandatory preview, confirmation token/value, approval ceremony, or two-step protocol exists.
+**Purpose/outcome:** Expose one semantic `move_item` tool through MCP using the shared planner/executor. Explicit user intent to move an identified item to a destination is sufficient authorization; the service still performs semantic resolution, ambiguity rejection, ordinary sync and local validation, minimum remote calls, partial-failure reporting, and acknowledged-effect persistence. No mandatory preview, confirmation token/value, approval ceremony, or two-step protocol exists.
 
 **Dependencies:** WU-009–011.
 
 **Likely ownership/edit surfaces:** `destiny-mcp` mutation tool modules; shared MCP/application contract tests; documentation of host behavior.
 
-**Behavior and checks:** Unit-test ambiguous/missing semantic target, stale revision, repeated request handling, preflight changes, and sanitized partial failure. Contract-test parity with CLI services and exact single-call semantics. Integration-test one stdio `move_item` request with fakes, proving no approval artifact or second tool call is required while preflight/policy remain enforced. Snapshot-test effects and typed outcomes. Manual-check default-enabled MCP mutation and secret exclusion.
+**Behavior and checks:** Unit-test ambiguous/missing semantic target, stale revision, repeated request handling, local revision changes, and sanitized partial failure. Contract-test parity with CLI services and exact single-call semantics. Integration-test one stdio `move_item` request with fakes, proving no approval artifact or second tool call is required while local validation/policy remain enforced. Snapshot-test effects and typed outcomes. Manual-check default-enabled MCP mutation and secret exclusion.
 
-**Exclusions:** No preview tool, confirmation token/value, approval ceremony, two-step MCP protocol, adapter-generated authority, bypass of preflight/policy, or new mutation semantics.
+**Exclusions:** No preview tool, confirmation token/value, approval ceremony, two-step MCP protocol, adapter-generated authority, bypass of local validation/policy, or new mutation semantics.
 
 **Review notes:** This unit is review-sensitive because explicit user intent is the MCP authorization decision while the host/model remains untrusted for credentials and semantic ambiguity. Rollback boundary: remove only MCP mutation schemas/mapping and their transport tests; shared mutation behavior remains intact.
 
@@ -261,19 +268,19 @@ The scaffold must also document the supported feature/configuration matrix and h
 
 ### WU-014 — End-to-end fixture journey
 
-**Purpose/outcome:** Demonstrate the complete offline journey: authorization fake, Manifest fixture, profile sync, search/inspect, semantically resolve “The Last Word to Warlock,” authorize the MCP move by explicit user intent (with optional CLI confirmation UX), fake transfer, refresh, and verification.
+**Purpose/outcome:** Demonstrate the complete offline journey: authorization fake, Manifest fixture, profile sync, search/inspect, semantically resolve “The Last Word to Warlock,” authorize the MCP move by explicit user intent (with optional CLI confirmation UX), fake transfer and local persistence of acknowledged effects.
 
 **Dependencies:** WU-003–013.
 
 **Likely ownership/edit surfaces:** shared fixture corpus; workspace integration/e2e test package; CLI/MCP journey harnesses; test documentation.
 
-**Behavior and checks:** End-to-end integration test for the named journey, including stale cache, internal plan/state binding, fresh preflight, partial failure alternative, and successful verification. Contract-test equivalent CLI/MCP service outcomes, including one direct MCP call. Snapshot-test key journey outputs. Manual run through both adapters using the scaffold-established commands, without a live account.
+**Behavior and checks:** End-to-end integration test for the named journey, including stale cache, internal plan/state binding, local validation, partial failure alternative, and chained local effects. Contract-test equivalent CLI/MCP service outcomes, including one direct MCP call. Snapshot-test key journey outputs. Manual run through both adapters using the scaffold-established commands, without a live account.
 
 **Exclusions:** No claim that fixtures prove Bungie compatibility, no live credentials, and no multi-call atomicity claim.
 
 **Review notes:** Keep fixtures deterministic and sanitized so the test remains runnable in CI.
 
-**Offline evidence (local WU-014 slices, 2026-09-24):** The real-adapter `transfer_execution_journey` composes the named "The Last Word to Warlock" path across the profile/transfer gateways, SQLite, shared query and mutation services, scripted transports, deterministic clock, fresh preflight, post-action refresh, and verified destination. Its adjacent scenarios cover stale preflight and honest partial failure. `query_journey` runs CLI JSON and MCP read-service projections against the same committed fixture state and pins deterministic key-output JSON (characters, Vault instance, definition, perks, metadata, privacy and missing result) without a new snapshot dependency. MCP `stdio` separately proves a single semantic `move_item` request over an in-memory fixture, including two Vault-mediated steps and verified destination; it does **not** use the real-adapter fixture. Run `cargo test -p destiny-adapters --all-features --test transfer_execution_journey`, `cargo test -p destiny-adapters --all-features --test query_journey`, and `cargo test -p destiny-mcp --all-features --test stdio` for focused evidence; the baseline remains `cargo test --workspace --all-features`. CLI mutation does not exist, and the CLI success child-process path still requires an OS credential store; parity is on shared read semantics, not byte-identical output or mutation. Fixtures do not prove live Bungie, real keyring, or multi-call atomicity. Detailed commits, test results and deferred checks: `odd/tasks/destiny-offline-fixture-journey.md`.
+**Historical offline evidence (local WU-014 slices, 2026-09-24; preflight/post-action refresh superseded by issue #71):** The real-adapter `transfer_execution_journey` composes the named "The Last Word to Warlock" path across the profile/transfer gateways, SQLite, shared query and mutation services, scripted transports, deterministic clock, fresh preflight, post-action refresh, and verified destination. Its adjacent scenarios cover stale preflight and honest partial failure. `query_journey` runs CLI JSON and MCP read-service projections against the same committed fixture state and pins deterministic key-output JSON (characters, Vault instance, definition, perks, metadata, privacy and missing result) without a new snapshot dependency. MCP `stdio` separately proves a single semantic `move_item` request over an in-memory fixture, including two Vault-mediated steps and verified destination; it does **not** use the real-adapter fixture. Run `cargo test -p destiny-adapters --all-features --test transfer_execution_journey`, `cargo test -p destiny-adapters --all-features --test query_journey`, and `cargo test -p destiny-mcp --all-features --test stdio` for focused evidence; the baseline remains `cargo test --workspace --all-features`. CLI mutation does not exist, and the CLI success child-process path still requires an OS credential store; parity is on shared read semantics, not byte-identical output or mutation. Fixtures do not prove live Bungie, real keyring, or multi-call atomicity. Detailed commits, test results and deferred checks: `odd/tasks/destiny-offline-fixture-journey.md`.
 
 ### WU-015 — Live integration checklist and packaging documentation
 
@@ -283,7 +290,7 @@ The scaffold must also document the supported feature/configuration matrix and h
 
 **Likely ownership/edit surfaces:** `docs/` integration/deployment/runbook files; package metadata/examples; live-test checklist and release notes.
 
-**Behavior and checks:** Manual/live checks only: OAuth callback exactness, denial/reauthorization, read sync, one transfer, post-refresh verification, and MCP stdio host compatibility. Record provider/version/date evidence and never commit credentials or live identifiers. Contract-check packaged CLI/MCP startup and configuration errors. No invented command is required beyond the scaffold commands and commands documented by the implementation.
+**Behavior and checks:** Manual/live checks only: OAuth callback exactness, denial/reauthorization, read sync, one transfer, immediate local effects and in-game confirmation, and MCP stdio host compatibility. Record provider/version/date evidence and never commit credentials or live identifiers. Contract-check packaged CLI/MCP startup and configuration errors. No invented command is required beyond the scaffold commands and commands documented by the implementation.
 
 **Exclusions:** No production release, hosted service, confidential backend, or guarantee that undocumented provider behavior remains stable.
 
@@ -308,7 +315,7 @@ Each slice should target roughly one reviewer session and monitor authored addit
 
 ## Explicit non-goals and post-MVP boundary
 
-The current scope includes single-item move/equip, lock/unlock (CLI and MCP `set_lock_state`), and weekly read capabilities. Lock uses shared fresh preflight and one dispatch; acknowledgement is `applied` (no post-action read, freshness invalidated); already satisfied is a verified no-op. Vault items use one owned character for the provider call (live validation pending). Build engines, multi-item build plans/apply, plug/mod/perk mutations, dismantling, Postmaster, duplicate ranking, web UI, hosted/confidential backend, general-purpose Bungie proxying, and broad inventory actions remain deferred. Later capabilities may reuse the ports and projections but must not bypass fresh preflight, bounded intent, or acknowledgement-only success with freshness invalidation. (2026-10-08: post-action verification replaced by optimistic semantics; see `odd/tasks/inventory-actions-closure.md`.)
+The current scope includes single-item move/equip, lock/unlock (CLI and MCP `set_lock_state`), and weekly read capabilities. Lock uses ordinary sync and committed-projection validation before one dispatch; acknowledgement is `applied` with local effects persisted and freshness retained (no post-action read); already satisfied local state is a verified no-op. Vault items use one owned character for the provider call (live validation pending). Build engines, multi-item build plans/apply, plug/mod/perk mutations, dismantling, duplicate ranking, web UI, hosted/confidential backend, general-purpose Bungie proxying, and broad inventory actions remain deferred. Batch equip, Postmaster pulls and saved in-game loadout apply are now supported. Later capabilities may reuse the ports and projections but must not bypass local validation, bounded intent, or acknowledgement-only success with local effect persistence. Incomplete effects and uncertain/rejected outcomes invalidate freshness (issue #71; see `odd/tasks/rc2-live-validation-fixes.md`).
 
 ## Architecture traceability
 
@@ -330,7 +337,7 @@ The current scope includes single-item move/equip, lock/unlock (CLI and MCP `set
 | WU-014 | AC-3, AC-4, AC-5, AC-6, AC-7, AC-9 |
 | WU-015 | AC-1, AC-3, AC-4, AC-6, AC-8, AC-9 |
 
-Architecture criteria referenced above: **AC-1** public exact-callback authentication; **AC-2** typed authorization failure/reauthorization; **AC-3** fresh, revisioned, atomic Manifest/profile snapshots; **AC-4** equivalent CLI/MCP shared-service results and one-call intent-authorized MCP mutation; **AC-5** concrete instance-aware search/inspect; **AC-6** semantic resolution, ambiguity rejection, preflight, partial failure, refresh, verification; **AC-7** default-enabled intent-authorized MCP execution; **AC-8** no secret leakage; **AC-9** repeatable vertical fixture journey without atomicity claims.
+Architecture criteria referenced above: **AC-1** public exact-callback authentication; **AC-2** typed authorization failure/reauthorization; **AC-3** fresh, revisioned, atomic Manifest/profile snapshots; **AC-4** equivalent CLI/MCP shared-service results and one-call intent-authorized MCP mutation; **AC-5** concrete instance-aware search/inspect; **AC-6** semantic resolution, ambiguity rejection, local validation, partial failure, acknowledged effects; **AC-7** default-enabled intent-authorized MCP execution; **AC-8** no secret leakage; **AC-9** repeatable vertical fixture journey without atomicity claims.
 
 ## Recommended first unit and readiness
 

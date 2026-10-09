@@ -115,9 +115,9 @@ and fill/split profile inventory stacks once. Both advance revision and retain
 freshness. Incomplete attempts or persistence failures invalidate.
 Never blindly retry.
 
-Move/equip use fresh preflight checks and return `applied` (exit 0) when Bungie
+Move/equip validate the committed local projection and return `applied` (exit 0) when Bungie
 acknowledges every step, without post-action verification. Plans from Ghostlink's
-local projection (re-synced only when stale or invalidated). Bungie is the final
+local projection (synced only when missing, stale or invalidated). Bungie is the final
 validator. Acknowledged actions update local state immediately; rejections and
 uncertain outcomes mark it for refresh. Never retry an uncertain outcome.
 Incomplete effects and persistence failures also require refresh.

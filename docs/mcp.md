@@ -30,8 +30,8 @@ token or value, approval ceremony, or second MCP call. The single call plans the
 move from the committed local projection, uses ordinary sync only when missing,
 stale or invalidated, re-resolves and validates the revision-bound plan locally,
 and issues only the ordered transfer steps. Bungie is the final validator. It returns `applied` with `isError=false` when every step is acknowledged.
-It does not perform post-action verification; the next ordinary read forces sync
-without writing guessed inventory state (see [Equip one item](cli.md#equip-one-item));
+It does not perform post-action verification; acknowledged effects persist locally
+with freshness retained (see [Equip one item](cli.md#equip-one-item));
 membership and credentials are resolved internally and are never accepted or
 emitted through MCP.
 
@@ -43,7 +43,7 @@ pipeline and JSON as `ghostlink equip`; see the [equip safety limits](cli.md#equ
 ### Shared action contract
 
 Move, equip, batch equip, lock, pull, stack pull and apply-loadout use the same
-contract: Plans from Ghostlink's local projection (re-synced only when stale or
+contract: Plans from Ghostlink's local projection (synced only when missing, stale or
 invalidated). Bungie is the final validator. Acknowledged actions update local
 state immediately; rejections and uncertain outcomes mark it for refresh.
 Never retry an uncertain outcome. Incomplete effects or persistence failures
@@ -172,7 +172,7 @@ with 2–17 items. Character is an explicit unique class or owned ID; item ID/na
 resolution matches CLI `ghostlink equip <ITEM>... --character <class|id>`.
 The existing single-item `equip_item` tool is unchanged.
 
-One fresh preflight validates the combined equipment state: unique items and
+Committed-projection validation checks the combined equipment state: unique items and
 slots, class compatibility, equippability, and at most one exotic weapon and
 one exotic armor including equipped slots not replaced. Invalid batches dispatch
 nothing. Required transfers use Vault-mediated routing, stop on first failure,
@@ -299,7 +299,7 @@ uses the existing operation guard and production gateway/repository clones.
 
 `structuredContent` is the shared `ghostlink pull-stack --json` shape: `kind:
 "stack_pull"`, `disposition`, `plan_id`, `dispatch`, independent `receipt` and
-`failure`; dispatch retains preflight totals, not invented post quantities.
+`failure`; dispatch retains pre-action totals, not invented post quantities.
 Acknowledgement returns `applied`, with `isError=false` (CLI 0), not observed
 quantity arrival. There is no post-action request, wait or `observations` field.
 Acknowledged pulls apply the requested quantity locally once: decrement a
@@ -355,6 +355,8 @@ when unavailable.
 For example: `{"character": "hunter"}`. Requires login and loaded Manifest definitions.
 
 Call `get_loadouts` first for compact discovery, then `get_loadout` for detail.
+Both use ordinary sync and saved loadouts cached with the profile (component 206);
+a live 206 read is only a legacy fallback when the cache is unavailable.
 `get_loadouts` accepts an optional bounded `character` (exact id or unique class),
 with omission selecting all characters. Its structured output matches
 `ghostlink --json loadouts` exactly: `kind: "loadouts"`, character ID/class, and

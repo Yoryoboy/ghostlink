@@ -403,6 +403,40 @@ cargo-dist handling of the libdbus runtime dependency.
     with a generic `unsupported_operation` (stale "already in Vault"); the
     error should say the item is already at the destination.
 
+  Live checklist (`v0.1.0-rc.3`, pending, human-run):
+  Record sanitized outcomes, CLI exits/MCP errors, `local_state`, and in-game
+  confirmation in the next live log; do not record credentials or live IDs.
+  - [ ] Chain moves, equips and locks with no waits or forced sync between
+    actions (including CLI/MCP alternation): move then move back, equip then
+    another equip, unlock then lock. Confirm no stale refusal or false no-op.
+  - [ ] Pull Postmaster equipment instances until the owner's destination bucket
+    is full, then confirm the next pull refuses locally without dispatch.
+  - [ ] Pull an ordinary Enhancement Core stack with an explicit amount and owner;
+    confirm local Postmaster/inventory quantities and in-game receipt.
+  - [ ] In a controlled stale/unknown-occupancy case where a full-destination
+    Postmaster pull reaches Bungie, confirm numeric code 1642 and typed
+    `destination_full`, or record the actual code/reason returned. Do not bypass
+    a known-full local refusal just to obtain the code.
+  - [ ] Apply a saved loadout including a subclass switch, then immediately equip
+    an item without waiting; confirm local equipment/subclass and game state.
+  - [ ] Measure `get_loadouts` response size in Pi and confirm summaries are not
+    truncated; fetch `get_loadout` detail by both saved name and slot.
+  - [ ] After Ghostlink caches an item, move it in game behind Ghostlink's back;
+    attempt the stale action and record typed `item_not_found` and its actionable
+    message (numeric 1623), or the actual rejection if Bungie returns another code.
+  - [ ] Confirm `local_state`: `updated` after complete acknowledged effects,
+    `unchanged` for local no-op/pre-dispatch refusal, `refresh_pending` after
+    rejection/uncertainty or incomplete effects. Confirm the next ordinary read
+    syncs only when missing/stale/invalidated; never blindly retry a failure.
+  - [ ] Pending from rc.2: post-expiry broker token refresh with broker defaults.
+  - [ ] Pending from rc.2: `equip_items` multi-item batch, including local equipment
+    effects and an immediate follow-up action.
+  - [ ] Pending from rc.2: native Windows install, paste login, wizard, MCP/CLI
+    reads and documented lifecycle refusal/manual guidance.
+  - [ ] Pending from rc.2: update across two releases in a disposable Linux
+    container/VM, check installed versions, restart MCP and verify reads; check
+    Windows manual updater guidance as described in the lifecycle log above.
+
 ## Follow-ups (out of scope)
 - Windows `ghostlink://` handler (next feature, developed on Windows).
 - winget / AUR / MSI / code signing.

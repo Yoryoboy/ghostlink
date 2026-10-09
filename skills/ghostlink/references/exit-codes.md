@@ -107,7 +107,7 @@ validation is unchanged.
 | `refused` | 41 / varies | Received refusal exits 41; pre-action refusal retains category exits. Report without working around it. |
 | `local_state_failed` | 42 | Local state could not be updated after the action; receipt retained. Sync/inspect, do not retry. |
 
-Planning missing target is 32, ambiguity 31, missing definition 33; preflight
+Planning missing target is 32, ambiguity 31, missing definition 33; local revision
 drift/expiry is 30, other eligibility refusals default to 40. Typed pre-action
 infrastructure errors use the category table above. No post-action profile request,
 wait or observations; no provider-lag exit 43. Acknowledged instanced pulls update
@@ -125,14 +125,15 @@ claim. MCP `pull_item` uses the same shared output.
 
 ## Stack pull `disposition`
 
-`ghostlink pull-stack <ITEM_HASH> --amount <N> --character <CHARACTER_ID>`
+`ghostlink pull-stack <ITEM_HASH> --amount <N> --character <id|class>`
 uses `kind: "stack_pull"` with independent receipt, disposition and failure.
-Canonical uint32 hash, positive int32 amount and positive int64 owner ID are
-required; invalid input exits 2 before any I/O. The pull disposition table above
+Canonical uint32 hash and positive int32 amount are required. CLI resolves an
+exact owner ID or unique class; MCP requires a positive int64 owner ID.
+Invalid input exits 2 before dispatch. The pull disposition table above
 also applies: `applied` is 0, received refusal/transport uncertainty 41, local
 persistence or invalidation failure 42. No provider-lag exit 43, post-action request,
-wait or observations; preflight totals are not invented post quantities.
-Missing definition is 33, ambiguous definition 31, preflight drift/expiry 30;
+wait or observations; pre-action totals are not invented post quantities.
+Missing definition is 33, ambiguous definition 31, local revision drift/expiry 30;
 other pre-action failures retain category exits. Nonzero evidence stays on stderr.
 Requires authenticated membership, qualified non-instanced metadata and pinned
 audited account-wide local capacity (unchanged stack arithmetic). Ordinary sync
@@ -153,7 +154,7 @@ offline checks do not establish live readiness.
 |---|---:|---|
 | `applied` | 0 | Every step accepted; not an observed destination. Local effects persisted; freshness retained. |
 | `verified_noop` | 0 | Local state already matches the destination; nothing sent to Bungie. |
-| `refused` | varies | Report `reason` and steps; do not retry. Already in the destination when planning is exit **40** (`unsupported_operation`), not no-op success. Missing item is 32, missing character 2, ambiguity 31, changed preflight 30. |
+| `refused` | varies | Report `reason` and steps; do not retry. Already in the destination when planning is exit **40** (`unsupported_operation`), not no-op success. Missing item is 32, missing character 2, ambiguity 31, changed local revision 30. |
 | `incomplete` | 41 | Report completed, rejected/uncertain and unrun steps; no rollback. Do not retry. |
 Move does not emit provider-lag verification exits 42/43. Never blindly repeat.
 
@@ -225,8 +226,9 @@ Bungie may refuse after a transfer already happened.
 | `incomplete` | 41 | Refused, auth-refused, transient or uncertain attempt; no post-action observation. Never blindly retry. |
 | `verification_failed` | 42 | Local invalidation storage failed after dispatch: local state could not be updated after the action. Sync and inspect; do not retry. |
 
-Lock/unlock no longer emit provider-lag verification exits 42/43. Dispatched
-attempts invalidate freshness, not guessed state; already-satisfied no-ops do not.
+Lock/unlock no longer emit provider-lag verification exits 42/43. Acknowledged
+lock effects persist locally with freshness retained; incomplete attempts or
+persistence failures invalidate. Already-satisfied local no-ops leave state unchanged.
 
 Vault items use one owned character for the provider call. Lock/unlock do not
 apply equip class, exotic, or equipped-state policy.

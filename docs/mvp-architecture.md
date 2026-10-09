@@ -23,7 +23,7 @@ Build engines, multi-item build plans/apply, plugs/mod/perk mutations, dismantli
 3. Manifest and profile synchronization populate local definitions and item projections.
 4. User searches for “The Last Word”; the core resolves the semantic result to a stable item instance and destination character.
 5. A move plan explains source, Vault intermediary if required, destination, and expected effects.
-6. Explicit user intent authorizes one direct MCP `move_item` call (there is no CLI move command). The core refreshes the relevant profile immediately before execution, re-resolves the item, performs the minimum supported remote calls, refreshes afterward, and verifies the observed destination.
+6. Explicit user intent authorizes one MCP `move_item` call or CLI `ghostlink move` invocation. The core uses ordinary sync, validates the committed local projection, performs the minimum supported remote calls, and persists acknowledged effects locally without post-action verification.
 7. The adapter reports a semantic result or a safe, actionable error.
 
 ## 2. System context and boundaries
@@ -53,7 +53,7 @@ flowchart LR
 | SQLite/cache/search repository | Durable non-secret projections, indexes, sync metadata, plans/results | Store access tokens, API keys, authorization codes, or raw secret-bearing payloads |
 | Credential-store port | Save/load/delete opaque access-token material securely | Define a particular library or print credentials |
 | CLI adapter | Parse commands, display bounded results, request interactive confirmation | Reimplement policy or call Bungie directly |
-| MCP stdio adapter | Expose semantic read tools and the intent-authorized mutation entry point | Put secrets in tool inputs/outputs or bypass semantic resolution, preflight, or mutation policy |
+| MCP stdio adapter | Expose semantic read tools and the intent-authorized mutation entry point | Put secrets in tool inputs/outputs or bypass semantic resolution, local validation, or mutation policy |
 
 ### Dependency direction
 
@@ -72,7 +72,7 @@ Core records include:
 - `Freshness { dataset, fetched_at, revision, status }`; and
 - `MovePlan { plan_id, item, source, destination, steps, created_at, expires_at }`.
 
-Architectural ports are intentionally behavioral: `BungieGateway` authenticates and reads/executes supported operations; `ManifestGateway` obtains a versioned definition set; `InventoryRepository` reads/replaces projections and sync metadata transactionally; `CredentialStore` protects opaque access state; `Clock` and `IdGenerator` make expiry and idempotency testable; `MutationPolicy` enforces semantic resolution, ambiguity rejection, preflight, and verification; `SearchRepository` resolves semantic queries to indexed items. Exact Rust traits and endpoint mappings belong to implementation planning.
+Architectural ports are intentionally behavioral: `BungieGateway` authenticates and reads/executes supported operations; `ManifestGateway` obtains a versioned definition set; `InventoryRepository` reads/replaces projections and sync metadata transactionally; `CredentialStore` protects opaque access state; `Clock` and `IdGenerator` make expiry and idempotency testable; `MutationPolicy` enforces semantic resolution, ambiguity rejection, local revision binding, and acknowledgement handling; `SearchRepository` resolves semantic queries to indexed items. Exact Rust traits and endpoint mappings belong to implementation planning.
 
 ## 4. Authentication and secret boundaries
 
@@ -97,6 +97,21 @@ Access tokens, authorization codes, API keys, callback query values, and raw cre
 Bungie remains the source of truth. SQLite contains a rebuildable cache/search projection, not an authority. Manifest data is synchronized by version: download to temporary storage, validate completeness and version, then replace definitions in one transaction. Profile synchronization fetches the required profile/components, normalizes them, and atomically replaces the affected snapshot plus `fetched_at`, `SyncRevision`, source, and schema version.
 
 Freshness is dataset-specific (Manifest, profile, character inventory) and policy-driven rather than a single global TTL. Reads may use a fresh projection; stale or missing data triggers synchronization before answering. A forced `sync` bypasses freshness. Move, single-item equip and lock/unlock dispatch from the committed local projection after ordinary sync, acquiring only when missing, stale or invalidated; batch equip, pulls and saved loadouts use the same ordinary freshness gate. Bungie is the final validator. Acknowledged move/equip effects and lock state update the projection locally without a post-action read, advance its revision when content changes, and retain freshness on complete success. Incomplete, rejected or uncertain attempts invalidate freshness. Local persistence failure after acknowledgement preserves receipts and invalidates freshness without retrying Bungie; the next ordinary read syncs. Concurrent syncs use a per-dataset lock or equivalent single-flight policy; an interrupted transaction leaves the prior committed snapshot intact.
+
+### How actions work
+
+[Destiny Item Manager (DIM)](https://github.com/DestinyItemManager/DIM) is the reference design.
+
+- Actions plan from the local SQLite projection, not a forced fresh preflight.
+- Ordinary sync acquires profiles only when missing, stale or invalidated.
+- Revision-bound local validation precedes dispatch; Bungie is the final validator.
+- Acknowledged move, equip, batch equip, lock, pull and loadout effects persist locally.
+- Complete effects retain freshness, so chained actions need no wait or post-action read.
+- Non-newer `responseMintedTimestamp` profiles are discarded by ordinary sync.
+- Saved loadouts (component 206) are cached with the profile; discovery returns summaries, detail is separate.
+- Postmaster capacity uses audited local limits, without per-action Manifest evidence.
+- Numeric Bungie codes yield typed rejections; incomplete/uncertain effects invalidate, never auto-retry.
+- Every action reports `local_state`: `updated`, `unchanged`, or `refresh_pending`.
 
 ### Profile minted-time guard (slice A)
 
@@ -125,10 +140,9 @@ missing fields, malformed values, leap seconds and fractions beyond nanosecond
 precision are treated as unknown (as DIM does), so the profile publishes and the
 sync never fails because of this field.
 
-**Temporary scope:** Forced, Preflight and PostAction acquisitions still publish
-even older/equal minted profiles and store their supplied instant. Loadout
-application retains that behavior pending its local-sync slice.
-Instanced and stack pulls now use Ordinary sync and inherit the guard. Their capacity is
+**Scope:** Explicit Forced sync still publishes even older/equal minted profiles
+and stores their supplied instant; the guard applies to Ordinary sync, which all
+actions (including loadout application and pulls) now use. Pull capacity is
 advisory: definition-bucket character occupancy (including equipped) against
 pinned audited constants, without remote Manifest evidence. Known full refuses;
 unknown definitions allow Bungie to decide. Numeric error 1642 is destination full.
@@ -150,7 +164,7 @@ Repeated syncs are idempotent at the projection level: the same Bungie state pro
 
 **Inventory search:** authorize; require a fresh-enough inventory projection; synchronize if needed; resolve query text through Manifest definitions and indexed fields; return semantic summaries with item instance IDs only where needed for follow-up, never raw API payloads. Ambiguous matches return candidates and ask the user to choose. `inspect_item` reads the selected projection and reports its current freshness marker.
 
-**Saved in-game loadouts (F1):** profile acquisition requests component 206 alongside inventory. Optional saved loadouts travel on `ProfileAcquisition`, not inventory constructors or revision metadata. Migration 21 stores one normalized JSON projection in `saved_loadouts.normalized_loadouts`; only domain fields are serialized, never provider JSON. This bounded aggregate is read as a whole, preserves slot/socket gaps, and deliberately has no foreign keys to mutable inventory items (saved loadouts can reference missing items). Publication replaces the aggregate in the same transaction as inventory and minted time; a discarded non-newer ordinary acquisition leaves it unchanged. Local effects and freshness invalidation do not alter it. Summary/detail reads use ordinary sync and the cached projection, with one live 206 read per call only when the cache is unavailable. Apply (F2) uses ordinary sync and cached slot/name resolution: fresh cached projections need zero profile/206 reads. One acknowledged EquipLoadout applies local Equip effects for saved items, relocating them and unequipping same-bucket replacements through the shared mutation resolver/persistence boundary. Complete effects retain freshness; missing/unsupported items or reducer rejection apply the rest and invalidate. Non-applied receipts and persistence failures invalidate, preserve receipts, and never retry. A loadout-only subclass-bucket resolver equips the saved subclass already held by the target and unequips other equipped subclass-bucket items on that character; a subclass not held on the target applies no effect and invalidates. Normal single-item equip slot validation stays unchanged. Mods/plugs, including subclass aspects/fragments, remain unchanged, matching DIM's Bungie API limitation. `local_state_updated` is true only when effects persist without invalidation.
+**Saved in-game loadouts (F1):** profile acquisition requests component 206 alongside inventory. Optional saved loadouts travel on `ProfileAcquisition`, not inventory constructors or revision metadata. Migration 21 stores one normalized JSON projection in `saved_loadouts.normalized_loadouts`; only domain fields are serialized, never provider JSON. This bounded aggregate is read as a whole, preserves slot/socket gaps, and deliberately has no foreign keys to mutable inventory items (saved loadouts can reference missing items). Publication replaces the aggregate in the same transaction as inventory and minted time; a discarded non-newer ordinary acquisition leaves it unchanged. Local effects and freshness invalidation do not alter it. Summary/detail reads use ordinary sync and the cached projection, with one live 206 read per call only when the cache is unavailable. Apply (F2) uses ordinary sync and cached slot/name resolution: fresh cached projections need zero profile/206 reads. One acknowledged EquipLoadout applies local Equip effects for saved items, relocating them and unequipping same-bucket replacements through the shared mutation resolver/persistence boundary. Complete effects retain freshness; missing/unsupported items or reducer rejection apply the rest and invalidate. Non-applied receipts and persistence failures invalidate, preserve receipts, and never retry. A loadout-only subclass-bucket resolver equips the saved subclass already held by the target and unequips other equipped subclass-bucket items on that character; a subclass not held on the target applies no effect and invalidates. Normal single-item equip slot validation stays unchanged. Mods/plugs, including subclass aspects/fragments, remain unchanged, matching DIM's Bungie API limitation. `local_state` is `updated` only when effects persist without invalidation.
 
 **Build/loadout planning:** the MVP exposes only the architectural seam, not a build engine. A future planner may consume a fresh `InventorySnapshot` and Manifest definitions to produce a non-executable plan. No build optimization, substitution, or multi-item execution is accepted as MVP behavior.
 
@@ -180,7 +194,7 @@ Retry only transient transport, provider-unavailable, and rate-limit outcomes, w
 
 ## 9. Threat model and trust boundaries
 
-The user and Bungie are external trust boundaries. The system browser is trusted for user interaction but not for callback input; callback state and code validation protect against CSRF and unsolicited callbacks. The MCP host/model is untrusted with respect to credentials and mutation authority. SQLite is local but inspectable and therefore receives only non-secret projections. The OS credential store is the preferred secret boundary. Threats include malicious callback requests, state fixation, token leakage through diagnostics, stale-state destructive actions, prompt-injected mutation requests, and local-disk exposure. Mitigations are exact callback matching, one-time random state, no secrets in model-visible channels, semantic resolution with ambiguity rejection, mandatory fresh preflight, single-call intent-authorized MCP mutation, restricted fallback policy, and acknowledgement-only success with durable freshness invalidation.
+The user and Bungie are external trust boundaries. The system browser is trusted for user interaction but not for callback input; callback state and code validation protect against CSRF and unsolicited callbacks. The MCP host/model is untrusted with respect to credentials and mutation authority. SQLite is local but inspectable and therefore receives only non-secret projections. The OS credential store is the preferred secret boundary. Threats include malicious callback requests, state fixation, token leakage through diagnostics, stale-state destructive actions, prompt-injected mutation requests, and local-disk exposure. Mitigations are exact callback matching, one-time random state, no secrets in model-visible channels, semantic resolution with ambiguity rejection, committed-projection validation, single-call intent-authorized MCP mutation, restricted fallback policy, and acknowledgement-only success with durable local effects and invalidation on incomplete outcomes.
 
 ## 10. Configuration and deployment
 
@@ -209,18 +223,18 @@ Every use case returns either a typed success containing sanitized domain record
 The following invariants are implementation acceptance rules, not optional optimizations:
 
 1. A query never presents a stale projection as current; it includes freshness or synchronizes first.
-2. A mutation never trusts a plan past its expiry. Move and single equip validate the current committed projection under ordinary sync; other actions retain forced preflight.
+2. A mutation never trusts a plan past its expiry. All actions validate the current committed projection under ordinary sync; none forces a fresh preflight.
 3. A mutation never selects an item by display name alone; names resolve to an explicit instance or an ambiguity result.
-4. A failed postcondition never becomes a successful action merely because the provider returned HTTP success.
+4. HTTP success alone is not acknowledgement. `applied` requires acknowledgement of every planned step, not a post-action observation.
 5. Local replacement transactions preserve the previous committed snapshot until the new one is complete.
 6. Reauthorization is surfaced to the caller rather than hidden behind repeated transport retries.
 7. All application paths use the same policy service, regardless of whether the request came from terminal input or an MCP host.
-8. MCP execution requires explicit user intent plus semantic resolution, ambiguity rejection, and shared mutation validation; adapters cannot bypass local revision binding or the ordinary freshness gate for move/single equip.
+8. MCP execution requires explicit user intent plus semantic resolution, ambiguity rejection, and shared mutation validation; adapters cannot bypass local revision binding or the ordinary freshness gate for any action.
 9. Secret-bearing values are opaque at the application boundary and are unavailable to presentation serializers.
 
-A synchronization run records dataset, requested reason (`stale`, `forced`, `preflight`, or `post_action`), start/end time, source revision when available, and outcome. These are operational markers only. A sync marker does not imply the remote state is immutable or that an unrelated dataset is fresh.
+A synchronization run records dataset, requested reason (ordinary freshness or explicit `forced` sync; legacy `preflight`/`post_action` reasons are not used by actions), start/end time, source revision when available, and outcome. These are operational markers only. A sync marker does not imply the remote state is immutable or that an unrelated dataset is fresh.
 
-A move plan is valid only for its selected membership, item instance, destination, source `SyncRevision`, and expiry window. If any of these assumptions change during preflight, execution stops with `stale_state`; the service reports that the action must be re-resolved. This prevents stale state from authorizing a mutation without imposing a second MCP approval step.
+A move plan is valid only for its selected membership, item instance, destination, source `SyncRevision`, and expiry window. If any of these assumptions change during local validation, execution stops with `stale_state`; the service reports that the action must be re-resolved. This prevents stale state from authorizing a mutation without imposing a second MCP approval step.
 
 ## 13. Implementation seams and sequence
 
@@ -231,7 +245,7 @@ Implementation should proceed in vertical slices that preserve a runnable path:
 3. Add Manifest versioning and transactional replacement, then profile normalization and freshness metadata.
 4. Build repository-backed character listing, semantic inventory search, and inspection against fixture snapshots.
 5. Wire the CLI to the application services and exercise the read journey end to end.
-6. Add internal move/equip planning, preflight refresh, remote execution boundaries, post-action refresh, and destination/equipped-state verification using Bungie adapter test doubles.
+6. Add internal move/equip planning, ordinary sync and local validation, remote execution boundaries, and acknowledged-effect persistence using Bungie adapter test doubles.
 7. Add the MCP stdio adapter, including the single-call intent-authorized `move_item` contract, over the same service instances and compare its results with CLI results.
 
 Each slice should test the port boundary rather than couple domain tests to HTTP, SQLite implementation details, or a particular credential-store library. Live Bungie testing is a separate integration check and must use a non-production account where possible. The first implementation plan should turn the open questions below into explicit decisions before adding endpoint-specific code.
@@ -243,7 +257,7 @@ Each slice should test the port boundary rather than couple domain tests to HTTP
 - [ ] Manifest and profile snapshots expose freshness, revision, and source markers and commit atomically.
 - [ ] CLI equip and MCP equip return identical JSON through shared presentation and application services; MCP move remains a separate one-call intent-authorized tool.
 - [ ] Search and inspect resolve a concrete item instance and distinguish definition hash from instance ID.
-- [ ] `move_item` resolves semantically, rejects ambiguity, applies CLI UX if used, refreshes before execution, handles partial failure honestly, refreshes afterward, and verifies destination.
+- [ ] `move_item` resolves semantically, rejects ambiguity, validates the committed local projection, handles partial failure honestly, and persists acknowledged effects without post-action acquisition.
 - [ ] MCP move execution is enabled by default through one direct intent-authorized `move_item` call; it has no mandatory preview, confirmation token/value, approval ceremony, or two-step protocol, and cannot bypass the shared policy service.
 - [ ] Secret scanning of logs, SQLite, MCP results, and command output finds no access token, API key, code, or refresh token.
 - [ ] A repeatable end-to-end test demonstrates the vertical journey, including one direct intent-authorized MCP mutation, without claiming multi-call atomicity.

@@ -23,7 +23,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - `ghostlink move` and `ghostlink equip` are CLI game mutations. Run them only with explicit user intent for this item and destination. Move requires exactly one explicit character or Vault destination; equip requires a character. Never select defaults.
 - `ghostlink lock` and `ghostlink unlock` require explicit user intent for this item and requested state; MCP `set_lock_state` requires the same intent. Already satisfied according to local state is `verified_noop`; nothing was sent to Bungie. Vault items use one owned character for the provider call, not a destination selection.
 - MCP `pull_item` and fallback `ghostlink pull` require explicit user intent for one genuine Postmaster equipment instance ID only. Destination is its committed Postmaster owner, never an arbitrary character. Names, hashes, stacks and quantity are unsupported; requires login and qualified stored definitions.
-- MCP `pull_stack` with `{"item_hash":"7","amount":"3","character":"2"}` (all three canonical decimal strings, no extra fields), or fallback `ghostlink pull-stack <ITEM_HASH> --amount <N> --character <CHARACTER_ID>`, requires explicit hash, amount and Postmaster owner intent. Hash is canonical uint32 decimal; amount positive int32; owner positive int64, never a class. Only qualified non-instanced account-wide Consumables/Modifications are supported; do not synthesize stack IDs or select destinations. Requires login and stored definitions. Duplicate rows constrain amount by the smallest matching stack, never their sum.
+- MCP `pull_stack` with `{"item_hash":"7","amount":"3","character":"2"}` (all three canonical decimal strings, no extra fields), or fallback `ghostlink pull-stack <ITEM_HASH> --amount <N> --character <id|class>`, requires explicit hash, amount and Postmaster owner intent. Hash is canonical uint32 decimal; amount positive int32; MCP owner is positive int64, never a class. CLI accepts an exact ID or unique class. Only qualified non-instanced account-wide Consumables/Modifications are supported; do not synthesize stack IDs or select destinations. Requires login and stored definitions. Duplicate rows constrain amount by the smallest matching stack, never their sum.
 - Never blindly retry `pull-stack`, `pull`, `move`, `equip`, `lock` or `unlock`, including after a non-zero exit. Re-read state (`ghostlink sync`, then `ghostlink inspect-item`) and report. For move/equip/lock/unlock/pull/pull-stack, `applied` exits 0 on full acknowledgement (MCP success), without claiming observed state. Acknowledged instanced and stack pulls persist locally and retain freshness; stack quantities are applied exactly once. Pull/pull-stack refused or transport-uncertain attempts exit 41; local persistence or invalidation failure exits 42 with the receipt retained. Neither emits provider-lag exit 43. Incomplete lock attempts exit 41, not success. Check later, do not repeat the mutation.
 - Move already at its destination during planning is refused (exit 40), not a verified no-op. Report it without working around the refusal.
 - `ghostlink update` and `ghostlink uninstall` are installation mutations, not game actions or reads. Run them only with explicit user intent; never automatically retry a failed or uncertain lifecycle command.
@@ -79,7 +79,7 @@ Require explicit user intent for every item and one target character. Prefer MCP
 `equip_items` with `{"character":"hunter","items":["123456789","234567890"]}`
 (2–17 items, no extra fields). Fallback: `ghostlink equip 123456789 234567890
 --character hunter --json`. One selector retains single-item equip unchanged.
-Use owned IDs or unambiguous names; never guess. Combined preflight rejects
+Use owned IDs or unambiguous names; never guess. Combined local validation rejects
 repeated slots/items, wrong class, non-equippable items and exotic conflicts
 including currently equipped slots not replaced. Transfers stop on first failure
 before the single batch equip call. Report each item, slot, status and numeric
@@ -92,7 +92,7 @@ and reassess intent after failures; never blindly repeat a batch.
 ## Shared action state contract
 
 For move, equip, equip_items, set_lock_state, pull_item, pull_stack and apply_loadout:
-Plans from Ghostlink's local projection (re-synced only when stale or invalidated).
+Plans from Ghostlink's local projection (synced only when missing, stale or invalidated).
 Bungie is the final validator. Acknowledged actions update local state immediately;
 rejections and uncertain outcomes mark it for refresh. Never retry an uncertain outcome.
 Incomplete effects or local persistence failures also require refresh.
@@ -128,6 +128,8 @@ community `clarity` and `clarity_match`. Identical content shares one entry,
 even across different hashes; differing parent-specific text remains distinct.
 No index means no insight is available, not no effect. Both JSON shapes match
 MCP exactly; no-selector text and `--detail` remain human-only presentation choices.
+Both reads use saved loadouts cached with the profile (component 206), with a live
+206 read only as a legacy fallback when that cache is unavailable.
 
 ## Apply saved loadouts
 
@@ -196,7 +198,8 @@ after the action". No provider-lag exit 43 or post-action `observations` field.
 Caller-local serialization does not cover other processes or game activity.
 Anonymous stacks use MCP `pull_stack` with required `item_hash`, `amount`, and
 `character` decimal strings (uint32, positive int32, positive int64 respectively),
-or fallback `pull-stack`; no names, classes, instance IDs or extra fields. Only
+or fallback `pull-stack` (CLI owner accepts an exact ID or unique class); MCP
+accepts no names, classes, instance IDs or extra fields. Only
 qualified non-instanced account-wide Consumables/Modifications are supported.
 Duplicate rows bound amount by the smallest matching stack. Ordinary sync plans
 and executes from committed stacks; fresh state needs no profile acquisition or
@@ -206,7 +209,7 @@ validator (numeric 1642 is destination full; unknown codes remain uncertain).
 Acknowledgement applies the requested quantity locally once, decrements Postmaster,
 fills/splits profile stacks, advances revision and retains freshness. Incomplete
 receipts or persistence failures invalidate; no retry. Dispatch retains only
-preflight totals, not observed post quantities. Live checks remain pending.
+pre-action totals, not observed post quantities. Live checks remain pending.
 Never retry uncertain or refused outcomes blindly; sync, re-read and reassess
 explicit intent before another action.
 
@@ -251,7 +254,7 @@ explicit intent before another action.
 
 - State facts only from command output; say when a result is empty instead of inventing items.
 - For move or equip, report `status`, each step, and `reason`; never claim rollback after partial progress. Move/equip `applied` means every step was accepted (exit 0), not observed location/equipped state. Acknowledged effects persist locally with freshness retained; incomplete attempts require refresh. Neither emits provider-lag exits 42/43; uncertain and partial results still fail. Update exit 43 instead means `lifecycle_busy`.
-- For lock/unlock, report `status`, requested `locked`, `attempt`, `observed` and `reason`. `applied` means Bungie acknowledged the requested state (exit 0 / MCP success), not post-action observation; only no-op has preflight `observed`. There is no post-action profile request; complete local persistence retains freshness. Exit 41 is incomplete; 42 is fail-closed local invalidation storage failure, not provider lag. Lock no longer emits lag exit 43. Never blindly retry.
+- For lock/unlock, report `status`, requested `locked`, `attempt`, `observed` and `reason`. `applied` means Bungie acknowledged the requested state (exit 0 / MCP success), not post-action observation; only no-op has committed-local `observed`. There is no post-action profile request; complete local persistence retains freshness. Exit 41 is incomplete; 42 is fail-closed local invalidation storage failure, not provider lag. Lock no longer emits lag exit 43. Never blindly retry.
 - For pull/pull-stack, report `disposition`, `receipt` and `failure`. `applied` means acknowledged (CLI 0 / MCP success), not observed arrival or quantities. No post-action request/wait or observations. Acknowledged instanced and stack pulls persist locally and retain freshness. Refused/transport-uncertain attempts exit 41 and invalidate; local persistence or invalidation failure exits 42, retaining the receipt. Sync and inspect/Postmaster later; never blindly repeat. Confirm the exact instance or hash, amount and owner before acting.
 - Never echo tokens, membership IDs, or raw provider errors.
 
