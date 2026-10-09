@@ -163,6 +163,25 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   `stat:`, negation, parentheses, `or`, DIM precedence) driven by one filter
   registry that also provides validation and help; invalid queries fail
   explicitly. Plan sub-slices before implementing.
+  Plan (2026-10-09, DIM `search/query-parser.ts`, `search-config.ts`,
+  `filter-types.ts`): DIM precedence explicit `and` > `or` > implicit
+  whitespace AND, left-associative; `-`/`not` negate; `not:x` = `-is:x`;
+  quotes are phrases (exact name is `exactname:`); numeric `=,<,<=,>,>=`;
+  `stat:<name>:<op><n>`, `power:<op><n>`. Decisions: owner chose that the
+  query COEXISTS with structured flags (combined with AND); empty query =
+  all owned (DIM); plain logical NOT (DIM; `-power:>2000` includes items
+  without power); sort stays outside the query (DIM sort config); keep the
+  current normalization (English names; no accent-folding migration);
+  unlike DIM, unbalanced parentheses and unknown filters are explicit errors;
+  DIM filters without stored data (notes, wishlists, crafting, objectives,
+  loadout membership, stat arithmetic) are rejected as unsupported.
+  Execution: typed AST + shared predicate evaluated inside the candidate scan
+  before pagination; lossless AND lowering / necessary-prefilter only;
+  preserve ordering, U2 offset/next_offset and U1 tiles.
+  Slices: U3a1 lexer/parser/AST (bounds, strict EOF/delimiters); U3a2 filter
+  registry + typed validation + listing; U3b1 evaluator + AND lowering;
+  U3b2 repository execution seam (SQLite + fake); U3c CLI positional query +
+  MCP `query` + registry help; U3d docs/compatibility matrix.
 - [ ] **U4 — Loadout apply phases (A5).** Compare `apply_loadout` with DIM
   (dequip → moves → bulk equip → subclass/mods, per-item partial failure);
   implement the gaps.
