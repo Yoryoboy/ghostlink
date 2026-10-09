@@ -6,6 +6,27 @@ use serde_json::json;
 mod cli_lock_contract;
 
 #[test]
+fn lock_output_local_state_covers_noop_refusal_and_persistence_failure() {
+    use destiny_output::lock::{LockOutput, LockStatus};
+    let mut output = LockOutput::refused(destiny_app::MutationError::MissingItem, true);
+    for (status, state) in [
+        (LockStatus::Refused, "unchanged"),
+        (LockStatus::VerifiedNoop, "unchanged"),
+        (LockStatus::Applied, "updated"),
+        (LockStatus::Incomplete, "refresh_pending"),
+        (LockStatus::VerificationFailed, "refresh_pending"),
+    ] {
+        output.status = status;
+        assert_eq!(output.json()["local_state"], state);
+        assert!(output.json().get("profile_refresh").is_none());
+        assert_eq!(
+            output.render_text().contains("local state refresh pending"),
+            state == "refresh_pending"
+        );
+    }
+}
+
+#[test]
 fn lock_schema_requires_boolean_state_and_bounded_item() {
     for invalid in [
         json!({}),

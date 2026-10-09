@@ -131,6 +131,14 @@ impl MoveOutput {
         }
         .with_evidence(evidence, characters)
     }
+    pub fn local_state(&self) -> &'static str {
+        match (self.status, self.profile_refresh) {
+            (_, ProfileRefresh::Failed)
+            | (MoveStatus::Incomplete | MoveStatus::VerificationFailed, _) => "refresh_pending",
+            (MoveStatus::Applied, _) => "updated",
+            _ => "unchanged",
+        }
+    }
     pub fn json(&self) -> Value {
         json!({
             "status":self.status.as_str(),
@@ -145,16 +153,12 @@ impl MoveOutput {
             "steps_completed":self.steps.iter().filter(|s| s.outcome == "completed").count(),
             "steps_uncompleted":self.steps.iter().filter(|s| s.outcome != "completed").count(),
             "verification":match self.status {
-                MoveStatus::VerifiedNoop => "verified",
+                MoveStatus::VerifiedNoop => "local_state",
                 MoveStatus::VerificationFailed => "failed",
                 _ => "not_verified",
             },
             "reason":self.reason,
-            "profile_refresh":match self.profile_refresh {
-                ProfileRefresh::NotRequired => "not_required",
-                ProfileRefresh::Refreshed => "refreshed",
-                ProfileRefresh::Failed => "failed",
-            },
+            "local_state":self.local_state(),
             "observed":self.observed.as_ref().map(|o|json!({"location":location_json(&o.location),"equipped":o.equipped})),
         })
     }
@@ -172,7 +176,9 @@ impl MoveOutput {
                 .unwrap_or("destination"),
         );
         if self.status == MoveStatus::VerifiedNoop {
-            return format!("{name} is already at {destination}\n✔ verified");
+            return format!(
+                "{name} is already at {destination} according to local state; nothing sent to Bungie"
+            );
         }
         let mut lines = vec![format!("{name}: {}", self.status.as_str())];
         if let Some(reason) = &self.reason {
@@ -202,17 +208,13 @@ impl MoveOutput {
         if self.steps.iter().any(|s| s.outcome == "uncertain") {
             lines.push("outcome is uncertain; do not blindly retry".into());
         }
-        match self.profile_refresh {
-            ProfileRefresh::Refreshed => lines.push("profile refreshed".into()),
-            ProfileRefresh::Failed => {
-                lines.push("profile refresh failed; no fresh state available".into())
-            }
-            ProfileRefresh::NotRequired => {}
+        if self.local_state() == "refresh_pending" {
+            lines.push("local state refresh pending".into());
         }
         if let Some(observed) = &self.observed {
             lines.push(format!(
                 "{}: {}",
-                "refreshed state",
+                "local state",
                 clean(&observed.location.label)
             ));
         }

@@ -95,7 +95,15 @@ fn shared_output_preserves_receipts_exits_and_sanitizes_human_and_json() {
             assert!(!output.render_text().contains('\u{1b}'));
             assert!(!output.render_text().contains('\n'));
             assert!(output.value.get("membership").is_none());
-            assert_eq!(output.value["local_state_updated"], local_state_updated);
+            assert_eq!(
+                output.value["local_state"],
+                if receipt.applied() && local_state_updated {
+                    "updated"
+                } else {
+                    "refresh_pending"
+                }
+            );
+            assert!(output.value.get("local_state_updated").is_none());
             if receipt.applied() && !local_state_updated {
                 assert_eq!(
                     output.value["reason"],

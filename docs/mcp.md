@@ -40,6 +40,25 @@ emitted through MCP.
 control characters are rejected. One call is the complete intent authorization,
 with no separate token or approval ceremony. It uses the same shared equip
 pipeline and JSON as `ghostlink equip`; see the [equip safety limits](cli.md#equip-one-item).
+### Shared action contract
+
+Move, equip, batch equip, lock, pull, stack pull and apply-loadout use the same
+contract: Plans from Ghostlink's local projection (re-synced only when stale or
+invalidated). Bungie is the final validator. Acknowledged actions update local
+state immediately; rejections and uncertain outcomes mark it for refresh.
+Never retry an uncertain outcome. Incomplete effects or persistence failures
+also require refresh.
+
+Their CLI JSON and MCP structured output share `local_state`: `updated` means
+acknowledged effects persisted and freshness retained; `unchanged` means no-op
+or refusal before dispatch; `refresh_pending` means invalidated state that the
+next ordinary read re-syncs from Bungie. Human output adds a short refresh-pending
+phrase only for that last value. This replaces `profile_refresh` and
+`local_state_updated`. Compatibility status `verified_noop` means local state
+(including Ghostlink's acknowledged actions) already matches; nothing was sent
+to Bungie. It is not Bungie verification; invalidated projections re-sync before
+planning or deciding a no-op.
+
 Both `equip_item` and `move_item` return `applied` on full acknowledgement,
 without claiming an observed destination/equipped state. Both dispatch from the
 local projection under the ordinary freshness gate. Already-satisfied local
@@ -58,12 +77,12 @@ Bungie remains the final validator. Acknowledgement returns `applied` (CLI 0), n
 observed lock state, with no post-action profile request. The acknowledged lock
 state updates the local projection and advances its revision, retaining freshness.
 Refused or uncertain attempts and local persistence failures invalidate freshness
-so the next ordinary read syncs. Already satisfied is a verified no-op, with no
+so the next ordinary read syncs. Already satisfied according to local state is `verified_noop`, with no
 provider mutation. Vault items use one
 owned character for the provider call; live validation remains pending.
 
 Lock JSON matches `ghostlink lock` / `ghostlink unlock`: `status`, `item`,
-requested `locked`, sanitized `attempt` and `reason`, `profile_refresh`, and
+requested `locked`, sanitized `attempt` and `reason`, `local_state`, and
 `observed` lock state (only local validation for no-op, otherwise null).
 `applied` and `verified_noop` have `isError=false`. Refusals and incomplete
 attempts (CLI 41), including auth refusal and transient/uncertain transport,
@@ -97,7 +116,7 @@ then syncs. Mods/plugs, including subclass aspects/fragments, remain unchanged
 (DIM/Bungie API limitation). Single-item equip validation is unchanged.
 JSON matches `ghostlink apply-loadout --json`: `kind: "apply_loadout"`,
 `character`, one-based `slot`, `name`, `outcome`, bounded `receipt`, `reason`, and
-`local_state_updated` (true only for complete effects without invalidation).
+`local_state` (`updated` only for complete effects without invalidation).
 `applied` is acknowledgement (`isError=false`, CLI 0), not observed state.
 Refusal/auth/transient/uncertain attempts are errors (CLI 41). Applied receipts
 with incomplete local effects or persistence failure fail closed (CLI 42),
@@ -149,10 +168,10 @@ one exotic armor including equipped slots not replaced. Invalid batches dispatch
 nothing. Required transfers use Vault-mediated routing, stop on first failure,
 and precede exactly one EquipItems call; actions are paced at 0.1s minimum.
 Already-equipped requested items are per-item no-ops; all-no-op batches are
-verified without dispatch. Only every per-item success (or no-op) is MCP success.
+already satisfied according to local state without dispatch. Only every per-item success (or no-op) is MCP success.
 Failures, omitted `not_reported` results and envelope refusal/auth/transient/
 uncertainty remain errors. Structured output lists item, slot, status and numeric
-code, matching CLI JSON. Every dispatched attempt invalidates local freshness;
+code, matching CLI JSON. Acknowledged effects persist locally with freshness retained; incomplete attempts require refresh;
 storage failure is fail-closed with "local state could not be updated after the
 action". Restricted location says "go to orbit or a social space and retry".
 Never blindly retry; read state and reassess user intent.

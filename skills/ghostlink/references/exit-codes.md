@@ -63,11 +63,22 @@ Unknown, malformed or absent codes remain uncertain even with recognized status
 text. These rules apply to move, equip, batch equip, lock/unlock, apply-loadout
 and both Postmaster pulls. Acknowledgement remains distinct from observed state.
 
+## Shared action `local_state`
+
+All seven action outputs use `local_state`: `updated` for acknowledged effects
+persisted with freshness retained, `unchanged` for no-op or refusal before
+dispatch, `refresh_pending` for invalidated state (incomplete, rejected, uncertain
+or persistence failure). The next ordinary read re-syncs only when stale or
+invalidated. Human output adds a short phrase only for refresh pending.
+`verified_noop` means local state (including Ghostlink's acknowledged actions)
+already matches; nothing was sent to Bungie, not Bungie verification.
+Never retry an uncertain outcome.
+
 ## Apply loadout `outcome`
 
 `ghostlink apply-loadout <slot|name> --character <class|id> --json` and MCP
 `apply_loadout` share `kind: "apply_loadout"`, character, one-based slot, name,
-outcome, receipt, reason and `local_state_updated` (true only for complete local
+outcome, receipt, reason and `local_state` (`updated` only for complete local
 equipment effects without invalidation). Exactly one MCP slot/name; names are normalized exact
 matches within that character. Unknown/ambiguous names list candidates; select
 explicitly, never guess. Empty/unavailable slots refuse without an action.
@@ -140,8 +151,8 @@ offline checks do not establish live readiness.
 
 | `status` | Exit | Agent action |
 |---|---:|---|
-| `applied` | 0 | Every step accepted; not an observed destination. Next ordinary read forces sync. |
-| `verified_noop` | 0 | Reached the destination between planning and fresh preflight; no transfer dispatched. |
+| `applied` | 0 | Every step accepted; not an observed destination. Local effects persisted; freshness retained. |
+| `verified_noop` | 0 | Local state already matches the destination; nothing sent to Bungie. |
 | `refused` | varies | Report `reason` and steps; do not retry. Already in the destination when planning is exit **40** (`unsupported_operation`), not no-op success. Missing item is 32, missing character 2, ambiguity 31, changed preflight 30. |
 | `incomplete` | 41 | Report completed, rejected/uncertain and unrun steps; no rollback. Do not retry. |
 Move does not emit provider-lag verification exits 42/43. Never blindly repeat.
@@ -195,8 +206,8 @@ selected and verify ownership before deleting the listed desktop entry/record.
 
 | `status` | Exit | Agent action |
 |---|---:|---|
-| `applied` | 0 | Every step accepted, not observed equipped state. Next ordinary read forces sync. |
-| `verified_noop` | 0 | Fresh preflight already satisfies intent; no dispatch. |
+| `applied` | 0 | Every step accepted, not observed equipped state. Local effects persisted; freshness retained. |
+| `verified_noop` | 0 | Local state already matches intent; nothing sent to Bungie. |
 | `refused` | varies | Report `reason` and `steps`; a refusal during execution can follow a completed transfer, so never assume nothing changed. Do not retry. Exit 32 means the item selector matched nothing, 2 means the character matched nothing, other exits follow the error table. |
 | `incomplete` | 41 | Some steps ran. Report each step; do not retry. |
 Equip does not emit provider-lag verification exits 42/43. Never blindly repeat.
@@ -208,8 +219,8 @@ Bungie may refuse after a transfer already happened.
 
 | `status` | Exit | Agent action |
 |---|---:|---|
-| `applied` | 0 | Bungie acknowledged requested lock state, not a post-action observation. Next ordinary read forces sync. |
-| `verified_noop` | 0 | Fresh preflight already satisfies requested state; no dispatch. |
+| `applied` | 0 | Bungie acknowledged requested lock state, not a post-action observation. Local effects persisted; freshness retained. |
+| `verified_noop` | 0 | Local state already matches requested state; nothing sent to Bungie. |
 | `refused` | varies | Report `reason`; missing item 32, ambiguity 31, stale state 30, otherwise category exit. No dispatch; do not work around refusal. |
 | `incomplete` | 41 | Refused, auth-refused, transient or uncertain attempt; no post-action observation. Never blindly retry. |
 | `verification_failed` | 42 | Local invalidation storage failed after dispatch: local state could not be updated after the action. Sync and inspect; do not retry. |

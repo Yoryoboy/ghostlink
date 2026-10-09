@@ -86,7 +86,9 @@ impl EquipOutput {
                 .unwrap_or("character"),
         );
         if self.status == EquipStatus::VerifiedNoop {
-            return format!("{name} is already equipped on {character}\n✔ verified");
+            return format!(
+                "{name} is already equipped on {character} according to local state; nothing sent to Bungie"
+            );
         }
         let mut lines = vec![format!("{name}: {}", self.status.as_str())];
         if let Some(reason) = &self.reason {
@@ -119,17 +121,13 @@ impl EquipOutput {
         if self.steps.iter().any(|s| s.outcome == "uncertain") {
             lines.push("outcome is uncertain; do not blindly retry".into());
         }
-        match self.profile_refresh {
-            ProfileRefresh::Refreshed => lines.push("profile refreshed".into()),
-            ProfileRefresh::Failed => {
-                lines.push("profile refresh failed; no fresh state available".into())
-            }
-            ProfileRefresh::NotRequired => {}
+        if self.local_state() == "refresh_pending" {
+            lines.push("local state refresh pending".into());
         }
         if let Some(o) = &self.observed {
             lines.push(format!(
                 "{}: {}; {}",
-                "refreshed state",
+                "local state",
                 clean(&o.location.label),
                 if o.equipped {
                     "equipped"

@@ -257,6 +257,14 @@ impl EquipOutput {
         }
         .with_evidence(evidence, characters)
     }
+    pub fn local_state(&self) -> &'static str {
+        match (self.status, self.profile_refresh) {
+            (_, ProfileRefresh::Failed)
+            | (EquipStatus::Incomplete | EquipStatus::VerificationFailed, _) => "refresh_pending",
+            (EquipStatus::Applied, _) => "updated",
+            _ => "unchanged",
+        }
+    }
     pub fn json(&self) -> Value {
         json!({
             "status": self.status.as_str(),
@@ -269,7 +277,7 @@ impl EquipOutput {
                 v
             }).collect::<Vec<_>>(),
             "reason":self.reason,
-            "profile_refresh":match self.profile_refresh {ProfileRefresh::NotRequired=>"not_required",ProfileRefresh::Refreshed=>"refreshed",ProfileRefresh::Failed=>"failed"},
+            "local_state":self.local_state(),
             "observed":self.observed.as_ref().map(|o|json!({"location":o.location.json(),"equipped":o.equipped})),
         })
     }

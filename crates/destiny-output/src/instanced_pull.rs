@@ -19,6 +19,7 @@ impl InstancedPullOutput {
             disposition,
             value: json!({
                 "kind":"instanced_pull", "disposition":disposition_kind(disposition),
+                "local_state":if disposition == PullDisposition::Applied { "updated" } else { "refresh_pending" },
                 "plan_id":clean(outcome.plan_id().as_str()),
                 "dispatch":dispatch(outcome.dispatch()), "receipt":receipt(outcome.gateway_outcome()),
                 "failure":outcome.local_state_error().map(local_state_failure),
@@ -48,7 +49,7 @@ impl InstancedPullOutput {
         if let Some(error) = failure.local_state_error() {
             return Self {
                 disposition: PullDisposition::LocalStateFailed,
-                value: json!({"kind":"instanced_pull", "disposition":"local_state_failed",
+                value: json!({"kind":"instanced_pull", "disposition":"local_state_failed", "local_state":"refresh_pending",
                     "plan_id":clean(failure.plan_id().as_str()), "dispatch":dispatch,
                     "receipt":null, "failure":local_state_failure(error)}),
             };
@@ -58,7 +59,7 @@ impl InstancedPullOutput {
     fn failed(plan_id: Option<&str>, dispatch: Value, failure: Value) -> Self {
         Self {
             disposition: PullDisposition::Refused,
-            value: json!({"kind":"instanced_pull", "disposition":"refused",
+            value: json!({"kind":"instanced_pull", "disposition":"refused", "local_state":"unchanged",
                 "plan_id":plan_id.map(clean), "dispatch":dispatch, "receipt":null, "failure":failure}),
         }
     }
@@ -321,6 +322,7 @@ mod tests {
         assert!(output.is_success());
         let value = output.json();
         assert_eq!(value["disposition"], "applied");
+        assert_eq!(value["local_state"], "updated");
         assert_eq!(value["receipt"], json!({"kind":"acknowledged"}));
         assert_eq!(
             value["dispatch"],
@@ -384,6 +386,14 @@ mod tests {
             assert_eq!(output.disposition(), disposition);
             assert_eq!(output.is_success(), disposition == PullDisposition::Applied);
             assert_eq!(output.json()["receipt"], expected);
+            assert_eq!(
+                output.json()["local_state"],
+                if disposition == PullDisposition::Applied {
+                    "updated"
+                } else {
+                    "refresh_pending"
+                }
+            );
             assert!(output.json().get("observations").is_none());
         }
     }
@@ -413,6 +423,7 @@ mod tests {
                 InstancedPullOutput::planning_failed(&InstancedPullPlanningError::Refused(reason));
             assert!(!output.is_success());
             assert_eq!(output.json()["failure"]["reason"], code);
+            assert_eq!(output.json()["local_state"], "unchanged");
             assert!(output.json()["receipt"].is_null());
         }
         let output = InstancedPullOutput::planning_failed(&InstancedPullPlanningError::Refused(

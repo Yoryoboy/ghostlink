@@ -59,6 +59,16 @@ fn batch_output_preserves_statuses_and_fails_closed_sanitized() {
             transfer_failed: false,
         }));
         assert_eq!(output.exit_code, exit);
+        assert_eq!(
+            output.value["local_state"],
+            if exit != 0 {
+                "refresh_pending"
+            } else if status == BatchItemStatus::NoOp {
+                "unchanged"
+            } else {
+                "updated"
+            }
+        );
         assert_eq!(output.value["items"][0]["name"], "Item?forged");
         assert!(!output.render_text().contains("\nforged"));
         if exit == 42 {

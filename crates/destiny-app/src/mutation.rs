@@ -3547,6 +3547,39 @@ mod tests {
     }
 
     #[test]
+    fn invalidated_lock_projection_resyncs_before_deciding_noop() {
+        use crate::lock::LockExecutionOutcome;
+        use crate::test_support::QueuedLockGateway;
+        for provider_locked in [false, true] {
+            let shared = gateway();
+            let mut repo = CompositeRepository::with_definitions(vec![]);
+            let mut cached = fresh_vault_projection();
+            cached.items[0].locked = true;
+            repo.commit(cached);
+            let mut svc = service(&shared, repo);
+            svc.repository_mut().invalidate_freshness().unwrap();
+            let mut refreshed = fresh_vault_projection();
+            refreshed.items[0].locked = provider_locked;
+            shared.borrow_mut().queue_membership(Ok(membership()));
+            shared.borrow_mut().queue_inventory(Ok(refreshed));
+            let req = lock_request();
+            let plan = svc.plan_lock(&req, LIFETIME, TTL, NOW).unwrap();
+            let mut lock = QueuedLockGateway::new();
+            lock.queue(Ok(destiny_core::LockOutcome::Applied));
+            let outcome = svc
+                .execute_lock(&mut lock, &req, &plan, TTL, NOW, NOW)
+                .unwrap();
+            assert_eq!(
+                matches!(outcome, LockExecutionOutcome::VerifiedNoOp(_)),
+                provider_locked
+            );
+            assert_eq!(lock.calls(), usize::from(!provider_locked));
+            assert_eq!(shared.borrow().inventory_calls(), 1);
+            assert_eq!(shared.borrow().membership_calls(), 1);
+        }
+    }
+
+    #[test]
     fn acknowledged_lock_storage_failure_keeps_receipt_invalidates_and_never_retries() {
         use crate::lock::{LockExecutionOutcome, LockVerificationFailureReason};
         use crate::test_support::QueuedLockGateway;

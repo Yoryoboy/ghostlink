@@ -170,6 +170,14 @@ fn cli_move_verified_outcomes_and_no_retry() {
             )
             .unwrap();
             assert_eq!(output.status, status, "{}", output.render_text());
+            assert_eq!(
+                output.json()["local_state"],
+                if status == MoveStatus::Applied {
+                    "updated"
+                } else {
+                    "refresh_pending"
+                }
+            );
             assert_eq!(output.exit_code(), code);
             assert_eq!(transfer.requests().len(), 1);
             assert_eq!(output.json()["item"]["name"], "Ace of Spades");
@@ -341,10 +349,11 @@ fn cli_move_committed_local_destination_is_verified_without_dispatch() {
             committed.items.first(),
         );
         assert_eq!(output.status, MoveStatus::VerifiedNoop);
+        assert_eq!(output.json()["local_state"], "unchanged");
         assert_eq!(output.exit_code(), 0);
         assert_eq!(output.profile_refresh, ProfileRefresh::NotRequired);
         assert_eq!(output.steps[0].outcome, "not_run");
-        assert_eq!(output.json()["verification"], "verified");
+        assert_eq!(output.json()["verification"], "local_state");
         assert!(transfer.requests().is_empty());
     }
 }

@@ -49,7 +49,8 @@ impl LockPlan {
 
 /// Bounded evidence: None means no dispatch, Some preserves the exact sanitized
 /// gateway outcome, including a refusal or uncertainty, through classification.
-/// Observed state is populated only by a verified no-op's local validation.
+/// Observed state is populated only when local state already matches;
+/// nothing is sent to Bungie (legacy VerifiedNoOp), not provider verification.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LockExecutionEvidence {
     plan: PlanId,
@@ -178,7 +179,7 @@ where
         })
     }
 
-    /// Ordinary sync → local validation → verified no-op or one dispatch.
+    /// Ordinary sync → local validation → local-state no-op or one dispatch.
     /// Timestamp ordering is checked without a post-action profile request.
     /// Acknowledged effects retain freshness; storage failure fails closed.
     pub fn execute_lock<L: LockGateway>(

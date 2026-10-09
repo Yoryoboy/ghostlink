@@ -59,7 +59,7 @@ impl PullOutput {
     /// Format only the sanitized shared projection and retained receipt/failure.
     pub fn render_text(&self) -> String {
         let value = self.shared.json();
-        let text = format!(
+        let mut text = format!(
             "Postmaster pull: {}\nPlan: {}\nReceipt: {}\nDispatch: {}\nFailure: {}",
             value["disposition"].as_str().unwrap_or("refused"),
             value["plan_id"],
@@ -67,6 +67,9 @@ impl PullOutput {
             value["dispatch"],
             value["failure"],
         );
+        if value["local_state"] == "refresh_pending" {
+            text.push_str("\nlocal state refresh pending");
+        }
         text
     }
 }

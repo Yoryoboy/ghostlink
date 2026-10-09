@@ -58,6 +58,8 @@ fn equip_success_noop_json_and_exit_codes() {
     assert_eq!(output.exit_code(), 0);
     let value = output.json();
     assert_eq!(value["status"], "applied");
+    assert_eq!(value["local_state"], "updated");
+    assert!(value.get("profile_refresh").is_none());
     assert_eq!(
         value["item"],
         serde_json::json!({"name":"Ace of Spades", "instance_id":"123", "slot":"Kinetic"})
@@ -75,10 +77,11 @@ fn equip_success_noop_json_and_exit_codes() {
     output.steps.clear();
     assert_eq!(
         output.render_text(),
-        "Ace of Spades is already equipped on Hunter\n✔ verified"
+        "Ace of Spades is already equipped on Hunter according to local state; nothing sent to Bungie"
     );
     assert_eq!(output.exit_code(), 0);
     assert_eq!(output.json()["status"], "verified_noop");
+    assert_eq!(output.json()["local_state"], "unchanged");
     for (status, code) in [
         (EquipStatus::Incomplete, 41),
         (EquipStatus::VerificationFailed, 42),
@@ -86,6 +89,14 @@ fn equip_success_noop_json_and_exit_codes() {
     ] {
         output.status = status;
         assert_eq!(output.exit_code(), code);
+        assert_eq!(
+            output.json()["local_state"],
+            if status == EquipStatus::Refused {
+                "unchanged"
+            } else {
+                "refresh_pending"
+            }
+        );
     }
 }
 
@@ -118,6 +129,7 @@ fn equip_every_planning_refusal_has_a_human_reason() {
     ] {
         let output = EquipOutput::refused(error);
         assert_eq!(output.json()["status"], "refused");
+        assert_eq!(output.json()["local_state"], "unchanged");
         assert!(
             output.render_text().contains(expected),
             "{}",
@@ -150,7 +162,7 @@ fn equip_every_provider_refusal_and_uncertainty_is_explained() {
         let mut output = report(EquipStatus::Incomplete);
         output.steps.push(step);
         assert!(output.render_text().contains(expected));
-        assert!(output.render_text().contains("profile refreshed"));
+        assert!(output.render_text().contains("local state refresh pending"));
         assert_ne!(output.exit_code(), 0);
     }
     let mut output = report(EquipStatus::Incomplete);
@@ -182,7 +194,7 @@ fn equip_every_provider_refusal_and_uncertainty_is_explained() {
         "2. equip: uncertain",
         "3. equip: not run",
         "outcome is uncertain",
-        "profile refreshed",
+        "local state refresh pending",
         "Hunter; not equipped",
     ] {
         assert!(text.contains(expected), "missing {expected}: {text}");
@@ -190,7 +202,7 @@ fn equip_every_provider_refusal_and_uncertainty_is_explained() {
     assert_eq!(output.json()["observed"]["equipped"], false);
     output.status = EquipStatus::VerificationFailed;
     output.profile_refresh = ProfileRefresh::Failed;
-    assert!(output.render_text().contains("profile refresh failed"));
+    assert!(output.render_text().contains("local state refresh pending"));
 }
 
 #[test]

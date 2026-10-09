@@ -129,6 +129,14 @@ impl LockOutput {
         }
         .with_evidence(outcome.evidence())
     }
+    pub fn local_state(&self) -> &'static str {
+        match (self.status, self.profile_refresh) {
+            (_, ProfileRefresh::Failed)
+            | (LockStatus::Incomplete | LockStatus::VerificationFailed, _) => "refresh_pending",
+            (LockStatus::Applied, _) => "updated",
+            _ => "unchanged",
+        }
+    }
     pub fn json(&self) -> Value {
         json!({
             "status": self.status.as_str(),
@@ -137,7 +145,7 @@ impl LockOutput {
             "attempt": self.attempt,
             "reason": self.reason.as_deref().map(clean),
             "message": self.reason.as_deref().and_then(crate::rejection_message),
-            "profile_refresh": match self.profile_refresh { ProfileRefresh::NotRequired => "not_required", ProfileRefresh::Refreshed => "refreshed", ProfileRefresh::Failed => "failed" },
+            "local_state": self.local_state(),
             "observed": self.observed.map(|locked| json!({"locked":locked})),
         })
     }
@@ -155,7 +163,9 @@ impl LockOutput {
             );
         }
         if self.status == LockStatus::VerifiedNoop {
-            return format!("{name}: already {state}\n✔ verified");
+            return format!(
+                "{name}: already {state} according to local state; nothing sent to Bungie"
+            );
         }
         let mut lines = vec![format!("{name}: {}", self.status.as_str())];
         if let Some(reason) = &self.reason {
@@ -164,12 +174,8 @@ impl LockOutput {
         if let Some(attempt) = self.attempt {
             lines.push(format!("set_lock_state: {attempt}"));
         }
-        match self.profile_refresh {
-            ProfileRefresh::NotRequired => {}
-            ProfileRefresh::Refreshed => lines.push("profile refreshed".into()),
-            ProfileRefresh::Failed => {
-                lines.push("profile refresh failed; no fresh state available".into())
-            }
+        if self.local_state() == "refresh_pending" {
+            lines.push("local state refresh pending".into());
         }
         if let Some(locked) = self.observed {
             lines.push(format!(

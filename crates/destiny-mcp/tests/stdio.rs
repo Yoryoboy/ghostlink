@@ -27,6 +27,37 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 
+#[tokio::test]
+async fn action_descriptions_share_the_ordinary_sync_contract() {
+    let mut session = FixtureSession::spawn(Some("success")).await;
+    let id = session.next_id();
+    let response = session.request(id, "tools/list", Some(json!({}))).await;
+    let tools = response["result"]["tools"].as_array().unwrap();
+    for name in [
+        "move_item",
+        "equip_item",
+        "equip_items",
+        "set_lock_state",
+        "pull_item",
+        "pull_stack",
+        "apply_loadout",
+    ] {
+        let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
+        let description = tool["description"].as_str().unwrap();
+        for phrase in [
+            "Plans from Ghostlink's local projection",
+            "Bungie is the final validator",
+            "Acknowledged actions update local state immediately",
+            "Never retry an uncertain outcome",
+        ] {
+            assert!(description.contains(phrase), "{name}: {description}");
+        }
+        assert!(!description.contains("forces sync"));
+        assert!(!description.contains("freshness is invalidated"));
+    }
+    session.shutdown().await;
+}
+
 /// Bounded wait for every read, write, and process exit.
 const TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -347,6 +378,7 @@ async fn pull_storage_failure_is_error_even_after_acknowledgement() {
         assert_eq!(response["result"]["isError"], true);
         let output = structured(&response);
         assert_eq!(output["disposition"], "local_state_failed");
+        assert_eq!(output["local_state"], "refresh_pending");
         assert_eq!(output["receipt"]["kind"], "acknowledged");
         assert_eq!(output["failure"]["category"], "local_storage");
         assert!(
@@ -479,7 +511,15 @@ async fn lock_stdio_applied_noop_refusal_and_incomplete_outcomes() {
         let output = &response["result"]["structuredContent"];
         assert_eq!(output["status"], status, "{scenario}: {response}");
         assert_eq!(output["locked"], locked);
-        assert_eq!(output["profile_refresh"], "not_required");
+        assert_eq!(
+            output["local_state"],
+            match status {
+                "applied" => "updated",
+                "incomplete" => "refresh_pending",
+                _ => "unchanged",
+            }
+        );
+        assert!(output.get("profile_refresh").is_none());
         if status == "applied" || status == "incomplete" {
             assert!(output["observed"].is_null());
         }

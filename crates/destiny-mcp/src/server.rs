@@ -813,6 +813,7 @@ mod tests {
     /// One bounded successful move output for the recording seam.
     fn move_success_output() -> MoveItemOutput {
         MoveItemOutput::Applied(AppliedMoveView {
+            local_state: crate::schema::LocalStateView::Updated,
             effects: MoveEffectsView {
                 item_id: "inst-a".into(),
                 via_vault: false,
@@ -1698,6 +1699,7 @@ mod tests {
             .unwrap();
         assert_eq!(result.is_error, Some(true));
         assert_eq!(structured(&result)["status"], "verification_failed");
+        assert_eq!(structured(&result)["local_state"], "refresh_pending");
     }
 
     #[test]

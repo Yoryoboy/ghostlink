@@ -27,6 +27,7 @@ impl StackPullOutput {
             disposition,
             value: json!({
                 "kind": "stack_pull", "disposition": disposition_kind(disposition),
+                "local_state":if disposition == PullDisposition::Applied { "updated" } else { "refresh_pending" },
                 "plan_id": clean(outcome.plan_id().as_str()),
                 "dispatch": dispatch(outcome.dispatch()),
                 "receipt": receipt(outcome.gateway_outcome()),
@@ -59,7 +60,7 @@ impl StackPullOutput {
         Self {
             disposition: PullDisposition::Refused,
             value: json!({
-                "kind":"stack_pull", "disposition":"refused",
+                "kind":"stack_pull", "disposition":"refused", "local_state":"unchanged",
                 "plan_id":plan_id.map(clean), "dispatch":dispatch,
                 "receipt":null, "failure":failure,
             }),
@@ -119,6 +120,9 @@ impl StackPullOutput {
             lines.push(format!("receipt_reason: {}", text(&receipt["reason"])));
         }
         lines.push(format!("failure: {}", text(&value["failure"])));
+        if value["local_state"] == "refresh_pending" {
+            lines.push("local state refresh pending".into());
+        }
         lines.join("\n")
     }
 }

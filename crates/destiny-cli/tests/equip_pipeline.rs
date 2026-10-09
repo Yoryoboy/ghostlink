@@ -202,7 +202,7 @@ fn cli_equip_routes_selectors_and_preserves_verified_outcomes_offline() {
         if expected == EquipStatus::Applied {
             assert_eq!(output.exit_code(), 0);
             assert_eq!(output.json()["status"], "applied");
-            assert_eq!(output.json()["profile_refresh"], "not_required");
+            assert_eq!(output.json()["local_state"], "updated");
             assert_eq!(output.json()["steps"][0]["outcome"], "completed");
             assert_eq!(output.json()["steps"][1]["outcome"], "completed");
             assert!(output.json()["observed"].is_null());

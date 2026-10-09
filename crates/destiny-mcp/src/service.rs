@@ -2301,15 +2301,17 @@ pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> Move
     match outcome {
         MoveExecutionOutcome::Applied(evidence) => {
             MoveItemOutput::Applied(crate::schema::AppliedMoveView {
+                local_state: crate::schema::LocalStateView::Updated,
                 effects: effects_view(effects),
                 steps: step_views(evidence),
                 reason: "Bungie accepted the action; not re-read".into(),
             })
         }
-        // The mandatory fresh preflight observed the item already at the
-        // destination and dispatched nothing.
+        // Local state, including acknowledged actions, already matches;
+        // ordinary sync refreshes invalidated projections before this decision.
         MoveExecutionOutcome::VerifiedNoOp(evidence) => {
             MoveItemOutput::VerifiedNoOp(MoveSuccessView {
+                local_state: crate::schema::LocalStateView::Unchanged,
                 effects: effects_view(effects),
                 observed: location_view(&effects.destination),
                 steps: step_views(evidence),
@@ -2317,6 +2319,7 @@ pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> Move
         }
         MoveExecutionOutcome::IncompleteExecution(incomplete) => {
             MoveItemOutput::Incomplete(IncompleteMoveView {
+                local_state: crate::schema::LocalStateView::RefreshPending,
                 effects: effects_view(effects),
                 expected_location: location_view(incomplete.expected_location()),
                 partial: incomplete.is_partial(),
@@ -2326,6 +2329,7 @@ pub fn move_item_output(plan: &MovePlan, outcome: &MoveExecutionOutcome) -> Move
         }
         MoveExecutionOutcome::VerificationFailed(failure) => {
             MoveItemOutput::VerificationFailed(VerificationFailureView {
+                local_state: crate::schema::LocalStateView::RefreshPending,
                 effects: effects_view(effects),
                 observed: failure.observed().map(location_view),
                 reason: verification_reason_view(failure.reason()),
