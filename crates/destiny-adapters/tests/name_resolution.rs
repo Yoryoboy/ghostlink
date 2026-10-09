@@ -211,6 +211,7 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
     }
     let mut app = QueryService::new(ProfileSyncService::new(QueuedProfileGateway::new(), store));
     let request = SearchInventoryRequest {
+        query: None,
         definitions: DefinitionSearchQuery {
             tier: None,
             text: None,

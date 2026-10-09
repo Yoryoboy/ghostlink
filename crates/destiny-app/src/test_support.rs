@@ -908,6 +908,14 @@ impl SearchRepository for InMemorySearchRepository {
         &self,
         query: &InstanceSearchQuery,
     ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        self.search_instance_query_page(query, None)
+    }
+
+    fn search_instance_query_page(
+        &self,
+        query: &InstanceSearchQuery,
+        execution: Option<&destiny_core::search_query::ResolvedQuery>,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
         query.validate()?;
         let mut indexed = std::collections::HashMap::new();
         for definition in &self.definitions {
@@ -940,6 +948,15 @@ impl SearchRepository for InMemorySearchRepository {
                         instance,
                         &self.stat_definitions,
                     )
+                    && execution.is_none_or(|execution| {
+                        execution.matches(
+                            instance,
+                            unique,
+                            &plugs,
+                            &available,
+                            query.include_available,
+                        )
+                    })
             })
             .cloned()
             .collect();

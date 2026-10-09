@@ -777,6 +777,14 @@ impl SearchRepository for SharedRepository {
         self.lock()?.search_instance_page(query)
     }
 
+    fn search_instance_query_page(
+        &self,
+        query: &InstanceSearchQuery,
+        execution: Option<&destiny_app::search_query::ResolvedQuery>,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        self.lock()?.search_instance_query_page(query, execution)
+    }
+
     fn lookup_instance(
         &self,
         instance_id: &ItemInstanceId,

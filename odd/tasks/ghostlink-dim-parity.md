@@ -207,6 +207,16 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
     collisions stay residual with a provably-necessary prefilter (200-context
     superset check). Character selectors are resolved in destiny-app
     (`select_weekly_character`) by U3b2. Workspace: 2028 passed, 0 failed.
+  - [x] U3b2 execution: optional typed query on the inventory request,
+    AND-combined with structured flags; repository seam
+    `search_instance_query_page` evaluates the residual predicate inside the
+    SQLite batched candidate scan before top-k and pagination (default
+    implementation fails closed); app resolves `character:` with the existing
+    selector and `stat:` names exactly against the catalog; compact tiles
+    include query-referenced stats. 620-item reference/fake parity for
+    OR/NOT/groups, late matches, pages, stat order/ties. Residual OR
+    stat-sorted query 5.1 ms; existing timings unchanged. Workspace: 2031
+    passed, 0 failed.
 - [ ] **U4 — Loadout apply phases (A5).** Compare `apply_loadout` with DIM
   (dequip → moves → bulk equip → subclass/mods, per-item partial failure);
   implement the gaps.

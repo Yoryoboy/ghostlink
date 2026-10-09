@@ -882,6 +882,7 @@ fn direct_move_is_acknowledged_then_observed_by_an_ordinary_read() {
     let search = read
         .search_inventory(
             &SearchInventoryRequest {
+                query: None,
                 definitions: definition_query(Some("the last word"), MAX_SEARCH_LIMIT),
                 instances: Some(instance_query(
                     ItemHashFilter::AnyOf(vec![ItemHash::new(LAST_WORD_HASH)]),

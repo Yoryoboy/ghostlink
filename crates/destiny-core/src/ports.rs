@@ -550,6 +550,20 @@ pub trait SearchRepository {
         Ok((instances, more))
     }
 
+    /// Apply the resolved predicate inside the candidate scan, before ordering
+    /// bounds and pagination. Wrappers must forward this seam. The default fails
+    /// closed for typed queries rather than filtering an already truncated page.
+    fn search_instance_query_page(
+        &self,
+        query: &InstanceSearchQuery,
+        execution: Option<&crate::search_query::ResolvedQuery>,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        if execution.is_some() {
+            return Err(AppError::new(ErrorCategory::UnsupportedOperation));
+        }
+        self.search_instance_page(query)
+    }
+
     /// Resolves one concrete instance by exact identifier.
     ///
     /// The lookup is exact and never name-based. A `Resolution::Ambiguous`

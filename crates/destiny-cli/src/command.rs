@@ -609,10 +609,7 @@ impl SearchInventoryArgs {
         definitions.validate().map_err(CliError::query_validation)?;
 
         let instances = self.instance_query(&definitions)?;
-        Ok(SearchInventoryRequest {
-            definitions,
-            instances,
-        })
+        Ok(SearchInventoryRequest::new(definitions, instances))
     }
 
     /// Builds an owned search when any definition or instance filter is supplied.

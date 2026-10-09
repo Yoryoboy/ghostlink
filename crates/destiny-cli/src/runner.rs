@@ -2431,6 +2431,7 @@ mod tests {
     #[test]
     fn search_dispatches_the_exact_validated_request_once() {
         let expected = SearchInventoryRequest {
+            query: None,
             definitions: destiny_app::DefinitionSearchQuery {
                 tier: None,
                 text: Some(destiny_app::SearchTerm::new("gjallar").unwrap()),

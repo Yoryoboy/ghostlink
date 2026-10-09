@@ -470,10 +470,7 @@ fn request(
     definitions: DefinitionSearchQuery,
     instances: Option<InstanceSearchQuery>,
 ) -> SearchInventoryRequest {
-    SearchInventoryRequest {
-        definitions,
-        instances,
-    }
+    SearchInventoryRequest::new(definitions, instances)
 }
 
 /// Runs one successful search through the composed service at `now`.

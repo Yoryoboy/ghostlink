@@ -293,6 +293,19 @@ fn publication_order(read_first: bool) {
         ) -> Result<Vec<ItemInstance>, AppError> {
             self.0.lock().unwrap().search_instances(query)
         }
+        fn search_instance_query_page(
+            &self,
+            query: &InstanceSearchQuery,
+            execution: Option<&destiny_app::search_query::ResolvedQuery>,
+        ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+            if execution.is_none() {
+                return self.search_instance_page(query);
+            }
+            self.0
+                .lock()
+                .unwrap()
+                .search_instance_query_page(query, execution)
+        }
         fn lookup_instance(
             &self,
             id: &ItemInstanceId,

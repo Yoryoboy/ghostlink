@@ -243,7 +243,11 @@ impl InstanceEnrichment {
 ///   definition criteria supply the instance query's definition criteria, without
 ///   intersecting a truncated candidate hash list. Hits pair each instance with
 ///   its exact definition in [`ItemInstanceId`] order.
-/// - With neither definition filters nor an instance query, `hits` is empty.
+/// - `query` is ANDed with both structured shapes. When present without an
+///   instance query, it searches owned items using the definition query's limit;
+///   an empty typed query therefore means all owned items.
+/// - With neither definition filters, an instance query, nor a typed query,
+///   `hits` is empty.
 ///
 /// The service validates both queries before it refreshes anything.
 ///
@@ -252,6 +256,27 @@ impl InstanceEnrichment {
 pub struct SearchInventoryRequest {
     pub definitions: DefinitionSearchQuery,
     pub instances: Option<InstanceSearchQuery>,
+    /// Typed DIM-style predicate, ANDed with structured criteria.
+    pub query: Option<destiny_core::search_query::TypedQuery>,
+}
+
+impl SearchInventoryRequest {
+    pub fn new(definitions: DefinitionSearchQuery, instances: Option<InstanceSearchQuery>) -> Self {
+        Self {
+            definitions,
+            instances,
+            query: None,
+        }
+    }
+
+    /// Keep the rich, spanned compiler error available to transport callers.
+    pub fn with_query(
+        mut self,
+        input: &str,
+    ) -> Result<Self, destiny_core::search_query::QueryParseError> {
+        self.query = Some(destiny_core::search_query::compile(input)?);
+        Ok(self)
+    }
 }
 
 /// Orchestrates one freshness-aware read over a synchronized projection.
@@ -780,15 +805,74 @@ where
                 }
             }
         }
+        let mut execution = request
+            .query
+            .as_ref()
+            .map(destiny_core::search_query::ResolvedQuery::new);
+        if let Some(typed) = &request.query {
+            let execution = execution
+                .as_mut()
+                .expect("typed query has execution context");
+            for name in destiny_core::search_query::referenced_stats(typed) {
+                if self.repository().stat_definition_count()? == 0 {
+                    return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+                }
+                // Exact normalized catalog lookup, never fuzzy name expansion.
+                let hashes = self.repository().stat_hashes_by_name(&name)?;
+                if hashes.is_empty() {
+                    return Err(AppError::new(ErrorCategory::UnknownStatName));
+                }
+                let mut displays = Vec::new();
+                for hash in hashes {
+                    let stat = self
+                        .repository()
+                        .lookup_stat(hash)?
+                        .ok_or_else(invalid_repository_state)?;
+                    displays.push(stat.name().to_owned());
+                    execution.stats.push(stat);
+                }
+                let names = resolved.stats.entry(name).or_default();
+                names.extend(displays);
+                names.sort();
+                names.dedup();
+            }
+        }
         let outcome = self.synchronize(policy, now)?;
         let metadata = query_metadata(&outcome, policy, now);
+        if let Some(typed) = &request.query {
+            let selectors = destiny_core::search_query::referenced_characters(typed);
+            if !selectors.is_empty() {
+                let snapshot = self.committed_snapshot()?;
+                for selector in selectors {
+                    let character = crate::weekly_selection::select_weekly_character(
+                        &snapshot.characters,
+                        Some(&destiny_core::CharacterId::new(&selector)),
+                    )
+                    .map_err(|error| {
+                        AppError::new(match error {
+                            crate::weekly_selection::WeeklySelectionError::InvalidRequest => {
+                                ErrorCategory::ProviderValidation
+                            }
+                            crate::weekly_selection::WeeklySelectionError::AmbiguousMatch => {
+                                ErrorCategory::AmbiguousMatch
+                            }
+                        })
+                    })?;
+                    execution
+                        .as_mut()
+                        .expect("typed query has execution context")
+                        .characters
+                        .insert(selector, character.id);
+                }
+            }
+        }
 
         let candidates = self
             .sync
             .repository()
             .search_definitions(&request.definitions)?;
 
-        let instance_query = if request.definitions.has_filters() {
+        let instance_query = if request.definitions.has_filters() || request.query.is_some() {
             let mut query = request.instances.clone().unwrap_or(InstanceSearchQuery {
                 offset: 0,
                 sort: None,
@@ -806,7 +890,9 @@ where
                 min_power: None,
                 limit: request.definitions.limit,
             });
-            query.definitions = Some(Box::new(request.definitions.clone()));
+            if request.definitions.has_filters() {
+                query.definitions = Some(Box::new(request.definitions.clone()));
+            }
             Some(query)
         } else {
             request.instances.clone()
@@ -817,7 +903,7 @@ where
             let (instances, more) = self
                 .sync
                 .repository()
-                .search_instance_page(instance_query)?;
+                .search_instance_query_page(instance_query, execution.as_ref())?;
             if more {
                 next_offset = instance_query
                     .offset
@@ -959,10 +1045,7 @@ pub fn owned_name_request(name: &str) -> Result<SearchInventoryRequest, AppError
         stats: Vec::new(),
         limit: destiny_core::MAX_SEARCH_LIMIT,
     };
-    Ok(SearchInventoryRequest {
-        definitions,
-        instances: Some(instances),
-    })
+    Ok(SearchInventoryRequest::new(definitions, Some(instances)))
 }
 
 /// The narrow, object-safe read surface a presentation boundary dispatches to.
@@ -1297,6 +1380,18 @@ mod tests {
         ) -> Result<Vec<ItemInstance>, AppError> {
             self.record("search_instances");
             self.search.search_instances(query)
+        }
+
+        fn search_instance_query_page(
+            &self,
+            query: &InstanceSearchQuery,
+            execution: Option<&destiny_core::search_query::ResolvedQuery>,
+        ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+            if execution.is_none() {
+                return self.search_instance_page(query);
+            }
+            self.record("search_instances");
+            self.search.search_instance_query_page(query, execution)
         }
 
         fn lookup_instance(
@@ -2027,10 +2122,7 @@ mod tests {
         definitions: DefinitionSearchQuery,
         instances: Option<InstanceSearchQuery>,
     ) -> SearchInventoryRequest {
-        SearchInventoryRequest {
-            definitions,
-            instances,
-        }
+        SearchInventoryRequest::new(definitions, instances)
     }
 
     fn fresh_service(

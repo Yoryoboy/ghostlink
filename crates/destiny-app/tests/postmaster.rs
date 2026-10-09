@@ -80,6 +80,16 @@ impl SearchRepository for Repository {
     fn search_instances(&self, query: &InstanceSearchQuery) -> Result<Vec<ItemInstance>, AppError> {
         self.search.search_instances(query)
     }
+    fn search_instance_query_page(
+        &self,
+        query: &InstanceSearchQuery,
+        execution: Option<&destiny_core::search_query::ResolvedQuery>,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        if execution.is_none() {
+            return self.search_instance_page(query);
+        }
+        self.search.search_instance_query_page(query, execution)
+    }
     fn lookup_instance(&self, id: &ItemInstanceId) -> Result<Resolution<ItemInstance>, AppError> {
         self.search.lookup_instance(id)
     }

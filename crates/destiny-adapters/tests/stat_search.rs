@@ -363,6 +363,16 @@ fn owned_continuations_stop_at_the_offset_ceiling() {
             );
             self.0.search_instances(q)
         }
+        fn search_instance_query_page(
+            &self,
+            q: &InstanceSearchQuery,
+            execution: Option<&search_query::ResolvedQuery>,
+        ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+            if execution.is_none() {
+                return self.search_instance_page(q);
+            }
+            self.0.search_instance_query_page(q, execution)
+        }
         fn lookup_instance(
             &self,
             id: &ItemInstanceId,
@@ -399,10 +409,7 @@ fn owned_continuations_stop_at_the_offset_ceiling() {
         q.offset = offset;
         let result = app
             .search_inventory(
-                &SearchInventoryRequest {
-                    definitions: definitions.clone(),
-                    instances: Some(q.clone()),
-                },
+                &SearchInventoryRequest::new(definitions.clone(), Some(q.clone())),
                 FreshnessPolicy { ttl_seconds: 300 },
                 Timestamp::new(1),
             )
@@ -522,6 +529,7 @@ fn stat_names_are_validated_before_sync_and_named_hits_are_ordered() {
     let (store, _) = seeded(catalog());
     let mut app = QueryService::new(ProfileSyncService::new(QueuedProfileGateway::new(), store));
     let mut request = SearchInventoryRequest {
+        query: None,
         definitions: DefinitionSearchQuery {
             tier: None,
             text: None,
@@ -697,6 +705,440 @@ fn stat_names_are_validated_before_sync_and_named_hits_are_ordered() {
         ErrorCategory::DefinitionsUnavailable
     );
 }
+fn typed_request(input: &str, instances: InstanceSearchQuery) -> SearchInventoryRequest {
+    SearchInventoryRequest::new(
+        DefinitionSearchQuery {
+            text: None,
+            item_type: None,
+            tier: None,
+            tags: vec![],
+            element: None,
+            slot: None,
+            class_type: None,
+            limit: instances.limit,
+        },
+        Some(instances),
+    )
+    .with_query(input)
+    .unwrap()
+}
+
+#[test]
+fn typed_query_app_flag_parity_and_combination() {
+    let (store, _) = seeded(catalog());
+    let mut app = QueryService::new(ProfileSyncService::new(QueuedProfileGateway::new(), store));
+    for (input, flags) in [
+        ("is:invault", {
+            let mut q = query(&[]);
+            q.location = Some(LocationFilter::Vault);
+            q
+        }),
+        ("is:equipped", {
+            let mut q = query(&[]);
+            q.equipped = Some(true);
+            q
+        }),
+        ("stat:class:>=30", query(&["Class>=30"])),
+        ("is:armor", {
+            let mut q = query(&[]);
+            q.definitions = Some(Box::new(typed_request("", q.clone()).definitions));
+            q.definitions.as_mut().unwrap().slot = Some(ItemSlot::Helmet);
+            q
+        }),
+    ] {
+        let typed = app
+            .search_inventory(
+                &typed_request(input, query(&[])),
+                FreshnessPolicy { ttl_seconds: 300 },
+                Timestamp::new(1),
+            )
+            .unwrap();
+        let mut request = typed_request("", flags);
+        request.query = None;
+        let structured = app
+            .search_inventory(
+                &request,
+                FreshnessPolicy { ttl_seconds: 300 },
+                Timestamp::new(1),
+            )
+            .unwrap();
+        assert_eq!(typed.hits, structured.hits, "{input}");
+    }
+    let mut flags = query(&[]);
+    flags.equipped = Some(true);
+    let result = app
+        .search_inventory(
+            &typed_request("is:invault or is:locked", flags),
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(1),
+        )
+        .unwrap();
+    assert!(result.hits.is_empty(), "query must AND structured flags");
+    let request = SearchInventoryRequest::new(typed_request("", query(&[])).definitions, None)
+        .with_query("")
+        .unwrap();
+    let result = app
+        .search_inventory(
+            &request,
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(1),
+        )
+        .unwrap();
+    assert_eq!(result.hits[0].instance.instance_id.as_str(), "a");
+    assert_eq!(result.next_offset, Some(1));
+    let mut request = typed_request("is:legendary", query(&[]));
+    request.definitions.tier = Some(SearchTerm::new("exotic").unwrap());
+    assert!(
+        app.search_inventory(
+            &request,
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(1)
+        )
+        .unwrap()
+        .hits
+        .is_empty()
+    );
+}
+
+/// Search is fake; committed inventory and catalogs are the same real store.
+/// This isolates candidate-scan parity while exercising app resolution/enrichment.
+struct FakeAppRepository {
+    store: SqliteStore,
+    search: InMemorySearchRepository,
+}
+impl InventoryRepository for FakeAppRepository {
+    fn load_current(&self) -> Result<Option<InventorySnapshot>, AppError> {
+        self.store.load_current()
+    }
+    fn replace_current(
+        &mut self,
+        input: InventorySnapshotInput,
+    ) -> Result<InventorySnapshot, AppError> {
+        self.search.set_instances(input.items.clone());
+        self.store.replace_current(input)
+    }
+}
+impl DefinitionRepository for FakeAppRepository {
+    fn current_definition_version(&self) -> Result<DefinitionVersion, AppError> {
+        self.store.current_definition_version()
+    }
+    fn lookup_definition(&self, hash: ItemHash) -> Result<Resolution<ItemDefinition>, AppError> {
+        self.store.lookup_definition(hash)
+    }
+    fn current_metadata(&self) -> Result<Option<SyncMetadata>, AppError> {
+        self.store.current_metadata()
+    }
+    fn replace_definitions(
+        &mut self,
+        input: DefinitionReplacementInput,
+    ) -> Result<SyncMetadata, AppError> {
+        self.store.replace_definitions(input)
+    }
+}
+impl StatDefinitionRepository for FakeAppRepository {
+    fn lookup_stat(&self, hash: u32) -> Result<Option<StatDefinition>, AppError> {
+        self.store.lookup_stat(hash)
+    }
+    fn stat_hashes_by_name(&self, name: &str) -> Result<Vec<u32>, AppError> {
+        self.store.stat_hashes_by_name(name)
+    }
+    fn stat_definition_count(&self) -> Result<usize, AppError> {
+        self.store.stat_definition_count()
+    }
+}
+impl SearchRepository for FakeAppRepository {
+    fn name_catalog(&self, kind: &str) -> Result<name_matching::NameCatalog, AppError> {
+        self.search.name_catalog(kind)
+    }
+    fn search_definitions(
+        &self,
+        q: &DefinitionSearchQuery,
+    ) -> Result<Vec<ItemDefinition>, AppError> {
+        self.search.search_definitions(q)
+    }
+    fn search_instances(&self, q: &InstanceSearchQuery) -> Result<Vec<ItemInstance>, AppError> {
+        self.search.search_instances(q)
+    }
+    fn search_instance_page(
+        &self,
+        q: &InstanceSearchQuery,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        self.search.search_instance_page(q)
+    }
+    fn search_instance_query_page(
+        &self,
+        q: &InstanceSearchQuery,
+        execution: Option<&search_query::ResolvedQuery>,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        self.search.search_instance_query_page(q, execution)
+    }
+    fn lookup_instance(&self, id: &ItemInstanceId) -> Result<Resolution<ItemInstance>, AppError> {
+        self.search.lookup_instance(id)
+    }
+}
+
+fn large_typed_fixture() -> (SqliteStore, InMemorySearchRepository) {
+    let (mut store, mut fake) = seeded(catalog());
+    let snapshot = store.load_current().unwrap().unwrap();
+    let mut input = InventorySnapshotInput::with_metadata(&snapshot);
+    input.characters[0].class = Some("Hunter".into());
+    input.items = (0..620)
+        .map(|index| {
+            let mut item = snapshot.items[index % 2].clone();
+            item.instance_id = format!("{index:04}").into();
+            item.locked = index >= 580;
+            item.power = match index % 5 {
+                0 => None,
+                1 => Some(0),
+                _ => Some(2000 + (index % 20) as u16),
+            };
+            if index % 3 == 0 {
+                item.stats.clear();
+            } else {
+                item.stats = vec![
+                    StatSummary {
+                        stat_hash: 1,
+                        value: (index % 7) as i32,
+                    },
+                    StatSummary {
+                        stat_hash: 2,
+                        value: (index % 11) as i32,
+                    },
+                ];
+            }
+            item
+        })
+        .collect();
+    fake.set_instances(input.items.clone());
+    store.replace_current(input).unwrap();
+    (store, fake)
+}
+
+#[test]
+fn typed_residual_reference_paging_sort_and_fake_app_parity() {
+    let (store, _) = large_typed_fixture();
+    let snapshot = store.load_current().unwrap().unwrap();
+    let base = match store.lookup_definition(ItemHash::new(1)).unwrap() {
+        Resolution::Unique(d) => d,
+        _ => panic!("fixture definition"),
+    };
+    let socketed =
+        [60, 62].map(
+            |hash| match store.lookup_definition(ItemHash::new(hash)).unwrap() {
+                Resolution::Unique(d) => d,
+                _ => panic!("fixture plug"),
+            },
+        );
+    let available =
+        [60, 61].map(
+            |hash| match store.lookup_definition(ItemHash::new(hash)).unwrap() {
+                Resolution::Unique(d) => d,
+                _ => panic!("fixture plug"),
+            },
+        );
+    let characters =
+        std::collections::BTreeMap::from([("hunter".to_owned(), CharacterId::new("123"))]);
+    let mut app = QueryService::new(ProfileSyncService::new(QueuedProfileGateway::new(), store));
+    let (store, search) = large_typed_fixture();
+    let mut fake_app = QueryService::new(ProfileSyncService::new(
+        QueuedProfileGateway::new(),
+        FakeAppRepository { store, search },
+    ));
+    let policy = FreshnessPolicy { ttl_seconds: 300 };
+    for text in [
+        "",
+        "is:invault",
+        "is:equipped",
+        "is:helmet is:exotic",
+        "stat:class:>=5",
+        "is:locked or exactname:missing", // Only late matches, beyond both batch sizes.
+        "not (is:equipped or is:locked)",
+        "(stat:class:>=5 or -power:>2010) is:armor",
+        "is:locked or (character:hunter and mod:harmonic)",
+        "mod:heavy or archetype:specialist",
+        "hash:1 hash:99", // Colliding positive fields must not overwrite.
+    ] {
+        let typed = search_query::compile(text).unwrap();
+        for include_available in [false, true] {
+            for sort in [None, Some("Class:asc"), Some("Class:desc")] {
+                let mut flags = query(&[]);
+                flags.limit = 61;
+                flags.include_available = include_available;
+                flags.sort = sort.map(|s| s.parse().unwrap());
+                // Also test an independent structured conjunction.
+                for equipped in [None, Some(true)] {
+                    flags.equipped = equipped;
+                    let mut reference: Vec<_> = snapshot
+                        .items
+                        .iter()
+                        .filter(|item| {
+                            let mut stats: std::collections::BTreeMap<String, Vec<i32>> =
+                                std::collections::BTreeMap::new();
+                            for stat in &item.stats {
+                                if [1, 2].contains(&stat.stat_hash) {
+                                    stats.entry("class".into()).or_default().push(stat.value);
+                                }
+                            }
+                            query::instance_matches(&flags, item)
+                                && search_query::matches(
+                                    &typed,
+                                    &search_query::ItemView {
+                                        instance: item,
+                                        definition: Some(&base),
+                                        socketed: &socketed,
+                                        available: &available,
+                                        include_available,
+                                        stats: &stats,
+                                        characters: &characters,
+                                    },
+                                )
+                        })
+                        .cloned()
+                        .collect();
+                    reference.sort_by(|a, b| {
+                        query::compare_instances(flags.sort.as_ref(), a, b, &catalog())
+                    });
+                    let mut observed = Vec::new();
+                    let mut offset = 0;
+                    loop {
+                        flags.offset = offset;
+                        let request = typed_request(text, flags.clone());
+                        let result = app
+                            .search_inventory(&request, policy, Timestamp::new(1))
+                            .unwrap();
+                        let fake = fake_app
+                            .search_inventory(&request, policy, Timestamp::new(1))
+                            .unwrap();
+                        assert_eq!(result, fake, "fake app parity: {text}, {sort:?}");
+                        let page: Vec<_> =
+                            result.hits.iter().map(|hit| hit.instance.clone()).collect();
+                        assert_eq!(
+                            page,
+                            reference
+                                .iter()
+                                .skip(offset)
+                                .take(flags.limit)
+                                .cloned()
+                                .collect::<Vec<_>>(),
+                            "{text}, {sort:?}, offset {offset}"
+                        );
+                        let end = offset + page.len();
+                        assert_eq!(result.next_offset, (end < reference.len()).then_some(end));
+                        observed.extend(page);
+                        match result.next_offset {
+                            Some(next) => offset = next,
+                            None => break,
+                        }
+                    }
+                    assert_eq!(observed, reference);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn typed_catalog_selectors_errors_and_compact_stats() {
+    let (mut store, search) = large_typed_fixture();
+    let policy = FreshnessPolicy { ttl_seconds: 300 };
+    let now = Timestamp::new(1);
+    // Give two characters the same class to exercise the shared ambiguity rule.
+    let mut input = InventorySnapshotInput::with_metadata(&store.load_current().unwrap().unwrap());
+    let mut other = input.characters[0].clone();
+    other.id = CharacterId::new("456");
+    input.characters.push(other);
+    store.replace_current(input.clone()).unwrap();
+    let mut app = QueryService::new(ProfileSyncService::new(QueuedProfileGateway::new(), store));
+    let (mut store, _) = large_typed_fixture();
+    store.replace_current(input).unwrap();
+    let mut fake = QueryService::new(ProfileSyncService::new(
+        QueuedProfileGateway::new(),
+        FakeAppRepository { store, search },
+    ));
+    for (text, category) in [
+        ("character:hunter", ErrorCategory::AmbiguousMatch),
+        (
+            "is:locked or character:missing",
+            ErrorCategory::ProviderValidation,
+        ),
+        ("-stat:missing:>1", ErrorCategory::UnknownStatName),
+        ("stat:cla:>1", ErrorCategory::UnknownStatName), // No fuzzy expansion.
+    ] {
+        let request = typed_request(text, query(&[]));
+        let (policy, now) = if category == ErrorCategory::UnknownStatName {
+            (FreshnessPolicy { ttl_seconds: 0 }, Timestamp::new(100))
+        } else {
+            (policy, now)
+        };
+        assert_eq!(
+            app.search_inventory(&request, policy, now)
+                .unwrap_err()
+                .category(),
+            category
+        );
+        assert_eq!(
+            fake.search_inventory(&request, policy, now)
+                .unwrap_err()
+                .category(),
+            category
+        );
+    }
+    let result = app
+        .search_inventory(
+            &typed_request("character:123 stat:class:>=0", query(&[])),
+            policy,
+            now,
+        )
+        .unwrap();
+    assert_eq!(
+        result.hits[0].instance.location,
+        ItemLocation::Character(CharacterId::new("123"))
+    );
+    let output: serde_json::Value = serde_json::from_str(&destiny_cli::output::render_search(
+        destiny_cli::output::OutputMode::Json,
+        &result,
+    ))
+    .unwrap();
+    let tile = &output["hits"][0];
+    assert!(!tile["stats"].as_array().unwrap().is_empty());
+    assert!(
+        tile["stats"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["name"] == "Class")
+    );
+    let mut flags = query(&["Health>=20"]);
+    flags.sort = Some("Class:asc".parse().unwrap());
+    let result = app
+        .search_inventory(&typed_request("stat:class:>=0", flags), policy, now)
+        .unwrap();
+    assert!(result.resolved.stats.contains_key("health"));
+    assert!(result.resolved.stats.contains_key("class"));
+    for text in [
+        "unknown:private-sentinel",
+        "is:locked or",
+        "(is:locked",
+        "stat:class:wat",
+        "notes:private-sentinel",
+    ] {
+        let rich = typed_request("", query(&[])).with_query(text).unwrap_err();
+        // A caller using `?` at the app boundary gets the existing category;
+        // U3c can retain the original spanned compiler error instead.
+        let error = (|| -> Result<InventorySearchResult, AppError> {
+            let request = typed_request("", query(&[])).with_query(text)?;
+            app.search_inventory(&request, policy, now)
+        })()
+        .unwrap_err();
+        assert_eq!(error.category(), ErrorCategory::ProviderValidation);
+        assert_eq!(
+            error.to_string(),
+            format!("invalid query: {}", rich.message)
+        );
+        assert!(!error.to_string().contains("private-sentinel"));
+    }
+}
+
 #[test]
 fn stat_condition_parser_rejects_malformed_and_bounds() {
     for input in [

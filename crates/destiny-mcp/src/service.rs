@@ -1697,10 +1697,7 @@ impl SearchInventoryArgs {
             query.validate().map_err(McpError::from)?;
         }
 
-        Ok(SearchInventoryRequest {
-            definitions,
-            instances,
-        })
+        Ok(SearchInventoryRequest::new(definitions, instances))
     }
 }
 
@@ -2825,6 +2822,18 @@ mod tests {
         ) -> Result<Vec<ItemInstance>, AppError> {
             self.record("search_instances");
             self.search.search_instances(query)
+        }
+
+        fn search_instance_query_page(
+            &self,
+            query: &InstanceSearchQuery,
+            execution: Option<&destiny_app::search_query::ResolvedQuery>,
+        ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+            if execution.is_none() {
+                return self.search_instance_page(query);
+            }
+            self.record("search_instances");
+            self.search.search_instance_query_page(query, execution)
         }
 
         fn lookup_instance(

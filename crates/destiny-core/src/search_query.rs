@@ -7,7 +7,9 @@
 mod eval;
 mod lexer;
 
-pub use eval::{ItemView, Lowering, lower, matches, referenced_stats};
+pub use eval::{
+    ItemView, Lowering, ResolvedQuery, lower, matches, referenced_characters, referenced_stats,
+};
 mod parser;
 mod registry;
 

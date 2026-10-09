@@ -28,6 +28,138 @@ pub struct ItemView<'a> {
     pub characters: &'a BTreeMap<String, CharacterId>,
 }
 
+/// Request-local catalog resolution shared by repository candidate scans.
+/// Keep this separate from pagination criteria so intersecting single-valued
+/// structured fields never overwrites either side of the AND.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedQuery {
+    pub prefilter: InstanceSearchQuery,
+    pub predicate: Option<TypedQuery>,
+    pub characters: BTreeMap<String, CharacterId>,
+    pub stats: Vec<crate::StatDefinition>,
+}
+
+impl ResolvedQuery {
+    pub fn new(query: &TypedQuery) -> Self {
+        let (prefilter, predicate) = match lower(query) {
+            Lowering::Full(criteria) => (criteria, None),
+            Lowering::Residual {
+                prefilter,
+                predicate,
+            } => (prefilter, Some(predicate)),
+        };
+        Self {
+            prefilter,
+            predicate,
+            characters: BTreeMap::new(),
+            stats: Vec::new(),
+        }
+    }
+
+    /// Candidate reconstruction only loads definition/plug data used by the AST.
+    pub fn needs_definition(&self) -> bool {
+        self.prefilter
+            .definitions
+            .as_ref()
+            .is_some_and(|q| q.has_filters())
+            || self.predicate.as_ref().is_some_and(|q| {
+                any_leaf(q, |leaf| {
+                    !matches!(
+                        leaf,
+                        Leaf::Locked
+                            | Leaf::Unlocked
+                            | Leaf::Equipped
+                            | Leaf::Vault
+                            | Leaf::Inventory
+                            | Leaf::Postmaster
+                            | Leaf::Hash(_)
+                            | Leaf::PerkHash(_)
+                            | Leaf::Power(_)
+                            | Leaf::Stat { .. }
+                            | Leaf::Character(_)
+                    )
+                })
+            })
+    }
+
+    pub fn needs_plugs(&self) -> bool {
+        self.predicate.as_ref().is_some_and(|q| {
+            any_leaf(q, |leaf| {
+                matches!(
+                    leaf,
+                    Leaf::Perk(_)
+                        | Leaf::PerkName(_)
+                        | Leaf::ExactPerk(_)
+                        | Leaf::Mod(_)
+                        | Leaf::Archetype(_)
+                )
+            })
+        })
+    }
+
+    pub fn needs_available_plugs(&self) -> bool {
+        self.predicate.as_ref().is_some_and(|q| {
+            any_leaf(q, |leaf| {
+                matches!(
+                    leaf,
+                    Leaf::Perk(_) | Leaf::PerkName(_) | Leaf::ExactPerk(_) | Leaf::Mod(_)
+                )
+            })
+        })
+    }
+
+    pub fn matches(
+        &self,
+        instance: &ItemInstance,
+        definition: Option<&ItemDefinition>,
+        socketed: &[ItemDefinition],
+        available: &[ItemDefinition],
+        include_available: bool,
+    ) -> bool {
+        if !query::instance_matches_with_definition(&self.prefilter, instance, definition)
+            || !query::instance_matches_stats(&self.prefilter, instance, &self.stats)
+            || !query::instance_matches_available_names(&self.prefilter, socketed, available)
+        {
+            return false;
+        }
+        let Some(predicate) = &self.predicate else {
+            return true;
+        };
+        let mut stats: BTreeMap<String, Vec<i32>> = BTreeMap::new();
+        for stat in &instance.stats {
+            if let Some(definition) = self.stats.iter().find(|d| d.hash() == stat.stat_hash) {
+                stats
+                    .entry(query::normalize_search_text(definition.name()))
+                    .or_default()
+                    .push(stat.value);
+            }
+        }
+        matches(
+            predicate,
+            &ItemView {
+                instance,
+                definition,
+                socketed,
+                available,
+                include_available,
+                stats: &stats,
+                characters: &self.characters,
+            },
+        )
+    }
+}
+
+fn any_leaf(query: &TypedQuery, predicate: fn(&Leaf) -> bool) -> bool {
+    match &query.kind {
+        TypedQueryKind::Leaf(leaf) => predicate(leaf),
+        TypedQueryKind::And(children) | TypedQueryKind::Or(children) => {
+            children.iter().any(|q| any_leaf(q, predicate))
+        }
+        TypedQueryKind::Not(child) => any_leaf(child, predicate),
+        TypedQueryKind::Noop => false,
+    }
+}
+
 fn empty_query() -> InstanceSearchQuery {
     InstanceSearchQuery {
         offset: 0,
@@ -134,6 +266,27 @@ fn matches_leaf(leaf: &Leaf, view: &ItemView<'_>) -> bool {
             query::instance_matches_with_definition(&criteria, item, definition)
         }
     }
+}
+
+/// Unique normalized selectors, including NOT and every OR branch.
+pub fn referenced_characters(query: &TypedQuery) -> Vec<String> {
+    fn visit(query: &TypedQuery, names: &mut BTreeSet<String>) {
+        match &query.kind {
+            TypedQueryKind::Leaf(Leaf::Character(name)) => {
+                names.insert(name.clone());
+            }
+            TypedQueryKind::And(children) | TypedQueryKind::Or(children) => {
+                for child in children {
+                    visit(child, names);
+                }
+            }
+            TypedQueryKind::Not(child) => visit(child, names),
+            _ => {}
+        }
+    }
+    let mut names = BTreeSet::new();
+    visit(query, &mut names);
+    names.into_iter().collect()
 }
 
 /// Unique stat names in deterministic normalized order, including negated and

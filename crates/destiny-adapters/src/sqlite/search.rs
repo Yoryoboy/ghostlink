@@ -186,16 +186,19 @@ impl SearchRepository for SqliteStore {
         &self,
         query: &InstanceSearchQuery,
     ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        self.search_instance_query_page(query, None)
+    }
+
+    fn search_instance_query_page(
+        &self,
+        query: &InstanceSearchQuery,
+        execution: Option<&destiny_core::search_query::ResolvedQuery>,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
         query.validate()?;
         let bound = query.offset + query.limit + 1;
-
-        // `AnyOf(empty)` is a validated, explicit no-match: it keeps its
-        // fail-closed contract meaning and returns before any row is read.
-        let hashes = match &query.item_hashes {
-            ItemHashFilter::Any => None,
-            ItemHashFilter::AnyOf(hashes) if hashes.is_empty() => return Ok((Vec::new(), false)),
-            ItemHashFilter::AnyOf(hashes) => Some(hashes),
-        };
+        let typed_definition = execution.is_some_and(|q| q.needs_definition());
+        let typed_plugs = execution.is_some_and(|q| q.needs_plugs());
+        let typed_available = execution.is_some_and(|q| q.needs_available_plugs());
 
         let mut sql = String::from(
             "SELECT instance_id, item_hash, location_kind, location_character_id, \
@@ -204,31 +207,43 @@ impl SearchRepository for SqliteStore {
         );
         let mut parameters: Vec<Value> = Vec::new();
 
-        if let Some(hashes) = hashes {
-            // The candidate list is bounded by `MAX_HASH_FILTERS`, so the
-            // generated `IN` list stays finite; only placeholders are generated.
-            sql.push_str(" AND item_hash IN (");
-            for index in 0..hashes.len() {
-                if index > 0 {
-                    sql.push_str(", ");
+        // Intersect independently: never overwrite colliding structured fields.
+        for criteria in std::iter::once(query).chain(execution.map(|q| &q.prefilter)) {
+            criteria.validate()?;
+            // An explicit empty hash set remains a fail-closed no-match.
+            let hashes = match &criteria.item_hashes {
+                ItemHashFilter::Any => None,
+                ItemHashFilter::AnyOf(hashes) if hashes.is_empty() => {
+                    return Ok((Vec::new(), false));
                 }
-                sql.push('?');
+                ItemHashFilter::AnyOf(hashes) => Some(hashes),
+            };
+            if let Some(hashes) = hashes {
+                // The candidate list is bounded by `MAX_HASH_FILTERS`, so the
+                // generated `IN` list stays finite; only placeholders are generated.
+                sql.push_str(" AND item_hash IN (");
+                for index in 0..hashes.len() {
+                    if index > 0 {
+                        sql.push_str(", ");
+                    }
+                    sql.push('?');
+                }
+                sql.push(')');
+                for hash in hashes {
+                    parameters.push(Value::Integer(hash.value()));
+                }
             }
-            sql.push(')');
-            for hash in hashes {
-                parameters.push(Value::Integer(hash.value()));
-            }
-        }
-        if let Some(perk_hash) = query.perk_hash {
-            sql.push_str(
-                " AND EXISTS (SELECT 1 FROM item_perks p \
+            if let Some(perk_hash) = criteria.perk_hash {
+                sql.push_str(
+                    " AND EXISTS (SELECT 1 FROM item_perks p \
                  WHERE p.instance_id = items.instance_id AND p.perk_hash = ?)",
-            );
-            parameters.push(Value::Integer(i64::from(perk_hash.value())));
-        }
-        if let Some(character_id) = &query.character_id {
-            sql.push_str(" AND location_kind = 'character' AND location_character_id = ?");
-            parameters.push(Value::Text(character_id.as_str().to_owned()));
+                );
+                parameters.push(Value::Integer(i64::from(perk_hash.value())));
+            }
+            if let Some(character_id) = &criteria.character_id {
+                sql.push_str(" AND location_kind = 'character' AND location_character_id = ?");
+                parameters.push(Value::Text(character_id.as_str().to_owned()));
+            }
         }
         // Never truncate SQL candidates before shared definition/power matching.
         sql.push_str(" ORDER BY instance_id");
@@ -275,6 +290,7 @@ impl SearchRepository for SqliteStore {
                         || query.perk_name.is_some()
                         || query.mod_name.is_some()
                         || query.archetype.is_some()
+                        || typed_definition
                     {
                         if let std::collections::hash_map::Entry::Vacant(entry) =
                             base_definitions.entry(instance.item_hash)
@@ -294,6 +310,7 @@ impl SearchRepository for SqliteStore {
                     if query.perk_name.is_some()
                         || query.mod_name.is_some()
                         || query.archetype.is_some()
+                        || typed_plugs
                     {
                         for plug in &instance.plugs {
                             if let std::collections::hash_map::Entry::Vacant(entry) =
@@ -313,7 +330,9 @@ impl SearchRepository for SqliteStore {
                     }
                     let mut available = Vec::new();
                     if query.include_available
-                        && (query.perk_name.is_some() || query.mod_name.is_some())
+                        && (query.perk_name.is_some()
+                            || query.mod_name.is_some()
+                            || typed_available)
                     {
                         for plug in &instance.available_plugs {
                             if let std::collections::hash_map::Entry::Vacant(entry) =
@@ -339,6 +358,15 @@ impl SearchRepository for SqliteStore {
                         && destiny_core::query::instance_matches_available_names(
                             query, &plugs, &available,
                         )
+                        && execution.is_none_or(|execution| {
+                            execution.matches(
+                                &instance,
+                                definition,
+                                &plugs,
+                                &available,
+                                query.include_available,
+                            )
+                        })
                     {
                         if query.sort.is_some() {
                             // Keep at most k matches, ordered by the shared comparator.
