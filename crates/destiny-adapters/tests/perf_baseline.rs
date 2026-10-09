@@ -259,6 +259,7 @@ fn definitions(text: Option<&str>) -> DefinitionSearchQuery {
 
 fn instances() -> InstanceSearchQuery {
     InstanceSearchQuery {
+        offset: 0,
         sort: None,
         location: None,
         equipped: None,

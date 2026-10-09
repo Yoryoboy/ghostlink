@@ -131,10 +131,9 @@ pub const WEEKLY_TOOL: &str = "weekly";
 
 const LIST_CHARACTERS_DESCRIPTION: &str = "List the signed-in account's characters with the freshness metadata of the committed profile projection.";
 
-const SEARCH_INVENTORY_DESCRIPTION: &str = "Search definitions and inventory with bounded filters. Hits are compact tiles by default; detail=true returns full instance details.";
+const SEARCH_INVENTORY_DESCRIPTION: &str = "Search definitions and inventory with bounded filters. Hits are compact tiles by default; detail=true returns full instance details. Continue owned hits with offset=next_offset; definition candidates are unchanged.";
 
-const INSPECT_ITEM_DESCRIPTION: &str =
-    "Inspect exactly one concrete inventory instance by its instance identifier.";
+const INSPECT_ITEM_DESCRIPTION: &str = "Inspect one owned item by instance_id or exact normalized name (exactly one required). Multiple owned namesakes return compact candidates; fuzzy matches are never inspected.";
 
 const MOVE_ITEM_DESCRIPTION: &str = "Move one concrete inventory instance to the Vault or to a character, using only ordered transfer steps. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Incomplete effects or persistence failures also require refresh. Never retry an uncertain outcome. verified_noop means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie.";
 
@@ -755,6 +754,11 @@ pub struct SearchInventoryArgs {
     #[schemars(range(min = 1, max = MAX_SEARCH_LIMIT))]
     pub limit: usize,
 
+    /// Skip ordered owned hits (0..1000); definition candidates are unchanged.
+    #[serde(default)]
+    #[schemars(range(min = 0, max = MAX_SEARCH_LIMIT))]
+    pub offset: usize,
+
     /// Optional concrete-instance restrictions, combined with definition filters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instances: Option<InstanceQueryArgs>,
@@ -798,13 +802,18 @@ pub struct InstanceQueryArgs {
     pub limit: usize,
 }
 
-/// `inspect_item` arguments: exactly one concrete instance identifier.
+/// `inspect_item` arguments: exactly one concrete instance identifier or name.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InspectItemArgs {
-    /// Concrete instance identifier; never a definition hash or display name.
-    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
-    pub instance_id: String,
+    /// Concrete instance identifier; mutually exclusive with name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String", length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub instance_id: Option<String>,
+    /// Exact normalized owned item name; mutually exclusive with instance_id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String", length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub name: Option<String>,
 }
 
 /// Optional Postmaster selector; omitted or null returns all owned characters.
@@ -1364,6 +1373,8 @@ enum SearchHitSchema {
 /// Structured result of `search_inventory`.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct SearchInventoryOutput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
     pub resolved: ResolvedNamesView,
     pub candidates: Vec<DefinitionView>,
     #[schemars(with = "Vec<SearchHitSchema>")]
@@ -2149,6 +2160,16 @@ mod tests {
             serde_json::from_value::<SearchInventoryArgs>(json!({"instances": {"unknown": 1}}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn inspection_schema_has_no_top_level_combinators() {
+        // The Anthropic API rejects tool input schemas with a top-level
+        // oneOf/anyOf/allOf; the exactly-one-selector rule is enforced at runtime.
+        let schema = serde_json::to_value(schemars::schema_for!(InspectItemArgs)).unwrap();
+        for keyword in ["oneOf", "anyOf", "allOf"] {
+            assert!(schema.get(keyword).is_none(), "{keyword}");
+        }
     }
 
     #[test]

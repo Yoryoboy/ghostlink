@@ -61,6 +61,15 @@ pub fn compact_search(mut output: Value) -> Value {
     output
 }
 
+/// Same ambiguity diagnostic and compact candidate contract in both transports.
+pub fn ambiguous_items(candidates: Vec<Value>) -> Value {
+    serde_json::json!({
+        "code": "ambiguous_match",
+        "message": "The name matched multiple owned items; choose an instance id.",
+        "candidates": candidates,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

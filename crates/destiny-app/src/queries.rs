@@ -790,6 +790,7 @@ where
 
         let instance_query = if request.definitions.has_filters() {
             let mut query = request.instances.clone().unwrap_or(InstanceSearchQuery {
+                offset: 0,
                 sort: None,
                 location: None,
                 equipped: None,
@@ -811,8 +812,15 @@ where
             request.instances.clone()
         };
         let mut hits = Vec::new();
+        let mut next_offset = None;
         if let Some(instance_query) = &instance_query {
-            let instances = self.sync.repository().search_instances(instance_query)?;
+            let (instances, more) = self
+                .sync
+                .repository()
+                .search_instance_page(instance_query)?;
+            if more {
+                next_offset = Some(instance_query.offset + instances.len());
+            }
             hits.reserve(instances.len());
             let mut enrichment = InstanceEnrichment::default();
             for instance in instances {
@@ -822,6 +830,7 @@ where
         }
 
         Ok(InventorySearchResult {
+            next_offset,
             resolved,
             candidates,
             hits,
@@ -918,6 +927,41 @@ where
     }
 }
 
+/// Build the shared text search used for exact owned-name resolution.
+pub fn owned_name_request(name: &str) -> Result<SearchInventoryRequest, AppError> {
+    let definitions = DefinitionSearchQuery {
+        text: Some(destiny_core::SearchTerm::new(name)?),
+        item_type: None,
+        tier: None,
+        tags: Vec::new(),
+        element: None,
+        slot: None,
+        class_type: None,
+        limit: destiny_core::MAX_SEARCH_LIMIT,
+    };
+    let instances = InstanceSearchQuery {
+        offset: 0,
+        sort: None,
+        include_available: false,
+        item_hashes: destiny_core::ItemHashFilter::Any,
+        perk_hash: None,
+        perk_name: None,
+        mod_name: None,
+        archetype: None,
+        character_id: None,
+        location: None,
+        equipped: None,
+        definitions: Some(Box::new(definitions.clone())),
+        min_power: None,
+        stats: Vec::new(),
+        limit: destiny_core::MAX_SEARCH_LIMIT,
+    };
+    Ok(SearchInventoryRequest {
+        definitions,
+        instances: Some(instances),
+    })
+}
+
 /// The narrow, object-safe read surface a presentation boundary dispatches to.
 ///
 /// It exposes only the committed reads and keeps the caller-supplied
@@ -929,6 +973,31 @@ where
 /// associated types, or `Self`-typed returns, so `&mut dyn QueryOperations` is
 /// a valid dispatch target.
 pub trait QueryOperations {
+    /// Resolve only normalized exact owned names, across every search page.
+    fn owned_name_hits(
+        &mut self,
+        name: &str,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<InventorySearchResult, AppError> {
+        let mut request = owned_name_request(name)?;
+        let normalized = destiny_core::query::normalize_search_text(name);
+        let mut result = self.search_inventory(&request, policy, now)?;
+        let mut hits = std::mem::take(&mut result.hits);
+        while let Some(offset) = result.next_offset {
+            request.instances.as_mut().expect("owned name query").offset = offset;
+            let page = self.search_inventory(&request, policy, now)?;
+            hits.extend(page.hits);
+            result.next_offset = page.next_offset;
+        }
+        hits.retain(|hit| {
+            destiny_core::query::normalize_search_text(&hit.definition.name) == normalized
+        });
+        result.hits = hits;
+        result.candidates.clear();
+        Ok(result)
+    }
+
     /// Reads committed Postmaster holdings for one selector or all owned characters.
     fn postmaster(
         &mut self,
@@ -1933,6 +2002,7 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            offset: 0,
             sort: None,
             location: None,
             equipped: None,

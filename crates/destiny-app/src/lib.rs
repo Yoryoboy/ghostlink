@@ -90,6 +90,7 @@ pub use destiny_core::ports::{
     DefinitionCatalogRepository, ManifestIndex, WorldDefinitionRepository,
 };
 pub use destiny_core::ports::{RetryDelay, StatDefinitionRepository};
+pub use destiny_core::query::normalize_search_text;
 pub use destiny_core::query::{InspectionPlug, InspectionPlugRole, LocationFilter, MAX_NAME_TERMS};
 pub use destiny_core::{
     AccessCredential, AccessCredentialMetadata, AppError, BucketHash, Character, CharacterId,

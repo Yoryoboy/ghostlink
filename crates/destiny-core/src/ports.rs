@@ -531,6 +531,23 @@ pub trait SearchRepository {
     /// Bounded, deterministic concrete-instance matches for one validated search.
     fn search_instances(&self, query: &InstanceSearchQuery) -> Result<Vec<ItemInstance>, AppError>;
 
+    /// Ordered owned page and whether another match exists. Adapters may override
+    /// this fallback to obtain the lookahead in the same scan.
+    fn search_instance_page(
+        &self,
+        query: &InstanceSearchQuery,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        let instances = self.search_instances(query)?;
+        if instances.len() < query.limit {
+            return Ok((instances, false));
+        }
+        let mut probe = query.clone();
+        probe.offset += instances.len();
+        probe.limit = 1;
+        let more = !self.search_instances(&probe)?.is_empty();
+        Ok((instances, more))
+    }
+
     /// Resolves one concrete instance by exact identifier.
     ///
     /// The lookup is exact and never name-based. A `Resolution::Ambiguous`

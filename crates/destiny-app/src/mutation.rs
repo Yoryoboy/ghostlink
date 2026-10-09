@@ -1561,6 +1561,7 @@ where
                 let instances = self
                     .repository()
                     .search_instances(&InstanceSearchQuery {
+                        offset: 0,
                         sort: None,
                         location: None,
                         equipped: None,

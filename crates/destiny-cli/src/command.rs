@@ -168,9 +168,7 @@ impl Cli {
                     }
                 })
             }
-            Command::InspectItem(arguments) => {
-                arguments.into_request().map(ReadRequest::InspectItem)
-            }
+            Command::InspectItem(arguments) => arguments.into_request(),
             Command::SubclassOptions(arguments) => {
                 if self.json && arguments.locked {
                     return Err(CliError::invalid_request());
@@ -564,11 +562,21 @@ pub struct SearchInventoryArgs {
     /// Maximum number of definition candidates and instance hits.
     #[arg(long, value_name = "N", default_value_t = 100)]
     pub limit: usize,
+
+    /// Skip ordered owned hits (0..1000); definition candidates are unchanged.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub offset: usize,
 }
 
 impl SearchInventoryArgs {
     /// Builds the two shared query shapes this command maps onto.
     fn into_request(self) -> Result<SearchInventoryRequest, CliError> {
+        if self.offset > MAX_SEARCH_LIMIT {
+            return Err(CliError::invalid_argument(
+                "--offset",
+                "must be between 0 and 1000",
+            ));
+        }
         let definitions = DefinitionSearchQuery {
             text: search_term(self.text.as_deref(), "--text")?,
             item_type: search_term(self.item_type.as_deref(), "--type")?,
@@ -612,7 +620,8 @@ impl SearchInventoryArgs {
         &self,
         definitions: &DefinitionSearchQuery,
     ) -> Result<Option<InstanceSearchQuery>, CliError> {
-        let no_instance_filter = !self.include_available
+        let no_instance_filter = self.offset == 0
+            && !self.include_available
             && self.stat.is_empty()
             && self.sort.is_none()
             && self.item_hash.is_empty()
@@ -640,6 +649,7 @@ impl SearchInventoryArgs {
             ItemHashFilter::AnyOf(self.item_hash.iter().copied().map(ItemHash::new).collect())
         };
         let query = InstanceSearchQuery {
+            offset: self.offset,
             sort: self
                 .sort
                 .as_deref()
@@ -1255,20 +1265,38 @@ mod subclass_tests {
 #[derive(Debug, Args)]
 pub struct InspectItemArgs {
     /// The concrete item instance identifier to inspect.
-    ///
-    /// A definition hash is never accepted here: a name or hash query resolves
-    /// through `search-inventory` first, and only a concrete instance identifier
-    /// reaches exact inspection.
-    #[arg(value_name = "INSTANCE_ID")]
-    pub instance_id: String,
+    #[arg(
+        value_name = "INSTANCE_ID",
+        required_unless_present = "name",
+        conflicts_with = "name"
+    )]
+    pub instance_id: Option<String>,
+
+    /// Resolve an owned item by exact normalized name; never choose fuzzy matches.
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
 }
 
 impl InspectItemArgs {
-    fn into_request(self) -> Result<InspectItemRequest, CliError> {
-        validate_identity(&self.instance_id, "INSTANCE_ID")?;
-        Ok(InspectItemRequest {
-            instance_id: ItemInstanceId::new(self.instance_id),
-        })
+    fn into_request(self) -> Result<ReadRequest, CliError> {
+        match (self.instance_id, self.name) {
+            (Some(instance_id), None) => {
+                validate_identity(&instance_id, "INSTANCE_ID")?;
+                Ok(ReadRequest::InspectItem(InspectItemRequest {
+                    instance_id: ItemInstanceId::new(instance_id),
+                }))
+            }
+            (None, Some(name)) => {
+                SearchTerm::new(&name).map_err(|_| {
+                    CliError::invalid_argument("--name", "must be a valid non-empty search term")
+                })?;
+                Ok(ReadRequest::InspectItemByName(name))
+            }
+            _ => Err(CliError::invalid_argument(
+                "inspect-item",
+                "supply exactly one instance id or --name",
+            )),
+        }
     }
 }
 
@@ -1286,6 +1314,7 @@ pub enum ReadRequest {
     /// Full legacy search hit output, explicitly requested with --detail.
     SearchInventoryDetail(SearchInventoryRequest),
     InspectItem(InspectItemRequest),
+    InspectItemByName(String),
     Subclass(Option<CharacterId>),
     SubclassOptions {
         character_id: Option<CharacterId>,
@@ -1839,7 +1868,9 @@ mod tests {
 
         let inspect = parse(["inspect-item", "inst-1"]);
         match inspect.command {
-            Command::InspectItem(arguments) => assert_eq!(arguments.instance_id, "inst-1"),
+            Command::InspectItem(arguments) => {
+                assert_eq!(arguments.instance_id.as_deref(), Some("inst-1"))
+            }
             other => panic!("unexpected command: {other:?}"),
         }
     }

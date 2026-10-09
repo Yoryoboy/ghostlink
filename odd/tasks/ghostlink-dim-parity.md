@@ -134,9 +134,19 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   full-output pins now opt into detail. Workspace: 1992 passed, 0 failed.
   Open (not U1): MCP text + structuredContent duplication is by spec (G1);
   revisit with client support evidence.
-- [ ] **U2 — Search continuation and inspect by name.** Cursor/offset for
+- [x] **U2 — Search continuation and inspect by name.** Cursor/offset for
   truncated results; `inspect-item` accepts a name and returns candidates when
-  ambiguous.
+  ambiguous. Done: owned hits accept `offset` (CLI `--offset`, MCP `offset`,
+  0..1000) in the existing order (stat-sorted top-k bound offset+limit+1,
+  lookahead limit+1) and return `next_offset` only when more hits exist; CLI
+  prints `More results: rerun with --offset N`. `inspect-item --name` / MCP
+  `name` inspect a unique exact normalized owned name; several matches return
+  `ambiguous_match` with compact U1 tiles (DIM shows candidates); fuzzy
+  matches are never inspected. Exactly-one-selector is enforced at runtime:
+  the generated top-level `oneOf` was removed because the Anthropic API
+  rejects tool input schemas with top-level oneOf/anyOf/allOf (400 on every
+  request; anthropics/claude-code #4886, #45106). Workspace: 1999 passed,
+  0 failed; owned search timings unchanged.
 - [ ] **U3 — DIM search language (A3).** Query AST (`is:`, `perk:`,
   `stat:`, negation, parentheses, `or`, DIM precedence) driven by one filter
   registry that also provides validation and help; invalid queries fail

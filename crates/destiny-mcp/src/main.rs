@@ -770,6 +770,13 @@ impl SearchRepository for SharedRepository {
         self.lock()?.search_instances(query)
     }
 
+    fn search_instance_page(
+        &self,
+        query: &InstanceSearchQuery,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        self.lock()?.search_instance_page(query)
+    }
+
     fn lookup_instance(
         &self,
         instance_id: &ItemInstanceId,

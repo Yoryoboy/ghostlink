@@ -1122,6 +1122,13 @@ impl SearchRepository for FixtureRepository {
         self.projection()?.search.search_instances(query)
     }
 
+    fn search_instance_page(
+        &self,
+        query: &destiny_app::InstanceSearchQuery,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        self.projection()?.search.search_instance_page(query)
+    }
+
     fn lookup_instance(
         &self,
         instance_id: &ItemInstanceId,

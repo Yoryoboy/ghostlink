@@ -1655,7 +1655,8 @@ impl SearchInventoryArgs {
             .into());
         }
         if instances.is_none()
-            && (self.include_available
+            && (self.offset > 0
+                || self.include_available
                 || !stats.is_empty()
                 || sort.is_some()
                 || definitions.has_filters()
@@ -1674,7 +1675,11 @@ impl SearchInventoryArgs {
                 .into_query()?,
             );
         }
+        if self.offset > MAX_SEARCH_LIMIT {
+            return Err(AppError::invalid_argument("offset", "must be between 0 and 1000").into());
+        }
         if let Some(query) = &mut instances {
+            query.offset = self.offset;
             query.definitions = definitions
                 .has_filters()
                 .then(|| Box::new(definitions.clone()));
@@ -1726,6 +1731,7 @@ impl InstanceQueryArgs {
         };
 
         let query = InstanceSearchQuery {
+            offset: 0,
             sort: None,
             include_available: false,
             item_hashes,
@@ -2111,9 +2117,19 @@ impl InspectItemArgs {
     /// sanitized [`ErrorCategory::ProviderValidation`] category before the
     /// service is invoked.
     pub fn into_request(self) -> Result<InspectItemRequest, McpError> {
-        validate_identifier(&self.instance_id, "instance_id")?;
+        if self.name.is_some() {
+            return Err(AppError::invalid_argument(
+                "inspect_item",
+                "supply exactly one instance_id or name",
+            )
+            .into());
+        }
+        let instance_id = self.instance_id.ok_or_else(|| {
+            AppError::invalid_argument("inspect_item", "supply exactly one instance_id or name")
+        })?;
+        validate_identifier(&instance_id, "instance_id")?;
         Ok(InspectItemRequest {
-            instance_id: ItemInstanceId::new(self.instance_id),
+            instance_id: ItemInstanceId::new(instance_id),
         })
     }
 }
@@ -2193,6 +2209,7 @@ fn repeated_terms(
 /// Projects a shared inventory search into its bounded MCP output.
 pub fn search_inventory_output(result: &InventorySearchResult) -> SearchInventoryOutput {
     SearchInventoryOutput {
+        next_offset: result.next_offset,
         resolved: crate::schema::ResolvedNamesView {
             perk: result.resolved.perk.clone(),
             mods: result.resolved.mods.clone(),
@@ -3123,6 +3140,7 @@ mod tests {
         limit: usize,
     ) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            offset: 0,
             detail: false,
             tier: None,
             location: None,
@@ -3155,6 +3173,7 @@ mod tests {
 
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            offset: 0,
             detail: false,
             sort: None,
             tier: None,
@@ -3316,7 +3335,8 @@ mod tests {
         let _mcp = mcp_service(app_service(&shared, repository));
 
         let empty_instance = InspectItemArgs {
-            instance_id: String::new(),
+            instance_id: Some(String::new()),
+            name: None,
         }
         .into_request()
         .expect_err("empty instance identifier must be rejected");
@@ -3324,7 +3344,8 @@ mod tests {
 
         let overlong_instance = "i".repeat(MAX_IDENTIFIER_LENGTH + 1);
         let error = InspectItemArgs {
-            instance_id: overlong_instance,
+            instance_id: Some(overlong_instance),
+            name: None,
         }
         .into_request()
         .expect_err("over-long instance identifier must be rejected");
@@ -3353,7 +3374,8 @@ mod tests {
     fn identifier_boundary_is_inclusive() {
         let boundary = "i".repeat(MAX_IDENTIFIER_LENGTH);
         let inspect = InspectItemArgs {
-            instance_id: boundary.clone(),
+            instance_id: Some(boundary.clone()),
+            name: None,
         }
         .into_request()
         .expect("boundary identifier is valid");
@@ -3439,6 +3461,7 @@ mod tests {
             instance("inst-b", 2, ItemLocation::Vault, vec![perk(20)]),
         ];
         let args = SearchInventoryArgs {
+            offset: 0,
             detail: true,
             tier: None,
             location: None,
@@ -3536,7 +3559,8 @@ mod tests {
     fn inspect_item_parity_keeps_definition_and_instance_distinct() {
         let items = vec![instance("inst-a", 1, ItemLocation::Vault, vec![perk(10)])];
         let request = InspectItemArgs {
-            instance_id: "inst-a".into(),
+            instance_id: Some("inst-a".into()),
+            name: None,
         }
         .into_request()
         .expect("valid identifier");
@@ -3583,7 +3607,8 @@ mod tests {
         let output = mcp
             .inspect_item(
                 &InspectItemArgs {
-                    instance_id: "absent".into(),
+                    instance_id: Some("absent".into()),
+                    name: None,
                 }
                 .into_request()
                 .expect("valid identifier"),
@@ -3609,7 +3634,8 @@ mod tests {
         let error = mcp
             .inspect_item(
                 &InspectItemArgs {
-                    instance_id: "dup".into(),
+                    instance_id: Some("dup".into()),
+                    name: None,
                 }
                 .into_request()
                 .expect("valid identifier"),
@@ -3698,6 +3724,7 @@ mod tests {
             location: None,
             equipped: None,
             sort: None,
+            offset: 0,
         };
         let output = mcp
             .search_inventory(&args.into_request().expect("valid arguments"))
@@ -3751,6 +3778,7 @@ mod tests {
             location: None,
             equipped: None,
             sort: None,
+            offset: 0,
         };
         let request = args.into_request().expect("valid arguments");
 

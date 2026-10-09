@@ -88,6 +88,7 @@ fn definitions(
 }
 fn query(conditions: &[&str]) -> InstanceSearchQuery {
     InstanceSearchQuery {
+        offset: 0,
         sort: None,
         location: None,
         equipped: None,
@@ -260,6 +261,22 @@ fn batched_projection_and_top_k_match_stable_reference() {
             Some("Health"),
             Some("Health:asc"),
         ] {
+            let mut paged = query(&conditions);
+            paged.sort = sort.map(|s| s.parse().unwrap());
+            paged.limit = 1000;
+            let full = fake.search_instances(&paged).unwrap();
+            paged.limit = 31;
+            let mut collected = Vec::new();
+            loop {
+                let (page, more) = store.search_instance_page(&paged).unwrap();
+                assert_eq!(page, fake.search_instances(&paged).unwrap());
+                collected.extend(page);
+                if !more {
+                    break;
+                }
+                paged.offset += paged.limit;
+            }
+            assert_eq!(collected, full, "pagination with ties: {sort:?}");
             for limit in [1, 5, 31, 620, 1000] {
                 let mut q = query(&conditions);
                 q.sort = sort.map(|s| s.parse().unwrap());
@@ -271,6 +288,29 @@ fn batched_projection_and_top_k_match_stable_reference() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn offset_pages_preserve_order_and_reject_invalid_offset() {
+    let (store, fake) = seeded(catalog());
+    for sort in [None, Some("Class"), Some("Class:asc")] {
+        let mut q = query(&[]);
+        q.sort = sort.map(|s| s.parse().unwrap());
+        q.limit = 1000;
+        let full = store.search_instances(&q).unwrap();
+        q.limit = 1;
+        let mut pages = Vec::new();
+        for offset in 0..full.len() {
+            q.offset = offset;
+            let (page, more) = store.search_instance_page(&q).unwrap();
+            assert_eq!(page, fake.search_instances(&q).unwrap());
+            assert_eq!(more, offset + 1 < full.len());
+            pages.extend(page);
+        }
+        assert_eq!(pages, full);
+        q.offset = 1001;
+        assert!(store.search_instances(&q).is_err());
     }
 }
 

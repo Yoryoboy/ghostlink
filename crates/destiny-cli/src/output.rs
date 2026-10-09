@@ -18,7 +18,7 @@ use crate::command::{CallbackMode, CliError};
 use crate::login::LoginInstruction;
 
 #[path = "search_output.rs"]
-mod search_output;
+pub(crate) mod search_output;
 
 #[cfg(test)]
 #[path = "artifact_output_tests.rs"]
@@ -935,6 +935,9 @@ fn search_human(result: &InventorySearchResult, detail: bool) -> String {
             lines.push(search_output::compact_line(hit));
         }
     }
+    if let Some(offset) = result.next_offset {
+        lines.push(format!("More results: rerun with --offset {offset}"));
+    }
     lines.push(metadata_text(&result.metadata));
     lines.join("\n")
 }
@@ -1085,7 +1088,7 @@ fn search_json(result: &InventorySearchResult) -> String {
     if !result.resolved.stats.is_empty() {
         resolved.insert("stats".to_owned(), json!(result.resolved.stats));
     }
-    json!({
+    let mut output = json!({
         "resolved": resolved,
         "candidates": result
             .candidates
@@ -1108,8 +1111,11 @@ fn search_json(result: &InventorySearchResult) -> String {
             .collect::<Vec<_>>(),
         "kind": "inventory_search",
         "metadata": metadata_json(&result.metadata),
-    })
-    .to_string()
+    });
+    if let Some(offset) = result.next_offset {
+        output["next_offset"] = json!(offset);
+    }
+    output.to_string()
 }
 
 fn inspection_json(inspection: &ItemInspection) -> String {
@@ -1850,6 +1856,7 @@ mod tests {
 
     fn search_result() -> InventorySearchResult {
         InventorySearchResult {
+            next_offset: None,
             resolved: Default::default(),
             candidates: vec![definition(1, "Gjallarhorn")],
             hits: vec![InventorySearchHit {
@@ -2101,6 +2108,7 @@ mod tests {
         );
 
         let empty = InventorySearchResult {
+            next_offset: None,
             resolved: Default::default(),
             candidates: Vec::new(),
             hits: Vec::new(),

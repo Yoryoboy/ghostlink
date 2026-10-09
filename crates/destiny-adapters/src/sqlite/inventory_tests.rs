@@ -460,6 +460,7 @@ fn postmaster_and_stacks_roundtrip_filter_and_atomic_safety() {
     permuted.characters.reverse();
     assert_eq!(store.replace_current(permuted).unwrap(), original);
     let query = InstanceSearchQuery {
+        offset: 0,
         sort: None,
         location: None,
         equipped: None,
@@ -1227,6 +1228,7 @@ fn stats_round_trip_search_and_revision_identity() {
     assert_eq!(
         store
             .search_instances(&destiny_core::InstanceSearchQuery {
+                offset: 0,
                 sort: None,
                 location: None,
                 equipped: None,

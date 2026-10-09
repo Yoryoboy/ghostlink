@@ -453,6 +453,8 @@ pub const MAX_NAME_TERMS: usize = 8;
 /// implementation runs before reading the projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstanceSearchQuery {
+    /// Number of ordered owned matches to skip, bounded to 1000.
+    pub offset: usize,
     pub sort: Option<StatSort>,
     pub include_available: bool,
     pub item_hashes: ItemHashFilter,
@@ -477,6 +479,12 @@ impl InstanceSearchQuery {
     /// Rejects an out-of-range limit or an over-large definition-hash list.
     pub fn validate(&self) -> Result<(), AppError> {
         validate_search_limit(self.limit)?;
+        if self.offset > MAX_SEARCH_LIMIT {
+            return Err(AppError::invalid_argument(
+                "offset",
+                "must be between 0 and 1000",
+            ));
+        }
         for (kind, terms) in [("perk", &self.perk_name), ("mod", &self.mod_name)] {
             if terms
                 .as_ref()
@@ -976,6 +984,7 @@ pub struct NamedStat {
 /// instance, and it never reports a definition as an instance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySearchResult {
+    pub next_offset: Option<usize>,
     pub resolved: crate::name_matching::ResolvedNames,
     pub candidates: Vec<ItemDefinition>,
     pub hits: Vec<InventorySearchHit>,
@@ -1215,6 +1224,7 @@ mod tests {
         perk_hash: Option<PerkHash>,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            offset: 0,
             sort: None,
             include_available: false,
             item_hashes,

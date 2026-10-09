@@ -178,13 +178,22 @@ impl SearchRepository for SqliteStore {
     }
 
     fn search_instances(&self, query: &InstanceSearchQuery) -> Result<Vec<ItemInstance>, AppError> {
+        self.search_instance_page(query)
+            .map(|(instances, _)| instances)
+    }
+
+    fn search_instance_page(
+        &self,
+        query: &InstanceSearchQuery,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
         query.validate()?;
+        let bound = query.offset + query.limit + 1;
 
         // `AnyOf(empty)` is a validated, explicit no-match: it keeps its
         // fail-closed contract meaning and returns before any row is read.
         let hashes = match &query.item_hashes {
             ItemHashFilter::Any => None,
-            ItemHashFilter::AnyOf(hashes) if hashes.is_empty() => return Ok(Vec::new()),
+            ItemHashFilter::AnyOf(hashes) if hashes.is_empty() => return Ok((Vec::new(), false)),
             ItemHashFilter::AnyOf(hashes) => Some(hashes),
         };
 
@@ -342,15 +351,15 @@ impl SearchRepository for SqliteStore {
                                     &stat_definitions,
                                 ) != std::cmp::Ordering::Greater
                             });
-                            if position < query.limit {
+                            if position < bound {
                                 instances.insert(position, instance);
-                                if instances.len() > query.limit {
+                                if instances.len() > bound {
                                     instances.pop();
                                 }
                             }
                         } else {
                             instances.push(instance);
-                            if instances.len() == query.limit {
+                            if instances.len() == bound {
                                 break 'batches;
                             }
                         }
@@ -358,7 +367,13 @@ impl SearchRepository for SqliteStore {
                 }
             }
         }
-        Ok(instances)
+        let more = instances.len() > query.offset + query.limit;
+        let page = instances
+            .into_iter()
+            .skip(query.offset)
+            .take(query.limit)
+            .collect();
+        Ok((page, more))
     }
 
     fn lookup_instance(
@@ -674,6 +689,7 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            offset: 0,
             sort: None,
             location: None,
             equipped: None,

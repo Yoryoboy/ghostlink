@@ -900,6 +900,14 @@ impl SearchRepository for InMemorySearchRepository {
     }
 
     fn search_instances(&self, query: &InstanceSearchQuery) -> Result<Vec<ItemInstance>, AppError> {
+        self.search_instance_page(query)
+            .map(|(instances, _)| instances)
+    }
+
+    fn search_instance_page(
+        &self,
+        query: &InstanceSearchQuery,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
         query.validate()?;
         let mut indexed = std::collections::HashMap::new();
         for definition in &self.definitions {
@@ -943,8 +951,13 @@ impl SearchRepository for InMemorySearchRepository {
                 &self.stat_definitions,
             )
         });
-        matches.truncate(query.limit);
-        Ok(matches)
+        let more = matches.len() > query.offset + query.limit;
+        let matches = matches
+            .into_iter()
+            .skip(query.offset)
+            .take(query.limit)
+            .collect();
+        Ok((matches, more))
     }
 
     fn lookup_instance(
@@ -2356,6 +2369,7 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            offset: 0,
             sort: None,
             location: None,
             equipped: None,

@@ -453,6 +453,60 @@ fn dispatch_inspect_item(
     arguments: JsonObject,
 ) -> Result<CallToolResult, ErrorData> {
     let arguments: InspectItemArgs = deserialize(arguments)?;
+    if let Some(name) = &arguments.name {
+        if arguments.instance_id.is_some() {
+            return Ok(McpError::from(destiny_app::AppError::invalid_argument(
+                "inspect_item",
+                "supply exactly one instance_id or name",
+            ))
+            .into_call_tool_result());
+        }
+        let mut request = match destiny_app::queries::owned_name_request(name) {
+            Ok(request) => request,
+            Err(error) => return Ok(McpError::from(error).into_call_tool_result()),
+        };
+        let normalized = destiny_app::normalize_search_text(name);
+        let mut hits = Vec::new();
+        loop {
+            let output = match service.search_inventory(&request) {
+                Ok(output) => output,
+                Err(error) => return Ok(error.into_call_tool_result()),
+            };
+            hits.extend(output.hits.into_iter().filter(|hit| {
+                destiny_app::normalize_search_text(&hit.definition.name) == normalized
+            }));
+            match output.next_offset {
+                Some(offset) => {
+                    request.instances.as_mut().expect("owned name query").offset = offset
+                }
+                None => break,
+            }
+        }
+        return match hits.as_slice() {
+            [] => Ok(CallToolResult::structured_error(
+                serde_json::json!({"code":"item_not_found","message":"The requested owned item name was not found."}),
+            )),
+            [hit] => Ok(service
+                .inspect_item(&destiny_app::InspectItemRequest {
+                    instance_id: destiny_app::ItemInstanceId::new(hit.instance.instance_id.clone()),
+                })
+                .map_or_else(tool_error, |output| output.into_call_tool_result())),
+            _ => {
+                let candidates = hits
+                    .iter()
+                    .map(|hit| {
+                        destiny_output::search::compact_hit(
+                            &serde_json::to_value(hit).expect("plain hit projection"),
+                            &serde_json::json!({}),
+                        )
+                    })
+                    .collect();
+                Ok(CallToolResult::structured_error(
+                    destiny_output::search::ambiguous_items(candidates),
+                ))
+            }
+        };
+    }
     let request = match arguments.into_request() {
         Ok(request) => request,
         Err(error) => return Ok(error.into_call_tool_result()),
@@ -778,6 +832,7 @@ mod tests {
                     .search_output
                     .clone()
                     .unwrap_or_else(|| SearchInventoryOutput {
+                        next_offset: None,
                         resolved: Default::default(),
                         candidates: Vec::new(),
                         hits: Vec::new(),
@@ -1702,6 +1757,21 @@ mod tests {
             .dispatch("inspect_item", args(json!({"instance_id": "inst-a"})))
             .expect("second dispatch");
         assert_eq!(structured(&first), structured(&second));
+    }
+
+    #[test]
+    fn inspect_item_requires_exactly_one_selector_at_runtime() {
+        let (server, handle) = server(RecordingService::new());
+        for arguments in [
+            json!({}),
+            json!({"instance_id": "123", "name": "Ace of Spades"}),
+        ] {
+            let result = server
+                .dispatch("inspect_item", arguments.as_object().unwrap().clone())
+                .expect("tool result");
+            assert_eq!(result.is_error, Some(true), "{arguments}");
+        }
+        assert!(handle.calls.lock().unwrap().is_empty());
     }
 
     #[test]

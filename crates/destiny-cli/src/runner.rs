@@ -213,6 +213,51 @@ where
                     .map_err(CliError::from)
             })
         }
+        ReadRequest::InspectItemByName(name) => {
+            let result = match service.owned_name_hits(&name, freshness.policy, freshness.now) {
+                Ok(result) => result,
+                Err(error) => return ProcessOutput::failure(mode, CliError::from(error)),
+            };
+            match result.hits.as_slice() {
+                [] => return ProcessOutput::failure(mode, CliError::item_not_found()),
+                [hit] => service
+                    .inspect_item(
+                        &destiny_app::InspectItemRequest {
+                            instance_id: hit.instance.instance_id.clone(),
+                        },
+                        freshness.policy,
+                        freshness.now,
+                    )
+                    .map_err(CliError::from)
+                    .and_then(inspection_outcome)
+                    .map(|inspection| render_inspection(mode, &inspection)),
+                _ => {
+                    let value: serde_json::Value =
+                        serde_json::from_str(&render_search(OutputMode::Json, &result))
+                            .expect("local search projection");
+                    let candidates = value["hits"].as_array().expect("search hits").clone();
+                    let error = destiny_output::search::ambiguous_items(candidates.clone());
+                    let stderr = match mode {
+                        OutputMode::Json => serde_json::json!({"error": error}).to_string(),
+                        OutputMode::Human => format!(
+                            "error: {}\n{}",
+                            error["message"].as_str().expect("error message"),
+                            candidates
+                                .iter()
+                                .map(crate::output::search_output::compact_line)
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        ),
+                    };
+                    return ProcessOutput {
+                        stdout: String::new(),
+                        stderr: format!("{stderr}\n"),
+                        exit_code: CliError::from_category(ErrorCategory::AmbiguousMatch)
+                            .exit_code(),
+                    };
+                }
+            }
+        }
         ReadRequest::InspectItem(request) => service
             .inspect_item(&request, freshness.policy, freshness.now)
             .map_err(CliError::from)
@@ -1749,6 +1794,7 @@ mod tests {
 
     fn search_result() -> InventorySearchResult {
         InventorySearchResult {
+            next_offset: None,
             resolved: Default::default(),
             candidates: vec![definition(1, "Gjallarhorn")],
             hits: vec![InventorySearchHit {
@@ -2396,6 +2442,7 @@ mod tests {
                 limit: 5,
             },
             instances: Some(destiny_app::InstanceSearchQuery {
+                offset: 0,
                 sort: None,
                 location: None,
                 equipped: None,
