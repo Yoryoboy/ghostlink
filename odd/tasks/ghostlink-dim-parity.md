@@ -188,6 +188,15 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
     `not:x` = `-is:x`; twelve stable error kinds with byte spans (never echo
     query text); bounds 1024 bytes / depth 32 / 128 nodes. Pure module, no
     execution yet. Workspace: 2016 passed, 0 failed.
+  - [x] U3a2 registry: one static sorted `FilterSpec` table
+    (`search_query/registry.rs`) drives validation, typed leaves and
+    `list_filters()`; 30 `is:` values (+ `not:`), name/exactname/type/tag/
+    perk/perkname/exactperk/mod/archetype/hash/perkhash/power(light)/stat/
+    character and keywords; damage `is:kinetic` distinct from
+    `is:kineticslot`; `tag:` means stored definition tags (not DIM user
+    tags). Unsupported (needs unstored data) and unknown filters, and invalid
+    values, are explicit errors; every OR branch is validated. Workspace:
+    2024 passed, 0 failed.
 - [ ] **U4 — Loadout apply phases (A5).** Compare `apply_loadout` with DIM
   (dequip → moves → bulk equip → subclass/mods, per-item partial failure);
   implement the gaps.

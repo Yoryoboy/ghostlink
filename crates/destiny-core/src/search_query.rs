@@ -1,4 +1,4 @@
-//! Bounded DIM-style query syntax, independent of filter validation and execution.
+//! Bounded DIM-style query syntax and typed filter validation, without execution.
 //!
 //! Spans are half-open byte ranges in the original UTF-8 input. Groups expand
 //! their root node's span to include the parentheses; no separate group node is
@@ -6,6 +6,12 @@
 
 mod lexer;
 mod parser;
+mod registry;
+
+pub use registry::{
+    Comparison, FilterFormat, FilterSpec, Leaf, TypedQuery, TypedQueryKind, ValueKind, compile,
+    list_filters,
+};
 
 use std::{fmt, ops::Range};
 
@@ -46,6 +52,9 @@ pub enum QueryParseErrorKind {
     QueryTooLong,
     TooDeeplyNested,
     TooManyTerms,
+    UnknownFilter,
+    UnsupportedFilter,
+    InvalidFilterValue,
 }
 
 impl QueryParseErrorKind {
@@ -64,6 +73,9 @@ impl QueryParseErrorKind {
             Self::QueryTooLong => "query_too_long",
             Self::TooDeeplyNested => "too_deeply_nested",
             Self::TooManyTerms => "too_many_terms",
+            Self::UnknownFilter => "unknown_filter",
+            Self::UnsupportedFilter => "unsupported_filter",
+            Self::InvalidFilterValue => "invalid_filter_value",
         }
     }
 }
@@ -72,7 +84,7 @@ impl QueryParseErrorKind {
 pub struct QueryParseError {
     pub kind: QueryParseErrorKind,
     pub span: Range<usize>,
-    /// Value-free English diagnostic: never includes query contents.
+    /// Sanitized English diagnostic: may name a static filter, never echoes input.
     pub message: String,
 }
 
@@ -91,6 +103,9 @@ impl QueryParseError {
             QueryParseErrorKind::QueryTooLong => "query exceeds 1024 bytes",
             QueryParseErrorKind::TooDeeplyNested => "query exceeds nesting depth 32",
             QueryParseErrorKind::TooManyTerms => "query exceeds 128 AST nodes",
+            QueryParseErrorKind::UnknownFilter => "unknown filter",
+            QueryParseErrorKind::UnsupportedFilter => "unsupported filter",
+            QueryParseErrorKind::InvalidFilterValue => "invalid filter value",
         };
         let message = format!("{reason} at bytes {}..{}", span.start, span.end);
         Self {
