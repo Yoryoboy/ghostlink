@@ -75,8 +75,18 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   2.3 -> 1.6, stat sort 10.7 -> 5.1, perk name 16.1 -> 10.9, inspect
   8.7 -> 5.0, snapshot 8.4 -> 4.7, publish unchanged 9.4 -> 5.7 ms.
   Workspace: 1968 passed, 0 failed.
-- [ ] **P4 — Diff sync writes (B10).** Write only changed rows on sync;
-  skip the saved-loadout rewrite when unchanged.
+- [x] **P4 — Diff sync writes (B10).** Write only changed rows on sync;
+  skip the saved-loadout rewrite when unchanged. Done: publication diffs
+  against the reconstructed prior snapshot inside the same IMMEDIATE
+  transaction (characters by id, items by instance id with their components
+  replaced as a unit, stacks by schema ordinal, subclass options by
+  scope/hash); equal saved loadouts are not rewritten. Revision, freshness,
+  minted timestamp, invalidation and acknowledged effects unchanged. Tests:
+  20-step sequence parity against fresh-database publication, trigger guards
+  on untouched rows, rollback trigger moved from INSERT to DELETE because a
+  removed option is now a single DELETE. DIM replaces its store wholesale in
+  memory; on SQLite the equivalent is a row diff. Publish one changed item
+  75.0 -> 5.9 ms. Workspace: 1971 passed, 0 failed.
 - [ ] **R1 — Bungie read errors and throttling (A1).** Classify body
   `ErrorCode` on reads (throttle 1672/36/51, maintenance, auth) into typed
   errors with clear messages; DIM adaptive backoff (1 s → 5 min, success

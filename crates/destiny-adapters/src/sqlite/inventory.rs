@@ -51,7 +51,7 @@ use destiny_core::{
     StackObservation, SyncMetadata, SyncRevision, Timestamp,
 };
 use rusqlite::{Connection, Error as SqlError, OptionalExtension, TransactionBehavior, params};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The fixed `sync_metadata` dataset row this repository owns.
 const PROFILE_DATASET: &str = "profile_inventory";
@@ -220,7 +220,7 @@ impl InventoryRepository for SqliteStore {
         minted: Option<destiny_core::ProfileMintedAt>,
         loadouts: Option<Vec<destiny_core::CharacterLoadouts>>,
     ) -> Result<InventorySnapshot, AppError> {
-        let payload = loadouts.map(super::loadouts::encode).transpose()?;
+        let payload = loadouts.clone().map(super::loadouts::encode).transpose()?;
         // Provenance and structural validity need no storage, so they are
         // rejected here before the transaction is opened and no write is ever
         // attempted.
@@ -266,10 +266,9 @@ impl InventoryRepository for SqliteStore {
             }
         };
 
-        // Unchanged content keeps the committed profile rows and rewrites only
-        // the freshness metadata; changed content replaces every row.
+        // Retain untouched rows; the prior reconstruction is also the diff base.
         if !unchanged {
-            replace_projection(&transaction, &ordered)?;
+            replace_projection(&transaction, prior.as_ref(), &ordered)?;
         }
         upsert_metadata(&transaction, &ordered, revision)?;
         transaction
@@ -278,16 +277,17 @@ impl InventoryRepository for SqliteStore {
                 [minted.map(encode_minted)],
             )
             .map_err(|_| storage_failure())?;
-        transaction
-            .execute("DELETE FROM saved_loadouts", [])
-            .map_err(|_| storage_failure())?;
-        if let Some(payload) = payload {
+        if super::loadouts::read(&transaction)? != loadouts {
             transaction
-                .execute(
+                .execute("DELETE FROM saved_loadouts", [])
+                .map_err(|_| storage_failure())?;
+            if let Some(payload) = payload {
+                execute_cached(
+                    &transaction,
                     "INSERT INTO saved_loadouts (singleton, normalized_loadouts) VALUES (1, ?1)",
                     [payload],
-                )
-                .map_err(|_| storage_failure())?;
+                )?;
+            }
         }
         transaction.commit().map_err(|_| storage_failure())?;
 
@@ -1095,6 +1095,20 @@ fn encode_boolean(value: bool) -> i64 {
     if value { 1 } else { 0 }
 }
 
+/// Executes a hot per-row write using the connection's statement cache.
+fn execute_cached(
+    connection: &Connection,
+    sql: &str,
+    parameters: impl rusqlite::Params,
+) -> Result<(), AppError> {
+    connection
+        .prepare_cached(sql)
+        .map_err(|_| storage_failure())?
+        .execute(parameters)
+        .map_err(|_| storage_failure())?;
+    Ok(())
+}
+
 /// Writes canonical anonymous rows, retaining duplicates and contiguous ordinals.
 fn insert_stacks(connection: &Connection, stacks: &[StackObservation]) -> Result<(), AppError> {
     for (ordinal, stack) in stacks.iter().enumerate() {
@@ -1106,7 +1120,7 @@ fn insert_stacks(connection: &Connection, stacks: &[StackObservation]) -> Result
             }
             StackContainer::Postmaster(owner) => ("postmaster", Some(owner.as_str())),
         };
-        connection.execute(
+        execute_cached(connection,
             "INSERT INTO stacks(ordinal,container,owner,bucket_hash,item_hash,quantity) VALUES(?1,?2,?3,?4,?5,?6)",
             params![i64::try_from(ordinal).map_err(|_| storage_failure())?, container, owner,
                 stack.bucket_hash().value(), stack.item_hash().value(), i64::from(stack.quantity())],
@@ -1115,37 +1129,73 @@ fn insert_stacks(connection: &Connection, stacks: &[StackObservation]) -> Result
     Ok(())
 }
 
-/// Removes the complete prior projection and writes the replacement rows.
-///
-/// Perk rows and items are deleted before characters so the removal order
-/// satisfies every foreign key explicitly instead of relying on cascade, and a
-/// stale perk row can never outlive the item it summarized. Characters are
-/// inserted before the items that reference them, and each item's perks are
-/// inserted after that item with contiguous zero-based ordinals that preserve the
-/// vector order. Any failure partway through drops the transaction and rolls all
-/// of it back.
+/// Applies the row diff within the caller's publication transaction.
+/// Changed items are replaced as units; foreign-key cascades remove only their
+/// components. New characters precede dependent rows, and removed characters
+/// follow all dependent deletes/updates. Anonymous stacks use the schema's
+/// canonical ordinal key, preserving duplicates and contiguous ordinals.
 fn replace_projection(
     connection: &Connection,
+    prior: Option<&InventorySnapshot>,
     input: &InventorySnapshotInput,
 ) -> Result<(), AppError> {
-    connection
-        .execute("DELETE FROM subclass_plug_options", [])
-        .map_err(|_| storage_failure())?;
-    connection
-        .execute("DELETE FROM item_perks", [])
-        .map_err(|_| storage_failure())?;
-    connection
-        .execute("DELETE FROM items", [])
-        .map_err(|_| storage_failure())?;
-    connection
-        .execute("DELETE FROM stacks", [])
-        .map_err(|_| storage_failure())?;
-    connection
-        .execute("DELETE FROM characters", [])
-        .map_err(|_| storage_failure())?;
+    let old_items: HashMap<_, _> = prior
+        .into_iter()
+        .flat_map(|p| &p.items)
+        .map(|item| (&item.instance_id, item))
+        .collect();
+    let new_items: HashMap<_, _> = input
+        .items
+        .iter()
+        .map(|item| (&item.instance_id, item))
+        .collect();
+    let old_characters: HashMap<_, _> = prior
+        .into_iter()
+        .flat_map(|p| &p.characters)
+        .map(|character| (&character.id, character))
+        .collect();
+    for (&id, &item) in &old_items {
+        if new_items.get(id).copied() != Some(item) {
+            execute_cached(
+                connection,
+                "DELETE FROM items WHERE instance_id = ?1",
+                [id.as_str()],
+            )?;
+        }
+    }
+    let old_stacks = prior.map_or(&[][..], |p| p.stacks.as_slice());
+    for ordinal in input.stacks.len()..old_stacks.len() {
+        execute_cached(
+            connection,
+            "DELETE FROM stacks WHERE ordinal = ?1",
+            [i64::try_from(ordinal).map_err(|_| storage_failure())?],
+        )?;
+    }
+    let old_options = prior.map_or(&[][..], |p| p.plug_set_entries.as_slice());
+    for entry in old_options {
+        if !input
+            .plug_set_entries
+            .iter()
+            .any(|new| new.scope == entry.scope && new.plug_hash == entry.plug_hash)
+        {
+            let scope = match &entry.scope {
+                PlugSetScope::Profile => "profile",
+                PlugSetScope::Character(id) => id.as_str(),
+            };
+            execute_cached(
+                connection,
+                "DELETE FROM subclass_plug_options WHERE scope = ?1 AND plug_hash = ?2",
+                params![scope, entry.plug_hash.value()],
+            )?;
+        }
+    }
 
-    connection
-        .execute(
+    if prior.is_none_or(|p| {
+        p.metadata.membership_id != input.membership_id
+            || p.metadata.membership_type != input.membership_type
+    }) {
+        execute_cached(
+            connection,
             "INSERT INTO active_profile (singleton, membership_id, membership_type) \
              VALUES (1, ?1, ?2) \
              ON CONFLICT(singleton) DO UPDATE SET \
@@ -1157,12 +1207,17 @@ fn replace_projection(
             ],
         )
         .map_err(|_| storage_failure())?;
+    }
 
     for character in &input.characters {
-        connection
-            .execute(
+        if old_characters.get(&character.id).copied() == Some(character) {
+            continue;
+        }
+        execute_cached(connection,
                 "INSERT INTO characters (character_id, name, class_name, race, gender, light, date_last_played) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 ON CONFLICT(character_id) DO UPDATE SET name = excluded.name, class_name = excluded.class_name, \
+                 race = excluded.race, gender = excluded.gender, light = excluded.light, date_last_played = excluded.date_last_played",
                 params![
                     character.id.as_str(),
                     character.name,
@@ -1181,94 +1236,130 @@ fn replace_projection(
         ProfileCurrenciesCoverage::Unavailable => "unavailable",
         ProfileCurrenciesCoverage::Available => "available",
     };
-    connection
-        .execute(
+    if prior.is_none_or(|p| p.profile_currencies_coverage != input.profile_currencies_coverage) {
+        execute_cached(
+            connection,
             "INSERT INTO inventory_coverage(id, profile_currencies) VALUES(1, ?1) \
          ON CONFLICT(id) DO UPDATE SET profile_currencies = excluded.profile_currencies",
             [coverage],
         )
         .map_err(|_| storage_failure())?;
-
-    insert_stacks(connection, &input.stacks)?;
+    }
+    for (ordinal, stack) in input.stacks.iter().enumerate() {
+        if old_stacks.get(ordinal) == Some(stack) {
+            continue;
+        }
+        let (container, owner) = match stack.container() {
+            StackContainer::ProfileInventory => ("profile_inventory", None),
+            StackContainer::ProfileCurrencies => ("profile_currencies", None),
+            StackContainer::CharacterInventory(id) => ("character_inventory", Some(id.as_str())),
+            StackContainer::Postmaster(id) => ("postmaster", Some(id.as_str())),
+        };
+        execute_cached(
+            connection,
+            "INSERT INTO stacks(ordinal,container,owner,bucket_hash,item_hash,quantity) VALUES(?1,?2,?3,?4,?5,?6) \
+             ON CONFLICT(ordinal) DO UPDATE SET container = excluded.container, owner = excluded.owner, \
+             bucket_hash = excluded.bucket_hash, item_hash = excluded.item_hash, quantity = excluded.quantity",
+            params![
+                i64::try_from(ordinal).map_err(|_| storage_failure())?,
+                container,
+                owner,
+                stack.bucket_hash().value(),
+                stack.item_hash().value(),
+                i64::from(stack.quantity())
+            ],
+        )?;
+    }
 
     for item in &input.items {
+        if old_items.get(&item.instance_id).copied() == Some(item) {
+            continue;
+        }
         let (location_kind, location_character_id, location_other) =
             encode_location(&item.location);
-        connection
-            .execute(
-                "INSERT INTO items \
+        execute_cached(
+            connection,
+            "INSERT INTO items \
                  (instance_id, item_hash, location_kind, location_character_id, location_other, \
                   quantity, equipped, locked, power) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    item.instance_id.as_str(),
-                    item.item_hash.value(),
-                    location_kind,
-                    location_character_id,
-                    location_other,
-                    i64::from(item.quantity),
-                    encode_boolean(item.equipped),
-                    encode_boolean(item.locked),
-                    item.power.map(i64::from),
-                ],
-            )
-            .map_err(|_| storage_failure())?;
+            params![
+                item.instance_id.as_str(),
+                item.item_hash.value(),
+                location_kind,
+                location_character_id,
+                location_other,
+                i64::from(item.quantity),
+                encode_boolean(item.equipped),
+                encode_boolean(item.locked),
+                item.power.map(i64::from),
+            ],
+        )?;
 
         let mut ordinals = std::collections::HashMap::new();
         for plug in &item.available_plugs {
             let ordinal = ordinals.entry(plug.socket_index).or_insert(0_i64);
-            connection.execute("INSERT INTO item_available_plugs(instance_id,socket_index,ordinal,plug_hash) VALUES(?1,?2,?3,?4)", params![item.instance_id.as_str(), i64::from(plug.socket_index), *ordinal, plug.plug_hash.value()]).map_err(|_| storage_failure())?;
+            execute_cached(connection, "INSERT INTO item_available_plugs(instance_id,socket_index,ordinal,plug_hash) VALUES(?1,?2,?3,?4)", params![item.instance_id.as_str(), i64::from(plug.socket_index), *ordinal, plug.plug_hash.value()]).map_err(|_| storage_failure())?;
             *ordinal += 1;
         }
         for stat in &item.stats {
-            connection
-                .execute(
-                    "INSERT INTO item_stats (instance_id, stat_hash, value) VALUES (?1, ?2, ?3)",
-                    params![
-                        item.instance_id.as_str(),
-                        i64::from(stat.stat_hash),
-                        i64::from(stat.value)
-                    ],
-                )
-                .map_err(|_| storage_failure())?;
+            execute_cached(
+                connection,
+                "INSERT INTO item_stats (instance_id, stat_hash, value) VALUES (?1, ?2, ?3)",
+                params![
+                    item.instance_id.as_str(),
+                    i64::from(stat.stat_hash),
+                    i64::from(stat.value)
+                ],
+            )?;
         }
         for (ordinal, plug) in item.plugs.iter().enumerate() {
-            connection
-                .execute(
-                    "INSERT INTO item_plugs (instance_id, ordinal, plug_hash) VALUES (?1, ?2, ?3)",
-                    params![
-                        item.instance_id.as_str(),
-                        i64::try_from(ordinal).map_err(|_| storage_failure())?,
-                        plug.plug_hash.value()
-                    ],
-                )
-                .map_err(|_| storage_failure())?;
+            execute_cached(
+                connection,
+                "INSERT INTO item_plugs (instance_id, ordinal, plug_hash) VALUES (?1, ?2, ?3)",
+                params![
+                    item.instance_id.as_str(),
+                    i64::try_from(ordinal).map_err(|_| storage_failure())?,
+                    plug.plug_hash.value()
+                ],
+            )?;
         }
         for (ordinal, perk) in item.perks.iter().enumerate() {
-            connection
-                .execute(
-                    "INSERT INTO item_perks \
+            execute_cached(
+                connection,
+                "INSERT INTO item_perks \
                      (instance_id, ordinal, perk_hash, active, visible) \
                      VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        item.instance_id.as_str(),
-                        i64::try_from(ordinal).map_err(|_| storage_failure())?,
-                        i64::from(perk.perk_hash.value()),
-                        encode_boolean(perk.active),
-                        encode_boolean(perk.visible),
-                    ],
-                )
-                .map_err(|_| storage_failure())?;
+                params![
+                    item.instance_id.as_str(),
+                    i64::try_from(ordinal).map_err(|_| storage_failure())?,
+                    i64::from(perk.perk_hash.value()),
+                    encode_boolean(perk.active),
+                    encode_boolean(perk.visible),
+                ],
+            )?;
+        }
+    }
+    for character in prior.into_iter().flat_map(|p| &p.characters) {
+        if !input.characters.iter().any(|new| new.id == character.id) {
+            execute_cached(
+                connection,
+                "DELETE FROM characters WHERE character_id = ?1",
+                [character.id.as_str()],
+            )?;
         }
     }
     for entry in &input.plug_set_entries {
+        if old_options.contains(entry) {
+            continue;
+        }
         let scope = match &entry.scope {
             PlugSetScope::Profile => "profile",
             PlugSetScope::Character(id) => id.as_str(),
         };
-        connection
-            .execute(
-                "INSERT INTO subclass_plug_options (scope, plug_hash, can_insert, enabled) VALUES (?1, ?2, ?3, ?4)",
+        execute_cached(connection,
+                "INSERT INTO subclass_plug_options (scope, plug_hash, can_insert, enabled) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(scope, plug_hash) DO UPDATE SET can_insert = excluded.can_insert, enabled = excluded.enabled",
                 params![
                     scope,
                     entry.plug_hash.value(),
