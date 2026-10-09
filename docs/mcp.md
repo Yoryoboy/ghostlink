@@ -338,8 +338,8 @@ Never invent values absent from both fields; missing `clarity` does not mean no
 effect. Explicitly qualify variant text as an enhanced/base fallback, not exact
 values for that variant, and never infer improved numbers.
 
-Definition versions are automatic: MCP uses the Manifest stored in SQLite;
-`DESTINY_DEFINITION_VERSION` is only an optional backward-compatible override.
+Definition versions always come from the Manifest stored in SQLite; an old
+`DESTINY_DEFINITION_VERSION` line or environment variable is ignored.
 MCP never downloads a Manifest inside a tool call (downloads can exceed client
 timeouts). With no stored catalog, definition-dependent tools return the typed
 `definitions_unavailable` error: `definitions not loaded; run ghostlink sync-manifest`.

@@ -377,9 +377,9 @@ fn compose_configured<F: ReadFoundations>(
 
 /// Manifest acquisitions; weekly reset additionally requires a stored session.
 ///
-/// Reuses shared read config (API key, database path, optional label, TTL),
+/// Reuses shared read config (API key, database path, TTL),
 /// which loads no OAuth-only key. Sync uses only the API key and database path;
-/// it always publishes the real upstream version, never the optional override.
+/// it always publishes the real upstream version.
 pub trait ManifestFoundations {
     /// Only authenticated weekly reads call this seam, never Manifest sync.
     fn require_session(&mut self, _config: &ReadRuntimeConfig) -> Result<(), AppError> {
@@ -1237,15 +1237,44 @@ mod tests {
                 DATABASE_SENTINEL.to_string(),
             ),
             (
-                "DESTINY_DEFINITION_VERSION".to_string(),
-                "manifest-v1".to_string(),
-            ),
-            (
                 "DESTINY_FRESHNESS_TTL_SECONDS".to_string(),
                 TTL_SECONDS.to_string(),
             ),
         ]))
         .expect("valid test configuration")
+    }
+
+    fn manifest_store() -> SqliteStore {
+        use destiny_app::DefinitionRepository;
+        let mut store = SqliteStore::open_in_memory().expect("in-memory store");
+        let version = destiny_app::DefinitionVersion::new("manifest-v1");
+        store
+            .replace_definitions(destiny_app::DefinitionReplacementInput {
+                definitions: destiny_app::ManifestDefinitions {
+                    version: version.clone(),
+                    definitions: vec![destiny_app::ItemDefinition {
+                        hash: destiny_app::ItemHash::new(1),
+                        name: "Offline item".into(),
+                        bucket_hash: None,
+                        item_type: None,
+                        tier: None,
+                        element: None,
+                        slot: None,
+                        class_type: None,
+                        plug_category: None,
+                        tags: vec![],
+                        version,
+                        does_postmaster_pull_have_side_effects: None,
+                        is_instance_item: None,
+                        max_stack_size: None,
+                        stack_unique_label: None,
+                    }],
+                },
+                checked_at: NOW,
+                source: destiny_app::SourceMarker::Manifest,
+            })
+            .expect("committed Manifest metadata");
+        store
     }
 
     fn credential() -> AccessCredential {
@@ -1681,7 +1710,7 @@ mod tests {
         use destiny_app::InventoryRepository;
         let calls = log();
         let mut foundations = SyncFoundations {
-            store: Some(SqliteStore::open_in_memory().unwrap()),
+            store: Some(manifest_store()),
             calls: Rc::clone(&calls),
             fail: false,
         };
@@ -2277,7 +2306,7 @@ mod tests {
     fn composition_follows_the_exact_fail_fast_order() {
         let log = log();
         let mut foundations = FakeFoundations::store_failure(Rc::clone(&log));
-        foundations.store = Some(Ok(SqliteStore::open_in_memory().expect("in-memory store")));
+        foundations.store = Some(Ok(manifest_store()));
 
         let runtime = compose(&mut foundations).expect("composition succeeds");
 
@@ -2300,7 +2329,7 @@ mod tests {
     fn a_composed_runtime_dispatches_a_valid_read_through_the_shared_runner() {
         let log = log();
         let mut foundations = FakeFoundations::store_failure(Rc::clone(&log));
-        foundations.store = Some(Ok(SqliteStore::open_in_memory().expect("in-memory store")));
+        foundations.store = Some(Ok(manifest_store()));
         let mut runtime = compose(&mut foundations).expect("composition succeeds");
 
         // A missing projection forces a provider refresh; the scripted
