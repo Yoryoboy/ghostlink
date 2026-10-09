@@ -677,13 +677,17 @@ shows subclass/artifact descriptions; `--detail` also shows each item's perks/mo
 
 ```sh
 ghostlink apply-loadout 3 --character hunter
+ghostlink apply-loadout --slot 2 --character hunter
+ghostlink apply-loadout --name "PvP" --character hunter
 ghostlink apply-loadout "PvE" --character hunter --json
 ```
 
 `--character` is required: exact owned id or unique case-insensitive class, with
 no default. LOADOUT is the one-based slot shown by `ghostlink loadouts` (1–12),
 or a normalized exact name within that character (trim/collapse whitespace,
-case-insensitive). Unknown/ambiguous names return typed errors with available
+case-insensitive). Use exactly one selector: positional LOADOUT, `--slot N`, or
+`--name NAME`; combining selectors is an argument error. `--name` always means a
+name, including numeric names. Unknown/ambiguous names return typed errors with available
 candidates; choose a slot, never guess. Empty/unavailable slots refuse before action.
 Requires login and loaded Manifest definitions. Go to orbit or a social space
 first; offline characters are also permitted. A location refusal says
@@ -887,6 +891,10 @@ reassess explicit intent first. Local serialization excludes neither game nor
 other-process activity. Anonymous stacks use `pull-stack` below; live validation
 and full Postmaster support remain pending.
 
+Pull refusals in human output are actionable sentences, not raw JSON. Definition
+version mismatches name snapshot and stored versions and suggest `ghostlink sync`.
+JSON refusal codes and fields are unchanged.
+
 ## Pull a non-instanced Postmaster stack
 
 ```sh
@@ -895,9 +903,11 @@ ghostlink pull-stack 123456789 --amount 3 --character 700000000000000001 --json
 
 `ITEM_HASH` is canonical uint32 decimal (0–4294967295), `--amount` is
 canonical positive int32 decimal (1–2147483647), and `--character` is the
-canonical positive int64 decimal Postmaster owner ID (1–9223372036854775807).
-All three are required. No signs, leading zeros, whitespace, names, class labels,
-instance IDs, membership overrides or alternative destinations. Invalid input
+canonical positive int64 decimal Postmaster owner ID (1–9223372036854775807)
+or a unique hunter|titan|warlock class (case-insensitive).
+All three are required. The hash is positional; `--item-hash HASH` is also accepted,
+but cannot be combined with the positional hash. No signs, leading zeros,
+whitespace, item names, instance IDs, membership overrides or alternative destinations. Invalid input
 fails before authentication, storage or service access.
 
 Requires login with `MoveEquipDestinyItems` and qualified stored Manifest

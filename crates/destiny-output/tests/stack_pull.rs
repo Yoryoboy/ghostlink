@@ -327,7 +327,8 @@ fn every_planning_and_capacity_refusal_has_a_stable_code() {
             output.json(),
             json!({"kind":"stack_pull","disposition":"refused","local_state":"unchanged","plan_id":null,"dispatch":null,"receipt":null,"failure":{"stage":"planning","kind":"eligibility_refused","reason":code}})
         );
-        assert!(output.render_text().contains(code));
+        assert!(!output.render_text().contains('{'));
+        assert!(!output.render_text().contains("null"));
         assert!(!output.is_success());
     }
     use StackPullRefusal::*;
@@ -355,7 +356,8 @@ fn every_planning_and_capacity_refusal_has_a_stable_code() {
             output.json()["failure"],
             json!({"stage":"planning","kind":"eligibility_refused","reason":"capacity","capacity_reason":{"kind":code}})
         );
-        assert!(output.render_text().contains(code));
+        assert!(!output.render_text().contains('{'));
+        assert!(!output.render_text().contains("null"));
         assert!(!output.is_success());
     }
     let output = StackPullOutput::planning_failed(&StackPullPlanningError::Infrastructure(

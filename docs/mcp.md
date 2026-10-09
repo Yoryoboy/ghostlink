@@ -67,6 +67,16 @@ errors with no blind retry. Incomplete move `expected_location` is derived from
 receipts, not an observation.
 `move_item` also has the `ghostlink move` CLI surface.
 
+Move JSON is not currently identical across transports. MCP retains its typed
+`effects` (source/destination/item ID/via-vault), flat transfer step evidence,
+and variant-specific failure/expected-location fields. CLI JSON instead has
+`item` display metadata, labeled `destination`, action-tagged steps, completed
+and uncompleted counts, `verification`, `reason`, and `observed`. Both share
+acknowledgement semantics and `local_state`, but their top-level status vocabulary
+also differs (`verified_no_op` in MCP versus `verified_noop` in CLI).
+Unifying this is a schema migration, not a presentation-only change; consumers
+must not assume move parity. Pull and stack-pull JSON remain unchanged.
+
 `set_lock_state` accepts exactly `{"item":"Ace of Spades","locked":true}`;
 use `false` to unlock. Both fields are required, `locked` must be a boolean, and
 unknown fields, controls, and overlong selectors are rejected before I/O.

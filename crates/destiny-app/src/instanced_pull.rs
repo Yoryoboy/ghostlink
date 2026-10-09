@@ -311,6 +311,13 @@ where
         }
     }
 
+    /// Diagnostic-only versions; never acquire or mutate inventory for presentation.
+    pub fn definition_versions(&self) -> Option<(DefinitionVersion, DefinitionVersion)> {
+        let snapshot = self.sync.repository().load_current().ok()??;
+        let stored = self.definitions.current_definition_version().ok()?;
+        Some((snapshot.metadata.definition_version, stored))
+    }
+
     /// Ordinary sync reuses a fresh committed snapshot without acquisition.
     /// Definition-based capacity is advisory; no Manifest-index evidence fetch.
     /// Planning cannot dispatch an action.

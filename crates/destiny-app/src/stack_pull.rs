@@ -240,6 +240,35 @@ impl<
             plan_ids,
         }
     }
+    /// Diagnostic-only versions; never acquire or mutate inventory for presentation.
+    pub fn definition_versions(&self) -> Option<(DefinitionVersion, DefinitionVersion)> {
+        let snapshot = self.sync.repository().load_current().ok()??;
+        let stored = self.definitions.current_definition_version().ok()?;
+        Some((snapshot.metadata.definition_version, stored))
+    }
+
+    /// Resolve an explicit CLI owner using the same committed snapshot as planning.
+    pub fn resolve_owner(
+        &mut self,
+        selector: &CharacterId,
+        freshness: FreshnessPolicy,
+    ) -> Result<CharacterId, AppError> {
+        let now = self.clock.now()?;
+        let snapshot = self.committed_snapshot(freshness, now)?;
+        crate::weekly_selection::select_weekly_character(&snapshot.characters, Some(selector))
+            .map(|character| character.id)
+            .map_err(|error| {
+                AppError::new(match error {
+                    crate::weekly_selection::WeeklySelectionError::InvalidRequest => {
+                        ErrorCategory::ProviderValidation
+                    }
+                    crate::weekly_selection::WeeklySelectionError::AmbiguousMatch => {
+                        ErrorCategory::AmbiguousMatch
+                    }
+                })
+            })
+    }
+
     fn committed_snapshot(
         &mut self,
         freshness: FreshnessPolicy,

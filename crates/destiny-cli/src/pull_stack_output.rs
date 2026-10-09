@@ -9,6 +9,10 @@ use destiny_app::{
 pub struct StackPullOutput {
     shared: destiny_output::stack_pull::StackPullOutput,
     exit_code: i32,
+    versions: Option<(
+        destiny_app::DefinitionVersion,
+        destiny_app::DefinitionVersion,
+    )>,
 }
 impl StackPullOutput {
     pub fn from_outcome(outcome: &StackPullExecutionOutcome) -> Self {
@@ -23,12 +27,17 @@ impl StackPullOutput {
                 PullDisposition::Refused => 41,
             }
         };
-        Self { shared, exit_code }
+        Self {
+            shared,
+            exit_code,
+            versions: None,
+        }
     }
     pub fn planning_failed(error: &StackPullPlanningError) -> Self {
         Self {
             shared: destiny_output::stack_pull::StackPullOutput::planning_failed(error),
             exit_code: planning_exit(error),
+            versions: None,
         }
     }
     pub fn execution_failed(failure: &StackPullExecutionFailure) -> Self {
@@ -47,13 +56,30 @@ impl StackPullOutput {
         Self {
             shared: destiny_output::stack_pull::StackPullOutput::execution_failed(failure),
             exit_code,
+            versions: None,
         }
+    }
+    pub fn with_versions(
+        mut self,
+        versions: Option<(
+            destiny_app::DefinitionVersion,
+            destiny_app::DefinitionVersion,
+        )>,
+    ) -> Self {
+        self.versions = versions;
+        self
     }
     pub fn json(&self) -> serde_json::Value {
         self.shared.json()
     }
     pub fn render_text(&self) -> String {
-        self.shared.render_text()
+        if self.versions.is_some()
+            && self.shared.json()["failure"]["reason"] == "definition_version_mismatch"
+        {
+            crate::pull_output::render_with_versions(&self.shared.json(), self.versions.as_ref())
+        } else {
+            self.shared.render_text()
+        }
     }
     pub fn exit_code(&self) -> i32 {
         self.exit_code

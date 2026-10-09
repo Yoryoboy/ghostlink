@@ -82,7 +82,9 @@ impl StackPullOutput {
             "stack_pull: {}",
             disposition_kind(self.disposition)
         )];
-        lines.push(format!("plan_id: {}", text(&value["plan_id"])));
+        if !value["plan_id"].is_null() {
+            lines.push(format!("plan_id: {}", text(&value["plan_id"])));
+        }
         let dispatch = &value["dispatch"];
         if !dispatch.is_null() {
             for (label, field) in [
@@ -107,22 +109,8 @@ impl StackPullOutput {
                 ));
             }
         }
-        let receipt = &value["receipt"];
-        lines.push(format!(
-            "receipt: {}",
-            if receipt.is_null() {
-                "null".into()
-            } else {
-                text(&receipt["kind"])
-            }
-        ));
-        if !receipt["reason"].is_null() {
-            lines.push(format!("receipt_reason: {}", text(&receipt["reason"])));
-        }
-        lines.push(format!("failure: {}", text(&value["failure"])));
-        if value["local_state"] == "refresh_pending" {
-            lines.push("local state refresh pending".into());
-        }
+        let human = crate::instanced_pull::render_pull_text(value);
+        lines.extend(human.lines().skip(1).map(str::to_owned));
         lines.join("\n")
     }
 }

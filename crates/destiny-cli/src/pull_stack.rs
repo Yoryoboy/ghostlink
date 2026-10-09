@@ -20,9 +20,24 @@ where
     P: PlanIdGenerator,
     T: StackPullGateway,
 {
+    let owner = if ["hunter", "titan", "warlock"]
+        .iter()
+        .any(|class| selection.owner.as_str().eq_ignore_ascii_case(class))
+    {
+        match service.resolve_owner(&selection.owner, freshness) {
+            Ok(owner) => owner,
+            Err(error) => {
+                return StackPullOutput::planning_failed(&StackPullPlanningError::Infrastructure(
+                    error,
+                ));
+            }
+        }
+    } else {
+        selection.owner
+    };
     let request = StackPullPlanRequest {
         membership,
-        owner: selection.owner,
+        owner,
         item_hash: selection.item_hash,
         amount: selection.amount,
     };
@@ -32,10 +47,15 @@ where
         freshness,
     ) {
         Ok(plan) => plan,
-        Err(error) => return StackPullOutput::planning_failed(&error),
+        Err(error) => {
+            return StackPullOutput::planning_failed(&error)
+                .with_versions(service.definition_versions());
+        }
     };
     match service.execute(plan, gateway, freshness) {
         Ok(outcome) => StackPullOutput::from_outcome(&outcome),
-        Err(failure) => StackPullOutput::execution_failed(&failure),
+        Err(failure) => {
+            StackPullOutput::execution_failed(&failure).with_versions(service.definition_versions())
+        }
     }
 }

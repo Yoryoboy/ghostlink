@@ -10,6 +10,10 @@ use destiny_output::instanced_pull::InstancedPullOutput;
 pub struct PullOutput {
     shared: InstancedPullOutput,
     exit_code: i32,
+    versions: Option<(
+        destiny_app::DefinitionVersion,
+        destiny_app::DefinitionVersion,
+    )>,
 }
 impl PullOutput {
     pub fn from_outcome(outcome: &InstancedPullExecutionOutcome) -> Self {
@@ -24,12 +28,17 @@ impl PullOutput {
                 PullDisposition::Refused => 41,
             }
         };
-        Self { shared, exit_code }
+        Self {
+            shared,
+            exit_code,
+            versions: None,
+        }
     }
     pub fn planning_failed(error: &InstancedPullPlanningError) -> Self {
         Self {
             shared: InstancedPullOutput::planning_failed(error),
             exit_code: planning_exit(error),
+            versions: None,
         }
     }
     pub fn execution_failed(failure: &InstancedPullExecutionFailure) -> Self {
@@ -48,7 +57,18 @@ impl PullOutput {
         Self {
             shared: InstancedPullOutput::execution_failed(failure),
             exit_code,
+            versions: None,
         }
+    }
+    pub fn with_versions(
+        mut self,
+        versions: Option<(
+            destiny_app::DefinitionVersion,
+            destiny_app::DefinitionVersion,
+        )>,
+    ) -> Self {
+        self.versions = versions;
+        self
     }
     pub fn json(&self) -> serde_json::Value {
         self.shared.json()
@@ -58,21 +78,35 @@ impl PullOutput {
     }
     /// Format only the sanitized shared projection and retained receipt/failure.
     pub fn render_text(&self) -> String {
-        let value = self.shared.json();
-        let mut text = format!(
-            "Postmaster pull: {}\nPlan: {}\nReceipt: {}\nDispatch: {}\nFailure: {}",
-            value["disposition"].as_str().unwrap_or("refused"),
-            value["plan_id"],
-            value["receipt"],
-            value["dispatch"],
-            value["failure"],
-        );
-        if value["local_state"] == "refresh_pending" {
-            text.push_str("\nlocal state refresh pending");
-        }
-        text
+        render_with_versions(&self.shared.json(), self.versions.as_ref())
     }
 }
+pub(crate) fn render_with_versions(
+    value: &serde_json::Value,
+    versions: Option<&(
+        destiny_app::DefinitionVersion,
+        destiny_app::DefinitionVersion,
+    )>,
+) -> String {
+    let text = destiny_output::instanced_pull::render_pull_text(value);
+    if (value["failure"]["reason"] == "definition_version_mismatch"
+        || value["failure"]["capacity_reason"]["kind"] == "definition_version_mismatch")
+        && let Some((snapshot, stored)) = versions
+    {
+        let clean = |s: &str| {
+            s.chars()
+                .map(|c| if c.is_control() { '?' } else { c })
+                .collect::<String>()
+        };
+        return format!(
+            "Postmaster pull: refused\nSnapshot definitions version {} differs from stored definitions version {}; run ghostlink sync and retry.",
+            clean(snapshot.as_str()),
+            clean(stored.as_str())
+        );
+    }
+    text
+}
+
 fn planning_exit(error: &InstancedPullPlanningError) -> i32 {
     match error {
         InstancedPullPlanningError::Infrastructure(error) => {

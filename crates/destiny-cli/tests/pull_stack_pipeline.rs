@@ -416,7 +416,7 @@ fn invalid_arguments_never_construct_runtime() {
                 "9223372036854775808",
                 "01",
                 "+1",
-                "hunter",
+                "unknown-class",
                 " 1",
                 "1 ",
                 "",
@@ -477,6 +477,59 @@ fn invalid_arguments_never_construct_runtime() {
             2
         );
     }
+}
+
+#[test]
+fn class_owner_resolves_before_single_dispatch() {
+    let mut pre = input(false);
+    pre.characters[0].class = Some("Hunter".into());
+    let mut repository = InMemoryInventoryRepository::new();
+    repository.replace_current(pre.clone()).unwrap();
+    let mut profile = QueuedProfileGateway::new();
+    profile.queue_membership(Ok(membership()));
+    profile.queue_inventory(Ok(pre));
+    let mut service = StackPullService::new(
+        ProfileSyncService::new(profile, repository),
+        InMemoryDefinitionRepository::new(version(), vec![definition()]),
+        QueuedManifestGateway::new(),
+        pinned_stack_bucket_capacity_policy(),
+        FakeClock::fixed(Timestamp::new(100)),
+        DeterministicPlanIds::starting_at(1),
+    );
+    let mut gateway = QueuedStackPullGateway::new();
+    gateway.queue(Ok(StackPullOutcome::Acknowledged));
+    let output = run_pull_stack_with(
+        [
+            "ghostlink",
+            "pull-stack",
+            "--item-hash",
+            "7",
+            "--amount",
+            "3",
+            "--character",
+            "hunter",
+        ],
+        |selection| {
+            Ok(destiny_cli::pull_stack::pull_stack(
+                selection,
+                membership(),
+                &mut service,
+                &mut gateway,
+                FreshnessPolicy { ttl_seconds: 60 },
+            ))
+        },
+    );
+    assert_eq!(output.exit_code, 0, "{}", output.stderr);
+    assert_eq!(gateway.requests().len(), 1);
+    assert_eq!(gateway.requests()[0].character().as_str(), "2");
+    assert!(
+        service
+            .resolve_owner(
+                &CharacterId::new("warlock"),
+                FreshnessPolicy { ttl_seconds: 60 }
+            )
+            .is_err()
+    );
 }
 
 #[test]
