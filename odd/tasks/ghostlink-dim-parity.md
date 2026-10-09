@@ -241,7 +241,10 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
     success; incomplete or uncertain state invalidates freshness.
   - [ ] U4b/U4c DIM preparation before `EquipLoadout` (cross-character and
     vault transfers, dequip with replacements, space, grouped equips,
-    phases): owner decision pending (adds Bungie writes).
+    phases): owner decision (2026-10-09): verify live first. Next RC live
+    checklist: apply a saved loadout with one item in the Vault and one on
+    another character (equipped there). If Bungie's `EquipLoadout` does not
+    pull them, implement DIM's preparation as a follow-up feature.
 - [ ] **U5 — Small polish (A6).** Manifest small tables with concurrency 4;
   shorter MCP tool descriptions; stale "four reads" comment.
 - [ ] **D — Docs, skill and live checklist.**
