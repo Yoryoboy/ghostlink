@@ -99,6 +99,9 @@ impl<T: EquipTransport, C: Clock, S: CredentialSource> EquipGateway
         let http = EquipHttpRequest::new(EQUIP_ENDPOINT, body, Some(&self.api_key), Some(&bearer));
         let mut response = match self.transport.post(&http) {
             Ok(response) => response,
+            Err(EquipTransportError::Throttled(seconds)) => {
+                return Err(AppError::bungie_rate_limit(seconds));
+            }
             Err(EquipTransportError::NotDispatched) => {
                 return Err(AppError::new(ErrorCategory::ProviderUnavailable));
             }

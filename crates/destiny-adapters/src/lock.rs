@@ -96,6 +96,9 @@ impl<T: LockTransport, C: Clock, S: CredentialSource> LockGateway for BungieLock
         let http = LockHttpRequest::new(LOCK_ENDPOINT, body, Some(&self.api_key), Some(&bearer));
         let mut response = match self.transport.post(&http) {
             Ok(response) => response,
+            Err(LockTransportError::Throttled(seconds)) => {
+                return Err(AppError::bungie_rate_limit(seconds));
+            }
             Err(LockTransportError::NotDispatched) => {
                 return Err(AppError::new(ErrorCategory::ProviderUnavailable));
             }
@@ -231,6 +234,14 @@ mod tests {
             LockApiKey::new("key-canary").unwrap(),
         )
         .unwrap()
+    }
+    #[test]
+    fn pre_dispatch_throttle_is_definitive_and_not_retried() {
+        let mut gateway = gateway(Err(LockTransportError::Throttled(45)), true);
+        let error = gateway.set_lock_state(&request(true)).unwrap_err();
+        assert_eq!(error.category(), ErrorCategory::ProviderRateLimit);
+        assert!(error.to_string().contains("retry in about 45 seconds"));
+        assert_eq!(gateway.transport().calls, 1);
     }
     #[test]
     fn numeric_action_rejections() {

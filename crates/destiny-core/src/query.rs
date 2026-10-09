@@ -75,6 +75,9 @@ pub const MAX_SEARCH_TEXT_LENGTH: usize = 256;
 /// Maximum number of matches any single search may return.
 pub const MAX_SEARCH_LIMIT: usize = 1000;
 
+/// Maximum number of ordered owned matches a search may skip.
+pub const MAX_SEARCH_OFFSET: usize = 10_000;
+
 /// Maximum number of tag filters one definition search may carry.
 pub const MAX_TAG_FILTERS: usize = 16;
 
@@ -271,6 +274,18 @@ pub enum StatOp {
     Equals,
 }
 
+impl StatOp {
+    pub(crate) fn matches(self, value: i64, target: i64) -> bool {
+        match self {
+            Self::AtLeast => value >= target,
+            Self::AtMost => value <= target,
+            Self::GreaterThan => value > target,
+            Self::LessThan => value < target,
+            Self::Equals => value == target,
+        }
+    }
+}
+
 /// A validated exact normalized stat name and signed integer comparison.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StatCondition {
@@ -327,13 +342,9 @@ pub fn instance_matches_stats(
             definitions.iter().any(|definition| {
                 definition.hash() == stat.stat_hash
                     && condition.name.matches_name(definition.name())
-            }) && match condition.op {
-                StatOp::AtLeast => stat.value >= condition.value,
-                StatOp::AtMost => stat.value <= condition.value,
-                StatOp::GreaterThan => stat.value > condition.value,
-                StatOp::LessThan => stat.value < condition.value,
-                StatOp::Equals => stat.value == condition.value,
-            }
+            }) && condition
+                .op
+                .matches(i64::from(stat.value), i64::from(condition.value))
         })
     })
 }
@@ -453,6 +464,8 @@ pub const MAX_NAME_TERMS: usize = 8;
 /// implementation runs before reading the projection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InstanceSearchQuery {
+    /// Number of ordered owned matches to skip, bounded to [`MAX_SEARCH_OFFSET`].
+    pub offset: usize,
     pub sort: Option<StatSort>,
     pub include_available: bool,
     pub item_hashes: ItemHashFilter,
@@ -477,6 +490,12 @@ impl InstanceSearchQuery {
     /// Rejects an out-of-range limit or an over-large definition-hash list.
     pub fn validate(&self) -> Result<(), AppError> {
         validate_search_limit(self.limit)?;
+        if self.offset > MAX_SEARCH_OFFSET {
+            return Err(AppError::invalid_argument(
+                "offset",
+                "must be between 0 and 10000",
+            ));
+        }
         for (kind, terms) in [("perk", &self.perk_name), ("mod", &self.mod_name)] {
             if terms
                 .as_ref()
@@ -683,14 +702,14 @@ pub fn instance_matches_perk_name(query: &InstanceSearchQuery, plugs: &[ItemDefi
     })
 }
 
-fn is_weapon_slot(slot: Option<ItemSlot>) -> bool {
+pub(crate) fn is_weapon_slot(slot: Option<ItemSlot>) -> bool {
     matches!(
         slot,
         Some(ItemSlot::Kinetic | ItemSlot::Energy | ItemSlot::Power)
     )
 }
 
-fn is_armor_slot(slot: Option<ItemSlot>) -> bool {
+pub(crate) fn is_armor_slot(slot: Option<ItemSlot>) -> bool {
     matches!(
         slot,
         Some(
@@ -976,6 +995,7 @@ pub struct NamedStat {
 /// instance, and it never reports a definition as an instance.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InventorySearchResult {
+    pub next_offset: Option<usize>,
     pub resolved: crate::name_matching::ResolvedNames,
     pub candidates: Vec<ItemDefinition>,
     pub hits: Vec<InventorySearchHit>,
@@ -1215,6 +1235,7 @@ mod tests {
         perk_hash: Option<PerkHash>,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            offset: 0,
             sort: None,
             include_available: false,
             item_hashes,
@@ -1230,6 +1251,16 @@ mod tests {
             min_power: None,
             limit: MAX_SEARCH_LIMIT,
         }
+    }
+
+    #[test]
+    fn owned_offset_has_an_independent_bound() {
+        let mut query = instance_query(ItemHashFilter::Any, None);
+        query.offset = 10_000;
+        assert!(query.validate().is_ok());
+        query.offset = 10_001;
+        let error = query.validate().unwrap_err();
+        assert!(error.to_string().contains("must be between 0 and 10000"));
     }
 
     #[test]

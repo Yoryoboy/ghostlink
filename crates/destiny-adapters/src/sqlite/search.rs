@@ -1,10 +1,10 @@
 //! Durable, bounded search over the SQLite projection.
 //!
 //! This module implements [`destiny_core::SearchRepository`] on the
-//! application-owned [`SqliteStore`] without adding any schema: it reads only the
-//! existing version-2 source-of-truth tables (`definitions`, `definition_tags`,
-//! `items`, and `item_perks`). It performs no provider I/O, no async work, and no
-//! serialization, and it returns the same bounded, deterministic, provider-neutral
+//! application-owned [`SqliteStore`] using the normalized definition-search
+//! companion and the source-of-truth definition and inventory tables. It performs
+//! no provider I/O, no async work, and no serialization, and it returns the same
+//! bounded, deterministic, provider-neutral
 //! core records the in-memory fake returns.
 //!
 //! # Matching parity
@@ -13,10 +13,9 @@
 //! Rust predicate directly, so the durable result can never drift from the
 //! in-memory contract on case, whitespace, Unicode, type equality, or
 //! all-tag containment. Definitions are enumerated in deterministic [`ItemHash`]
-//! ascending order, reconstructed through the same reader the
-//! [`destiny_core::DefinitionRepository`] exact lookup uses, and filtered in Rust;
-//! no SQLite `lower()` or precomputed normalized value is involved, so there is no
-//! derived structure that could become corrupt or diverge.
+//! ascending order. SQL preselects candidates using Rust-normalized companion
+//! columns; the exact lookup reader reconstructs candidates and Rust makes the
+//! final decision. Incomplete companion coverage fails closed.
 //!
 //! Instance search preselects exact hash, perk and character constraints in
 //! parameterized SQL, then applies the shared Rust instance/definition predicate
@@ -37,27 +36,42 @@
 //! never by interpolating a value into SQL text. Every storage failure maps to the
 //! single sanitized [`destiny_core::ErrorCategory::LocalStorage`] category.
 //!
-//! # Performance tradeoff and future index seam
+//! # Compact search projection and future index seam
 //!
-//! Definition search is a bounded sequential scan of the definition primary key
-//! plus one ordered tag lookup per visited definition, and it stops at the limit.
-//! That is deliberately chosen over a precomputed normalized projection or a
-//! full-text index: the architecture keeps semantic behavior stable while indexes
-//! evolve, and an MVP correctness slice should not carry a derived structure whose
-//! corruption handling and migration cost outweigh the benefit. When the catalog
-//! grows, the seam is the enumeration query itself and the per-definition tag
-//! lookup: a future migration can add an index (or a normalized companion table)
-//! behind this same `SearchRepository` contract without changing any answer.
+//! Migration 22 backfills a compact companion atomically. Publication maintains
+//! it in the catalog transaction using the core Rust normalizer and name-kind
+//! predicates. One cached SQL statement scans compact rows for necessary filter
+//! conditions (substring via `instr`, exact type/attributes and delimited tags).
+//! Only candidates incur reconstruction; the shared predicate remains authoritative
+//! and truncation happens afterwards. Tier preselection checks presence only,
+//! preserving resolved multi-name terms. Name catalogs read display names and
+//! precomputed kind flags without reconstruction. Coverage counts fail closed
+//! rather than silently omitting results. Future indexes can refine this seam.
 
 use super::{SqliteStore, storage_failure};
 use destiny_core::query::instance_matches_with_definition;
 use destiny_core::{
     AppError, DefinitionRepository, DefinitionSearchQuery, InstanceSearchQuery, ItemDefinition,
-    ItemHash, ItemHashFilter, ItemInstance, ItemInstanceId, ItemLocation, PerkHash, PerkSummary,
-    Resolution, SearchRepository, definition_matches,
+    ItemHash, ItemHashFilter, ItemInstance, ItemInstanceId, ItemLocation, MAX_SEARCH_OFFSET,
+    PerkSummary, Resolution, SearchRepository, definition_matches,
 };
 use rusqlite::types::Value;
 use rusqlite::{Connection, Error as SqlError, params_from_iter};
+
+/// An absent table or incomplete derived catalog must never omit answers.
+pub(super) fn validate_search_coverage(connection: &Connection) -> Result<(), AppError> {
+    let complete: bool = connection
+        .prepare_cached(
+            "SELECT (SELECT count(*) FROM definition_search) = (SELECT count(*) FROM definitions)",
+        )
+        .map_err(|_| storage_failure())?
+        .query_row([], |row| row.get(0))
+        .map_err(|_| storage_failure())?;
+    if !complete {
+        return Err(storage_failure());
+    }
+    Ok(())
+}
 
 /// The raw column tuple one `items` row decodes into before it is validated.
 type RawInstance = (
@@ -77,36 +91,22 @@ impl SearchRepository for SqliteStore {
         &self,
         kind: &str,
     ) -> Result<destiny_core::name_matching::NameCatalog, AppError> {
-        let mut names = Vec::new();
-        if kind == "stat" {
-            names = super::world::read_stats(self.connection())?
+        let names: Vec<String> = if kind == "stat" {
+            super::world::read_stats(self.connection())?
                 .into_iter()
                 .map(|(stat, _)| stat.name().to_owned())
-                .collect();
+                .collect()
         } else {
-            // Only plug definitions need reconstruction; ordinary item definitions
-            // are never visited during name resolution.
-            let mut statement = self
-                .connection()
-                .prepare(
-                    "SELECT hash FROM definitions WHERE plug_category IS NOT NULL ORDER BY hash",
-                )
-                .map_err(|_| storage_failure())?;
-            let hashes = statement
-                .query_map([], |row| row.get::<_, i64>(0))
-                .map_err(|_| storage_failure())?;
-            for hash in hashes {
-                let definition = match self
-                    .lookup_definition(ItemHash::new(hash.map_err(|_| storage_failure())?))?
-                {
-                    Resolution::Unique(definition) => definition,
-                    _ => return Err(storage_failure()),
-                };
-                if destiny_core::name_matching::is_name_kind(&definition, kind) {
-                    names.push(definition.name);
-                }
-            }
-        }
+            validate_search_coverage(self.connection())?;
+            let mut statement = self.connection().prepare_cached(
+                "SELECT name FROM definition_search WHERE (?1 = 'perk' AND perk = 1) OR (?1 = 'mod' AND mod = 1) OR (?1 = 'archetype' AND archetype = 1) ORDER BY hash"
+            ).map_err(|_| storage_failure())?;
+            statement
+                .query_map([kind], |row| row.get::<_, String>(0))
+                .map_err(|_| storage_failure())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| storage_failure())?
+        };
         Ok(destiny_core::name_matching::NameCatalog::new(
             names.iter().map(String::as_str),
         ))
@@ -118,19 +118,44 @@ impl SearchRepository for SqliteStore {
     ) -> Result<Vec<ItemDefinition>, AppError> {
         query.validate()?;
 
-        // Enumerate the source-of-truth definitions in deterministic hash order
-        // and stop as soon as the validated limit is reached. Only the bounded
-        // match set is materialized, and each definition is reconstructed by the
-        // definition repository's own reader, so the corruption defenses of the
-        // exact lookup path apply unchanged.
+        validate_search_coverage(self.connection())?;
+        let mut sql = String::from("SELECT hash FROM definition_search WHERE 1 = 1");
+        let mut parameters: Vec<Value> = Vec::new();
+        if let Some(term) = &query.text {
+            sql.push_str(" AND instr(name_norm, ?) > 0");
+            parameters.push(term.as_str().to_owned().into());
+        }
+        if let Some(term) = &query.item_type {
+            sql.push_str(" AND item_type_norm = ?");
+            parameters.push(term.as_str().to_owned().into());
+        }
+        if query.tier.is_some() {
+            sql.push_str(" AND tier_norm IS NOT NULL");
+        }
+        for (column, value) in [
+            ("element", query.element.map(|v| v.as_str())),
+            ("slot", query.slot.map(|v| v.as_str())),
+            ("class_type", query.class_type.map(|v| v.as_str())),
+        ] {
+            if let Some(value) = value {
+                sql.push_str(&format!(" AND {column} = ?"));
+                parameters.push(value.to_owned().into());
+            }
+        }
+        for tag in &query.tags {
+            sql.push_str(" AND instr(tags_norm, ?) > 0");
+            parameters.push(format!("\n{}\n", tag.as_str()).into());
+        }
+        sql.push_str(" ORDER BY hash");
+        // No SQL LIMIT: the Rust predicate decides before truncation.
         let mut matches: Vec<ItemDefinition> = Vec::new();
         {
             let mut statement = self
                 .connection()
-                .prepare("SELECT hash FROM definitions ORDER BY hash")
+                .prepare_cached(&sql)
                 .map_err(|_| storage_failure())?;
             let rows = statement
-                .query_map([], |row| row.get::<_, i64>(0))
+                .query_map(params_from_iter(parameters), |row| row.get::<_, i64>(0))
                 .map_err(|_| storage_failure())?;
 
             for row in rows {
@@ -153,15 +178,27 @@ impl SearchRepository for SqliteStore {
     }
 
     fn search_instances(&self, query: &InstanceSearchQuery) -> Result<Vec<ItemInstance>, AppError> {
-        query.validate()?;
+        self.search_instance_page(query)
+            .map(|(instances, _)| instances)
+    }
 
-        // `AnyOf(empty)` is a validated, explicit no-match: it keeps its
-        // fail-closed contract meaning and returns before any row is read.
-        let hashes = match &query.item_hashes {
-            ItemHashFilter::Any => None,
-            ItemHashFilter::AnyOf(hashes) if hashes.is_empty() => return Ok(Vec::new()),
-            ItemHashFilter::AnyOf(hashes) => Some(hashes),
-        };
+    fn search_instance_page(
+        &self,
+        query: &InstanceSearchQuery,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        self.search_instance_query_page(query, None)
+    }
+
+    fn search_instance_query_page(
+        &self,
+        query: &InstanceSearchQuery,
+        execution: Option<&destiny_core::search_query::ResolvedQuery>,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        query.validate()?;
+        let bound = query.offset + query.limit + 1;
+        let typed_definition = execution.is_some_and(|q| q.needs_definition());
+        let typed_plugs = execution.is_some_and(|q| q.needs_plugs());
+        let typed_available = execution.is_some_and(|q| q.needs_available_plugs());
 
         let mut sql = String::from(
             "SELECT instance_id, item_hash, location_kind, location_character_id, \
@@ -170,31 +207,43 @@ impl SearchRepository for SqliteStore {
         );
         let mut parameters: Vec<Value> = Vec::new();
 
-        if let Some(hashes) = hashes {
-            // The candidate list is bounded by `MAX_HASH_FILTERS`, so the
-            // generated `IN` list stays finite; only placeholders are generated.
-            sql.push_str(" AND item_hash IN (");
-            for index in 0..hashes.len() {
-                if index > 0 {
-                    sql.push_str(", ");
+        // Intersect independently: never overwrite colliding structured fields.
+        for criteria in std::iter::once(query).chain(execution.map(|q| &q.prefilter)) {
+            criteria.validate()?;
+            // An explicit empty hash set remains a fail-closed no-match.
+            let hashes = match &criteria.item_hashes {
+                ItemHashFilter::Any => None,
+                ItemHashFilter::AnyOf(hashes) if hashes.is_empty() => {
+                    return Ok((Vec::new(), false));
                 }
-                sql.push('?');
+                ItemHashFilter::AnyOf(hashes) => Some(hashes),
+            };
+            if let Some(hashes) = hashes {
+                // The candidate list is bounded by `MAX_HASH_FILTERS`, so the
+                // generated `IN` list stays finite; only placeholders are generated.
+                sql.push_str(" AND item_hash IN (");
+                for index in 0..hashes.len() {
+                    if index > 0 {
+                        sql.push_str(", ");
+                    }
+                    sql.push('?');
+                }
+                sql.push(')');
+                for hash in hashes {
+                    parameters.push(Value::Integer(hash.value()));
+                }
             }
-            sql.push(')');
-            for hash in hashes {
-                parameters.push(Value::Integer(hash.value()));
-            }
-        }
-        if let Some(perk_hash) = query.perk_hash {
-            sql.push_str(
-                " AND EXISTS (SELECT 1 FROM item_perks p \
+            if let Some(perk_hash) = criteria.perk_hash {
+                sql.push_str(
+                    " AND EXISTS (SELECT 1 FROM item_perks p \
                  WHERE p.instance_id = items.instance_id AND p.perk_hash = ?)",
-            );
-            parameters.push(Value::Integer(i64::from(perk_hash.value())));
-        }
-        if let Some(character_id) = &query.character_id {
-            sql.push_str(" AND location_kind = 'character' AND location_character_id = ?");
-            parameters.push(Value::Text(character_id.as_str().to_owned()));
+                );
+                parameters.push(Value::Integer(i64::from(perk_hash.value())));
+            }
+            if let Some(character_id) = &criteria.character_id {
+                sql.push_str(" AND location_kind = 'character' AND location_character_id = ?");
+                parameters.push(Value::Text(character_id.as_str().to_owned()));
+            }
         }
         // Never truncate SQL candidates before shared definition/power matching.
         sql.push_str(" ORDER BY instance_id");
@@ -211,100 +260,149 @@ impl SearchRepository for SqliteStore {
         // Resolve each distinct plug hash at most once across candidate rows.
         // Rust applies the Unicode-aware exact match before truncation.
         let mut plug_definitions = std::collections::HashMap::new();
+        let mut base_definitions = std::collections::HashMap::new();
         {
             let mut statement = self
                 .connection()
-                .prepare(&sql)
+                .prepare_cached(&sql)
                 .map_err(|_| storage_failure())?;
             let rows = statement
                 .query_map(params_from_iter(parameters), decode_instance_row)
                 .map_err(|_| storage_failure())?;
 
-            for row in rows {
-                let raw: RawInstance = row.map_err(|_| storage_failure())?;
-                let instance = read_instance(self.connection(), raw)?;
-                let definition = if query
-                    .definitions
-                    .as_ref()
-                    .is_some_and(|criteria| criteria.has_filters())
-                    || query.perk_name.is_some()
-                    || query.mod_name.is_some()
-                    || query.archetype.is_some()
-                {
-                    match self.lookup_definition(instance.item_hash)? {
-                        Resolution::Unique(definition) => Some(definition),
-                        Resolution::Missing => None,
-                        Resolution::Ambiguous(_) => return Err(storage_failure()),
-                    }
-                } else {
-                    None
-                };
-                let mut plugs = Vec::new();
-                if query.perk_name.is_some()
-                    || query.mod_name.is_some()
-                    || query.archetype.is_some()
-                {
-                    for plug in &instance.plugs {
+            let mut candidates = rows;
+            let batch_size = if query.sort.is_some() { 500 } else { 64 };
+            'batches: loop {
+                let mut batch = candidates
+                    .by_ref()
+                    .take(batch_size)
+                    .map(|row| read_instance_base(row.map_err(|_| storage_failure())?))
+                    .collect::<Result<Vec<_>, AppError>>()?;
+                if batch.is_empty() {
+                    break;
+                }
+                super::inventory::attach_components(self.connection(), &mut batch, false)?;
+                for instance in batch {
+                    let definition = if query
+                        .definitions
+                        .as_ref()
+                        .is_some_and(|criteria| criteria.has_filters())
+                        || query.perk_name.is_some()
+                        || query.mod_name.is_some()
+                        || query.archetype.is_some()
+                        || typed_definition
+                    {
                         if let std::collections::hash_map::Entry::Vacant(entry) =
-                            plug_definitions.entry(plug.plug_hash)
+                            base_definitions.entry(instance.item_hash)
                         {
-                            let resolved = match self.lookup_definition(plug.plug_hash)? {
+                            let resolved = match self.lookup_definition(instance.item_hash)? {
                                 Resolution::Unique(definition) => Some(definition),
                                 Resolution::Missing => None,
                                 Resolution::Ambiguous(_) => return Err(storage_failure()),
                             };
                             entry.insert(resolved);
                         }
-                        if let Some(definition) = &plug_definitions[&plug.plug_hash] {
-                            plugs.push(definition.clone());
+                        base_definitions[&instance.item_hash].as_ref()
+                    } else {
+                        None
+                    };
+                    let mut plugs = Vec::new();
+                    if query.perk_name.is_some()
+                        || query.mod_name.is_some()
+                        || query.archetype.is_some()
+                        || typed_plugs
+                    {
+                        for plug in &instance.plugs {
+                            if let std::collections::hash_map::Entry::Vacant(entry) =
+                                plug_definitions.entry(plug.plug_hash)
+                            {
+                                let resolved = match self.lookup_definition(plug.plug_hash)? {
+                                    Resolution::Unique(definition) => Some(definition),
+                                    Resolution::Missing => None,
+                                    Resolution::Ambiguous(_) => return Err(storage_failure()),
+                                };
+                                entry.insert(resolved);
+                            }
+                            if let Some(definition) = &plug_definitions[&plug.plug_hash] {
+                                plugs.push(definition.clone());
+                            }
                         }
                     }
-                }
-                let mut available = Vec::new();
-                if query.include_available
-                    && (query.perk_name.is_some() || query.mod_name.is_some())
-                {
-                    for plug in &instance.available_plugs {
-                        if let std::collections::hash_map::Entry::Vacant(entry) =
-                            plug_definitions.entry(plug.plug_hash)
-                        {
-                            let resolved = match self.lookup_definition(plug.plug_hash)? {
-                                Resolution::Unique(definition) => Some(definition),
-                                Resolution::Missing => None,
-                                Resolution::Ambiguous(_) => return Err(storage_failure()),
-                            };
-                            entry.insert(resolved);
-                        }
-                        if let Some(definition) = &plug_definitions[&plug.plug_hash] {
-                            available.push(definition.clone());
+                    let mut available = Vec::new();
+                    if query.include_available
+                        && (query.perk_name.is_some()
+                            || query.mod_name.is_some()
+                            || typed_available)
+                    {
+                        for plug in &instance.available_plugs {
+                            if let std::collections::hash_map::Entry::Vacant(entry) =
+                                plug_definitions.entry(plug.plug_hash)
+                            {
+                                let resolved = match self.lookup_definition(plug.plug_hash)? {
+                                    Resolution::Unique(definition) => Some(definition),
+                                    Resolution::Missing => None,
+                                    Resolution::Ambiguous(_) => return Err(storage_failure()),
+                                };
+                                entry.insert(resolved);
+                            }
+                            if let Some(definition) = &plug_definitions[&plug.plug_hash] {
+                                available.push(definition.clone());
+                            }
                         }
                     }
-                }
-                if destiny_core::query::instance_matches_stats(query, &instance, &stat_definitions)
-                    && instance_matches_with_definition(query, &instance, definition.as_ref())
-                    && destiny_core::query::instance_matches_available_names(
-                        query, &plugs, &available,
-                    )
-                {
-                    instances.push(instance);
-                    if query.sort.is_none() && instances.len() == query.limit {
-                        break;
+                    if destiny_core::query::instance_matches_stats(
+                        query,
+                        &instance,
+                        &stat_definitions,
+                    ) && instance_matches_with_definition(query, &instance, definition)
+                        && destiny_core::query::instance_matches_available_names(
+                            query, &plugs, &available,
+                        )
+                        && execution.is_none_or(|execution| {
+                            execution.matches(
+                                &instance,
+                                definition,
+                                &plugs,
+                                &available,
+                                query.include_available,
+                            )
+                        })
+                    {
+                        if query.sort.is_some() {
+                            // Keep at most k matches, ordered by the shared comparator.
+                            // Insert after equal records, exactly like the old stable sort.
+                            let position = instances.partition_point(|existing| {
+                                destiny_core::query::compare_instances(
+                                    query.sort.as_ref(),
+                                    existing,
+                                    &instance,
+                                    &stat_definitions,
+                                ) != std::cmp::Ordering::Greater
+                            });
+                            if position < bound {
+                                instances.insert(position, instance);
+                                if instances.len() > bound {
+                                    instances.pop();
+                                }
+                            }
+                        } else {
+                            instances.push(instance);
+                            if instances.len() == bound {
+                                break 'batches;
+                            }
+                        }
                     }
                 }
             }
         }
-        if query.sort.is_some() {
-            instances.sort_by(|left, right| {
-                destiny_core::query::compare_instances(
-                    query.sort.as_ref(),
-                    left,
-                    right,
-                    &stat_definitions,
-                )
-            });
-            instances.truncate(query.limit);
-        }
-        Ok(instances)
+        let more = query.offset + query.limit <= MAX_SEARCH_OFFSET
+            && instances.len() > query.offset + query.limit;
+        let page = instances
+            .into_iter()
+            .skip(query.offset)
+            .take(query.limit)
+            .collect();
+        Ok((page, more))
     }
 
     fn lookup_instance(
@@ -315,13 +413,15 @@ impl SearchRepository for SqliteStore {
         // valid projection carries at most one row and `Ambiguous` is
         // unreachable here. It stays a documented outcome of the shared
         // `Resolution` type rather than a silently collapsing branch.
-        let raw = self.connection().query_row(
-            "SELECT instance_id, item_hash, location_kind, location_character_id, \
-             location_other, quantity, equipped, locked, power \
-             FROM items WHERE instance_id = ?1",
-            [instance_id.as_str()],
-            decode_instance_row,
-        );
+        let raw = self
+            .connection()
+            .prepare_cached(
+                "SELECT instance_id, item_hash, location_kind, location_character_id, \
+                 location_other, quantity, equipped, locked, power \
+                 FROM items WHERE instance_id = ?1",
+            )
+            .map_err(|_| storage_failure())?
+            .query_row([instance_id.as_str()], decode_instance_row);
 
         match raw {
             Ok(raw) => Ok(Resolution::Unique(read_instance(self.connection(), raw)?)),
@@ -355,6 +455,16 @@ fn decode_instance_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawInstance>
 /// fails closed as a sanitized local-storage error rather than returning a
 /// partially constructed record.
 fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstance, AppError> {
+    let mut instance = read_instance_base(raw)?;
+    let id = instance.instance_id.as_str();
+    instance.perks = read_perks(connection, id)?;
+    instance.plugs = super::inventory::read_plugs(connection, id)?;
+    instance.stats = super::inventory::read_stats(connection, id)?;
+    instance.available_plugs = super::inventory::read_available_plugs(connection, id)?;
+    Ok(instance)
+}
+
+fn read_instance_base(raw: RawInstance) -> Result<ItemInstance, AppError> {
     let (
         instance_id,
         item_hash,
@@ -380,13 +490,8 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
         ("other", None, Some(other)) => ItemLocation::Other(other),
         _ => return Err(storage_failure()),
     };
-    let perks = read_perks(connection, instance_id.as_str())?;
-    let plugs = super::inventory::read_plugs(connection, instance_id.as_str())?;
-    let stats = super::inventory::read_stats(connection, instance_id.as_str())?;
-
-    let available_plugs = super::inventory::read_available_plugs(connection, instance_id.as_str())?;
     Ok(ItemInstance {
-        available_plugs,
+        available_plugs: Vec::new(),
         instance_id: instance_id.into(),
         item_hash: ItemHash::new(item_hash),
         location,
@@ -394,16 +499,16 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
         equipped: decode_boolean(equipped)?,
         locked: decode_boolean(locked)?,
         power: decode_optional_u16(power)?,
-        plugs,
-        stats,
-        perks,
+        plugs: Vec::new(),
+        stats: Vec::new(),
+        perks: Vec::new(),
     })
 }
 
 /// Reads one instance's perk summaries in ordinal order, requiring `0..n`.
 fn read_perks(connection: &Connection, instance_id: &str) -> Result<Vec<PerkSummary>, AppError> {
     let mut statement = connection
-        .prepare(
+        .prepare_cached(
             "SELECT ordinal, perk_hash, active, visible FROM item_perks \
              WHERE instance_id = ?1 ORDER BY ordinal",
         )
@@ -419,20 +524,10 @@ fn read_perks(connection: &Connection, instance_id: &str) -> Result<Vec<PerkSumm
         })
         .map_err(|_| storage_failure())?;
 
-    let mut perks = Vec::new();
-    for (position, row) in rows.enumerate() {
-        let (ordinal, perk_hash, active, visible) = row.map_err(|_| storage_failure())?;
-        let expected = i64::try_from(position).map_err(|_| storage_failure())?;
-        if ordinal != expected {
-            return Err(storage_failure());
-        }
-        perks.push(PerkSummary {
-            perk_hash: PerkHash::new(u32::try_from(perk_hash).map_err(|_| storage_failure())?),
-            active: decode_boolean(active)?,
-            visible: decode_boolean(visible)?,
-        });
-    }
-    Ok(perks)
+    super::inventory::decode_perks(
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| storage_failure())?,
+    )
 }
 
 /// Decodes one stored integer boolean, accepting only the exact values `0`/`1`.
@@ -460,7 +555,7 @@ mod tests {
         BucketHash, Character, CharacterId, DefinitionReplacementInput, DefinitionVersion,
         ErrorCategory, InventoryRepository, InventorySnapshot, InventorySnapshotInput,
         MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_TAG_FILTERS, ManifestDefinitions, MembershipId,
-        MembershipType, SearchTerm, SourceMarker, Timestamp,
+        MembershipType, PerkHash, SearchTerm, SourceMarker, Timestamp,
     };
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -623,6 +718,7 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            offset: 0,
             sort: None,
             location: None,
             equipped: None,
@@ -674,6 +770,93 @@ mod tests {
             // A whitespace-only name normalizes to the empty string.
             definition(17, "   ", None, &[]),
         ]
+    }
+
+    #[test]
+    fn owned_projection_and_search_matrix_match_reference() {
+        use destiny_core::{AvailablePlug, LocationFilter, PlugSummary, StatSummary};
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let mut weapon = definition(1, "İrem Cannon", Some("Weapon"), &[]);
+        weapon.slot = Some(destiny_core::domain::ItemSlot::Energy);
+        let mut perk = definition(60, "Rampage", None, &[]);
+        perk.plug_category = Some("frames".into());
+        let definitions = vec![weapon, perk];
+        seed_definitions(&mut store, &definitions);
+        let mut items = Vec::new();
+        for index in (0..24).rev() {
+            let location = match index % 4 {
+                0 => ItemLocation::Vault,
+                1 => ItemLocation::Character(CHARACTER_ID.into()),
+                2 => ItemLocation::Character("hunter".into()),
+                _ => ItemLocation::Postmaster("hunter".into()),
+            };
+            let mut item = instance(&format!("item-{index:02}"), 1, location, &[10, 20]);
+            item.power = Some(1800 + index % 3);
+            if index % 3 != 0 {
+                item.stats = vec![StatSummary {
+                    stat_hash: 1,
+                    value: i32::from(index % 5),
+                }];
+                item.plugs = vec![PlugSummary {
+                    plug_hash: ItemHash::new(60),
+                    enabled: true,
+                }];
+                item.available_plugs = vec![AvailablePlug {
+                    socket_index: 2,
+                    plug_hash: ItemHash::new(60),
+                }];
+            }
+            items.push(item);
+        }
+        let mut input = snapshot(items);
+        let mut hunter = input.characters[0].clone();
+        hunter.id = "hunter".into();
+        input.characters.push(hunter);
+        let committed = store.replace_current(input).unwrap();
+        assert_eq!(store.load_current().unwrap(), Some(committed.clone()));
+        let fake = InMemorySearchRepository::with_projection(definitions, &committed);
+        let mut queries = Vec::new();
+        for limit in [1, 5, 24, 100] {
+            let q = instance_query(ItemHashFilter::Any, None, None, limit);
+            queries.push(q.clone());
+            for sort in ["power", "power:asc", "Missing", "Missing:asc"] {
+                let mut q = q.clone();
+                q.sort = Some(sort.parse().unwrap());
+                queries.push(q);
+            }
+            let mut text = q.clone();
+            text.definitions = Some(Box::new(definition_query(
+                Some("i\u{307}rem"),
+                None,
+                &[],
+                limit,
+            )));
+            queries.push(text);
+            let mut perk = q.clone();
+            perk.perk_name = Some(vec![term("rampage")]);
+            queries.push(perk);
+            let mut stat = q.clone();
+            stat.stats = vec!["Missing>=1".parse().unwrap()];
+            queries.push(stat);
+            queries.push(instance_query(
+                ItemHashFilter::Any,
+                Some(20),
+                Some("hunter"),
+                limit,
+            ));
+            for location in [LocationFilter::Vault, LocationFilter::Character] {
+                let mut q = q.clone();
+                q.location = Some(location);
+                queries.push(q);
+            }
+        }
+        for q in queries {
+            assert_eq!(
+                store.search_instances(&q).unwrap(),
+                fake.search_instances(&q).unwrap(),
+                "{q:?}"
+            );
+        }
     }
 
     #[test]

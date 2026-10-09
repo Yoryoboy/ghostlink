@@ -293,6 +293,19 @@ fn publication_order(read_first: bool) {
         ) -> Result<Vec<ItemInstance>, AppError> {
             self.0.lock().unwrap().search_instances(query)
         }
+        fn search_instance_query_page(
+            &self,
+            query: &InstanceSearchQuery,
+            execution: Option<&destiny_app::search_query::ResolvedQuery>,
+        ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+            if execution.is_none() {
+                return self.search_instance_page(query);
+            }
+            self.0
+                .lock()
+                .unwrap()
+                .search_instance_query_page(query, execution)
+        }
         fn lookup_instance(
             &self,
             id: &ItemInstanceId,
@@ -469,17 +482,19 @@ fn publication_order(read_first: bool) {
             events: events.clone(),
             committed: published_tx,
         });
+        let exclusive = Arc::new(Mutex::new(()));
         let read = destiny_mcp::QueryReadService::new(
-            QueryService::new(ProfileSyncService::new_with_definitions(
-                PublishingProfile,
-                read_store,
-            )),
+            QueryService::new(
+                ProfileSyncService::new_with_definitions(PublishingProfile, read_store)
+                    .with_sync_gate(exclusive.clone()),
+            ),
             FakeClock::fixed(Timestamp::new(1000)),
             POLICY,
         );
-        let server = Arc::new(destiny_mcp::ReadToolServer::with_mutation(
-            Box::new(read),
+        let server = Arc::new(destiny_mcp::ReadToolServer::with_read_pool(
+            vec![Box::new(read)],
             Box::new(mutation),
+            exclusive,
         ));
         let (mutation_finished_tx, mutation_finished_rx) = mpsc::channel();
         let mutation_server = server.clone();

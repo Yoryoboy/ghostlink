@@ -16,7 +16,7 @@ use destiny_app::auth_ux::AuthorizationMode;
 use destiny_app::{
     AppError, CharacterId, DefinitionSearchQuery, ErrorCategory, InspectItemRequest,
     InstanceSearchQuery, ItemHash, ItemHashFilter, ItemInspection, ItemInstanceId,
-    MAX_SEARCH_LIMIT, PerkHash, Resolution, SearchInventoryRequest, SearchTerm,
+    MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET, PerkHash, Resolution, SearchInventoryRequest, SearchTerm,
 };
 
 use crate::output::OutputMode;
@@ -159,11 +159,16 @@ impl Cli {
             }
             Command::ListCharacters => Ok(ReadRequest::ListCharacters),
             Command::SearchInventory(arguments) => {
-                arguments.into_request().map(ReadRequest::SearchInventory)
+                let detail = arguments.detail;
+                arguments.into_request().map(|request| {
+                    if detail {
+                        ReadRequest::SearchInventoryDetail(request)
+                    } else {
+                        ReadRequest::SearchInventory(request)
+                    }
+                })
             }
-            Command::InspectItem(arguments) => {
-                arguments.into_request().map(ReadRequest::InspectItem)
-            }
+            Command::InspectItem(arguments) => arguments.into_request(),
             Command::SubclassOptions(arguments) => {
                 if self.json && arguments.locked {
                     return Err(CliError::invalid_request());
@@ -476,6 +481,16 @@ impl CallbackMode {
 /// concrete instances without silently choosing one.
 #[derive(Debug, Args)]
 pub struct SearchInventoryArgs {
+    /// DIM query, ANDed with flags; e.g. 'is:weapon -is:locked'. Empty = all owned.
+    /// Use --filters for keys, examples and syntax (including DIM precedence).
+    #[arg(value_name = "QUERY", allow_hyphen_values = true)]
+    pub query: Option<String>,
+    /// List supported DIM filters and syntax without accessing inventory.
+    #[arg(long)]
+    pub filters: bool,
+    /// Return full instance details instead of compact inventory tiles.
+    #[arg(long)]
+    pub detail: bool,
     /// Match socketed or selectable perks and mods (default: socketed only).
     #[arg(long)]
     pub include_available: bool,
@@ -554,11 +569,21 @@ pub struct SearchInventoryArgs {
     /// Maximum number of definition candidates and instance hits.
     #[arg(long, value_name = "N", default_value_t = 100)]
     pub limit: usize,
+
+    /// Skip ordered owned hits (0..10000); definition candidates are unchanged.
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    pub offset: usize,
 }
 
 impl SearchInventoryArgs {
     /// Builds the two shared query shapes this command maps onto.
     fn into_request(self) -> Result<SearchInventoryRequest, CliError> {
+        if self.offset > MAX_SEARCH_OFFSET {
+            return Err(CliError::invalid_argument(
+                "--offset",
+                "must be between 0 and 10000",
+            ));
+        }
         let definitions = DefinitionSearchQuery {
             text: search_term(self.text.as_deref(), "--text")?,
             item_type: search_term(self.item_type.as_deref(), "--type")?,
@@ -591,10 +616,21 @@ impl SearchInventoryArgs {
         definitions.validate().map_err(CliError::query_validation)?;
 
         let instances = self.instance_query(&definitions)?;
-        Ok(SearchInventoryRequest {
-            definitions,
-            instances,
-        })
+        let request = SearchInventoryRequest::new(definitions, instances);
+        match self.query.as_deref() {
+            Some(input) => request.with_query(input).map_err(|error| {
+                CliError::invalid_argument(
+                    "QUERY",
+                    format!(
+                        "Invalid query: {}: {}\n{}",
+                        error.kind.as_str(),
+                        error.message,
+                        error.excerpt(input)
+                    ),
+                )
+            }),
+            None => Ok(request),
+        }
     }
 
     /// Builds an owned search when any definition or instance filter is supplied.
@@ -602,7 +638,8 @@ impl SearchInventoryArgs {
         &self,
         definitions: &DefinitionSearchQuery,
     ) -> Result<Option<InstanceSearchQuery>, CliError> {
-        let no_instance_filter = !self.include_available
+        let no_instance_filter = self.offset == 0
+            && !self.include_available
             && self.stat.is_empty()
             && self.sort.is_none()
             && self.item_hash.is_empty()
@@ -630,6 +667,7 @@ impl SearchInventoryArgs {
             ItemHashFilter::AnyOf(self.item_hash.iter().copied().map(ItemHash::new).collect())
         };
         let query = InstanceSearchQuery {
+            offset: self.offset,
             sort: self
                 .sort
                 .as_deref()
@@ -1245,20 +1283,38 @@ mod subclass_tests {
 #[derive(Debug, Args)]
 pub struct InspectItemArgs {
     /// The concrete item instance identifier to inspect.
-    ///
-    /// A definition hash is never accepted here: a name or hash query resolves
-    /// through `search-inventory` first, and only a concrete instance identifier
-    /// reaches exact inspection.
-    #[arg(value_name = "INSTANCE_ID")]
-    pub instance_id: String,
+    #[arg(
+        value_name = "INSTANCE_ID",
+        required_unless_present = "name",
+        conflicts_with = "name"
+    )]
+    pub instance_id: Option<String>,
+
+    /// Resolve an owned item by exact normalized name; never choose fuzzy matches.
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
 }
 
 impl InspectItemArgs {
-    fn into_request(self) -> Result<InspectItemRequest, CliError> {
-        validate_identity(&self.instance_id, "INSTANCE_ID")?;
-        Ok(InspectItemRequest {
-            instance_id: ItemInstanceId::new(self.instance_id),
-        })
+    fn into_request(self) -> Result<ReadRequest, CliError> {
+        match (self.instance_id, self.name) {
+            (Some(instance_id), None) => {
+                validate_identity(&instance_id, "INSTANCE_ID")?;
+                Ok(ReadRequest::InspectItem(InspectItemRequest {
+                    instance_id: ItemInstanceId::new(instance_id),
+                }))
+            }
+            (None, Some(name)) => {
+                SearchTerm::new(&name).map_err(|_| {
+                    CliError::invalid_argument("--name", "must be a valid non-empty search term")
+                })?;
+                Ok(ReadRequest::InspectItemByName(name))
+            }
+            _ => Err(CliError::invalid_argument(
+                "inspect-item",
+                "supply exactly one instance id or --name",
+            )),
+        }
     }
 }
 
@@ -1273,7 +1329,10 @@ pub enum ReadRequest {
     Postmaster(Option<CharacterId>),
     ListCharacters,
     SearchInventory(SearchInventoryRequest),
+    /// Full legacy search hit output, explicitly requested with --detail.
+    SearchInventoryDetail(SearchInventoryRequest),
     InspectItem(InspectItemRequest),
+    InspectItemByName(String),
     Subclass(Option<CharacterId>),
     SubclassOptions {
         character_id: Option<CharacterId>,
@@ -1339,8 +1398,8 @@ pub fn category_outcome(category: ErrorCategory) -> ErrorOutcome {
 ///
 /// [`CliError::code`] and [`CliError::exit_code`] are the machine contract, and
 /// the [`fmt::Display`] message is the single sanitized line written for a
-/// human. Neither ever echoes a rejected value, a provider payload, a
-/// credential, or a header.
+/// human. Query syntax errors may include a bounded, control-free input excerpt;
+/// other rejected values, provider payloads, credentials and headers are never echoed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CliError {
     kind: FailureKind,
@@ -1809,6 +1868,24 @@ mod tests {
     }
 
     #[test]
+    fn query_may_start_with_a_dim_negation() {
+        for (args, expected) in [
+            (vec!["search-inventory", "-is:locked"], "-is:locked"),
+            (
+                vec!["search-inventory", "-is:locked is:weapon", "--limit", "5"],
+                "-is:locked is:weapon",
+            ),
+        ] {
+            match parse(args).command {
+                Command::SearchInventory(arguments) => {
+                    assert_eq!(arguments.query.as_deref(), Some(expected));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn subcommands_parse_into_their_arguments() {
         assert!(matches!(
             parse(["list-characters"]).command,
@@ -1827,7 +1904,9 @@ mod tests {
 
         let inspect = parse(["inspect-item", "inst-1"]);
         match inspect.command {
-            Command::InspectItem(arguments) => assert_eq!(arguments.instance_id, "inst-1"),
+            Command::InspectItem(arguments) => {
+                assert_eq!(arguments.instance_id.as_deref(), Some("inst-1"))
+            }
             other => panic!("unexpected command: {other:?}"),
         }
     }
@@ -2095,6 +2174,18 @@ mod tests {
                 "case: {case:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn owned_offset_has_an_independent_bound() {
+        let request = search_request(
+            parse(["search-inventory", "--offset", "10000"])
+                .into_read_request()
+                .expect("offset ceiling is accepted"),
+        );
+        assert_eq!(request.instances.unwrap().offset, 10_000);
+        let error = rejected(["search-inventory", "--offset", "10001"]);
+        assert!(error.to_string().contains("must be between 0 and 10000"));
     }
 
     #[test]

@@ -314,6 +314,7 @@ pub struct TransferHttpResponse {
     content_length: Option<u64>,
     content_type: Option<String>,
     body: Box<dyn Read>,
+    throttle: Option<std::sync::Arc<crate::bungie_throttle::BungieThrottle>>,
 }
 
 impl TransferHttpResponse {
@@ -333,6 +334,7 @@ impl TransferHttpResponse {
             content_length,
             content_type,
             body,
+            throttle: None,
         }
     }
 
@@ -353,7 +355,11 @@ impl TransferHttpResponse {
         if !self.content_type().is_some_and(is_json_content_type) {
             return None;
         }
-        read_bounded_body(&mut self.body, content_length)
+        let bytes = read_bounded_body(&mut self.body, content_length)?;
+        if let Some(throttle) = &self.throttle {
+            throttle.observe_bytes(&bytes);
+        }
+        Some(bytes)
     }
 }
 
@@ -380,6 +386,8 @@ impl fmt::Debug for TransferHttpResponse {
 /// to begin may become an `Err`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransferTransportError {
+    /// Adaptive pacing refused before dispatch; no mutation was attempted.
+    Throttled(u64),
     /// The connection could not be established, so no request bytes reached the
     /// provider and no mutation can have occurred.
     NotDispatched,
@@ -409,6 +417,7 @@ pub trait TransferTransport {
 /// both the total request and the connection phase.
 pub struct HttpTransferTransport {
     client: reqwest::blocking::Client,
+    throttle: std::sync::Arc<crate::bungie_throttle::BungieThrottle>,
 }
 
 impl HttpTransferTransport {
@@ -418,7 +427,10 @@ impl HttpTransferTransport {
         let client = Self::hardened_client_builder()
             .build()
             .map_err(|_| configuration())?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            throttle: crate::bungie_throttle::shared(),
+        })
     }
 
     fn hardened_client_builder() -> reqwest::blocking::ClientBuilder {
@@ -427,6 +439,15 @@ impl HttpTransferTransport {
             .no_proxy()
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)
+    }
+
+    /// Injects isolated pacing/time for deterministic transport tests.
+    pub fn with_throttle(
+        mut self,
+        throttle: std::sync::Arc<crate::bungie_throttle::BungieThrottle>,
+    ) -> Self {
+        self.throttle = throttle;
+        self
     }
 
     /// Pull-only policy: preserve encoded bytes and declared wire length for
@@ -441,7 +462,10 @@ impl HttpTransferTransport {
             .retry(reqwest::retry::never())
             .build()
             .map_err(|_| configuration())?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            throttle: crate::bungie_throttle::shared(),
+        })
     }
 }
 
@@ -484,6 +508,9 @@ impl HttpTransferTransport {
         &mut self,
         request: &TransferHttpRequest<'_>,
     ) -> Result<TransferHttpResponse, TransferTransportError> {
+        self.throttle
+            .before_request()
+            .map_err(TransferTransportError::Throttled)?;
         let headers = request
             .headers()
             .ok_or(TransferTransportError::Configuration)?;
@@ -509,6 +536,7 @@ impl HttpTransferTransport {
             content_length,
             content_type,
             body: Box::new(response),
+            throttle: Some(self.throttle.clone()),
         })
     }
 }
@@ -612,6 +640,9 @@ where
 
         let mut response = match self.transport.post(&http_request) {
             Ok(response) => response,
+            Err(TransferTransportError::Throttled(seconds)) => {
+                return Err(AppError::bungie_rate_limit(seconds));
+            }
             Err(TransferTransportError::NotDispatched) => return Err(provider_unavailable()),
             Err(TransferTransportError::Configuration) => return Err(configuration()),
             Err(TransferTransportError::Indeterminate) => return Ok(TransferOutcome::Uncertain),
@@ -955,6 +986,7 @@ mod tests {
                 .and_then(|value| value.to_str().ok())
                 .map(str::to_owned),
             body: Box::new(received),
+            throttle: None,
         }
     }
 
@@ -1253,6 +1285,34 @@ mod tests {
         assert_eq!(TRANSFER_RESPONSE_LIMIT, 8 * 1024);
     }
 
+    #[test]
+    fn adaptive_fail_fast_precedes_credentials_and_dispatch() {
+        use std::time::Duration;
+        struct Time;
+        impl crate::bungie_throttle::ThrottleTime for Time {
+            fn now(&self) -> Duration {
+                Duration::ZERO
+            }
+            fn sleep(&self, _: Duration) {
+                panic!("fail-fast must not sleep");
+            }
+        }
+        let throttle = std::sync::Arc::new(crate::bungie_throttle::BungieThrottle::new(
+            std::sync::Arc::new(Time),
+        ));
+        for _ in 0..6 {
+            throttle.observe(&serde_json::json!({"ErrorCode":36,"ThrottleSeconds":45}));
+        }
+        let mut transport = HttpTransferTransport::new()
+            .unwrap()
+            .with_throttle(throttle);
+        // Missing credentials guarantee no network call even if this gate regresses.
+        let request = TransferHttpRequest::new(TRANSFER_ENDPOINT, "{}".into(), None, None);
+        assert_eq!(
+            transport.post(&request).unwrap_err(),
+            TransferTransportError::Throttled(45)
+        );
+    }
     #[test]
     fn allowlist_accepts_only_the_exact_action_url() {
         assert!(is_allowed_transfer_url(TRANSFER_ENDPOINT));

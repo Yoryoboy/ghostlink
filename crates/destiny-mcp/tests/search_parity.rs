@@ -1156,6 +1156,22 @@ fn search_cli_mcp_request_parity() {
 
     for (flags, args) in [
         (vec![], json!({})),
+        (vec![""], json!({"query": ""})),
+        (
+            vec!["is:weapon -is:locked", "--tier", "Exotic"],
+            json!({"query": "is:weapon -is:locked", "tier": "Exotic"}),
+        ),
+        (
+            vec![
+                "-is:locked",
+                "--offset",
+                "1",
+                "--limit",
+                "2",
+                "--include-available",
+            ],
+            json!({"query": "-is:locked", "offset": 1, "limit": 2, "include_available": true}),
+        ),
         (
             vec!["--perk", "Rampage", "--perk", "Rampage"],
             json!({"perk_name": "Rampage", "perk_names": ["Rampage"]}),

@@ -28,6 +28,75 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 
 #[tokio::test]
+async fn dim_query_stdio_and_invalid_query_contract() {
+    let mut session = FixtureSession::spawn(Some("success")).await;
+    let all = session
+        .call_tool(SEARCH_INVENTORY_TOOL, json!({"query":""}))
+        .await;
+    assert_eq!(all["result"]["isError"], false, "{all}");
+    assert!(
+        !all["result"]["structuredContent"]["hits"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let query = session
+        .call_tool(
+            SEARCH_INVENTORY_TOOL,
+            json!({"query":"is:invault", "equipped":false}),
+        )
+        .await;
+    let flags = session
+        .call_tool(
+            SEARCH_INVENTORY_TOOL,
+            json!({"location":"vault", "equipped":false}),
+        )
+        .await;
+    assert_eq!(query["result"]["isError"], false, "{query}");
+    assert_eq!(
+        query["result"]["structuredContent"]["hits"],
+        flags["result"]["structuredContent"]["hits"]
+    );
+    let invalid = session
+        .call_tool(
+            SEARCH_INVENTORY_TOOL,
+            json!({"query":"is:weapon mystery:x"}),
+        )
+        .await;
+    assert_eq!(invalid["result"]["isError"], true);
+    let error = &invalid["result"]["structuredContent"];
+    assert_eq!(error["code"], "invalid_query");
+    assert_eq!(error["kind"], "unknown_filter");
+    assert_eq!(error["span"], json!({"start":10,"end":19}));
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown filter")
+    );
+    assert!(
+        error["supported_filters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|key| key == "is:weapon")
+    );
+    let unsupported = session
+        .call_tool(SEARCH_INVENTORY_TOOL, json!({"query":"wishlist:x"}))
+        .await;
+    assert_eq!(
+        unsupported["result"]["structuredContent"]["kind"],
+        "unsupported_filter"
+    );
+    assert!(
+        unsupported["result"]["structuredContent"]
+            .get("supported_filters")
+            .is_none()
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn action_descriptions_share_the_ordinary_sync_contract() {
     let mut session = FixtureSession::spawn(Some("success")).await;
     let id = session.next_id();
@@ -151,6 +220,14 @@ async fn apply_loadout_stdio_contract() {
         ("loadout-transient", "transient", "failed"),
         ("loadout-uncertain", "uncertain", "failed"),
         ("loadout-storage", "applied", "local_state_failed"),
+        ("loadout-partial", "applied", "local_state_failed"),
+        ("loadout-subclass", "applied", "local_state_failed"),
+        (
+            "loadout-missing-definition",
+            "applied",
+            "local_state_failed",
+        ),
+        ("loadout-unsupported", "applied", "local_state_failed"),
     ] {
         for args in [
             json!({"character":"hunter","slot":3}),
@@ -166,6 +243,40 @@ async fn apply_loadout_stdio_contract() {
             assert_eq!(output["receipt"], receipt);
             assert_eq!(output["outcome"], outcome);
             assert_eq!(response["result"]["isError"], outcome != "applied");
+            let local = &output["local_state"];
+            assert_eq!(local["persisted"], scenario != "loadout-storage");
+            assert_eq!(
+                local["status"],
+                match scenario {
+                    "loadout-success" => "updated",
+                    "loadout-storage" => "failed",
+                    "loadout-partial"
+                    | "loadout-subclass"
+                    | "loadout-missing-definition"
+                    | "loadout-unsupported" => "partial",
+                    _ => "not_attempted",
+                }
+            );
+            match scenario {
+                "loadout-partial" => {
+                    assert_eq!(local["unresolved_items"][0]["item"]["instance_id"], "404");
+                    assert_eq!(local["unresolved_items"][0]["reason"], "not_owned");
+                    assert!(local["unresolved_items"][0]["item"]["item_hash"].is_null());
+                }
+                "loadout-subclass" => {
+                    assert_eq!(local["skipped"][0]["reason"], "subclass_not_held")
+                }
+                "loadout-missing-definition" => {
+                    assert_eq!(local["unresolved_items"][0]["reason"], "missing_definition")
+                }
+                "loadout-unsupported" => {
+                    assert_eq!(local["skipped"][0]["reason"], "unsupported_bucket")
+                }
+                _ => {
+                    assert_eq!(local["unresolved_items"], json!([]));
+                    assert_eq!(local["skipped"], json!([]));
+                }
+            }
             if scenario == "loadout-location" {
                 assert_eq!(output["reason"], "go to orbit or a social space and retry");
             }
@@ -1341,6 +1452,52 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
     session.shutdown().await;
 }
 
+#[tokio::test]
+async fn search_inventory_stdio_defaults_to_compact_and_accepts_detail() {
+    let mut session = FixtureSession::spawn(None).await;
+    let query = json!({"text":"The Last Word", "instances":{"item_hashes":[5]}});
+    let default = session
+        .call_tool(SEARCH_INVENTORY_TOOL, query.clone())
+        .await;
+    let mut explicit = query.clone();
+    explicit["detail"] = json!(false);
+    let compact = session.call_tool(SEARCH_INVENTORY_TOOL, explicit).await;
+    let mut detailed = query;
+    detailed["detail"] = json!(true);
+    let detail = session.call_tool(SEARCH_INVENTORY_TOOL, detailed).await;
+    for result in [&default, &compact, &detail] {
+        assert_eq!(result["result"]["isError"], false);
+        assert_no_secret_in(result);
+    }
+    assert_eq!(structured(&default), structured(&compact));
+    let tile = &structured(&default)["hits"][0];
+    assert_eq!(tile["instance_id"], "inst-e");
+    assert_eq!(tile["name"], "The Last Word");
+    assert_eq!(
+        tile["location"],
+        json!({"kind":"character", "character_id":"zavala"})
+    );
+    for omitted in [
+        "instance",
+        "definition",
+        "available_perks",
+        "available_mods",
+        "archetype",
+        "stats",
+    ] {
+        assert!(tile.get(omitted).is_none(), "{omitted}");
+    }
+    assert_eq!(
+        structured(&detail)["hits"][0]["instance"]["instance_id"],
+        "inst-e"
+    );
+    assert_eq!(
+        structured(&default)["candidates"],
+        structured(&detail)["candidates"]
+    );
+    session.shutdown().await;
+}
+
 /// The named semantic journey: one `item_text` request, not an exact instance.
 ///
 /// This is the in-memory MCP fixture, not the real-adapter journey composed in
@@ -1365,7 +1522,7 @@ async fn move_item_semantic_text_resolves_the_named_instance_through_the_vault()
     let search = session
         .call_tool(
             SEARCH_INVENTORY_TOOL,
-            json!({ "text": "The Last Word", "instances": { "item_hashes": [5] } }),
+            json!({ "detail": true, "text": "The Last Word", "instances": { "item_hashes": [5] } }),
         )
         .await;
     assert_eq!(search["result"]["isError"], false);

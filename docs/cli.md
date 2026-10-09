@@ -270,8 +270,10 @@ for installation details, manual fallback, and security limits.
 ```sh
 ghostlink list-characters
 ghostlink postmaster --character hunter --json
-ghostlink search-inventory --text gjallar --limit 5
+ghostlink search-inventory 'is:weapon -is:locked' --limit 5
+ghostlink search-inventory --filters
 ghostlink inspect-item 700000000000000001
+ghostlink inspect-item --name "Ace of Spades"
 ghostlink subclass --character hunter
 ghostlink subclass-options --character hunter --element strand --locked
 ```
@@ -364,6 +366,55 @@ Requires login, loaded Manifest definitions and a profile sync.
 
 ### Inventory filters
 
+#### DIM-style query
+
+Pass a positional query, quoted for your shell. It can start with `-` and combines
+with structured flags using AND. An explicit empty query selects all owned items;
+omitting the query and all filters still returns definition candidates only.
+`--filters` lists syntax, examples and supported/unsupported filters from the
+same registry used for validation, without reading inventory. It prints plain
+text even with `--json`.
+
+```sh
+ghostlink search-inventory 'is:weapon (is:solar or is:arc) -is:locked'
+ghostlink search-inventory 'type:"Hand Cannon" perk:dragonfly' --location vault
+ghostlink search-inventory 'stat:Range:>=30 power:>=440' --sort Range
+ghostlink search-inventory '-is:locked' --json
+ghostlink search-inventory '' --limit 5
+```
+
+Precedence is **explicit `and` > `or` > whitespace AND**: `a b or c` means
+`a and (b or c)`. Use parentheses to make grouping clear. `-` and `not` negate;
+`not:locked` is shorthand for `-is:locked`. Quoted words are phrases, not exact
+names; use `exactname:"Ace of Spades"` for normalized exact matching.
+Comparisons accept unsigned integers with `=`, `<`, `<=`, `>`, `>=` (no operator
+means equality): `power:>=440` / `light:>=440`, `stat:Range:>=30`.
+Absent or zero power never matches a power comparison; plain negation such as
+`-power:>440` also includes items with no power. Missing stats fail comparisons.
+
+| Query filters | Meaning |
+| --- | --- |
+| `name:`, `exactname:`, `type:`, `keyword:`, bare words/phrases | Normalized name/type/text matching |
+| `perk:`, `perkname:`, `exactperk:`, `perkhash:` | Weapon perk text, exact normalized perk name, or hash |
+| `mod:`, `archetype:` | Armor mod or archetype name |
+| `hash:`, `character:` | Definition hash; character name/class or identifier |
+| `tag:` | Exact stored definition tag, **not** a DIM user annotation |
+| `power:` / `light:`, `stat:` | Numeric comparisons |
+
+Supported `is:` values: `locked`, `equipped`, `invault`,
+`ininventory`, `inpostmaster`, `weapon`, `armor`, `kineticslot`, `energy`, `power`,
+`helmet`, `gauntlets`, `chest`, `leg`, `classitem`, `kinetic`, `arc`, `solar`,
+`void`, `stasis`, `strand`, `common`, `rare`, `legendary`, `exotic`, `hunter`,
+`titan`, `warlock`. `is:kinetic` means damage; `is:kineticslot` means slot.
+
+Unsupported DIM filters (notes, wishlists, crafting/patterns, duplicates, kill
+trackers, loadout membership, base stats and stat arithmetic) fail explicitly;
+unknown keys/values and unbalanced groups are errors, even in an OR branch.
+Sorting stays in `--sort`, not `sort:` or `sortby:`. Queries are bounded to
+1024 bytes, nesting depth 32 and 128 AST nodes. Never silently drop a filter.
+
+#### Structured flags
+
 Filter Manifest candidates and owned hits by definition attributes and power:
 
 ```sh
@@ -386,12 +437,29 @@ Names are case-insensitive:
 | `--location <LOCATION>` | vault, character; combines with `--character` using AND |
 | `--equipped <BOOL>` | true, false; filters owned instances |
 | `--limit <N>` | 1–1000; default 100, bounds definition candidates and instance hits |
+| `--offset <N>` | 0–10000; skip ordered owned hits only |
+| `--detail` | Restore full instance hits instead of compact tiles |
 | `--sort <Stat>[:asc\|desc]` | Sort owned hits by stat; descending by default |
 
 `--text`, `--type`, `--tag`, and the new definition filters also constrain owned
-hits. An unfiltered search returns definition candidates only. Text and JSON
-output include element, slot, and class where available. Location or equipped
-filters alone also search owned instances.
+hits. Without a query or filters, search returns definition candidates only.
+Location or equipped filters alone also search owned instances. Owned hits default
+to compact tiles: `instance_id`, `item_hash`, `name`, `item_type`, `tier`,
+`location`, `equipped`, `locked`, `perk_names`; optional `element`/`power`,
+`quantity` when greater than one, nonempty `mods`, and only stats referenced by
+query/flag filters or sort. Human output is one line per hit. `--detail` restores
+the previous full hit shape; candidates and inspection are unchanged.
+
+Pagination happens over owned matches in the existing order. JSON includes
+`next_offset` only when more hits exist and that offset is valid (at most 10000).
+Human output prints `More results: rerun with --offset N`. Reuse the same query,
+flags, sort and limit; definition candidates are not paginated.
+
+```sh
+ghostlink search-inventory 'is:armor' --limit 5 --json
+ghostlink search-inventory 'is:armor' --limit 5 --offset 5 --json
+ghostlink search-inventory 'is:armor' --detail --json
+```
 
 Repeat `--perk` or `--mod` up to eight times per kind. Every term must match
 (AND); within one term, any resolved name matches. For example:
@@ -566,6 +634,8 @@ Stat names are **not unique**: Class and Melee can each refer to multiple
 hashes. Any matching hash may satisfy each condition. Hits show named stats
 in stable name-then-hash order (unnamed stats are omitted), as `stats: Class
 35, Health 20, ...` in text and a `stats` array of `{name, value}` in JSON.
+Compact search hits include only filter/sort-referenced stats; use `--detail`
+or inspect the chosen item for all named stats.
 MCP `search_inventory` accepts the same comparisons in its `stats` array.
 Stats appear after the next profile sync (the next stale inventory read
 refreshes the stored profile projection).
@@ -699,16 +769,32 @@ Ordinary sync resolves the saved slot/name from the committed cache: a fresh
 cached projection needs zero profile or component-206 reads. Legacy projections
 without the cache use one 206 read. Exactly one official EquipLoadout call follows;
 no item-by-item provider emulation, post-action request, or automatic retry.
-Acknowledged saved items found locally move to the character, become equipped,
-and unequip same-bucket replacements. Complete persistence retains freshness;
+Acknowledged saved items found locally are projected locally onto the character,
+as equipped, with same-bucket replacements unequipped. These are not per-item
+Bungie confirmations; no cross-character/Vault preparation is promised.
+Complete persistence retains freshness;
 missing items, subclasses not held on the target, or rejected local effects apply the rest
 and invalidate freshness so the next ordinary read syncs. Mods/plugs remain
 unchanged, including subclass aspects/fragments, matching DIM's Bungie API
 limitation. Held subclasses switch locally and unequip the previous subclass;
 this loadout-only path does not change single-item equip validation.
 JSON (`kind: "apply_loadout"`) shows `character`, one-based `slot`, `name`,
-`outcome`, `receipt`, `reason`, and `local_state` (`updated` only for complete
-local effects without invalidation). `applied` is acknowledgement, not observed
+`outcome`, `receipt`, `reason`, and a typed `local_state` object:
+
+```json
+{"status":"updated","unresolved_items":[],"skipped":[],"persisted":true}
+```
+
+`status` is `updated` (complete projection), `partial` (unresolved/skipped items),
+`failed` (projection persistence or invalidation failed), or `not_attempted`
+(no acknowledged receipt/local projection attempt). Each issue in
+`unresolved_items` or `skipped` has `{item: {instance_id, item_hash, bucket, name},
+reason}`; hash, bucket and name may be null. Reasons are `not_owned`, `ambiguous`,
+`missing_definition`, `definition_unavailable`, `subclass_not_held`,
+`unsupported_bucket`, `invalid_projection`. `persisted` is false only when
+writing projected effects failed; true can also mean there were no effects.
+
+`applied` is acknowledgement, not observed
 game state (exit 0). Refusal/auth/transient/uncertain attempts invalidate freshness
 and fail (41). An applied receipt with incomplete local effects or persistence
 failure is `local_state_failed` (42), preserving the receipt and reporting
@@ -719,7 +805,13 @@ MCP `apply_loadout` uses the same service and output.
 
 ### Inspect one owned item
 
-`ghostlink inspect-item <INSTANCE_ID>` shows named socketed perks and mods,
+Use exactly one of `ghostlink inspect-item <INSTANCE_ID>` or
+`ghostlink inspect-item --name "Ace of Spades"`. Name lookup is normalized exact
+matching (case/whitespace), never fuzzy. Multiple owned matches return
+`ambiguous_match` (exit 31) with compact candidates; choose an `instance_id`.
+A missing match returns `item_not_found` (32).
+
+Inspection shows named socketed perks and mods,
 the armor archetype, available perks/mods and named stats where present, using
 the same enrichment as search hits. Raw perk component state is separate under
 `perk states:`. CLI JSON exposes `perk_names`, `mod_names`, `mods` (the same
@@ -835,18 +927,41 @@ and rejected with `--json`):
   (such as `character_list`, `inventory_search`, or `item_inspection`) and a bounded
   `metadata` block (`revision`, `checked_at`, `source`, `freshness`). Definition
   search candidates and concrete instance hits stay in separate, bounded arrays.
-- `inspect-item` accepts only a concrete instance identifier; a missing instance
-  is the typed `item_not_found` outcome (exit 32), never an empty success.
-- Failures write exactly one sanitized line to stderr (human) or one sanitized
+- `inspect-item` accepts exactly one instance identifier or `--name` exact-name
+  selector; missing matches return `item_not_found` (32), ambiguity returns
+  compact candidates with `ambiguous_match` (31).
+- Failures write a sanitized diagnostic to stderr (human) or one sanitized
   `{"error":{"code":"...","message":"..."}}` object (JSON) and never echo a
-  rejected argument value, credential, header, raw provider response, or
-  membership ID. Invalid arguments keep code `invalid_request` and exit 2;
+  credential, header, raw provider response, or membership ID. Query syntax
+  errors are an exception to argument non-echoing: exit 2 (`invalid_request`)
+  includes the error kind, byte span, bounded sanitized excerpt and caret.
+  Other invalid arguments keep code `invalid_request` and exit 2;
   the message names the argument and reason, for example
   `invalid --limit: must be between 1 and 1000`, without echoing its value.
-- Validation happens before any service call, so invalid arguments make no
-  provider or repository request. Exit codes follow the stable matrix in
+- Argument and query syntax validation happens before any service call;
+  catalog-based name/stat resolution happens during the read. Exit codes follow the stable matrix in
   `odd/tasks/destiny-cli-read-journey.md`.
 
+
+### Bungie read errors and pacing
+
+Read responses classify body `ErrorCode`, not provider status text:
+
+| Bungie code | CLI code / exit | Next step |
+| --- | --- | --- |
+| 35, 36, 37, 54, 55, 56, 57, 1672 | `provider_rate_limit` / 20 | Wait for the reported retry time; do not loop |
+| 5 | `provider_unavailable` / 21 | Maintenance; try a read later |
+| 99, 22, 2111, 2123, 2124 | `reauthorization_required` / 11 | Run `ghostlink login` |
+| 2101, 2102 | `configuration_error` / 52 | Fix the missing/invalid API key setup |
+
+Bungie reads and actions share process-wide adaptive pacing (OAuth excluded).
+After throttling, pre-request delay is `2^n * 500 ms`; success halves `n`.
+The computed cooldown caps at five minutes; a longer positive `ThrottleSeconds`
+hint may extend it. Waits above 30 seconds fail before dispatch with
+`retry in about N seconds`; a later caller-driven probe can recover. Existing
+bounded read retries remain; actions are never automatically retried, and an
+action refused before dispatch is definitive (nothing sent). This is not a
+cross-process throttle guarantee.
 
 ## Pull one Postmaster equipment instance
 
@@ -1006,7 +1121,8 @@ Bungie is the final validator. Acknowledged actions update local state immediate
 rejections and uncertain outcomes mark it for refresh. Never retry an uncertain outcome.
 Incomplete effects and persistence failures also require refresh.
 
-CLI JSON and MCP structured output both report `local_state`: `updated` means
+Except apply-loadout (the typed object described above), CLI JSON and MCP
+structured output report a string `local_state`: `updated` means
 acknowledged effects persisted with freshness retained; `unchanged` means no-op or
 refusal before dispatch; `refresh_pending` means invalidated state requiring the
 next ordinary read to re-sync. This replaces `profile_refresh` and

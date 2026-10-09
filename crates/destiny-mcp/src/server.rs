@@ -1,8 +1,8 @@
 //! RMCP tools-only server for the Destiny semantic tools.
 //!
 //! [`ReadToolServer`] adapts the provider-neutral [`InventoryReadService`] seam
-//! to an [`rmcp::ServerHandler`]. On its own it exposes exactly the four
-//! bounded read tools, dispatches each `tools/call` through the shared argument
+//! to an [`rmcp::ServerHandler`]. On its own it exposes the bounded read
+//! tools, dispatches each `tools/call` through the shared argument
 //! conversion and service, and returns the structured result or a sanitized tool
 //! error. When constructed with the optional adapter-free [`MutationToolService`]
 //! seam it additionally advertises and dispatches the single intent-authorized
@@ -11,13 +11,13 @@
 //!
 //! # Boundaries
 //!
-//! - The handler holds a `Box<dyn InventoryReadService + Send>` and an optional
-//!   `Box<dyn MutationToolService + Send>` behind `std::sync::Mutex`, so both
-//!   synchronous services can be shared by the [`rmcp::ServerHandler`] without
-//!   introducing a second service contract. A lock is only ever held for one
-//!   synchronous dispatch, never across an `.await`. One outer operation guard
-//!   serializes both seams: local refresh publication cannot overtake mutation
-//!   preflight, ordered dispatch, or freshness invalidation.
+//! - Production uses a fixed pool of independent read services/SQLite connections.
+//!   Fresh projection reads do not acquire the exclusive operation guard. Only
+//!   mutations hold it for their entire dispatch, while read-triggered syncs
+//!   acquire it inside the app sync seam and re-check freshness after waiting.
+//!   This single-flight boundary prevents competing publication from overtaking
+//!   mutation preflight, ordered dispatch, or freshness invalidation. Legacy
+//!   single-service mutation construction retains whole-read exclusion.
 //! - Dispatch is offloaded with [`tokio::task::spawn_blocking`]: the read
 //!   service performs blocking provider and storage work, and the RMCP server
 //!   loop is async. Keeping the blocking work off the async worker is what makes
@@ -45,6 +45,18 @@ use crate::schema::{
 use crate::service::{InventoryReadService, MutationToolService};
 
 type SharedReadService = Arc<Mutex<Box<dyn InventoryReadService + Send>>>;
+
+/// Fixed round-robin slots; each slot owns a distinct synchronous service.
+struct ReadPool {
+    services: Vec<SharedReadService>,
+    next: std::sync::atomic::AtomicUsize,
+}
+impl ReadPool {
+    fn select(&self) -> SharedReadService {
+        let index = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Arc::clone(&self.services[index % self.services.len()])
+    }
+}
 type SharedMutationService = Arc<Mutex<Box<dyn MutationToolService + Send>>>;
 
 /// The instructions a read-only server advertises.
@@ -62,34 +74,39 @@ const READ_ONLY_INSTRUCTIONS: &str =
 /// has to match the discovery set.
 const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item`, `equip_item`, and `set_lock_state`, `pull_item`, `pull_stack`, `apply_loadout`, and `equip_items` mutations.";
 
-/// The tools-only RMCP server over one shared read service and an optional
-/// mutation seam.
+/// The tools-only RMCP server over bounded read slots and an optional mutation seam.
 ///
-/// Each service is shared behind its own mutex. An outer operation guard spans
-/// the entire call on either seam, including all snapshot publication paths.
-/// Lock ordering is operation -> service -> individual gateway/repository calls.
-/// Sync and freshness invalidation never reenter the operation guard. This protects
-/// only this server's local publication, not external game state or other processes.
+/// Lock ordering: reads take slot -> exclusive (only on refresh) -> individual
+/// adapter locks; mutations take exclusive -> mutation service -> adapter locks.
+/// Mutations never take read slots or reenter exclusive. No adapter lock or SQLite
+/// transaction survives the freshness check preceding exclusive acquisition.
+/// All guards live inside synchronous dispatch/spawn_blocking, never across await.
+/// This protects only local publication, not external game state or other processes.
 /// The server is `Send + Sync + 'static`, as
 /// [`rmcp::ServerHandler`] requires.
 pub struct ReadToolServer {
     operation: Arc<Mutex<()>>,
-    service: SharedReadService,
+    service: Arc<ReadPool>,
     mutation: Option<SharedMutationService>,
+    legacy_read_exclusion: bool,
 }
 
 impl ReadToolServer {
     /// Wraps one read service for the stdio server, exposing only the reads.
     ///
     /// This is the read-only construction: the server discovers exactly the
-    /// four read tools and rejects `move_item` as an unknown tool, so an
+    /// bounded read tools and rejects `move_item` as an unknown tool, so an
     /// unconfigured mutation seam cannot be told apart from one that was never
     /// built.
     pub fn new(service: Box<dyn InventoryReadService + Send>) -> Self {
         Self {
             operation: Arc::new(Mutex::new(())),
-            service: Arc::new(Mutex::new(service)),
+            service: Arc::new(ReadPool {
+                services: vec![Arc::new(Mutex::new(service))],
+                next: std::sync::atomic::AtomicUsize::new(0),
+            }),
             mutation: None,
+            legacy_read_exclusion: false,
         }
     }
 
@@ -105,14 +122,43 @@ impl ReadToolServer {
     ) -> Self {
         Self {
             operation: Arc::new(Mutex::new(())),
-            service: Arc::new(Mutex::new(service)),
+            service: Arc::new(ReadPool {
+                services: vec![Arc::new(Mutex::new(service))],
+                next: std::sync::atomic::AtomicUsize::new(0),
+            }),
             mutation: Some(Arc::new(Mutex::new(mutation))),
+            legacy_read_exclusion: true,
+        }
+    }
+
+    /// Composes independent read slots whose publishing sync services all use
+    /// `exclusive` via `ProfileSyncService::with_sync_gate`. Mutation services
+    /// must NOT inject it: dispatch already holds it until the service returns.
+    /// Legacy `with_mutation` keeps whole-read exclusion for arbitrary services
+    /// that have not opted into that publication contract.
+    pub fn with_read_pool(
+        services: Vec<Box<dyn InventoryReadService + Send>>,
+        mutation: Box<dyn MutationToolService + Send>,
+        exclusive: Arc<Mutex<()>>,
+    ) -> Self {
+        assert!(!services.is_empty(), "read pool must not be empty");
+        Self {
+            operation: exclusive,
+            service: Arc::new(ReadPool {
+                services: services
+                    .into_iter()
+                    .map(|s| Arc::new(Mutex::new(s)))
+                    .collect(),
+                next: std::sync::atomic::AtomicUsize::new(0),
+            }),
+            mutation: Some(Arc::new(Mutex::new(mutation))),
+            legacy_read_exclusion: false,
         }
     }
 
     /// The exact tool descriptors this server advertises, in stable order.
     ///
-    /// The four reads are always present and deterministic. `move_item` is
+    /// The reads are always present and deterministic. `move_item` is
     /// appended only when a mutation seam was composed, so the discovery set is
     /// a function of the construction and never of the request.
     pub fn discover_tools(&self) -> ListToolsResult {
@@ -143,7 +189,8 @@ impl ReadToolServer {
     pub fn dispatch(&self, name: &str, arguments: JsonObject) -> Result<CallToolResult, ErrorData> {
         dispatch_operation(
             &self.operation,
-            &self.service,
+            &self.service.select(),
+            self.legacy_read_exclusion,
             self.mutation_for(name),
             name,
             arguments,
@@ -222,10 +269,18 @@ impl ServerHandler for ReadToolServer {
         // everything it needs; the synchronous service runs off the async
         // worker thread. A read-only server keeps the mutation name unknown.
         let operation = Arc::clone(&self.operation);
-        let service = Arc::clone(&self.service);
+        let service = self.service.select();
+        let legacy_read_exclusion = self.legacy_read_exclusion;
         let mutation = self.mutation_for(&name).map(Arc::clone);
         let result = tokio::task::spawn_blocking(move || {
-            dispatch_operation(&operation, &service, mutation.as_ref(), &name, arguments)
+            dispatch_operation(
+                &operation,
+                &service,
+                legacy_read_exclusion,
+                mutation.as_ref(),
+                &name,
+                arguments,
+            )
         })
         .await
         .map_err(|_| internal_error())?;
@@ -233,16 +288,21 @@ impl ServerHandler for ReadToolServer {
     }
 }
 
-/// Single operation boundary for both direct dispatch and the async handler.
-/// Acquire before any service work, release only after verification/no-op/error.
+/// Mutation exclusion for both direct dispatch and the async handler.
+/// Read pool slots guard themselves; their sync seam owns publication exclusion.
 fn dispatch_operation(
     operation: &Mutex<()>,
     service: &SharedReadService,
+    legacy_read_exclusion: bool,
     mutation: Option<&SharedMutationService>,
     name: &str,
     arguments: JsonObject,
 ) -> Result<CallToolResult, ErrorData> {
-    let _operation = operation.lock().map_err(|_| internal_error())?;
+    let _operation = if mutation.is_some() || legacy_read_exclusion {
+        Some(operation.lock().map_err(|_| internal_error())?)
+    } else {
+        None
+    };
     match mutation {
         Some(mutation) => dispatch_mutation_locked(mutation, name, arguments),
         None => dispatch_locked(service, name, arguments),
@@ -358,13 +418,20 @@ fn dispatch_search_inventory(
     arguments: JsonObject,
 ) -> Result<CallToolResult, ErrorData> {
     let arguments: SearchInventoryArgs = deserialize(arguments)?;
+    let detail = arguments.detail;
     let request = match arguments.into_request() {
         Ok(request) => request,
         Err(error) => return Ok(error.into_call_tool_result()),
     };
     Ok(service
         .search_inventory(&request)
-        .map_or_else(tool_error, |output| output.into_call_tool_result()))
+        .map_or_else(tool_error, |output| {
+            if detail {
+                output.into_detail_call_tool_result()
+            } else {
+                output.into_call_tool_result()
+            }
+        }))
 }
 
 fn dispatch_get_subclass(
@@ -386,6 +453,60 @@ fn dispatch_inspect_item(
     arguments: JsonObject,
 ) -> Result<CallToolResult, ErrorData> {
     let arguments: InspectItemArgs = deserialize(arguments)?;
+    if let Some(name) = &arguments.name {
+        if arguments.instance_id.is_some() {
+            return Ok(McpError::from(destiny_app::AppError::invalid_argument(
+                "inspect_item",
+                "supply exactly one instance_id or name",
+            ))
+            .into_call_tool_result());
+        }
+        let mut request = match destiny_app::queries::owned_name_request(name) {
+            Ok(request) => request,
+            Err(error) => return Ok(McpError::from(error).into_call_tool_result()),
+        };
+        let normalized = destiny_app::normalize_search_text(name);
+        let mut hits = Vec::new();
+        loop {
+            let output = match service.search_inventory(&request) {
+                Ok(output) => output,
+                Err(error) => return Ok(error.into_call_tool_result()),
+            };
+            hits.extend(output.hits.into_iter().filter(|hit| {
+                destiny_app::normalize_search_text(&hit.definition.name) == normalized
+            }));
+            match output.next_offset {
+                Some(offset) => {
+                    request.instances.as_mut().expect("owned name query").offset = offset
+                }
+                None => break,
+            }
+        }
+        return match hits.as_slice() {
+            [] => Ok(CallToolResult::structured_error(
+                serde_json::json!({"code":"item_not_found","message":"The requested owned item name was not found."}),
+            )),
+            [hit] => Ok(service
+                .inspect_item(&destiny_app::InspectItemRequest {
+                    instance_id: destiny_app::ItemInstanceId::new(hit.instance.instance_id.clone()),
+                })
+                .map_or_else(tool_error, |output| output.into_call_tool_result())),
+            _ => {
+                let candidates = hits
+                    .iter()
+                    .map(|hit| {
+                        destiny_output::search::compact_hit(
+                            &serde_json::to_value(hit).expect("plain hit projection"),
+                            &serde_json::json!({}),
+                        )
+                    })
+                    .collect();
+                Ok(CallToolResult::structured_error(
+                    destiny_output::search::ambiguous_items(candidates),
+                ))
+            }
+        };
+    }
     let request = match arguments.into_request() {
         Ok(request) => request,
         Err(error) => return Ok(error.into_call_tool_result()),
@@ -560,6 +681,7 @@ mod tests {
         max_inflight: Arc<AtomicUsize>,
         delay: Duration,
         failure: Option<ErrorCategory>,
+        search_output: Option<SearchInventoryOutput>,
     }
 
     impl RecordingService {
@@ -570,6 +692,7 @@ mod tests {
                 max_inflight: Arc::new(AtomicUsize::new(0)),
                 delay: Duration::ZERO,
                 failure: None,
+                search_output: None,
             }
         }
 
@@ -705,12 +828,16 @@ mod tests {
             self.enter("search_inventory");
             let result = match self.failure {
                 Some(category) => Err(McpError::new(category)),
-                None => Ok(SearchInventoryOutput {
-                    resolved: Default::default(),
-                    candidates: Vec::new(),
-                    hits: Vec::new(),
-                    metadata: metadata(),
-                }),
+                None => Ok(self
+                    .search_output
+                    .clone()
+                    .unwrap_or_else(|| SearchInventoryOutput {
+                        next_offset: None,
+                        resolved: Default::default(),
+                        candidates: Vec::new(),
+                        hits: Vec::new(),
+                        metadata: metadata(),
+                    })),
             };
             self.leave();
             result
@@ -859,6 +986,98 @@ mod tests {
     }
 
     #[test]
+    fn fresh_reads_progress_while_exclusive_guard_is_held() {
+        use std::sync::mpsc;
+        struct PausedMutation(mpsc::Sender<()>, mpsc::Receiver<()>);
+        impl MutationToolService for PausedMutation {
+            fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+                self.0.send(()).unwrap();
+                self.1.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(move_success_output())
+            }
+        }
+        for _ in 0..8 {
+            struct RendezvousRead(std::sync::Arc<std::sync::Barrier>, RecordingService);
+            impl InventoryReadService for RendezvousRead {
+                fn list_characters(
+                    &mut self,
+                    request: &ListCharactersRequest,
+                ) -> Result<ListCharactersOutput, McpError> {
+                    self.0.wait();
+                    self.1.list_characters(request)
+                }
+                fn get_postmaster(
+                    &mut self,
+                    c: Option<&destiny_app::CharacterId>,
+                ) -> Result<crate::schema::GetPostmasterOutput, McpError> {
+                    self.1.get_postmaster(c)
+                }
+                fn get_subclass(
+                    &mut self,
+                    c: Option<&destiny_app::CharacterId>,
+                ) -> Result<crate::schema::GetSubclassOutput, McpError> {
+                    self.1.get_subclass(c)
+                }
+                fn search_inventory(
+                    &mut self,
+                    r: &destiny_app::SearchInventoryRequest,
+                ) -> Result<crate::schema::SearchInventoryOutput, McpError> {
+                    self.1.search_inventory(r)
+                }
+                fn inspect_item(
+                    &mut self,
+                    r: &destiny_app::InspectItemRequest,
+                ) -> Result<crate::schema::InspectItemOutput, McpError> {
+                    self.1.inspect_item(r)
+                }
+            }
+            let rendezvous = Arc::new(std::sync::Barrier::new(2));
+            let (entered_tx, entered_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let server = Arc::new(ReadToolServer::with_read_pool(
+                (0..2)
+                    .map(|_| {
+                        Box::new(RendezvousRead(rendezvous.clone(), RecordingService::new()))
+                            as Box<dyn InventoryReadService + Send>
+                    })
+                    .collect(),
+                Box::new(PausedMutation(entered_tx, release_rx)),
+                Arc::new(std::sync::Mutex::new(())),
+            ));
+            let mutation_server = server.clone();
+            let mutation = std::thread::spawn(move || {
+                mutation_server.dispatch(MOVE_ITEM_TOOL, args(exact_move_arguments()))
+            });
+            entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(server.operation.try_lock().is_err());
+            let (tx, rx) = mpsc::channel();
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    let server = server.clone();
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        tx.send(
+                            server
+                                .dispatch(LIST_CHARACTERS_TOOL, Default::default())
+                                .is_ok(),
+                        )
+                        .unwrap();
+                    })
+                })
+                .collect();
+            let first = rx.recv_timeout(Duration::from_secs(2));
+            let second = rx.recv_timeout(Duration::from_secs(2));
+            release_tx.send(()).unwrap();
+            assert!(mutation.join().unwrap().is_ok());
+            for worker in workers {
+                worker.join().unwrap();
+            }
+            assert_eq!(first, Ok(true), "fresh read queued behind mutation");
+            assert_eq!(second, Ok(true), "second fresh read queued behind mutation");
+        }
+    }
+
+    #[test]
     fn rc002_dispatch_holds_the_actual_operation_guard_until_service_returns() {
         use std::sync::{TryLockError, mpsc};
         const BOUND: Duration = Duration::from_secs(5);
@@ -876,12 +1095,13 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let (done_tx, done_rx) = mpsc::channel();
-        let server = Arc::new(ReadToolServer::with_mutation(
-            Box::new(RecordingService::new()),
+        let server = Arc::new(ReadToolServer::with_read_pool(
+            vec![Box::new(RecordingService::new())],
             Box::new(PausedMutation {
                 entered: entered_tx,
                 release: release_rx,
             }),
+            Arc::new(std::sync::Mutex::new(())),
         ));
         let worker_server = server.clone();
         let worker = std::thread::spawn(move || {
@@ -930,12 +1150,13 @@ mod tests {
         }
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
-        let server = Arc::new(ReadToolServer::with_mutation(
-            Box::new(RecordingService::new()),
+        let server = Arc::new(ReadToolServer::with_read_pool(
+            vec![Box::new(RecordingService::new())],
             Box::new(PausedPull {
                 entered: entered_tx,
                 release: release_rx,
             }),
+            Arc::new(std::sync::Mutex::new(())),
         ));
         for item in ["0", "01", "9223372036854775808"] {
             let result = server
@@ -982,9 +1203,10 @@ mod tests {
         }
         let (tx, rx) = mpsc::channel();
         let (release, wait) = mpsc::channel();
-        let server = Arc::new(ReadToolServer::with_mutation(
-            Box::new(RecordingService::new()),
+        let server = Arc::new(ReadToolServer::with_read_pool(
+            vec![Box::new(RecordingService::new())],
             Box::new(PausedStack(tx, wait)),
+            Arc::new(std::sync::Mutex::new(())),
         ));
         let result = server
             .dispatch(
@@ -1073,7 +1295,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_exposes_exactly_the_four_reads_in_stable_order() {
+    fn discovery_exposes_exactly_the_read_tools_in_stable_order() {
         let (server, _handle) = server(RecordingService::new());
         let tools = server.discover_tools().tools;
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
@@ -1193,6 +1415,51 @@ mod tests {
 
         // A malformed request never reaches the shared service.
         assert!(handle.recorded().is_empty());
+    }
+
+    #[test]
+    fn search_detail_dispatch_preserves_full_output_and_defaults_to_tiles() {
+        let full: SearchInventoryOutput = serde_json::from_value(json!({
+            "resolved": {"stats":{"mobility":["Mobility"]}}, "candidates": [],
+            "hits": [{
+                "definition": {"hash":42,"bucket_hash":null,"name":"Test Helmet","item_type":"Helmet","tier":"Legendary","element":"Arc","tags":[],"definition_version":"v1"},
+                "instance": {"instance_id":"123","item_hash":42,"location":{"kind":"vault"},"quantity":1,"equipped":false,"locked":true,"power":2010,"perks":[{"perk_hash":99,"active":true,"visible":true}]},
+                "perk_names":["Plugged Perk"], "mods":[], "available_perks":["Alternative"], "available_mods":[], "archetype":null,
+                "stats":[{"name":"Mobility","value":30},{"name":"Recovery","value":20}]
+            }], "metadata": metadata()
+        })).unwrap();
+        let mut service = RecordingService::new();
+        service.search_output = Some(full.clone());
+        let (server, handle) = self::server(service);
+        for arguments in [json!({}), json!({"detail":false}), json!({"detail":true})] {
+            let detail = arguments["detail"] == true;
+            let result = server
+                .dispatch(SEARCH_INVENTORY_TOOL, args(arguments))
+                .unwrap();
+            assert_ne!(result.is_error, Some(true));
+            let value = structured(&result);
+            if detail {
+                assert_eq!(
+                    value.to_string(),
+                    serde_json::to_value(&full).unwrap().to_string()
+                );
+            } else {
+                assert_eq!(value["hits"][0]["instance_id"], "123");
+                assert!(value["hits"][0].get("instance").is_none());
+                assert_eq!(
+                    value["hits"][0]["stats"],
+                    json!([{"name":"Mobility","value":30}])
+                );
+                assert!(!value["hits"][0].to_string().contains("Alternative"));
+            }
+        }
+        assert_eq!(handle.recorded(), ["search_inventory"; 3]);
+        assert!(
+            server
+                .dispatch(SEARCH_INVENTORY_TOOL, args(json!({"detail":"true"})))
+                .is_err()
+        );
+        assert_eq!(handle.recorded().len(), 3);
     }
 
     #[test]
@@ -1493,7 +1760,40 @@ mod tests {
     }
 
     #[test]
-    fn read_only_construction_exposes_exactly_the_four_reads() {
+    fn no_advertised_input_schema_uses_top_level_combinators() {
+        // The Anthropic API rejects every request when any tool input schema has a
+        // top-level oneOf/anyOf/allOf, which would break whole client sessions.
+        let (server, _read, _mutation) = mutation_server(RecordingService::new());
+        let tools = server.discover_tools().tools;
+        assert!(tools.iter().any(|tool| tool.name == "apply_loadout"));
+        for tool in tools {
+            for keyword in ["oneOf", "anyOf", "allOf"] {
+                assert!(
+                    !tool.input_schema.contains_key(keyword),
+                    "{} input schema has top-level {keyword}",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn inspect_item_requires_exactly_one_selector_at_runtime() {
+        let (server, handle) = server(RecordingService::new());
+        for arguments in [
+            json!({}),
+            json!({"instance_id": "123", "name": "Ace of Spades"}),
+        ] {
+            let result = server
+                .dispatch("inspect_item", arguments.as_object().unwrap().clone())
+                .expect("tool result");
+            assert_eq!(result.is_error, Some(true), "{arguments}");
+        }
+        assert!(handle.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn read_only_construction_exposes_exactly_the_read_tools() {
         let (server, _handle) = server(RecordingService::new());
         let tools = server.discover_tools().tools;
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
@@ -1538,7 +1838,7 @@ mod tests {
     }
 
     #[test]
-    fn configured_mutation_exposes_the_four_reads_plus_move_item() {
+    fn configured_mutation_exposes_the_read_tools_plus_move_item() {
         let (server, _read, _mutation) = mutation_server(RecordingService::new());
         let tools = server.discover_tools().tools;
         let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();

@@ -470,6 +470,7 @@ fn cli(service: &mut Service, arguments: &[&str], now: Timestamp) -> ProcessOutp
 /// The definition search request the CLI forwards verbatim.
 fn control_search() -> SearchInventoryRequest {
     SearchInventoryRequest {
+        query: None,
         definitions: DefinitionSearchQuery {
             tier: None,
             text: Some(SearchTerm::new(CONTROL_TERM).expect("valid search term")),

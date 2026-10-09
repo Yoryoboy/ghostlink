@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 21;
+pub(crate) const LATEST_VERSION: u32 = 22;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 21] = [
+const MIGRATIONS: [Migration; 22] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -159,7 +159,29 @@ const MIGRATIONS: [Migration; 21] = [
         up: "CREATE TABLE saved_loadouts (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), normalized_loadouts TEXT NOT NULL) STRICT;",
         down: "CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1)); INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM saved_loadouts) THEN 0 ELSE 1 END; DROP TABLE downgrade_guard; DROP TABLE saved_loadouts;",
     },
+    Migration {
+        version: 22,
+        up: SCHEMA_V22_UP,
+        down: "DROP TABLE definition_search;",
+    },
 ];
+
+const SCHEMA_V22_UP: &str = r#"
+CREATE TABLE definition_search (
+    hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    name_norm TEXT NOT NULL,
+    item_type_norm TEXT,
+    tier_norm TEXT,
+    tags_norm TEXT NOT NULL,
+    element TEXT,
+    slot TEXT,
+    class_type TEXT,
+    perk INTEGER NOT NULL CHECK (perk IN (0, 1)),
+    mod INTEGER NOT NULL CHECK (mod IN (0, 1)),
+    archetype INTEGER NOT NULL CHECK (archetype IN (0, 1))
+) STRICT;
+"#;
 
 // Canonical signed Unix seconds and nanoseconds, encoded by the inventory adapter.
 // Additive migration leaves all legacy rows unknown; only profile rows may carry it.
@@ -856,6 +878,9 @@ fn apply_step(
     transaction
         .pragma_update(None, "user_version", i64::from(recorded))
         .map_err(|_| storage_failure())?;
+    if forward && version == 22 {
+        super::definitions::backfill_search(&transaction)?;
+    }
     transaction.commit().map_err(|_| storage_failure())
 }
 

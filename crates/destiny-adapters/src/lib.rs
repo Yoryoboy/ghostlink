@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod artifact;
+pub mod bungie_throttle;
 pub mod calendar;
 pub mod clarity;
 pub mod clock;

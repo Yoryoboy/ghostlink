@@ -71,6 +71,9 @@ impl<T: StackPullTransport, C: Clock, S: CredentialSource> StackPullGateway
         );
         let mut response = match self.transport.post(&http) {
             Ok(response) => response,
+            Err(StackPullTransportError::Throttled(seconds)) => {
+                return Err(AppError::bungie_rate_limit(seconds));
+            }
             Err(StackPullTransportError::NotDispatched) => {
                 return Err(AppError::new(ErrorCategory::ProviderUnavailable));
             }

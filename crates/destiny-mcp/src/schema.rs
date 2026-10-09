@@ -25,6 +25,7 @@
 //! `ItemLocation::Other` instance is rendered as the opaque
 //! [`LocationView::Other`] shape without its provider text.
 
+use destiny_app::MAX_SEARCH_OFFSET;
 use destiny_app::{
     AppError, ErrorCategory, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_TEXT_LENGTH,
     MAX_TAG_FILTERS,
@@ -104,21 +105,74 @@ impl ApplyLoadoutArgs {
         })
     }
 }
+#[derive(JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyLoadoutLocalStatusView {
+    Updated,
+    Partial,
+    Failed,
+    NotAttempted,
+}
+#[derive(JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyLoadoutLocalReasonView {
+    NotOwned,
+    Ambiguous,
+    MissingDefinition,
+    DefinitionUnavailable,
+    SubclassNotHeld,
+    UnsupportedBucket,
+    InvalidProjection,
+}
+#[derive(JsonSchema)]
+pub struct ApplyLoadoutLocalItemView {
+    pub instance_id: String,
+    pub item_hash: Option<i64>,
+    pub bucket: Option<String>,
+    pub name: Option<String>,
+}
+#[derive(JsonSchema)]
+pub struct ApplyLoadoutLocalIssueView {
+    pub item: ApplyLoadoutLocalItemView,
+    pub reason: ApplyLoadoutLocalReasonView,
+}
+#[derive(JsonSchema)]
+pub struct ApplyLoadoutLocalStateView {
+    pub status: ApplyLoadoutLocalStatusView,
+    pub unresolved_items: Vec<ApplyLoadoutLocalIssueView>,
+    pub skipped: Vec<ApplyLoadoutLocalIssueView>,
+    /// True includes cases with no projection effects to write.
+    pub persisted: bool,
+}
+#[derive(JsonSchema)]
+pub struct ApplyLoadoutOutputView {
+    pub kind: String,
+    pub character: Option<String>,
+    pub slot: Option<u8>,
+    pub name: Option<String>,
+    pub outcome: String,
+    pub receipt: Option<String>,
+    pub reason: Option<String>,
+    pub message: Option<String>,
+    pub code: Option<String>,
+    pub candidates: Option<Vec<ApplyLoadoutCandidateView>>,
+    pub local_state: ApplyLoadoutLocalStateView,
+}
+#[derive(JsonSchema)]
+pub struct ApplyLoadoutCandidateView {
+    pub slot: u8,
+    pub name: Option<String>,
+}
 pub fn apply_loadout_tool() -> Tool {
-    let mut tool = Tool::new(
+    let tool = Tool::new(
         APPLY_LOADOUT_TOOL,
-        "Apply one saved in-game loadout. Required character is an exact id or unique class; supply exactly one of one-based slot or normalized exact name. Unknown or ambiguous names list candidates, never guess. Go to orbit or a social space first (offline also allowed). Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Missing/unsupported items, incomplete effects or persistence failures also require refresh. Never retry an uncertain outcome. Ordinary sync resolves cached loadouts without profile/206 reads while fresh and cached. Held subclasses switch locally; a subclass not held on the target is skipped with refresh pending. Mods/plugs, including subclass aspects/fragments, are not updated (Bungie limitation). Single-item equip validation is unchanged.",
+        "Apply a saved loadout: character id/unique class and exactly one slot (1-based) or exact name; ambiguity returns candidates. Orbit/social space/offline only. Mods/plugs are not updated. Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; incomplete, rejected or uncertain outcomes require refresh. Never retry an uncertain outcome. See local_state and docs/mcp.md for skips and persistence.",
         JsonObject::new(),
-    ).with_input_schema::<ApplyLoadoutArgs>();
-    let mut schema = (*tool.input_schema).clone();
-    schema.insert(
-        "oneOf".into(),
-        serde_json::json!([
-            {"required":["slot"],"not":{"required":["name"]}},
-            {"required":["name"],"not":{"required":["slot"]}}
-        ]),
-    );
-    tool.input_schema = std::sync::Arc::new(schema);
+    ).with_input_schema::<ApplyLoadoutArgs>()
+        .with_object_output_schema::<ApplyLoadoutOutputView>();
+    // No top-level oneOf: the Anthropic API rejects tool input schemas that use
+    // oneOf/anyOf/allOf at the root. Exactly one of slot or name is enforced at
+    // runtime by `ApplyLoadoutArgs`.
     tool
 }
 
@@ -131,12 +185,11 @@ pub const WEEKLY_TOOL: &str = "weekly";
 
 const LIST_CHARACTERS_DESCRIPTION: &str = "List the signed-in account's characters with the freshness metadata of the committed profile projection.";
 
-const SEARCH_INVENTORY_DESCRIPTION: &str = "Search item definitions and, when requested, concrete inventory instances with bounded filters.";
+const SEARCH_INVENTORY_DESCRIPTION: &str = "Search definitions and inventory with bounded filters. Hits are compact tiles by default; detail=true returns full instance details. Continue owned hits with offset=next_offset; definition candidates are unchanged.";
 
-const INSPECT_ITEM_DESCRIPTION: &str =
-    "Inspect exactly one concrete inventory instance by its instance identifier.";
+const INSPECT_ITEM_DESCRIPTION: &str = "Inspect one owned item by instance_id or exact normalized name (exactly one required). Multiple owned namesakes return compact candidates; fuzzy matches are never inspected.";
 
-const MOVE_ITEM_DESCRIPTION: &str = "Move one concrete inventory instance to the Vault or to a character, using only ordered transfer steps. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Incomplete effects or persistence failures also require refresh. Never retry an uncertain outcome. verified_noop means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie.";
+const MOVE_ITEM_DESCRIPTION: &str = "Move exactly one instance_id/item_text to exactly one to_vault/character_id/character_label destination via ordered transfers. Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; rejection, uncertainty, incomplete effects or persistence failure require refresh. Never retry an uncertain outcome. verified_noop: local state already matches, no dispatch. See docs/mcp.md.";
 
 /// Maximum accepted MCP identifier length, in characters.
 ///
@@ -209,7 +262,7 @@ pub fn tool_specs() -> Vec<Tool> {
         .with_object_output_schema::<GetLoadoutsOutput>(),
         Tool::new(
             GET_LOADOUT_TOOL,
-            "Read ONE saved loadout's full items, plugs, subclass configuration and artifact perks. Call get_loadouts first. Required loadout accepts a one-based saved slot number or normalized exact name. Optional character is an exact id or unique hunter|titan|warlock class; omitted searches all characters and must resolve uniquely. Unknown or ambiguous selectors return typed errors, never guesses. Plug insight text is deduplicated by content in plug_insights; each occurrence references its insight index. Requires login and loaded Manifest definitions; reads live state.",
+            "Read one saved loadout's full items, plugs, subclass and artifact perks; call get_loadouts first. loadout: one-based slot or normalized exact name. Optional character: exact id/unique class; omitted searches all. Unknown/ambiguous selectors return errors, never guesses. plug_insights deduplicates text; occurrences reference its index. Requires login and Manifest; reads live state. See docs/mcp.md.",
             JsonObject::new(),
         )
         .with_input_schema::<GetLoadoutArgs>()
@@ -221,12 +274,12 @@ pub fn tool_specs() -> Vec<Tool> {
         )
         .with_input_schema::<WeeklyResetArgs>()
         .with_object_output_schema::<WeeklyResetOutput>(),
-        Tool::new(WEEKLY_TOOL, "Read reliable per-character weekly content and progress. Requires login and `ghostlink sync-manifest`. Reprise is omitted. Vanguard alerts report GM, challenged Crucible, and challenged Vanguard Op variants with visible reward unions; these are not verified in-game weapon assignments. Character accepts an exact id or unique hunter|titan|warlock class; omitted selects strictly highest light, ties use deterministic first.", JsonObject::new())
+        Tool::new(WEEKLY_TOOL, "Read per-character weekly content/progress. Requires login and sync-manifest. character: exact id/unique class; omitted selects highest light, deterministic first on ties. Reprise omitted. Vanguard alerts: GM, challenged Crucible/Vanguard Op variants and visible reward unions, not verified weapon assignments. See docs/mcp.md.", JsonObject::new())
             .with_input_schema::<WeeklyArgs>()
             .with_object_output_schema::<WeeklyOutput>(),
         Tool::new(
             GET_SUBCLASS_OPTIONS_TOOL,
-            "Return available subclass options (supers, abilities, aspects, fragments) per character with unlocked/locked/unknown status. Status is reliable only for the most recently played character's class; raw can_insert/enabled are included. Omit character for all characters or select an exact id or unique hunter|titan|warlock class; optionally filter element. Requires loaded Manifest definitions.",
+            "Read subclass options (supers, abilities, aspects, fragments) with unlocked/locked/unknown status and raw can_insert/enabled. Status reliable only for the most recently played class. character: exact id/unique class; omit for all. Optional element filter. Requires Manifest. See docs/mcp.md.",
             JsonObject::new(),
         )
         .with_input_schema::<GetSubclassOptionsArgs>()
@@ -278,7 +331,7 @@ impl PullStackArgs {
     }
 }
 pub fn pull_stack_tool() -> Tool {
-    Tool::new(PULL_STACK_TOOL, "Pull an exact amount of one non-instanced Postmaster stack for an owned character. Canonical decimal strings only: uint32 item_hash, positive int32 amount, positive int64 character. Requires authentication and qualified definitions. Pinned audited account-wide capacities use unchanged stack arithmetic; locally full refuses (1642 is destination full). Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Persistence failures also require refresh. Never retry an uncertain outcome. Requested quantities apply locally once, not as observed quantities.", JsonObject::new())
+    Tool::new(PULL_STACK_TOOL, "Pull a Postmaster stack: canonical uint32 item_hash, positive int32 amount/int64 character strings. Requires login/definitions; locally full refuses (1642). Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; rejection, uncertainty or persistence failure require refresh. Never retry an uncertain outcome. Requested amount applies locally once, not as observed quantity. See docs/mcp.md.", JsonObject::new())
         .with_input_schema::<PullStackArgs>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
 }
@@ -306,7 +359,7 @@ impl PullItemArgs {
     }
 }
 pub fn pull_item_tool() -> Tool {
-    Tool::new(PULL_ITEM_TOOL, "Pull one genuine Postmaster equipment instance into its committed owner's inventory without equipping. Requires authentication and qualified definitions. Known full buckets refuse locally; unknown occupancy permits dispatch. No names, hashes, stacks, quantity or destination. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Persistence failures also require refresh. Never retry an uncertain outcome. Numeric error 1642 means destination full; free a slot and reassess.", JsonObject::new())
+    Tool::new(PULL_ITEM_TOOL, "Pull genuine Postmaster item id to its owner's inventory, not equipped. Login/definitions required. Known full refuses; unknown occupancy permits dispatch; 1642 means full. Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; rejection, uncertainty or persistence failure require refresh. Never retry an uncertain outcome. No names, hashes, stacks or destination. See docs/mcp.md.", JsonObject::new())
         .with_input_schema::<PullItemArgs>()
         .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true).idempotent(false).open_world(true))
 }
@@ -343,7 +396,7 @@ impl EquipItemsArgs {
 pub fn equip_items_tool() -> Tool {
     Tool::new(
         EQUIP_ITEMS_TOOL,
-        "Equip 2–17 items on one explicit character. Validate combined slots, class and exotic limits before transferring via Vault and making one EquipItems call. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Per-item failures, omitted results or persistence failures also require refresh. Never retry an uncertain outcome. All-no-op means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie.",
+        "Equip 2–17 items on explicit character; validate slots/class/exotics, transfer via Vault, then one EquipItems call. Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; rejection, uncertainty, per-item failure, omitted results or persistence failure require refresh. Never retry an uncertain outcome. All-no-op: local state matches, no dispatch. See docs/mcp.md.",
         JsonObject::new(),
     )
     .with_input_schema::<EquipItemsArgs>()
@@ -384,7 +437,7 @@ impl EquipItemArgs {
     }
 }
 pub fn equip_item_tool() -> Tool {
-    Tool::new(EQUIP_ITEM_TOOL, "Equip one explicitly selected item on one explicitly selected character, automatically transferring if necessary. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Incomplete effects or persistence failures also require refresh. Never retry an uncertain outcome. verified_noop means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie. Ambiguity refuses; partial progress is not rolled back. Character must be in orbit, a social space, or offline.", JsonObject::new())
+    Tool::new(EQUIP_ITEM_TOOL, "Equip item on character; transfer if needed. Ambiguity refuses; partial progress is not rolled back. Orbit/social space/offline only. Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; rejection, uncertainty, incomplete effects or persistence failure require refresh. Never retry an uncertain outcome. verified_noop: local state matches, no dispatch. See docs/mcp.md.", JsonObject::new())
         .with_input_schema::<EquipItemArgs>()
 }
 
@@ -408,7 +461,7 @@ impl SetLockStateArgs {
     }
 }
 pub fn set_lock_state_tool() -> Tool {
-    Tool::new(SET_LOCK_STATE_TOOL, "Set one explicitly selected owned item's lock state (locked=true locks, false unlocks), with at most one dispatch. Plans from Ghostlink's local projection (re-synced only when stale or invalidated). Bungie is the final validator. Acknowledged actions update local state immediately; rejections and uncertain outcomes mark it for refresh. Persistence failures also require refresh. Never retry an uncertain outcome. verified_noop means local state (including Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie. Ambiguity refuses. Vault items use one owned character for the provider call.", JsonObject::new())
+    Tool::new(SET_LOCK_STATE_TOOL, "Set owned item lock via locked boolean; ambiguity refuses, at most one dispatch. Vault uses an owned character. Plans from Ghostlink's local projection; sync only when stale/invalidated. Bungie is the final validator. Acknowledged actions update local state immediately; rejection, uncertainty or persistence failure require refresh. Never retry an uncertain outcome. verified_noop: local state matches, no dispatch. See docs/mcp.md.", JsonObject::new())
         .with_input_schema::<SetLockStateArgs>()
 }
 
@@ -656,6 +709,13 @@ impl WeeklyResetOutput {
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchInventoryArgs {
+    /// DIM query: "is:weapon -is:locked", "perk:rampage", "power:>=2000 or is:exotic".
+    /// ANDed with other arguments; empty string searches all owned items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    /// Return full instance details instead of compact tiles (default false).
+    #[serde(default)]
+    pub detail: bool,
     /// Match socketed or selectable perks and mods; default is socketed only.
     #[serde(default)]
     pub include_available: bool,
@@ -752,6 +812,11 @@ pub struct SearchInventoryArgs {
     #[schemars(range(min = 1, max = MAX_SEARCH_LIMIT))]
     pub limit: usize,
 
+    /// Skip ordered owned hits (0..10000); definition candidates are unchanged.
+    #[serde(default)]
+    #[schemars(range(min = 0, max = MAX_SEARCH_OFFSET))]
+    pub offset: usize,
+
     /// Optional concrete-instance restrictions, combined with definition filters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instances: Option<InstanceQueryArgs>,
@@ -795,13 +860,18 @@ pub struct InstanceQueryArgs {
     pub limit: usize,
 }
 
-/// `inspect_item` arguments: exactly one concrete instance identifier.
+/// `inspect_item` arguments: exactly one concrete instance identifier or name.
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InspectItemArgs {
-    /// Concrete instance identifier; never a definition hash or display name.
-    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
-    pub instance_id: String,
+    /// Concrete instance identifier; mutually exclusive with name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String", length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub instance_id: Option<String>,
+    /// Exact normalized owned item name; mutually exclusive with instance_id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String", length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub name: Option<String>,
 }
 
 /// Optional Postmaster selector; omitted or null returns all owned characters.
@@ -1325,11 +1395,47 @@ pub struct NamedStatView {
     pub value: i32,
 }
 
+/// Wire schema for compact hits; projection is shared in destiny-output.
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+pub struct CompactSearchHitSchema {
+    pub instance_id: String,
+    pub item_hash: i64,
+    pub name: String,
+    pub item_type: Option<String>,
+    pub tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub element: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power: Option<u16>,
+    pub location: LocationView,
+    pub equipped: bool,
+    pub locked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantity: Option<u32>,
+    pub perk_names: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mods: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stats: Vec<NamedStatView>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+#[serde(untagged)]
+enum SearchHitSchema {
+    Compact(Box<CompactSearchHitSchema>),
+    Detail(Box<InventorySearchHitView>),
+}
+
 /// Structured result of `search_inventory`.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct SearchInventoryOutput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_offset: Option<usize>,
     pub resolved: ResolvedNamesView,
     pub candidates: Vec<DefinitionView>,
+    #[schemars(with = "Vec<SearchHitSchema>")]
     pub hits: Vec<InventorySearchHitView>,
     pub metadata: QueryMetadataView,
 }
@@ -1592,14 +1698,53 @@ pub struct AppliedMoveView {
 pub struct McpError {
     code: String,
     message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    span: Option<QueryErrorSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supported_filters: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+struct QueryErrorSpan {
+    start: usize,
+    end: usize,
 }
 
 impl McpError {
+    /// Rich diagnostics without echoing the query or expanding tool discovery.
+    pub fn invalid_query(error: destiny_app::search_query::QueryParseError) -> Self {
+        Self {
+            code: "invalid_query".to_owned(),
+            message: error.message,
+            kind: Some(error.kind.as_str().to_owned()),
+            span: Some(QueryErrorSpan {
+                start: error.span.start,
+                end: error.span.end,
+            }),
+            supported_filters: (error.kind
+                == destiny_app::search_query::QueryParseErrorKind::UnknownFilter)
+                .then(|| {
+                    destiny_app::search_query::list_filters()
+                        .iter()
+                        .filter(|spec| {
+                            spec.format != destiny_app::search_query::FilterFormat::Unsupported
+                        })
+                        .flat_map(|spec| spec.keys.iter().map(|key| (*key).to_owned()))
+                        .collect()
+                }),
+        }
+    }
+
     /// Builds the sanitized MCP error for one shared application category.
     pub fn new(category: ErrorCategory) -> Self {
         Self {
             code: error_code(category).to_owned(),
             message: AppError::new(category).to_string(),
+            kind: None,
+            span: None,
+            supported_filters: None,
         }
     }
 
@@ -1627,6 +1772,9 @@ impl From<AppError> for McpError {
         Self {
             code: error_code(error.category()).to_owned(),
             message: error.to_string(),
+            kind: None,
+            span: None,
+            supported_filters: None,
         }
     }
 }
@@ -1659,8 +1807,18 @@ impl ListCharactersOutput {
 }
 
 impl SearchInventoryOutput {
-    /// Renders this output as a structured tool result.
+    /// Renders compact inventory tiles by default.
     pub fn into_call_tool_result(self) -> CallToolResult {
+        match serde_json::to_value(self) {
+            Ok(value) => structured_result(destiny_output::search::compact_search(value)),
+            Err(_) => {
+                CallToolResult::error(vec![ContentBlock::text("result serialization failed")])
+            }
+        }
+    }
+
+    /// Renders the unchanged full hit shape for explicit detail requests.
+    pub fn into_detail_call_tool_result(self) -> CallToolResult {
         structured_result(self)
     }
 }
@@ -1723,6 +1881,29 @@ mod tests {
     };
     use destiny_app::{AppError, ErrorCategory};
     use serde_json::{Value, json};
+
+    #[test]
+    fn every_tool_description_stays_within_byte_budget() {
+        let mut tools = tool_specs();
+        tools.extend([
+            move_item_tool(),
+            super::equip_item_tool(),
+            super::equip_items_tool(),
+            super::set_lock_state_tool(),
+            super::pull_item_tool(),
+            super::pull_stack_tool(),
+            super::apply_loadout_tool(),
+        ]);
+        let total: usize = tools
+            .iter()
+            .map(|tool| tool.description.as_ref().expect("description").len())
+            .sum();
+        println!("{} tool descriptions: {total} bytes", tools.len());
+        for tool in tools {
+            let bytes = tool.description.as_ref().expect("description").len();
+            assert!(bytes <= 500, "{}: {bytes} bytes exceeds 500", tool.name);
+        }
+    }
 
     fn schema_json(tool_name: &str) -> Value {
         tool_specs()
@@ -2102,6 +2283,16 @@ mod tests {
             serde_json::from_value::<SearchInventoryArgs>(json!({"instances": {"unknown": 1}}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn inspection_schema_has_no_top_level_combinators() {
+        // The Anthropic API rejects tool input schemas with a top-level
+        // oneOf/anyOf/allOf; the exactly-one-selector rule is enforced at runtime.
+        let schema = serde_json::to_value(schemars::schema_for!(InspectItemArgs)).unwrap();
+        for keyword in ["oneOf", "anyOf", "allOf"] {
+            assert!(schema.get(keyword).is_none(), "{keyword}");
+        }
     }
 
     #[test]

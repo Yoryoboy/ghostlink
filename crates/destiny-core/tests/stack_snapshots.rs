@@ -57,6 +57,7 @@ fn postmaster_requires_owner_and_refuses_transfer_endpoints() {
     });
     assert!(candidate.is_structurally_valid());
     let mut query = InstanceSearchQuery {
+        offset: 0,
         sort: None,
         location: None,
         equipped: None,

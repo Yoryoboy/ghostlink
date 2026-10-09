@@ -900,6 +900,22 @@ impl SearchRepository for InMemorySearchRepository {
     }
 
     fn search_instances(&self, query: &InstanceSearchQuery) -> Result<Vec<ItemInstance>, AppError> {
+        self.search_instance_page(query)
+            .map(|(instances, _)| instances)
+    }
+
+    fn search_instance_page(
+        &self,
+        query: &InstanceSearchQuery,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+        self.search_instance_query_page(query, None)
+    }
+
+    fn search_instance_query_page(
+        &self,
+        query: &InstanceSearchQuery,
+        execution: Option<&destiny_core::search_query::ResolvedQuery>,
+    ) -> Result<(Vec<ItemInstance>, bool), AppError> {
         query.validate()?;
         let mut indexed = std::collections::HashMap::new();
         for definition in &self.definitions {
@@ -932,6 +948,15 @@ impl SearchRepository for InMemorySearchRepository {
                         instance,
                         &self.stat_definitions,
                     )
+                    && execution.is_none_or(|execution| {
+                        execution.matches(
+                            instance,
+                            unique,
+                            &plugs,
+                            &available,
+                            query.include_available,
+                        )
+                    })
             })
             .cloned()
             .collect();
@@ -943,8 +968,14 @@ impl SearchRepository for InMemorySearchRepository {
                 &self.stat_definitions,
             )
         });
-        matches.truncate(query.limit);
-        Ok(matches)
+        let more = query.offset + query.limit <= destiny_core::MAX_SEARCH_OFFSET
+            && matches.len() > query.offset + query.limit;
+        let matches = matches
+            .into_iter()
+            .skip(query.offset)
+            .take(query.limit)
+            .collect();
+        Ok((matches, more))
     }
 
     fn lookup_instance(
@@ -2356,6 +2387,7 @@ mod tests {
         limit: usize,
     ) -> InstanceSearchQuery {
         InstanceSearchQuery {
+            offset: 0,
             sort: None,
             location: None,
             equipped: None,

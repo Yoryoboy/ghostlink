@@ -262,6 +262,7 @@ fn acknowledged_effects_preserve_metadata_and_update_search() {
             )
         );
         let query = InstanceSearchQuery {
+            offset: 0,
             sort: None,
             location: None,
             equipped: Some(true),

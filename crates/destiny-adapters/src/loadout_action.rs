@@ -113,6 +113,9 @@ impl<T: LoadoutActionTransport, C: Clock, S: CredentialSource> LoadoutActionGate
         );
         let mut response = match self.transport.post(&http) {
             Ok(response) => response,
+            Err(LoadoutActionTransportError::Throttled(seconds)) => {
+                return Err(AppError::bungie_rate_limit(seconds));
+            }
             Err(LoadoutActionTransportError::NotDispatched) => {
                 return Err(AppError::new(ErrorCategory::ProviderUnavailable));
             }

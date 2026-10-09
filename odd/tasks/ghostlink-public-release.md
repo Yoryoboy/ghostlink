@@ -437,6 +437,38 @@ cargo-dist handling of the libdbus runtime dependency.
     container/VM, check installed versions, restart MCP and verify reads; check
     Windows manual updater guidance as described in the lifecycle log above.
 
+  Live checklist (next RC — DIM parity, pending, human-run):
+  Keep the rc.3 log above as historical evidence. Record sanitized outcomes,
+  CLI exits/MCP errors and local projection state; never credentials or live IDs.
+  - [ ] Apply a saved loadout with one item in the Vault and one equipped on
+    another character. Compare the receipt, local projection and in-game result.
+    Owner decision: if EquipLoadout does not pull them, decide whether a follow-up
+    DIM-style preparation pipeline is needed; current behavior does not promise it.
+  - [ ] Observe throttle fail-fast (`retry in about N seconds`) and a successful
+    caller-driven read after cooldown. Confirm no action redispatch; do not flood
+    Bungie to manufacture throttling.
+  - [ ] Exercise CLI positional queries (including leading `-`) and MCP `query`:
+    AND with flags, parentheses, phrases/exact names, numeric comparisons and
+    explicit-and/or/whitespace precedence. Confirm empty query searches all owned.
+  - [ ] Check invalid queries in CLI (exit 2, kind/byte span/excerpt) and MCP
+    (`invalid_query`, kind/span/message; supported_filters for unknown keys).
+    Include unsupported DIM filters; no silent relaxation.
+  - [ ] Compare compact/default and detail search hits, referenced stats and
+    owned pagination (offset/next_offset), with unchanged definition candidates.
+  - [ ] Inspect by exact normalized name in CLI/MCP, including ambiguity with
+    compact candidates and no fuzzy selection; choose a genuine instance ID.
+  - [ ] Run concurrent fresh MCP reads while a mutation runs; confirm reads are
+    not globally serialized. Trigger stale reads together and confirm sync is
+    single-flight/exclusive with mutations.
+  - [ ] Confirm apply_loadout's typed local_state status, unresolved_items,
+    skipped and persisted, nullable item metadata and reason codes; exits 0/41/42
+    retain their meanings. Describe effects as projected locally, not per-item
+    Bungie confirmations.
+  - [ ] Start a Claude client session and accept the full MCP tool list. Confirm
+    apply_loadout slot/name and inspect_item id/name exclusivity is enforced at
+    runtime, with no top-level oneOf/anyOf/allOf in advertised input schemas
+    (the rc.3 apply_loadout schema bug is fixed).
+
 ## Follow-ups (out of scope)
 - Windows `ghostlink://` handler (next feature, developed on Windows).
 - winget / AUR / MSI / code signing.

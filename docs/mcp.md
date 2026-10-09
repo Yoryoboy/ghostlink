@@ -1,13 +1,13 @@
 # Ghostlink MCP server (`destiny-mcp`)
 
-`destiny-mcp` serves bounded read tools plus six default-enabled semantic
+`destiny-mcp` serves bounded read tools plus seven default-enabled semantic
 mutations over the Model Context Protocol stdio transport:
 
 ```text
 get_postmaster    read committed Postmaster instances and anonymous stacks (no pull)
 list_characters   list the signed-in account's characters
 search_inventory  search Manifest definitions and concrete instances
-inspect_item      inspect exactly one concrete instance by instance identifier
+inspect_item      inspect by instance identifier or normalized exact owned name
 get_subclass      show equipped subclass configurations per character
 get_subclass_options list available subclass options with unlock status
 get_artifact      read live seasonal artifact state and per-character perks
@@ -17,6 +17,7 @@ weekly_reset      predict weekly rotations and observe current-week milestones
 weekly            show one character's reliable weekly content and progress
 move_item         move one concrete instance to the Vault or to a character
 equip_item        transfer if necessary, equip on an explicit character, return acceptance
+equip_items       equip 2–17 explicitly selected items on one character
 set_lock_state    lock or unlock one explicitly selected owned item, return acceptance
 pull_item         pull one genuine Postmaster equipment instance to its owner
 pull_stack        pull an explicit amount of a non-instanced Postmaster stack
@@ -49,7 +50,8 @@ state immediately; rejections and uncertain outcomes mark it for refresh.
 Never retry an uncertain outcome. Incomplete effects or persistence failures
 also require refresh.
 
-Their CLI JSON and MCP structured output share `local_state`: `updated` means
+Except `apply_loadout` (typed object below), their CLI JSON and MCP structured
+output share a string `local_state`: `updated` means
 acknowledged effects persisted and freshness retained; `unchanged` means no-op
 or refusal before dispatch; `refresh_pending` means invalidated state that the
 next ordinary read re-syncs from Bungie. Human output adds a short refresh-pending
@@ -101,7 +103,11 @@ receipt, invalidates freshness without retrying Bungie, and fails closed
 (CLI 42): "local state could not be updated after the action". Provider-lag
 verification exits 42/43 are no longer emitted. Never blindly retry; sync later
 to confirm. See [Lock or unlock one item](cli.md#lock-or-unlock-one-item).
-All publishing reads and mutations share the same server operation guard.
+Fresh projection reads run concurrently on four round-robin read slots with
+separate SQLite connections; they do not wait for a mutation. Mutations and
+profile syncs retain one exclusive guard. Read-triggered syncs are single-flight:
+freshness is rechecked after acquiring the guard. This serialization is local
+to the server process, not other processes or in-game activity.
 
 `apply_loadout` accepts `{"character":"hunter","slot":3}` or
 `{"character":"hunter","name":"PvE"}`: character is required (exact owned id
@@ -109,14 +115,18 @@ or unique case-insensitive class), and exactly one of slot/name is required.
 Slots are one-based (1–12) as shown by `get_loadouts`; names use normalized exact
 matching within that character. Unknown/ambiguous names return typed errors and
 candidates without guessing; empty/unavailable slots refuse. Unknown fields and
-invalid selectors are rejected before service I/O. Requires login and loaded
+invalid selectors are rejected before service I/O. Tool input schemas never use
+top-level `oneOf`, `anyOf` or `allOf`; slot/name exclusivity is enforced at runtime
+(as is instance-id/name exclusivity for `inspect_item`). Requires login and loaded
 Manifest definitions; orbit, a social space, or an offline character is required.
 Location refusal says "go to orbit or a social space and retry".
 
 One call uses ordinary sync and cached slot/name resolution, then exactly one
 EquipLoadout action. A fresh cached projection needs zero profile/206 reads;
 legacy projections without the cache use one 206 read. Acknowledged saved items
-found locally move to the character, equip and unequip same-bucket replacements.
+found locally are **projected locally** onto the character, equipped, with
+same-bucket replacements unequipped. Bungie does not confirm per-item effects.
+Cross-character/Vault preparation before EquipLoadout is not promised.
 Complete local persistence retains freshness, including subclass switches:
 the saved subclass must already be held on the target character and replaces
 other equipped subclass-bucket items. Missing items, subclasses not held on the
@@ -126,7 +136,22 @@ then syncs. Mods/plugs, including subclass aspects/fragments, remain unchanged
 (DIM/Bungie API limitation). Single-item equip validation is unchanged.
 JSON matches `ghostlink apply-loadout --json`: `kind: "apply_loadout"`,
 `character`, one-based `slot`, `name`, `outcome`, bounded `receipt`, `reason`, and
-`local_state` (`updated` only for complete effects without invalidation).
+`local_state` is an object (formerly a string):
+
+```json
+{"status":"updated","unresolved_items":[],"skipped":[],"persisted":true}
+```
+
+`status` is `updated` for complete projection, `partial` for unresolved/skipped
+items, `failed` for projection persistence or invalidation failure, or
+`not_attempted` without an acknowledged receipt/local projection attempt.
+Each issue in `unresolved_items` or `skipped` is
+`{item: {instance_id, item_hash, bucket, name}, reason}`; hash, bucket and name
+may be null. Reason codes: `not_owned`, `ambiguous`, `missing_definition`,
+`definition_unavailable`, `subclass_not_held`, `unsupported_bucket`,
+`invalid_projection`. `persisted` is false only when writing projected effects
+failed; true can also mean no effects were written.
+
 `applied` is acknowledgement (`isError=false`, CLI 0), not observed state.
 Refusal/auth/transient/uncertain attempts are errors (CLI 41). Applied receipts
 with incomplete local effects or persistence failure fail closed (CLI 42),
@@ -154,6 +179,22 @@ runtime failure is a sanitized message written to stderr; nothing else is writte
 to stdout. A missing stored credential fails closed with `authorization is
 required`, a legacy raw-material credential with `reauthorization is required`,
 and neither path guesses an expiry or falls back to an environment value.
+
+## Bungie read errors and pacing
+
+Body `ErrorCode` decides read failures: 35/36/37/54/55/56/57/1672 return
+`provider_rate_limit`; 5 returns `provider_unavailable` (maintenance);
+99/22/2111/2123/2124 return `reauthorization_required`; 2101/2102 return
+`configuration_error` (missing/invalid API key). Errors are sanitized; status
+text alone does not classify them. See [CLI exits](cli.md#bungie-read-errors-and-pacing).
+
+Reads and actions share process-wide adaptive pre-request pacing (OAuth excluded):
+`2^n * 500 ms` after throttling, with success halving `n`. Computed cooldown caps
+at five minutes; a longer `ThrottleSeconds` hint may extend it. Waits over 30
+seconds fail before dispatch with `retry in about N seconds`; a caller-driven
+probe after cooldown can recover. Existing bounded read retries remain. Actions
+refused before dispatch are definitive, and actions are never automatically
+retried. Do not loop or blindly repeat a mutation.
 
 ## Bungie action rejections
 
@@ -316,6 +357,47 @@ observed-state guarantee. Live account validation remains pending.
 
 ## Inventory search and inspection
 
+Pass optional `query` for the [DIM-style language](cli.md#dim-style-query), ANDed
+with structured fields. An explicit empty query selects all owned items.
+Quotes are phrases (`exactname:` is exact); explicit `and` binds tighter than
+`or`, which binds tighter than whitespace AND. Unknown/unsupported filters fail;
+never silently remove them. CLI `ghostlink search-inventory --filters` lists
+the registry vocabulary and syntax.
+
+```json
+{"name":"search_inventory","arguments":{"query":"is:weapon (is:solar or is:arc) -is:locked","location":"vault","limit":5}}
+```
+
+Hits default to compact tiles: `instance_id`, `item_hash`, `name`, `item_type`,
+`tier`, `location`, `equipped`, `locked`, `perk_names`; optional element/power,
+quantity when greater than one, nonempty `mods`, and only query/flag-filter or
+sort-referenced stats. `detail: true` restores the previous full hit shape.
+Candidates and inspection are unchanged.
+
+`offset` defaults to 0 and accepts 0–10000, skipping ordered owned hits only.
+Continue with returned `next_offset`, preserving query/fields/sort/limit;
+`next_offset` is omitted unless more hits exist and the next offset is valid.
+Definition candidates are unaffected.
+
+```json
+{"name":"search_inventory","arguments":{"query":"is:armor","limit":5,"offset":5,"detail":true}}
+```
+
+Invalid queries return MCP error `invalid_query` with `kind`, byte `span`
+(`start`, `end`) and `message`; `supported_filters` is included only for
+`unknown_filter`. Query text is not echoed. For example, an unknown key returns
+`kind: "unknown_filter"`; unsupported DIM notes/wishlists/crafting/loadout
+membership or stat arithmetic return explicit errors instead of relaxed results.
+
+`inspect_item` requires exactly one of `instance_id` or `name`, enforced at
+runtime without top-level schema combinators. `name` uses normalized exact owned
+matching, never fuzzy; ambiguity returns `ambiguous_match` with compact
+`candidates`. Ask which instance to inspect, then use its `instance_id`.
+
+```json
+{"name":"inspect_item","arguments":{"name":"Ace of Spades"}}
+```
+
 `search_inventory` accepts top-level `perk_names` and `mod_names` arrays in
 addition to the existing singular `perk_name` and `mod_name`. Terms combine
 with AND, including the singular field, with a shared cap of eight terms per
@@ -455,7 +537,8 @@ with `coverage_start` and `coverage_note` for no data. Non-current weeks retain
 The real child-process stdio test is gated behind the non-default
 `offline-fixtures` feature. It spawns a clearly test-only `offline-fixture`
 binary that composes deterministic in-memory application test doubles, then
-drives complete MCP sessions (initialize, discovery, the three reads, a
+drives complete MCP sessions (initialize, discovery, the original three-read
+fixture coverage—not the current tool inventory—a
 protocol failure, a sanitized tool failure, cancellation, and shutdown) and the
 one-call mutation journey: one `move_item` request performs semantic planning, a
 local validation under ordinary sync and the minimum transfer calls, returning acknowledgement without

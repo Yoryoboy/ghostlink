@@ -15,6 +15,14 @@ fn clean(value: &str) -> String {
         .map(|c| if c.is_control() { '?' } else { c })
         .collect()
 }
+fn local_issue(issue: &destiny_app::LoadoutLocalIssue) -> Value {
+    json!({"item": {
+        "instance_id": clean(issue.item.instance_id.as_str()),
+        "item_hash": issue.item.item_hash.map(|hash| hash.value()),
+        "bucket": issue.item.bucket.as_deref().map(clean),
+        "name": issue.item.name.as_deref().map(clean),
+    }, "reason": issue.reason.code()})
+}
 impl ApplyLoadoutOutput {
     pub fn from_result(result: Result<ApplyLoadoutResult, ApplyLoadoutError>) -> Self {
         match result {
@@ -61,10 +69,15 @@ impl ApplyLoadoutOutput {
                     };
                 Self {
                     value: json!({"kind":"apply_loadout", "character":clean(result.character.as_str()),
-                        "slot":result.slot, "name":result.name.as_deref().map(clean),
-                        "outcome":outcome, "receipt":receipt, "reason":reason,
-                        "message":reason.and_then(crate::rejection_message),
-                        "local_state":if result.receipt.applied() && result.local_state_updated { "updated" } else { "refresh_pending" }}),
+                    "slot":result.slot, "name":result.name.as_deref().map(clean),
+                    "outcome":outcome, "receipt":receipt, "reason":reason,
+                    "message":reason.and_then(crate::rejection_message),
+                    "local_state": {
+                        "status": result.local_state.status.code(),
+                        "unresolved_items": result.local_state.unresolved_items.iter().map(local_issue).collect::<Vec<_>>(),
+                        "skipped": result.local_state.skipped.iter().map(local_issue).collect::<Vec<_>>(),
+                        "persisted": result.local_state.persisted
+                    }}),
                     exit_code,
                 }
             }
@@ -103,7 +116,7 @@ impl ApplyLoadoutOutput {
                 };
                 Self {
                     value: json!({"kind":"apply_loadout", "character":null, "slot":null, "name":null,
-                        "outcome":"refused", "receipt":null, "local_state":"unchanged", "code":code, "reason":clean(&reason),
+                        "outcome":"refused", "receipt":null, "local_state":{"status":"not_attempted", "unresolved_items":[], "skipped":[], "persisted":true}, "code":code, "reason":clean(&reason),
                         "candidates":candidates.iter().map(|c| json!({"slot":c.slot,"name":c.name.as_deref().map(clean)})).collect::<Vec<_>>()}),
                     exit_code: 41,
                 }
@@ -131,8 +144,25 @@ impl ApplyLoadoutOutput {
         if let Some(reason) = self.value["reason"].as_str() {
             text.push_str(&format!("; {}", crate::reason_text(reason)));
         }
-        if self.value["local_state"] == "refresh_pending" {
-            text.push_str("; local state refresh pending");
+        let status = self.value["local_state"]["status"]
+            .as_str()
+            .unwrap_or("not_attempted");
+        if status == "updated" {
+            text.push_str("; projected locally");
+        } else {
+            text.push_str(&format!("; local projection {status}"));
+        }
+        for (field, label) in [("unresolved_items", "unresolved"), ("skipped", "skipped")] {
+            if let Some(issues) = self.value["local_state"][field].as_array() {
+                for issue in issues {
+                    text.push_str(&format!(
+                        "\n  {label}: {} [{}] — {}",
+                        issue["item"]["name"].as_str().unwrap_or("(unknown item)"),
+                        issue["item"]["instance_id"].as_str().unwrap_or("unknown"),
+                        issue["reason"].as_str().unwrap_or("invalid_projection")
+                    ));
+                }
+            }
         }
         if let Some(candidates) = self.value["candidates"].as_array() {
             for candidate in candidates {

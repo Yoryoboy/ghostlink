@@ -60,6 +60,7 @@ impl ErrorCategory {
 pub struct AppError {
     category: ErrorCategory,
     detail: Option<String>,
+    retry_after_seconds: Option<u64>,
 }
 
 impl AppError {
@@ -67,6 +68,7 @@ impl AppError {
         Self {
             category,
             detail: None,
+            retry_after_seconds: None,
         }
     }
 
@@ -76,6 +78,7 @@ impl AppError {
         let message = format!("invalid {argument}: {}", reason.as_ref());
         Self {
             category: ErrorCategory::ProviderValidation,
+            retry_after_seconds: None,
             detail: Some(
                 message
                     .chars()
@@ -83,6 +86,26 @@ impl AppError {
                     .take(512)
                     .collect(),
             ),
+        }
+    }
+
+    /// A trusted, static provider diagnostic, never upstream response text.
+    pub fn provider_message(category: ErrorCategory, message: &'static str) -> Self {
+        Self {
+            category,
+            detail: Some(message.to_owned()),
+            retry_after_seconds: None,
+        }
+    }
+
+    /// A numeric provider pacing hint, safe for CLI and MCP presentation.
+    pub fn bungie_rate_limit(seconds: u64) -> Self {
+        Self {
+            category: ErrorCategory::ProviderRateLimit,
+            retry_after_seconds: Some(seconds),
+            detail: Some(format!(
+                "Bungie is throttling requests; retry in about {seconds} seconds."
+            )),
         }
     }
 
@@ -94,10 +117,16 @@ impl AppError {
         self.category
     }
 
+    /// Numeric pacing metadata retained independently of display text.
+    pub const fn retry_after_seconds(&self) -> Option<u64> {
+        self.retry_after_seconds
+    }
+
     pub(crate) fn name_resolution(category: ErrorCategory, message: String) -> Self {
         Self {
             category,
             detail: Some(message),
+            retry_after_seconds: None,
         }
     }
 }

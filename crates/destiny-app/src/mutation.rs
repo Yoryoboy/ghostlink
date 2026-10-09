@@ -144,6 +144,8 @@ use destiny_core::{
 pub enum MutationError {
     /// A seam failure propagated unchanged; the sanitized category is kept.
     Application(ErrorCategory),
+    /// A definitive provider throttle refusal with a sanitized numeric retry hint.
+    BungieRateLimit(u64),
     /// The request carried no explicit intent to move one item.
     MissingIntent,
     /// The request did not attribute intent to exactly one move.
@@ -202,6 +204,7 @@ impl MutationError {
     pub const fn category(self) -> ErrorCategory {
         match self {
             Self::Application(category) => category,
+            Self::BungieRateLimit(_) => ErrorCategory::ProviderRateLimit,
             Self::MissingIntent => ErrorCategory::AuthorizationRequired,
             Self::AmbiguousIntent
             | Self::AmbiguousItem
@@ -259,13 +262,22 @@ impl MutationError {
 
 impl From<AppError> for MutationError {
     fn from(error: AppError) -> Self {
-        Self::Application(error.category())
+        if error.category().is_rate_limit()
+            && let Some(seconds) = error.retry_after_seconds()
+        {
+            Self::BungieRateLimit(seconds)
+        } else {
+            Self::Application(error.category())
+        }
     }
 }
 
 impl From<MutationError> for AppError {
     fn from(error: MutationError) -> Self {
-        Self::new(error.category())
+        match error {
+            MutationError::BungieRateLimit(seconds) => Self::bungie_rate_limit(seconds),
+            _ => Self::new(error.category()),
+        }
     }
 }
 
@@ -273,6 +285,9 @@ impl fmt::Display for MutationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Application(category) => write!(formatter, "{}", AppError::new(*category)),
+            Self::BungieRateLimit(seconds) => {
+                write!(formatter, "{}", AppError::bungie_rate_limit(*seconds))
+            }
             Self::MissingIntent => {
                 formatter.write_str("explicit intent to move one item is required")
             }
@@ -1546,6 +1561,7 @@ where
                 let instances = self
                     .repository()
                     .search_instances(&InstanceSearchQuery {
+                        offset: 0,
                         sort: None,
                         location: None,
                         equipped: None,
@@ -1981,6 +1997,18 @@ mod tests {
         ) -> Result<Vec<ItemInstance>, AppError> {
             self.record("search_instances");
             self.search.search_instances(query)
+        }
+
+        fn search_instance_query_page(
+            &self,
+            query: &InstanceSearchQuery,
+            execution: Option<&destiny_core::search_query::ResolvedQuery>,
+        ) -> Result<(Vec<ItemInstance>, bool), AppError> {
+            if execution.is_none() {
+                return self.search_instance_page(query);
+            }
+            self.record("search_instances");
+            self.search.search_instance_query_page(query, execution)
         }
 
         fn lookup_instance(
@@ -6618,6 +6646,45 @@ mod tests {
             }
             other => panic!("expected an incomplete execution, got {other:?}"),
         }
+        assert_eq!(shared.borrow().inventory_calls(), 1);
+    }
+
+    #[test]
+    fn throttle_diagnostic_survives_mutation_error_roundtrip() {
+        let original = AppError::bungie_rate_limit(45);
+        let mutation = MutationError::from(original.clone());
+        assert_eq!(mutation.category(), ErrorCategory::ProviderRateLimit);
+        assert_eq!(mutation.to_string(), original.to_string());
+        let restored = AppError::from(mutation);
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn pre_dispatch_throttle_keeps_freshness_and_the_retry_diagnostic() {
+        let (shared, mut service, move_request, plan) = direct_service_with_plan();
+        queue_refresh(&shared, fresh_vault_projection());
+        let mut transfer = QueuedTransferGateway::new();
+        transfer.queue(Err(AppError::bungie_rate_limit(45)));
+        let failure = service
+            .execute_move_action(
+                &mut transfer,
+                &move_request,
+                &plan,
+                TTL,
+                NOW,
+                POST_ACTION_NOW,
+            )
+            .expect_err("zero-attempt throttle refusal");
+        assert_eq!(failure.error().category(), ErrorCategory::ProviderRateLimit);
+        assert!(
+            failure
+                .error()
+                .to_string()
+                .contains("retry in about 45 seconds")
+        );
+        assert_eq!(failure.evidence().attempted_count(), 0);
+        assert!(!failure.requires_freshness_invalidation());
+        assert_eq!(transfer.calls(), 1);
         assert_eq!(shared.borrow().inventory_calls(), 1);
     }
 

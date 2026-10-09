@@ -15,6 +15,205 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
+fn publication_diff_preserves_untouched_rows() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let rows = Some(vec![]);
+    let mut input = full_input();
+    input.stacks.push(
+        destiny_core::StackObservation::new(
+            ItemHash::new(7),
+            destiny_core::BucketHash::new(9),
+            3,
+            destiny_core::StackContainer::ProfileInventory,
+        )
+        .unwrap(),
+    );
+    input.plug_set_entries.push(destiny_core::PlugSetEntry {
+        scope: destiny_core::PlugSetScope::Profile,
+        plug_hash: ItemHash::new(77),
+        can_insert: true,
+        enabled: false,
+    });
+    store
+        .replace_current_profile(input.clone(), None, rows.clone())
+        .unwrap();
+    // Fail on any attempted rewrite, including DELETE/INSERT of the singleton
+    // whose rowid would otherwise stay the same.
+    store.connection().execute_batch(
+        "CREATE TEMP TRIGGER keep_saved BEFORE DELETE ON saved_loadouts BEGIN SELECT RAISE(ABORT, 'saved rewrite'); END;
+         CREATE TEMP TRIGGER keep_character BEFORE UPDATE ON characters BEGIN SELECT RAISE(ABORT, 'character rewrite'); END;
+         CREATE TEMP TRIGGER keep_item BEFORE DELETE ON items WHEN OLD.instance_id = 'instance-2' BEGIN SELECT RAISE(ABORT, 'item rewrite'); END;
+         CREATE TEMP TRIGGER keep_stack_delete BEFORE DELETE ON stacks BEGIN SELECT RAISE(ABORT, 'stack rewrite'); END;
+         CREATE TEMP TRIGGER keep_stack_update BEFORE UPDATE ON stacks BEGIN SELECT RAISE(ABORT, 'stack rewrite'); END;
+         CREATE TEMP TRIGGER keep_option_delete BEFORE DELETE ON subclass_plug_options BEGIN SELECT RAISE(ABORT, 'option rewrite'); END;
+         CREATE TEMP TRIGGER keep_option_update BEFORE UPDATE ON subclass_plug_options BEGIN SELECT RAISE(ABORT, 'option rewrite'); END;",
+    ).unwrap();
+    let before = store.connection().total_changes();
+    store
+        .replace_current_profile(input.clone(), None, rows.clone())
+        .expect("unchanged loadouts must not be rewritten");
+    assert_eq!(store.connection().total_changes() - before, 2);
+    let mut changed = input;
+    changed.items[0].locked = false;
+    store
+        .replace_current_profile(changed, None, rows)
+        .expect("unchanged characters and items must not be rewritten");
+}
+
+#[test]
+fn corrupt_saved_loadouts_roll_back_publication_diff() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let before = store.replace_current(full_input()).unwrap();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO saved_loadouts(singleton, normalized_loadouts) VALUES(1, 'corrupt')",
+            [],
+        )
+        .unwrap();
+    store.invalidate_freshness().unwrap();
+    let mut changed = full_input();
+    changed.items[0].locked = false;
+    assert_eq!(
+        store.replace_current(changed).unwrap_err(),
+        AppError::new(ErrorCategory::LocalStorage)
+    );
+    assert_eq!(store.load_current().unwrap(), Some(before));
+    assert!(store.freshness_invalidated().unwrap());
+}
+
+#[test]
+fn publication_sequence_matches_fresh_publication() {
+    use destiny_core::*;
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut input = full_input();
+    let mut loadouts = None;
+    let mut previous: Option<InventorySnapshot> = None;
+    let mut revision = 0;
+    for step in 0..20 {
+        match step {
+            1 => {
+                let mut item = input.items[0].clone();
+                item.instance_id = "added-item".into();
+                input.items.push(item);
+            }
+            2 => input.items[0].location = ItemLocation::Character("character-1".into()),
+            3 => input.items[0].location = ItemLocation::Postmaster("character-1".into()),
+            4 => input.items[0].location = ItemLocation::Vault,
+            5 => input.items[0].locked = false,
+            6 => {
+                input.items[0].plugs = vec![PlugSummary {
+                    plug_hash: ItemHash::new(77),
+                    enabled: true,
+                }];
+                input.items[0].available_plugs = vec![AvailablePlug {
+                    socket_index: 1,
+                    plug_hash: ItemHash::new(78),
+                }];
+                input.items[0].stats = vec![StatSummary {
+                    stat_hash: 12,
+                    value: 34,
+                }];
+                input.items[0].perks.reverse();
+            }
+            7 => {
+                let stack = StackObservation::new(
+                    ItemHash::new(7),
+                    BucketHash::new(9),
+                    3,
+                    StackContainer::CharacterInventory("character-1".into()),
+                )
+                .unwrap();
+                input.stacks = vec![stack.clone(), stack];
+            }
+            8 => {
+                input.stacks.pop();
+            }
+            9 => {
+                let mut character = input.characters[0].clone();
+                character.id = "123".into();
+                input.characters.push(character);
+                input.items[0].location = ItemLocation::Character("123".into());
+                input.stacks.push(
+                    StackObservation::new(
+                        ItemHash::new(8),
+                        BucketHash::new(10),
+                        4,
+                        StackContainer::Postmaster("123".into()),
+                    )
+                    .unwrap(),
+                );
+                input.plug_set_entries.push(PlugSetEntry {
+                    scope: PlugSetScope::Character("123".into()),
+                    plug_hash: ItemHash::new(77),
+                    can_insert: true,
+                    enabled: false,
+                });
+            }
+            10 => input.characters[0].name = Some("Changed".into()),
+            11 => {
+                input.items[0].location = ItemLocation::Vault;
+                input.stacks.retain(|s| s.item_hash() != ItemHash::new(8));
+                input.characters.retain(|c| c.id.as_str() != "123");
+                input.plug_set_entries.clear();
+            }
+            12 => input
+                .items
+                .retain(|i| i.instance_id.as_str() != "added-item"),
+            13 => {
+                loadouts = Some(vec![CharacterLoadouts {
+                    character_id: "123".into(),
+                    loadouts: vec![Loadout {
+                        slot_index: 0,
+                        name_hash: 1,
+                        color_hash: 2,
+                        icon_hash: 3,
+                        items: vec![LoadoutItem {
+                            instance_id: "456".into(),
+                            plugs: vec![LoadoutPlug {
+                                socket_index: 0,
+                                plug_hash: ItemHash::new(77),
+                            }],
+                        }],
+                    }],
+                }])
+            }
+            14 => {} // Unchanged saved loadouts and inventory.
+            15 => loadouts = Some(vec![]),
+            16 => loadouts = None,
+            17 => input.stacks.clear(),
+            18 => input.profile_currencies_coverage = ProfileCurrenciesCoverage::Available,
+            19 => input.membership_id = "another-membership".into(),
+            _ => {}
+        }
+        input.checked_at = Timestamp::new(200 + step);
+        let changed = previous
+            .as_ref()
+            .is_none_or(|old| !InventorySnapshotInput::with_metadata(old).content_eq(&input));
+        revision += u64::from(changed);
+        let minted = (step % 2 == 0).then(|| ProfileMintedAt::new(100, 2).unwrap());
+        store.invalidate_freshness().unwrap();
+        let actual = store
+            .replace_current_profile(input.clone(), minted, loadouts.clone())
+            .unwrap();
+        let mut fresh = SqliteStore::open_in_memory().unwrap();
+        let mut expected = fresh
+            .replace_current_profile(input.clone(), minted, loadouts.clone())
+            .unwrap();
+        expected.metadata.revision = SyncRevision::new(revision);
+        assert_eq!(actual, expected, "step {step}");
+        assert_eq!(store.load_current().unwrap(), Some(expected));
+        assert_eq!(
+            store.saved_loadouts().unwrap(),
+            fresh.saved_loadouts().unwrap()
+        );
+        assert_eq!(store.profile_minted_at().unwrap(), minted);
+        assert!(!store.freshness_invalidated().unwrap());
+        previous = Some(actual);
+    }
+}
+
+#[test]
 fn saved_loadouts_publication_and_reopen() {
     let database = TempDatabase::new();
     let mut store = SqliteStore::open(database.path()).unwrap();
@@ -261,6 +460,7 @@ fn postmaster_and_stacks_roundtrip_filter_and_atomic_safety() {
     permuted.characters.reverse();
     assert_eq!(store.replace_current(permuted).unwrap(), original);
     let query = InstanceSearchQuery {
+        offset: 0,
         sort: None,
         location: None,
         equipped: None,
@@ -614,7 +814,7 @@ fn subclass_options_roundtrip_revision_and_atomic_replace() {
         changed.metadata.revision.value(),
         first.metadata.revision.value() + 1
     );
-    store.connection().execute_batch("CREATE TRIGGER reject_options BEFORE INSERT ON subclass_plug_options BEGIN SELECT RAISE(ABORT, 'test'); END;").unwrap();
+    store.connection().execute_batch("CREATE TRIGGER reject_options BEFORE DELETE ON subclass_plug_options BEGIN SELECT RAISE(ABORT, 'test'); END;").unwrap();
     input.plug_set_entries.pop();
     input.items.clear();
     input.checked_at = Timestamp::new(300);
@@ -1028,6 +1228,7 @@ fn stats_round_trip_search_and_revision_identity() {
     assert_eq!(
         store
             .search_instances(&destiny_core::InstanceSearchQuery {
+                offset: 0,
                 sort: None,
                 location: None,
                 equipped: None,

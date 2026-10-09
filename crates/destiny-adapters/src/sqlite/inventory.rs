@@ -51,7 +51,7 @@ use destiny_core::{
     StackObservation, SyncMetadata, SyncRevision, Timestamp,
 };
 use rusqlite::{Connection, Error as SqlError, OptionalExtension, TransactionBehavior, params};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// The fixed `sync_metadata` dataset row this repository owns.
 const PROFILE_DATASET: &str = "profile_inventory";
@@ -220,7 +220,7 @@ impl InventoryRepository for SqliteStore {
         minted: Option<destiny_core::ProfileMintedAt>,
         loadouts: Option<Vec<destiny_core::CharacterLoadouts>>,
     ) -> Result<InventorySnapshot, AppError> {
-        let payload = loadouts.map(super::loadouts::encode).transpose()?;
+        let payload = loadouts.clone().map(super::loadouts::encode).transpose()?;
         // Provenance and structural validity need no storage, so they are
         // rejected here before the transaction is opened and no write is ever
         // attempted.
@@ -266,10 +266,9 @@ impl InventoryRepository for SqliteStore {
             }
         };
 
-        // Unchanged content keeps the committed profile rows and rewrites only
-        // the freshness metadata; changed content replaces every row.
+        // Retain untouched rows; the prior reconstruction is also the diff base.
         if !unchanged {
-            replace_projection(&transaction, &ordered)?;
+            replace_projection(&transaction, prior.as_ref(), &ordered)?;
         }
         upsert_metadata(&transaction, &ordered, revision)?;
         transaction
@@ -278,16 +277,17 @@ impl InventoryRepository for SqliteStore {
                 [minted.map(encode_minted)],
             )
             .map_err(|_| storage_failure())?;
-        transaction
-            .execute("DELETE FROM saved_loadouts", [])
-            .map_err(|_| storage_failure())?;
-        if let Some(payload) = payload {
+        if super::loadouts::read(&transaction)? != loadouts {
             transaction
-                .execute(
+                .execute("DELETE FROM saved_loadouts", [])
+                .map_err(|_| storage_failure())?;
+            if let Some(payload) = payload {
+                execute_cached(
+                    &transaction,
                     "INSERT INTO saved_loadouts (singleton, normalized_loadouts) VALUES (1, ?1)",
                     [payload],
-                )
-                .map_err(|_| storage_failure())?;
+                )?;
+            }
         }
         transaction.commit().map_err(|_| storage_failure())?;
 
@@ -421,7 +421,7 @@ fn read_projection(connection: &Connection) -> Result<Option<InventorySnapshot>,
 /// Validate every row rather than filtering by id and hiding corrupt markers.
 fn read_coverage(connection: &Connection) -> Result<Option<ProfileCurrenciesCoverage>, AppError> {
     let mut statement = connection
-        .prepare("SELECT id, profile_currencies FROM inventory_coverage")
+        .prepare_cached("SELECT id, profile_currencies FROM inventory_coverage")
         .map_err(|_| storage_failure())?;
     let mut rows = statement.query([]).map_err(|_| storage_failure())?;
     let Some(row) = rows.next().map_err(|_| storage_failure())? else {
@@ -494,7 +494,7 @@ fn read_anchor(
     connection: &Connection,
 ) -> Result<Option<(MembershipId, MembershipType)>, AppError> {
     let mut statement = connection
-        .prepare("SELECT singleton, membership_id, membership_type FROM active_profile")
+        .prepare_cached("SELECT singleton, membership_id, membership_type FROM active_profile")
         .map_err(|_| storage_failure())?;
     let rows = statement
         .query_map([], |row| {
@@ -576,7 +576,7 @@ fn read_stacks(
     connection: &Connection,
     characters: &[Character],
 ) -> Result<Vec<StackObservation>, AppError> {
-    let mut statement = connection.prepare(
+    let mut statement = connection.prepare_cached(
         "SELECT ordinal, container, owner, bucket_hash, item_hash, quantity FROM stacks ORDER BY ordinal"
     ).map_err(|_| storage_failure())?;
     let rows = statement
@@ -633,7 +633,7 @@ fn read_subclass_options(
     characters: &[Character],
 ) -> Result<Vec<PlugSetEntry>, AppError> {
     let mut statement = connection
-        .prepare("SELECT scope, plug_hash, can_insert, enabled FROM subclass_plug_options")
+        .prepare_cached("SELECT scope, plug_hash, can_insert, enabled FROM subclass_plug_options")
         .map_err(|_| storage_failure())?;
     let rows = statement
         .query_map([], |row| {
@@ -684,7 +684,7 @@ fn read_subclass_options(
 /// Reconstructs every stored character with its optional fields, checked.
 fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> {
     let mut statement = connection
-        .prepare(
+        .prepare_cached(
             "SELECT character_id, name, class_name, race, gender, light, date_last_played \
              FROM characters ORDER BY character_id",
         )
@@ -734,7 +734,7 @@ fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> 
 /// value is corrupt local state and fails closed.
 fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
     let mut statement = connection
-        .prepare(
+        .prepare_cached(
             "SELECT instance_id, item_hash, location_kind, location_character_id, \
              location_other, quantity, equipped, locked, power \
              FROM items ORDER BY instance_id",
@@ -784,10 +784,8 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
             _ => return Err(storage_failure()),
         };
 
-        let plugs = read_plugs(connection, &instance_id)?;
-        let stats = read_stats(connection, &instance_id)?;
         items.push(ItemInstance {
-            available_plugs: read_available_plugs(connection, &instance_id)?,
+            available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
             location,
@@ -795,13 +793,13 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
             equipped: decode_boolean(equipped)?,
             locked: decode_boolean(locked)?,
             power: decode_optional_u16(power)?,
-            plugs,
-            stats,
+            plugs: Vec::new(),
+            stats: Vec::new(),
             perks: Vec::new(),
         });
     }
 
-    attach_perks(connection, &mut items)?;
+    attach_components(connection, &mut items, true)?;
     let orphan: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM item_plugs p LEFT JOIN items i \
@@ -825,7 +823,7 @@ pub(super) fn read_available_plugs(
     connection: &Connection,
     instance_id: &str,
 ) -> Result<Vec<destiny_core::AvailablePlug>, AppError> {
-    let mut statement = connection.prepare("SELECT socket_index, ordinal, plug_hash FROM item_available_plugs WHERE instance_id=?1 ORDER BY socket_index, ordinal").map_err(|_| storage_failure())?;
+    let mut statement = connection.prepare_cached("SELECT socket_index, ordinal, plug_hash FROM item_available_plugs WHERE instance_id=?1 ORDER BY socket_index, ordinal").map_err(|_| storage_failure())?;
     let rows = statement
         .query_map([instance_id], |row| {
             Ok((
@@ -835,13 +833,22 @@ pub(super) fn read_available_plugs(
             ))
         })
         .map_err(|_| storage_failure())?;
+    decode_available_plugs(
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| storage_failure())?,
+    )
+}
+
+fn decode_available_plugs(
+    rows: Vec<(i64, i64, i64)>,
+) -> Result<Vec<destiny_core::AvailablePlug>, AppError> {
     let mut plugs = Vec::new();
     let mut previous = None;
     let mut expected = 0;
     let mut sockets = 0;
     let mut seen = HashSet::new();
     for row in rows {
-        let (index, ordinal, hash) = row.map_err(|_| storage_failure())?;
+        let (index, ordinal, hash) = row;
         let index = u8::try_from(index).map_err(|_| storage_failure())?;
         if previous != Some(index) {
             sockets += 1;
@@ -867,7 +874,7 @@ pub(super) fn read_stats(
     instance_id: &str,
 ) -> Result<Vec<destiny_core::StatSummary>, AppError> {
     let mut statement = connection
-        .prepare(
+        .prepare_cached(
             "SELECT stat_hash, value FROM item_stats WHERE instance_id = ?1 ORDER BY stat_hash",
         )
         .map_err(|_| storage_failure())?;
@@ -876,10 +883,17 @@ pub(super) fn read_stats(
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
         })
         .map_err(|_| storage_failure())?;
+    decode_stats(
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| storage_failure())?,
+    )
+}
+
+fn decode_stats(rows: Vec<(i64, i64)>) -> Result<Vec<destiny_core::StatSummary>, AppError> {
     let mut stats = Vec::new();
     let mut previous = None;
     for row in rows {
-        let (hash, value) = row.map_err(|_| storage_failure())?;
+        let (hash, value) = row;
         let hash = u32::try_from(hash).map_err(|_| storage_failure())?;
         if stats.len() >= 64 || previous.is_some_and(|previous| previous >= hash) {
             return Err(storage_failure());
@@ -899,7 +913,7 @@ pub(super) fn read_plugs(
     instance_id: &str,
 ) -> Result<Vec<PlugSummary>, AppError> {
     let mut statement = connection
-        .prepare(
+        .prepare_cached(
             "SELECT ordinal, plug_hash FROM item_plugs WHERE instance_id = ?1 ORDER BY ordinal",
         )
         .map_err(|_| storage_failure())?;
@@ -908,9 +922,15 @@ pub(super) fn read_plugs(
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
         })
         .map_err(|_| storage_failure())?;
+    decode_plugs(
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|_| storage_failure())?,
+    )
+}
+
+fn decode_plugs(rows: Vec<(i64, i64)>) -> Result<Vec<PlugSummary>, AppError> {
     let mut plugs = Vec::new();
-    for (position, row) in rows.enumerate() {
-        let (ordinal, hash) = row.map_err(|_| storage_failure())?;
+    for (position, (ordinal, hash)) in rows.into_iter().enumerate() {
         if position >= 32 || ordinal != i64::try_from(position).map_err(|_| storage_failure())? {
             return Err(storage_failure());
         }
@@ -923,75 +943,134 @@ pub(super) fn read_plugs(
     Ok(plugs)
 }
 
-/// One stored perk row before it is attached to its item.
-struct StoredPerk {
-    instance_id: String,
-    ordinal: i64,
-    perk_hash: i64,
-    active: i64,
-    visible: i64,
-}
-
-/// Reads every perk row in `(instance_id, ordinal)` order.
-fn read_perk_rows(connection: &Connection) -> Result<Vec<StoredPerk>, AppError> {
-    let mut statement = connection
-        .prepare(
-            "SELECT instance_id, ordinal, perk_hash, active, visible \
-             FROM item_perks ORDER BY instance_id, ordinal",
-        )
-        .map_err(|_| storage_failure())?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok(StoredPerk {
-                instance_id: row.get(0)?,
-                ordinal: row.get(1)?,
-                perk_hash: row.get(2)?,
-                active: row.get(3)?,
-                visible: row.get(4)?,
-            })
-        })
-        .map_err(|_| storage_failure())?;
-
-    let mut perks = Vec::new();
-    for row in rows {
-        perks.push(row.map_err(|_| storage_failure())?);
-    }
-    Ok(perks)
-}
-
-/// Attaches each stored perk row to its item, preserving ordinal order.
-///
-/// Both collections are ordered by instance identifier, so one forward walk is
-/// enough. Every item's ordinals must be exactly `0..n-1`; a row whose instance
-/// has no item, or a stored order that skips or repeats an ordinal, is corrupt
-/// local state and fails closed.
-fn attach_perks(connection: &Connection, items: &mut [ItemInstance]) -> Result<(), AppError> {
-    let rows = read_perk_rows(connection)?;
-    let mut index = 0;
-    for item in items.iter_mut() {
-        let mut expected = 0_i64;
-        while index < rows.len() && rows[index].instance_id == item.instance_id.as_str() {
-            let row = &rows[index];
-            if row.ordinal != expected {
-                return Err(storage_failure());
+/// Set-based component reconstruction. Full reads include orphan rows so they
+/// fail closed; candidate reads use bounded IN chunks below SQLite's bind limit.
+fn attach_component<T>(
+    connection: &Connection,
+    items: &mut [ItemInstance],
+    full: bool,
+    select: &str,
+    order: &str,
+    decode: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+    attach: impl Fn(&mut ItemInstance, Vec<T>) -> Result<(), AppError>,
+) -> Result<(), AppError> {
+    let chunk_size = if full { items.len().max(1) } else { 500 };
+    // An empty full projection must still detect orphan component rows.
+    let chunks = items.len().max(1).div_ceil(chunk_size);
+    for chunk in 0..chunks {
+        let start = (chunk * chunk_size).min(items.len());
+        let end = (start + chunk_size).min(items.len());
+        let items = &mut items[start..end];
+        let mut sql = select.to_owned();
+        if !full {
+            if items.is_empty() {
+                continue;
             }
-            item.perks.push(PerkSummary {
-                perk_hash: PerkHash::new(
-                    u32::try_from(row.perk_hash).map_err(|_| storage_failure())?,
-                ),
-                active: decode_boolean(row.active)?,
-                visible: decode_boolean(row.visible)?,
-            });
-            expected += 1;
-            index += 1;
+            sql.push_str(" WHERE instance_id IN (");
+            sql.push_str(&vec!["?"; items.len()].join(","));
+            sql.push(')');
+        }
+        sql.push_str(" ORDER BY instance_id, ");
+        sql.push_str(order);
+        let mut statement = connection
+            .prepare_cached(&sql)
+            .map_err(|_| storage_failure())?;
+        let ids: Vec<&str> = if full {
+            Vec::new()
+        } else {
+            items.iter().map(|item| item.instance_id.as_str()).collect()
+        };
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(ids), |row| {
+                Ok((row.get::<_, String>(0)?, decode(row)?))
+            })
+            .map_err(|_| storage_failure())?;
+        let mut grouped = std::collections::HashMap::<String, Vec<T>>::new();
+        for row in rows {
+            let (id, value) = row.map_err(|_| storage_failure())?;
+            grouped.entry(id).or_default().push(value);
+        }
+        for item in items {
+            let rows = grouped
+                .remove(item.instance_id.as_str())
+                .unwrap_or_default();
+            attach(item, rows)?;
+        }
+        if !grouped.is_empty() {
+            return Err(storage_failure());
         }
     }
-    if index != rows.len() {
-        // At least one perk row references an item instance this projection does
-        // not carry, so the rows do not form a complete projection.
-        return Err(storage_failure());
-    }
     Ok(())
+}
+
+pub(super) fn attach_components(
+    connection: &Connection,
+    items: &mut [ItemInstance],
+    full: bool,
+) -> Result<(), AppError> {
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, ordinal, plug_hash FROM item_plugs",
+        "ordinal",
+        |row| Ok((row.get(1)?, row.get(2)?)),
+        |item, rows| {
+            item.plugs = decode_plugs(rows)?;
+            Ok(())
+        },
+    )?;
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, stat_hash, value FROM item_stats",
+        "stat_hash",
+        |row| Ok((row.get(1)?, row.get(2)?)),
+        |item, rows| {
+            item.stats = decode_stats(rows)?;
+            Ok(())
+        },
+    )?;
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, socket_index, ordinal, plug_hash FROM item_available_plugs",
+        "socket_index, ordinal",
+        |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?)),
+        |item, rows| {
+            item.available_plugs = decode_available_plugs(rows)?;
+            Ok(())
+        },
+    )?;
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, ordinal, perk_hash, active, visible FROM item_perks",
+        "ordinal",
+        |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        |item, rows| {
+            item.perks = decode_perks(rows)?;
+            Ok(())
+        },
+    )
+}
+
+pub(super) fn decode_perks(rows: Vec<(i64, i64, i64, i64)>) -> Result<Vec<PerkSummary>, AppError> {
+    let mut perks = Vec::new();
+    for (position, (ordinal, hash, active, visible)) in rows.into_iter().enumerate() {
+        if ordinal != i64::try_from(position).map_err(|_| storage_failure())? {
+            return Err(storage_failure());
+        }
+        perks.push(PerkSummary {
+            perk_hash: PerkHash::new(u32::try_from(hash).map_err(|_| storage_failure())?),
+            active: decode_boolean(active)?,
+            visible: decode_boolean(visible)?,
+        });
+    }
+    Ok(perks)
 }
 
 /// Decodes one stored integer boolean, accepting only the exact values `0`/`1`.
@@ -1016,6 +1095,20 @@ fn encode_boolean(value: bool) -> i64 {
     if value { 1 } else { 0 }
 }
 
+/// Executes a hot per-row write using the connection's statement cache.
+fn execute_cached(
+    connection: &Connection,
+    sql: &str,
+    parameters: impl rusqlite::Params,
+) -> Result<(), AppError> {
+    connection
+        .prepare_cached(sql)
+        .map_err(|_| storage_failure())?
+        .execute(parameters)
+        .map_err(|_| storage_failure())?;
+    Ok(())
+}
+
 /// Writes canonical anonymous rows, retaining duplicates and contiguous ordinals.
 fn insert_stacks(connection: &Connection, stacks: &[StackObservation]) -> Result<(), AppError> {
     for (ordinal, stack) in stacks.iter().enumerate() {
@@ -1027,7 +1120,7 @@ fn insert_stacks(connection: &Connection, stacks: &[StackObservation]) -> Result
             }
             StackContainer::Postmaster(owner) => ("postmaster", Some(owner.as_str())),
         };
-        connection.execute(
+        execute_cached(connection,
             "INSERT INTO stacks(ordinal,container,owner,bucket_hash,item_hash,quantity) VALUES(?1,?2,?3,?4,?5,?6)",
             params![i64::try_from(ordinal).map_err(|_| storage_failure())?, container, owner,
                 stack.bucket_hash().value(), stack.item_hash().value(), i64::from(stack.quantity())],
@@ -1036,37 +1129,73 @@ fn insert_stacks(connection: &Connection, stacks: &[StackObservation]) -> Result
     Ok(())
 }
 
-/// Removes the complete prior projection and writes the replacement rows.
-///
-/// Perk rows and items are deleted before characters so the removal order
-/// satisfies every foreign key explicitly instead of relying on cascade, and a
-/// stale perk row can never outlive the item it summarized. Characters are
-/// inserted before the items that reference them, and each item's perks are
-/// inserted after that item with contiguous zero-based ordinals that preserve the
-/// vector order. Any failure partway through drops the transaction and rolls all
-/// of it back.
+/// Applies the row diff within the caller's publication transaction.
+/// Changed items are replaced as units; foreign-key cascades remove only their
+/// components. New characters precede dependent rows, and removed characters
+/// follow all dependent deletes/updates. Anonymous stacks use the schema's
+/// canonical ordinal key, preserving duplicates and contiguous ordinals.
 fn replace_projection(
     connection: &Connection,
+    prior: Option<&InventorySnapshot>,
     input: &InventorySnapshotInput,
 ) -> Result<(), AppError> {
-    connection
-        .execute("DELETE FROM subclass_plug_options", [])
-        .map_err(|_| storage_failure())?;
-    connection
-        .execute("DELETE FROM item_perks", [])
-        .map_err(|_| storage_failure())?;
-    connection
-        .execute("DELETE FROM items", [])
-        .map_err(|_| storage_failure())?;
-    connection
-        .execute("DELETE FROM stacks", [])
-        .map_err(|_| storage_failure())?;
-    connection
-        .execute("DELETE FROM characters", [])
-        .map_err(|_| storage_failure())?;
+    let old_items: HashMap<_, _> = prior
+        .into_iter()
+        .flat_map(|p| &p.items)
+        .map(|item| (&item.instance_id, item))
+        .collect();
+    let new_items: HashMap<_, _> = input
+        .items
+        .iter()
+        .map(|item| (&item.instance_id, item))
+        .collect();
+    let old_characters: HashMap<_, _> = prior
+        .into_iter()
+        .flat_map(|p| &p.characters)
+        .map(|character| (&character.id, character))
+        .collect();
+    for (&id, &item) in &old_items {
+        if new_items.get(id).copied() != Some(item) {
+            execute_cached(
+                connection,
+                "DELETE FROM items WHERE instance_id = ?1",
+                [id.as_str()],
+            )?;
+        }
+    }
+    let old_stacks = prior.map_or(&[][..], |p| p.stacks.as_slice());
+    for ordinal in input.stacks.len()..old_stacks.len() {
+        execute_cached(
+            connection,
+            "DELETE FROM stacks WHERE ordinal = ?1",
+            [i64::try_from(ordinal).map_err(|_| storage_failure())?],
+        )?;
+    }
+    let old_options = prior.map_or(&[][..], |p| p.plug_set_entries.as_slice());
+    for entry in old_options {
+        if !input
+            .plug_set_entries
+            .iter()
+            .any(|new| new.scope == entry.scope && new.plug_hash == entry.plug_hash)
+        {
+            let scope = match &entry.scope {
+                PlugSetScope::Profile => "profile",
+                PlugSetScope::Character(id) => id.as_str(),
+            };
+            execute_cached(
+                connection,
+                "DELETE FROM subclass_plug_options WHERE scope = ?1 AND plug_hash = ?2",
+                params![scope, entry.plug_hash.value()],
+            )?;
+        }
+    }
 
-    connection
-        .execute(
+    if prior.is_none_or(|p| {
+        p.metadata.membership_id != input.membership_id
+            || p.metadata.membership_type != input.membership_type
+    }) {
+        execute_cached(
+            connection,
             "INSERT INTO active_profile (singleton, membership_id, membership_type) \
              VALUES (1, ?1, ?2) \
              ON CONFLICT(singleton) DO UPDATE SET \
@@ -1078,12 +1207,17 @@ fn replace_projection(
             ],
         )
         .map_err(|_| storage_failure())?;
+    }
 
     for character in &input.characters {
-        connection
-            .execute(
+        if old_characters.get(&character.id).copied() == Some(character) {
+            continue;
+        }
+        execute_cached(connection,
                 "INSERT INTO characters (character_id, name, class_name, race, gender, light, date_last_played) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+                 ON CONFLICT(character_id) DO UPDATE SET name = excluded.name, class_name = excluded.class_name, \
+                 race = excluded.race, gender = excluded.gender, light = excluded.light, date_last_played = excluded.date_last_played",
                 params![
                     character.id.as_str(),
                     character.name,
@@ -1102,94 +1236,130 @@ fn replace_projection(
         ProfileCurrenciesCoverage::Unavailable => "unavailable",
         ProfileCurrenciesCoverage::Available => "available",
     };
-    connection
-        .execute(
+    if prior.is_none_or(|p| p.profile_currencies_coverage != input.profile_currencies_coverage) {
+        execute_cached(
+            connection,
             "INSERT INTO inventory_coverage(id, profile_currencies) VALUES(1, ?1) \
          ON CONFLICT(id) DO UPDATE SET profile_currencies = excluded.profile_currencies",
             [coverage],
         )
         .map_err(|_| storage_failure())?;
-
-    insert_stacks(connection, &input.stacks)?;
+    }
+    for (ordinal, stack) in input.stacks.iter().enumerate() {
+        if old_stacks.get(ordinal) == Some(stack) {
+            continue;
+        }
+        let (container, owner) = match stack.container() {
+            StackContainer::ProfileInventory => ("profile_inventory", None),
+            StackContainer::ProfileCurrencies => ("profile_currencies", None),
+            StackContainer::CharacterInventory(id) => ("character_inventory", Some(id.as_str())),
+            StackContainer::Postmaster(id) => ("postmaster", Some(id.as_str())),
+        };
+        execute_cached(
+            connection,
+            "INSERT INTO stacks(ordinal,container,owner,bucket_hash,item_hash,quantity) VALUES(?1,?2,?3,?4,?5,?6) \
+             ON CONFLICT(ordinal) DO UPDATE SET container = excluded.container, owner = excluded.owner, \
+             bucket_hash = excluded.bucket_hash, item_hash = excluded.item_hash, quantity = excluded.quantity",
+            params![
+                i64::try_from(ordinal).map_err(|_| storage_failure())?,
+                container,
+                owner,
+                stack.bucket_hash().value(),
+                stack.item_hash().value(),
+                i64::from(stack.quantity())
+            ],
+        )?;
+    }
 
     for item in &input.items {
+        if old_items.get(&item.instance_id).copied() == Some(item) {
+            continue;
+        }
         let (location_kind, location_character_id, location_other) =
             encode_location(&item.location);
-        connection
-            .execute(
-                "INSERT INTO items \
+        execute_cached(
+            connection,
+            "INSERT INTO items \
                  (instance_id, item_hash, location_kind, location_character_id, location_other, \
                   quantity, equipped, locked, power) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    item.instance_id.as_str(),
-                    item.item_hash.value(),
-                    location_kind,
-                    location_character_id,
-                    location_other,
-                    i64::from(item.quantity),
-                    encode_boolean(item.equipped),
-                    encode_boolean(item.locked),
-                    item.power.map(i64::from),
-                ],
-            )
-            .map_err(|_| storage_failure())?;
+            params![
+                item.instance_id.as_str(),
+                item.item_hash.value(),
+                location_kind,
+                location_character_id,
+                location_other,
+                i64::from(item.quantity),
+                encode_boolean(item.equipped),
+                encode_boolean(item.locked),
+                item.power.map(i64::from),
+            ],
+        )?;
 
         let mut ordinals = std::collections::HashMap::new();
         for plug in &item.available_plugs {
             let ordinal = ordinals.entry(plug.socket_index).or_insert(0_i64);
-            connection.execute("INSERT INTO item_available_plugs(instance_id,socket_index,ordinal,plug_hash) VALUES(?1,?2,?3,?4)", params![item.instance_id.as_str(), i64::from(plug.socket_index), *ordinal, plug.plug_hash.value()]).map_err(|_| storage_failure())?;
+            execute_cached(connection, "INSERT INTO item_available_plugs(instance_id,socket_index,ordinal,plug_hash) VALUES(?1,?2,?3,?4)", params![item.instance_id.as_str(), i64::from(plug.socket_index), *ordinal, plug.plug_hash.value()]).map_err(|_| storage_failure())?;
             *ordinal += 1;
         }
         for stat in &item.stats {
-            connection
-                .execute(
-                    "INSERT INTO item_stats (instance_id, stat_hash, value) VALUES (?1, ?2, ?3)",
-                    params![
-                        item.instance_id.as_str(),
-                        i64::from(stat.stat_hash),
-                        i64::from(stat.value)
-                    ],
-                )
-                .map_err(|_| storage_failure())?;
+            execute_cached(
+                connection,
+                "INSERT INTO item_stats (instance_id, stat_hash, value) VALUES (?1, ?2, ?3)",
+                params![
+                    item.instance_id.as_str(),
+                    i64::from(stat.stat_hash),
+                    i64::from(stat.value)
+                ],
+            )?;
         }
         for (ordinal, plug) in item.plugs.iter().enumerate() {
-            connection
-                .execute(
-                    "INSERT INTO item_plugs (instance_id, ordinal, plug_hash) VALUES (?1, ?2, ?3)",
-                    params![
-                        item.instance_id.as_str(),
-                        i64::try_from(ordinal).map_err(|_| storage_failure())?,
-                        plug.plug_hash.value()
-                    ],
-                )
-                .map_err(|_| storage_failure())?;
+            execute_cached(
+                connection,
+                "INSERT INTO item_plugs (instance_id, ordinal, plug_hash) VALUES (?1, ?2, ?3)",
+                params![
+                    item.instance_id.as_str(),
+                    i64::try_from(ordinal).map_err(|_| storage_failure())?,
+                    plug.plug_hash.value()
+                ],
+            )?;
         }
         for (ordinal, perk) in item.perks.iter().enumerate() {
-            connection
-                .execute(
-                    "INSERT INTO item_perks \
+            execute_cached(
+                connection,
+                "INSERT INTO item_perks \
                      (instance_id, ordinal, perk_hash, active, visible) \
                      VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![
-                        item.instance_id.as_str(),
-                        i64::try_from(ordinal).map_err(|_| storage_failure())?,
-                        i64::from(perk.perk_hash.value()),
-                        encode_boolean(perk.active),
-                        encode_boolean(perk.visible),
-                    ],
-                )
-                .map_err(|_| storage_failure())?;
+                params![
+                    item.instance_id.as_str(),
+                    i64::try_from(ordinal).map_err(|_| storage_failure())?,
+                    i64::from(perk.perk_hash.value()),
+                    encode_boolean(perk.active),
+                    encode_boolean(perk.visible),
+                ],
+            )?;
+        }
+    }
+    for character in prior.into_iter().flat_map(|p| &p.characters) {
+        if !input.characters.iter().any(|new| new.id == character.id) {
+            execute_cached(
+                connection,
+                "DELETE FROM characters WHERE character_id = ?1",
+                [character.id.as_str()],
+            )?;
         }
     }
     for entry in &input.plug_set_entries {
+        if old_options.contains(entry) {
+            continue;
+        }
         let scope = match &entry.scope {
             PlugSetScope::Profile => "profile",
             PlugSetScope::Character(id) => id.as_str(),
         };
-        connection
-            .execute(
-                "INSERT INTO subclass_plug_options (scope, plug_hash, can_insert, enabled) VALUES (?1, ?2, ?3, ?4)",
+        execute_cached(connection,
+                "INSERT INTO subclass_plug_options (scope, plug_hash, can_insert, enabled) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(scope, plug_hash) DO UPDATE SET can_insert = excluded.can_insert, enabled = excluded.enabled",
                 params![
                     scope,
                     entry.plug_hash.value(),

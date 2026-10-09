@@ -112,9 +112,6 @@ use std::{
     time::Duration,
 };
 
-/// The only success code Bungie returns for a fulfilled request.
-const SUCCESS_ERROR_CODE: u64 = 1;
-
 /// Upper bound on the accepted manifest version length.
 const MAX_VERSION_CHARS: usize = 128;
 
@@ -159,9 +156,7 @@ pub fn decode_manifest_index(bytes: &[u8]) -> Result<ManifestDownloadPlan, AppEr
     let value: Value = serde_json::from_slice(bytes).map_err(|_| provider_validation())?;
     let root = value.as_object().ok_or_else(provider_validation)?;
 
-    if root.get("ErrorCode").and_then(Value::as_u64) != Some(SUCCESS_ERROR_CODE) {
-        return Err(provider_validation());
-    }
+    crate::bungie_errors::read_error(root)?;
 
     let response = root
         .get("Response")
@@ -1058,6 +1053,8 @@ impl fmt::Debug for ManifestHttpRequest<'_> {
 /// The variants are intentionally coarse so that no upstream text can escape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManifestTransportError {
+    /// Adaptive pacing refused dispatch.
+    Throttled(u64),
     /// The request exceeded the total timeout.
     Timeout,
     /// DNS, connection, TLS, or body-transfer failure.
@@ -1076,6 +1073,7 @@ pub struct ManifestHttpResponse {
     content_type: Option<String>,
     retry_after: RetryAfterHeader,
     body: Box<dyn Read>,
+    throttle: Option<std::sync::Arc<crate::bungie_throttle::BungieThrottle>>,
 }
 
 impl ManifestHttpResponse {
@@ -1098,6 +1096,7 @@ impl ManifestHttpResponse {
             content_type,
             retry_after: RetryAfterHeader::Absent,
             body,
+            throttle: None,
         }
     }
 
@@ -1160,9 +1159,19 @@ pub trait ManifestTransport {
 /// surface transport text.
 pub struct HttpManifestTransport {
     client: reqwest::blocking::Client,
+    throttle: std::sync::Arc<crate::bungie_throttle::BungieThrottle>,
 }
 
 impl HttpManifestTransport {
+    /// Injects isolated pacing/time for deterministic transport tests.
+    pub fn with_throttle(
+        mut self,
+        throttle: std::sync::Arc<crate::bungie_throttle::BungieThrottle>,
+    ) -> Self {
+        self.throttle = throttle;
+        self
+    }
+
     /// Builds a hardened client for the fixed Manifest origin.
     pub fn new() -> Result<Self, AppError> {
         let client = reqwest::blocking::Client::builder()
@@ -1173,7 +1182,10 @@ impl HttpManifestTransport {
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .map_err(|_| configuration())?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            throttle: crate::bungie_throttle::shared(),
+        })
     }
 }
 
@@ -1193,6 +1205,9 @@ impl ManifestTransport for HttpManifestTransport {
         if !is_allowed_manifest_url(request.url()) {
             return Err(ManifestTransportError::Configuration);
         }
+        self.throttle
+            .before_request()
+            .map_err(ManifestTransportError::Throttled)?;
         let timeout = if matches!(request.url(), MANIFEST_ENDPOINT | MILESTONES_ENDPOINT) {
             REQUEST_TIMEOUT
         } else {
@@ -1209,6 +1224,10 @@ impl ManifestTransport for HttpManifestTransport {
         }
         let response = builder.send().map_err(classify_transport_error)?;
         let status = response.status().as_u16();
+        if status == 200 && !matches!(request.url(), MANIFEST_ENDPOINT | MILESTONES_ENDPOINT) {
+            // Static content has no Bungie envelope; HTTP success is its success signal.
+            self.throttle.observe(&serde_json::json!({"ErrorCode":1}));
+        }
         let content_length = response.content_length();
         let content_type = response
             .headers()
@@ -1222,6 +1241,8 @@ impl ManifestTransport for HttpManifestTransport {
             content_type,
             retry_after,
             body: Box::new(response),
+            throttle: matches!(request.url(), MANIFEST_ENDPOINT | MILESTONES_ENDPOINT)
+                .then(|| self.throttle.clone()),
         })
     }
 }
@@ -1515,8 +1536,15 @@ where
     F: FnOnce() -> Option<Timestamp>,
 {
     let mut response = fetch_response(transport, request, retry_after_now)?;
-    read_bounded_body(&mut response.body, response.content_length, limit)
-        .map_err(ReadFailure::terminal)
+    let bytes = read_bounded_body(&mut response.body, response.content_length, limit)
+        .map_err(ReadFailure::terminal)?;
+    if let Some(throttle) = &response.throttle {
+        throttle.observe_bytes(&bytes);
+    }
+    if matches!(request.url(), MANIFEST_ENDPOINT | MILESTONES_ENDPOINT) {
+        crate::bungie_errors::check_read_body(&bytes)?;
+    }
+    Ok(bytes)
 }
 
 fn fetch_response<T: ManifestTransport, F: FnOnce() -> Option<Timestamp>>(
@@ -1524,10 +1552,16 @@ fn fetch_response<T: ManifestTransport, F: FnOnce() -> Option<Timestamp>>(
     request: &ManifestHttpRequest<'_>,
     retry_after_now: F,
 ) -> Result<ManifestHttpResponse, ReadFailure> {
-    let response = transport
-        .get(request)
-        .map_err(map_transport_error)
-        .map_err(ReadFailure::terminal)?;
+    let response = transport.get(request).map_err(|error| {
+        if let ManifestTransportError::Throttled(seconds) = error {
+            ReadFailure::with_retry_after(
+                AppError::bungie_rate_limit(seconds),
+                destiny_core::ports::RetryAfterHint::Unusable,
+            )
+        } else {
+            ReadFailure::terminal(map_transport_error(error))
+        }
+    })?;
     if response.status != 200 {
         let hint = response.retry_after().resolve(retry_after_now);
         return Err(ReadFailure::with_retry_after(
@@ -1547,6 +1581,7 @@ fn map_transport_error(error: ManifestTransportError) -> AppError {
             provider_unavailable()
         }
         ManifestTransportError::Configuration => configuration(),
+        ManifestTransportError::Throttled(seconds) => AppError::bungie_rate_limit(seconds),
     }
 }
 

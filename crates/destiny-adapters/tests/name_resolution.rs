@@ -106,6 +106,7 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
         })
         .unwrap();
     let query = InstanceSearchQuery {
+        offset: 0,
         sort: None,
         location: None,
         equipped: None,
@@ -210,6 +211,7 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
     }
     let mut app = QueryService::new(ProfileSyncService::new(QueuedProfileGateway::new(), store));
     let request = SearchInventoryRequest {
+        query: None,
         definitions: DefinitionSearchQuery {
             tier: None,
             text: None,
@@ -232,9 +234,10 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
             Timestamp::new(1),
         )
         .unwrap();
-    let cli = destiny_cli::output::render_search(destiny_cli::output::OutputMode::Human, &result);
+    let cli =
+        destiny_cli::output::render_search_detail(destiny_cli::output::OutputMode::Human, &result);
     assert!(cli.contains("matched perk: Rampage, Rampage Plus"));
-    let cli: serde_json::Value = serde_json::from_str(&destiny_cli::output::render_search(
+    let cli: serde_json::Value = serde_json::from_str(&destiny_cli::output::render_search_detail(
         destiny_cli::output::OutputMode::Json,
         &result,
     ))
@@ -267,10 +270,9 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
             vec!["Harmonic Siphon".to_owned()]
         ]
     );
-    let armor_cli: serde_json::Value = serde_json::from_str(&destiny_cli::output::render_search(
-        destiny_cli::output::OutputMode::Json,
-        &armor,
-    ))
+    let armor_cli: serde_json::Value = serde_json::from_str(
+        &destiny_cli::output::render_search_detail(destiny_cli::output::OutputMode::Json, &armor),
+    )
     .unwrap();
     let armor_mcp =
         serde_json::to_value(destiny_mcp::service::search_inventory_output(&armor)).unwrap();
@@ -279,11 +281,11 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
         armor_mcp["hits"][0]["available_mods"]
     );
     assert!(
-        destiny_cli::output::render_search(destiny_cli::output::OutputMode::Human, &armor)
+        destiny_cli::output::render_search_detail(destiny_cli::output::OutputMode::Human, &armor)
             .contains("available mods: Targeting")
     );
     assert!(
-        destiny_cli::output::render_search(destiny_cli::output::OutputMode::Human, &result)
+        destiny_cli::output::render_search_detail(destiny_cli::output::OutputMode::Human, &result)
             .contains("available perks: Rampage Plus")
     );
     assert_eq!(

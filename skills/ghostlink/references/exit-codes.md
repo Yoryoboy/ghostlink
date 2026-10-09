@@ -14,22 +14,36 @@ instruction object on stdout before waiting.) The failure object is either:
 
 | Exit | `error.code` | Agent action |
 |---:|---|---|
-| 2 | `invalid_request` | Fix the argument named in the message; check `--help`. |
+| 2 | `invalid_request` | Fix the argument; query syntax diagnostics include kind, byte span and bounded excerpt/caret. Check `--help` / search `--filters`; never drop filters silently. |
 | 2 | `unknown_stat_name` / `unknown_search_name` | Name not recognized; use a suggestion from the message or ask. |
 | 2 | `ambiguous_search_name` | Several perks/mods/archetypes match; pick an exact name or ask. |
 | 10 | `authorization_required` / `authorization_denied` / `authorization_state` | Ask the user to run `ghostlink login`. |
-| 11 | `reauthorization_required` | Ask the user to run `ghostlink login` again. |
-| 20 | `provider_rate_limit` | Wait before any further call; do not loop. |
-| 21 | `provider_unavailable` | Bungie unreachable, or a login callback timed out; report and stop. |
+| 11 | `reauthorization_required` | Ask the user to run `ghostlink login` again; read body codes 99/22/2111/2123/2124 mean expired/revoked authorization. |
+| 20 | `provider_rate_limit` | Read body codes 35/36/37/54/55/56/57/1672 or pacing refusal: wait for the retry time; do not loop. |
+| 21 | `provider_unavailable` | Read body code 5 means maintenance; otherwise Bungie unavailable or callback timeout. Report and stop. |
 | 30 | `stale_state` | State changed underneath the operation. Run `ghostlink sync`, re-check, and ask before any new mutation. |
 | 31 | `ambiguous_match` | Show candidates and ask the user which one. |
-| 32 | `item_not_found` | No such instance ID; search again with `ghostlink search-inventory`. |
+| 32 | `item_not_found` | No such instance ID or exact owned name; search again with `ghostlink search-inventory`. |
 | 33 | `definitions_unavailable` | Run `ghostlink sync-manifest`; repeat reads once. For mutations, re-check state and explicit intent before another invocation. |
 | 40 | `unsupported_operation` | Report; do not work around it. |
 | 41 | `partial_failure` | Report what completed; do not retry. |
 | 42 | `verification_failed` | Run `ghostlink sync`, inspect the item, report. |
 | 50–52 | `credential_store_unavailable` / `local_storage` / `configuration_error` | Local setup problem; report to the user. |
 | 70 | `internal_error` | Report and stop. |
+
+MCP query errors use `invalid_query` with `kind`, byte `span` (`start`, `end`)
+and `message`; `supported_filters` appears only for `unknown_filter`.
+CLI uses `invalid_request` / exit 2, not a separate `invalid_query` code.
+Never silently relax an invalid query. Inspect by name is normalized exact;
+`ambiguous_match` returns compact candidates: ask which `instance_id` to use.
+
+Read body codes 2101/2102 mean a missing/invalid API key (`configuration_error`,
+CLI 52), not a reason to repeat login. Reads/actions share process-wide pacing
+(OAuth excluded): pre-request `2^n * 500 ms`, success halves `n`, computed cooldown
+caps at five minutes (a longer `ThrottleSeconds` can extend it). Waits above
+30 seconds fail fast with `retry in about N seconds`; a caller-driven probe
+later can recover. Bounded read retries remain. Actions refused before dispatch
+are definitive (nothing sent), and actions are never automatically retried.
 
 ## Definitive Bungie action rejections
 
@@ -65,7 +79,8 @@ and both Postmaster pulls. Acknowledgement remains distinct from observed state.
 
 ## Shared action `local_state`
 
-All seven action outputs use `local_state`: `updated` for acknowledged effects
+Except apply-loadout (object below), action outputs use a string `local_state`:
+`updated` for acknowledged effects
 persisted with freshness retained, `unchanged` for no-op or refusal before
 dispatch, `refresh_pending` for invalidated state (incomplete, rejected, uncertain
 or persistence failure). The next ordinary read re-syncs only when stale or
@@ -78,8 +93,23 @@ Never retry an uncertain outcome.
 
 `ghostlink apply-loadout <slot|name> --character <class|id> --json` and MCP
 `apply_loadout` share `kind: "apply_loadout"`, character, one-based slot, name,
-outcome, receipt, reason and `local_state` (`updated` only for complete local
-equipment effects without invalidation). Exactly one MCP slot/name; names are normalized exact
+outcome, receipt, reason and a `local_state` object:
+
+```json
+{"status":"updated","unresolved_items":[],"skipped":[],"persisted":true}
+```
+
+`status`: `updated` (complete), `partial` (unresolved/skipped), `failed`
+(persistence/invalidation failed), `not_attempted` (no acknowledged receipt/local
+projection attempt). Each issue has `{item: {instance_id, item_hash, bucket, name},
+reason}`; hash/bucket/name may be null. Reasons: `not_owned`, `ambiguous`,
+`missing_definition`, `definition_unavailable`, `subclass_not_held`,
+`unsupported_bucket`, `invalid_projection`. `persisted` is false only for a
+failed projection write; true can also mean no effects.
+Item effects are **projected locally**, not per-item confirmed by Bungie;
+do not promise cross-character/Vault preparation.
+
+Exactly one MCP slot/name (runtime-enforced); names are normalized exact
 matches within that character. Unknown/ambiguous names list candidates; select
 explicitly, never guess. Empty/unavailable slots refuse without an action.
 
@@ -87,7 +117,7 @@ explicitly, never guess. Empty/unavailable slots refuse without an action.
 |---|---:|---|
 | `applied` | 0 | Acknowledged, not observed. Local equipment effects persisted; freshness retained. |
 | `refused` / `failed` | 41 | Report reason/receipt/candidates; no automatic retry. Location refusal: go to orbit or a social space and retry only with reassessed intent. |
-| `local_state_failed` | 42 | Applied receipt retained, but local effects are incomplete or persistence failed. Known effects may have applied; sync/read, never blindly repeat. |
+| `local_state_failed` | 42 | Applied receipt retained, but local effects are incomplete or persistence failed. Some effects may have been projected locally; sync/read, never blindly repeat. |
 
 Startup/argument errors use the usual error envelope and exits. Requires login,
 Manifest definitions and orbit/social space/offline. No post-action request,

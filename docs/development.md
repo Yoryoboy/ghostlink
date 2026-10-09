@@ -139,6 +139,8 @@ to `ghostlink`.
 
 ## Release packaging
 
+Keep user-facing changes in the [next release-notes draft](release-notes/next.md) before tagging.
+
 `dist-workspace.toml` pins cargo-dist 0.32.0. Install that version with
 `cargo install cargo-dist --version 0.32.0 --locked`. After changing packaging
 configuration, regenerate `.github/workflows/release.yml` with `dist generate`;

@@ -131,9 +131,6 @@ impl<'de> serde::Deserialize<'de> for UniqueValue {
     }
 }
 
-/// The only success code Bungie returns for a fulfilled request.
-const SUCCESS_ERROR_CODE: u64 = 1;
-
 /// Provider privacy values that are accepted when present.
 const PRIVACY_NONE: u64 = 0;
 const PRIVACY_PUBLIC: u64 = 1;
@@ -199,9 +196,7 @@ pub fn decode_profile_with_observations(
     let UniqueValue(value) = serde_json::from_slice(bytes).map_err(|_| provider_validation())?;
     let root = value.as_object().ok_or_else(provider_validation)?;
 
-    if root.get("ErrorCode").and_then(Value::as_u64) != Some(SUCCESS_ERROR_CODE) {
-        return Err(provider_validation());
-    }
+    crate::bungie_errors::read_error(root)?;
 
     let response = root
         .get("Response")

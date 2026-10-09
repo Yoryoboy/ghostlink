@@ -17,8 +17,8 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 
 ## Hard Rules
 
-- For CLI operations, always add `--json`; never scrape human text. Exit 0 prints one JSON object on stdout; a non-zero exit prints one JSON object on stderr. Exceptions: `ghostlink login` first prints an `authorizing` instruction object, and `--help` is plain text.
-- Flags are not listed here. Before using a command for the first time in a session, run `ghostlink <cmd> --help`.
+- For CLI operations, always add `--json`; never scrape human text. Exit 0 prints one JSON object on stdout; a non-zero exit prints one JSON object on stderr. Exceptions: `ghostlink login` first prints an `authorizing` instruction object, and `--help` / search `--filters` are plain text even with `--json`.
+- Before using a CLI command for the first time in a session, run `ghostlink <cmd> --help`. For DIM query syntax/filter support, use `ghostlink search-inventory --filters` (registry-generated help, no inventory read).
 - Never guess an item or character. Resolve ambiguity with a read command or ask the user.
 - `ghostlink move` and `ghostlink equip` are CLI game mutations. Run them only with explicit user intent for this item and destination. Move requires exactly one explicit character or Vault destination; equip requires a character. Never select defaults.
 - `ghostlink lock` and `ghostlink unlock` require explicit user intent for this item and requested state; MCP `set_lock_state` requires the same intent. Already satisfied according to local state is `verified_noop`; nothing was sent to Bungie. Vault items use one owned character for the provider call, not a destination selection.
@@ -48,7 +48,7 @@ codes remain uncertain. Received refusals retain CLI 41 / MCP error.
 |---|---|
 | Which characters exist, their IDs and light | `ghostlink list-characters` |
 | Find owned items by name, type, perk, mod, stat, slot | `ghostlink search-inventory` |
-| Full detail of one owned item, including what each perk and mod does | `ghostlink inspect-item` (the `instance` ID from search hits, never the definition `hash`) |
+| Full detail of one owned item, including what each perk and mod does | MCP `inspect_item` by `instance_id` or exact `name`; CLI `ghostlink inspect-item <INSTANCE_ID>` or `--name "<exact name>"` (never a definition hash) |
 | Committed Postmaster instances and anonymous stacks (read only) | MCP `get_postmaster`; fallback `ghostlink postmaster` |
 | Recover one genuine Postmaster equipment instance to its owner | MCP `pull_item`; fallback `ghostlink pull` |
 | Recover an explicit amount of a non-instanced stack from one Postmaster owner | MCP `pull_stack`; fallback `ghostlink pull-stack` |
@@ -72,6 +72,42 @@ codes remain uncertain. Received refusals retain CLI 41 / MCP error.
 | Browser callback never reaches login (Linux) | `ghostlink handler status` |
 
 `ghostlink search-inventory --character` accepts an exact character ID or a unique case-insensitive class (`hunter`, `titan`, `warlock`), like most CLI commands. Exact IDs take precedence; unknown selectors and duplicate classes are errors. MCP `search_inventory.character_id` still requires an exact character ID; get it from `list_characters` first.
+
+## Search and inspect recipe
+
+Prefer MCP `search_inventory` with `query`, e.g.
+`{"query":"is:weapon (is:solar or is:arc) -is:locked","location":"vault","limit":5}`.
+Fallback:
+
+```sh
+ghostlink search-inventory 'type:"Hand Cannon" -is:locked' --location vault --json
+ghostlink search-inventory 'stat:Range:>=30 power:>=440' --sort Range --json
+ghostlink search-inventory --filters
+```
+
+Quote the whole query to protect spaces/comparisons; leading `-` is accepted.
+Queries AND with structured flags. Explicit `and` > `or` > whitespace AND;
+use parentheses for clarity. `-`/`not` negate. Quotes are phrases, not exact
+names; use `exactname:` for exact matching. Comparisons use unsigned integers;
+absent/zero power fails comparisons, but plain NOT includes such items.
+An explicit empty query (`''` / `query: ""`) selects all owned items.
+Unsupported DIM filters are errors. CLI query syntax errors exit 2
+(`invalid_request`, kind/byte span/excerpt); MCP returns `invalid_query`
+(kind/span/message, plus `supported_filters` only for unknown keys). Report and
+correct or ask; never silently relax a query or retry it unchanged.
+
+Search hits are compact tiles by default (`instance_id`, not nested `instance`),
+with plugged perk/mod names and only filter/sort-referenced stats. Use CLI
+`--detail` / MCP `detail: true` for the previous full shape. Continue owned hits
+with returned `next_offset` via `--offset` / MCP `offset` (0–10000), keeping the
+same query, filters, sort and limit. No `next_offset` means stop; definition
+candidates are not paginated.
+
+Inspect using exactly one instance ID or normalized exact owned name:
+MCP `{"name":"Ace of Spades"}` or CLI
+`ghostlink inspect-item --name "Ace of Spades" --json`. Never fuzzy-match.
+On `ambiguous_match`, show compact candidates and ask the user which instance;
+then inspect its `instance_id`. Inspect provides full detail and effect text.
 
 ## Equip several items
 
@@ -97,7 +133,8 @@ Bungie is the final validator. Acknowledged actions update local state immediate
 rejections and uncertain outcomes mark it for refresh. Never retry an uncertain outcome.
 Incomplete effects or local persistence failures also require refresh.
 
-Report `local_state` in CLI JSON and MCP structured output: `updated` means
+Except apply-loadout (typed object below), report the string `local_state` in
+CLI JSON and MCP structured output: `updated` means
 acknowledged effects persisted with freshness retained; `unchanged` means no-op
 or refused before dispatch; `refresh_pending` means invalidated state requiring
 the next ordinary read to re-sync. Human output adds a short phrase only for
@@ -145,10 +182,15 @@ a social space first (offline is also allowed); location refusal explicitly says
 "go to orbit or a social space and retry". Ordinary sync resolves the cached
 slot/name before one action (zero profile/206 reads while fresh and cached).
 Report `kind: "apply_loadout"`, `character`, `slot`, `name`, `outcome`, `receipt`
-and `reason`, plus JSON `local_state` (`updated` only for complete local
-equipment effects without invalidation). `applied` (CLI 0 / MCP success) means
-acknowledged, not observed. Known saved items move/equip locally and replace
-same-bucket equipment; complete persistence retains freshness. Missing items,
+and `reason`, plus the `local_state` object: `status` (`updated`, `partial`,
+`failed`, `not_attempted`), `unresolved_items`, `skipped`, `persisted`.
+Issues contain `{item: {instance_id, item_hash, bucket, name}, reason}`; hash,
+bucket and name may be null. Report these local issues, not invented per-item
+Bungie successes. `persisted: true` can mean no effects were written.
+`applied` (CLI 0 / MCP success) means acknowledged, not observed. Known saved
+items are **projected locally** as moved/equipped with same-bucket replacements;
+complete persistence retains freshness. Do not promise cross-character/Vault
+preparation before EquipLoadout. Missing items,
 subclasses not held on the target or rejected effects apply the rest and invalidate.
 Held subclasses switch locally, unequipping the previous subclass without
 invalidation; single-item equip validation is unchanged. Mods/plugs, including
@@ -232,7 +274,7 @@ explicit intent before another action.
 ## Descriptions
 
 - Five plug surfaces expose optional official `description` and community `clarity`: subclass slots, subclass options, artifact slots, saved-loadout detail's referenced `plug_insights`, and inspect `plug_details` (`hash`, `name`, `role`, optional `description`, `clarity`, `clarity_match`). Loadout summaries contain no effect text: call `get_loadout` after `get_loadouts`. Missing fields mean no text is available, not no effect.
-- `ghostlink search-inventory` returns names only. To explain perks, search first, then inspect the chosen instance.
+- Search returns compact tiles (or full hits with `detail`), without effect descriptions. To explain perks, search first, then inspect the chosen instance.
 - Descriptions exist only for plugs present in the user's items, subclass or subclass options; there is no lookup for arbitrary perk names.
 
 ## Weekly Calendar
@@ -247,7 +289,7 @@ explicit intent before another action.
 1. Pick the command from the table; check its `--help` if not yet seen.
 2. Run it with `--json`. Reads refresh a stale profile automatically; use `ghostlink sync` only to force freshness.
 3. On exit 0, answer from the JSON. Mention `metadata.checked_at` when freshness matters.
-4. On non-zero exit, parse stderr. An object with `status` is a move, equip, lock or unlock result: read `status` and `reason`. For `kind: "instanced_pull"` or `kind: "stack_pull"`, read `disposition`, independent `receipt` and `failure`; there are no post-action observations. For `kind: "apply_loadout"`, read `outcome`, `receipt`, `reason` and any name-resolution `candidates`. For refused `kind: "loadout"`, read `code`, `reason` and `candidates`. Otherwise read `error.code`. Then follow `references/exit-codes.md`.
+4. On non-zero exit, parse stderr. An object with `status` is a move, equip, lock or unlock result: read `status` and `reason`. For `kind: "instanced_pull"` or `kind: "stack_pull"`, read `disposition`, independent `receipt` and `failure`; there are no post-action observations. For `kind: "apply_loadout"`, read `outcome`, `receipt`, `reason`, typed `local_state` (status/issues/persisted) and any name-resolution `candidates`. For refused `kind: "loadout"`, read `code`, `reason` and `candidates`. Otherwise read `error.code`. Then follow `references/exit-codes.md`.
 5. For mutations, quote the resolved item and destination (move/equip) or requested lock state (lock/unlock) back to the user if inferred from earlier conversation; obtain explicit intent before acting. For pull, confirm the exact genuine instance ID and its observed Postmaster owner.
 
 ## Output Contract

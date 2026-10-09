@@ -1,5 +1,68 @@
 //! Exact numeric PlatformErrorCodes only; never interpret provider text.
 use destiny_core::ProviderRejection as R;
+use destiny_core::ports::{ReadFailure, RetryAfterHint};
+use destiny_core::{AppError, ErrorCategory};
+use serde_json::{Map, Value};
+use std::time::Duration;
+
+pub(crate) const fn is_throttle(code: u64) -> bool {
+    matches!(code, 35 | 36 | 37 | 54 | 55 | 56 | 57 | 1672)
+}
+
+pub(crate) fn throttle_seconds(root: &Map<String, Value>) -> Option<u64> {
+    root.get("ThrottleSeconds")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+}
+
+/// Read-only classification: action rejection semantics below remain unchanged.
+pub(crate) fn read_error(root: &Map<String, Value>) -> Result<(), AppError> {
+    let code = root.get("ErrorCode").and_then(Value::as_u64);
+    let error = match code {
+        Some(1) => return Ok(()),
+        Some(code) if is_throttle(code) => {
+            AppError::bungie_rate_limit(throttle_seconds(root).unwrap_or(1))
+        }
+        Some(5) => AppError::provider_message(
+            ErrorCategory::ProviderUnavailable,
+            "Bungie API is down for maintenance",
+        ),
+        Some(99 | 22 | 2111 | 2123 | 2124) => AppError::provider_message(
+            ErrorCategory::ReauthorizationRequired,
+            "Bungie authorization has expired or was revoked; reauthorization is required",
+        ),
+        Some(2101 | 2102) => AppError::provider_message(
+            ErrorCategory::ConfigurationError,
+            "Bungie API key is missing or invalid",
+        ),
+        _ => AppError::new(ErrorCategory::ProviderValidation),
+    };
+    Err(error)
+}
+
+pub(crate) fn check_read_body(bytes: &[u8]) -> Result<(), ReadFailure> {
+    // Structural validation remains the decoder's responsibility, including
+    // truncated streams and duplicate fields. Only inspect complete envelopes.
+    let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        return Ok(());
+    };
+    let Some(root) = value
+        .as_object()
+        .filter(|root| root.contains_key("ErrorCode"))
+    else {
+        return Ok(());
+    };
+    read_error(root).map_err(|error| {
+        let hint = if error.category().is_rate_limit() {
+            throttle_seconds(root).map_or(RetryAfterHint::Absent, |n| {
+                RetryAfterHint::Wait(Duration::from_secs(n))
+            })
+        } else {
+            RetryAfterHint::Absent
+        };
+        ReadFailure::with_retry_after(error, hint)
+    })
+}
 pub(crate) const fn rejection(code: u64) -> Option<R> {
     Some(match code {
         1623 => R::ItemNotFound,

@@ -776,10 +776,10 @@ fn changed_profile() -> Vec<u8> {
     serde_json::to_vec(&value).expect("mutated fixture serializes")
 }
 
-/// A profile response with a non-success `ErrorCode` and no usable payload.
+/// An unknown non-success code remains a validation failure, without retries.
 fn non_success_profile() -> Vec<u8> {
     serde_json::to_vec(&json!({
-        "ErrorCode": 5,
+        "ErrorCode": 777,
         "ErrorStatus": "InvalidRequest",
         "Message": "provider-supplied text",
         "Response": {}

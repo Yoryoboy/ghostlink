@@ -448,6 +448,7 @@ fn instance_query(
     limit: usize,
 ) -> InstanceSearchQuery {
     InstanceSearchQuery {
+        offset: 0,
         sort: None,
         location: None,
         equipped: None,
@@ -469,10 +470,7 @@ fn request(
     definitions: DefinitionSearchQuery,
     instances: Option<InstanceSearchQuery>,
 ) -> SearchInventoryRequest {
-    SearchInventoryRequest {
-        definitions,
-        instances,
-    }
+    SearchInventoryRequest::new(definitions, instances)
 }
 
 /// Runs one successful search through the composed service at `now`.
@@ -1080,7 +1078,7 @@ fn type_filter_constrains_owned_hits_through_service_cli_and_reopen() {
     assert_eq!(hit_instances(&result), [INSTANCE_CHAR_ONE]);
     let output = cli_json(
         &mut service,
-        &["--json", "search-inventory", "--type", "Sword"],
+        &["--json", "search-inventory", "--detail", "--type", "Sword"],
     );
     let hits = output["hits"].as_array().unwrap();
     assert_eq!(hits.len(), 2);
@@ -1523,6 +1521,7 @@ fn cli_search_inventory_reports_bounded_candidates_and_paired_hits() {
         &[
             "--json",
             "search-inventory",
+            "--detail",
             "--text",
             "gjallar",
             "--item-hash",
@@ -1546,6 +1545,88 @@ fn cli_search_inventory_reports_bounded_candidates_and_paired_hits() {
 /// CLI journey: the real CLI inspection keeps definition and instance identity
 /// distinct, renders both modes, and reports a missing instance as the typed
 /// `item_not_found`/32 outcome with an empty stdout.
+#[test]
+fn sqlite_continuation_and_exact_name_inspection() {
+    let journey = Journey::new();
+    journey.at(NOW);
+    let mut service = journey.service();
+    seed(&journey, &mut service);
+    let first = cli_json(
+        &mut service,
+        &[
+            "--json",
+            "search-inventory",
+            "--text",
+            "sword",
+            "--limit",
+            "1",
+        ],
+    );
+    assert_eq!(first["next_offset"], 1);
+    let last = cli_json(
+        &mut service,
+        &[
+            "--json",
+            "search-inventory",
+            "--text",
+            "sword",
+            "--limit",
+            "1",
+            "--offset",
+            "1",
+        ],
+    );
+    assert!(last.get("next_offset").is_none());
+    assert_ne!(
+        first["hits"][0]["instance_id"],
+        last["hits"][0]["instance_id"]
+    );
+    assert_eq!(first["candidates"], last["candidates"]);
+    let unique = cli_json(
+        &mut service,
+        &["--json", "inspect-item", "--name", "  GJALLARHORN  "],
+    );
+    assert_eq!(unique["instance"]["instance_id"], INSTANCE_VAULT);
+    for name in ["gjallar", "Unknown"] {
+        let missing = cli(
+            &mut service,
+            &["--json", "inspect-item", "--name", name],
+            NOW,
+        );
+        assert_eq!(missing.exit_code, 32);
+    }
+    let mut same_names = definitions();
+    same_names
+        .iter_mut()
+        .find(|definition| definition.hash == ItemHash::new(2003))
+        .unwrap()
+        .name = "Sword of Crota".into();
+    service
+        .repository_mut()
+        .replace_definitions(DefinitionReplacementInput {
+            definitions: ManifestDefinitions {
+                version: DefinitionVersion::new(DEFINITION_VERSION),
+                definitions: same_names,
+            },
+            checked_at: NOW,
+            source: SourceMarker::Manifest,
+        })
+        .unwrap();
+    let ambiguous = cli(
+        &mut service,
+        &["--json", "inspect-item", "--name", "Sword of Crota"],
+        NOW,
+    );
+    let error: Value = serde_json::from_str(&ambiguous.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "ambiguous_match");
+    let candidates = error["error"]["candidates"].as_array().unwrap();
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.iter().all(
+        |candidate| candidate["instance_id"].is_string() && candidate.get("instance").is_none()
+    ));
+    assert_no_secrets(&ambiguous.stderr);
+}
+
 #[test]
 fn cli_inspect_item_renders_exact_identity_and_a_typed_missing_item() {
     let journey = Journey::new();
@@ -1717,6 +1798,7 @@ fn cli_and_mcp_reads_share_semantics_with_pinned_key_output() {
         &[
             "--json",
             "search-inventory",
+            "--detail",
             "--item-hash",
             "1001",
             "--item-hash",
@@ -1727,7 +1809,7 @@ fn cli_and_mcp_reads_share_semantics_with_pinned_key_output() {
     );
     let mcp_search = mcp_read_search(
         &mut mcp,
-        json!({"instances": {"item_hashes": [1001, 1003, 3001]}}),
+        json!({"detail": true, "instances": {"item_hashes": [1001, 1003, 3001]}}),
     );
     assert_shared(&cli_search, &mcp_search, "search");
     assert_eq!(cli_search["metadata"], metadata);
