@@ -159,7 +159,7 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   (`ApplyLoadoutArgs::request`, covered by `tests/stdio.rs`). New guard test:
   no advertised tool input schema may use top-level oneOf/anyOf/allOf (RED on
   the previous code). Workspace: 2001 passed, 0 failed.
-- [ ] **U3 — DIM search language (A3).** Query AST (`is:`, `perk:`,
+- [x] **U3 — DIM search language (A3).** (U3d docs folded into task D.) Query AST (`is:`, `perk:`,
   `stat:`, negation, parentheses, `or`, DIM precedence) driven by one filter
   registry that also provides validation and help; invalid queries fail
   explicitly. Plan sub-slices before implementing.
@@ -228,6 +228,20 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
 - [ ] **U4 — Loadout apply phases (A5).** Compare `apply_loadout` with DIM
   (dequip → moves → bulk equip → subclass/mods, per-item partial failure);
   implement the gaps.
+  Comparison (2026-10-09): Ghostlink sends one Bungie `EquipLoadout`
+  (`destiny-adapters/src/loadout_action.rs`) and projects the result
+  locally. DIM in-game apply (`loadout/ingame/ingame-loadout-apply.ts:30-44`)
+  first runs a move-only loadout through its shared preparation pipeline
+  (source dequips with exotic-safe replacements, ordered transfers, space)
+  and then calls `equipLoadout`. DIM's arrival bulk equip and socket/mod
+  machinery do not apply (Bungie applies the saved configuration).
+  - [ ] U4a outcome clarity: split today's `local_state_failed` into remote
+    acknowledgement vs unresolved items vs projection rejection vs
+    persistence failure; stable CLI/MCP fields; no invented per-item
+    success; incomplete or uncertain state invalidates freshness.
+  - [ ] U4b/U4c DIM preparation before `EquipLoadout` (cross-character and
+    vault transfers, dequip with replacements, space, grouped equips,
+    phases): owner decision pending (adds Bungie writes).
 - [ ] **U5 — Small polish (A6).** Manifest small tables with concurrency 4;
   shorter MCP tool descriptions; stale "four reads" comment.
 - [ ] **D — Docs, skill and live checklist.**
