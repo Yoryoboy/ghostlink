@@ -27,9 +27,26 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
 
 ## Tasks
 
-- [ ] **P0 — Baseline timings.** Reproducible timing harness over a large
+- [x] **P0 — Baseline timings.** Reproducible timing harness over a large
   synthetic catalog + projection (search by name, no-match search, stat-sorted
-  search, inspect, list, unchanged/changed sync). Record numbers here.
+  search, inspect, list, unchanged/changed sync). Harness:
+  `crates/destiny-adapters/tests/perf_baseline.rs` (`#[ignore]`; run with
+  `cargo test -p destiny-adapters --release --test perf_baseline -- --ignored
+  --nocapture --test-threads=1`). Dataset: 20,000 definitions, 600 instances,
+  300 stacks, 3 characters, 30 saved loadouts; median of 9 samples.
+  Baseline (2026-10-09, release, `main` e8d8c50):
+
+  | measurement | median ms |
+  |---|---:|
+  | definition name (late match) | 131.5 |
+  | definition name (no match) | 132.1 |
+  | owned text | 2.3 |
+  | owned stat sort (limit 5) | 10.7 |
+  | owned perk name | 16.1 |
+  | inspect item (service) | 8.7 |
+  | full committed snapshot | 8.4 |
+  | publish unchanged | 9.4 |
+  | publish one changed item | 80.1 |
 - [ ] **P1 — Indexed definition search (B7).** Resolve name/perk/type text
   through an indexed normalized column (or FTS5) and batched tag reads instead
   of reconstructing every definition.
