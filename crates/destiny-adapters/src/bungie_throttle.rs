@@ -47,7 +47,8 @@ impl BungieThrottle {
             return Ok(());
         }
         let millis = 500u64.saturating_mul(1u64.checked_shl(state.count).unwrap_or(u64::MAX));
-        let delay = Duration::from_millis(millis);
+        // DIM caps the backoff at five minutes; without it the cooldown grows unbounded.
+        let delay = Duration::from_millis(millis).min(Duration::from_secs(300));
         if delay > Duration::from_secs(30) {
             // Refuse long waits, but allow a probe once the advertised cooldown
             // has elapsed; otherwise a process could never recover after six throttles.
@@ -176,6 +177,18 @@ mod tests {
         *time.now.lock().unwrap() = Duration::from_secs(96);
         throttle.before_request().unwrap();
         assert!(time.sleeps.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cooldown_is_capped_at_five_minutes_like_dim() {
+        let time = Arc::new(Time::default());
+        let throttle = BungieThrottle::new(time.clone());
+        for _ in 0..20 {
+            throttle.observe(&json!({"ErrorCode":36}));
+        }
+        assert_eq!(throttle.before_request(), Err(300));
+        *time.now.lock().unwrap() = Duration::from_secs(300);
+        throttle.before_request().unwrap();
     }
 
     #[test]
