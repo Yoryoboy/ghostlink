@@ -650,6 +650,10 @@ impl WeeklyResetOutput {
 #[derive(Clone, Debug, Default, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchInventoryArgs {
+    /// DIM query: "is:weapon -is:locked", "perk:rampage", "power:>=2000 or is:exotic".
+    /// ANDed with other arguments; empty string searches all owned items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
     /// Return full instance details instead of compact tiles (default false).
     #[serde(default)]
     pub detail: bool,
@@ -1635,14 +1639,53 @@ pub struct AppliedMoveView {
 pub struct McpError {
     code: String,
     message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    span: Option<QueryErrorSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    supported_filters: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
+struct QueryErrorSpan {
+    start: usize,
+    end: usize,
 }
 
 impl McpError {
+    /// Rich diagnostics without echoing the query or expanding tool discovery.
+    pub fn invalid_query(error: destiny_app::search_query::QueryParseError) -> Self {
+        Self {
+            code: "invalid_query".to_owned(),
+            message: error.message,
+            kind: Some(error.kind.as_str().to_owned()),
+            span: Some(QueryErrorSpan {
+                start: error.span.start,
+                end: error.span.end,
+            }),
+            supported_filters: (error.kind
+                == destiny_app::search_query::QueryParseErrorKind::UnknownFilter)
+                .then(|| {
+                    destiny_app::search_query::list_filters()
+                        .iter()
+                        .filter(|spec| {
+                            spec.format != destiny_app::search_query::FilterFormat::Unsupported
+                        })
+                        .flat_map(|spec| spec.keys.iter().map(|key| (*key).to_owned()))
+                        .collect()
+                }),
+        }
+    }
+
     /// Builds the sanitized MCP error for one shared application category.
     pub fn new(category: ErrorCategory) -> Self {
         Self {
             code: error_code(category).to_owned(),
             message: AppError::new(category).to_string(),
+            kind: None,
+            span: None,
+            supported_filters: None,
         }
     }
 
@@ -1670,6 +1713,9 @@ impl From<AppError> for McpError {
         Self {
             code: error_code(error.category()).to_owned(),
             message: error.to_string(),
+            kind: None,
+            span: None,
+            supported_filters: None,
         }
     }
 }

@@ -217,6 +217,14 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
     OR/NOT/groups, late matches, pages, stat order/ties. Residual OR
     stat-sorted query 5.1 ms; existing timings unchanged. Workspace: 2031
     passed, 0 failed.
+  - [x] U3c CLI/MCP: `ghostlink search-inventory '<query>'` (positional,
+    `allow_hyphen_values` so `-is:locked` works; coexists with flags via
+    AND) and `--filters` help generated from the registry with a syntax and
+    precedence summary; invalid queries exit 2 with kind, byte span and a
+    bounded excerpt + caret. MCP `search_inventory.query` (no top-level
+    combinators; guard green); invalid queries return `invalid_query` with
+    kind, span, message and `supported_filters`. Workspace: 2036 passed,
+    0 failed (+1 parent regression test for a leading `-` query).
 - [ ] **U4 — Loadout apply phases (A5).** Compare `apply_loadout` with DIM
   (dequip → moves → bulk equip → subclass/mods, per-item partial failure);
   implement the gaps.

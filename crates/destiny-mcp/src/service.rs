@@ -1697,7 +1697,11 @@ impl SearchInventoryArgs {
             query.validate().map_err(McpError::from)?;
         }
 
-        Ok(SearchInventoryRequest::new(definitions, instances))
+        let request = SearchInventoryRequest::new(definitions, instances);
+        match self.query.as_deref() {
+            Some(input) => request.with_query(input).map_err(McpError::invalid_query),
+            None => Ok(request),
+        }
     }
 }
 
@@ -3151,6 +3155,7 @@ mod tests {
         limit: usize,
     ) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            query: None,
             offset: 0,
             detail: false,
             tier: None,
@@ -3203,6 +3208,7 @@ mod tests {
 
     fn instance_search_args(character_id: Option<&str>) -> SearchInventoryArgs {
         SearchInventoryArgs {
+            query: None,
             offset: 0,
             detail: false,
             sort: None,
@@ -3491,6 +3497,7 @@ mod tests {
             instance("inst-b", 2, ItemLocation::Vault, vec![perk(20)]),
         ];
         let args = SearchInventoryArgs {
+            query: None,
             offset: 0,
             detail: true,
             tier: None,
@@ -3755,6 +3762,7 @@ mod tests {
             equipped: None,
             sort: None,
             offset: 0,
+            query: None,
         };
         let output = mcp
             .search_inventory(&args.into_request().expect("valid arguments"))
@@ -3809,6 +3817,7 @@ mod tests {
             equipped: None,
             sort: None,
             offset: 0,
+            query: None,
         };
         let request = args.into_request().expect("valid arguments");
 

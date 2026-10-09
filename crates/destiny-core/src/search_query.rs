@@ -120,6 +120,29 @@ impl QueryParseError {
         }
     }
 
+    /// A bounded, control-character-free excerpt for interactive diagnostics.
+    /// Byte spans remain authoritative; the caret uses displayed character positions.
+    pub fn excerpt(&self, input: &str) -> String {
+        let chars: Vec<(usize, char)> = input.char_indices().take(MAX_QUERY_BYTES + 64).collect();
+        let position = chars.partition_point(|(byte, _)| *byte < self.span.start);
+        let left = position.saturating_sub(16);
+        let right = (left + 64).min(chars.len());
+        let excerpt: String = chars[left..right]
+            .iter()
+            .map(|(_, ch)| if ch.is_control() { '\u{fffd}' } else { *ch })
+            .collect();
+        let width = chars[position..right]
+            .iter()
+            .take_while(|(byte, _)| *byte < self.span.end)
+            .count()
+            .clamp(1, 48);
+        format!(
+            "{excerpt}\n{}{}",
+            " ".repeat(position - left),
+            "^".repeat(width)
+        )
+    }
+
     pub fn to_app_error(&self) -> AppError {
         AppError::invalid_argument("query", &self.message)
     }
@@ -155,4 +178,29 @@ pub fn parse_query(query: &str) -> Result<QueryNode, QueryParseError> {
         ));
     }
     parser::parse(lexer::lex(query)?)
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn excerpts_are_bounded_utf8_safe_and_remove_controls() {
+        for input in [
+            "é mystery:x".to_owned(),
+            "\"unterminated\n".to_owned(),
+            "é".repeat(100_000),
+        ] {
+            let error = compile(&input).unwrap_err();
+            let excerpt = error.excerpt(&input);
+            assert!(excerpt.chars().count() <= 130);
+            assert!(excerpt.contains('^'));
+            assert_eq!(excerpt.lines().count(), 2);
+        }
+        let error = compile("is:weapon mystery:x").unwrap_err();
+        assert_eq!(
+            error.excerpt("is:weapon mystery:x"),
+            "is:weapon mystery:x\n          ^^^^^^^^^"
+        );
+    }
 }

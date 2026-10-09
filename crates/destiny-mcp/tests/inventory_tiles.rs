@@ -127,7 +127,10 @@ impl QueryOperations for Reads {
         _: Timestamp,
     ) -> Result<InventorySearchResult, AppError> {
         let mut output = self.0.clone();
-        let query = request.instances.as_ref().unwrap();
+        let mut fallback =
+            search_query::ResolvedQuery::new(&search_query::compile("").unwrap()).prefilter;
+        fallback.limit = request.definitions.limit;
+        let query = request.instances.as_ref().unwrap_or(&fallback);
         query.validate()?;
         let hits: Vec<_> = output
             .hits
@@ -135,6 +138,19 @@ impl QueryOperations for Reads {
             .filter(|hit| {
                 request.definitions.text.as_ref().is_none_or(|term| {
                     normalize_search_text(&hit.definition.name).contains(term.as_str())
+                }) && request.query.as_ref().is_none_or(|predicate| {
+                    search_query::matches(
+                        predicate,
+                        &search_query::ItemView {
+                            instance: &hit.instance,
+                            definition: Some(&hit.definition),
+                            socketed: &[],
+                            available: &[],
+                            include_available: query.include_available,
+                            stats: &Default::default(),
+                            characters: &Default::default(),
+                        },
+                    )
                 })
             })
             .collect();
@@ -236,6 +252,34 @@ fn mcp_dispatch(data: InventorySearchResult, tool: &str, arguments: Value) -> Va
         .unwrap()
         .structured_content
         .unwrap()
+}
+
+#[test]
+fn dim_query_cli_mcp_fixture_execution_parity() {
+    for (query, count) in [("", 1), ("is:arc is:locked", 1), ("-is:locked", 0)] {
+        let data = fixture();
+        let cli = destiny_cli::runner::run(
+            &mut Reads(data.clone()),
+            [
+                "ghostlink",
+                "search-inventory",
+                query,
+                "--text",
+                "Helmet",
+                "--json",
+            ],
+            freshness(),
+        );
+        assert_eq!(cli.exit_code, 0, "{}", cli.stderr);
+        let cli: Value = serde_json::from_str(&cli.stdout).unwrap();
+        let mcp = mcp_dispatch(
+            data,
+            "search_inventory",
+            json!({"query":query,"text":"Helmet"}),
+        );
+        assert_eq!(cli["hits"].as_array().unwrap().len(), count);
+        assert_eq!(cli["hits"], mcp["hits"]);
+    }
 }
 
 #[test]

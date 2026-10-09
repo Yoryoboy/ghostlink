@@ -481,6 +481,13 @@ impl CallbackMode {
 /// concrete instances without silently choosing one.
 #[derive(Debug, Args)]
 pub struct SearchInventoryArgs {
+    /// DIM query, ANDed with flags; e.g. 'is:weapon -is:locked'. Empty = all owned.
+    /// Use --filters for keys, examples and syntax (including DIM precedence).
+    #[arg(value_name = "QUERY", allow_hyphen_values = true)]
+    pub query: Option<String>,
+    /// List supported DIM filters and syntax without accessing inventory.
+    #[arg(long)]
+    pub filters: bool,
     /// Return full instance details instead of compact inventory tiles.
     #[arg(long)]
     pub detail: bool,
@@ -609,7 +616,21 @@ impl SearchInventoryArgs {
         definitions.validate().map_err(CliError::query_validation)?;
 
         let instances = self.instance_query(&definitions)?;
-        Ok(SearchInventoryRequest::new(definitions, instances))
+        let request = SearchInventoryRequest::new(definitions, instances);
+        match self.query.as_deref() {
+            Some(input) => request.with_query(input).map_err(|error| {
+                CliError::invalid_argument(
+                    "QUERY",
+                    format!(
+                        "Invalid query: {}: {}\n{}",
+                        error.kind.as_str(),
+                        error.message,
+                        error.excerpt(input)
+                    ),
+                )
+            }),
+            None => Ok(request),
+        }
     }
 
     /// Builds an owned search when any definition or instance filter is supplied.
@@ -1377,8 +1398,8 @@ pub fn category_outcome(category: ErrorCategory) -> ErrorOutcome {
 ///
 /// [`CliError::code`] and [`CliError::exit_code`] are the machine contract, and
 /// the [`fmt::Display`] message is the single sanitized line written for a
-/// human. Neither ever echoes a rejected value, a provider payload, a
-/// credential, or a header.
+/// human. Query syntax errors may include a bounded, control-free input excerpt;
+/// other rejected values, provider payloads, credentials and headers are never echoed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CliError {
     kind: FailureKind,
@@ -1844,6 +1865,24 @@ mod tests {
         assert!(help.contains("sync-manifest"));
         let help = Cli::try_parse_from(["ghostlink", "sync-manifest", "--help"]).unwrap_err();
         assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+    }
+
+    #[test]
+    fn query_may_start_with_a_dim_negation() {
+        for (args, expected) in [
+            (vec!["search-inventory", "-is:locked"], "-is:locked"),
+            (
+                vec!["search-inventory", "-is:locked is:weapon", "--limit", "5"],
+                "-is:locked is:weapon",
+            ),
+        ] {
+            match parse(args).command {
+                Command::SearchInventory(arguments) => {
+                    assert_eq!(arguments.query.as_deref(), Some(expected));
+                }
+                other => panic!("unexpected command: {other:?}"),
+            }
+        }
     }
 
     #[test]

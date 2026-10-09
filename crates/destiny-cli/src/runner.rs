@@ -104,6 +104,28 @@ where
 {
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
     match Cli::try_parse_from(args.iter().cloned()) {
+        Ok(cli) if matches!(&cli.command, crate::command::Command::SearchInventory(args) if args.filters) =>
+        {
+            let mut text = String::from(
+                "DIM syntax: whitespace = implicit AND; explicit and > or > whitespace (DIM precedence).\nNegate with - or not; group with parentheses; quote phrases. Numeric operators: = < <= > >=.\nQuery and structured flags combine via AND; empty query = all owned.\n\n",
+            );
+            for filter in destiny_app::search_query::list_filters() {
+                use std::fmt::Write;
+                let _ = writeln!(
+                    text,
+                    "{} [{:?}] — {}\n  Example: {}",
+                    filter.keys.join(" / "),
+                    filter.format,
+                    filter.description,
+                    filter.examples.join("; ")
+                );
+            }
+            Err(ProcessOutput {
+                exit_code: 0,
+                stdout: text,
+                stderr: String::new(),
+            })
+        }
         Ok(cli) => Ok(cli),
         Err(error) => Err(parse_failure(json_mode(&args), &error)),
     }
@@ -2426,6 +2448,74 @@ mod tests {
                 .ends_with("revision: 3\nchecked_at: 9999\nfreshness: fresh\n")
         );
         assert_eq!(service.recorded(), [(Recorded::List, TTL, NOW)]);
+    }
+
+    #[test]
+    fn dim_query_dispatch_and_diagnostics() {
+        for query in ["is:weapon -is:locked", ""] {
+            let mut service = RecordingService::new();
+            let output = run(
+                &mut service,
+                argv(&["search-inventory", query, "--tier", "Exotic"]),
+                freshness(),
+            );
+            assert_eq!(output.exit_code, 0, "{}", output.stderr);
+            let recorded = service.recorded();
+            let Recorded::Search(request) = &recorded[0].0 else {
+                panic!("expected search")
+            };
+            assert_eq!(
+                request.query,
+                Some(destiny_app::search_query::compile(query).unwrap())
+            );
+            assert_eq!(
+                request.definitions.tier,
+                Some(destiny_app::SearchTerm::new("Exotic").unwrap())
+            );
+        }
+        let mut service = RecordingService::new();
+        let output = run(
+            &mut service,
+            argv(&["search-inventory", "is:weapon mystery:x"]),
+            freshness(),
+        );
+        assert_eq!(output.exit_code, 2);
+        assert!(
+            output.stderr.contains("unknown_filter"),
+            "{}",
+            output.stderr
+        );
+        assert!(output.stderr.contains("10..19"));
+        assert!(output.stderr.contains('^'));
+        assert!(service.recorded().is_empty());
+    }
+
+    #[test]
+    fn dim_filters_help_is_registry_generated_and_stable() {
+        let mut service = RecordingService::new();
+        let first = run(
+            &mut service,
+            argv(&["search-inventory", "--filters"]),
+            freshness(),
+        );
+        let second = run(
+            &mut service,
+            argv(&["search-inventory", "--filters"]),
+            freshness(),
+        );
+        assert_eq!(first.exit_code, 0);
+        assert_eq!(first.stdout, second.stdout);
+        for filter in destiny_app::search_query::list_filters() {
+            for key in filter.keys {
+                assert!(first.stdout.contains(key), "missing {key}");
+            }
+            assert!(first.stdout.contains(filter.description));
+            for example in filter.examples {
+                assert!(first.stdout.contains(example));
+            }
+        }
+        assert!(first.stdout.contains("precedence"));
+        assert!(service.recorded().is_empty());
     }
 
     #[test]

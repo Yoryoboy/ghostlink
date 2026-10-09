@@ -28,6 +28,75 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 
 #[tokio::test]
+async fn dim_query_stdio_and_invalid_query_contract() {
+    let mut session = FixtureSession::spawn(Some("success")).await;
+    let all = session
+        .call_tool(SEARCH_INVENTORY_TOOL, json!({"query":""}))
+        .await;
+    assert_eq!(all["result"]["isError"], false, "{all}");
+    assert!(
+        !all["result"]["structuredContent"]["hits"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let query = session
+        .call_tool(
+            SEARCH_INVENTORY_TOOL,
+            json!({"query":"is:invault", "equipped":false}),
+        )
+        .await;
+    let flags = session
+        .call_tool(
+            SEARCH_INVENTORY_TOOL,
+            json!({"location":"vault", "equipped":false}),
+        )
+        .await;
+    assert_eq!(query["result"]["isError"], false, "{query}");
+    assert_eq!(
+        query["result"]["structuredContent"]["hits"],
+        flags["result"]["structuredContent"]["hits"]
+    );
+    let invalid = session
+        .call_tool(
+            SEARCH_INVENTORY_TOOL,
+            json!({"query":"is:weapon mystery:x"}),
+        )
+        .await;
+    assert_eq!(invalid["result"]["isError"], true);
+    let error = &invalid["result"]["structuredContent"];
+    assert_eq!(error["code"], "invalid_query");
+    assert_eq!(error["kind"], "unknown_filter");
+    assert_eq!(error["span"], json!({"start":10,"end":19}));
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown filter")
+    );
+    assert!(
+        error["supported_filters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|key| key == "is:weapon")
+    );
+    let unsupported = session
+        .call_tool(SEARCH_INVENTORY_TOOL, json!({"query":"wishlist:x"}))
+        .await;
+    assert_eq!(
+        unsupported["result"]["structuredContent"]["kind"],
+        "unsupported_filter"
+    );
+    assert!(
+        unsupported["result"]["structuredContent"]
+            .get("supported_filters")
+            .is_none()
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn action_descriptions_share_the_ordinary_sync_contract() {
     let mut session = FixtureSession::spawn(Some("success")).await;
     let id = session.next_id();
