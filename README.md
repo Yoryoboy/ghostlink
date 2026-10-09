@@ -80,7 +80,10 @@ when missing after login or on a CLI read.
 ```sh
 ghostlink list-characters
 ghostlink postmaster --character hunter --json
-ghostlink search-inventory --type "Hand Cannon" --element solar --sort Range
+ghostlink search-inventory 'is:weapon (is:solar or is:arc) -is:locked' --sort Range
+ghostlink search-inventory --filters
+ghostlink search-inventory 'type:"Hand Cannon"' --detail --json
+ghostlink search-inventory '' --limit 5 --offset 5
 ghostlink weekly --character hunter
 ghostlink move "Ace of Spades" --vault
 ghostlink equip "Ace of Spades" --character hunter
@@ -91,9 +94,13 @@ ghostlink unlock "Ace of Spades" --json
 ghostlink apply-loadout 3 --character hunter --json
 ```
 
-Add `--json` for machine-readable output. Search by perks, mods, armor stats and
-more; inspect items, subclasses, the seasonal artifact and saved loadouts. See
-the [CLI reference](docs/cli.md) for all commands.
+Add `--json` for machine-readable output. DIM-style queries combine with flags
+using AND; quote the whole query, including leading `-` negation. Search hits are
+compact tiles by default; `--detail` restores full hits. Continue owned hits with
+`--offset` using the returned `next_offset` (definition candidates are unchanged).
+Use `ghostlink inspect-item --name "Ace of Spades"` for normalized exact-name
+inspection; ambiguity returns candidates, never a fuzzy choice. See the
+[CLI reference](docs/cli.md) for syntax, supported filters and all commands.
 
 `ghostlink postmaster` lists committed Postmaster instances and anonymous stacks,
 including empty character groups, with ordinary freshness synchronization. Currency
@@ -121,8 +128,9 @@ local projection (synced only when missing, stale or invalidated). Bungie is the
 validator. Acknowledged actions update local state immediately; rejections and
 uncertain outcomes mark it for refresh. Never retry an uncertain outcome.
 Incomplete effects and persistence failures also require refresh.
-All actions report `local_state`: `updated`, `unchanged` (no-op or refusal before
-dispatch), or `refresh_pending` (the next ordinary read re-syncs).
+Actions other than apply-loadout report a string `local_state`: `updated`,
+`unchanged` (no-op or refusal before dispatch), or `refresh_pending` (the next
+ordinary read re-syncs).
 `verified_noop` means local state, including Ghostlink's acknowledged actions,
 already matches; nothing was sent to Bungie. It is not Bungie verification.
 
@@ -135,6 +143,15 @@ Acknowledgement returns `applied` (0 / MCP success); refusal/auth/transient/unce
 attempts fail (41), and local invalidation storage failure fails closed (42) with
 the receipt retained. No post-action request or retry; complete local persistence
 retains freshness, while incomplete effects or failures require refresh.
+Its `local_state` is now an object: `status` (`updated`, `partial`, `failed`,
+`not_attempted`), `unresolved_items`, `skipped`, and `persisted`. Item effects are
+**projected locally**, not individually confirmed by Bungie. Cross-character/Vault
+preparation is not promised; see the [next release draft](docs/release-notes/next.md).
+
+Fresh MCP projection reads use four concurrent slots; mutations and profile syncs
+remain exclusive, and read-triggered syncs are single-flight. Bungie throttling
+uses process-wide adaptive pacing; long waits fail fast with a retry time rather
+than holding a tool call indefinitely. Never blindly retry an action.
 
 ## Use it from an AI agent
 

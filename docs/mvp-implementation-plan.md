@@ -226,7 +226,7 @@ older fixture evidence involving preflight/post-action refresh is not a current 
 
 ### WU-011 — MCP stdio read tools
 
-**Purpose/outcome:** Add the thin stdio server and semantic read tools (`list_characters`, `search_inventory`, `inspect_item`) over the same application services and sanitized result types.
+**Purpose/outcome (historical MVP slice):** Add the thin stdio server and the original three semantic read tools (`list_characters`, `search_inventory`, `inspect_item`) over the same application services and sanitized result types. The current read tools and seven mutations are listed in [the MCP reference](mcp.md); this work unit is not the current tool inventory.
 
 **Dependencies:** WU-007; WU-001 command baseline. MCP reads depend on shared query services/scaffold, not CLI completion (WU-008).
 

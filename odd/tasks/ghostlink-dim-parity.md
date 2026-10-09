@@ -1,4 +1,4 @@
-# DIM Parity — Read Performance and UX — IN PROGRESS
+# DIM Parity — Read Performance and UX — IMPLEMENTED (live checks pending)
 
 Second DIM comparison round (2026-10-09), after the rc.3 action-model
 migration. Goal: faster reads on SQLite and DIM-grade CLI/MCP experience.
@@ -262,11 +262,29 @@ summary · A5 loadout phases · A6 serial Manifest downloads.
   asserted safety promises, guarded by a 500-byte-per-tool budget test;
   three stale "four reads" test names renamed. Workspace: 2040 passed,
   0 failed.
-- [ ] **D — Docs, skill and live checklist.**
+- [x] **D — Docs, skill and live checklist.** README, docs/cli.md,
+  docs/mcp.md (seven mutations incl. `equip_items`), skills/ghostlink
+  (SKILL.md, references/exit-codes.md), historical labels in
+  docs/mvp-*.md, release-notes draft `docs/release-notes/next.md` (linked
+  from docs/development.md; no CHANGELOG exists), and the next-RC DIM-parity
+  live checklist in odd/tasks/ghostlink-public-release.md. Claims checked
+  against code; `supported_filters` is only returned for unknown filters.
+  Workspace: 2040 passed, 0 failed.
 
 ## Delivery
 
-- Branch `perf/sqlite-reads` from `main` at `e8d8c50` for P0–P4; later groups
-  stack on it.
+- Branch `perf/sqlite-reads` from `main` at `e8d8c50`, one work-unit commit
+  per task, each with an approved native review. Push / PR / merge / RC are
+  owner decisions.
+- Pending human-run checks (next RC): EquipLoadout with Vault and
+  other-character items (decides U4b/U4c), throttle fail-fast/recovery,
+  query syntax/errors, compact/detail + pagination, inspect by exact name,
+  concurrent MCP reads during a mutation, typed `local_state`, Claude client
+  accepts the MCP tool list.
+- Follow-ups (review advisories / deferred): Manifest download concurrency;
+  count-only coverage check (`sqlite/search.rs`); duplicate envelope parse
+  (`bungie_errors.rs`); per-slot resource cost and round-robin waits in the
+  MCP read pool; MCP text + structuredContent duplication (G1);
+  `perf_baseline.rs` advisory.
 
 ## Evidence
