@@ -109,7 +109,10 @@ impl EquipOutput {
                 step.kind,
                 step.reason
                     .as_ref()
-                    .map(|r| format!(" — {}", clean(r)))
+                    .map(|r| format!(
+                        " — {}",
+                        clean(destiny_output::rejection_message(r).unwrap_or(r))
+                    ))
                     .unwrap_or_default()
             ));
         }

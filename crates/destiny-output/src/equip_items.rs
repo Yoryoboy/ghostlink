@@ -34,6 +34,7 @@ impl EquipItemsOutput {
                     ("applied", 0, None)
                 } else {
                     let reason = match &result.receipt {
+                        Some(EquipItemsOutcome::Rejected(reason)) => reason.reason(),
                         Some(EquipItemsOutcome::Refused) => "provider refused batch equip",
                         Some(EquipItemsOutcome::RestrictedLocation) => {
                             "go to orbit or a social space and retry"
@@ -66,7 +67,7 @@ impl EquipItemsOutput {
                     .collect();
                 Self {
                     value: json!({"kind":"equip_items", "outcome":outcome,
-                        "items":items, "reason":reason}),
+                        "items":items, "reason":reason, "message":reason.and_then(crate::rejection_message)}),
                     exit_code,
                 }
             }
@@ -78,7 +79,7 @@ impl EquipItemsOutput {
             self.value["outcome"].as_str().unwrap_or("incomplete")
         );
         if let Some(reason) = self.value["reason"].as_str() {
-            text.push_str(&format!("; {reason}"));
+            text.push_str(&format!("; {}", crate::reason_text(reason)));
         }
         if let Some(items) = self.value["items"].as_array() {
             for item in items {

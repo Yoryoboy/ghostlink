@@ -716,8 +716,8 @@ fn classify_response(response: &mut TransferHttpResponse) -> Result<TransferOutc
 /// Classifies a JSON action envelope.
 ///
 /// Success is the shared `ErrorCode == 1` convention. A non-success envelope is
-/// a deterministic refusal only when `ErrorStatus` is one of the recorded
-/// transfer statuses; anything else, or a missing, mistyped, or non-integral
+/// a deterministic refusal only for a recognized numeric code;
+/// anything else, or a missing, mistyped, or non-integral
 /// code, is uncertain. The body is never surfaced.
 fn classify_envelope(bytes: &[u8]) -> TransferOutcome {
     let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
@@ -728,24 +728,11 @@ fn classify_envelope(bytes: &[u8]) -> TransferOutcome {
     };
     match object.get("ErrorCode").and_then(Value::as_u64) {
         Some(SUCCESS_ERROR_CODE) => TransferOutcome::Transferred,
-        Some(_) => classify_error_status(object.get("ErrorStatus")),
+        Some(code) => crate::bungie_errors::rejection(code)
+            .map_or(TransferOutcome::Uncertain, |reason| {
+                TransferOutcome::Rejected(TransferRejection::Provider(reason))
+            }),
         None => TransferOutcome::Uncertain,
-    }
-}
-
-/// Maps a non-success `ErrorStatus` onto a bounded deterministic refusal.
-///
-/// Only the recorded transfer statuses are recognized. `CanTransfer` is
-/// deliberately not a refusal, and an unknown, absent, empty, or mistyped status
-/// is uncertain rather than guessed.
-fn classify_error_status(status: Option<&Value>) -> TransferOutcome {
-    match status.and_then(Value::as_str) {
-        Some("ItemIsEquipped") => TransferOutcome::Rejected(TransferRejection::Equipped),
-        Some("NotTransferrable") => TransferOutcome::Rejected(TransferRejection::NotTransferable),
-        Some("NoRoomInDestination") => {
-            TransferOutcome::Rejected(TransferRejection::DestinationFull)
-        }
-        _ => TransferOutcome::Uncertain,
     }
 }
 
@@ -848,6 +835,41 @@ fn is_token_byte(byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn numeric_action_rejections() {
+        crate::bungie_errors::assert_action_codes(|value| {
+            match super::classify_envelope(value.to_string().as_bytes()) {
+                TransferOutcome::Rejected(TransferRejection::Provider(reason)) => Some(reason),
+                TransferOutcome::Uncertain => None,
+                other => panic!("unexpected {other:?}"),
+            }
+        });
+    }
+    #[test]
+    fn numeric_action_rejections_ignore_status_text() {
+        for code in [
+            1623, 1632, 1634, 1640, 1641, 1642, 1648, 1656, 1660, 1663, 1671, 1672,
+        ] {
+            let body = serde_json::json!({"ErrorCode":code,"ErrorStatus":"Success"});
+            assert!(
+                matches!(
+                    super::classify_envelope(body.to_string().as_bytes()),
+                    TransferOutcome::Rejected(_)
+                ),
+                "code {code}"
+            );
+        }
+        for body in [
+            serde_json::json!({"ErrorCode":999,"ErrorStatus":"ItemIsEquipped"}),
+            serde_json::json!({"ErrorStatus":"NoRoomInDestination"}),
+        ] {
+            assert_eq!(
+                super::classify_envelope(body.to_string().as_bytes()),
+                TransferOutcome::Uncertain
+            );
+        }
+    }
+
     use super::{
         BungieTransferGateway, HttpTransferTransport, TRANSFER_ENDPOINT, TRANSFER_RESPONSE_LIMIT,
         TransferApiKey, TransferBearerToken, TransferHttpRequest, TransferHttpResponse,
@@ -1569,20 +1591,13 @@ mod tests {
     }
 
     #[test]
-    fn known_refusal_statuses_map_to_deterministic_rejections() {
-        for (status, expected) in [
-            ("ItemIsEquipped", TransferRejection::Equipped),
-            ("NotTransferrable", TransferRejection::NotTransferable),
-            ("NoRoomInDestination", TransferRejection::DestinationFull),
-        ] {
-            // The refusal is keyed on the stable status name, not the numeric
-            // code, so any non-success code carrying it is still deterministic.
+    fn status_text_never_proves_a_rejection() {
+        for status in ["ItemIsEquipped", "NotTransferrable", "NoRoomInDestination"] {
             for error_code in ["0", "7", "1670"] {
                 let body = ensure_success_body(error_code, Some(status));
                 assert_eq!(
                     transfer_with(json_response(200, &body)),
-                    TransferOutcome::Rejected(expected),
-                    "status {status} under code {error_code} must be a deterministic refusal"
+                    TransferOutcome::Uncertain
                 );
             }
         }

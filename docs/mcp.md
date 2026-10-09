@@ -126,6 +126,16 @@ to stdout. A missing stored credential fails closed with `authorization is
 required`, a legacy raw-material credential with `reauthorization is required`,
 and neither path guesses an expiry or falls back to an environment value.
 
+## Bungie action rejections
+
+All action adapters share exact numeric rejection classification; provider
+status text never decides. See the [canonical reason table](../skills/ghostlink/references/exit-codes.md#definitive-bungie-action-rejections)
+for stable snake_case reasons and user actions. Rejected receipts/steps are
+errors (`isError=true`), not uncertain outcomes. They invalidate freshness so
+the next action/read syncs, without automatic retry or rollback of earlier
+acknowledged transfer legs. Unknown codes remain uncertain. New typed reasons
+include sanitized actionable `message` text alongside `reason`.
+
 ## Batch equip
 
 `equip_items` accepts exactly `{"character":"hunter","items":["123456789","234567890"]}`

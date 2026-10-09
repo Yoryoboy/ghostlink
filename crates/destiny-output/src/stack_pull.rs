@@ -153,12 +153,14 @@ fn receipt(value: &StackPullOutcome) -> Value {
         StackPullOutcome::Uncertain => json!({"kind":"uncertain"}),
         StackPullOutcome::Transient => json!({"kind":"transient"}),
         StackPullOutcome::AuthenticationRefused => json!({"kind":"authentication_refused"}),
-        StackPullOutcome::Rejected(reason) => {
-            let reason = match reason {
-                StackPullRejection::InvalidRequest => "invalid_request",
-                StackPullRejection::DestinationFull => "destination_full",
-            };
-            json!({"kind":"rejected", "reason":reason})
+        StackPullOutcome::Rejected(StackPullRejection::Provider(reason)) => {
+            json!({"kind":"rejected", "reason":reason.reason(), "message":reason.message()})
+        }
+        StackPullOutcome::Rejected(StackPullRejection::InvalidRequest) => {
+            json!({"kind":"rejected", "reason":"invalid_request"})
+        }
+        StackPullOutcome::Rejected(StackPullRejection::DestinationFull) => {
+            json!({"kind":"rejected", "reason":"destination_full"})
         }
     }
 }

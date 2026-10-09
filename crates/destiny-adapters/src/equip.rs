@@ -140,33 +140,12 @@ fn classify_response(response: &mut EquipHttpResponse) -> Result<EquipOutcome, A
     };
     match value.get("ErrorCode").and_then(Value::as_u64) {
         Some(1) => Ok(EquipOutcome::Equipped),
-        Some(_) => Ok(classify_error_status(
-            value.get("ErrorStatus").and_then(Value::as_str),
-        )),
+        Some(code) => Ok(crate::bungie_errors::rejection(code)
+            .map_or(EquipOutcome::Uncertain, |reason| {
+                EquipOutcome::Rejected(EquipRejection::Provider(reason))
+            })),
         None => Ok(EquipOutcome::Uncertain),
     }
-}
-
-fn classify_error_status(status: Option<&str>) -> EquipOutcome {
-    let rejection = match status {
-        Some(
-            "DestinyCharacterNotInTower"
-            | "DestinyCannotPerformActionAtThisLocation"
-            | "DestinyCanOnlyEquipInGame"
-            | "DestinyAccountMustBeOffline",
-        ) => EquipRejection::NotInSocialSpace,
-        Some("DestinyItemUniqueEquipRestricted") => EquipRejection::ExoticLimit,
-        Some(
-            "DestinyItemUnequippable"
-            | "DestinyItemFailedLevelCheck"
-            | "DestinyItemFailedUnlockCheck",
-        ) => EquipRejection::Unequippable,
-        Some("DestinyItemNotFound") => EquipRejection::ItemNotFound,
-        Some("DestinyCharacterNotFound") => EquipRejection::CharacterNotFound,
-        Some("DestinyThrottledByGameServer") => return EquipOutcome::Transient,
-        _ => return EquipOutcome::Uncertain,
-    };
-    EquipOutcome::Rejected(rejection)
 }
 
 #[cfg(test)]
@@ -247,6 +226,16 @@ mod tests {
             Some("application/json".into()),
             Box::new(Cursor::new(bytes)),
         )
+    }
+    #[test]
+    fn numeric_action_rejections() {
+        crate::bungie_errors::assert_action_codes(|value| {
+            match classify_response(&mut response(200, value)).unwrap() {
+                EquipOutcome::Rejected(EquipRejection::Provider(reason)) => Some(reason),
+                EquipOutcome::Uncertain => None,
+                other => panic!("unexpected {other:?}"),
+            }
+        });
     }
     #[test]
     fn exact_url_body_and_success_without_retry() {
@@ -332,69 +321,23 @@ mod tests {
 
     #[test]
     fn mapped_statuses_and_unknowns() {
-        for (code, status, outcome) in [
-            (
-                1634,
-                "DestinyCharacterNotInTower",
-                EquipOutcome::Rejected(EquipRejection::NotInSocialSpace),
-            ),
-            (
-                1671,
-                "DestinyCannotPerformActionAtThisLocation",
-                EquipOutcome::Rejected(EquipRejection::NotInSocialSpace),
-            ),
-            (
-                1655,
-                "DestinyCanOnlyEquipInGame",
-                EquipOutcome::Rejected(EquipRejection::NotInSocialSpace),
-            ),
-            (
-                1654,
-                "DestinyAccountMustBeOffline",
-                EquipOutcome::Rejected(EquipRejection::NotInSocialSpace),
-            ),
-            (
-                1641,
-                "DestinyItemUniqueEquipRestricted",
-                EquipOutcome::Rejected(EquipRejection::ExoticLimit),
-            ),
-            (
-                1640,
-                "DestinyItemUnequippable",
-                EquipOutcome::Rejected(EquipRejection::Unequippable),
-            ),
-            (
-                1638,
-                "DestinyItemFailedLevelCheck",
-                EquipOutcome::Rejected(EquipRejection::Unequippable),
-            ),
-            (
-                1639,
-                "DestinyItemFailedUnlockCheck",
-                EquipOutcome::Rejected(EquipRejection::Unequippable),
-            ),
-            (
-                1623,
-                "DestinyItemNotFound",
-                EquipOutcome::Rejected(EquipRejection::ItemNotFound),
-            ),
-            (
-                1620,
-                "DestinyCharacterNotFound",
-                EquipOutcome::Rejected(EquipRejection::CharacterNotFound),
-            ),
-            (
-                1672,
-                "DestinyThrottledByGameServer",
-                EquipOutcome::Transient,
-            ),
-            (9999, "Unknown-canary", EquipOutcome::Uncertain),
+        for (code, status) in [
+            (1655, "DestinyCanOnlyEquipInGame"),
+            (1654, "DestinyAccountMustBeOffline"),
+            (1638, "DestinyItemFailedLevelCheck"),
+            (1639, "DestinyItemFailedUnlockCheck"),
+            (1620, "DestinyCharacterNotFound"),
+            (9999, "DestinyItemNotFound"),
         ] {
             let mut gateway = gateway(Ok(response(
                 200,
                 json!({"ErrorCode":code,"ErrorStatus":status}),
             )));
-            assert_eq!(gateway.equip(&request()).unwrap(), outcome, "{status}");
+            assert_eq!(
+                gateway.equip(&request()).unwrap(),
+                EquipOutcome::Uncertain,
+                "{status}"
+            );
             assert_eq!(gateway.transport().calls, 1);
         }
     }

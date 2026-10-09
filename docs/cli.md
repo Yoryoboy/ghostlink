@@ -935,6 +935,15 @@ hash/amount/owner intent. Acceptance is not an atomic or observed-state guarante
 local serialization does not cover the game or other processes. Offline tests
 are not live-account or full Postmaster readiness claims.
 
+## Bungie action rejections
+
+Every action classifies definitive rejections by exact numeric Bungie code,
+never status text. Stable snake_case reasons and actionable messages are listed
+once in the [shared reason table](../skills/ghostlink/references/exit-codes.md#definitive-bungie-action-rejections).
+Received rejections retain the existing incomplete/refused exit 41, invalidate
+freshness for the next action/read, and never retry automatically. Unknown codes
+remain uncertain. Earlier acknowledged legs of a move remain applied.
+
 ## Move one item
 
 ```sh

@@ -36,6 +36,7 @@ impl ApplyLoadoutOutput {
                     LoadoutActionOutcome::Rejected(reason) => (
                         "rejected",
                         Some(match reason {
+                            LoadoutActionRejection::Provider(reason) => reason.reason(),
                             LoadoutActionRejection::RestrictedLocation => {
                                 "go to orbit or a social space and retry"
                             }
@@ -62,6 +63,7 @@ impl ApplyLoadoutOutput {
                     value: json!({"kind":"apply_loadout", "character":clean(result.character.as_str()),
                         "slot":result.slot, "name":result.name.as_deref().map(clean),
                         "outcome":outcome, "receipt":receipt, "reason":reason,
+                        "message":reason.and_then(crate::rejection_message),
                         "local_state_updated":result.local_state_updated}),
                     exit_code,
                 }
@@ -127,7 +129,7 @@ impl ApplyLoadoutOutput {
             ));
         }
         if let Some(reason) = self.value["reason"].as_str() {
-            text.push_str(&format!("; {reason}"));
+            text.push_str(&format!("; {}", crate::reason_text(reason)));
         }
         if let Some(candidates) = self.value["candidates"].as_array() {
             for candidate in candidates {

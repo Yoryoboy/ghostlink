@@ -2788,8 +2788,12 @@ mod tests {
             }
             let mut equip = QueuedEquipGateway::new();
             let outcome = match case {
-                4 => EquipOutcome::Rejected(EquipRejection::ExoticLimit),
-                5 => EquipOutcome::Rejected(EquipRejection::NotInSocialSpace),
+                4 => EquipOutcome::Rejected(EquipRejection::Provider(
+                    destiny_core::ProviderRejection::ItemNotFound,
+                )),
+                5 => EquipOutcome::Rejected(EquipRejection::Provider(
+                    destiny_core::ProviderRejection::Throttled,
+                )),
                 6..=8 | 18 => EquipOutcome::Uncertain,
                 19 => EquipOutcome::AuthenticationRefused,
                 20 => EquipOutcome::Rejected(EquipRejection::ExoticLimit),
@@ -2881,12 +2885,13 @@ mod tests {
                 assert_eq!(evidence.stop_outcome(), Some(StepOutcome::Uncertain));
             }
             if case == 4 || case == 5 {
+                assert!(svc.repository().freshness_invalidated().unwrap());
                 assert_eq!(
                     evidence.stop_outcome(),
                     Some(StepOutcome::EquipRejected(if case == 4 {
-                        EquipRejection::ExoticLimit
+                        EquipRejection::Provider(destiny_core::ProviderRejection::ItemNotFound)
                     } else {
-                        EquipRejection::NotInSocialSpace
+                        EquipRejection::Provider(destiny_core::ProviderRejection::Throttled)
                     }))
                 );
             }
@@ -3412,10 +3417,14 @@ mod tests {
             );
             let mut lock = QueuedLockGateway::new();
             let outcome = match case {
-                2 => LockOutcome::Rejected(LockRejection::ItemNotFound),
+                2 => LockOutcome::Rejected(LockRejection::Provider(
+                    destiny_core::ProviderRejection::ItemNotFound,
+                )),
                 3 | 4 => LockOutcome::Uncertain,
                 11 => LockOutcome::AuthenticationRefused,
-                12 => LockOutcome::Transient,
+                12 => LockOutcome::Rejected(LockRejection::Provider(
+                    destiny_core::ProviderRejection::Throttled,
+                )),
                 _ => LockOutcome::Applied,
             };
             lock.queue(if case == 8 {
@@ -3484,10 +3493,14 @@ mod tests {
         fn outcome_for_case(case: usize) -> destiny_core::LockOutcome {
             use destiny_core::{LockOutcome, LockRejection};
             match case {
-                2 => LockOutcome::Rejected(LockRejection::ItemNotFound),
+                2 => LockOutcome::Rejected(LockRejection::Provider(
+                    destiny_core::ProviderRejection::ItemNotFound,
+                )),
                 3 | 4 => LockOutcome::Uncertain,
                 11 => LockOutcome::AuthenticationRefused,
-                12 => LockOutcome::Transient,
+                12 => LockOutcome::Rejected(LockRejection::Provider(
+                    destiny_core::ProviderRejection::Throttled,
+                )),
                 _ => LockOutcome::Applied,
             }
         }
@@ -6150,6 +6163,12 @@ mod tests {
             TransferOutcome::Uncertain,
             TransferOutcome::AuthenticationRefused,
             TransferOutcome::Rejected(TransferRejection::DestinationFull),
+            TransferOutcome::Rejected(TransferRejection::Provider(
+                destiny_core::ProviderRejection::ItemNotFound,
+            )),
+            TransferOutcome::Rejected(TransferRejection::Provider(
+                destiny_core::ProviderRejection::Throttled,
+            )),
         ] {
             let (shared, mut service, request, plan) = direct_service_with_plan();
             queue_refresh(&shared, fresh_vault_projection());
@@ -6209,6 +6228,7 @@ mod tests {
                     assert_eq!(incomplete.observed(), &ItemLocation::Vault);
                     assert_eq!(incomplete.evidence().completed_count(), 0);
                     assert!(service.repository().freshness_invalidated().unwrap());
+                    assert_eq!(transfer.calls(), 1);
                     assert_eq!(
                         service.committed_snapshot().unwrap().items[0].location,
                         ItemLocation::Vault

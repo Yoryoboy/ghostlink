@@ -93,6 +93,9 @@ fn receipt(value: &InstancedPullOutcome) -> Value {
         InstancedPullOutcome::Uncertain => json!({"kind":"uncertain"}),
         InstancedPullOutcome::Transient => json!({"kind":"transient"}),
         InstancedPullOutcome::AuthenticationRefused => json!({"kind":"authentication_refused"}),
+        InstancedPullOutcome::Rejected(InstancedPullRejection::Provider(reason)) => {
+            json!({"kind":"rejected", "reason":reason.reason(), "message":reason.message()})
+        }
         InstancedPullOutcome::Rejected(InstancedPullRejection::DestinationFull) => {
             json!({"kind":"rejected", "reason":"destination_full", "message":"destination full; free a slot and retry"})
         }

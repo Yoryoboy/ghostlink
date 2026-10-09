@@ -45,6 +45,7 @@ impl EquipLoadoutRequest {
 /// Bounded reasons, never raw provider text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LoadoutActionRejection {
+    Provider(crate::ProviderRejection),
     /// Bungie requires orbit, a social space, or an offline character.
     RestrictedLocation,
     CharacterNotFound,
@@ -54,6 +55,7 @@ pub enum LoadoutActionRejection {
 impl LoadoutActionRejection {
     pub const fn category(self) -> ErrorCategory {
         match self {
+            Self::Provider(reason) => reason.category(),
             Self::RestrictedLocation => ErrorCategory::UnsupportedOperation,
             Self::CharacterNotFound | Self::InvalidRequest => ErrorCategory::ProviderValidation,
         }

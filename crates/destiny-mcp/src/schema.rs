@@ -1447,9 +1447,13 @@ pub enum StepOutcomeView {
     Unattempted,
     Completed,
     Rejected {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
         reason: TransferRejectionView,
     },
     EquipRejected {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
         reason: EquipRejectionView,
     },
     /// Received authentication refusal: attempted, not applied.
@@ -1462,6 +1466,14 @@ pub enum StepOutcomeView {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransferRejectionView {
+    ItemNotFound,
+    AlreadyInInventory,
+    NotInSocialSpace,
+    Unequippable,
+    ExoticLimit,
+    UniquenessViolation,
+    ActionForbidden,
+    Throttled,
     NotTransferable,
     Equipped,
     DestinationFull,
@@ -1472,6 +1484,13 @@ pub enum TransferRejectionView {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EquipRejectionView {
+    AlreadyInInventory,
+    DestinationFull,
+    UniquenessViolation,
+    Equipped,
+    NotTransferable,
+    ActionForbidden,
+    Throttled,
     NotInSocialSpace,
     ExoticLimit,
     Unequippable,

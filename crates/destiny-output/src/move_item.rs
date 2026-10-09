@@ -139,7 +139,7 @@ impl MoveOutput {
             "steps":self.steps.iter().map(|s| {
                 let mut value = json!({"ordinal":s.ordinal,"kind":s.kind,"to":location_json(&s.to),"outcome":s.outcome});
                 if let Some(from) = &s.from { value["from"] = location_json(from); }
-                if let Some(reason) = &s.reason { value["reason"] = json!(reason); }
+                if let Some(reason) = &s.reason { value["reason"] = json!(reason); if let Some(message) = crate::rejection_message(reason) { value["message"] = json!(message); } }
                 value
             }).collect::<Vec<_>>(),
             "steps_completed":self.steps.iter().filter(|s| s.outcome == "completed").count(),
@@ -195,7 +195,7 @@ impl MoveOutput {
                 step.kind,
                 step.reason
                     .as_ref()
-                    .map(|r| format!(" — {}", clean(r)))
+                    .map(|r| format!(" — {}", clean(crate::reason_text(r))))
                     .unwrap_or_default()
             ));
         }

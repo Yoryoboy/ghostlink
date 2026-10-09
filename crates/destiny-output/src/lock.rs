@@ -80,10 +80,11 @@ impl LockOutput {
             Some(LockOutcome::Rejected(reason)) => (
                 Some("rejected"),
                 Some(match reason {
+                    LockRejection::Provider(reason) => reason.reason(),
                     LockRejection::NotInSocialSpace => {
                         "character must be in orbit, a social space, or offline"
                     }
-                    LockRejection::ItemNotFound => "item was not found",
+                    LockRejection::ItemNotFound => "item_not_found",
                     LockRejection::CharacterNotFound => "character was not found",
                     LockRejection::InvalidRequest => "lock request was rejected",
                 }),
@@ -135,6 +136,7 @@ impl LockOutput {
             "locked": self.locked,
             "attempt": self.attempt,
             "reason": self.reason.as_deref().map(clean),
+            "message": self.reason.as_deref().and_then(crate::rejection_message),
             "profile_refresh": match self.profile_refresh { ProfileRefresh::NotRequired => "not_required", ProfileRefresh::Refreshed => "refreshed", ProfileRefresh::Failed => "failed" },
             "observed": self.observed.map(|locked| json!({"locked":locked})),
         })
@@ -157,7 +159,7 @@ impl LockOutput {
         }
         let mut lines = vec![format!("{name}: {}", self.status.as_str())];
         if let Some(reason) = &self.reason {
-            lines.push(clean(reason));
+            lines.push(clean(crate::reason_text(reason)));
         }
         if let Some(attempt) = self.attempt {
             lines.push(format!("set_lock_state: {attempt}"));

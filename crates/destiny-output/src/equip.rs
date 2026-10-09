@@ -149,6 +149,7 @@ pub fn step_view(
         StepOutcome::Rejected(reason) => (
             "rejected",
             Some(match reason {
+                TransferRejection::Provider(reason) => reason.reason(),
                 TransferRejection::NotTransferable => "item is not transferable",
                 TransferRejection::Equipped => "item is equipped; it must be unequipped first",
                 TransferRejection::DestinationFull => "destination has no room for this item",
@@ -158,6 +159,7 @@ pub fn step_view(
         StepOutcome::EquipRejected(reason) => (
             "rejected",
             Some(match reason {
+                EquipRejection::Provider(reason) => reason.reason(),
                 EquipRejection::NotInSocialSpace => {
                     "character must be in a social space, orbit, or offline"
                 }
@@ -263,7 +265,7 @@ impl EquipOutput {
             "steps": self.steps.iter().map(|s| {
                 let mut v = json!({"ordinal":s.ordinal,"kind":s.kind,"to":s.to.json(),"outcome":s.outcome});
                 if let Some(from) = &s.from { v["from"] = from.json(); }
-                if let Some(reason) = &s.reason { v["reason"] = json!(reason); }
+                if let Some(reason) = &s.reason { v["reason"] = json!(reason); if let Some(message) = crate::rejection_message(reason) { v["message"] = json!(message); } }
                 v
             }).collect::<Vec<_>>(),
             "reason":self.reason,

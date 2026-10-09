@@ -658,14 +658,15 @@ fn plain_response(status: u16) -> TransferHttpResponse {
 }
 
 fn refusal_envelope(rejection: TransferRejection) -> String {
-    let status = match rejection {
-        TransferRejection::NotTransferable => "NotTransferrable",
-        TransferRejection::Equipped => "ItemIsEquipped",
-        TransferRejection::DestinationFull => "NoRoomInDestination",
-        // The `InvalidRequest` refusal is carried by an HTTP status instead.
-        TransferRejection::InvalidRequest => "InvalidRequest",
+    let code = match rejection {
+        TransferRejection::NotTransferable => 1660,
+        TransferRejection::Equipped => 1656,
+        TransferRejection::DestinationFull => 1642,
+        // The InvalidRequest refusal is carried by HTTP, not this envelope.
+        TransferRejection::InvalidRequest => 0,
+        TransferRejection::Provider(_) => panic!("unexpected fixture reason"),
     };
-    format!("{{\"ErrorCode\":5,\"ErrorStatus\":\"{status}\",\"Response\":{{}}}}")
+    format!("{{\"ErrorCode\":{code},\"ErrorStatus\":\"untrusted\",\"Response\":{{}}}}")
 }
 
 fn sentinel_transfer_body() -> String {
@@ -1270,7 +1271,9 @@ fn refused_second_step_strands_the_item_in_the_vault() {
     assert_eq!(incomplete.observed(), &ItemLocation::Vault);
     assert_eq!(
         incomplete.stop_outcome(),
-        Some(StepOutcome::Rejected(TransferRejection::DestinationFull))
+        Some(StepOutcome::Rejected(TransferRejection::Provider(
+            destiny_core::ProviderRejection::DestinationFull
+        )))
     );
     assert_eq!(incomplete.evidence().completed_count(), 1);
     assert_eq!(incomplete.evidence().attempted_count(), 2);

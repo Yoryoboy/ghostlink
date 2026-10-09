@@ -101,6 +101,7 @@ fn positive_int64_id(value: &str) -> bool {
 /// Numeric provider mapping is adapter-owned; no provider text is retained.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InstancedPullRejection {
+    Provider(crate::ProviderRejection),
     /// The provider deterministically rejected the request; nothing applied.
     InvalidRequest,
     /// DestinyNoRoomInDestination (Bungie Platform error 1642).
@@ -110,6 +111,7 @@ pub enum InstancedPullRejection {
 impl InstancedPullRejection {
     pub const fn category(self) -> ErrorCategory {
         match self {
+            Self::Provider(reason) => reason.category(),
             Self::InvalidRequest | Self::DestinationFull => ErrorCategory::ProviderValidation,
         }
     }

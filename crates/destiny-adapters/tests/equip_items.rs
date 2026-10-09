@@ -256,23 +256,32 @@ fn envelope_refusal_auth_transient_and_unknown() {
     ] {
         assert_eq!(outcome(status, json!({"ErrorCode": 1})), expected);
     }
-    for (status, expected) in [
-        ("DestinyCharacterNotFound", O::Refused),
-        (
-            "DestinyCannotPerformActionAtThisLocation",
-            O::RestrictedLocation,
-        ),
-        ("DestinyItemUniqueEquipRestricted", O::Refused),
-        ("WebAuthRequired", O::AuthenticationRefused),
-        ("AccessTokenHasExpired", O::AuthenticationRefused),
-        ("AccessTokenInvalid", O::AuthenticationRefused),
-        ("DestinyThrottledByGameServer", O::Transient),
-        ("ThrottleLimitExceeded", O::Transient),
-        ("unknown-canary", O::Uncertain),
+    for status in [
+        "DestinyCharacterNotFound",
+        "DestinyCannotPerformActionAtThisLocation",
+        "DestinyItemUniqueEquipRestricted",
+        "WebAuthRequired",
+        "AccessTokenHasExpired",
+        "AccessTokenInvalid",
+        "DestinyThrottledByGameServer",
+        "ThrottleLimitExceeded",
+        "unknown-canary",
     ] {
         assert_eq!(
             outcome(200, json!({"ErrorCode": 999, "ErrorStatus": status})),
-            expected
+            O::Uncertain
+        );
+    }
+}
+#[test]
+fn numeric_refusals_ignore_status_and_do_not_retry() {
+    for (code, reason) in [
+        (1623, destiny_core::ProviderRejection::ItemNotFound),
+        (1672, destiny_core::ProviderRejection::Throttled),
+    ] {
+        assert_eq!(
+            outcome(200, json!({"ErrorCode":code,"ErrorStatus":"Success"})),
+            EquipItemsOutcome::Rejected(reason)
         );
     }
 }

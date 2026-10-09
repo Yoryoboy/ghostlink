@@ -134,37 +134,31 @@ fn exact_single_post_ack_and_http_receipts() {
 #[test]
 fn bounded_provider_refusals_and_throttle_no_raw_messages() {
     use LoadoutActionOutcome as O;
-    for (status, expected) in [
-        (
-            "DestinyCharacterNotInTower",
-            O::Rejected(LoadoutActionRejection::RestrictedLocation),
-        ),
-        (
-            "DestinyCannotPerformActionAtThisLocation",
-            O::Rejected(LoadoutActionRejection::RestrictedLocation),
-        ),
-        (
-            "DestinyCanOnlyEquipInGame",
-            O::Rejected(LoadoutActionRejection::RestrictedLocation),
-        ),
-        (
-            "DestinyAccountMustBeOffline",
-            O::Rejected(LoadoutActionRejection::RestrictedLocation),
-        ),
-        (
-            "DestinyCharacterNotFound",
-            O::Rejected(LoadoutActionRejection::CharacterNotFound),
-        ),
-        ("DestinyThrottledByGameServer", O::Transient),
-        ("ThrottleLimitExceeded", O::Transient),
-        ("unknown-canary", O::Uncertain),
+    for status in [
+        "DestinyCharacterNotInTower",
+        "DestinyCannotPerformActionAtThisLocation",
+        "DestinyCanOnlyEquipInGame",
+        "DestinyAccountMustBeOffline",
+        "DestinyCharacterNotFound",
+        "DestinyThrottledByGameServer",
+        "ThrottleLimitExceeded",
+        "unknown-canary",
     ] {
         assert_eq!(
             outcome(
                 200,
                 json!({"ErrorCode": 999, "ErrorStatus": status, "Message": "token-canary"})
             ),
-            expected
+            O::Uncertain
+        );
+    }
+    for (code, reason) in [
+        (1623, destiny_core::ProviderRejection::ItemNotFound),
+        (1672, destiny_core::ProviderRejection::Throttled),
+    ] {
+        assert_eq!(
+            outcome(200, json!({"ErrorCode":code,"ErrorStatus":"Success"})),
+            O::Rejected(LoadoutActionRejection::Provider(reason))
         );
     }
     for body in [

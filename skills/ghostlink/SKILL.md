@@ -33,6 +33,15 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - Explain perk, mod, aspect, fragment and ability effects only from output `description` (official Bungie tooltip) and optional `clarity` (community research). Attribute community numbers to Clarity; never invent numbers, percentages or durations absent from both fields. If neither gives an exact value, say it is unavailable.
 - Missing `clarity` is not evidence of no effect. For `clarity_match: "variant"`, explicitly qualify the text as an enhanced/base fallback, not exact values for the inspected variant; never infer improved numbers.
 
+## Bungie action rejections
+
+Use the [shared reason table](references/exit-codes.md#definitive-bungie-action-rejections)
+for every action. Exact numeric codes alone decide definitive rejection; status
+text cannot. Report the stable `reason` and actionable `message`. Rejections
+invalidate freshness, so the next action/read syncs; earlier acknowledged legs
+remain applied. No automatic retry, replacement equip or rollback. Unknown
+codes remain uncertain. Received refusals retain CLI 41 / MCP error.
+
 ## Decision Gates
 
 | Intent | Command |

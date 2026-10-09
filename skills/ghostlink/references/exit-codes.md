@@ -31,6 +31,38 @@ instruction object on stdout before waiting.) The failure object is either:
 | 50–52 | `credential_store_unavailable` / `local_storage` / `configuration_error` | Local setup problem; report to the user. |
 | 70 | `internal_error` | Report and stop. |
 
+## Definitive Bungie action rejections
+
+Actions plan from the local projection; Bungie is the final validator. Only the
+exact numeric code classifies a rejection, never `ErrorStatus` text. These
+received refusals prove the rejected action did not apply, invalidate freshness
+so the next action/read syncs, and are never retried automatically. Earlier
+acknowledged transfer legs remain applied; there is no rollback.
+
+All rows use CLI **41** and MCP **error (`isError=true`)** under the existing
+incomplete/failed/refused action contract. Receipts/steps classify them as
+`rejected`, not `uncertain`; `reason` is stable snake_case and `message` is
+sanitized actionable text. This is distinct from pre-action category exits
+(e.g. missing local item 32 or rate limiting a read 20).
+
+| Bungie code | `reason` | User action |
+|---:|---|---|
+| 1623 | `item_not_found` | Item is no longer where Ghostlink thought; the next read refreshes local state. Reassess and retry. |
+| 1632 | `already_in_inventory` | Already there; read its location before retrying. |
+| 1634 / 1671 | `not_in_social_space` | Go to orbit or a social space. |
+| 1640 | `unequippable` | Choose an item equippable on this character. |
+| 1641 | `exotic_limit` | Choose a different item; the exotic equip rule prevents this. |
+| 1642 | `destination_full` | Free a destination slot. |
+| 1648 | `uniqueness_violation` | Choose a different item; it conflicts with a uniqueness rule. |
+| 1656 | `equipped` | Unequip it first; Ghostlink does not equip a replacement or retry. |
+| 1660 | `not_transferable` | Choose a different item. |
+| 1663 | `action_forbidden` | Report; do not work around Bungie's restriction. |
+| 1672 | `throttled` | Bungie is throttling; wait and retry only after reassessing intent. |
+
+Unknown, malformed or absent codes remain uncertain even with recognized status
+text. These rules apply to move, equip, batch equip, lock/unlock, apply-loadout
+and both Postmaster pulls. Acknowledgement remains distinct from observed state.
+
 ## Apply loadout `outcome`
 
 `ghostlink apply-loadout <slot|name> --character <class|id> --json` and MCP
