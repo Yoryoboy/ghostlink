@@ -161,8 +161,12 @@ impl Fixture {
             )
             .unwrap()));
         }
+        let mut repository = InMemoryInventoryRepository::new();
+        repository
+            .replace_current(snapshot(false).input().clone())
+            .unwrap();
         let pipeline = InstancedPullService::new(
-            ProfileSyncService::new(profile.clone(), InMemoryInventoryRepository::new()),
+            ProfileSyncService::new(profile.clone(), repository),
             InMemoryDefinitionRepository::new(version(), vec![definition]),
             manifest,
             pinned_equipment_capacity_policy(),
@@ -188,10 +192,7 @@ impl Fixture {
             .json();
         assert_eq!(action.0.borrow().calls(), 1);
         let reasons = profile.0.borrow().requested_reasons().to_vec();
-        assert_eq!(
-            &reasons,
-            &[ProfileSyncReason::Preflight, ProfileSyncReason::Preflight]
-        );
+        assert!(reasons.is_empty());
         assert!(value.get("observations").is_none());
         value
     }

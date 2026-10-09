@@ -199,10 +199,13 @@ names, hashes, anonymous stacks, quantity and destination are unsupported.
 Invalid input is rejected before account/service work. Use the genuine
 `instance_id` from `get_postmaster.instances`, never a synthesized stack selector.
 
-One call resolves authenticated membership, freshly derives the Postmaster owner,
-qualifies non-destructive equipment with stored definitions and a freshly fetched
-public Manifest index, and proves pinned target-bucket capacity. Unknown or changed
-evidence refuses. It shares production gateway/repository clones and the existing
+One call resolves authenticated membership and uses ordinary sync and the committed
+projection to derive the Postmaster owner and qualify non-destructive equipment.
+Fresh projections need no profile acquisition or Manifest-index capacity fetch.
+Pinned audited capacity counts character-held instances (including equipped) by
+stored definition bucket. A known full bucket refuses locally; unknown occupant
+definitions permit a blind attempt with Bungie as final validator. Error code 1642
+returns a typed destination-full refusal; provider text alone never does. It shares production gateway/repository clones and the existing
 operation guard with publishing reads and sibling mutations, not a separate store.
 No inventory clearing, arbitrary destination, preview, rollback or redispatch.
 
@@ -210,10 +213,10 @@ No inventory clearing, arbitrary destination, preview, rollback or redispatch.
 `kind: "instanced_pull"`, `disposition`, `plan_id`, `dispatch`, independent
 `receipt` and `failure`. Bungie acknowledgement yields `disposition: "applied"`
 with `isError=false` (CLI 0), not observed arrival. There is at most one action,
-no post-action profile request or wait, and no `observations` field. Dispatched
-attempts durably invalidate local freshness so the next ordinary read forces sync;
-no guessed arrival state is published. `uncertain` and received `refused` remain
-errors (CLI 41). Invalidation storage failure returns `local_state_failed` with
+no post-action profile request or wait, and no `observations` field. Acknowledged
+pulls update character inventory locally (not equipped), advance revision and retain
+freshness. Incomplete attempts invalidate freshness so the next ordinary read syncs. `uncertain` and received `refused` remain
+errors (CLI 41). Local persistence or invalidation failure returns `local_state_failed` with
 `isError=true` (CLI 42), retaining the receipt and reporting "local state could
 not be updated after the action". Pre-action refusals retain category exits.
 
@@ -238,7 +241,10 @@ rejected before I/O. Use committed stack observations, never synthesize instance
 IDs or choose a destination.
 
 Only qualified non-instanced account-wide Consumables/Modifications are supported.
-Fresh planning and preflight prove eligibility and capacity; duplicate Postmaster
+Ordinary sync reuses the committed projection for planning and execution: fresh
+state needs no profile acquisition or Manifest capacity fetch. Pinned audited
+capacities do not require Manifest-version/artifact qualification; local fullness
+refuses, with unchanged unique-stack and capacity arithmetic. Duplicate Postmaster
 rows bound the amount by the smallest matching stack, not their sum. The adapter
 uses the existing operation guard and production gateway/repository clones.
 
@@ -247,9 +253,12 @@ uses the existing operation guard and production gateway/repository clones.
 `failure`; dispatch retains preflight totals, not invented post quantities.
 Acknowledgement returns `applied`, with `isError=false` (CLI 0), not observed
 quantity arrival. There is no post-action request, wait or `observations` field.
-Dispatched attempts durably invalidate local freshness; the next ordinary read
-forces sync without publishing guessed quantities. Transport uncertainty and
-received refusals remain errors (CLI 41); invalidation storage failure returns
+Acknowledged pulls apply the requested quantity locally once: decrement a
+Postmaster stack, fill/split profile inventory stacks, advance revision and retain
+freshness. Following plans see the updated capacity. Bungie is the final validator;
+numeric 1642 is a typed destination-full refusal, unknown codes stay uncertain.
+Incomplete receipts or persistence failures invalidate. Transport uncertainty and
+received refusals remain errors (CLI 41); persistence or invalidation failure returns
 `local_state_failed` (CLI 42 / `isError=true`) with the exact receipt and "local
 state could not be updated after the action". Pre-action refusals retain category
 exits. There are no provider-lag failures or exit 43. Never blindly retry: re-read

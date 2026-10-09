@@ -845,17 +845,18 @@ hashes, leading zeros, anonymous stacks, quantity, destination and owner argumen
 are not accepted. Requires login with `MoveEquipDestinyItems` authorization and
 qualified stored Manifest definitions; run `ghostlink sync-manifest` explicitly
 if missing. Membership comes from authentication, and the destination is the
-freshly observed original Postmaster owner's character inventory.
+committed original Postmaster owner's character inventory.
 
-One invocation forces fresh planning and preflight, checks explicit non-destructive
-instanced-equipment metadata and target-bucket capacity, then dispatches at most
-one action. The pinned audited capacity policy must match the freshly fetched
-public Manifest index version and bucket artifact; changed or missing evidence
-refuses the proof. No freeing space, redemption, redispatch, reminting or rollback.
+Planning and execution use ordinary sync: a fresh projection needs no profile
+acquisition or Manifest-index capacity fetch. Local advisory capacity counts
+character-held instances (including equipped) by definition bucket against the
+pinned audited constants. Known full buckets refuse before dispatch; unknown
+occupant definitions allow a blind attempt. Bungie is the final validator:
+numeric error 1642 means destination full; free a slot and retry after reassessing. No freeing space, redemption, redispatch, reminting or rollback.
 Bungie acknowledgement returns `applied` without post-action profile requests
-or waits. Every dispatched outcome invalidates local freshness durably; the next
-ordinary read forces provider sync. Inventory content, revision and real acquisition
-time remain unchanged, rather than writing guessed arrival state.
+or waits. Acknowledged pulls update the committed character inventory (not equipped),
+advance revision and retain freshness and real acquisition time. Incomplete attempts
+or persistence failures invalidate freshness; the next ordinary read syncs.
 
 JSON reuses the shared `kind: "instanced_pull"` projection: independent
 `disposition`, `receipt`, `dispatch`, `failure` and `plan_id`. There is no
@@ -866,7 +867,7 @@ post-action `observations` field. Typed pre-action failures have null receipt.
 | `applied` | 0 | Bungie acknowledged the action; not observed arrival. |
 | `uncertain` | 41 | Dispatched attempt without a clear acknowledgement; never success. |
 | `refused` | 41 / varies | Received refusal exits 41; pre-action refusals retain category exits. |
-| `local_state_failed` | 42 | Local freshness invalidation failed after dispatch; receipt retained. |
+| `local_state_failed` | 42 | Local persistence or invalidation failed after dispatch; receipt retained. |
 
 Only applied output goes to stdout; failures go to stderr. Storage failure reports
 "local state could not be updated after the action" and fails closed even after
@@ -892,10 +893,11 @@ fails before authentication, storage or service access.
 
 Requires login with `MoveEquipDestinyItems` and qualified stored Manifest
 metadata. One invocation-owned SQLite connection serializes local inventory
-publication and definition use, with authenticated membership, fresh planning
-and preflight, and fresh public Manifest index capacity evidence. Only pinned
-audited account-wide Consumables and Modifications buckets are supported.
-Unknown metadata, side effects, instanced items, capacity or policy drift refuse.
+publication and definition use, with authenticated membership and ordinary sync
+for planning and execution. Fresh committed state needs no profile acquisition or
+Manifest capacity fetch. Only pinned audited account-wide Consumables and
+Modifications buckets are supported, without Manifest-version/artifact qualification.
+Unknown metadata, side effects, instanced items or locally full destinations refuse.
 Duplicate anonymous rows remain significant: amount must not exceed the smallest
 matching owner Postmaster stack, not their sum. The owner selects the source;
 the destination is the qualified normal account-wide ProfileInventory bucket,
@@ -903,14 +905,17 @@ not an arbitrary character or Vault.
 
 One consumed plan dispatches at most once. Acknowledgement returns `applied`
 (exit 0 / stdout), not observed quantity arrival, without post-action requests or
-waits. Dispatched attempts durably invalidate local freshness so the next ordinary
-read forces sync; no guessed quantities are published. No automatic definition
+waits. Acknowledged pulls apply the requested quantity locally once: decrement a
+Postmaster stack, fill/split profile inventory stacks, advance revision and retain
+freshness. Capacity and the next plan see those updated stacks. Bungie is the final
+validator; numeric 1642 is a typed destination-full refusal, unknown codes uncertain.
+Incomplete receipts or persistence failures invalidate. No automatic definition
 download, recompose, freeing space, reminting, redispatch or rollback.
 JSON uses shared `kind: "stack_pull"`, independent `disposition`, `receipt`,
 `dispatch`, `failure` and `plan_id`; dispatch includes preflight quantity totals,
 not invented post quantities. There is no post-action `observations` field.
 Received refusals remain `refused`; transport uncertainty remains `uncertain`:
-both exit 41 on stderr. Invalidation storage failure is `local_state_failed` (42),
+both exit 41 on stderr. Persistence or invalidation failure is `local_state_failed` (42),
 retaining the receipt and reporting "local state could not be updated after the
 action". There is no provider-lag failure or exit 43.
 Missing definition is 33, ambiguous definition 31, preflight drift/expiry 30;

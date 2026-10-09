@@ -88,6 +88,15 @@ impl ProfileGateway for Profile {
     ) -> Result<InventorySnapshotInput, AppError> {
         self.0.borrow_mut().load_inventory(membership)
     }
+    fn load_inventory_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<InventorySnapshotInput, AppError> {
+        self.0
+            .borrow_mut()
+            .load_inventory_scoped(membership, reason)
+    }
     fn load_inventory_with_observations_scoped(
         &mut self,
         membership: &DestinyMembership,
@@ -133,7 +142,7 @@ fn pipeline_with_repository(
     let mut profile = QueuedProfileGateway::new();
     for next in [Ok(pre.clone()), Ok(pre)].into_iter().chain(posts) {
         profile.queue_membership(Ok(membership()));
-        profile.queue_acquisition(next.map(|i| ProfileAcquisition::new(i, None).unwrap()));
+        profile.queue_inventory(next);
     }
     let profile = Profile(std::rc::Rc::new(std::cell::RefCell::new(profile)));
     let mut manifest = QueuedManifestGateway::new();
@@ -204,7 +213,7 @@ fn acknowledged_stale_profile_and_shared_text() {
     assert_eq!(action.calls(), 1);
     assert_eq!(action.requests()[0].quantity(), 3);
     assert_eq!(action.requests()[0].character().as_str(), "2");
-    assert_eq!(reasons, [ProfileSyncReason::Preflight; 2]);
+    assert_eq!(reasons, [ProfileSyncReason::Ordinary]);
     let (text, _, _) = pipeline(
         vec![definition()],
         input(false),
@@ -235,7 +244,7 @@ fn lag_and_unused_observation_failure_do_not_override_acknowledgement() {
         assert_eq!(body(&output)["disposition"], "applied");
         assert!(body(&output).get("observations").is_none());
         assert_eq!(action.calls(), 1);
-        assert_eq!(reasons, [ProfileSyncReason::Preflight; 2]);
+        assert_eq!(reasons, [ProfileSyncReason::Ordinary]);
     }
 }
 #[test]
@@ -298,7 +307,7 @@ fn planning_refusals_preserve_reasons_and_do_not_dispatch() {
         assert_eq!(value["failure"]["reason"], reason);
         assert!(value["receipt"].is_null());
         assert_eq!(action.calls(), 0);
-        assert_eq!(reasons, [ProfileSyncReason::Preflight]);
+        assert_eq!(reasons, [ProfileSyncReason::Ordinary]);
         assert!(!output.stderr.contains("PRIVATE"));
     }
 }
@@ -345,7 +354,10 @@ fn acknowledged_stack_storage_failure_exits_42_and_retains_receipt() {
         vec![],
         Ok(StackPullOutcome::Acknowledged),
         true,
-        InMemoryInventoryRepository::new().with_invalidation_failure(),
+        InMemoryInventoryRepository::with_revision_for_test(
+            input(false),
+            SyncRevision::new(u64::MAX),
+        ),
     );
     assert_eq!(output.exit_code, 42);
     assert!(output.stdout.is_empty());
@@ -360,7 +372,7 @@ fn acknowledged_stack_storage_failure_exits_42_and_retains_receipt() {
             .contains("local state could not be updated after the action")
     );
     assert_eq!(action.calls(), 1);
-    assert_eq!(reasons, [ProfileSyncReason::Preflight; 2]);
+    assert!(reasons.is_empty());
 }
 
 #[test]

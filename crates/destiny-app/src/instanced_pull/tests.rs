@@ -39,6 +39,7 @@ fn queue_observation(
         input.membership_id.clone(),
     )
     .unwrap()));
+    gateway.queue_inventory(Ok(input.clone()));
     gateway.queue_acquisition(Ok(ProfileAcquisition::new(input, rows).unwrap()));
 }
 
@@ -62,12 +63,14 @@ fn execute(
     assert_eq!(gateway.calls(), 1);
     assert_eq!(gateway.requests().len(), 1);
     assert_eq!(outcome.gateway_outcome(), &receipt);
-    assert_eq!(s.manifest.capacity_evidence_calls(), 2);
-    assert_eq!(
-        s.sync.gateway_mut().requested_reasons(),
-        &[ProfileSyncReason::Preflight, ProfileSyncReason::Preflight]
-    );
-    assert!(s.sync.repository().freshness_invalidated().unwrap());
+    assert_eq!(s.manifest.capacity_evidence_calls(), 0);
+    assert!(s.sync.gateway_mut().requested_reasons().is_empty());
+    if outcome.local_state_error().is_none() {
+        assert_eq!(
+            s.sync.repository().freshness_invalidated().unwrap(),
+            receipt != InstancedPullOutcome::Acknowledged
+        );
+    }
     outcome
 }
 
@@ -81,13 +84,21 @@ fn acknowledged_stale_profile_is_applied_without_post_action_read() {
     );
     let outcome = execute(&mut s, p, InstancedPullOutcome::Acknowledged);
     assert_eq!(outcome.disposition(), PullDisposition::Applied);
+    let snapshot = s.sync.repository().load_current().unwrap().unwrap();
+    assert_eq!(
+        snapshot.items[0].location,
+        ItemLocation::Character(CharacterId::new("2"))
+    );
+    assert!(!snapshot.items[0].equipped);
+    assert_eq!(snapshot.metadata.revision.value(), 2);
 }
 
 #[test]
-fn invalidation_storage_failure_retains_receipt_and_fails_closed() {
-    let (mut s, p) = armed_execution();
-    let repository = s.sync.repository_mut();
-    *repository = std::mem::take(repository).with_invalidation_failure();
+fn persistence_storage_failure_retains_receipt_invalidates_and_never_retries() {
+    let mut s = service(input(), vec![definition()], "v1", true, evidence());
+    *s.sync.repository_mut() =
+        InMemoryInventoryRepository::with_revision_for_test(input(), SyncRevision::new(u64::MAX));
+    let p = plan(&mut s, &request()).unwrap();
     let before = s.sync.repository().load_current().unwrap();
     let mut gateway = QueuedInstancedPullGateway::new();
     gateway.queue(Ok(InstancedPullOutcome::Acknowledged));
@@ -105,10 +116,8 @@ fn invalidation_storage_failure_retains_receipt_and_fails_closed() {
     );
     assert_eq!(gateway.calls(), 1);
     assert_eq!(s.sync.repository().load_current().unwrap(), before);
-    assert_eq!(
-        s.sync.gateway_mut().requested_reasons(),
-        &[ProfileSyncReason::Preflight; 2]
-    );
+    assert!(s.sync.gateway_mut().requested_reasons().is_empty());
+    assert!(s.sync.repository().freshness_invalidated().unwrap());
 }
 
 #[test]
@@ -117,6 +126,10 @@ fn receipts_remain_failures_without_a_clear_acknowledgement() {
         (InstancedPullOutcome::Uncertain, PullDisposition::Uncertain),
         (
             InstancedPullOutcome::Rejected(InstancedPullRejection::InvalidRequest),
+            PullDisposition::Refused,
+        ),
+        (
+            InstancedPullOutcome::Rejected(InstancedPullRejection::DestinationFull),
             PullDisposition::Refused,
         ),
         (
@@ -164,7 +177,10 @@ fn predispatch_and_gateway_errors_have_no_observation_expense() {
             assert_eq!(attempt.context().item(), &ItemInstanceId::new("1"));
         }
         assert_eq!(gateway.calls(), usize::from(!expired));
-        assert!(!s.sync.repository().freshness_invalidated().unwrap());
+        assert_eq!(
+            s.sync.repository().freshness_invalidated().unwrap(),
+            !expired
+        );
         assert!(
             !s.sync
                 .gateway_mut()
@@ -282,6 +298,7 @@ fn service(
     });
     let mut gateway = QueuedProfileGateway::new();
     gateway.queue_membership(Ok(membership()));
+    gateway.queue_inventory(Ok(input.clone()));
     gateway.queue_acquisition(Ok(
         ProfileAcquisition::new(input.clone(), observations).unwrap()
     ));
@@ -316,18 +333,20 @@ fn plan(
         PlanLifetime::MAX,
         FreshnessPolicy { ttl_seconds: 60 },
     );
-    assert_eq!(service.sync.gateway_mut().observed_acquisition_calls(), 1);
-    assert_eq!(
-        service.sync.gateway_mut().requested_reasons(),
-        &[ProfileSyncReason::Preflight]
-    );
-    assert_eq!(service.sync.gateway_mut().membership_calls(), 1);
-    assert_eq!(service.sync.gateway_mut().inventory_calls(), 1);
-    assert_eq!(service.manifest.capacity_evidence_calls(), 1);
+    assert_eq!(service.sync.gateway_mut().observed_acquisition_calls(), 0);
+    assert!(service.sync.gateway_mut().requested_reasons().is_empty());
+    assert_eq!(service.sync.gateway_mut().membership_calls(), 0);
+    assert_eq!(service.sync.gateway_mut().inventory_calls(), 0);
+    assert_eq!(service.manifest.capacity_evidence_calls(), 0);
     assert_eq!(service.plan_ids.calls(), u64::from(result.is_ok()));
     result
 }
 fn queue_preflight(s: &mut Service, input: InventorySnapshotInput, observed: bool) {
+    // Model another committed local effect/sync, not a forced acquisition.
+    s.sync
+        .repository_mut()
+        .replace_current(input.clone())
+        .unwrap();
     let rows = observed.then(|| {
         input
             .items
@@ -393,10 +412,10 @@ impl InventoryRepository for DispatchInventory {
         let call = self.reads.loads.get() + 1;
         self.reads.loads.set(call);
         let mut snapshot = self.inner.load_current()?;
-        if call == 2 {
-            // The first load is sync's freshness read; the second must follow
-            // successful publication and the renewed definition safety checks.
-            assert_eq!(self.reads.publications.get(), 1);
+        if call == 3 {
+            // Ordinary sync reads freshness, eligibility loads the projection,
+            // and this final reload binds dispatch against publication drift.
+            assert_eq!(self.reads.publications.get(), 0);
             assert_eq!(self.reads.lookups.get(), 1);
             assert_eq!(self.reads.versions.get(), 1);
             if let Some(now) = self.advance_to {
@@ -452,8 +471,8 @@ impl DefinitionRepository for DispatchDefinitions {
         let call = self.reads.versions.get() + 1;
         self.reads.versions.set(call);
         if call == 2 {
-            assert_eq!(self.reads.loads.get(), 2);
-            assert_eq!(self.reads.publications.get(), 1);
+            assert_eq!(self.reads.loads.get(), 3);
+            assert_eq!(self.reads.publications.get(), 0);
             assert_eq!(self.reads.lookups.get(), 1);
             if let Some(result) = &self.final_version {
                 return result.clone();
@@ -552,20 +571,13 @@ fn assert_fault_dispatch(
     assert_eq!(reads.clocks.get(), clocks);
     assert_eq!(reads.loads.get(), loads);
     assert_eq!(reads.versions.get(), versions);
-    let renewed = usize::from(loads != 0);
-    assert_eq!(reads.publications.get(), renewed);
-    assert_eq!(reads.lookups.get(), renewed);
-    assert_eq!(s.manifest.capacity_evidence_calls(), 1 + renewed);
-    assert_eq!(s.sync.gateway_mut().membership_calls(), 1 + renewed);
-    assert_eq!(
-        s.sync.gateway_mut().observed_acquisition_calls(),
-        1 + renewed
-    );
-    assert_eq!(s.sync.gateway_mut().inventory_calls(), 1 + renewed);
-    assert_eq!(
-        s.sync.gateway_mut().requested_reasons(),
-        vec![ProfileSyncReason::Preflight; 1 + renewed].as_slice()
-    );
+    assert_eq!(reads.publications.get(), 0);
+    assert_eq!(reads.lookups.get(), usize::from(loads != 0));
+    assert_eq!(s.manifest.capacity_evidence_calls(), 0);
+    assert_eq!(s.sync.gateway_mut().membership_calls(), 0);
+    assert_eq!(s.sync.gateway_mut().observed_acquisition_calls(), 0);
+    assert_eq!(s.sync.gateway_mut().inventory_calls(), 0);
+    assert!(s.sync.gateway_mut().requested_reasons().is_empty());
     assert_eq!(s.plan_ids.calls(), 1);
 }
 
@@ -574,7 +586,7 @@ fn final_clock_rejects_expiry_after_slow_reads_at_and_beyond_boundary() {
     for beyond in [0, 1] {
         let (mut s, plan, _) = armed_dispatch();
         s.sync.repository_mut().advance_to = Some(plan.expires_at().seconds() + beyond);
-        assert_fault_dispatch(&mut s, plan, PreDispatchError::Expired, 2, 2, 2);
+        assert_fault_dispatch(&mut s, plan, PreDispatchError::Expired, 2, 3, 2);
     }
 }
 
@@ -594,8 +606,8 @@ fn slow_read_control_dispatches_once_just_before_expiry() {
     assert_eq!(gateway.calls(), 1);
     assert_eq!(gateway.requests().len(), 1);
     assert_eq!(reads.clocks.get(), 2);
-    assert_eq!(reads.loads.get(), 2);
-    assert_eq!(reads.publications.get(), 1);
+    assert_eq!(reads.loads.get(), 3);
+    assert_eq!(reads.publications.get(), 0);
     assert_eq!(reads.lookups.get(), 1);
     assert_eq!(reads.versions.get(), 2);
     assert_eq!(s.plan_ids.calls(), 1);
@@ -614,7 +626,7 @@ fn execution_clock_errors_preserve_sanitized_category_at_each_stage() {
                 AppError::new(ErrorCategory::ProviderValidation),
             )),
             call,
-            if renewed { 2 } else { 0 },
+            if renewed { 3 } else { 0 },
             if renewed { 2 } else { 0 },
         );
     }
@@ -632,7 +644,7 @@ fn final_inventory_error_and_missing_snapshot_follow_renewed_eligibility() {
                 AppError::new(ErrorCategory::LocalStorage),
             )),
             1,
-            2,
+            3,
             1,
         );
     }
@@ -654,7 +666,7 @@ fn final_definition_read_error_and_version_drift_follow_renewed_eligibility() {
     ] {
         let (mut s, plan, _) = armed_dispatch();
         s.definitions.final_version = Some(result);
-        assert_fault_dispatch(&mut s, plan, expected, 1, 2, 2);
+        assert_fault_dispatch(&mut s, plan, expected, 1, 3, 2);
     }
 }
 
@@ -682,7 +694,7 @@ fn publication_drift_visible_only_at_final_reload_refuses_dispatch() {
     ] {
         let (mut s, plan, _) = armed_dispatch();
         s.sync.repository_mut().fault = fault;
-        assert_fault_dispatch(&mut s, plan, expected, 1, 2, 1);
+        assert_fault_dispatch(&mut s, plan, expected, 1, 3, 1);
     }
 }
 
@@ -722,11 +734,8 @@ fn consumed_preflight_dispatches_exactly_once_without_reminting() {
         );
         assert_eq!(gateway.requests()[0].quantity(), 1);
         assert_eq!(s.plan_ids.calls(), 1);
-        assert_eq!(s.manifest.capacity_evidence_calls(), 2);
-        assert_eq!(
-            s.sync.gateway_mut().requested_reasons(),
-            &[ProfileSyncReason::Preflight, ProfileSyncReason::Preflight]
-        );
+        assert_eq!(s.manifest.capacity_evidence_calls(), 0);
+        assert!(s.sync.gateway_mut().requested_reasons().is_empty());
     }
 }
 
@@ -745,8 +754,8 @@ fn preflight_expiry_and_backwards_clock_do_not_acquire() {
             Err(expected)
         );
         assert_eq!(gateway.calls(), 0);
-        assert_eq!(s.sync.gateway_mut().membership_calls(), 1);
-        assert_eq!(s.manifest.capacity_evidence_calls(), 1);
+        assert_eq!(s.sync.gateway_mut().membership_calls(), 0);
+        assert_eq!(s.manifest.capacity_evidence_calls(), 0);
     }
 }
 
@@ -765,7 +774,7 @@ fn assert_preflight_refusal(s: &mut Service, plan: InstancedPullPlan, expected: 
             .gateway_mut()
             .requested_reasons()
             .iter()
-            .all(|r| *r == ProfileSyncReason::Preflight)
+            .all(|r| *r == ProfileSyncReason::Ordinary)
     );
 }
 fn refused(reason: InstancedPullRefusal) -> PreDispatchError {
@@ -935,7 +944,13 @@ fn bucket_only_identity_drift_is_detected_with_unchanged_revision() {
     s.sync.gateway_mut().queue_membership(Ok(membership()));
     s.sync.gateway_mut().queue_acquisition(Ok(acquisition("9")));
     s.manifest.queue_capacity_evidence(evidence());
-    assert_preflight_refusal(&mut s, plan, PreDispatchError::FingerprintDrift);
+    let mut gateway = QueuedInstancedPullGateway::new();
+    gateway.queue(Ok(InstancedPullOutcome::Acknowledged));
+    assert!(
+        s.preflight_dispatch(plan, &mut gateway, FreshnessPolicy { ttl_seconds: 60 })
+            .is_ok()
+    );
+    assert_eq!(gateway.calls(), 1); // Runtime buckets are not definition occupancy.
     assert_eq!(
         s.sync
             .repository()
@@ -992,7 +1007,19 @@ fn preflight_capacity_and_evidence_are_reproved() {
                 .unwrap()));
         }
         queue_preflight(&mut s, changed, case != 0);
-        assert_preflight_refusal(&mut s, plan, refused(reason));
+        if case == 1 {
+            assert_preflight_refusal(&mut s, plan, refused(reason));
+        } else if case == 2 {
+            assert_preflight_refusal(&mut s, plan, PreDispatchError::RevisionDrift);
+        } else {
+            let mut gateway = QueuedInstancedPullGateway::new();
+            gateway.queue(Ok(InstancedPullOutcome::Acknowledged));
+            assert!(
+                s.preflight_dispatch(plan, &mut gateway, FreshnessPolicy { ttl_seconds: 60 })
+                    .is_ok()
+            );
+            assert_eq!(gateway.calls(), 1); // No runtime or remote index requirement.
+        }
     }
 }
 
@@ -1002,15 +1029,34 @@ fn preflight_infrastructure_failures_do_not_dispatch() {
         let mut s = service(input(), vec![definition()], "v1", true, evidence());
         let plan = plan(&mut s, &request()).unwrap();
         let error = AppError::new(ErrorCategory::ProviderUnavailable);
+        let (_, repository) = std::mem::replace(
+            &mut s.sync,
+            ProfileSyncService::new(
+                QueuedProfileGateway::new(),
+                InMemoryInventoryRepository::new(),
+            ),
+        )
+        .into_parts();
+        s.sync = ProfileSyncService::new(QueuedProfileGateway::new(), repository);
+        s.sync.repository_mut().invalidate_freshness().unwrap();
         match case {
             0 => s.sync.gateway_mut().queue_membership(Err(error.clone())),
             1 => {
                 s.sync.gateway_mut().queue_membership(Ok(membership()));
-                s.sync.gateway_mut().queue_acquisition(Err(error.clone()));
+                s.sync.gateway_mut().queue_inventory(Err(error.clone()));
             }
             _ => {
+                // Ordinary refresh does not borrow a failed Manifest fetch.
                 s.manifest.queue_capacity_evidence(Err(error.clone()));
-                queue_preflight(&mut s, input(), true);
+                queue_observation(s.sync.gateway_mut(), input(), None);
+                let mut gateway = QueuedInstancedPullGateway::new();
+                gateway.queue(Ok(InstancedPullOutcome::Acknowledged));
+                assert!(
+                    s.preflight_dispatch(plan, &mut gateway, FreshnessPolicy { ttl_seconds: 60 })
+                        .is_ok()
+                );
+                assert_eq!(s.manifest.capacity_evidence_calls(), 0);
+                continue;
             }
         }
         assert_preflight_refusal(
@@ -1039,10 +1085,20 @@ fn valid_control_is_fresh_opaque_and_binds_occupancy() {
     assert_eq!(plan.id().as_str(), "plan-1");
     assert_eq!(plan.created_at(), Timestamp::new(100));
     assert!(plan.expires_at() > plan.created_at());
-    assert_eq!(plan.fingerprint.occupied, 2);
     assert_eq!(
-        plan.fingerprint.occupants,
-        vec![ItemInstanceId::new("3"), ItemInstanceId::new("9")]
+        service
+            .policy
+            .check_local_capacity(
+                &service.sync.repository().load_current().unwrap().unwrap(),
+                &service.definitions,
+                plan.owner(),
+                plan.destination_bucket()
+            )
+            .unwrap(),
+        LocalEquipmentOccupancy::Known {
+            occupied: 2,
+            capacity: 10
+        }
     );
 }
 #[test]
@@ -1062,8 +1118,20 @@ fn owner_is_derived_and_other_containers_do_not_occupy_its_bucket() {
     let mut s = service(input, vec![definition()], "v1", true, evidence());
     let plan = plan(&mut s, &request()).unwrap();
     assert_eq!(plan.owner(), &CharacterId::new("4"));
-    assert_eq!(plan.fingerprint.occupied, 0);
-    assert!(plan.fingerprint.occupants.is_empty());
+    assert_eq!(
+        s.policy
+            .check_local_capacity(
+                &s.sync.repository().load_current().unwrap().unwrap(),
+                &s.definitions,
+                plan.owner(),
+                plan.destination_bucket()
+            )
+            .unwrap(),
+        LocalEquipmentOccupancy::Known {
+            occupied: 0,
+            capacity: 10
+        }
+    );
 }
 
 #[test]
@@ -1086,12 +1154,7 @@ fn definition_row_version_and_qualified_policy_version_bind_publication() {
         ..definition()
     };
     let mut s = service(input, vec![changed], "v2", true, evidence());
-    assert_eq!(
-        plan(&mut s, &request()),
-        Err(InstancedPullPlanningError::Refused(
-            InstancedPullRefusal::Capacity(CapacityRefusal::DefinitionVersionMismatch)
-        ))
-    );
+    assert!(plan(&mut s, &request()).is_ok()); // Pinned capacity survives Manifest updates.
 }
 
 #[test]
@@ -1214,13 +1277,8 @@ fn evidence_fetch_and_qualification_fail_closed() {
         true,
         Err(AppError::new(ErrorCategory::ProviderUnavailable)),
     );
-    assert_eq!(
-        plan(&mut s, &request()),
-        Err(InstancedPullPlanningError::Infrastructure(AppError::new(
-            ErrorCategory::ProviderUnavailable
-        )))
-    );
-    for (version, artifact, refusal) in [
+    assert!(plan(&mut s, &request()).is_ok());
+    for (version, artifact, _old_refusal) in [
         (
             "v2",
             "artifact",
@@ -1244,21 +1302,13 @@ fn evidence_fetch_and_qualification_fail_closed() {
             true,
             Ok(EquipmentCapacityEvidence::new(DefinitionVersion::new(version), artifact).unwrap()),
         );
-        assert_eq!(
-            plan(&mut s, &request()),
-            Err(InstancedPullPlanningError::Refused(refusal))
-        );
+        assert!(plan(&mut s, &request()).is_ok());
     }
 }
 #[test]
 fn capacity_refusals_are_typed() {
     let mut s = service(input(), vec![definition()], "v1", false, evidence());
-    assert_eq!(
-        plan(&mut s, &request()),
-        Err(InstancedPullPlanningError::Refused(
-            InstancedPullRefusal::Capacity(CapacityRefusal::ObservationsUnavailable)
-        ))
-    );
+    assert!(plan(&mut s, &request()).is_ok());
     let mut full = input();
     for id in 10..20 {
         full.items.push(item(
@@ -1287,10 +1337,130 @@ fn capacity_refusals_are_typed() {
         .unwrap(),
     );
     let mut s = service(stacked, vec![definition()], "v1", true, evidence());
-    assert_eq!(
-        plan(&mut s, &request()),
-        Err(InstancedPullPlanningError::Refused(
-            InstancedPullRefusal::Capacity(CapacityRefusal::DestinationStackObserved)
+    assert!(plan(&mut s, &request()).is_ok()); // Instanced advisory counts instances only.
+}
+
+#[test]
+fn unknown_occupant_definitions_blind_attempt_instead_of_guessing_zero() {
+    for case in 0..4 {
+        let mut input = input();
+        let mut occupant = item("3", ItemLocation::Character(CharacterId::new("2")));
+        occupant.item_hash = ItemHash::new(8);
+        input.items.push(occupant);
+        let mut definitions = vec![definition()];
+        let mut other = definition();
+        other.hash = ItemHash::new(8);
+        match case {
+            0 => {}                                          // Missing
+            1 => definitions.extend([other.clone(), other]), // Ambiguous
+            2 => {
+                other.bucket_hash = None;
+                definitions.push(other);
+            }
+            _ => {
+                other.version = DefinitionVersion::new("old");
+                definitions.push(other);
+            }
+        }
+        let mut s = service(input, definitions, "v1", false, evidence());
+        let snapshot = s.sync.repository().load_current().unwrap().unwrap();
+        assert_eq!(
+            s.policy
+                .check_local_capacity(
+                    &snapshot,
+                    &s.definitions,
+                    &CharacterId::new("2"),
+                    BucketHash::new(BUCKET)
+                )
+                .unwrap(),
+            LocalEquipmentOccupancy::Unknown
+        );
+        let p = plan(&mut s, &request()).unwrap();
+        assert_eq!(
+            execute(&mut s, p, InstancedPullOutcome::Acknowledged).disposition(),
+            PullDisposition::Applied
+        );
+    }
+}
+
+#[test]
+fn known_full_bucket_refuses_even_with_unknown_occupants() {
+    let mut input = input();
+    for id in 10..20 {
+        input.items.push(item(
+            &id.to_string(),
+            ItemLocation::Character(CharacterId::new("2")),
+        ));
+    }
+    let mut unknown = item("30", ItemLocation::Character(CharacterId::new("2")));
+    unknown.item_hash = ItemHash::new(8);
+    input.items.push(unknown);
+    let s = service(input, vec![definition()], "v1", false, evidence());
+    let snapshot = s.sync.repository().load_current().unwrap().unwrap();
+    assert!(matches!(
+        s.policy.check_local_capacity(
+            &snapshot,
+            &s.definitions,
+            &CharacterId::new("2"),
+            BucketHash::new(BUCKET)
+        ),
+        Err(LocalCapacityError::Refused(
+            CapacityRefusal::AtCapacity { .. }
         ))
+    ));
+}
+
+#[test]
+fn acknowledged_pull_fills_last_slot_and_next_pull_refuses_locally() {
+    let mut input = input();
+    input
+        .items
+        .push(item("2", ItemLocation::Postmaster(CharacterId::new("2"))));
+    for id in 10..19 {
+        let mut occupant = item(
+            &id.to_string(),
+            ItemLocation::Character(CharacterId::new("2")),
+        );
+        occupant.equipped = id == 10;
+        input.items.push(occupant);
+    }
+    let mut s = service(input, vec![definition()], "v1", false, evidence());
+    let p = plan(&mut s, &request()).unwrap();
+    execute(&mut s, p, InstancedPullOutcome::Acknowledged);
+    let mut second = request();
+    second.item = ItemInstanceId::new("2");
+    // plan()'s ID assertion is for the first request; use the service directly.
+    assert_eq!(
+        s.plan(
+            &second,
+            PlanLifetime::MAX,
+            FreshnessPolicy { ttl_seconds: 60 }
+        ),
+        Err(InstancedPullPlanningError::Refused(
+            InstancedPullRefusal::Capacity(CapacityRefusal::AtCapacity {
+                occupied: 10,
+                capacity: 10
+            })
+        ))
+    );
+    assert_eq!(s.plan_ids.calls(), 1);
+    assert!(s.sync.gateway_mut().requested_reasons().is_empty());
+    assert_eq!(s.manifest.capacity_evidence_calls(), 0);
+}
+
+#[test]
+fn incomplete_invalidation_failure_preserves_no_room_receipt() {
+    let (mut s, p) = armed_execution();
+    let repository = s.sync.repository_mut();
+    *repository = std::mem::take(repository).with_invalidation_failure();
+    let outcome = execute(
+        &mut s,
+        p,
+        InstancedPullOutcome::Rejected(InstancedPullRejection::DestinationFull),
+    );
+    assert_eq!(outcome.disposition(), PullDisposition::LocalStateFailed);
+    assert_eq!(
+        outcome.local_state_error().unwrap().category(),
+        ErrorCategory::LocalStorage
     );
 }

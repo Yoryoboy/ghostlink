@@ -65,9 +65,18 @@ impl ProfileGateway for Profile {
     }
     fn load_inventory(
         &mut self,
-        _: &DestinyMembership,
+        membership: &DestinyMembership,
     ) -> Result<InventorySnapshotInput, AppError> {
-        panic!("must preserve acquisitions")
+        self.0.borrow_mut().load_inventory(membership)
+    }
+    fn load_inventory_scoped(
+        &mut self,
+        membership: &DestinyMembership,
+        reason: ProfileSyncReason,
+    ) -> Result<InventorySnapshotInput, AppError> {
+        self.0
+            .borrow_mut()
+            .load_inventory_scoped(membership, reason)
     }
     fn load_inventory_with_observations_scoped(
         &mut self,
@@ -114,7 +123,7 @@ impl Fixture {
             }))
         {
             profile.queue_membership(Ok(membership()));
-            profile.queue_acquisition(acquisition);
+            profile.queue_inventory(acquisition.map(|a| a.into_parts().0));
         }
         let profile = Profile(Rc::new(RefCell::new(profile)));
         let definition = ItemDefinition {
@@ -181,10 +190,7 @@ impl Fixture {
             .json();
         assert_eq!(action.0.borrow().calls(), 1);
         let reasons = profile.0.borrow().requested_reasons().to_vec();
-        assert_eq!(
-            &reasons,
-            &[ProfileSyncReason::Preflight, ProfileSyncReason::Preflight]
-        );
+        assert_eq!(&reasons, &[ProfileSyncReason::Ordinary]);
         assert!(output.get("observations").is_none());
         output
     }

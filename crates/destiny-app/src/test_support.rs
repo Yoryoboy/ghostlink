@@ -1937,6 +1937,77 @@ mod tests {
     }
 
     #[test]
+    fn acknowledged_stack_effects_memory_contract() {
+        use destiny_core::{
+            BucketHash, InventoryEffect, ProfileCurrenciesCoverage, ProfileMintedAt,
+            StackContainer, StackObservation,
+        };
+        let membership =
+            DestinyMembership::new(MembershipType::new(1), MembershipId::new("123")).unwrap();
+        let mut seed = multi_input();
+        seed.membership_id = membership.membership_id().clone();
+        let owner = seed.characters[0].id.clone();
+        seed.profile_currencies_coverage = ProfileCurrenciesCoverage::Available;
+        seed.stacks = vec![
+            StackObservation::new(
+                ItemHash::new(7),
+                BucketHash::new(20),
+                8,
+                StackContainer::Postmaster(owner.clone()),
+            )
+            .unwrap(),
+        ];
+        let effect = InventoryEffect::PullStack {
+            item_hash: ItemHash::new(7),
+            owner,
+            quantity: 3,
+            destination_bucket: BucketHash::new(10),
+            max_stack_size: 10,
+        };
+        let mut repository = InMemoryInventoryRepository::new();
+        let minted = ProfileMintedAt::new(100, 1).unwrap();
+        let before = repository
+            .replace_current_minted(seed, Some(minted))
+            .unwrap();
+        repository.invalidate_freshness().unwrap();
+        let after = repository
+            .apply_acknowledged_effects(&membership, std::slice::from_ref(&effect))
+            .unwrap();
+        let mut expected =
+            destiny_core::apply_inventory_effects(&before, std::slice::from_ref(&effect))
+                .unwrap()
+                .snapshot;
+        expected.metadata.revision = SyncRevision::new(before.metadata.revision.value() + 1);
+        assert_eq!(after, expected);
+        assert_eq!(repository.load_current().unwrap(), Some(after.clone()));
+        assert_eq!(repository.profile_minted_at().unwrap(), Some(minted));
+        assert!(repository.freshness_invalidated().unwrap());
+        let writes_before = repository.load_current().unwrap();
+        assert!(
+            repository
+                .apply_acknowledged_effects(&membership, &[effect.clone(), effect.clone()])
+                .is_err()
+        );
+        assert_eq!(repository.load_current().unwrap(), writes_before);
+        let replay = repository
+            .apply_acknowledged_effects(&membership, &[effect])
+            .unwrap();
+        assert_ne!(replay.stacks, after.stacks);
+        assert_eq!(
+            replay.metadata.revision.value(),
+            after.metadata.revision.value() + 1
+        );
+        assert_eq!(
+            repository
+                .replace_current(InventorySnapshotInput::with_metadata(&replay))
+                .unwrap()
+                .metadata
+                .revision,
+            replay.metadata.revision
+        );
+    }
+
+    #[test]
     fn acknowledged_effects_memory_contract() {
         use destiny_core::{DestinyMembership, InventoryEffect, apply_inventory_effects};
         let membership =

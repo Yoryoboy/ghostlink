@@ -19,7 +19,8 @@ pub mod equipment_capacity;
 pub mod error;
 pub use equipment_capacity::{
     CapacityPolicyMismatch, CapacityRefusal, EquipmentCapacityEvidence, EquipmentCapacityPolicy,
-    EquipmentCapacityProof, QualifiedEquipmentCapacityPolicy,
+    EquipmentCapacityProof, LocalCapacityError, LocalEquipmentOccupancy,
+    QualifiedEquipmentCapacityPolicy,
 };
 pub mod ids;
 pub mod instanced_pull;

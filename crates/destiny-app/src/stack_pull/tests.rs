@@ -83,9 +83,7 @@ fn evidence() -> EquipmentCapacityEvidence {
 }
 fn queue(s: &mut Service, input: InventorySnapshotInput) {
     s.sync.gateway_mut().queue_membership(Ok(membership()));
-    s.sync
-        .gateway_mut()
-        .queue_acquisition(Ok(ProfileAcquisition::new(input, None).unwrap()));
+    s.sync.gateway_mut().queue_inventory(Ok(input));
 }
 fn service(input: InventorySnapshotInput, definitions: Vec<ItemDefinition>) -> Service {
     let mut s = StackPullService::new(
@@ -121,9 +119,121 @@ fn refused(s: &mut Service, amount: i64, reason: StackPullPlanningRefusal) {
     );
     assert_eq!(
         s.sync.gateway_mut().requested_reasons(),
-        &[ProfileSyncReason::Preflight]
+        &[ProfileSyncReason::Ordinary]
     );
 }
+#[test]
+fn fresh_projection_dispatches_without_acquisition_or_manifest_fetch() {
+    let mut s = service(input(), vec![definition()]);
+    s.sync.repository_mut().replace_current(input()).unwrap();
+    let p = plan(&mut s, 3).unwrap();
+    let mut gateway = QueuedStackPullGateway::new();
+    gateway.queue(Ok(StackPullOutcome::Acknowledged));
+    let outcome = s.execute(p, &mut gateway, FRESH).unwrap();
+    assert_eq!(outcome.disposition(), PullDisposition::Applied);
+    assert_eq!(gateway.calls(), 1);
+    assert!(s.sync.gateway_mut().requested_reasons().is_empty());
+    assert_eq!(s.manifest.capacity_evidence_calls(), 0);
+    let current = s.sync.repository().load_current().unwrap().unwrap();
+    assert!(
+        current
+            .stacks
+            .contains(&row(7, StackContainer::Postmaster(CharacterId::new("2"))))
+    );
+    assert!(
+        current
+            .stacks
+            .contains(&row(23, StackContainer::ProfileInventory))
+    );
+    assert_eq!(current.metadata.revision, SyncRevision::new(2));
+    assert!(!s.sync.repository().freshness_invalidated().unwrap());
+}
+#[test]
+fn second_pull_uses_updated_stacks_and_capacity() {
+    let mut next = input();
+    next.stacks = vec![row(10, StackContainer::Postmaster(CharacterId::new("2")))];
+    next.stacks
+        .extend((0..49).map(|_| row(100, StackContainer::ProfileInventory)));
+    next.stacks.push(row(97, StackContainer::ProfileInventory));
+    let mut s = service(next, vec![definition()]);
+    let p = plan(&mut s, 2).unwrap();
+    let mut gateway = QueuedStackPullGateway::new();
+    gateway.queue(Ok(StackPullOutcome::Acknowledged));
+    s.execute(p, &mut gateway, FRESH).unwrap();
+    let p = plan(&mut s, 1).unwrap();
+    assert_eq!(p.context().pre_postmaster_quantity(), 8);
+    assert_eq!(p.context().pre_destination_quantity(), 4999);
+    gateway.queue(Ok(StackPullOutcome::Acknowledged));
+    s.execute(p, &mut gateway, FRESH).unwrap();
+    assert_eq!(
+        plan(&mut s, 1).unwrap_err(),
+        StackPullPlanningError::Refused(StackPullPlanningRefusal::Capacity(
+            StackPullRefusal::InsufficientCapacity
+        ))
+    );
+    assert_eq!(gateway.calls(), 2);
+    assert_eq!(
+        s.sync
+            .repository()
+            .load_current()
+            .unwrap()
+            .unwrap()
+            .metadata
+            .revision,
+        SyncRevision::new(3)
+    );
+    assert_eq!(
+        s.sync.gateway_mut().requested_reasons(),
+        &[ProfileSyncReason::Ordinary]
+    );
+    assert_eq!(s.manifest.capacity_evidence_calls(), 0);
+    assert!(!s.sync.repository().freshness_invalidated().unwrap());
+}
+
+#[test]
+fn time_and_revision_binding_refuse_without_dispatch() {
+    for case in 0..3 {
+        let (mut s, p) = armed();
+        if case == 2 {
+            let mut next = input();
+            next.stacks[1] = row(21, StackContainer::ProfileInventory);
+            s.sync.repository_mut().replace_current(next).unwrap();
+        } else {
+            s.clock = FakeClock::fixed(if case == 0 {
+                p.expires_at()
+            } else {
+                Timestamp::new(99)
+            });
+        }
+        let mut gateway = QueuedStackPullGateway::new();
+        let failure = s.execute(p, &mut gateway, FRESH).unwrap_err();
+        assert_eq!(
+            failure.reason(),
+            &StackPullExecutionFailureReason::PreDispatch(match case {
+                0 => StackPullPreDispatchError::Expired,
+                1 => StackPullPreDispatchError::BackwardsClock,
+                _ => StackPullPreDispatchError::RevisionDrift,
+            })
+        );
+        assert_eq!(gateway.calls(), 0);
+        assert!(!s.sync.repository().freshness_invalidated().unwrap());
+    }
+}
+
+#[test]
+fn incomplete_invalidation_failure_retains_receipt() {
+    let (mut s, p) = armed();
+    let repository = s.sync.repository_mut();
+    *repository = std::mem::take(repository).with_invalidation_failure();
+    let mut gateway = QueuedStackPullGateway::new();
+    let receipt = StackPullOutcome::Rejected(StackPullRejection::DestinationFull);
+    gateway.queue(Ok(receipt));
+    let outcome = s.execute(p, &mut gateway, FRESH).unwrap();
+    assert_eq!(outcome.gateway_outcome(), &receipt);
+    assert_eq!(outcome.disposition(), PullDisposition::LocalStateFailed);
+    assert_eq!(gateway.calls(), 1);
+}
+
 #[test]
 fn duplicate_selection_uses_smallest_not_sum() {
     let mut next = input();
@@ -191,7 +301,7 @@ fn planning_refuses_each_definition_gate() {
     }
 }
 #[test]
-fn membership_owner_source_and_policy_refusals() {
+fn membership_owner_source_refusals_and_policy_drift_tolerance() {
     use StackPullPlanningRefusal::*;
     let mut s = service(input(), vec![definition()]);
     let mut r = request(1);
@@ -213,11 +323,7 @@ fn membership_owner_source_and_policy_refusals() {
         1,
         Capacity(StackPullRefusal::NoPostmasterStack),
     );
-    for (version, artifact, reason) in [
-        ("old", "artifact", PolicyVersionMismatch),
-        ("v1", "changed", PolicyArtifactMismatch),
-        ("old", "changed", PolicyVersionMismatch),
-    ] {
+    for (version, artifact) in [("old", "artifact"), ("v1", "changed"), ("old", "changed")] {
         let mut s = service(input(), vec![definition()]);
         s.manifest = QueuedManifestGateway::new();
         s.manifest
@@ -226,7 +332,8 @@ fn membership_owner_source_and_policy_refusals() {
                 artifact,
             )
             .unwrap()));
-        refused(&mut s, 1, reason);
+        assert!(plan(&mut s, 1).is_ok());
+        assert_eq!(s.manifest.capacity_evidence_calls(), 0);
     }
 }
 #[test]
@@ -291,16 +398,31 @@ fn acknowledged_stale_profile_is_applied_without_post_action_read() {
     assert_eq!(gateway.requests()[0].item_id(), "0");
     assert_eq!(
         s.sync.gateway_mut().requested_reasons(),
-        &[ProfileSyncReason::Preflight, ProfileSyncReason::Preflight]
+        &[ProfileSyncReason::Ordinary]
     );
-    assert!(s.sync.repository().freshness_invalidated().unwrap());
+    assert!(!s.sync.repository().freshness_invalidated().unwrap());
+    let current = s.sync.repository().load_current().unwrap().unwrap();
+    assert_eq!(current.metadata.revision, SyncRevision::new(2));
+    assert!(
+        current
+            .stacks
+            .contains(&row(7, StackContainer::Postmaster(CharacterId::new("2"))))
+    );
+    assert!(
+        current
+            .stacks
+            .contains(&row(23, StackContainer::ProfileInventory))
+    );
 }
 
 #[test]
-fn invalidation_storage_failure_retains_receipt_and_fails_closed() {
-    let (mut s, p) = armed();
+fn persistence_storage_failure_retains_receipt_and_fails_closed() {
+    let (mut s, _) = armed();
     let repository = s.sync.repository_mut();
-    *repository = std::mem::take(repository).with_invalidation_failure();
+    *repository =
+        InMemoryInventoryRepository::with_revision_for_test(input(), SyncRevision::new(u64::MAX));
+    // Replan at the overflow revision: persistence fails only after acknowledgement.
+    let p = plan(&mut s, 3).unwrap();
     let before = s.sync.repository().load_current().unwrap();
     let mut gateway = QueuedStackPullGateway::new();
     gateway.queue(Ok(StackPullOutcome::Acknowledged));
@@ -315,14 +437,19 @@ fn invalidation_storage_failure_retains_receipt_and_fails_closed() {
     assert_eq!(s.sync.repository().load_current().unwrap(), before);
     assert_eq!(
         s.sync.gateway_mut().requested_reasons(),
-        &[ProfileSyncReason::Preflight; 2]
+        &[ProfileSyncReason::Ordinary]
     );
+    assert!(s.sync.repository().freshness_invalidated().unwrap());
 }
 
 #[test]
 fn uncertain_and_refused_receipts_fail_without_post_action_requests() {
     for (receipt, disposition) in [
         (StackPullOutcome::Uncertain, PullDisposition::Uncertain),
+        (
+            StackPullOutcome::Rejected(StackPullRejection::DestinationFull),
+            PullDisposition::Refused,
+        ),
         (
             StackPullOutcome::Rejected(StackPullRejection::InvalidRequest),
             PullDisposition::Refused,
@@ -343,19 +470,18 @@ fn uncertain_and_refused_receipts_fail_without_post_action_requests() {
         assert!(s.sync.repository().freshness_invalidated().unwrap());
         assert_eq!(
             s.sync.gateway_mut().requested_reasons(),
-            &[ProfileSyncReason::Preflight; 2]
+            &[ProfileSyncReason::Ordinary]
         );
     }
 }
 #[test]
-fn drift_consumes_plan_without_dispatch_or_postaction() {
+fn changed_source_consumes_plan_without_dispatch_or_postaction() {
     let mut s = service(input(), vec![definition()]);
     let p = plan(&mut s, 3).unwrap();
     let mut next = input();
     next.stacks
         .push(row(2, StackContainer::Postmaster(CharacterId::new("2"))));
-    queue(&mut s, next);
-    s.manifest.queue_capacity_evidence(Ok(evidence()));
+    s.sync.repository_mut().replace_current(next).unwrap();
     let mut gateway = QueuedStackPullGateway::new();
     assert!(s.execute(p, &mut gateway, FRESH).is_err());
     assert_eq!(gateway.calls(), 0);

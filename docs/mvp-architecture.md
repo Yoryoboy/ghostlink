@@ -126,10 +126,23 @@ precision are treated as unknown (as DIM does), so the profile publishes and the
 sync never fails because of this field.
 
 **Temporary scope:** Forced, Preflight and PostAction acquisitions still publish
-even older/equal minted profiles and store their supplied instant. Pulls and
-loadout application retain that behavior until slices E/F move them to Ordinary
-local sync, at which point they inherit the guard. This is not yet a global
-monotonic-profile guarantee.
+even older/equal minted profiles and store their supplied instant. Loadout
+application retains that behavior pending its local-sync slice.
+Instanced and stack pulls now use Ordinary sync and inherit the guard. Their capacity is
+advisory: definition-bucket character occupancy (including equipped) against
+pinned audited constants, without remote Manifest evidence. Known full refuses;
+unknown definitions allow Bungie to decide. Numeric error 1642 is destination full.
+Stack capacity uses pinned audited account-wide limits and committed stack rows,
+without Manifest-version/artifact qualification or evidence fetching. Smallest
+Postmaster stack, unique-stack and guaranteed-room arithmetic remain unchanged;
+Bungie is the final validator. Consumed plans bind the committed revision.
+Acknowledged pulls persist locally, advance revision and retain freshness;
+PullStack applies the requested quantity exactly once (it is not idempotent),
+decrementing a source and filling/splitting profile inventory stacks. The reducer
+rejects quantities above max_stack_size * 50 to bound new-row expansion.
+Incomplete attempts and persistence failures invalidate, retaining receipts;
+never retry after acknowledgement, even if persistence fails. This is not yet a
+global monotonic-profile guarantee.
 
 Repeated syncs are idempotent at the projection level: the same Bungie state produces the same normalized rows and revision semantics. A successful replacement with changed normalized content receives the next repository-generated `SyncRevision`; unchanged normalized content may retain its revision. Remote mutations are not assumed globally idempotent. Each plan has a local `plan_id`, a bounded step identity, and an execution record so retries can re-read current state and avoid replaying a step whose postcondition is already true. Never claim atomicity across multiple Bungie calls.
 

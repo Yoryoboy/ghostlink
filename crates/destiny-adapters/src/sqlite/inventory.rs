@@ -169,6 +169,14 @@ impl InventoryRepository for SqliteStore {
                 return Err(storage_failure());
             }
         }
+        if prior.stacks != result.snapshot.stacks {
+            // Anonymous duplicate rows have no persistent identity. Rewrite this
+            // profile's multiset without touching coverage or acquisition metadata.
+            transaction
+                .execute("DELETE FROM stacks", [])
+                .map_err(|_| storage_failure())?;
+            insert_stacks(&transaction, &result.snapshot.stacks)?;
+        }
         let rows = transaction
             .execute(
                 "UPDATE sync_metadata SET revision = ?1 WHERE dataset = 'profile_inventory'",
@@ -983,6 +991,26 @@ fn encode_boolean(value: bool) -> i64 {
     if value { 1 } else { 0 }
 }
 
+/// Writes canonical anonymous rows, retaining duplicates and contiguous ordinals.
+fn insert_stacks(connection: &Connection, stacks: &[StackObservation]) -> Result<(), AppError> {
+    for (ordinal, stack) in stacks.iter().enumerate() {
+        let (container, owner) = match stack.container() {
+            StackContainer::ProfileInventory => ("profile_inventory", None),
+            StackContainer::ProfileCurrencies => ("profile_currencies", None),
+            StackContainer::CharacterInventory(owner) => {
+                ("character_inventory", Some(owner.as_str()))
+            }
+            StackContainer::Postmaster(owner) => ("postmaster", Some(owner.as_str())),
+        };
+        connection.execute(
+            "INSERT INTO stacks(ordinal,container,owner,bucket_hash,item_hash,quantity) VALUES(?1,?2,?3,?4,?5,?6)",
+            params![i64::try_from(ordinal).map_err(|_| storage_failure())?, container, owner,
+                stack.bucket_hash().value(), stack.item_hash().value(), i64::from(stack.quantity())],
+        ).map_err(|_| storage_failure())?;
+    }
+    Ok(())
+}
+
 /// Removes the complete prior projection and writes the replacement rows.
 ///
 /// Perk rows and items are deleted before characters so the removal order
@@ -1057,21 +1085,7 @@ fn replace_projection(
         )
         .map_err(|_| storage_failure())?;
 
-    for (ordinal, stack) in input.stacks.iter().enumerate() {
-        let (container, owner) = match stack.container() {
-            StackContainer::ProfileInventory => ("profile_inventory", None),
-            StackContainer::ProfileCurrencies => ("profile_currencies", None),
-            StackContainer::CharacterInventory(owner) => {
-                ("character_inventory", Some(owner.as_str()))
-            }
-            StackContainer::Postmaster(owner) => ("postmaster", Some(owner.as_str())),
-        };
-        connection.execute(
-            "INSERT INTO stacks(ordinal,container,owner,bucket_hash,item_hash,quantity) VALUES(?1,?2,?3,?4,?5,?6)",
-            params![i64::try_from(ordinal).map_err(|_| storage_failure())?, container, owner,
-                stack.bucket_hash().value(), stack.item_hash().value(), i64::from(stack.quantity())],
-        ).map_err(|_| storage_failure())?;
-    }
+    insert_stacks(connection, &input.stacks)?;
 
     for item in &input.items {
         let (location_kind, location_character_id, location_other) =

@@ -1014,7 +1014,22 @@ impl FixtureRepository {
             })),
             definitions: InMemoryDefinitionRepository::new(version, definitions),
         };
-        let mut input = snapshot_input(characters, items);
+        let mut input = if std::env::var(SCENARIO_ENV)
+            .unwrap_or_default()
+            .starts_with("stack-")
+        {
+            // Ordinary stack pulls reuse this fresh committed projection. Seed
+            // the same rows as the provider world, not an empty stack inventory.
+            FixtureWorld {
+                characters: characters.to_vec(),
+                items: items.to_vec(),
+                refresh_failed: false,
+                stack_arrived: false,
+            }
+            .snapshot_input()
+        } else {
+            snapshot_input(characters, items)
+        };
         if postmaster_scenario() {
             input.checked_at = Timestamp::new(1);
         }
@@ -1037,7 +1052,10 @@ impl InventoryRepository for FixtureRepository {
         membership: &DestinyMembership,
         effects: &[destiny_app::InventoryEffect],
     ) -> Result<InventorySnapshot, AppError> {
-        if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("batch-storage") {
+        if matches!(
+            std::env::var(SCENARIO_ENV).ok().as_deref(),
+            Some("batch-storage" | "pull-storage" | "stack-storage")
+        ) {
             return Err(AppError::new(ErrorCategory::LocalStorage));
         }
         let mut projection = self.projection()?;

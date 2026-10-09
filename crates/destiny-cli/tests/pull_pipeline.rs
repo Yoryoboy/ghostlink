@@ -97,9 +97,9 @@ impl ProfileGateway for Profile {
     }
     fn load_inventory(
         &mut self,
-        _: &DestinyMembership,
+        membership: &DestinyMembership,
     ) -> Result<InventorySnapshotInput, AppError> {
-        panic!("pull must use observation-aware acquisition")
+        self.0.borrow_mut().load_inventory(membership)
     }
     fn load_inventory_with_observations_scoped(
         &mut self,
@@ -151,8 +151,11 @@ impl Fixture {
         receipt: Result<InstancedPullOutcome, AppError>,
         safe: Option<bool>,
         evidence_version: DefinitionVersion,
-        repository: InMemoryInventoryRepository,
+        mut repository: InMemoryInventoryRepository,
     ) -> Self {
+        if repository.load_current().unwrap().is_none() {
+            repository.replace_current(pre.clone()).unwrap();
+        }
         let mut profile = QueuedProfileGateway::new();
         // Production resolves authenticated context once before planning. Every
         // fresh sync resolves it again, never deriving it from command input.
@@ -248,7 +251,7 @@ fn body(output: &destiny_cli::ProcessOutput) -> serde_json::Value {
     .unwrap()
 }
 #[test]
-fn acknowledged_pull_storage_failure_exits_42_and_retains_receipt() {
+fn acknowledged_pull_persistence_failure_exits_42_and_retains_receipt() {
     let mut fixture = Fixture::with_repository(
         input(postmaster(), 100),
         input(postmaster(), 100),
@@ -256,7 +259,10 @@ fn acknowledged_pull_storage_failure_exits_42_and_retains_receipt() {
         Ok(InstancedPullOutcome::Acknowledged),
         Some(false),
         version(),
-        InMemoryInventoryRepository::new().with_invalidation_failure(),
+        InMemoryInventoryRepository::with_revision_for_test(
+            input(postmaster(), 100),
+            SyncRevision::new(u64::MAX),
+        ),
     );
     let output = fixture.run(&["ghostlink", "pull", ITEM, "--json"]);
     assert_eq!(output.exit_code, 42);
@@ -272,7 +278,7 @@ fn acknowledged_pull_storage_failure_exits_42_and_retains_receipt() {
             .contains("local state could not be updated after the action")
     );
     assert_eq!(fixture.action.calls(), 1);
-    assert_eq!(fixture.reasons(), [ProfileSyncReason::Preflight; 2]);
+    assert!(fixture.reasons().is_empty());
 }
 
 #[test]
@@ -337,8 +343,8 @@ fn acknowledged_stale_profile_propagates_applied_and_only_one_action() {
     assert_eq!(fixture.action.calls(), 1);
     assert_eq!(fixture.action.requests()[0].item().as_str(), ITEM);
     assert_eq!(fixture.action.requests()[0].item_hash().value(), 7);
-    assert_eq!(fixture.reasons(), [ProfileSyncReason::Preflight; 2]);
-    assert_eq!(fixture.profile.0.borrow().membership_calls(), 3);
+    assert!(fixture.reasons().is_empty());
+    assert_eq!(fixture.profile.0.borrow().membership_calls(), 1);
 }
 #[test]
 fn eligibility_capacity_and_preflight_drift_refuse_without_dispatch_or_observation() {
@@ -382,22 +388,6 @@ fn eligibility_capacity_and_preflight_drift_refuse_without_dispatch_or_observati
             "planning",
             "capacity",
         ),
-        (
-            input(postmaster(), 100),
-            input(postmaster(), 100),
-            Some(false),
-            DefinitionVersion::new("changed"),
-            "planning",
-            "policy_version_mismatch",
-        ),
-        (
-            input(postmaster(), 100),
-            input(arrival(), 100),
-            Some(false),
-            version(),
-            "pre_dispatch",
-            "not_in_postmaster",
-        ),
     ] {
         let mut fixture = Fixture::new(
             pre,
@@ -419,11 +409,35 @@ fn eligibility_capacity_and_preflight_drift_refuse_without_dispatch_or_observati
     }
 }
 #[test]
+fn changed_manifest_capacity_evidence_and_unread_provider_drift_do_not_gate_pull() {
+    let mut fixture = Fixture::new(
+        input(postmaster(), 100),
+        input(arrival(), 100),
+        vec![],
+        Ok(InstancedPullOutcome::Acknowledged),
+        Some(false),
+        DefinitionVersion::new("changed"),
+    );
+    assert_eq!(
+        fixture
+            .run(&["ghostlink", "pull", ITEM, "--json"])
+            .exit_code,
+        0
+    );
+    assert_eq!(fixture.action.calls(), 1);
+    assert!(fixture.reasons().is_empty());
+}
+
+#[test]
 fn uncertain_and_refused_receipts_are_nonzero_without_observation() {
     for (receipt, disposition) in [
         (InstancedPullOutcome::Uncertain, "uncertain"),
         (
             InstancedPullOutcome::Rejected(InstancedPullRejection::InvalidRequest),
+            "refused",
+        ),
+        (
+            InstancedPullOutcome::Rejected(InstancedPullRejection::DestinationFull),
             "refused",
         ),
         (InstancedPullOutcome::AuthenticationRefused, "refused"),
@@ -438,7 +452,7 @@ fn uncertain_and_refused_receipts_are_nonzero_without_observation() {
         assert!(!body(&output)["receipt"].is_null());
         assert!(body(&output).get("observations").is_none());
         assert_eq!(fixture.action.calls(), 1);
-        assert_eq!(fixture.reasons(), [ProfileSyncReason::Preflight; 2]);
+        assert!(fixture.reasons().is_empty());
     }
 }
 #[test]
@@ -470,10 +484,7 @@ fn typed_gateway_error_has_no_observations_or_receipt() {
     assert!(value["receipt"].is_null());
     assert!(value.get("observations").is_none());
     assert_eq!(fixture.action.calls(), 1);
-    assert_eq!(
-        fixture.reasons(),
-        [ProfileSyncReason::Preflight, ProfileSyncReason::Preflight]
-    );
+    assert!(fixture.reasons().is_empty());
 }
 #[test]
 fn json_is_shared_mapper_exactly_and_text_retains_all_sanitized_evidence() {

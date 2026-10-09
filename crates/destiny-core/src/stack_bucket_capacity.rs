@@ -99,8 +99,22 @@ impl QualifiedStackBucketCapacityPolicy {
         item_hash: ItemHash,
         observations: &[StackObservation],
     ) -> Result<StackPullCapacityInput, StackPullRefusal> {
+        self.policy
+            .derive(destination_bucket, item_hash, observations)
+    }
+}
+
+impl StackBucketCapacityPolicy {
+    /// Derive advisory local capacity from the audited table and committed rows.
+    /// No Manifest version/artifact qualification: Bungie is the final validator.
+    /// Counts and arithmetic are identical to the qualified-policy path.
+    pub fn derive(
+        &self,
+        destination_bucket: BucketHash,
+        item_hash: ItemHash,
+        observations: &[StackObservation],
+    ) -> Result<StackPullCapacityInput, StackPullRefusal> {
         let (capacity, account_wide) = self
-            .policy
             .capacity(destination_bucket)
             .ok_or(StackPullRefusal::UnknownCapacity)?;
         let mut occupied = 0;

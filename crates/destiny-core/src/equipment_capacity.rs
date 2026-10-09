@@ -66,6 +66,60 @@ impl EquipmentCapacityPolicy {
             .find_map(|(key, capacity)| (*key == bucket).then_some(*capacity))
     }
 
+    /// Advisory instanced occupancy from definitions, including equipped items.
+    /// Missing, ambiguous or version-mismatched occupant definitions are explicitly
+    /// unknown: Bungie, not a guessed zero count, decides whether a pull fits.
+    /// The audited capacities are independent of Manifest artifact identity.
+    pub fn check_local_capacity<D: crate::DefinitionRepository>(
+        &self,
+        snapshot: &crate::InventorySnapshot,
+        definitions: &D,
+        owner: &CharacterId,
+        bucket: BucketHash,
+    ) -> Result<LocalEquipmentOccupancy, LocalCapacityError> {
+        let capacity = self.capacity(bucket).ok_or(LocalCapacityError::Refused(
+            CapacityRefusal::UnsupportedDestinationBucket,
+        ))?;
+        let mut occupied = 0;
+        let mut unknown = false;
+        for item in snapshot
+            .items
+            .iter()
+            .filter(|item| matches!(&item.location, ItemLocation::Character(id) if id == owner))
+        {
+            match definitions
+                .lookup_definition(item.item_hash)
+                .map_err(LocalCapacityError::Infrastructure)?
+            {
+                crate::Resolution::Unique(definition)
+                    if definition.version == snapshot.metadata.definition_version =>
+                {
+                    match definition.bucket_hash {
+                        Some(item_bucket) if item_bucket == bucket => {
+                            occupied = increment_occupied(occupied)
+                                .map_err(LocalCapacityError::Refused)?;
+                        }
+                        Some(_) => {}
+                        None => unknown = true,
+                    }
+                }
+                _ => unknown = true,
+            }
+        }
+        // Known occupants alone can prove the bucket full; unknown ones only
+        // matter while known occupancy still leaves room.
+        if occupied >= capacity {
+            return Err(LocalCapacityError::Refused(CapacityRefusal::AtCapacity {
+                occupied,
+                capacity,
+            }));
+        }
+        if unknown {
+            return Ok(LocalEquipmentOccupancy::Unknown);
+        }
+        Ok(LocalEquipmentOccupancy::Known { occupied, capacity })
+    }
+
     /// Proves correspondence to supplied index evidence, NOT its freshness or
     /// authenticity. The caller must acquire and authenticate that evidence.
     pub fn qualify(
@@ -82,6 +136,19 @@ impl EquipmentCapacityPolicy {
             policy: self.clone(),
         })
     }
+}
+
+/// Advisory occupancy is not dispatch authority or provider-observed capacity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalEquipmentOccupancy {
+    Known { occupied: usize, capacity: usize },
+    Unknown,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum LocalCapacityError {
+    Refused(CapacityRefusal),
+    Infrastructure(AppError),
 }
 
 /// Identity supplied from an observed public Manifest index. Core does not fetch

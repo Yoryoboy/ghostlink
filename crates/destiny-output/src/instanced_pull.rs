@@ -45,6 +45,14 @@ impl InstancedPullOutput {
                 (dispatch(attempt), reason)
             }
         };
+        if let Some(error) = failure.local_state_error() {
+            return Self {
+                disposition: PullDisposition::LocalStateFailed,
+                value: json!({"kind":"instanced_pull", "disposition":"local_state_failed",
+                    "plan_id":clean(failure.plan_id().as_str()), "dispatch":dispatch,
+                    "receipt":null, "failure":local_state_failure(error)}),
+            };
+        }
         Self::failed(Some(failure.plan_id().as_str()), dispatch, reason)
     }
     fn failed(plan_id: Option<&str>, dispatch: Value, failure: Value) -> Self {
@@ -85,6 +93,9 @@ fn receipt(value: &InstancedPullOutcome) -> Value {
         InstancedPullOutcome::Uncertain => json!({"kind":"uncertain"}),
         InstancedPullOutcome::Transient => json!({"kind":"transient"}),
         InstancedPullOutcome::AuthenticationRefused => json!({"kind":"authentication_refused"}),
+        InstancedPullOutcome::Rejected(InstancedPullRejection::DestinationFull) => {
+            json!({"kind":"rejected", "reason":"destination_full", "message":"destination full; free a slot and retry"})
+        }
         InstancedPullOutcome::Rejected(InstancedPullRejection::InvalidRequest) => {
             json!({"kind":"rejected", "reason":"invalid_request"})
         }
@@ -272,8 +283,10 @@ mod tests {
             .to_vec(),
         )
         .unwrap();
+        let mut repository = InMemoryInventoryRepository::new();
+        repository.replace_current(input).unwrap();
         let mut service = InstancedPullService::new(
-            ProfileSyncService::new(profile, InMemoryInventoryRepository::new()),
+            ProfileSyncService::new(profile, repository),
             InMemoryDefinitionRepository::new(version, vec![definition]),
             manifest,
             policy,

@@ -1100,11 +1100,11 @@ pub trait TransferGateway {
     fn transfer(&mut self, request: &TransferRequest) -> Result<TransferOutcome, AppError>;
 }
 
-/// Performs exactly one instanced Postmaster pull attempt, under fresh preflight.
+/// Performs exactly one instanced Postmaster pull attempt, under local authorization.
 ///
 /// No sequencing, batching, retries, rollback or post-condition verification.
-/// Request syntax alone is not action authorization: the future service must
-/// freshly prove provider identity, ownership, Postmaster location and eligibility.
+/// Request syntax alone is not action authorization: the service must validate
+/// committed identity, ownership, Postmaster location, eligibility and revision.
 /// No credentials, raw provider payloads or provider messages cross this seam.
 ///
 /// `Err(AppError)` is reserved for failures before dispatch. A received auth

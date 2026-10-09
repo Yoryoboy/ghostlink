@@ -129,6 +129,11 @@ fn classify_response(response: &mut StackPullHttpResponse) -> StackPullOutcome {
         envelope.message_data,
         envelope.detailed_error_trace,
     );
+    // Numeric PlatformErrorCodes::DestinyNoRoomInDestination, as for instances.
+    // Never infer a refusal from untrusted provider text.
+    if envelope.error_code == 1642 {
+        return StackPullOutcome::Rejected(destiny_core::StackPullRejection::DestinationFull);
+    }
     if envelope.error_code == 1
         && envelope.throttle_seconds >= 0
         && envelope
@@ -138,8 +143,7 @@ fn classify_response(response: &mut StackPullHttpResponse) -> StackPullOutcome {
     {
         StackPullOutcome::Acknowledged
     } else {
-        // No non-success Bungie code is proven to mean non-application; keep
-        // Uncertain rather than mapping to Rejected/Transient without evidence.
+        // Unknown non-success codes remain uncertain, never guessed refusals.
         StackPullOutcome::Uncertain
     }
 }
@@ -148,6 +152,30 @@ fn classify_response(response: &mut StackPullHttpResponse) -> StackPullOutcome {
 mod tests {
     use super::*;
     use destiny_core::{CharacterId, DestinyMembership, ItemHash, MembershipId, MembershipType};
+    #[test]
+    fn numeric_no_room_refuses_and_unknown_codes_stay_uncertain() {
+        for code in [1642, 1641, 1643, 999] {
+            for status in ["DestinyNoRoomInDestination", "Success", "untrusted"] {
+                let body = serde_json::json!({"Response":0,"ErrorCode":code,"ThrottleSeconds":0,"ErrorStatus":status}).to_string();
+                let mut response = StackPullHttpResponse::new(
+                    200,
+                    Some(body.len() as u64),
+                    Some("application/json".into()),
+                    Box::new(std::io::Cursor::new(body.into_bytes())),
+                );
+                assert_eq!(
+                    classify_response(&mut response),
+                    if code == 1642 {
+                        StackPullOutcome::Rejected(
+                            destiny_core::StackPullRejection::DestinationFull,
+                        )
+                    } else {
+                        StackPullOutcome::Uncertain
+                    }
+                );
+            }
+        }
+    }
     #[test]
     fn stack_pull_exact_body() {
         for amount in [1, 17, i32::MAX as i64] {
