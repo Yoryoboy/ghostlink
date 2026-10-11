@@ -22,7 +22,42 @@ set_lock_state    lock or unlock one explicitly selected owned item, return acce
 pull_item         pull one genuine Postmaster equipment instance to its owner
 pull_stack        pull an explicit amount of a non-instanced Postmaster stack
 apply_loadout     apply one saved in-game loadout on an explicit character
+list_builds       list locally stored build definitions
+get_build         show one local build, including DIM JSON export
+save_build        import or capture equipped/in-game loadout as a local build
+delete_build      delete one local build definition
 ```
+
+## Local build tools
+
+Build tools never apply equipment or modify DIM/Bungie loadouts. They are
+composed in the production server with membership-scoped SQLite storage.
+
+| Tool | Arguments |
+|---|---|
+| `list_builds` | `{}` |
+| `get_build` / `delete_build` | Exactly one `id` or normalized exact `name` |
+| `save_build` import | `source: "import"`, `input`: DIM JSON or full loadout URL |
+| `save_build` equipped | `source: "equipped"`, `character`, `name` |
+| `save_build` in-game | `source: "in_game_loadout"`, `character`, exactly one `slot` (1..12) or `loadout_name` |
+
+Source-inapplicable/unknown fields are rejected before service dispatch. MCP
+imports accept content, never server file paths or stdin. Input is bounded to
+1 MiB; `dim.gg` fails with `unsupported_operation` and typed reason
+`share_link_requires_online_import` (BE-009), without fetching a share.
+
+Local operations use the committed profile membership without synchronization;
+run profile sync first if unavailable. Inventory captures require stored
+Manifest, exact character ID or unique class, and ordinary profile freshness.
+Server exclusion covers conversion and storage; build sync does not reenter
+the same guard. List returns `kind: builds`; get/save return `kind: build`,
+`summary`, `dim_json` (DIM export string), `omissions`, `unresolved_items`.
+Report omissions rather than promising complete socket/crafted/artifact data.
+Unresolved instances are reported during conversion; stored DIM does not retain
+those discarded entries (`unresolved_items: null` on later get). Ambiguity is an
+error with candidates; ask for an ID
+or slot rather than guessing. ID deletion is idempotent (`deleted: false` when
+absent). These shapes match [CLI builds](cli.md#local-builds).
 
 Mutation is composed by default in the product binary: its profile gateway and
 durable projection are shared with the read path, and one explicit `move_item`

@@ -856,6 +856,96 @@ pub struct MoveItemRequest {
 /// projection after the action, and verify the destination. Outputs are the
 /// bounded MCP projections defined in [`crate::schema`]; a failure is a stable
 /// sanitized [`McpError`].
+pub enum BuildToolRequest {
+    Local(destiny_app::builds::LocalBuildRequest),
+    Save(crate::schema::SaveBuildArgs),
+}
+pub trait BuildToolService {
+    fn execute(
+        &mut self,
+        request: BuildToolRequest,
+    ) -> Result<destiny_output::builds::BuildOutput, McpError>;
+}
+/// A separate local connection and profile-sync seam; the server owns exclusion.
+pub struct ComposedBuildService<G, I, R, C, K> {
+    pub builds: destiny_app::builds::BuildService<R, C>,
+    pub sync: destiny_app::ProfileSyncService<G, I>,
+    pub clock: K,
+    pub policy: destiny_app::FreshnessPolicy,
+}
+impl<G, I, R, C, K> BuildToolService for ComposedBuildService<G, I, R, C, K>
+where
+    G: destiny_app::ProfileGateway,
+    I: destiny_app::InventoryRepository + destiny_app::WorldDefinitionRepository,
+    R: destiny_app::BuildRepository,
+    C: destiny_app::BuildCodec,
+    K: destiny_app::Clock,
+{
+    fn execute(
+        &mut self,
+        request: BuildToolRequest,
+    ) -> Result<destiny_output::builds::BuildOutput, McpError> {
+        use destiny_app::builds::LocalBuildRequest;
+        let now = self.clock.now().map_err(McpError::from)?;
+        let local = match request {
+            BuildToolRequest::Local(request) => request,
+            BuildToolRequest::Save(args) => {
+                args.validate()?;
+                match args.source {
+                    crate::schema::BuildSourceArg::Import => {
+                        LocalBuildRequest::Import(args.input.unwrap())
+                    }
+                    crate::schema::BuildSourceArg::Equipped => {
+                        let result = self
+                            .builds
+                            .from_equipped(
+                                &mut self.sync,
+                                &destiny_app::CharacterId::new(args.character.unwrap()),
+                                &args.name.unwrap(),
+                                self.policy,
+                                now,
+                            )
+                            .and_then(|r| self.builds.reply(r));
+                        return Ok(destiny_output::builds::BuildOutput::from_result(result));
+                    }
+                    crate::schema::BuildSourceArg::InGameLoadout => {
+                        let request = crate::schema::ApplyLoadoutArgs {
+                            character: args.character.unwrap(),
+                            slot: args.slot,
+                            name: args.loadout_name,
+                        }
+                        .request()?;
+                        let result = self
+                            .builds
+                            .from_loadout(
+                                &mut self.sync,
+                                &request.character,
+                                &request.loadout,
+                                self.policy,
+                                now,
+                            )
+                            .and_then(|r| self.builds.reply(r));
+                        return Ok(destiny_output::builds::BuildOutput::from_result(result));
+                    }
+                }
+            }
+        };
+        let result = (|| {
+            let snapshot = self
+                .sync
+                .repository()
+                .load_current()?
+                .ok_or_else(|| destiny_app::AppError::new(ErrorCategory::StaleState))?;
+            let membership = destiny_app::DestinyMembership::new(
+                snapshot.metadata.membership_type,
+                snapshot.metadata.membership_id,
+            )?;
+            self.builds.execute_local(&membership, &local, now)
+        })();
+        Ok(destiny_output::builds::BuildOutput::from_result(result))
+    }
+}
+
 pub trait MutationToolService {
     fn equip_items(
         &mut self,

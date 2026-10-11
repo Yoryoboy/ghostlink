@@ -100,13 +100,24 @@ DIM evidence here. Ask the owner only when DIM is ambiguous or does not fit
   equipped socket overrides (no persisted socket indices), artifact unlocks,
   crafted dates → BE-005. Workspace: 2055 passed all-features, 2025 default,
   0 failed; clippy both modes, fmt, diff check clean.
-- [ ] **BE-003b — Build CLI and MCP.** CLI
+- [x] **BE-003b — Build CLI and MCP.** CLI
   `build import|list|show|delete|export|from-equipped|from-loadout`; MCP
   tools; docs (`docs/cli.md`, `docs/mcp.md`), skill.
+  Done: nested `ghostlink build <sub>` (matches `agents`/`handler` groups);
+  MCP `list_builds`, `get_build` (with DIM export), `save_build`
+  (`source` import|equipped|in_game_loadout), `delete_build`; shared output
+  in `destiny-output/src/builds.rs`; no new exit codes. DIM evidence: URL
+  forms `loadout-import.ts:57-88`. Known gap: unresolved in-game items are
+  reported at creation but not persisted (`build show` shows null) → BE-004
+  resolves against current inventory. Workspace: 2064 passed all-features,
+  2032 default, 0 failed; clippy both modes, fmt, diff check, offline
+  `--help` smoke clean.
 
-Review follow-ups (BE-002, non-blocking): bound per-bucket mod list length
+Review follow-ups (non-blocking): bound per-bucket mod list length
 (`build.rs:190`); tighten `dim.gg` share-id detection heuristic
-(`dim_loadout.rs:333`).
+(`dim_loadout.rs:333`); equipped snapshot captures disabled plugs as mods
+(`destiny-app/src/builds.rs:176-185`); missing plug definitions skipped
+silently (`builds.rs:398-401`).
 - [ ] **BE-004 — Resolution and analysis v1.** DIM resolution semantics;
   findings supported by current data (missing items, exotic mismatch,
   invalid/nonmatching search, location of each item); CLI `build check`,

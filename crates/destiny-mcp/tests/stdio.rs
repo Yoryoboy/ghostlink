@@ -28,6 +28,104 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 
 #[tokio::test]
+async fn builds_stdio_import_list_show_export_delete_and_ambiguity() {
+    let mut session = FixtureSession::spawn(Some("success")).await;
+    let dim =
+        json!({"id":"original", "name":"Raid", "classType":1, "equipped":[], "unequipped":[]})
+            .to_string();
+    let saved = session
+        .call_tool("save_build", json!({"source":"import", "input":dim}))
+        .await;
+    assert_eq!(saved["result"]["isError"], false, "{saved}");
+    let id = saved["result"]["structuredContent"]["summary"]["id"].clone();
+    let shown = session.call_tool("get_build", json!({"id":id})).await;
+    assert_eq!(
+        saved["result"]["structuredContent"],
+        shown["result"]["structuredContent"]
+    );
+    let export: Value = serde_json::from_str(
+        shown["result"]["structuredContent"]["dim_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(export["name"], "Raid");
+    assert_ne!(export["id"], "original");
+    session
+        .call_tool("save_build", json!({"source":"import", "input":dim}))
+        .await;
+    let ambiguous = session.call_tool("get_build", json!({"name":"raid"})).await;
+    assert_eq!(ambiguous["result"]["isError"], true);
+    assert_eq!(
+        ambiguous["result"]["structuredContent"]["error"]["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let list = session.call_tool("list_builds", json!({})).await;
+    assert_eq!(
+        list["result"]["structuredContent"]["builds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    for _ in 0..2 {
+        let deleted = session.call_tool("delete_build", json!({"id":id})).await;
+        assert_eq!(deleted["result"]["isError"], false);
+    }
+    let share = session
+        .call_tool(
+            "save_build",
+            json!({"source":"import", "input":"https://dim.gg/abcdefg"}),
+        )
+        .await;
+    assert_eq!(
+        share["result"]["structuredContent"]["error"]["reason"],
+        "share_link_requires_online_import"
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn build_sources_stdio_report_omissions_and_unresolved_items() {
+    let mut session = FixtureSession::spawn(Some("build-sources")).await;
+    let equipped = session
+        .call_tool(
+            "save_build",
+            json!({"source":"equipped", "character":"1", "name":"Equipped"}),
+        )
+        .await;
+    assert_eq!(equipped["result"]["isError"], false, "{equipped}");
+    assert!(
+        equipped["result"]["structuredContent"]["omissions"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("inventory_socket_indices_unavailable"))
+    );
+    let saved = session
+        .call_tool(
+            "save_build",
+            json!({"source":"in_game_loadout", "character":"1", "slot":1}),
+        )
+        .await;
+    assert_eq!(saved["result"]["isError"], false, "{saved}");
+    assert_eq!(
+        saved["result"]["structuredContent"]["unresolved_items"],
+        json!(["404"])
+    );
+    let id = saved["result"]["structuredContent"]["summary"]["id"].clone();
+    let shown = session.call_tool("get_build", json!({"id":id})).await;
+    assert!(shown["result"]["structuredContent"]["unresolved_items"].is_null());
+    let invalid = session
+        .call_tool("save_build", json!({"source":"equipped", "input":"bad"}))
+        .await;
+    assert_eq!(invalid["result"]["isError"], true);
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn dim_query_stdio_and_invalid_query_contract() {
     let mut session = FixtureSession::spawn(Some("success")).await;
     let all = session
@@ -388,7 +486,7 @@ async fn stack_stdio_acknowledged_refused_uncertain_and_invalid() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 22);
         let tool = tools.iter().find(|t| t["name"] == "pull_stack").unwrap();
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(tool["annotations"]["readOnlyHint"], false);
@@ -439,7 +537,7 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 22);
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == "pull_item")
@@ -1260,6 +1358,10 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             WEEKLY_RESET_TOOL,
             "weekly",
             "get_subclass_options",
+            "list_builds",
+            "get_build",
+            "save_build",
+            "delete_build",
             MOVE_ITEM_TOOL,
             "equip_item",
             "set_lock_state",
@@ -1268,7 +1370,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             "apply_loadout",
             "equip_items"
         ],
-        "the product-equivalent server discovers all reads plus move_item and equip_item"
+        "the product-equivalent server discovers reads, local builds and game mutations"
     );
 
     // --- the reads still work ----------------------------------------------------

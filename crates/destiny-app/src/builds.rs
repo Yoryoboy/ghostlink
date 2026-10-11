@@ -67,6 +67,27 @@ pub struct BuildSourceResult {
     pub unresolved_items: Vec<ItemInstanceId>,
     pub omissions: Vec<BuildOmission>,
 }
+/// Transport-independent local build command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LocalBuildRequest {
+    Import(String),
+    List,
+    Show(BuildSelector),
+    Delete(BuildSelector),
+    Export(BuildSelector),
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BuildReply {
+    List(Vec<BuildSummary>),
+    Build {
+        result: Box<BuildSourceResult>,
+        dim_json: String,
+        source_capture: bool,
+    },
+    Deleted(bool),
+    Export(String),
+}
+
 pub struct BuildService<R, C> {
     repository: R,
     codec: C,
@@ -74,6 +95,51 @@ pub struct BuildService<R, C> {
 impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
     pub fn new(repository: R, codec: C) -> Self {
         Self { repository, codec }
+    }
+    pub fn execute_local(
+        &mut self,
+        membership: &DestinyMembership,
+        request: &LocalBuildRequest,
+        now: Timestamp,
+    ) -> Result<BuildReply, BuildError> {
+        match request {
+            LocalBuildRequest::List => Ok(BuildReply::List(self.list(membership)?)),
+            LocalBuildRequest::Delete(selector) => {
+                Ok(BuildReply::Deleted(self.delete(membership, selector)?))
+            }
+            LocalBuildRequest::Export(selector) => {
+                Ok(BuildReply::Export(self.export(membership, selector)?))
+            }
+            LocalBuildRequest::Import(input) => {
+                let build = self.import(membership, input, now)?;
+                self.reply(BuildSourceResult {
+                    build,
+                    unresolved_items: vec![],
+                    omissions: vec![],
+                })
+            }
+            LocalBuildRequest::Show(selector) => {
+                let build = self.show(membership, selector)?;
+                let dim_json = self.codec.export(&build.definition)?;
+                Ok(BuildReply::Build {
+                    result: Box::new(BuildSourceResult {
+                        build,
+                        unresolved_items: vec![],
+                        omissions: vec![],
+                    }),
+                    dim_json,
+                    source_capture: false,
+                })
+            }
+        }
+    }
+    pub fn reply(&self, result: BuildSourceResult) -> Result<BuildReply, BuildError> {
+        let dim_json = self.codec.export(&result.build.definition)?;
+        Ok(BuildReply::Build {
+            result: Box::new(result),
+            dim_json,
+            source_capture: true,
+        })
     }
     pub fn into_parts(self) -> (R, C) {
         (self.repository, self.codec)

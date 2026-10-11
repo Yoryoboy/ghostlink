@@ -110,6 +110,28 @@ fn compose_server<S: CredentialStore + Send + 'static>(
         SystemClock::new(),
     )?;
     let policy = config.freshness_policy();
+    let build_inventory = SqliteStore::open(config.database_path())?;
+    let build_version_store = SqliteStore::open(config.database_path())?;
+    let build_config = config.clone();
+    let build_gateway = BungieProfileGateway::new(
+        HttpProfileTransport::new()?,
+        SystemClock::new(),
+        profile_source.clone(),
+        ProfileApiKey::new(config.api_key().expose_secret())?,
+        DefinitionVersion::new("unavailable"),
+    )?
+    .with_definition_version_resolver(move || {
+        build_config.resolve_definition_version(&build_version_store)
+    });
+    let builds = crate::service::ComposedBuildService {
+        builds: destiny_app::builds::BuildService::new(
+            SqliteStore::open(config.database_path())?,
+            destiny_adapters::dim_loadout::DimBuildCodec,
+        ),
+        sync: ProfileSyncService::new_with_definitions(build_gateway, build_inventory),
+        clock: SystemClock::new(),
+        policy,
+    };
     // A separate local connection makes version resolution lazy: an empty
     // catalog is a typed tool error, not a startup failure or tool-time download.
     let version_store = SqliteStore::open(config.database_path())?;
@@ -207,7 +229,8 @@ fn compose_server<S: CredentialStore + Send + 'static>(
                 })
             })
             .collect::<Result<Vec<_>, AppError>>()?,
-    ))
+    )
+    .with_builds(Box::new(builds)))
 }
 
 fn configured_refresher(

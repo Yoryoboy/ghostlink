@@ -5,6 +5,53 @@ Install the `ghostlink` executable from a release; see the
 `cargo run -p ghostlink --bin ghostlink -- <command>` (the library is still named
 `destiny_cli`). See [configuration](configuration.md) for optional overrides.
 
+## Local builds
+
+Build definitions are stored per committed profile membership in SQLite. These
+commands **never apply gear** or write to DIM/Bungie saved loadouts.
+
+```sh
+ghostlink build import raid.json --json
+ghostlink build import - < raid.json
+ghostlink build import 'https://app.destinyitemmanager.com/loadouts?loadout=...'
+ghostlink build from-equipped Raid --character hunter --json
+ghostlink build from-loadout --slot 1 --character hunter --json
+ghostlink build from-loadout --name Raid --character hunter --json
+ghostlink build list --json
+ghostlink build show --name Raid --json
+ghostlink build show <ID> --json
+ghostlink build export <ID> > raid.json
+ghostlink build delete <ID> --json
+```
+
+The nested `build` group follows the existing `agents`/`handler` command groups.
+Local import/list/show/delete/export require a committed profile (`ghostlink
+sync` first) and configuration, but do not acquire credentials, sync or access
+providers. Inventory sources additionally require login and stored Manifest
+and use ordinary freshness. Character and saved-loadout selectors match
+`apply-loadout`: exact character ID or unique class; positional slot/name,
+`--slot` (1..12), or `--name`.
+
+Import accepts a UTF-8 file, `-` for stdin, or a complete DIM loadout URL, with a
+1 MiB input limit. Imports receive fresh local IDs. A `dim.gg` URL/share ID is a
+typed `share_link_requires_online_import` reason under `unsupported_operation`
+(exit 40); online import is deferred to BE-009. No network fallback occurs.
+
+JSON list output is `kind: builds`; show/source output is `kind: build` with
+`summary`, `dim_json`, `omissions`, and `unresolved_items`. Human output shows
+IDs/names and source limitations. Equipped sources cannot recover socket
+indices, artifact unlocks, socket categories or crafted dates; in-game sources
+cannot recover socket categories/crafted dates and report unresolved instances
+at conversion time (`unresolved_items: null` on later show, since discarded
+entries are not persisted). Known omissions remain visible on show. No substitutions
+are invented. Export is the **raw DIM JSON object**, even with `--json`, not an
+envelope; inspect source warnings before exporting.
+
+Select a build by positional ID or `--name` (normalized exact match). Ambiguous
+names return candidates (exit 31); missing builds use `item_not_found` (32).
+Delete by ID is idempotent and reports `deleted: false` if absent. Existing
+[exit codes](../skills/ghostlink/references/exit-codes.md) apply; no new exits.
+
 ## Update
 
 ```sh

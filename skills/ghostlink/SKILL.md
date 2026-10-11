@@ -17,6 +17,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 
 ## Hard Rules
 
+- Local build definitions: prefer MCP `list_builds`, `get_build` (includes `dim_json` export), `save_build` (`source`: `import` / `equipped` / `in_game_loadout`), and `delete_build`; fallback `ghostlink build import|list|show|export|delete|from-equipped|from-loadout`. These never apply gear. Report omissions/unresolved source items; resolve name ambiguity with IDs. `dim.gg` online import is deferred. Export writes raw DIM JSON even with `--json`.
 - For CLI operations, always add `--json`; never scrape human text. Exit 0 prints one JSON object on stdout; a non-zero exit prints one JSON object on stderr. Exceptions: `ghostlink login` first prints an `authorizing` instruction object, and `--help` / search `--filters` are plain text even with `--json`.
 - Before using a CLI command for the first time in a session, run `ghostlink <cmd> --help`. For DIM query syntax/filter support, use `ghostlink search-inventory --filters` (registry-generated help, no inventory read).
 - Never guess an item or character. Resolve ambiguity with a read command or ask the user.

@@ -1,5 +1,6 @@
 //! Transport-neutral presentation contracts shared by CLI and MCP.
 pub mod apply_loadout;
+pub mod builds;
 pub mod equip;
 pub mod equip_items;
 pub mod instanced_pull;

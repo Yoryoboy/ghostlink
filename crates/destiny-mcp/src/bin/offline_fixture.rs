@@ -268,7 +268,9 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         world: Arc::clone(&world),
     })
     .with_equip_items(batch)
-    .with_lock(WorldLockGateway { world })
+    .with_lock(WorldLockGateway {
+        world: Arc::clone(&world),
+    })
     .with_pull(pull)
     .with_stack(stack);
 
@@ -311,11 +313,27 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         FakeClock::fixed(NOW),
         TTL,
     );
+    let builds = destiny_mcp::service::ComposedBuildService {
+        builds: destiny_app::builds::BuildService::new(
+            destiny_app::test_support::InMemoryBuildRepository::default(),
+            destiny_adapters::dim_loadout::DimBuildCodec,
+        ),
+        sync: ProfileSyncService::new_with_definitions(
+            WorldGateway {
+                membership: membership(),
+                world,
+            },
+            FixtureRepository::seeded(&characters(), &base_items()),
+        ),
+        clock: FakeClock::fixed(NOW),
+        policy: TTL,
+    };
     if !std::env::var(SCENARIO_ENV)
         .unwrap_or_default()
         .starts_with("loadout-")
     {
-        return ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service));
+        return ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
+            .with_builds(Box::new(builds));
     }
     let mut loadout_character = character("1");
     loadout_character.id = CharacterId::new("1");
@@ -361,6 +379,7 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         last_attempt: None,
     };
     ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
+        .with_builds(Box::new(builds))
 }
 
 impl destiny_app::LoadoutGateway for WorldGateway {
@@ -1090,6 +1109,28 @@ impl FixtureRepository {
 }
 
 impl InventoryRepository for FixtureRepository {
+    fn saved_loadouts(&self) -> Result<Option<Vec<destiny_app::CharacterLoadouts>>, AppError> {
+        if std::env::var(SCENARIO_ENV).ok().as_deref() != Some("build-sources") {
+            return Ok(None);
+        }
+        Ok(Some(vec![destiny_app::CharacterLoadouts {
+            character_id: CharacterId::new("1"),
+            loadouts: vec![destiny_app::Loadout {
+                slot_index: 0,
+                name_hash: 1,
+                color_hash: 2,
+                icon_hash: 3,
+                items: ["404"]
+                    .into_iter()
+                    .map(|id| destiny_app::LoadoutItem {
+                        instance_id: ItemInstanceId::new(id),
+                        plugs: vec![],
+                    })
+                    .collect(),
+            }],
+        }]))
+    }
+
     fn apply_acknowledged_effects(
         &mut self,
         membership: &DestinyMembership,
@@ -1342,6 +1383,9 @@ fn characters() -> Vec<Character> {
         return vec![];
     }
     let mut characters = vec![character("warlock"), character("zavala")];
+    if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("build-sources") {
+        characters.push(character("1"));
+    }
     if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("ambiguous-character") {
         characters[0].class = Some("Titan".into());
     }

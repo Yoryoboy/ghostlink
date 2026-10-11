@@ -89,6 +89,7 @@ pub struct ReadToolServer {
     service: Arc<ReadPool>,
     mutation: Option<SharedMutationService>,
     legacy_read_exclusion: bool,
+    builds: Option<Arc<Mutex<Box<dyn crate::service::BuildToolService + Send>>>>,
 }
 
 impl ReadToolServer {
@@ -107,6 +108,7 @@ impl ReadToolServer {
             }),
             mutation: None,
             legacy_read_exclusion: false,
+            builds: None,
         }
     }
 
@@ -128,6 +130,7 @@ impl ReadToolServer {
             }),
             mutation: Some(Arc::new(Mutex::new(mutation))),
             legacy_read_exclusion: true,
+            builds: None,
         }
     }
 
@@ -153,6 +156,7 @@ impl ReadToolServer {
             }),
             mutation: Some(Arc::new(Mutex::new(mutation))),
             legacy_read_exclusion: false,
+            builds: None,
         }
     }
 
@@ -163,6 +167,9 @@ impl ReadToolServer {
     /// a function of the construction and never of the request.
     pub fn discover_tools(&self) -> ListToolsResult {
         let mut tools = crate::schema::tool_specs();
+        if self.builds.is_some() {
+            tools.extend(crate::schema::build_tool_specs());
+        }
         if self.mutation.is_some() {
             tools.push(move_item_tool());
             tools.push(crate::schema::equip_item_tool());
@@ -186,7 +193,17 @@ impl ReadToolServer {
     /// failure is a sanitized structured tool error. `move_item` routes through
     /// the mutation seam only when one was composed; otherwise it stays an
     /// unknown tool.
+    pub fn with_builds(mut self, builds: Box<dyn crate::service::BuildToolService + Send>) -> Self {
+        self.builds = Some(Arc::new(Mutex::new(builds)));
+        self
+    }
+
     pub fn dispatch(&self, name: &str, arguments: JsonObject) -> Result<CallToolResult, ErrorData> {
+        if is_build_tool(name)
+            && let Some(builds) = &self.builds
+        {
+            return dispatch_builds(&self.operation, builds, name, arguments);
+        }
         dispatch_operation(
             &self.operation,
             &self.service.select(),
@@ -219,7 +236,9 @@ impl ReadToolServer {
     /// with a composed mutation seam reports [`MUTATION_INSTRUCTIONS`] instead,
     /// so the advertised capability never contradicts the discovered tools.
     fn instructions(&self) -> &'static str {
-        if self.mutation.is_some() {
+        if self.builds.is_some() {
+            "Bounded Destiny inventory tools and local build import, storage, inspection, DIM export and deletion. Build tools never apply gear."
+        } else if self.mutation.is_some() {
             MUTATION_INSTRUCTIONS
         } else {
             READ_ONLY_INSTRUCTIONS
@@ -265,6 +284,18 @@ impl ServerHandler for ReadToolServer {
     ) -> Result<CallToolResponse, ErrorData> {
         let name = request.name.to_string();
         let arguments = request.arguments.unwrap_or_default();
+        if is_build_tool(&name)
+            && let Some(builds) = &self.builds
+        {
+            let builds = Arc::clone(builds);
+            let operation = Arc::clone(&self.operation);
+            return tokio::task::spawn_blocking(move || {
+                dispatch_builds(&operation, &builds, &name, arguments)
+            })
+            .await
+            .map_err(|_| internal_error())?
+            .map(CallToolResponse::from);
+        }
         // Clone the selected shared handle so the blocking dispatch owns
         // everything it needs; the synchronous service runs off the async
         // worker thread. A read-only server keeps the mutation name unknown.
@@ -286,6 +317,63 @@ impl ServerHandler for ReadToolServer {
         .map_err(|_| internal_error())?;
         result.map(CallToolResponse::from)
     }
+}
+
+fn is_build_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "list_builds" | "get_build" | "save_build" | "delete_build"
+    )
+}
+fn dispatch_builds(
+    operation: &Mutex<()>,
+    builds: &Mutex<Box<dyn crate::service::BuildToolService + Send>>,
+    name: &str,
+    arguments: JsonObject,
+) -> Result<CallToolResult, ErrorData> {
+    use crate::service::BuildToolRequest;
+    use destiny_app::builds::LocalBuildRequest;
+    // Validate before service acquisition; mutation exclusion covers source sync
+    // and local writes without reentering the profile sync gate.
+    let request = match name {
+        "list_builds" => {
+            let _: crate::schema::ListCharactersArgs = deserialize(arguments)?;
+            BuildToolRequest::Local(LocalBuildRequest::List)
+        }
+        "get_build" | "delete_build" => {
+            let args: crate::schema::BuildSelectionArgs = deserialize(arguments)?;
+            let selector = match args.selector() {
+                Ok(s) => s,
+                Err(e) => return Ok(e.into_call_tool_result()),
+            };
+            BuildToolRequest::Local(if name == "get_build" {
+                LocalBuildRequest::Show(selector)
+            } else {
+                LocalBuildRequest::Delete(selector)
+            })
+        }
+        "save_build" => {
+            let args: crate::schema::SaveBuildArgs = deserialize(arguments)?;
+            if let Err(e) = args.validate() {
+                return Ok(e.into_call_tool_result());
+            }
+            BuildToolRequest::Save(args)
+        }
+        _ => return Err(internal_error()),
+    };
+    let _operation = operation.lock().map_err(|_| internal_error())?;
+    let output = builds
+        .lock()
+        .map_err(|_| internal_error())?
+        .execute(request);
+    Ok(match output {
+        Ok(output) => {
+            let mut result = CallToolResult::structured(output.value);
+            result.is_error = Some(output.exit_code != 0);
+            result
+        }
+        Err(error) => error.into_call_tool_result(),
+    })
 }
 
 /// Mutation exclusion for both direct dispatch and the async handler.
