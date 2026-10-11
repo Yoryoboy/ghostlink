@@ -223,6 +223,7 @@ pub struct WorldDefinitionTable<T> {
 /// The seven non-item components acquired against one exact index version.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorldDefinitionsAcquisition {
+    pub armor_catalogs: Vec<crate::armor_catalog::ArmorCatalogRecord>,
     /// Optional inventory tooltip catalog, published under the shared Manifest metadata.
     pub item_descriptions: Vec<ItemDescription>,
     pub version: DefinitionVersion,
@@ -238,6 +239,7 @@ pub struct WorldDefinitionsAcquisition {
 impl WorldDefinitionsAcquisition {
     /// Validate a complete, bounded, duplicate-free publication against the item version.
     pub fn validate_for(&self, version: &DefinitionVersion) -> Result<(), AppError> {
+        crate::armor_catalog::validate_catalogs(&self.armor_catalogs)?;
         fn valid(hashes: impl Iterator<Item = u32>, count: usize, cap: usize) -> bool {
             count > 0
                 && count <= cap
@@ -334,6 +336,8 @@ impl WorldDefinitionsAcquisition {
 
     /// Canonicalize set order and discard acquisition-only skip counts.
     pub fn canonicalize(&mut self) {
+        self.armor_catalogs
+            .sort_by_key(|record| (record.kind().id(), record.hash()));
         self.item_descriptions.sort_by_key(ItemDescription::hash);
         self.milestones
             .definitions
@@ -386,6 +390,7 @@ mod tests {
         assert!(definitions[1].contains("activity_type_hash: 4"));
         assert!(definitions[1].contains("light_level: 2000"));
         let acquisition = WorldDefinitionsAcquisition {
+            armor_catalogs: Vec::new(),
             item_descriptions: Vec::new(),
             loadout_names: WorldDefinitionTable {
                 definitions: vec![LoadoutNameDefinition::new(9, name.into()).unwrap()],

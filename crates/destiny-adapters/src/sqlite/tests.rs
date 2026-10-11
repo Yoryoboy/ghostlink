@@ -10,12 +10,17 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 36] = [
+const EXPECTED_TABLE_NAMES: [&str; 41] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
     "activity_type_definitions",
+    "armor_catalogs",
     "builds",
+    "catalog_interpolation",
+    "catalog_scaled_stats",
+    "catalog_set_items",
+    "catalog_set_perks",
     "characters",
     "clarity_insights",
     "clarity_metadata",
@@ -61,7 +66,33 @@ const EXPECTED_INDEX_NAMES: [&str; 5] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 184] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 210] = [
+    ("armor_catalogs", "kind", "INTEGER"),
+    ("armor_catalogs", "hash", "INTEGER"),
+    ("armor_catalogs", "definition_version", "TEXT"),
+    ("armor_catalogs", "name", "TEXT"),
+    ("armor_catalogs", "maximum_value", "INTEGER"),
+    ("catalog_scaled_stats", "kind", "INTEGER"),
+    ("catalog_scaled_stats", "hash", "INTEGER"),
+    ("catalog_scaled_stats", "ordinal", "INTEGER"),
+    ("catalog_scaled_stats", "stat_hash", "INTEGER"),
+    ("catalog_scaled_stats", "maximum_value", "INTEGER"),
+    ("catalog_scaled_stats", "numeric", "INTEGER"),
+    ("catalog_interpolation", "kind", "INTEGER"),
+    ("catalog_interpolation", "hash", "INTEGER"),
+    ("catalog_interpolation", "stat_ordinal", "INTEGER"),
+    ("catalog_interpolation", "ordinal", "INTEGER"),
+    ("catalog_interpolation", "value", "INTEGER"),
+    ("catalog_interpolation", "weight", "INTEGER"),
+    ("catalog_set_items", "kind", "INTEGER"),
+    ("catalog_set_items", "hash", "INTEGER"),
+    ("catalog_set_items", "ordinal", "INTEGER"),
+    ("catalog_set_items", "item_hash", "INTEGER"),
+    ("catalog_set_perks", "kind", "INTEGER"),
+    ("catalog_set_perks", "hash", "INTEGER"),
+    ("catalog_set_perks", "ordinal", "INTEGER"),
+    ("catalog_set_perks", "required_count", "INTEGER"),
+    ("catalog_set_perks", "perk_hash", "INTEGER"),
     ("definition_socket_entries", "definition_hash", "INTEGER"),
     ("definition_socket_entries", "ordinal", "INTEGER"),
     ("definition_socket_entries", "socket_type_hash", "INTEGER"),
@@ -931,7 +962,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 27);
+    assert_eq!(LATEST_SCHEMA_VERSION, 28);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION

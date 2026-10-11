@@ -595,6 +595,22 @@ impl destiny_core::ports::WorldDefinitionRepository for InMemoryDefinitionReposi
     }
 }
 
+impl destiny_core::armor_catalog::ArmorCatalogRepository for InMemoryDefinitionRepository {
+    fn armor_catalog(
+        &self,
+        kind: destiny_core::armor_catalog::ArmorCatalogKind,
+        hash: Option<u32>,
+    ) -> Result<Vec<destiny_core::armor_catalog::ArmorCatalogRecord>, AppError> {
+        Ok(self
+            .world
+            .iter()
+            .flat_map(|world| &world.armor_catalogs)
+            .filter(|record| record.kind() == kind && hash.is_none_or(|hash| hash == record.hash()))
+            .cloned()
+            .collect())
+    }
+}
+
 impl InMemoryDefinitionRepository {
     pub fn stat_name_catalog(&self) -> destiny_core::name_matching::NameCatalog {
         destiny_core::name_matching::NameCatalog::new(
@@ -1561,6 +1577,7 @@ mod equip_gateway_tests {
 pub fn synthetic_world(version: DefinitionVersion) -> destiny_core::WorldDefinitionsAcquisition {
     use destiny_core::*;
     WorldDefinitionsAcquisition {
+        armor_catalogs: Vec::new(),
         item_descriptions: Vec::new(),
         version,
         loadout_names: WorldDefinitionTable {
@@ -1622,6 +1639,9 @@ impl QueuedManifestGateway {
         match outcome {
             Ok(batch) => {
                 self.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                    armor_catalog_paths: std::array::from_fn(|_| {
+                        "/common/destiny2_content/armor.json".into()
+                    }),
                     version: batch.version.clone(),
                     component_path: "/common/destiny2_content/test.json".into(),
                     milestone_path: "/common/destiny2_content/milestones.json".into(),

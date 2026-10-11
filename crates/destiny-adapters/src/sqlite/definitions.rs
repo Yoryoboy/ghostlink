@@ -143,6 +143,11 @@ impl SqliteStore {
         }
         if let Some(world) = &world {
             world.validate_for(&replacement.definitions.version)?;
+            if super::migrations::read_user_version(self.connection())? < 28
+                && !world.armor_catalogs.is_empty()
+            {
+                return Err(storage_failure());
+            }
         }
         destiny_core::world_definitions::validate_item_descriptions(
             &replacement.definitions,

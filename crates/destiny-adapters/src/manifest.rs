@@ -23,6 +23,177 @@
 
 pub use crate::public_milestones::decode_public_milestones;
 
+/// Bounded, field-limited armor catalogs; redacted rows are omitted.
+pub fn decode_armor_catalog(
+    kind: destiny_core::armor_catalog::ArmorCatalogKind,
+    bytes: &[u8],
+) -> Result<Vec<destiny_core::armor_catalog::ArmorCatalogRecord>, AppError> {
+    decode_armor_catalog_reader(kind, bytes)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StatGroupWire {
+    hash: u32,
+    maximum_value: Option<i32>,
+    #[serde(default)]
+    redacted: bool,
+    scaled_stats: Option<Vec<ScaledStatWire>>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EquipableSetWire {
+    hash: u32,
+    #[serde(default)]
+    redacted: bool,
+    display_properties: Option<CatalogNameWire>,
+    set_items: Option<Vec<u32>>,
+    set_perks: Option<Vec<SetPerkWire>>,
+}
+#[derive(Deserialize)]
+struct CatalogNameWire {
+    name: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScaledStatWire {
+    stat_hash: u32,
+    maximum_value: i32,
+    display_as_numeric: bool,
+    display_interpolation: Vec<InterpolationWire>,
+}
+#[derive(Deserialize)]
+struct InterpolationWire {
+    value: i32,
+    weight: i32,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetPerkWire {
+    required_set_count: i32,
+    sandbox_perk_hash: u32,
+}
+
+struct ArmorCatalogSeed(destiny_core::armor_catalog::ArmorCatalogKind);
+impl<'de> DeserializeSeed<'de> for ArmorCatalogSeed {
+    type Value = Vec<destiny_core::armor_catalog::ArmorCatalogRecord>;
+    fn deserialize<D: de::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+impl<'de> Visitor<'de> for ArmorCatalogSeed {
+    type Value = Vec<destiny_core::armor_catalog::ArmorCatalogRecord>;
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("armor catalog")
+    }
+    fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+        use destiny_core::armor_catalog::*;
+        let mut seen = std::collections::HashSet::new();
+        let mut records = Vec::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let hash =
+                decode_decimal_u32(&key).map_err(|_| de::Error::custom("invalid catalog"))?;
+            if !seen.insert(hash) || seen.len() > 10_000 {
+                return Err(de::Error::custom("invalid catalog"));
+            }
+            let missing = || de::Error::custom("invalid catalog");
+            let record = match self.0 {
+                ArmorCatalogKind::StatGroup => {
+                    let wire = map.next_value::<StatGroupWire>()?;
+                    if wire.hash != hash {
+                        return Err(missing());
+                    }
+                    if wire.redacted {
+                        continue;
+                    }
+                    ArmorCatalogRecord::StatGroup(StatGroupDefinition {
+                        hash,
+                        maximum_value: wire.maximum_value,
+                        scaled_stats: wire
+                            .scaled_stats
+                            .ok_or_else(missing)?
+                            .into_iter()
+                            .map(|stat| ScaledStat {
+                                stat_hash: stat.stat_hash,
+                                maximum_value: stat.maximum_value,
+                                display_as_numeric: stat.display_as_numeric,
+                                display_interpolation: stat
+                                    .display_interpolation
+                                    .into_iter()
+                                    .map(|point| InterpolationPoint {
+                                        value: point.value,
+                                        weight: point.weight,
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    })
+                }
+                ArmorCatalogKind::EquipableSet => {
+                    let wire = map.next_value::<EquipableSetWire>()?;
+                    if wire.hash != hash {
+                        return Err(missing());
+                    }
+                    if wire.redacted {
+                        continue;
+                    }
+                    ArmorCatalogRecord::EquipableSet(EquipableSetDefinition {
+                        hash,
+                        name: wire.display_properties.ok_or_else(missing)?.name,
+                        set_items: wire.set_items.ok_or_else(missing)?,
+                        set_perks: wire
+                            .set_perks
+                            .ok_or_else(missing)?
+                            .into_iter()
+                            .map(|perk| SetPerk {
+                                required_set_count: perk.required_set_count,
+                                sandbox_perk_hash: perk.sandbox_perk_hash,
+                            })
+                            .collect(),
+                    })
+                }
+            };
+            record
+                .validate()
+                .map_err(|_| de::Error::custom("invalid catalog"))?;
+            records.push(record);
+        }
+        Ok(records)
+    }
+}
+fn decode_armor_catalog_reader(
+    kind: destiny_core::armor_catalog::ArmorCatalogKind,
+    body: impl Read,
+) -> Result<Vec<destiny_core::armor_catalog::ArmorCatalogRecord>, AppError> {
+    let mut bounded = BoundedReader {
+        inner: body,
+        remaining: MAX_ARMOR_CATALOG_BYTES,
+        exceeded: false,
+        failed: false,
+    };
+    let result = {
+        let mut deserializer = serde_json::Deserializer::from_reader(BufReader::new(&mut bounded));
+        ArmorCatalogSeed(kind)
+            .deserialize(&mut deserializer)
+            .and_then(|records| {
+                deserializer.end()?;
+                Ok(records)
+            })
+    };
+    result.map_err(|_| {
+        if bounded.failed && !bounded.exceeded {
+            provider_unavailable()
+        } else {
+            provider_validation()
+        }
+    })
+}
+/// Each additional decompressed catalog is capped at 16 MiB.
+const MAX_ARMOR_CATALOG_BYTES: usize = 16 * 1024 * 1024;
+
 #[cfg(test)]
 mod loadout_name_tests {
     use super::*;
@@ -75,6 +246,8 @@ mod loadout_name_tests {
             "DestinyStatDefinition",
             "DestinyLoadoutNameDefinition",
             "DestinySandboxPerkDefinition",
+            "DestinyStatGroupDefinition",
+            "DestinyEquipableItemSetDefinition",
         ] {
             en.insert(
                 component.into(),
@@ -134,6 +307,7 @@ fn provider_validation() -> AppError {
 /// validated relative content path: safe for a caller to fetch, never a URL.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestDownloadPlan {
+    pub armor_catalog_paths: [String; 2],
     pub version: DefinitionVersion,
     pub component_path: String,
     pub milestone_path: String,
@@ -170,6 +344,10 @@ pub fn decode_manifest_index(bytes: &[u8]) -> Result<ManifestDownloadPlan, AppEr
     let modifier_path = decode_component_path(response, "DestinyActivityModifierDefinition")?;
 
     Ok(ManifestDownloadPlan {
+        armor_catalog_paths: [
+            decode_component_path(response, "DestinyStatGroupDefinition")?,
+            decode_component_path(response, "DestinyEquipableItemSetDefinition")?,
+        ],
         version,
         component_path,
         milestone_path,
@@ -1566,6 +1744,7 @@ where
         )?;
         let plan = decode_manifest_index(&index_bytes)?;
         Ok(destiny_core::ports::ManifestIndex {
+            armor_catalog_paths: plan.armor_catalog_paths,
             version: plan.version,
             component_path: plan.component_path,
             milestone_path: plan.milestone_path,
@@ -1597,8 +1776,36 @@ where
                 return Err(provider_validation());
             }
         }
+        let mut armor_catalogs = Vec::new();
+        for path in &plan.armor_catalog_paths {
+            if !is_safe_component_path(path) {
+                return Err(provider_validation());
+            }
+        }
         decode_version(Some(&Value::String(plan.version.as_str().to_owned())))?;
+        for (kind, path) in destiny_core::armor_catalog::ArmorCatalogKind::ALL
+            .into_iter()
+            .zip(&plan.armor_catalog_paths)
+        {
+            let url = format!("{MANIFEST_ORIGIN}{path}");
+            let request = ManifestHttpRequest::new(&url, None);
+            armor_catalogs.extend(self.read_retry.run(
+                ReadRetryScope::RateLimitAndTransient,
+                || {
+                    let response =
+                        fetch_response(&mut self.transport, &request, || self.clock.now().ok())?;
+                    if response
+                        .content_length
+                        .is_some_and(|size| size > MAX_ARMOR_CATALOG_BYTES as u64)
+                    {
+                        return Err(ReadFailure::terminal(provider_validation()));
+                    }
+                    decode_armor_catalog_reader(kind, response.body).map_err(ReadFailure::terminal)
+                },
+            )?);
+        }
         Ok(destiny_core::WorldDefinitionsAcquisition {
+            armor_catalogs,
             item_descriptions: Vec::new(),
             version: plan.version.clone(),
             milestones: self.load_world_table(&plan.milestone_path, 1000, project_milestone)?,
@@ -1995,7 +2202,7 @@ mod tests {
             "Response": {
                 "version": version,
                 "jsonWorldComponentContentPaths": {
-                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path, "DestinySandboxPerkDefinition": path }
+                    "en": { "DestinyStatGroupDefinition": path, "DestinyEquipableItemSetDefinition": path, "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path, "DestinySandboxPerkDefinition": path }
                 }
             }
         })
@@ -2239,6 +2446,8 @@ mod tests {
             "DestinyStatDefinition",
             "DestinyLoadoutNameDefinition",
             "DestinySandboxPerkDefinition",
+            "DestinyStatGroupDefinition",
+            "DestinyEquipableItemSetDefinition",
         ] {
             en.insert(kind.into(), json!(VALID_PATH));
         }
@@ -2251,6 +2460,8 @@ mod tests {
             "DestinyStatDefinition",
             "DestinyLoadoutNameDefinition",
             "DestinySandboxPerkDefinition",
+            "DestinyStatGroupDefinition",
+            "DestinyEquipableItemSetDefinition",
         ] {
             let mut missing = value.clone();
             missing["Response"]["jsonWorldComponentContentPaths"]["en"]
@@ -2769,7 +2980,7 @@ mod transport_tests {
             "Response": {
                 "version": "manifest-v1",
                 "jsonWorldComponentContentPaths": {
-                    "en": { "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path, "DestinySandboxPerkDefinition": path }
+                    "en": { "DestinyStatGroupDefinition": path, "DestinyEquipableItemSetDefinition": path, "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path, "DestinySandboxPerkDefinition": path }
                 }
             }
         })
@@ -2945,10 +3156,12 @@ mod transport_tests {
     }
 
     #[test]
-    fn gateway_world_components_use_seven_urls_without_key() {
+    fn gateway_world_components_use_nine_urls_without_key() {
         let mut index: serde_json::Value =
             serde_json::from_str(&index_body(COMPONENT_PATH)).unwrap();
         let paths = [
+            "/common/destiny2_content/groups.json",
+            "/common/destiny2_content/sets.json",
             "/common/destiny2_content/m.json",
             "/common/destiny2_content/a.json",
             "/common/destiny2_content/mod.json",
@@ -2958,6 +3171,8 @@ mod transport_tests {
             "/common/destiny2_content/loadout-names.json",
         ];
         for (kind, path) in [
+            "DestinyStatGroupDefinition",
+            "DestinyEquipableItemSetDefinition",
             "DestinyMilestoneDefinition",
             "DestinyActivityDefinition",
             "DestinyActivityModifierDefinition",
@@ -2973,6 +3188,8 @@ mod transport_tests {
         }
         let transport = FakeTransport::with(vec![
             Ok(json_response(index.to_string())),
+            Ok(json_response(r#"{"123":{"hash":123,"scaledStats":[]}}"#.into())),
+            Ok(json_response(r#"{"456":{"hash":456,"displayProperties":{"name":"Synthetic set"},"setItems":[42],"setPerks":[{"requiredSetCount":2,"sandboxPerkHash":7}]}}"#.into())),
             Ok(json_response(component_body())),
             Ok(json_response(component_body())),
             Ok(json_response(component_body())),
@@ -2998,7 +3215,8 @@ mod transport_tests {
         assert_eq!(batch.stats.definitions.len(), 1);
         assert_eq!(batch.loadout_names.definitions[0].name(), "PvE");
         let requests = &gateway.transport().requests;
-        assert_eq!(requests.len(), 8);
+        assert_eq!(batch.armor_catalogs.len(), 2);
+        assert_eq!(requests.len(), 10);
         assert!(requests[0].has_api_key);
         for (request, path) in requests[1..].iter().zip(paths) {
             assert_eq!(request.url, format!("{MANIFEST_ORIGIN}{path}"));

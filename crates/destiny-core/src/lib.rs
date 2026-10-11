@@ -1,5 +1,6 @@
 //! Provider- and transport-free domain contracts.
 
+pub mod armor_catalog;
 pub mod armor_definition;
 pub use armor_definition::*;
 pub use clarity::*;

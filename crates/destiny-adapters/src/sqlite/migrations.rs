@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 27;
+pub(crate) const LATEST_VERSION: u32 = 28;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 27] = [
+const MIGRATIONS: [Migration; 28] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -189,7 +189,68 @@ const MIGRATIONS: [Migration; 27] = [
         up: SCHEMA_V27_UP,
         down: SCHEMA_V27_DOWN,
     },
+    Migration {
+        version: 28,
+        up: SCHEMA_V28_UP,
+        down: SCHEMA_V28_DOWN,
+    },
 ];
+
+const SCHEMA_V28_UP: &str = r#"
+CREATE TABLE armor_catalogs (
+    kind INTEGER NOT NULL CHECK (kind IN (0,1)),
+    hash INTEGER NOT NULL CHECK (hash BETWEEN 0 AND 4294967295),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128),
+    name TEXT CHECK ((kind = 0 AND name IS NULL) OR (kind = 1 AND name IS NOT NULL AND length(name) BETWEEN 1 AND 256)),
+    maximum_value INTEGER CHECK ((kind = 0 AND (maximum_value IS NULL OR maximum_value BETWEEN -2147483648 AND 2147483647)) OR (kind = 1 AND maximum_value IS NULL)),
+    PRIMARY KEY (kind, hash)
+) STRICT;
+CREATE TABLE catalog_scaled_stats (
+    kind INTEGER NOT NULL CHECK (kind = 0), hash INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 63),
+    stat_hash INTEGER NOT NULL CHECK (stat_hash BETWEEN 0 AND 4294967295),
+    maximum_value INTEGER NOT NULL CHECK (maximum_value BETWEEN -2147483648 AND 2147483647),
+    numeric INTEGER NOT NULL CHECK (numeric IN (0,1)),
+    PRIMARY KEY (hash, ordinal),
+    FOREIGN KEY (kind, hash) REFERENCES armor_catalogs(kind, hash) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE catalog_interpolation (
+    kind INTEGER NOT NULL CHECK (kind = 0), hash INTEGER NOT NULL, stat_ordinal INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 255),
+    value INTEGER NOT NULL CHECK (value BETWEEN -2147483648 AND 2147483647),
+    weight INTEGER NOT NULL CHECK (weight BETWEEN -2147483648 AND 2147483647),
+    PRIMARY KEY (hash, stat_ordinal, ordinal),
+    FOREIGN KEY (kind, hash) REFERENCES armor_catalogs(kind, hash) ON DELETE CASCADE,
+    FOREIGN KEY (hash, stat_ordinal) REFERENCES catalog_scaled_stats(hash, ordinal) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE catalog_set_items (
+    kind INTEGER NOT NULL CHECK (kind = 1), hash INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 1023),
+    item_hash INTEGER NOT NULL CHECK (item_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (hash, ordinal),
+    FOREIGN KEY (kind, hash) REFERENCES armor_catalogs(kind, hash) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE catalog_set_perks (
+    kind INTEGER NOT NULL CHECK (kind = 1), hash INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 63),
+    required_count INTEGER NOT NULL CHECK (required_count BETWEEN -2147483648 AND 2147483647),
+    perk_hash INTEGER NOT NULL CHECK (perk_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (hash, ordinal),
+    FOREIGN KEY (kind, hash) REFERENCES armor_catalogs(kind, hash) ON DELETE CASCADE
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V28_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM armor_catalogs) OR EXISTS (SELECT 1 FROM catalog_scaled_stats) OR EXISTS (SELECT 1 FROM catalog_interpolation) OR EXISTS (SELECT 1 FROM catalog_set_items) OR EXISTS (SELECT 1 FROM catalog_set_perks) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE catalog_interpolation;
+DROP TABLE catalog_scaled_stats;
+DROP TABLE catalog_set_items;
+DROP TABLE catalog_set_perks;
+DROP TABLE armor_catalogs;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
 
 const SCHEMA_V27_UP: &str = r#"
 CREATE TABLE definition_socket_entries (

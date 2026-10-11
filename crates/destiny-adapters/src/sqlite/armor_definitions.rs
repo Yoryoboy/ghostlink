@@ -247,6 +247,7 @@ mod tests {
         assert_eq!(armor.socket_entries[0].default_visible, None);
         assert_eq!(armor.socket_categories[1].socket_indexes, vec![2, 3]);
         let mut sqlite = SqliteStore::open_in_memory().unwrap();
+        sqlite.migrate_to(27).unwrap();
         let mut fake = destiny_app::test_support::InMemoryDefinitionRepository::default();
         let first = sqlite.replace_definitions(input.clone()).unwrap();
         assert_eq!(fake.replace_definitions(input.clone()).unwrap(), first);

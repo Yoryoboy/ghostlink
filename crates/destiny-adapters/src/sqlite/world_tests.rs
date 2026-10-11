@@ -404,6 +404,7 @@ fn loadout_name_v11_upgrade_preserves_data_and_invalidates_manifest_freshness() 
 
 fn world(version: &str, name: &str) -> WorldDefinitionsAcquisition {
     WorldDefinitionsAcquisition {
+        armor_catalogs: Vec::new(),
         item_descriptions: Vec::new(),
         version: DefinitionVersion::new(version),
         loadout_names: WorldDefinitionTable {

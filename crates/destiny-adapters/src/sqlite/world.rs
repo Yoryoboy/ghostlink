@@ -213,6 +213,11 @@ fn read_loadout_names(
 }
 
 pub(super) fn clear_catalog(connection: &Connection) -> Result<(), AppError> {
+    if super::migrations::read_user_version(connection)? >= 28 {
+        connection
+            .execute("DELETE FROM armor_catalogs", [])
+            .map_err(|_| storage_failure())?;
+    }
     if super::migrations::read_user_version(connection)? >= 14 {
         connection
             .execute("DELETE FROM item_descriptions", [])
@@ -238,6 +243,7 @@ pub(super) fn replace_catalog(
 ) -> Result<(), AppError> {
     clear_catalog(connection)?;
     let version = world.version.as_str();
+    super::armor_catalogs::write(connection, &world.armor_catalogs, version)?;
     if super::migrations::read_user_version(connection)? >= 14 {
         replace_item_descriptions(connection, &world.item_descriptions)?;
     }
@@ -426,6 +432,7 @@ pub(super) fn contents_match(
         world.item_descriptions.is_empty()
     };
     Ok(descriptions_match
+        && super::armor_catalogs::contents_match(connection, &world.armor_catalogs)?
         && loadout_names_match
         && stats_match
         && table_matches!(

@@ -203,12 +203,20 @@ coverage (`domain.rs:123-126`).
     `preventInitializationOnVendorPurchase` is unused by DIM and omitted.
     Workspace: 2098 passed all-features, 2066 default, 0 failed; clippy both
     modes, fmt, diff check clean.
-  - [ ] **BE-005b3 — Manifest catalogs.** DestinyStatGroupDefinition
-    (interpolation, DIM `inventory/store/stats.ts:614-641`),
+  - [x] **BE-005b3 — Stat group and armor set catalogs.**
+    DestinyStatGroupDefinition and DestinyEquipableItemSetDefinition.
+    Done: `destiny-core/src/armor_catalog.rs`, `sqlite/armor_catalogs.rs`,
+    migration 28 (STRICT, guarded downgrade, once-per-upgrade refresh,
+    indexed single-hash reads); 2 extra Manifest requests, each capped at
+    16 MiB decompressed (live size not measured). DIM evidence
+    `inventory/store/stats.ts:249,282,291,614-641` (top-level
+    `maximumValue` fallback; absence kept unknown),
+    `item-popup/SetBonus.tsx:55,102,213`. Workspace: 2104 passed
+    all-features, 2072 default, 0 failed; clippy both modes, fmt, diff check.
+  - [ ] **BE-005b4 — Socket and plug set catalogs.**
     DestinySocketTypeDefinition (whitelist `sockets.ts:607-612`),
     DestinySocketCategoryDefinition (categoryStyle `sockets.ts:664-681`),
-    DestinyPlugSetDefinition (currentlyCanRoll `sockets.ts:734,768`),
-    DestinyEquipableItemSetDefinition (`item-popup/SetBonus.tsx:55,213`).
+    DestinyPlugSetDefinition (currentlyCanRoll `sockets.ts:734,768`).
     Table names confirmed in DIM `destiny2/d2-definitions.ts:56-95,121-149`.
   - [ ] **BE-005c — DIM armor model.** Base/masterwork/tuning/set-bonus
     derivations with fixtures.

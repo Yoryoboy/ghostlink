@@ -101,6 +101,7 @@ fn table<T>(definitions: Vec<T>) -> WorldDefinitionTable<T> {
 
 fn world() -> WorldDefinitionsAcquisition {
     WorldDefinitionsAcquisition {
+        armor_catalogs: Vec::new(),
         version: DefinitionVersion::new(VERSION),
         item_descriptions: vec![],
         stats: table(

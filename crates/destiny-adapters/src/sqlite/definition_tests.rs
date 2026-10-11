@@ -572,6 +572,7 @@ fn bridge_world() -> destiny_core::WorldDefinitionsAcquisition {
         }
     }
     WorldDefinitionsAcquisition {
+        armor_catalogs: Vec::new(),
         version: DefinitionVersion::new("v1"),
         item_descriptions: vec![
             ItemDescription::new(ItemHash::new(10), "Original tooltip".into()).unwrap(),

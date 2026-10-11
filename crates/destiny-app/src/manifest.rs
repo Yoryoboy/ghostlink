@@ -185,6 +185,15 @@ where
         let (definitions, skipped, descriptions) = normalize_with_count(acquisition)?;
         let mut world = self.gateway.load_world_components(&index)?;
         world.item_descriptions = descriptions;
+        destiny_core::armor_catalog::validate_catalogs(&world.armor_catalogs)?;
+        for record in &mut world.armor_catalogs {
+            if let destiny_core::armor_catalog::ArmorCatalogRecord::EquipableSet(set) = record {
+                set.name = normalize_presentation(&set.name, MAX_TEXT_LENGTH)?;
+            }
+        }
+        world
+            .armor_catalogs
+            .sort_by_key(|record| (record.kind().id(), record.hash()));
         world.validate_for(&version)?;
         let world_counts = world.counts();
         let world_skipped = world.skipped_counts();
@@ -1109,6 +1118,7 @@ mod tests {
             let metadata = repository.current_metadata().unwrap();
             let mut gateway = QueuedManifestGateway::new();
             gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                armor_catalog_paths: Default::default(),
                 version: DefinitionVersion::new("manifest-prior"),
                 component_path: "unused".into(),
                 milestone_path: "unused".into(),
@@ -1199,6 +1209,7 @@ mod tests {
                 let error = AppError::new(ErrorCategory::ProviderUnavailable);
                 if component_failure {
                     gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                        armor_catalog_paths: Default::default(),
                         version: DefinitionVersion::new(VERSION),
                         component_path: "unused".into(),
                         milestone_path: "unused".into(),
@@ -1249,6 +1260,7 @@ mod tests {
                 let metadata = repository.current_metadata().unwrap();
                 let mut gateway = QueuedManifestGateway::new();
                 gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                    armor_catalog_paths: Default::default(),
                     version: DefinitionVersion::new(VERSION),
                     component_path: "unused".into(),
                     milestone_path: "unused".into(),
@@ -1334,6 +1346,7 @@ mod tests {
         fn sync_rejects_component_version_that_disagrees_with_index() {
             let mut gateway = QueuedManifestGateway::new();
             gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                armor_catalog_paths: Default::default(),
                 version: DefinitionVersion::new("other-version"),
                 component_path: "unused".into(),
                 milestone_path: "unused".into(),

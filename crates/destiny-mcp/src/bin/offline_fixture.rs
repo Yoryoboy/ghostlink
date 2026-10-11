@@ -581,6 +581,7 @@ fn weekly_repository() -> InMemoryDefinitionRepository {
                 source: SourceMarker::Manifest,
             },
             WorldDefinitionsAcquisition {
+                armor_catalogs: Vec::new(),
                 item_descriptions: Vec::new(),
                 loadout_names: WorldDefinitionTable {
                     definitions: vec![],
