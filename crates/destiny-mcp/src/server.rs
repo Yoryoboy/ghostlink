@@ -322,7 +322,7 @@ impl ServerHandler for ReadToolServer {
 fn is_build_tool(name: &str) -> bool {
     matches!(
         name,
-        "list_builds" | "get_build" | "save_build" | "delete_build"
+        "list_builds" | "get_build" | "save_build" | "delete_build" | "analyze_build"
     )
 }
 fn dispatch_builds(
@@ -339,6 +339,13 @@ fn dispatch_builds(
         "list_builds" => {
             let _: crate::schema::ListCharactersArgs = deserialize(arguments)?;
             BuildToolRequest::Local(LocalBuildRequest::List)
+        }
+        "analyze_build" => {
+            let args: crate::schema::AnalyzeBuildArgs = deserialize(arguments)?;
+            match args.request() {
+                Ok(request) => BuildToolRequest::Analyze(request),
+                Err(error) => return Ok(error.into_call_tool_result()),
+            }
         }
         "get_build" | "delete_build" => {
             let args: crate::schema::BuildSelectionArgs = deserialize(arguments)?;

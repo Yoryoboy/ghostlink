@@ -118,6 +118,18 @@ async fn build_sources_stdio_report_omissions_and_unresolved_items() {
     let id = saved["result"]["structuredContent"]["summary"]["id"].clone();
     let shown = session.call_tool("get_build", json!({"id":id})).await;
     assert!(shown["result"]["structuredContent"]["unresolved_items"].is_null());
+    let analyzed = session
+        .call_tool("analyze_build", json!({"id":id,"character":"1"}))
+        .await;
+    assert_eq!(analyzed["result"]["isError"], false, "{analyzed}");
+    let analysis = &analyzed["result"]["structuredContent"];
+    assert_eq!(analysis["kind"], "build_analysis");
+    assert_eq!(analysis["counts"]["missing"], 0);
+    assert_eq!(analysis["findings"].as_array().unwrap().len(), 13);
+    let invalid_analysis = session
+        .call_tool("analyze_build", json!({"id":id,"name":"other"}))
+        .await;
+    assert_eq!(invalid_analysis["result"]["isError"], true);
     let invalid = session
         .call_tool("save_build", json!({"source":"equipped", "input":"bad"}))
         .await;
@@ -486,7 +498,7 @@ async fn stack_stdio_acknowledged_refused_uncertain_and_invalid() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 22);
+        assert_eq!(tools.len(), 23);
         let tool = tools.iter().find(|t| t["name"] == "pull_stack").unwrap();
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(tool["annotations"]["readOnlyHint"], false);
@@ -537,7 +549,7 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 22);
+        assert_eq!(tools.len(), 23);
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == "pull_item")
@@ -1362,6 +1374,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             "get_build",
             "save_build",
             "delete_build",
+            "analyze_build",
             MOVE_ITEM_TOOL,
             "equip_item",
             "set_lock_state",

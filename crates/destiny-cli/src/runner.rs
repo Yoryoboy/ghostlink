@@ -548,6 +548,7 @@ where
     if let Command::Build(arguments) = &cli.command {
         return match crate::builds::compose(arguments) {
             Ok(output) => {
+                // Export is always raw DIM JSON, including --json (docs/cli.md).
                 let body = if let Some(export) = output.export {
                     export
                 } else if mode == OutputMode::Json {

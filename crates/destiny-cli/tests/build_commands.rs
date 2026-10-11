@@ -5,6 +5,16 @@ use destiny_cli::command::Cli;
 fn build_commands_parse_all_sources_and_selectors() {
     for args in [
         vec!["ghostlink", "build", "list"],
+        vec![
+            "ghostlink",
+            "build",
+            "check",
+            "id",
+            "--character",
+            "hunter",
+            "--json",
+        ],
+        vec!["ghostlink", "build", "check", "--name", "Raid"],
         vec!["ghostlink", "build", "import", "-"],
         vec!["ghostlink", "build", "show", "--name", "Raid"],
         vec!["ghostlink", "build", "export", "id"],

@@ -146,6 +146,12 @@ impl SaveBuildArgs {
 }
 #[derive(JsonSchema)]
 pub struct BuildOutputSchema {
+    pub target_character: Option<String>,
+    pub counts: Option<serde_json::Value>,
+    pub items: Option<Vec<serde_json::Value>>,
+    pub findings: Option<Vec<serde_json::Value>>,
+    pub not_evaluated: Option<Vec<String>>,
+    pub metadata: Option<serde_json::Value>,
     pub kind: String,
     pub summary: Option<serde_json::Value>,
     pub builds: Option<Vec<serde_json::Value>>,
@@ -155,12 +161,40 @@ pub struct BuildOutputSchema {
     pub deleted: Option<bool>,
     pub error: Option<serde_json::Value>,
 }
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AnalyzeBuildArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub id: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub name: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub character: Option<String>,
+}
+impl AnalyzeBuildArgs {
+    pub fn request(&self) -> Result<destiny_app::builds::BuildCheckRequest, McpError> {
+        let selector = BuildSelectionArgs {
+            id: self.id.clone(),
+            name: self.name.clone(),
+        }
+        .selector()?;
+        if let Some(character) = &self.character {
+            destiny_app::SearchTerm::new(character).map_err(McpError::from)?;
+        }
+        Ok(destiny_app::builds::BuildCheckRequest {
+            selector,
+            character: self.character.as_ref().map(destiny_app::CharacterId::new),
+        })
+    }
+}
+
 pub fn build_tool_specs() -> Vec<Tool> {
     vec![
         Tool::new("list_builds", "List local builds for the committed profile membership; no synchronization.", JsonObject::new()).with_input_schema::<ListCharactersArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
         Tool::new("get_build", "Show one local build by id or exact normalized name (exactly one). Includes DIM JSON export and known source omissions. Ambiguity returns candidates; never guess.", JsonObject::new()).with_input_schema::<BuildSelectionArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
         Tool::new("save_build", "Save a local build. source=import: input is DIM JSON/loadouts?loadout= URL (dim.gg requires deferred online import). source=equipped: character and name. source=in_game_loadout: character and exactly one slot (1..12) or loadout_name. Inventory sources use ordinary freshness and report omissions/unresolved items. Never applies gear.", JsonObject::new()).with_input_schema::<SaveBuildArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(false).idempotent(false)),
         Tool::new("delete_build", "Delete a local build by id or exact normalized name (exactly one). ID deletion is idempotent; name ambiguity returns candidates. Does not delete any Bungie/DIM loadout.", JsonObject::new()).with_input_schema::<BuildSelectionArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true)),
+        Tool::new("analyze_build", "Check a stored build against synced inventory; exactly one id/name. Optional character ID/class; required if build class has multiple characters. Ordinary freshness. Reports resolved/missing items, counts, DIM findings and not_evaluated reasons; search matching is search_only. Never applies gear.", JsonObject::new()).with_input_schema::<AnalyzeBuildArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
     ]
 }
 

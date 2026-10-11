@@ -36,6 +36,45 @@ fn omission(o: BuildOmission) -> &'static str {
 impl BuildOutput {
     pub fn from_result(result: Result<BuildReply, BuildError>) -> Self {
         match result {
+            Ok(BuildReply::Analysis(result)) => {
+                let analysis = &result.analysis;
+                let items: Vec<_> = analysis.items.iter().map(|i| {
+                    let inventory = i.inventory.as_ref().map(|item| {
+                        let (location, owner) = match &item.location {
+                            destiny_app::ItemLocation::Character(id) => ("character", Some(id.as_str())),
+                            destiny_app::ItemLocation::Postmaster(id) => ("postmaster", Some(id.as_str())),
+                            destiny_app::ItemLocation::Vault => ("vault", None),
+                            destiny_app::ItemLocation::Other(_) => ("other", None),
+                        };
+                        json!({"instance_id":item.instance_id.as_str(), "hash":item.item_hash.value(),
+                            "location":location, "owning_character":owner, "equipped":item.equipped})
+                    });
+                    json!({"status":if inventory.is_some() {"resolved"} else {"missing"},
+                        "spec":{"id":i.spec.instance_id.as_ref().map(|id| id.as_str()), "hash":i.spec.hash.value(),
+                            "amount":i.spec.amount, "crafted_date":i.spec.crafted_date,
+                            "socket_overrides":i.spec.socket_overrides.iter().map(|(index, hash)| (index.to_string(), json!(hash.value()))).collect::<serde_json::Map<_, _>>()},
+                        "should_equip":i.should_equip, "inventory":inventory,
+                        "class_compatible":i.class_compatible, "resolution_reason":i.resolution_reason})
+                }).collect();
+                let findings: Vec<_> = analysis
+                    .findings
+                    .iter()
+                    .map(|f| {
+                        json!({"kind":f.kind.as_str(),
+                    "evaluation":f.evaluation, "present":f.present, "reason":f.reason,
+                    "blocks_optimization":f.kind.blocks_optimization()})
+                    })
+                    .collect();
+                Self::success(
+                    json!({"kind":"build_analysis", "summary":summary(&result.summary),
+                    "target_character":analysis.target_character.as_str(), "counts":{"specified":analysis.specified,
+                        "resolved":analysis.resolved,"missing":analysis.missing}, "items":items,
+                    "findings":findings, "not_evaluated":analysis.not_evaluated,
+                    "metadata":{"checked_at":result.metadata.sync.checked_at.seconds(),
+                        "revision":result.metadata.sync.revision.value(), "definition_version":result.metadata.sync.definition_version.as_str(),
+                        "freshness":match result.metadata.freshness { destiny_app::FreshnessStatus::Fresh => "fresh", destiny_app::FreshnessStatus::Stale => "stale", destiny_app::FreshnessStatus::Missing => "missing", destiny_app::FreshnessStatus::InvalidSource => "invalid_source"}}}),
+                )
+            }
             Ok(BuildReply::List(builds)) => Self::success(
                 json!({"kind":"builds", "builds":builds.iter().map(summary).collect::<Vec<_>>()}),
             ),
@@ -179,6 +218,37 @@ impl BuildOutput {
                     .collect::<Vec<_>>()
                     .join("\n")
             };
+        }
+        if self.value["kind"] == "build_analysis" {
+            let counts = &self.value["counts"];
+            let mut lines = vec![format!(
+                "{}: {} specified, {} resolved, {} missing (character {})",
+                clean(self.value["summary"]["name"].as_str().unwrap_or("")),
+                counts["specified"],
+                counts["resolved"],
+                counts["missing"],
+                clean(self.value["target_character"].as_str().unwrap_or(""))
+            )];
+            if let Some(items) = self.value["items"].as_array() {
+                for item in items {
+                    lines.push(format!(
+                        "{}: {} {}",
+                        item["spec"]["hash"], item["status"], item["inventory"]["location"]
+                    ));
+                }
+            }
+            if let Some(findings) = self.value["findings"].as_array() {
+                for finding in findings {
+                    if finding["present"] == true || finding["evaluation"] == "not_evaluated" {
+                        lines.push(format!(
+                            "{}: {} ({})",
+                            finding["kind"], finding["evaluation"], finding["reason"]
+                        ));
+                    }
+                }
+            }
+            lines.push(format!("Not evaluated: {}", self.value["not_evaluated"]));
+            return lines.join("\n");
         }
         if let Some(deleted) = self.value.get("deleted") {
             return format!("Deleted: {deleted}");

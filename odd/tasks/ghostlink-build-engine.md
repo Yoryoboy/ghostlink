@@ -127,10 +127,27 @@ silently (`builds.rs:398-401`).
   `non_transferrable` and instance `transfer_status` decoded from data
   already acquired (no new Bungie components), synced and persisted
   (migration 24, guarded downgrade), fake/SQLite parity, revision tests.
-- [ ] **BE-004b — Resolution and analysis v1.** DIM resolution semantics;
+  Commit `c231a0d` (verified alone: 2055 all-features / 2023 default, 0
+  failed); review approved and burned.
+- [x] **BE-004b — Resolution and analysis v1.** DIM resolution semantics;
   findings supported by current data (missing items, exotic mismatch,
   invalid/nonmatching search, location of each item); CLI `build check`,
   MCP `analyze_build`.
+  Done: `destiny-core/src/build_analysis.rs` (pure resolution and findings),
+  `BuildService::check` with ordinary freshness, target character selector
+  (unique character of the build class by default, else required). DIM
+  evidence: resolution `loadout-utils.ts:554-737`; incomplete armor
+  `analysis.ts:138-155`; exotic by definition name `analysis.ts:402-419`;
+  `ItemsDoNotMatchSearchQuery` implemented search-only with
+  `evaluation: "search_only"` (optimizer suppression `analysis.ts:293-307,
+  362-367` → BE-008). Crafted-date fallback, stats, mods, upgrades and
+  fragments reported `not_evaluated` with reasons. `build export` keeps
+  printing raw DIM JSON (documented). Workspace: 2076 passed all-features,
+  2044 default, 0 failed; clippy both modes, fmt, diff check, offline help.
+
+Review follow-ups (BE-004a, non-blocking): legacy search read path and
+`transfer_status` (`sqlite/search.rs:206`); add direct `notransfer`
+coverage (`domain.rs:123-126`).
 - [ ] **BE-005 — Armor 3.0 data.** Base stats, set bonuses, energy, tuning,
   masterwork, socket indices for inventory plugs (DIM sources first).
 - [ ] **BE-006 — Analysis v2.** Stat constraints, mods fit, armor upgrades.

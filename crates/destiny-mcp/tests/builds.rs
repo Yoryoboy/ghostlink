@@ -6,7 +6,13 @@ fn build_descriptors_are_small_closed_and_source_validation_is_strict() {
     let tools = schema::build_tool_specs();
     assert_eq!(
         tools.iter().map(|t| t.name.as_ref()).collect::<Vec<_>>(),
-        ["list_builds", "get_build", "save_build", "delete_build"]
+        [
+            "list_builds",
+            "get_build",
+            "save_build",
+            "delete_build",
+            "analyze_build"
+        ]
     );
     for tool in tools {
         assert!(tool.description.unwrap().len() <= 500);
@@ -17,6 +23,42 @@ fn build_descriptors_are_small_closed_and_source_validation_is_strict() {
     }))
     .unwrap();
     assert!(args.validate().is_err());
+}
+
+#[test]
+fn cli_mcp_build_check_request_parity() {
+    for (args, wire) in [
+        (
+            vec!["ghostlink", "build", "check", "id", "--character", "hunter"],
+            serde_json::json!({"id":"id", "character":"hunter"}),
+        ),
+        (
+            vec!["ghostlink", "build", "check", "--name", "Raid"],
+            serde_json::json!({"name":"Raid"}),
+        ),
+    ] {
+        let cli = destiny_cli::command::Cli::try_parse_from(args).unwrap();
+        let destiny_cli::command::Command::Build(build) = cli.command else {
+            panic!()
+        };
+        let destiny_cli::command::BuildCommand::Check(args) = build.command else {
+            panic!()
+        };
+        let mcp: schema::AnalyzeBuildArgs = serde_json::from_value(wire).unwrap();
+        assert_eq!(args.request().unwrap(), mcp.request().unwrap());
+    }
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"id":"id", "name":"Raid"}),
+        serde_json::json!({"id":"id", "character":"\n"}),
+    ] {
+        assert!(
+            serde_json::from_value::<schema::AnalyzeBuildArgs>(wire)
+                .unwrap()
+                .request()
+                .is_err()
+        );
+    }
 }
 
 #[test]

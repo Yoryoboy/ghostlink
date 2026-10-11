@@ -1211,7 +1211,7 @@ fn invalid_repository_state() -> AppError {
 /// the original time and the core's future-timestamp guard; a discarded
 /// acquisition is never fresh. The profile
 /// projection and the Manifest definition projection stay distinct.
-fn query_metadata(
+pub(crate) fn query_metadata(
     outcome: &ProfileSyncOutcome,
     policy: FreshnessPolicy,
     now: Timestamp,

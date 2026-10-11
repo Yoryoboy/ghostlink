@@ -2,6 +2,7 @@
 
 pub use clarity::*;
 pub mod build;
+pub mod build_analysis;
 pub mod calendar;
 pub mod clarity;
 pub use calendar::*;

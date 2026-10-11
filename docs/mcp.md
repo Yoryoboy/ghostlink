@@ -26,6 +26,7 @@ list_builds       list locally stored build definitions
 get_build         show one local build, including DIM JSON export
 save_build        import or capture equipped/in-game loadout as a local build
 delete_build      delete one local build definition
+analyze_build     check a local build against synced inventory
 ```
 
 ## Local build tools
@@ -37,9 +38,20 @@ composed in the production server with membership-scoped SQLite storage.
 |---|---|
 | `list_builds` | `{}` |
 | `get_build` / `delete_build` | Exactly one `id` or normalized exact `name` |
+| `analyze_build` | Exactly one `id`/`name`; optional `character` ID or unique class |
 | `save_build` import | `source: "import"`, `input`: DIM JSON or full loadout URL |
 | `save_build` equipped | `source: "equipped"`, `character`, `name` |
 | `save_build` in-game | `source: "in_game_loadout"`, `character`, exactly one `slot` (1..12) or `loadout_name` |
+
+`analyze_build` shares `ghostlink build check` output and ordinary freshness.
+Without a character selector the build class must have one owned character;
+otherwise resolve ambiguity with an explicit ID. Results contain item resolution,
+location/owner/equipped/class compatibility, counts (no percentage), and every DIM
+finding kind. `present: null` with `evaluation: not_evaluated` is not a clean bill
+of health. Search exclusion is `search_only`; optimizer-dependent suppression is
+not evaluated. Crafted dates, sockets, mods fit, fragment capacity, armor upgrades,
+stat constraints and optimization remain explicitly qualified/deferred. No gear is
+applied. See [CLI build checking](cli.md#check-a-build-against-inventory).
 
 Source-inapplicable/unknown fields are rejected before service dispatch. MCP
 imports accept content, never server file paths or stdin. Input is bounded to

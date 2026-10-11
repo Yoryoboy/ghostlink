@@ -20,6 +20,8 @@ ghostlink build from-loadout --name Raid --character hunter --json
 ghostlink build list --json
 ghostlink build show --name Raid --json
 ghostlink build show <ID> --json
+ghostlink build check <ID> --character hunter --json
+ghostlink build check --name Raid --json
 ghostlink build export <ID> > raid.json
 ghostlink build delete <ID> --json
 ```
@@ -51,6 +53,30 @@ Select a build by positional ID or `--name` (normalized exact match). Ambiguous
 names return candidates (exit 31); missing builds use `item_not_found` (32).
 Delete by ID is idempotent and reports `deleted: false` if absent. Existing
 [exit codes](../skills/ghostlink/references/exit-codes.md) apply; no new exits.
+
+### Check a build against inventory
+
+`build check` uses ordinary profile freshness and requires stored Manifest definitions.
+Choose a character by ID or unique class; without `--character`, the build class
+must have exactly one owned character (unrestricted builds require one character
+in total). Ambiguity returns exit 31; provide an explicit character ID.
+
+The shared CLI/MCP `build_analysis` result reports specified/resolved/missing
+counts, original specifications, current character/Vault/Postmaster location,
+owner, equipped state and nullable class compatibility. Resolution never silently
+substitutes another instance. Hash-resolved buckets prefer the target's copy,
+otherwise use only the first candidate if transferable, as in DIM.
+
+Every DIM finding kind has `evaluation`, nullable `present`, and a reason code.
+Missing items, incomplete resolved equipped armor, exotic constraints (including
+sentinels and definition-name matching), and invalid search are evaluated.
+Search exclusion is qualified `search_only`: optimizer filtering and suppression
+are deferred. Unsupported search capabilities/context are not called invalid.
+Mods, fragment capacity, armor upgrades/energy, stat constraints, seasonal costs
+and optimization are `not_evaluated`; crafted-date fallback and socket overrides
+are explicitly unevaluated. Class compatibility is item metadata, not an invented
+DIM finding. A successful check (exit 0) is an analysis report, not a claim that
+the build can be optimized or applied. There is no percentage coverage.
 
 ## Update
 

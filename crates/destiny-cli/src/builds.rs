@@ -54,6 +54,10 @@ pub fn compose(arguments: &BuildArgs) -> Result<BuildOutput, CliError> {
             }
             Some(LocalBuildRequest::Import(text))
         }
+        BuildCommand::Check(a) => {
+            a.request()?;
+            None
+        }
         BuildCommand::List => Some(LocalBuildRequest::List),
         BuildCommand::Show(s) => Some(LocalBuildRequest::Show(s.selector()?)),
         BuildCommand::Delete(s) => Some(LocalBuildRequest::Delete(s.selector()?)),
@@ -96,6 +100,20 @@ pub fn compose(arguments: &BuildArgs) -> Result<BuildOutput, CliError> {
         config.resolve_definition_version(&inventory)?,
     )?;
     let mut sync = ProfileSyncService::new_with_definitions(gateway, inventory);
+    if let BuildCommand::Check(a) = &arguments.command {
+        let request = a.request()?;
+        return Ok(BuildOutput::from_result(
+            builds
+                .check(
+                    &mut sync,
+                    &request.selector,
+                    request.character.as_ref(),
+                    config.freshness_policy(),
+                    now,
+                )
+                .map(|result| destiny_app::builds::BuildReply::Analysis(Box::new(result))),
+        ));
+    }
     let result = match &arguments.command {
         BuildCommand::FromEquipped { name, character } => builds.from_equipped(
             &mut sync,

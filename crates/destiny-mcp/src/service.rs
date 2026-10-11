@@ -857,6 +857,7 @@ pub struct MoveItemRequest {
 /// bounded MCP projections defined in [`crate::schema`]; a failure is a stable
 /// sanitized [`McpError`].
 pub enum BuildToolRequest {
+    Analyze(destiny_app::builds::BuildCheckRequest),
     Local(destiny_app::builds::LocalBuildRequest),
     Save(crate::schema::SaveBuildArgs),
 }
@@ -876,7 +877,9 @@ pub struct ComposedBuildService<G, I, R, C, K> {
 impl<G, I, R, C, K> BuildToolService for ComposedBuildService<G, I, R, C, K>
 where
     G: destiny_app::ProfileGateway,
-    I: destiny_app::InventoryRepository + destiny_app::WorldDefinitionRepository,
+    I: destiny_app::InventoryRepository
+        + destiny_app::WorldDefinitionRepository
+        + destiny_app::StatDefinitionRepository,
     R: destiny_app::BuildRepository,
     C: destiny_app::BuildCodec,
     K: destiny_app::Clock,
@@ -888,6 +891,19 @@ where
         use destiny_app::builds::LocalBuildRequest;
         let now = self.clock.now().map_err(McpError::from)?;
         let local = match request {
+            BuildToolRequest::Analyze(request) => {
+                let result = self
+                    .builds
+                    .check(
+                        &mut self.sync,
+                        &request.selector,
+                        request.character.as_ref(),
+                        self.policy,
+                        now,
+                    )
+                    .map(|result| destiny_app::builds::BuildReply::Analysis(Box::new(result)));
+                return Ok(destiny_output::builds::BuildOutput::from_result(result));
+            }
             BuildToolRequest::Local(request) => request,
             BuildToolRequest::Save(args) => {
                 args.validate()?;

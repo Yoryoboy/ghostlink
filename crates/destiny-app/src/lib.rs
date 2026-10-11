@@ -1,8 +1,8 @@
 //! Application-facing configuration, services, and sanitized diagnostics.
 
 pub mod builds;
-pub use destiny_core::build;
 pub use destiny_core::ports::{BuildCodec, BuildRepository};
+pub use destiny_core::{build, build_analysis};
 pub mod clarity;
 pub use clarity::{ClaritySyncReport, ManifestAndClarityReport};
 pub use destiny_core::{ClarityInsight, ClarityRepository};

@@ -132,6 +132,90 @@ fn fixture() -> ProfileSyncService<Gateway, SqliteStore> {
     ProfileSyncService::new_with_definitions(Gateway(input, saved, 0), repository)
 }
 #[test]
+fn build_check_uses_current_projection_and_unique_class_target() {
+    let mut sync = fixture();
+    let mut service = BuildService::new(
+        destiny_app::test_support::InMemoryBuildRepository::default(),
+        DimBuildCodec,
+    );
+    let result = service
+        .from_equipped(
+            &mut sync,
+            &CharacterId::new("1"),
+            "Check",
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let checked = service
+        .check(
+            &mut sync,
+            &destiny_app::builds::BuildSelector::Id(result.build.definition.id),
+            None,
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    assert_eq!(checked.analysis.target_character, CharacterId::new("1"));
+    assert_eq!(checked.analysis.specified, 3);
+    assert_eq!(checked.analysis.resolved, 3);
+    assert_eq!(checked.analysis.missing, 0);
+    assert_eq!(sync.into_parts().0.2, 0); // fresh reads do not acquire
+}
+
+#[test]
+fn build_check_stale_refresh_and_character_ambiguity_do_not_guess() {
+    let mut sync = fixture();
+    let mut service = BuildService::new(
+        destiny_app::test_support::InMemoryBuildRepository::default(),
+        DimBuildCodec,
+    );
+    let source = service
+        .from_equipped(
+            &mut sync,
+            &CharacterId::new("1"),
+            "Check",
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let selector = destiny_app::builds::BuildSelector::Id(source.build.definition.id);
+    let (mut gateway, repository) = sync.into_parts();
+    gateway.0.items.retain(|i| i.instance_id.as_str() != "1");
+    let mut second = gateway.0.characters[0].clone();
+    second.id = CharacterId::new("2");
+    gateway.0.characters.push(second);
+    gateway.0.checked_at = Timestamp::new(1000);
+    let mut sync = ProfileSyncService::new_with_definitions(gateway, repository);
+    let error = service
+        .check(
+            &mut sync,
+            &selector,
+            None,
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(1000),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        destiny_app::builds::BuildError::App(AppError::new(ErrorCategory::AmbiguousMatch))
+    );
+    let result = service
+        .check(
+            &mut sync,
+            &selector,
+            Some(&CharacterId::new("1")),
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(1000),
+        )
+        .unwrap();
+    assert_eq!(result.analysis.missing, 1);
+    assert_eq!(result.analysis.resolved, 2);
+    assert_eq!(result.metadata.sync.checked_at, Timestamp::new(1000));
+    assert_eq!(sync.into_parts().0.2, 2);
+}
+
+#[test]
 fn equipped_snapshot_is_faithful_and_reports_unavailable_indices() {
     let mut sync = fixture();
     let mut service = BuildService::new(

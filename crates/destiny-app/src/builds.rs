@@ -78,6 +78,7 @@ pub enum LocalBuildRequest {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BuildReply {
+    Analysis(Box<BuildCheckResult>),
     List(Vec<BuildSummary>),
     Build {
         result: Box<BuildSourceResult>,
@@ -86,6 +87,19 @@ pub enum BuildReply {
     },
     Deleted(bool),
     Export(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuildCheckRequest {
+    pub selector: BuildSelector,
+    pub character: Option<CharacterId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuildCheckResult {
+    pub summary: BuildSummary,
+    pub analysis: build_analysis::BuildAnalysis,
+    pub metadata: QueryMetadata,
 }
 
 pub struct BuildService<R, C> {
@@ -198,6 +212,119 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             .codec
             .export(&self.show(membership, selector)?.definition)?)
     }
+    pub fn check<G, I>(
+        &self,
+        sync: &mut ProfileSyncService<G, I>,
+        selector: &BuildSelector,
+        character: Option<&CharacterId>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<BuildCheckResult, BuildError>
+    where
+        G: ProfileGateway,
+        I: InventoryRepository + WorldDefinitionRepository + StatDefinitionRepository,
+    {
+        if sync.repository().current_metadata()?.is_none() {
+            return Err(AppError::new(ErrorCategory::DefinitionsUnavailable).into());
+        }
+        let outcome = sync.sync(ProfileSyncReason::Ordinary, policy, now)?;
+        let snapshot = sync
+            .repository()
+            .load_current()?
+            .ok_or_else(|| AppError::new(ErrorCategory::LocalStorage))?;
+        let membership = DestinyMembership::new(
+            snapshot.metadata.membership_type,
+            snapshot.metadata.membership_id.clone(),
+        )?;
+        let build = self.show(&membership, selector)?;
+        let candidates: Vec<_> = snapshot
+            .characters
+            .iter()
+            .filter(|c| {
+                build.definition.class_type == 3
+                    || character_class(c).ok() == Some(build.definition.class_type)
+            })
+            .cloned()
+            .collect();
+        let target = if let Some(character) = character {
+            crate::weekly_selection::select_weekly_character(&candidates, Some(character)).map_err(
+                |e| {
+                    AppError::new(match e {
+                        crate::weekly_selection::WeeklySelectionError::InvalidRequest => {
+                            ErrorCategory::ProviderValidation
+                        }
+                        crate::weekly_selection::WeeklySelectionError::AmbiguousMatch => {
+                            ErrorCategory::AmbiguousMatch
+                        }
+                    })
+                },
+            )?
+        } else {
+            match candidates.as_slice() {
+                [character] => character.clone(),
+                [] => return Err(AppError::new(ErrorCategory::ProviderValidation).into()),
+                _ => return Err(AppError::new(ErrorCategory::AmbiguousMatch).into()),
+            }
+        };
+        let mut hashes = std::collections::BTreeSet::new();
+        for item in build
+            .definition
+            .equipped
+            .iter()
+            .chain(&build.definition.unequipped)
+        {
+            hashes.insert(item.hash);
+            hashes.insert(build_analysis::migrated_hash(item.hash));
+        }
+        if let Some(ExoticArmor::Item(hash)) = build
+            .definition
+            .parameters
+            .as_ref()
+            .and_then(|p| p.exotic_armor_hash)
+        {
+            hashes.insert(hash);
+        }
+        for item in &snapshot.items {
+            hashes.insert(item.item_hash);
+            hashes.extend(item.plugs.iter().map(|p| p.plug_hash));
+            hashes.extend(item.available_plugs.iter().map(|p| p.plug_hash));
+        }
+        let mut definitions = Vec::new();
+        for hash in hashes {
+            if let Some(d) = lookup(sync.repository(), hash)? {
+                definitions.push(d);
+            }
+        }
+        let mut stats = Vec::new();
+        if let Some(query) = build
+            .definition
+            .parameters
+            .as_ref()
+            .and_then(|p| p.query.as_deref())
+            .and_then(|q| search_query::compile(q).ok())
+        {
+            for name in search_query::referenced_stats(&query) {
+                for hash in sync.repository().stat_hashes_by_name(&name)? {
+                    if let Some(d) = sync.repository().lookup_stat(hash)? {
+                        stats.push(d);
+                    }
+                }
+            }
+        }
+        Ok(BuildCheckResult {
+            summary: build.summary,
+            analysis: build_analysis::analyze_build(
+                &build.definition,
+                &target.id,
+                &snapshot.items,
+                &definitions,
+                &stats,
+                &snapshot.characters,
+            ),
+            metadata: crate::queries::query_metadata(&outcome, policy, now),
+        })
+    }
+
     pub fn from_equipped<G, I>(
         &mut self,
         sync: &mut ProfileSyncService<G, I>,

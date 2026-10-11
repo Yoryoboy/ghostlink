@@ -228,6 +228,8 @@ pub enum BuildCommand {
     List,
     /// Show a build by ID or exact normalized name.
     Show(BuildSelection),
+    /// Check inventory resolution and supported DIM findings; never applies gear.
+    Check(BuildCheckArgs),
     /// Delete a local build; ID deletion is idempotent.
     Delete(BuildSelection),
     /// Write raw DIM JSON to stdout (also with --json).
@@ -240,6 +242,25 @@ pub enum BuildCommand {
     },
     /// Convert an in-game loadout using the apply-loadout selectors.
     FromLoadout(ApplyLoadoutArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct BuildCheckArgs {
+    #[command(flatten)]
+    pub selection: BuildSelection,
+    #[arg(long)]
+    pub character: Option<String>,
+}
+impl BuildCheckArgs {
+    pub fn request(&self) -> Result<destiny_app::builds::BuildCheckRequest, CliError> {
+        if let Some(character) = &self.character {
+            SearchTerm::new(character).map_err(|_| CliError::invalid_request())?;
+        }
+        Ok(destiny_app::builds::BuildCheckRequest {
+            selector: self.selection.selector()?,
+            character: self.character.as_ref().map(destiny_app::CharacterId::new),
+        })
+    }
 }
 
 #[derive(Debug, Args)]
