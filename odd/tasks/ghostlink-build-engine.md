@@ -72,9 +72,20 @@ DIM evidence here. Ask the owner only when DIM is ambiguous or does not fit
 
 - [x] **BE-001 — Tracker and branch.** Worktree `../ghostlink-builds`, branch
   `feature/ghostlink-build-engine` from `origin/main` `a86584e`.
-- [ ] **BE-002 — Core build model.** DIM `Loadout` types in `destiny-core`
+- [x] **BE-002 — Core build model.** DIM `Loadout` types in `destiny-core`
   with serde round-trip; parse DIM API JSON and `/loadouts?loadout=` URLs;
   DIM import normalization (fresh id, legacy tiers ×10).
+  Done: `destiny-core/src/build.rs` (dependency-free) and
+  `destiny-adapters/src/dim_loadout.rs` (parse keeps identity, import
+  assigns a fresh UUID; `dim.gg` share ids return a typed online-import
+  error). DIM evidence: fresh id and separate clamping
+  `loadout-import.ts:92-125`; modern values win, tiers ×10
+  `loadout-params.ts:20-22`; caps 10 tiers / 200 stat
+  `known-values.ts:38-39`; no-exotic/any-exotic sentinels
+  `loadout-builder/types.ts:157-161`; `clearSpace` migration and
+  `amount || 1` `loadout-type-converters.ts:69-118`. Workspace:
+  2049 passed all-features, 2019 default, 0 failed; clippy both modes,
+  fmt, diff check clean.
 - [ ] **BE-003 — Build store and sources.** SQLite migration and repository
   (fake parity); create from import, equipped snapshot and in-game loadout;
   CLI `build import|list|show|delete|from-equipped|from-loadout`; MCP tools.

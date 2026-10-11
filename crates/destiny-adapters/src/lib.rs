@@ -6,6 +6,7 @@ pub mod bungie_throttle;
 pub mod calendar;
 pub mod clarity;
 pub mod clock;
+pub mod dim_loadout;
 pub mod equip;
 pub mod equip_items;
 pub mod file_credential_store;
