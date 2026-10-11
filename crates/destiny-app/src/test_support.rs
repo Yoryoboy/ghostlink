@@ -2260,6 +2260,9 @@ mod tests {
             source: SourceMarker::Profile,
             characters: Vec::<Character>::new(),
             items: vec![ItemInstance {
+                energy: None,
+                gear_tier: None,
+                sockets: Vec::new(),
                 transfer_status: None,
                 available_plugs: Vec::new(),
                 instance_id: "instance".into(),
@@ -2308,6 +2311,9 @@ mod tests {
             ],
             items: vec![
                 ItemInstance {
+                    energy: None,
+                    gear_tier: None,
+                    sockets: Vec::new(),
                     transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: "instance-1".into(),
@@ -2333,6 +2339,9 @@ mod tests {
                     ],
                 },
                 ItemInstance {
+                    energy: None,
+                    gear_tier: None,
+                    sockets: Vec::new(),
                     transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: "instance-2".into(),
@@ -2401,6 +2410,9 @@ mod tests {
         perk_hashes: Vec<u32>,
     ) -> ItemInstance {
         ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
             transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: instance_id.into(),

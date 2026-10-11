@@ -628,6 +628,9 @@ mod tests {
                 source: SourceMarker::Profile,
                 characters: Vec::new(),
                 items: vec![ItemInstance {
+                    energy: None,
+                    gear_tier: None,
+                    sockets: Vec::new(),
                     transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: "instance-1".into(),

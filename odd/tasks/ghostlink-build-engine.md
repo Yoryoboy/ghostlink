@@ -150,6 +150,41 @@ Review follow-ups (BE-004a, non-blocking): legacy search read path and
 coverage (`domain.rs:123-126`).
 - [ ] **BE-005 — Armor 3.0 data.** Base stats, set bonuses, energy, tuning,
   masterwork, socket indices for inventory plugs (DIM sources first).
+  DIM sources (research 2026-10-11, paths under DIM `src/app/`):
+  base stats = definition `investmentStats` + enabled intrinsic/ArmorStats
+  plugs, scaled by stat group (`inventory/store/stats.ts:134,224,318-390`),
+  never component-304 totals relabelled; energy = component 300 `energy`
+  (`d2-item-factory.ts:544`); Armor 3.0 masterwork tier = masterwork plug
+  conditional investment stat (`masterwork.ts:43-104`), not energy; gear tier
+  = 300 `gearTier` (`d2-item-factory.ts:586`), not rarity; tuning socket
+  category + plug set 1155052024 (`utils/item-utils.ts:409-432`,
+  `loadout-builder/types.ts:136`); sets = `equippingBlock.equipableItemSetHash`
+  + `DestinyEquipableItemSetDefinition` (`item-popup/SetBonus.tsx:23-64`,
+  `utils/socket-utils.ts:782-809`); socket index = component 305 array
+  position joined to definition `socketEntries[i]` (`inventory/store/sockets.ts:117-156`);
+  fragment capacity = aspects' `plug.energyCapacity.capacityValue`
+  (`loadout-drawer/loadout-utils.ts:745-769,946-954`); crafted date =
+  component 309 crafting objective (`inventory/store/crafted.ts:23-90`).
+  - [x] **BE-005a — Instance and socket fidelity.** Component 300 energy
+    and `gearTier`; component 305 real socket indices with enabled/visible
+    flags (today `decode_plugs` drops entries and SQLite `ordinal` is
+    filtered order). Decoder → core → SQLite → fake parity.
+    Done: migration 25 (`item_energy`, `item_gear_tiers`, `item_sockets`,
+    STRICT, cascading, downgrade refuses populated data); absent tier stays
+    `None` (DIM `?? 0` applied by consumers); raw sockets kept beside the
+    unchanged publication-filtered plug view; all fields in revision
+    equality. Legacy rows stay unknown until the next sync (no backfill).
+    DIM evidence `d2-item-factory.ts:544,586`, `sockets.ts:133-141`.
+    Workspace: 2082 passed all-features, 2050 default, 0 failed; clippy both
+    modes, fmt, diff check, pattern-insertion check clean.
+  - [ ] **BE-005b — Manifest armor and socket catalog.** Investment stats,
+    stat groups, plug category hashes, socket topology/categories, plug sets,
+    energy costs, aspect capacity, equipable item sets.
+  - [ ] **BE-005c — DIM armor model.** Base/masterwork/tuning/set-bonus
+    derivations with fixtures.
+  - [ ] **BE-005d — Build capture completion.** Equipped subclass/artifact
+    socket overrides, unlocked plug evidence (102/206), component 309 crafted
+    dates and resolution fallback.
 - [ ] **BE-006 — Analysis v2.** Stat constraints, mods fit, armor upgrades.
 - [ ] **BE-007 — Apply build.** DIM apply phases; covers dim-parity U4b/U4c.
 - [ ] **BE-008 — Substitutes.** Optimizer-based armor sets.

@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 24;
+pub(crate) const LATEST_VERSION: u32 = 25;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 24] = [
+const MIGRATIONS: [Migration; 25] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -174,7 +174,43 @@ const MIGRATIONS: [Migration; 24] = [
         up: SCHEMA_V24_UP,
         down: SCHEMA_V24_DOWN,
     },
+    Migration {
+        version: 25,
+        up: SCHEMA_V25_UP,
+        down: SCHEMA_V25_DOWN,
+    },
 ];
+
+const SCHEMA_V25_UP: &str = r#"
+CREATE TABLE item_energy (
+    instance_id TEXT PRIMARY KEY REFERENCES items(instance_id) ON DELETE CASCADE,
+    energy_capacity INTEGER NOT NULL CHECK (energy_capacity BETWEEN 0 AND 4294967295),
+    energy_used INTEGER NOT NULL CHECK (energy_used BETWEEN 0 AND 4294967295),
+    energy_unused INTEGER NOT NULL CHECK (energy_unused BETWEEN 0 AND 4294967295),
+    energy_type INTEGER CHECK (energy_type BETWEEN 0 AND 4294967295),
+    energy_type_hash INTEGER CHECK (energy_type_hash BETWEEN 0 AND 4294967295)
+) STRICT;
+CREATE TABLE item_gear_tiers (
+    instance_id TEXT PRIMARY KEY REFERENCES items(instance_id) ON DELETE CASCADE,
+    gear_tier INTEGER NOT NULL CHECK (gear_tier BETWEEN 0 AND 4294967295)
+) STRICT;
+CREATE TABLE item_sockets (
+    instance_id TEXT NOT NULL REFERENCES items(instance_id) ON DELETE CASCADE,
+    socket_index INTEGER NOT NULL CHECK (socket_index BETWEEN 0 AND 31),
+    plug_hash INTEGER CHECK (plug_hash BETWEEN 0 AND 4294967295),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    visible INTEGER NOT NULL CHECK (visible IN (0, 1)),
+    PRIMARY KEY(instance_id, socket_index)
+) STRICT;
+"#;
+const SCHEMA_V25_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM item_energy) OR EXISTS (SELECT 1 FROM item_gear_tiers) OR EXISTS (SELECT 1 FROM item_sockets) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE item_sockets;
+DROP TABLE item_gear_tiers;
+DROP TABLE item_energy;
+"#;
 
 const SCHEMA_V24_UP: &str = r#"
 ALTER TABLE definitions ADD COLUMN non_transferrable INTEGER CHECK (non_transferrable IS NULL OR non_transferrable IN (0, 1));

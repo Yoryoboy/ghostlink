@@ -86,8 +86,34 @@ pub struct AvailablePlug {
     pub plug_hash: ItemHash,
 }
 
+/// Exact component-300 energy values, without inferred armor semantics.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ItemEnergy {
+    pub energy_capacity: u32,
+    pub energy_used: u32,
+    pub energy_unused: u32,
+    pub energy_type: Option<u32>,
+    pub energy_type_hash: Option<u32>,
+}
+
+pub const MAX_ITEM_SOCKETS: usize = 32;
+
+/// Component-305 socket state. Index is the real provider array position.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexedSocket {
+    pub socket_index: u8,
+    pub plug_hash: Option<ItemHash>,
+    pub enabled: bool,
+    pub visible: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemInstance {
+    pub energy: Option<ItemEnergy>,
+    /// Omission stays unknown; consumers may use `unwrap_or(0)` like DIM.
+    pub gear_tier: Option<u32>,
+    /// Complete raw socket projection; publication filtering only affects `plugs`.
+    pub sockets: Vec<IndexedSocket>,
     /// Exact provider transferStatus; absent in legacy projections.
     pub transfer_status: Option<u32>,
     /// Selectable weapon perks, armor mods and unknown plugs, stored separately
@@ -450,6 +476,9 @@ mod plug_tests {
             power: None,
             perks: vec![],
             stats: vec![],
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
             transfer_status: None,
             available_plugs: vec![AvailablePlug {
                 socket_index: 0,
@@ -532,6 +561,9 @@ mod plug_tests {
         use super::{AvailablePlug, ItemInstance, ItemLocation, PlugSummary};
         use crate::{ItemHash, ItemInstanceId};
         let mut item = ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
             transfer_status: None,
             available_plugs: (1..=4)
                 .map(|hash| AvailablePlug {
@@ -616,6 +648,9 @@ mod plug_tests {
         use super::{ItemInstance, ItemLocation, PlugSummary};
         use crate::{ItemHash, ItemInstanceId};
         let mut item = ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
             transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new("1"),

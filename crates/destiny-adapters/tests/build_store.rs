@@ -97,7 +97,7 @@ fn fake_sqlite_repository_parity() {
 #[test]
 fn migration_is_additive_and_refuses_lossy_downgrade() {
     let mut store = SqliteStore::open_in_memory().unwrap();
-    assert_eq!(store.schema_version().unwrap(), 24);
+    assert_eq!(store.schema_version().unwrap(), 25);
     store.migrate_to(22).unwrap();
     store.migrate_to(23).unwrap();
     store

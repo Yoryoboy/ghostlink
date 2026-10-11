@@ -142,6 +142,9 @@ fn instance(id: &str, hash: i64, location: ItemLocation) -> ItemInstance {
         perks: vec![],
         plugs: vec![],
         stats: vec![],
+        energy: None,
+        gear_tier: None,
+        sockets: Vec::new(),
         transfer_status: None,
         available_plugs: vec![],
     }

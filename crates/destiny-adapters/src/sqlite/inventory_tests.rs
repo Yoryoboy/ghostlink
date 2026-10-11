@@ -15,6 +15,221 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
+fn instance_fidelity_fake_sqlite_roundtrip_and_every_field_revision() {
+    use destiny_core::{IndexedSocket, ItemEnergy, SearchRepository};
+    let mut fake = destiny_app::test_support::InMemoryInventoryRepository::new();
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut input = full_input();
+    let mut item = input.items[0].clone();
+    let mut variants = vec![item.clone()];
+    item.energy = Some(ItemEnergy {
+        energy_capacity: 10,
+        energy_used: 3,
+        energy_unused: 7,
+        energy_type: Some(0),
+        energy_type_hash: Some(591714140),
+    });
+    variants.push(item.clone());
+    for change in [
+        |e: &mut ItemEnergy| e.energy_capacity = 11,
+        |e: &mut ItemEnergy| e.energy_used = 4,
+        |e: &mut ItemEnergy| e.energy_unused = 6,
+        |e: &mut ItemEnergy| e.energy_type = None,
+        |e: &mut ItemEnergy| e.energy_type_hash = None,
+    ] {
+        change(item.energy.as_mut().unwrap());
+        variants.push(item.clone());
+    }
+    item.gear_tier = Some(0);
+    variants.push(item.clone());
+    item.gear_tier = Some(u32::MAX);
+    variants.push(item.clone());
+    item.gear_tier = None;
+    variants.push(item.clone());
+    item.sockets = vec![
+        IndexedSocket {
+            socket_index: 0,
+            plug_hash: None,
+            enabled: true,
+            visible: false,
+        },
+        IndexedSocket {
+            socket_index: 1,
+            plug_hash: Some(ItemHash::new(123)),
+            enabled: false,
+            visible: true,
+        },
+        IndexedSocket {
+            socket_index: 2,
+            plug_hash: Some(ItemHash::new(456)),
+            enabled: true,
+            visible: false,
+        },
+    ];
+    variants.push(item.clone());
+    item.sockets[0].plug_hash = Some(ItemHash::new(0));
+    variants.push(item.clone());
+    item.sockets[1].enabled = true;
+    variants.push(item.clone());
+    item.sockets[2].visible = true;
+    variants.push(item.clone());
+    item.sockets.swap(0, 1);
+    item.sockets[0].socket_index = 0;
+    item.sockets[1].socket_index = 1;
+    variants.push(item.clone());
+    item.sockets.clear();
+    item.energy = None;
+    variants.push(item);
+    let query = destiny_core::InstanceSearchQuery {
+        offset: 0,
+        sort: None,
+        location: None,
+        equipped: None,
+        include_available: false,
+        item_hashes: destiny_core::ItemHashFilter::Any,
+        perk_hash: None,
+        perk_name: None,
+        mod_name: None,
+        archetype: None,
+        stats: Vec::new(),
+        character_id: None,
+        definitions: None,
+        min_power: None,
+        limit: 10,
+    };
+    for (index, variant) in variants.into_iter().enumerate() {
+        input.items[0] = variant;
+        let real = store.replace_current(input.clone()).unwrap();
+        assert_eq!(real, fake.replace_current(input.clone()).unwrap());
+        assert_eq!(real.metadata.revision.value(), index as u64 + 1);
+        assert_eq!(store.load_current().unwrap(), Some(real.clone()));
+        assert_eq!(store.replace_current(input.clone()).unwrap(), real);
+        assert_eq!(
+            store.lookup_instance(&input.items[0].instance_id).unwrap(),
+            Resolution::Unique(input.items[0].clone())
+        );
+        assert_eq!(
+            store.search_instances(&query).unwrap(),
+            fake.load_current().unwrap().unwrap().items
+        );
+    }
+}
+
+#[test]
+fn instance_fidelity_v25_legacy_and_guard_each_projection() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let input = full_input();
+    store.replace_current(input.clone()).unwrap();
+    let before = store.load_current().unwrap();
+    store.migrate_to(24).unwrap();
+    store.migrate_to(25).unwrap();
+    assert_eq!(store.load_current().unwrap(), before);
+    for variant in 0..3 {
+        let mut changed = input.clone();
+        match variant {
+            0 => changed.items[0].energy = Some(destiny_core::ItemEnergy::default()),
+            1 => changed.items[0].gear_tier = Some(0),
+            _ => {
+                changed.items[0].sockets = vec![destiny_core::IndexedSocket {
+                    socket_index: 0,
+                    plug_hash: None,
+                    enabled: false,
+                    visible: false,
+                }]
+            }
+        }
+        store.replace_current(changed).unwrap();
+        let snapshot = store.load_current().unwrap();
+        assert!(store.migrate_to(24).is_err());
+        assert_eq!(store.schema_version().unwrap(), 25);
+        assert_eq!(store.load_current().unwrap(), snapshot);
+    }
+    store.replace_current(input).unwrap();
+    store.migrate_to(24).unwrap();
+}
+
+#[test]
+fn instance_fidelity_reopen_and_failed_write_preserve_projection() {
+    let database = TempDatabase::new();
+    let mut store = SqliteStore::open(database.path()).unwrap();
+    let mut input = full_input();
+    input.items[0].energy = Some(destiny_core::ItemEnergy::default());
+    input.items[0].gear_tier = Some(0);
+    input.items[0].sockets = vec![destiny_core::IndexedSocket {
+        socket_index: 0,
+        plug_hash: None,
+        enabled: false,
+        visible: true,
+    }];
+    let before = store.replace_current(input.clone()).unwrap();
+    store.connection().execute_batch("CREATE TEMP TRIGGER reject_sockets BEFORE INSERT ON item_sockets BEGIN SELECT RAISE(ABORT, 'socket write'); END;").unwrap();
+    input.items[0].energy.as_mut().unwrap().energy_capacity = 10;
+    assert!(store.replace_current(input).is_err());
+    assert_eq!(store.load_current().unwrap(), Some(before.clone()));
+    drop(store);
+    let store = SqliteStore::open(database.path()).unwrap();
+    assert_eq!(store.load_current().unwrap(), Some(before));
+}
+
+#[test]
+fn instance_fidelity_bounds_corruption_and_atomic_writes() {
+    use destiny_core::{IndexedSocket, ItemEnergy, SearchRepository};
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut input = full_input();
+    input.items[0].energy = Some(ItemEnergy::default());
+    input.items[0].sockets = (0..32)
+        .map(|index| IndexedSocket {
+            socket_index: index,
+            plug_hash: None,
+            enabled: false,
+            visible: false,
+        })
+        .collect();
+    store.replace_current(input.clone()).unwrap();
+    let before = store.load_current().unwrap();
+    input.items[0].sockets.push(IndexedSocket {
+        socket_index: 32,
+        plug_hash: None,
+        enabled: false,
+        visible: false,
+    });
+    assert!(store.replace_current(input.clone()).is_err());
+    input.items[0].sockets.pop();
+    input.items[0].sockets[0].socket_index = 1;
+    assert!(store.replace_current(input.clone()).is_err());
+    assert_eq!(store.load_current().unwrap(), before);
+    assert!(
+        store
+            .connection()
+            .execute("UPDATE item_energy SET energy_used=-1", [])
+            .is_err()
+    );
+    assert!(
+        store
+            .connection()
+            .execute("UPDATE item_sockets SET visible=2", [])
+            .is_err()
+    );
+    bypass_constraints(&store);
+    store
+        .connection()
+        .execute("UPDATE item_sockets SET visible=2 WHERE socket_index=0", [])
+        .unwrap();
+    assert!(store.load_current().is_err());
+    assert!(store.lookup_instance(&input.items[0].instance_id).is_err());
+    store
+        .connection()
+        .execute("UPDATE item_sockets SET visible=0 WHERE socket_index=0", [])
+        .unwrap();
+    store
+        .connection()
+        .execute("DELETE FROM item_sockets WHERE socket_index=0", [])
+        .unwrap();
+    assert!(store.load_current().is_err());
+    assert!(store.lookup_instance(&input.items[0].instance_id).is_err());
+}
+
+#[test]
 fn transfer_status_fake_sqlite_roundtrip_revision_and_search_parity() {
     use destiny_core::SearchRepository;
     let mut fake = destiny_app::test_support::InMemoryInventoryRepository::new();
@@ -1156,6 +1371,9 @@ fn full_input() -> InventorySnapshotInput {
         ],
         items: vec![
             ItemInstance {
+                energy: None,
+                gear_tier: None,
+                sockets: Vec::new(),
                 transfer_status: None,
                 available_plugs: Vec::new(),
                 instance_id: "instance-1".into(),
@@ -1188,6 +1406,9 @@ fn full_input() -> InventorySnapshotInput {
                 ],
             },
             ItemInstance {
+                energy: None,
+                gear_tier: None,
+                sockets: Vec::new(),
                 transfer_status: None,
                 available_plugs: Vec::new(),
                 instance_id: "instance-2".into(),
@@ -1206,6 +1427,9 @@ fn full_input() -> InventorySnapshotInput {
                 }],
             },
             ItemInstance {
+                energy: None,
+                gear_tier: None,
+                sockets: Vec::new(),
                 transfer_status: None,
                 available_plugs: Vec::new(),
                 instance_id: "instance-3".into(),

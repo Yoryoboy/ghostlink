@@ -66,6 +66,9 @@ fn term(text: &str) -> SearchTerm {
 }
 fn instance() -> ItemInstance {
     ItemInstance {
+        energy: None,
+        gear_tier: None,
+        sockets: Vec::new(),
         transfer_status: None,
         available_plugs: vec![],
         instance_id: ItemInstanceId::new("1"),

@@ -164,6 +164,9 @@ fn profile() -> InventorySnapshotInput {
                     enabled: true,
                 })
                 .collect(),
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
             transfer_status: None,
             available_plugs: (0..5)
                 .flat_map(|socket_index| {

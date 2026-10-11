@@ -76,10 +76,10 @@ pub use auth::{
     AuthorizationState, CallbackResult, ClientSecret, RefreshGrant, RefreshToken,
 };
 pub use domain::{
-    AvailablePlug, Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation,
-    PerkSummary, PlugSetEntry, PlugSetScope, PlugSummary, SnapshotMetadata, StatSummary,
-    SubclassElement, SubclassPlugKind, SyncMetadata, classify_subclass_plug,
-    parse_subclass_category,
+    AvailablePlug, Character, IndexedSocket, InventorySnapshot, ItemDefinition, ItemEnergy,
+    ItemInstance, ItemLocation, MAX_ITEM_SOCKETS, PerkSummary, PlugSetEntry, PlugSetScope,
+    PlugSummary, SnapshotMetadata, StatSummary, SubclassElement, SubclassPlugKind, SyncMetadata,
+    classify_subclass_plug, parse_subclass_category,
 };
 pub use error::{AppError, ErrorCategory};
 pub use ids::{

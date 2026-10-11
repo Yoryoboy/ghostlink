@@ -298,6 +298,16 @@ impl InventorySnapshotInput {
                     return false;
                 }
             }
+            if item.sockets.len() > crate::MAX_ITEM_SOCKETS
+                || item.sockets.iter().enumerate().any(|(index, socket)| {
+                    usize::from(socket.socket_index) != index
+                        || socket
+                            .plug_hash
+                            .is_some_and(|hash| u32::try_from(hash.value()).is_err())
+                })
+            {
+                return false;
+            }
             if item.plugs.len() > 32
                 || item
                     .plugs

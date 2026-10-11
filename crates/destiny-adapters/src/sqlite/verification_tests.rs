@@ -164,6 +164,9 @@ fn profile(
             date_last_played: None,
         }],
         items: vec![ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
             transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(instance_id),

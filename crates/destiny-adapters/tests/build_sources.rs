@@ -74,6 +74,9 @@ fn fixture() -> ProfileSyncService<Gateway, SqliteStore> {
                 plug_hash: ItemHash::new(10),
                 enabled: true,
             }],
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
             transfer_status: None,
             available_plugs: vec![],
         })

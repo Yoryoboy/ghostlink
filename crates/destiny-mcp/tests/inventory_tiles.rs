@@ -30,6 +30,9 @@ fn fixture() -> InventorySearchResult {
         hits: vec![InventorySearchHit {
             definition,
             instance: ItemInstance {
+                energy: None,
+                gear_tier: None,
+                sockets: Vec::new(),
                 transfer_status: None,
                 available_plugs: vec![],
                 instance_id: ItemInstanceId::new("123"),

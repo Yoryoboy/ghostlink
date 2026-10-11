@@ -38,6 +38,9 @@ fn item(id: &str, hash: i64, location: ItemLocation) -> ItemInstance {
         plugs: vec![],
         stats: vec![],
         available_plugs: vec![],
+        energy: None,
+        gear_tier: None,
+        sockets: Vec::new(),
         transfer_status: Some(0),
     }
 }

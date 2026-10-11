@@ -34,6 +34,9 @@ fn snapshot(equipped: bool, on_target: bool, ambiguous: bool) -> InventorySnapsh
         stats: vec![],
         plugs: vec![],
         perks: vec![],
+        energy: None,
+        gear_tier: None,
+        sockets: Vec::new(),
         transfer_status: None,
         available_plugs: vec![],
     };

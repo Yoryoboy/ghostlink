@@ -51,6 +51,9 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
     ]
     .into_iter()
     .map(|(id, hash, plugs)| ItemInstance {
+        energy: None,
+        gear_tier: None,
+        sockets: Vec::new(),
         transfer_status: None,
         available_plugs: vec![
             AvailablePlug {

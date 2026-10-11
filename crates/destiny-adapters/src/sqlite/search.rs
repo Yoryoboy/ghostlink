@@ -463,6 +463,11 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
     instance.plugs = super::inventory::read_plugs(connection, id)?;
     instance.stats = super::inventory::read_stats(connection, id)?;
     instance.available_plugs = super::inventory::read_available_plugs(connection, id)?;
+    super::inventory::attach_instance_fidelity(
+        connection,
+        std::slice::from_mut(&mut instance),
+        false,
+    )?;
     Ok(instance)
 }
 
@@ -494,6 +499,9 @@ fn read_instance_base(raw: RawInstance) -> Result<ItemInstance, AppError> {
         _ => return Err(storage_failure()),
     };
     Ok(ItemInstance {
+        energy: None,
+        gear_tier: None,
+        sockets: Vec::new(),
         transfer_status: transfer_status
             .map(u32::try_from)
             .transpose()
@@ -641,6 +649,9 @@ mod tests {
         perk_hashes: &[u32],
     ) -> ItemInstance {
         ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
             transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: instance_id.into(),
