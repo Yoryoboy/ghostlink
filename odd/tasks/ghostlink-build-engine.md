@@ -190,11 +190,26 @@ coverage (`domain.rs:123-126`).
     `loadout-drawer/loadout-utils.ts:946-954`. Workspace: 2091 passed
     all-features, 2059 default, 0 failed; clippy both modes, fmt, diff check,
     pattern-insertion check clean.
-  - [ ] **BE-005b2 — Manifest socket and set catalog.** Item socket entries
-    and categories, reusable plug items; DestinyStatGroupDefinition,
-    DestinySocketTypeDefinition, DestinySocketCategoryDefinition,
-    DestinyPlugSetDefinition, DestinyEquipableItemSetDefinition (table names
-    confirmed in DIM `destiny2/d2-definitions.ts:56-95,121-149`).
+  - [x] **BE-005b2 — Manifest item sockets.** Item socket entries (real
+    index, socket type, initial plug, reusable/randomized plug sets, inline
+    plug items, plug sources, default visibility) and socket categories.
+    Done: `sqlite/definition_sockets.rs`, migration 27 (STRICT, cascading,
+    guarded downgrade, once-per-upgrade Manifest refresh). Review follow-up
+    from BE-005b1 fixed: single-hash reads no longer use
+    `(?1 IS NULL OR hash = ?1)`; cached single-hash and all-rows statements,
+    `EXPLAIN QUERY PLAN` test asserts indexed SEARCH on all seven tables.
+    DIM evidence `inventory/store/sockets.ts:133-156,596,658-686,728-754`,
+    `search/items/search-filters/perks-set.ts:54`;
+    `preventInitializationOnVendorPurchase` is unused by DIM and omitted.
+    Workspace: 2098 passed all-features, 2066 default, 0 failed; clippy both
+    modes, fmt, diff check clean.
+  - [ ] **BE-005b3 — Manifest catalogs.** DestinyStatGroupDefinition
+    (interpolation, DIM `inventory/store/stats.ts:614-641`),
+    DestinySocketTypeDefinition (whitelist `sockets.ts:607-612`),
+    DestinySocketCategoryDefinition (categoryStyle `sockets.ts:664-681`),
+    DestinyPlugSetDefinition (currentlyCanRoll `sockets.ts:734,768`),
+    DestinyEquipableItemSetDefinition (`item-popup/SetBonus.tsx:55,213`).
+    Table names confirmed in DIM `destiny2/d2-definitions.ts:56-95,121-149`.
   - [ ] **BE-005c — DIM armor model.** Base/masterwork/tuning/set-bonus
     derivations with fixtures.
   - [ ] **BE-005d — Build capture completion.** Equipped subclass/artifact

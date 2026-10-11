@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 32] = [
+const EXPECTED_TABLE_NAMES: [&str; 36] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -23,6 +23,10 @@ const EXPECTED_TABLE_NAMES: [&str; 32] = [
     "definition_energy_costs",
     "definition_investment_stats",
     "definition_search",
+    "definition_socket_categories",
+    "definition_socket_entries",
+    "definition_socket_indexes",
+    "definition_socket_plugs",
     "definition_tags",
     "definitions",
     "inventory_coverage",
@@ -57,7 +61,30 @@ const EXPECTED_INDEX_NAMES: [&str; 5] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 165] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 184] = [
+    ("definition_socket_entries", "definition_hash", "INTEGER"),
+    ("definition_socket_entries", "ordinal", "INTEGER"),
+    ("definition_socket_entries", "socket_type_hash", "INTEGER"),
+    ("definition_socket_entries", "initial_hash", "INTEGER"),
+    ("definition_socket_entries", "reusable_set_hash", "INTEGER"),
+    (
+        "definition_socket_entries",
+        "randomized_set_hash",
+        "INTEGER",
+    ),
+    ("definition_socket_entries", "plug_sources", "INTEGER"),
+    ("definition_socket_entries", "default_visible", "INTEGER"),
+    ("definition_socket_plugs", "definition_hash", "INTEGER"),
+    ("definition_socket_plugs", "socket_index", "INTEGER"),
+    ("definition_socket_plugs", "ordinal", "INTEGER"),
+    ("definition_socket_plugs", "plug_hash", "INTEGER"),
+    ("definition_socket_categories", "definition_hash", "INTEGER"),
+    ("definition_socket_categories", "ordinal", "INTEGER"),
+    ("definition_socket_categories", "category_hash", "INTEGER"),
+    ("definition_socket_indexes", "definition_hash", "INTEGER"),
+    ("definition_socket_indexes", "category_ordinal", "INTEGER"),
+    ("definition_socket_indexes", "ordinal", "INTEGER"),
+    ("definition_socket_indexes", "socket_index", "INTEGER"),
     ("definition_armor", "definition_hash", "INTEGER"),
     ("definition_armor", "stat_group_hash", "INTEGER"),
     ("definition_armor", "plug_category_hash", "INTEGER"),
@@ -904,7 +931,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 26);
+    assert_eq!(LATEST_SCHEMA_VERSION, 27);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION

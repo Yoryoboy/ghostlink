@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 26;
+pub(crate) const LATEST_VERSION: u32 = 27;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 26] = [
+const MIGRATIONS: [Migration; 27] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -184,7 +184,60 @@ const MIGRATIONS: [Migration; 26] = [
         up: SCHEMA_V26_UP,
         down: SCHEMA_V26_DOWN,
     },
+    Migration {
+        version: 27,
+        up: SCHEMA_V27_UP,
+        down: SCHEMA_V27_DOWN,
+    },
 ];
+
+const SCHEMA_V27_UP: &str = r#"
+CREATE TABLE definition_socket_entries (
+    definition_hash INTEGER NOT NULL REFERENCES definitions(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 31),
+    socket_type_hash INTEGER NOT NULL CHECK (socket_type_hash BETWEEN 0 AND 4294967295),
+    initial_hash INTEGER NOT NULL CHECK (initial_hash BETWEEN 0 AND 4294967295),
+    reusable_set_hash INTEGER CHECK (reusable_set_hash BETWEEN 0 AND 4294967295),
+    randomized_set_hash INTEGER CHECK (randomized_set_hash BETWEEN 0 AND 4294967295),
+    plug_sources INTEGER CHECK (plug_sources BETWEEN 0 AND 4294967295),
+    default_visible INTEGER CHECK (default_visible IN (0, 1)),
+    PRIMARY KEY (definition_hash, ordinal)
+) STRICT;
+CREATE TABLE definition_socket_plugs (
+    definition_hash INTEGER NOT NULL,
+    socket_index INTEGER NOT NULL CHECK (socket_index BETWEEN 0 AND 31),
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 1023),
+    plug_hash INTEGER NOT NULL CHECK (plug_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (definition_hash, socket_index, ordinal),
+    FOREIGN KEY (definition_hash, socket_index) REFERENCES definition_socket_entries(definition_hash, ordinal) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE definition_socket_categories (
+    definition_hash INTEGER NOT NULL REFERENCES definitions(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 31),
+    category_hash INTEGER NOT NULL CHECK (category_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (definition_hash, ordinal)
+) STRICT;
+CREATE TABLE definition_socket_indexes (
+    definition_hash INTEGER NOT NULL,
+    category_ordinal INTEGER NOT NULL CHECK (category_ordinal BETWEEN 0 AND 31),
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 31),
+    socket_index INTEGER NOT NULL CHECK (socket_index BETWEEN 0 AND 31),
+    PRIMARY KEY (definition_hash, category_ordinal, ordinal),
+    FOREIGN KEY (definition_hash, category_ordinal) REFERENCES definition_socket_categories(definition_hash, ordinal) ON DELETE CASCADE,
+    FOREIGN KEY (definition_hash, socket_index) REFERENCES definition_socket_entries(definition_hash, ordinal) ON DELETE CASCADE
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V27_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definition_socket_entries) OR EXISTS (SELECT 1 FROM definition_socket_plugs) OR EXISTS (SELECT 1 FROM definition_socket_categories) OR EXISTS (SELECT 1 FROM definition_socket_indexes) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE definition_socket_indexes;
+DROP TABLE definition_socket_categories;
+DROP TABLE definition_socket_plugs;
+DROP TABLE definition_socket_entries;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
 
 const SCHEMA_V26_UP: &str = r#"
 CREATE TABLE definition_armor (

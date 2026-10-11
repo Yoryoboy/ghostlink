@@ -29,6 +29,7 @@
 mod armor_definitions;
 mod builds;
 mod clarity;
+mod definition_sockets;
 mod definitions;
 mod inventory;
 mod loadouts;

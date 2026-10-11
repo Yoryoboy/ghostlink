@@ -11,7 +11,7 @@ const ITEMS: &[u8] = br#"{
  {"statTypeHash":11,"value":5,"isConditionallyActive":true}],
  "stats":{"statGroupHash":100},"equippingBlock":{"equipableItemSetHash":200},
  "sockets":{"socketEntries":[{"socketTypeHash":300,"singleInitialItemHash":301},
- {"socketTypeHash":302,"reusablePlugSetHash":303},{"socketTypeHash":304,"randomizedPlugSetHash":305}],
+ {"socketTypeHash":302,"singleInitialItemHash":0,"reusablePlugSetHash":303},{"socketTypeHash":304,"singleInitialItemHash":0,"randomizedPlugSetHash":305}],
  "socketCategories":[{"socketCategoryHash":306,"socketIndexes":[0,1,2]}]}},
  "2":{"hash":2,"displayProperties":{"name":"Synthetic aspect"},
  "plug":{"plugCategoryIdentifier":"test.aspect","plugCategoryHash":400,"energyCapacity":{"capacityValue":2}}},
@@ -113,14 +113,18 @@ fn sqlite_fake_roundtrip_and_revision_parity_for_each_armor_field() {
 #[test]
 fn migration_26_guards_populated_armor_and_legacy_publication() {
     let mut store = SqliteStore::open_in_memory().unwrap();
-    assert_eq!(store.schema_version().unwrap(), 26);
+    assert_eq!(store.schema_version().unwrap(), 27);
     store.migrate_to(25).unwrap();
     store
         .replace_definitions(replacement())
         .expect_err("legacy schema cannot discard armor");
     assert!(store.current_metadata().unwrap().is_none());
     store.migrate_to(26).unwrap();
-    let input = replacement();
+    let mut input = replacement();
+    for item in &mut input.definitions.definitions {
+        item.armor.socket_entries.clear();
+        item.armor.socket_categories.clear();
+    }
     store.replace_definitions(input.clone()).unwrap();
     store
         .migrate_to(25)
@@ -221,6 +225,7 @@ fn each_migration_child_independently_guards_downgrade() {
             }
         }
         let mut store = SqliteStore::open_in_memory().unwrap();
+        store.migrate_to(26).unwrap();
         let metadata = store.replace_definitions(input.clone()).unwrap();
         assert!(store.migrate_to(25).is_err());
         assert_eq!(store.current_metadata().unwrap(), Some(metadata));
@@ -247,7 +252,7 @@ fn migration_forces_same_version_refresh_once() {
         .publish_manifest(prior, synthetic_world(DefinitionVersion::new("v1")))
         .unwrap();
     assert!(store.current_metadata().unwrap().is_some());
-    store.migrate_to(26).unwrap();
+    store.migrate_to(27).unwrap();
     assert!(store.current_metadata().unwrap().is_none());
     let mut gateway = QueuedManifestGateway::new();
     for _ in 0..2 {

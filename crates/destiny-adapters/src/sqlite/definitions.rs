@@ -134,6 +134,13 @@ impl SqliteStore {
         {
             return Err(storage_failure());
         }
+        if super::migrations::read_user_version(self.connection())? < 27
+            && replacement.definitions.definitions.iter().any(|item| {
+                !item.armor.socket_entries.is_empty() || !item.armor.socket_categories.is_empty()
+            })
+        {
+            return Err(storage_failure());
+        }
         if let Some(world) = &world {
             world.validate_for(&replacement.definitions.version)?;
         }

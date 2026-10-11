@@ -4,6 +4,23 @@ use destiny_core::{AppError, ArmorDefinition, InvestmentStat, ItemDefinition, Pl
 use rusqlite::{Connection, params};
 use std::collections::HashMap;
 
+/// Internal table/column literals only; values always remain bound parameters.
+pub(super) fn read_sql(table: &str, columns: &str, ordered: bool, hash: Option<i64>) -> String {
+    format!(
+        "SELECT {columns} FROM {table}{}{}",
+        if hash.is_some() {
+            " WHERE definition_hash = ?1"
+        } else {
+            ""
+        },
+        if ordered {
+            " ORDER BY definition_hash, ordinal"
+        } else {
+            ""
+        }
+    )
+}
+
 pub(super) fn write(
     connection: &Connection,
     definitions: &[ItemDefinition],
@@ -59,10 +76,11 @@ pub(super) fn write(
                 .map_err(|_| storage_failure())?;
         }
     }
+    super::definition_sockets::write(connection, definitions)?;
     Ok(())
 }
 
-/// Three bounded queries, not three queries per item during revision comparison.
+/// Bounded queries, not three queries per item during revision comparison.
 /// Legacy schemas preserve unknown metadata; no backfill or inferred values.
 pub(super) fn read(
     connection: &Connection,
@@ -72,9 +90,9 @@ pub(super) fn read(
     if read_user_version(connection)? < 26 {
         return Ok(result);
     }
-    let mut statement = connection.prepare("SELECT definition_hash, stat_group_hash, plug_category_hash, aspect_capacity, equipable_item_set_hash FROM definition_armor WHERE (?1 IS NULL OR definition_hash = ?1)").map_err(|_| storage_failure())?;
+    let mut statement = connection.prepare_cached(&read_sql("definition_armor", "definition_hash, stat_group_hash, plug_category_hash, aspect_capacity, equipable_item_set_hash", false, hash)).map_err(|_| storage_failure())?;
     let rows = statement
-        .query_map([hash], |row| {
+        .query_map(rusqlite::params_from_iter(hash), |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 ArmorDefinition {
@@ -91,9 +109,16 @@ pub(super) fn read(
         let (hash, armor) = row.map_err(|_| storage_failure())?;
         result.insert(hash, armor);
     }
-    let mut statement = connection.prepare("SELECT definition_hash, ordinal, stat_type_hash, value, conditionally_active FROM definition_investment_stats WHERE (?1 IS NULL OR definition_hash = ?1) ORDER BY definition_hash, ordinal").map_err(|_| storage_failure())?;
+    let mut statement = connection
+        .prepare_cached(&read_sql(
+            "definition_investment_stats",
+            "definition_hash, ordinal, stat_type_hash, value, conditionally_active",
+            true,
+            hash,
+        ))
+        .map_err(|_| storage_failure())?;
     let rows = statement
-        .query_map([hash], |row| {
+        .query_map(rusqlite::params_from_iter(hash), |row| {
             let active = match row.get::<_, i64>(4)? {
                 0 => false,
                 1 => true,
@@ -118,9 +143,16 @@ pub(super) fn read(
         }
         data.investment_stats.push(stat);
     }
-    let mut statement = connection.prepare("SELECT definition_hash, energy_cost, energy_type, energy_type_hash FROM definition_energy_costs WHERE (?1 IS NULL OR definition_hash = ?1)").map_err(|_| storage_failure())?;
+    let mut statement = connection
+        .prepare_cached(&read_sql(
+            "definition_energy_costs",
+            "definition_hash, energy_cost, energy_type, energy_type_hash",
+            false,
+            hash,
+        ))
+        .map_err(|_| storage_failure())?;
     let rows = statement
-        .query_map([hash], |row| {
+        .query_map(rusqlite::params_from_iter(hash), |row| {
             Ok((
                 row.get::<_, i64>(0)?,
                 PlugEnergyCost {
@@ -135,6 +167,7 @@ pub(super) fn read(
         let (hash, cost) = row.map_err(|_| storage_failure())?;
         result.entry(hash).or_default().energy_cost = Some(cost);
     }
+    super::definition_sockets::read(connection, hash, &mut result)?;
     Ok(result)
 }
 
@@ -142,6 +175,7 @@ pub(super) fn read(
 mod tests {
     use super::*;
     use crate::sqlite::SqliteStore;
+    use destiny_core::ports::WorldDefinitionRepository;
     use destiny_core::{DefinitionRepository, ItemHash, Resolution};
 
     fn input() -> destiny_core::DefinitionReplacementInput {
@@ -155,6 +189,266 @@ mod tests {
             checked_at: destiny_core::Timestamp::new(1),
             source: destiny_core::SourceMarker::Manifest,
         }
+    }
+
+    #[test]
+    fn single_hash_armor_queries_search_indexes() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        for table in [
+            "definition_armor",
+            "definition_investment_stats",
+            "definition_energy_costs",
+            "definition_socket_entries",
+            "definition_socket_plugs",
+            "definition_socket_categories",
+            "definition_socket_indexes",
+        ] {
+            let sql = format!(
+                "EXPLAIN QUERY PLAN {}",
+                read_sql(table, "definition_hash", false, Some(1))
+            );
+            let plan: String = store
+                .connection()
+                .query_row(&sql, [1], |row| row.get(3))
+                .unwrap();
+            assert!(plan.contains("SEARCH"), "{table}: {plan}");
+            assert!(!plan.contains("SCAN"), "{table}: {plan}");
+        }
+    }
+
+    fn helmet() -> destiny_core::DefinitionReplacementInput {
+        let acquisition = crate::manifest::decode_inventory_items(
+            destiny_core::DefinitionVersion::new("v1"),
+            br#"{"1":{"hash":1,"displayProperties":{"name":"Helmet"},"sockets":{"socketEntries":[{"socketTypeHash":0,"singleInitialItemHash":0,"reusablePlugItems":[]},{"socketTypeHash":202,"singleInitialItemHash":302,"reusablePlugSetHash":1155052024,"reusablePlugItems":[{"plugItemHash":402}]},{"socketTypeHash":203,"singleInitialItemHash":303,"randomizedPlugSetHash":503},{"socketTypeHash":204,"singleInitialItemHash":304,"plugSources":1,"defaultVisible":true}],"socketCategories":[{"socketCategoryHash":601,"socketIndexes":[1]},{"socketCategoryHash":602,"socketIndexes":[2,3]}]}}}"#,
+        ).unwrap();
+        destiny_core::DefinitionReplacementInput {
+            definitions: destiny_app::manifest::normalize_manifest(acquisition).unwrap(),
+            checked_at: destiny_core::Timestamp::new(1),
+            source: destiny_core::SourceMarker::Manifest,
+        }
+    }
+
+    #[test]
+    fn manifest_helmet_keeps_definition_socket_positions() {
+        let input = helmet();
+        let armor = &input.definitions.definitions[0].armor;
+        assert_eq!(armor.socket_entries.len(), 4);
+        assert_eq!(armor.socket_entries[0].socket_type_hash, 0);
+        assert_eq!(armor.socket_entries[1].socket_type_hash, 202);
+        assert_eq!(armor.socket_entries[1].single_initial_item_hash, 302);
+        assert_eq!(
+            armor.socket_entries[1].reusable_plug_set_hash,
+            Some(1155052024)
+        );
+        assert_eq!(armor.socket_entries[1].reusable_plug_items, vec![402]);
+        assert_eq!(armor.socket_entries[2].randomized_plug_set_hash, Some(503));
+        assert_eq!(armor.socket_entries[3].plug_sources, Some(1));
+        assert_eq!(armor.socket_entries[3].default_visible, Some(true));
+        assert_eq!(armor.socket_entries[0].default_visible, None);
+        assert_eq!(armor.socket_categories[1].socket_indexes, vec![2, 3]);
+        let mut sqlite = SqliteStore::open_in_memory().unwrap();
+        let mut fake = destiny_app::test_support::InMemoryDefinitionRepository::default();
+        let first = sqlite.replace_definitions(input.clone()).unwrap();
+        assert_eq!(fake.replace_definitions(input.clone()).unwrap(), first);
+        assert_eq!(
+            sqlite.lookup_definition(ItemHash::new(1)).unwrap(),
+            fake.lookup_definition(ItemHash::new(1)).unwrap()
+        );
+        assert_eq!(sqlite.replace_definitions(input.clone()).unwrap(), first);
+        let mut changed = input.clone();
+        changed.definitions.definitions[0].armor.socket_entries[0].default_visible = Some(false);
+        let next = sqlite.replace_definitions(changed.clone()).unwrap();
+        assert_ne!(next, first);
+        assert_eq!(fake.replace_definitions(changed).unwrap(), next);
+        assert!(sqlite.migrate_to(26).is_err());
+        assert_eq!(sqlite.current_metadata().unwrap(), Some(next));
+    }
+
+    #[test]
+    fn every_socket_field_participates_in_revision_identity() {
+        for field in 0..9 {
+            let input = helmet();
+            let mut changed = input.clone();
+            let armor = &mut changed.definitions.definitions[0].armor;
+            match field {
+                0 => armor.socket_entries[0].socket_type_hash = 1,
+                1 => armor.socket_entries[0].single_initial_item_hash = 1,
+                2 => armor.socket_entries[0].reusable_plug_set_hash = Some(0),
+                3 => armor.socket_entries[0].randomized_plug_set_hash = Some(0),
+                4 => armor.socket_entries[0].reusable_plug_items = vec![0, u32::MAX, 0],
+                5 => armor.socket_entries[0].plug_sources = Some(0),
+                6 => armor.socket_entries[0].default_visible = Some(false),
+                7 => armor.socket_categories[0].socket_category_hash = u32::MAX,
+                _ => armor.socket_categories[0].socket_indexes = vec![3, 0, 3],
+            }
+            let mut sqlite = SqliteStore::open_in_memory().unwrap();
+            let mut fake = destiny_app::test_support::InMemoryDefinitionRepository::default();
+            let first = sqlite.replace_definitions(input.clone()).unwrap();
+            fake.replace_definitions(input).unwrap();
+            let next = sqlite.replace_definitions(changed.clone()).unwrap();
+            assert_ne!(next, first, "field {field}");
+            assert_eq!(fake.replace_definitions(changed.clone()).unwrap(), next);
+            assert_eq!(sqlite.replace_definitions(changed.clone()).unwrap(), next);
+            assert_eq!(
+                sqlite.lookup_definition(ItemHash::new(1)).unwrap(),
+                Resolution::Unique(changed.definitions.definitions[0].clone())
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_socket_projection_and_inclusive_bounds() {
+        for sockets in [
+            serde_json::json!({"socketEntries":[{"socketTypeHash":-1,"singleInitialItemHash":0}],"socketCategories":[]}),
+            serde_json::json!({"socketEntries":[{"socketTypeHash":0,"singleInitialItemHash":0,"reusablePlugItems":[{"plugItemHash":"bad"}]}],"socketCategories":[]}),
+            serde_json::json!({"socketEntries":[],"socketCategories":[{"socketCategoryHash":0,"socketIndexes":[0]}]}),
+        ] {
+            let raw = serde_json::json!({"1":{"hash":1,"displayProperties":{"name":"Helmet"},"sockets":sockets}});
+            assert!(
+                crate::manifest::decode_inventory_items(
+                    destiny_core::DefinitionVersion::new("v1"),
+                    &serde_json::to_vec(&raw).unwrap()
+                )
+                .is_err()
+            );
+        }
+        let mut input = helmet();
+        let armor = &mut input.definitions.definitions[0].armor;
+        armor.socket_entries.resize(32, Default::default());
+        armor.socket_entries[0].reusable_plug_items = vec![u32::MAX; 1024];
+        armor
+            .socket_categories
+            .resize(32, armor.socket_categories[0].clone());
+        armor.socket_categories[0].socket_indexes = vec![31; 32];
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        store.replace_definitions(input.clone()).unwrap();
+        assert_eq!(
+            store.lookup_definition(ItemHash::new(1)).unwrap(),
+            Resolution::Unique(input.definitions.definitions[0].clone())
+        );
+        let mut shrunk = input;
+        shrunk.definitions.definitions[0].armor = Default::default();
+        store.replace_definitions(shrunk.clone()).unwrap();
+        assert_eq!(
+            store.lookup_definition(ItemHash::new(1)).unwrap(),
+            Resolution::Unique(shrunk.definitions.definitions[0].clone())
+        );
+        store.migrate_to(26).unwrap();
+    }
+
+    #[test]
+    fn socket_corruption_and_failed_writes_are_atomic() {
+        for mutation in [
+            "UPDATE definition_socket_entries SET default_visible=2",
+            "UPDATE definition_socket_entries SET socket_type_hash=-1",
+            "UPDATE definition_socket_plugs SET ordinal=1",
+            "UPDATE definition_socket_categories SET ordinal=2 WHERE ordinal=0",
+            "UPDATE definition_socket_indexes SET ordinal=2 WHERE ordinal=0",
+        ] {
+            let mut store = SqliteStore::open_in_memory().unwrap();
+            let input = helmet();
+            store.replace_definitions(input.clone()).unwrap();
+            store
+                .connection()
+                .pragma_update(None, "foreign_keys", 0)
+                .unwrap();
+            store
+                .connection()
+                .pragma_update(None, "ignore_check_constraints", 1)
+                .unwrap();
+            store.connection().execute(mutation, []).unwrap();
+            assert_eq!(
+                store.lookup_definition(ItemHash::new(1)),
+                Err(storage_failure()),
+                "{mutation}"
+            );
+            assert_eq!(
+                store.replace_definitions(input),
+                Err(storage_failure()),
+                "{mutation}"
+            );
+        }
+        for table in [
+            "definition_socket_entries",
+            "definition_socket_plugs",
+            "definition_socket_categories",
+            "definition_socket_indexes",
+        ] {
+            let mut store = SqliteStore::open_in_memory().unwrap();
+            let input = helmet();
+            let metadata = store.replace_definitions(input.clone()).unwrap();
+            store.connection().execute_batch(&format!("CREATE TRIGGER refuse BEFORE INSERT ON {table} BEGIN SELECT RAISE(ABORT, 'test'); END;")).unwrap();
+            let mut changed = input.clone();
+            changed.definitions.definitions[0].name.push_str(" changed");
+            assert_eq!(store.replace_definitions(changed), Err(storage_failure()));
+            assert_eq!(store.current_metadata().unwrap(), Some(metadata));
+            assert_eq!(
+                store.lookup_definition(ItemHash::new(1)).unwrap(),
+                Resolution::Unique(input.definitions.definitions[0].clone())
+            );
+        }
+    }
+
+    #[test]
+    fn socket_bounds_and_references_have_fake_sqlite_parity() {
+        for field in 0..5 {
+            let mut input = helmet();
+            let armor = &mut input.definitions.definitions[0].armor;
+            match field {
+                0 => armor.socket_entries.resize(33, Default::default()),
+                1 => armor.socket_entries[1].reusable_plug_items.resize(1025, 0),
+                2 => armor
+                    .socket_categories
+                    .resize(33, armor.socket_categories[0].clone()),
+                3 => armor.socket_categories[0].socket_indexes.resize(33, 0),
+                _ => armor.socket_categories[0].socket_indexes.push(4),
+            }
+            let mut sqlite = SqliteStore::open_in_memory().unwrap();
+            let mut fake = destiny_app::test_support::InMemoryDefinitionRepository::default();
+            assert!(sqlite.replace_definitions(input.clone()).is_err());
+            assert!(fake.replace_definitions(input).is_err());
+        }
+        let mut legacy = SqliteStore::open_in_memory().unwrap();
+        legacy.migrate_to(26).unwrap();
+        assert_eq!(legacy.replace_definitions(helmet()), Err(storage_failure()));
+    }
+
+    #[test]
+    fn socket_upgrade_forces_same_version_refresh_once() {
+        use destiny_app::{
+            ManifestService,
+            test_support::{QueuedManifestGateway, synthetic_world},
+        };
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        store.migrate_to(26).unwrap();
+        store
+            .publish_manifest(
+                input(),
+                synthetic_world(destiny_core::DefinitionVersion::new("v1")),
+            )
+            .unwrap();
+        assert!(store.current_metadata().unwrap().is_some());
+        store.migrate_to(27).unwrap();
+        assert!(store.current_metadata().unwrap().is_none());
+        let mut gateway = QueuedManifestGateway::new();
+        for _ in 0..2 {
+            gateway.queue(Ok(crate::manifest::decode_inventory_items(
+                destiny_core::DefinitionVersion::new("v1"),
+                br#"{"1":{"hash":1,"displayProperties":{"name":"Helmet"}}}"#,
+            )
+            .unwrap()));
+        }
+        let mut service = ManifestService::new(gateway, store);
+        assert!(matches!(
+            service.sync(destiny_core::Timestamp::new(2)).unwrap(),
+            destiny_app::ManifestSyncReport::Updated { .. }
+        ));
+        assert!(matches!(
+            service.sync(destiny_core::Timestamp::new(3)).unwrap(),
+            destiny_app::ManifestSyncReport::Unchanged { .. }
+        ));
+        assert_eq!(service.gateway().component_calls(), 1);
+        assert_eq!(service.gateway().world_calls(), 1);
     }
 
     #[test]

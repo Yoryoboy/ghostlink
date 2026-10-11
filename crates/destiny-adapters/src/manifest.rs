@@ -279,6 +279,8 @@ impl<T> OptionalField<T> {
 #[serde(rename_all = "camelCase")]
 struct InventoryRecord {
     #[serde(default)]
+    sockets: Option<SocketFields>,
+    #[serde(default)]
     investment_stats: Vec<InvestmentStatFields>,
     #[serde(default)]
     stats: Option<StatGroupFields>,
@@ -361,6 +363,39 @@ struct PlugFields {
     energy_capacity: Option<CapacityFields>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SocketFields {
+    socket_entries: Vec<SocketEntryFields>,
+    socket_categories: Vec<SocketCategoryFields>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SocketEntryFields {
+    socket_type_hash: u32,
+    single_initial_item_hash: u32,
+    #[serde(default)]
+    reusable_plug_set_hash: Option<u32>,
+    #[serde(default)]
+    randomized_plug_set_hash: Option<u32>,
+    #[serde(default)]
+    reusable_plug_items: Vec<ReusablePlugFields>,
+    #[serde(default)]
+    plug_sources: Option<u32>,
+    #[serde(default)]
+    default_visible: Option<bool>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReusablePlugFields {
+    plug_item_hash: u32,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SocketCategoryFields {
+    socket_category_hash: u32,
+    socket_indexes: Vec<u32>,
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InvestmentStatFields {
@@ -911,7 +946,41 @@ fn decode_record(
     if name.chars().count() > 256 {
         return Err(provider_validation());
     }
+    let (socket_entries, socket_categories) = record.sockets.map_or_else(
+        || (Vec::new(), Vec::new()),
+        |sockets| {
+            (
+                sockets
+                    .socket_entries
+                    .into_iter()
+                    .map(|entry| destiny_core::DefinitionSocketEntry {
+                        socket_type_hash: entry.socket_type_hash,
+                        single_initial_item_hash: entry.single_initial_item_hash,
+                        reusable_plug_set_hash: entry.reusable_plug_set_hash,
+                        randomized_plug_set_hash: entry.randomized_plug_set_hash,
+                        reusable_plug_items: entry
+                            .reusable_plug_items
+                            .into_iter()
+                            .map(|plug| plug.plug_item_hash)
+                            .collect(),
+                        plug_sources: entry.plug_sources,
+                        default_visible: entry.default_visible,
+                    })
+                    .collect(),
+                sockets
+                    .socket_categories
+                    .into_iter()
+                    .map(|category| destiny_core::DefinitionSocketCategory {
+                        socket_category_hash: category.socket_category_hash,
+                        socket_indexes: category.socket_indexes,
+                    })
+                    .collect(),
+            )
+        },
+    );
     let armor = destiny_core::ArmorDefinition {
+        socket_entries,
+        socket_categories,
         investment_stats: record
             .investment_stats
             .into_iter()
