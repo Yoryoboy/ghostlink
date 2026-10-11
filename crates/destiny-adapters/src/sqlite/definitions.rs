@@ -143,6 +143,11 @@ impl SqliteStore {
         }
         if let Some(world) = &world {
             world.validate_for(&replacement.definitions.version)?;
+            if super::migrations::read_user_version(self.connection())? < 29
+                && world.armor_catalogs.iter().any(|r| r.kind().id() >= 2)
+            {
+                return Err(storage_failure());
+            }
             if super::migrations::read_user_version(self.connection())? < 28
                 && !world.armor_catalogs.is_empty()
             {

@@ -36,6 +36,7 @@ mod inventory;
 mod loadouts;
 mod migrations;
 mod search;
+mod socket_catalogs;
 mod world;
 
 #[cfg(test)]

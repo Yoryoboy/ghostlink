@@ -13,6 +13,10 @@ pub(super) fn write(
         return Ok(());
     }
     for record in records {
+        if record.kind().id() >= 2 {
+            super::socket_catalogs::write(connection, record, version)?;
+            continue;
+        }
         let name = match record {
             ArmorCatalogRecord::EquipableSet(set) => Some(set.name.as_str()),
             _ => None,
@@ -65,6 +69,9 @@ pub(super) fn write(
                     }
                 }
             }
+            ArmorCatalogRecord::SocketType(_)
+            | ArmorCatalogRecord::SocketCategory(_)
+            | ArmorCatalogRecord::PlugSet(_) => unreachable!(),
             ArmorCatalogRecord::EquipableSet(set) => {
                 for (ordinal, hash) in set.set_items.iter().enumerate() {
                     connection
@@ -109,6 +116,9 @@ fn read(
     kind: ArmorCatalogKind,
     hash: Option<u32>,
 ) -> Result<Vec<ArmorCatalogRecord>, AppError> {
+    if kind.id() >= 2 {
+        return super::socket_catalogs::read(connection, kind, hash);
+    }
     if read_user_version(connection)? < 28 {
         return Ok(Vec::new());
     }
@@ -159,7 +169,7 @@ fn read(
             }
             _ => return Err(storage_failure()),
         };
-        if records.insert(hash, record).is_some() || records.len() > 10_000 {
+        if records.insert(hash, record).is_some() || records.len() > kind.max_records() {
             return Err(storage_failure());
         }
     }

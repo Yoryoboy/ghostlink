@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 41] = [
+const EXPECTED_TABLE_NAMES: [&str; 44] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -18,6 +18,8 @@ const EXPECTED_TABLE_NAMES: [&str; 41] = [
     "armor_catalogs",
     "builds",
     "catalog_interpolation",
+    "catalog_plug_items",
+    "catalog_plug_whitelist",
     "catalog_scaled_stats",
     "catalog_set_items",
     "catalog_set_perks",
@@ -48,6 +50,7 @@ const EXPECTED_TABLE_NAMES: [&str; 41] = [
     "milestone_definitions",
     "objective_definitions",
     "saved_loadouts",
+    "socket_catalogs",
     "stacks",
     "stat_definitions",
     "subclass_plug_options",
@@ -66,7 +69,24 @@ const EXPECTED_INDEX_NAMES: [&str; 5] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 210] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 227] = [
+    ("socket_catalogs", "kind", "INTEGER"),
+    ("socket_catalogs", "hash", "INTEGER"),
+    ("socket_catalogs", "definition_version", "TEXT"),
+    ("socket_catalogs", "category_hash", "INTEGER"),
+    ("socket_catalogs", "randomize", "INTEGER"),
+    ("socket_catalogs", "style", "INTEGER"),
+    ("socket_catalogs", "name", "TEXT"),
+    ("catalog_plug_whitelist", "kind", "INTEGER"),
+    ("catalog_plug_whitelist", "hash", "INTEGER"),
+    ("catalog_plug_whitelist", "ordinal", "INTEGER"),
+    ("catalog_plug_whitelist", "category_hash", "INTEGER"),
+    ("catalog_plug_whitelist", "identifier", "TEXT"),
+    ("catalog_plug_items", "kind", "INTEGER"),
+    ("catalog_plug_items", "hash", "INTEGER"),
+    ("catalog_plug_items", "ordinal", "INTEGER"),
+    ("catalog_plug_items", "item_hash", "INTEGER"),
+    ("catalog_plug_items", "can_roll", "INTEGER"),
     ("armor_catalogs", "kind", "INTEGER"),
     ("armor_catalogs", "hash", "INTEGER"),
     ("armor_catalogs", "definition_version", "TEXT"),
@@ -962,7 +982,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 28);
+    assert_eq!(LATEST_SCHEMA_VERSION, 29);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION

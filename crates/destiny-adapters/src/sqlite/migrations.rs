@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 28;
+pub(crate) const LATEST_VERSION: u32 = 29;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 28] = [
+const MIGRATIONS: [Migration; 29] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -194,7 +194,53 @@ const MIGRATIONS: [Migration; 28] = [
         up: SCHEMA_V28_UP,
         down: SCHEMA_V28_DOWN,
     },
+    Migration {
+        version: 29,
+        up: SCHEMA_V29_UP,
+        down: SCHEMA_V29_DOWN,
+    },
 ];
+const SCHEMA_V29_UP: &str = r#"
+CREATE TABLE socket_catalogs (
+    kind INTEGER NOT NULL CHECK (kind IN (2,3,4)),
+    hash INTEGER NOT NULL CHECK (hash BETWEEN 0 AND 4294967295),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128),
+    category_hash INTEGER CHECK (category_hash BETWEEN 0 AND 4294967295),
+    randomize INTEGER CHECK (randomize IN (0,1)),
+    style INTEGER CHECK (style BETWEEN 0 AND 4294967295),
+    name TEXT CHECK (length(name) <= 256),
+    CHECK ((kind = 2 AND category_hash IS NOT NULL AND randomize IS NOT NULL AND style IS NULL AND name IS NULL)
+        OR (kind = 3 AND category_hash IS NULL AND randomize IS NULL AND style IS NOT NULL AND name IS NOT NULL)
+        OR (kind = 4 AND category_hash IS NULL AND randomize IS NULL AND style IS NULL AND name IS NULL)),
+    PRIMARY KEY (kind, hash)
+) STRICT;
+CREATE TABLE catalog_plug_whitelist (
+    kind INTEGER NOT NULL CHECK (kind = 2), hash INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 1023),
+    category_hash INTEGER NOT NULL CHECK (category_hash BETWEEN 0 AND 4294967295),
+    identifier TEXT NOT NULL CHECK (length(identifier) <= 256),
+    PRIMARY KEY (hash, ordinal),
+    FOREIGN KEY (kind, hash) REFERENCES socket_catalogs(kind, hash) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE catalog_plug_items (
+    kind INTEGER NOT NULL CHECK (kind = 4), hash INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 65535),
+    item_hash INTEGER NOT NULL CHECK (item_hash BETWEEN 0 AND 4294967295),
+    can_roll INTEGER NOT NULL CHECK (can_roll IN (0,1)),
+    PRIMARY KEY (hash, ordinal),
+    FOREIGN KEY (kind, hash) REFERENCES socket_catalogs(kind, hash) ON DELETE CASCADE
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V29_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM socket_catalogs) OR EXISTS (SELECT 1 FROM catalog_plug_whitelist) OR EXISTS (SELECT 1 FROM catalog_plug_items) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE catalog_plug_whitelist;
+DROP TABLE catalog_plug_items;
+DROP TABLE socket_catalogs;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
 
 const SCHEMA_V28_UP: &str = r#"
 CREATE TABLE armor_catalogs (

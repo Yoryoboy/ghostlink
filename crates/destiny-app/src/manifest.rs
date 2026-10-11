@@ -187,8 +187,15 @@ where
         world.item_descriptions = descriptions;
         destiny_core::armor_catalog::validate_catalogs(&world.armor_catalogs)?;
         for record in &mut world.armor_catalogs {
-            if let destiny_core::armor_catalog::ArmorCatalogRecord::EquipableSet(set) = record {
-                set.name = normalize_presentation(&set.name, MAX_TEXT_LENGTH)?;
+            use destiny_core::armor_catalog::ArmorCatalogRecord;
+            match record {
+                ArmorCatalogRecord::EquipableSet(set) => {
+                    set.name = normalize_presentation(&set.name, MAX_TEXT_LENGTH)?;
+                }
+                ArmorCatalogRecord::SocketCategory(category) => {
+                    category.name = normalize_presentation(&category.name, MAX_TEXT_LENGTH)?;
+                }
+                _ => {}
             }
         }
         world

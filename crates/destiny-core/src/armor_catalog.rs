@@ -5,19 +5,43 @@ use crate::{AppError, ErrorCategory};
 pub enum ArmorCatalogKind {
     StatGroup,
     EquipableSet,
+    SocketType,
+    SocketCategory,
+    PlugSet,
 }
 impl ArmorCatalogKind {
-    pub const ALL: [Self; 2] = [Self::StatGroup, Self::EquipableSet];
+    pub const ALL: [Self; 5] = [
+        Self::StatGroup,
+        Self::EquipableSet,
+        Self::SocketType,
+        Self::SocketCategory,
+        Self::PlugSet,
+    ];
     pub const fn component(self) -> &'static str {
         match self {
             Self::StatGroup => "DestinyStatGroupDefinition",
             Self::EquipableSet => "DestinyEquipableItemSetDefinition",
+            Self::SocketType => "DestinySocketTypeDefinition",
+            Self::SocketCategory => "DestinySocketCategoryDefinition",
+            Self::PlugSet => "DestinyPlugSetDefinition",
+        }
+    }
+    /// Safety ceilings with seasonal headroom, not DIM/gameplay restrictions.
+    /// Live probe 2026-10-11: 5,422 plug sets, 1,874 socket types; other kinds <= 112.
+    pub const fn max_records(self) -> usize {
+        match self {
+            Self::PlugSet => 50_000,
+            Self::SocketType => 20_000,
+            _ => 10_000,
         }
     }
     pub const fn id(self) -> u32 {
         match self {
             Self::StatGroup => 0,
             Self::EquipableSet => 1,
+            Self::SocketType => 2,
+            Self::SocketCategory => 3,
+            Self::PlugSet => 4,
         }
     }
 }
@@ -59,26 +83,93 @@ impl std::fmt::Debug for EquipableSetDefinition {
             .finish_non_exhaustive()
     }
 }
+/// Generous safety ceilings, not gameplay limits: shared cosmetic sets can contain thousands.
+pub const MAX_PLUG_SET_ITEMS: usize = 65_536;
+pub const MAX_PLUG_WHITELIST: usize = 1024;
+#[derive(Clone, Eq, PartialEq)]
+pub struct PlugWhitelistEntry {
+    pub category_hash: u32,
+    pub category_identifier: String,
+}
+impl std::fmt::Debug for PlugWhitelistEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PlugWhitelistEntry")
+            .field("category_hash", &self.category_hash)
+            .finish_non_exhaustive()
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SocketTypeDefinition {
+    pub hash: u32,
+    pub socket_category_hash: u32,
+    pub always_randomize_sockets: bool,
+    pub plug_whitelist: Vec<PlugWhitelistEntry>,
+}
+#[derive(Clone, Eq, PartialEq)]
+pub struct SocketCategoryDefinition {
+    pub hash: u32,
+    pub category_style: u32,
+    pub name: String,
+}
+impl std::fmt::Debug for SocketCategoryDefinition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SocketCategoryDefinition")
+            .field("hash", &self.hash)
+            .field("category_style", &self.category_style)
+            .finish_non_exhaustive()
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlugSetItem {
+    pub plug_item_hash: u32,
+    pub currently_can_roll: bool,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlugSetDefinition {
+    pub hash: u32,
+    pub reusable_plug_items: Vec<PlugSetItem>,
+}
+fn bounded_text(value: &str, limit: usize) -> bool {
+    value.chars().count() <= limit && !value.chars().any(|c| c.is_control() && !c.is_whitespace())
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ArmorCatalogRecord {
     StatGroup(StatGroupDefinition),
     EquipableSet(EquipableSetDefinition),
+    SocketType(SocketTypeDefinition),
+    SocketCategory(SocketCategoryDefinition),
+    PlugSet(PlugSetDefinition),
 }
 impl ArmorCatalogRecord {
     pub const fn kind(&self) -> ArmorCatalogKind {
         match self {
             Self::StatGroup(_) => ArmorCatalogKind::StatGroup,
             Self::EquipableSet(_) => ArmorCatalogKind::EquipableSet,
+            Self::SocketType(_) => ArmorCatalogKind::SocketType,
+            Self::SocketCategory(_) => ArmorCatalogKind::SocketCategory,
+            Self::PlugSet(_) => ArmorCatalogKind::PlugSet,
         }
     }
     pub const fn hash(&self) -> u32 {
         match self {
             Self::StatGroup(value) => value.hash,
             Self::EquipableSet(value) => value.hash,
+            Self::SocketType(value) => value.hash,
+            Self::SocketCategory(value) => value.hash,
+            Self::PlugSet(value) => value.hash,
         }
     }
     pub fn validate(&self) -> Result<(), AppError> {
         let valid = match self {
+            Self::SocketType(value) => {
+                value.plug_whitelist.len() <= MAX_PLUG_WHITELIST
+                    && value
+                        .plug_whitelist
+                        .iter()
+                        .all(|entry| bounded_text(&entry.category_identifier, 256))
+            }
+            Self::SocketCategory(value) => bounded_text(&value.name, 256),
+            Self::PlugSet(value) => value.reusable_plug_items.len() <= MAX_PLUG_SET_ITEMS,
             Self::StatGroup(value) => {
                 value.scaled_stats.len() <= 64
                     && value
@@ -107,12 +198,12 @@ impl ArmorCatalogRecord {
 /// Validate complete batches before publication; empty catalogs are legitimate.
 pub fn validate_catalogs(records: &[ArmorCatalogRecord]) -> Result<(), AppError> {
     let mut seen = std::collections::HashSet::new();
-    let mut counts = [0; 2];
+    let mut counts = [0; 5];
     for record in records {
         record.validate()?;
         counts[record.kind().id() as usize] += 1;
         if !seen.insert((record.kind().id(), record.hash()))
-            || counts[record.kind().id() as usize] > 10_000
+            || counts[record.kind().id() as usize] > record.kind().max_records()
         {
             return Err(AppError::new(ErrorCategory::ProviderValidation));
         }

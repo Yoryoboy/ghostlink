@@ -213,11 +213,21 @@ coverage (`domain.rs:123-126`).
     `maximumValue` fallback; absence kept unknown),
     `item-popup/SetBonus.tsx:55,102,213`. Workspace: 2104 passed
     all-features, 2072 default, 0 failed; clippy both modes, fmt, diff check.
-  - [ ] **BE-005b4 — Socket and plug set catalogs.**
+  - [x] **BE-005b4 — Socket and plug set catalogs.**
     DestinySocketTypeDefinition (whitelist `sockets.ts:607-612`),
     DestinySocketCategoryDefinition (categoryStyle `sockets.ts:664-681`),
     DestinyPlugSetDefinition (currentlyCanRoll `sockets.ts:734,768`).
     Table names confirmed in DIM `destiny2/d2-definitions.ts:56-95,121-149`.
+    Done: `sqlite/socket_catalogs.rs`, migration 29 (STRICT, guarded
+    downgrade, once-per-upgrade refresh, indexed reads); 3 extra Manifest
+    requests (world tables 9 → 12). Bounds set from the live Manifest
+    244213.26.06.29.2000-1-bnet.65864 measured 2026-10-11 (plug sets 5,422
+    records / 10.4 MB / max 824 items; socket types 1,874 / 1.3 MB / max
+    whitelist 19; stat groups 112; categories 65; sets 56): per-kind record
+    caps plug sets 50,000, socket types 20,000, others 10,000; plug sets 64 MiB,
+    others 16 MiB. DIM evidence `sockets.ts:601,607-612,664-681,734,765,768,802`,
+    `utils/socket-utils.ts:640-642`. Workspace: 2112 passed all-features,
+    2080 default, 0 failed; clippy both modes, fmt, diff check.
   - [ ] **BE-005c — DIM armor model.** Base/masterwork/tuning/set-bonus
     derivations with fixtures.
   - [ ] **BE-005d — Build capture completion.** Equipped subclass/artifact

@@ -935,8 +935,8 @@ impl fmt::Debug for SandboxPerkCandidate {
 /// must validate it again on use because callers can construct this value.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ManifestIndex {
-    /// Stat group and equipable-set content paths, in ArmorCatalogKind::ALL order.
-    pub armor_catalog_paths: [String; 2],
+    /// Armor and socket catalog content paths, in ArmorCatalogKind::ALL order.
+    pub armor_catalog_paths: [String; 5],
     pub version: DefinitionVersion,
     pub component_path: String,
     pub milestone_path: String,

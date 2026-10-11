@@ -74,6 +74,31 @@ struct SetPerkWire {
     sandbox_perk_hash: u32,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SocketCatalogWire {
+    hash: u32,
+    #[serde(default)]
+    redacted: bool,
+    socket_category_hash: Option<u32>,
+    always_randomize_sockets: Option<bool>,
+    plug_whitelist: Option<Vec<WhitelistWire>>,
+    category_style: Option<u32>,
+    display_properties: Option<CatalogNameWire>,
+    reusable_plug_items: Option<Vec<PlugSetItemWire>>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WhitelistWire {
+    category_hash: u32,
+    category_identifier: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PlugSetItemWire {
+    plug_item_hash: u32,
+    currently_can_roll: bool,
+}
 struct ArmorCatalogSeed(destiny_core::armor_catalog::ArmorCatalogKind);
 impl<'de> DeserializeSeed<'de> for ArmorCatalogSeed {
     type Value = Vec<destiny_core::armor_catalog::ArmorCatalogRecord>;
@@ -96,11 +121,66 @@ impl<'de> Visitor<'de> for ArmorCatalogSeed {
         while let Some(key) = map.next_key::<String>()? {
             let hash =
                 decode_decimal_u32(&key).map_err(|_| de::Error::custom("invalid catalog"))?;
-            if !seen.insert(hash) || seen.len() > 10_000 {
+            if !seen.insert(hash) || seen.len() > self.0.max_records() {
                 return Err(de::Error::custom("invalid catalog"));
             }
             let missing = || de::Error::custom("invalid catalog");
             let record = match self.0 {
+                ArmorCatalogKind::SocketType
+                | ArmorCatalogKind::SocketCategory
+                | ArmorCatalogKind::PlugSet => {
+                    let wire = map.next_value::<SocketCatalogWire>()?;
+                    if wire.hash != hash {
+                        return Err(missing());
+                    }
+                    if wire.redacted {
+                        continue;
+                    }
+                    match self.0 {
+                        ArmorCatalogKind::SocketType => {
+                            ArmorCatalogRecord::SocketType(SocketTypeDefinition {
+                                hash,
+                                socket_category_hash: wire
+                                    .socket_category_hash
+                                    .ok_or_else(missing)?,
+                                always_randomize_sockets: wire
+                                    .always_randomize_sockets
+                                    .ok_or_else(missing)?,
+                                plug_whitelist: wire
+                                    .plug_whitelist
+                                    .ok_or_else(missing)?
+                                    .into_iter()
+                                    .map(|entry| PlugWhitelistEntry {
+                                        category_hash: entry.category_hash,
+                                        category_identifier: entry.category_identifier,
+                                    })
+                                    .collect(),
+                            })
+                        }
+                        ArmorCatalogKind::SocketCategory => {
+                            ArmorCatalogRecord::SocketCategory(SocketCategoryDefinition {
+                                hash,
+                                category_style: wire.category_style.ok_or_else(missing)?,
+                                name: wire.display_properties.ok_or_else(missing)?.name,
+                            })
+                        }
+                        ArmorCatalogKind::PlugSet => {
+                            ArmorCatalogRecord::PlugSet(PlugSetDefinition {
+                                hash,
+                                reusable_plug_items: wire
+                                    .reusable_plug_items
+                                    .ok_or_else(missing)?
+                                    .into_iter()
+                                    .map(|entry| PlugSetItem {
+                                        plug_item_hash: entry.plug_item_hash,
+                                        currently_can_roll: entry.currently_can_roll,
+                                    })
+                                    .collect(),
+                            })
+                        }
+                        _ => unreachable!(),
+                    }
+                }
                 ArmorCatalogKind::StatGroup => {
                     let wire = map.next_value::<StatGroupWire>()?;
                     if wire.hash != hash {
@@ -170,7 +250,7 @@ fn decode_armor_catalog_reader(
 ) -> Result<Vec<destiny_core::armor_catalog::ArmorCatalogRecord>, AppError> {
     let mut bounded = BoundedReader {
         inner: body,
-        remaining: MAX_ARMOR_CATALOG_BYTES,
+        remaining: max_armor_catalog_bytes(kind),
         exceeded: false,
         failed: false,
     };
@@ -191,8 +271,14 @@ fn decode_armor_catalog_reader(
         }
     })
 }
-/// Each additional decompressed catalog is capped at 16 MiB.
-const MAX_ARMOR_CATALOG_BYTES: usize = 16 * 1024 * 1024;
+/// Live probe 2026-10-11: plug sets were 10.4 MB; allow seasonal growth to 64 MiB.
+/// Other field-limited catalogs retain the 16 MiB decompressed safety ceiling.
+const fn max_armor_catalog_bytes(kind: destiny_core::armor_catalog::ArmorCatalogKind) -> usize {
+    match kind {
+        destiny_core::armor_catalog::ArmorCatalogKind::PlugSet => 64 * 1024 * 1024,
+        _ => 16 * 1024 * 1024,
+    }
+}
 
 #[cfg(test)]
 mod loadout_name_tests {
@@ -248,6 +334,9 @@ mod loadout_name_tests {
             "DestinySandboxPerkDefinition",
             "DestinyStatGroupDefinition",
             "DestinyEquipableItemSetDefinition",
+            "DestinySocketTypeDefinition",
+            "DestinySocketCategoryDefinition",
+            "DestinyPlugSetDefinition",
         ] {
             en.insert(
                 component.into(),
@@ -307,7 +396,7 @@ fn provider_validation() -> AppError {
 /// validated relative content path: safe for a caller to fetch, never a URL.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManifestDownloadPlan {
-    pub armor_catalog_paths: [String; 2],
+    pub armor_catalog_paths: [String; 5],
     pub version: DefinitionVersion,
     pub component_path: String,
     pub milestone_path: String,
@@ -347,6 +436,9 @@ pub fn decode_manifest_index(bytes: &[u8]) -> Result<ManifestDownloadPlan, AppEr
         armor_catalog_paths: [
             decode_component_path(response, "DestinyStatGroupDefinition")?,
             decode_component_path(response, "DestinyEquipableItemSetDefinition")?,
+            decode_component_path(response, "DestinySocketTypeDefinition")?,
+            decode_component_path(response, "DestinySocketCategoryDefinition")?,
+            decode_component_path(response, "DestinyPlugSetDefinition")?,
         ],
         version,
         component_path,
@@ -1796,7 +1888,7 @@ where
                         fetch_response(&mut self.transport, &request, || self.clock.now().ok())?;
                     if response
                         .content_length
-                        .is_some_and(|size| size > MAX_ARMOR_CATALOG_BYTES as u64)
+                        .is_some_and(|size| size > max_armor_catalog_bytes(kind) as u64)
                     {
                         return Err(ReadFailure::terminal(provider_validation()));
                     }
@@ -2202,7 +2294,7 @@ mod tests {
             "Response": {
                 "version": version,
                 "jsonWorldComponentContentPaths": {
-                    "en": { "DestinyStatGroupDefinition": path, "DestinyEquipableItemSetDefinition": path, "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path, "DestinySandboxPerkDefinition": path }
+                    "en": { "DestinySocketTypeDefinition": path, "DestinySocketCategoryDefinition": path, "DestinyPlugSetDefinition": path, "DestinyStatGroupDefinition": path, "DestinyEquipableItemSetDefinition": path, "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path, "DestinySandboxPerkDefinition": path }
                 }
             }
         })
@@ -2448,6 +2540,9 @@ mod tests {
             "DestinySandboxPerkDefinition",
             "DestinyStatGroupDefinition",
             "DestinyEquipableItemSetDefinition",
+            "DestinySocketTypeDefinition",
+            "DestinySocketCategoryDefinition",
+            "DestinyPlugSetDefinition",
         ] {
             en.insert(kind.into(), json!(VALID_PATH));
         }
@@ -2462,6 +2557,9 @@ mod tests {
             "DestinySandboxPerkDefinition",
             "DestinyStatGroupDefinition",
             "DestinyEquipableItemSetDefinition",
+            "DestinySocketTypeDefinition",
+            "DestinySocketCategoryDefinition",
+            "DestinyPlugSetDefinition",
         ] {
             let mut missing = value.clone();
             missing["Response"]["jsonWorldComponentContentPaths"]["en"]
@@ -2980,7 +3078,7 @@ mod transport_tests {
             "Response": {
                 "version": "manifest-v1",
                 "jsonWorldComponentContentPaths": {
-                    "en": { "DestinyStatGroupDefinition": path, "DestinyEquipableItemSetDefinition": path, "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path, "DestinySandboxPerkDefinition": path }
+                    "en": { "DestinySocketTypeDefinition": path, "DestinySocketCategoryDefinition": path, "DestinyPlugSetDefinition": path, "DestinyStatGroupDefinition": path, "DestinyEquipableItemSetDefinition": path, "DestinyInventoryItemDefinition": path, "DestinyMilestoneDefinition": path, "DestinyActivityDefinition": path, "DestinyActivityModifierDefinition": path, "DestinyObjectiveDefinition": path, "DestinyActivityTypeDefinition": path, "DestinyStatDefinition": path, "DestinyLoadoutNameDefinition": path, "DestinySandboxPerkDefinition": path }
                 }
             }
         })
@@ -3156,12 +3254,15 @@ mod transport_tests {
     }
 
     #[test]
-    fn gateway_world_components_use_nine_urls_without_key() {
+    fn gateway_world_components_use_twelve_urls_without_key() {
         let mut index: serde_json::Value =
             serde_json::from_str(&index_body(COMPONENT_PATH)).unwrap();
         let paths = [
             "/common/destiny2_content/groups.json",
             "/common/destiny2_content/sets.json",
+            "/common/destiny2_content/socket-types.json",
+            "/common/destiny2_content/socket-categories.json",
+            "/common/destiny2_content/plug-sets.json",
             "/common/destiny2_content/m.json",
             "/common/destiny2_content/a.json",
             "/common/destiny2_content/mod.json",
@@ -3173,6 +3274,9 @@ mod transport_tests {
         for (kind, path) in [
             "DestinyStatGroupDefinition",
             "DestinyEquipableItemSetDefinition",
+            "DestinySocketTypeDefinition",
+            "DestinySocketCategoryDefinition",
+            "DestinyPlugSetDefinition",
             "DestinyMilestoneDefinition",
             "DestinyActivityDefinition",
             "DestinyActivityModifierDefinition",
@@ -3190,6 +3294,9 @@ mod transport_tests {
             Ok(json_response(index.to_string())),
             Ok(json_response(r#"{"123":{"hash":123,"scaledStats":[]}}"#.into())),
             Ok(json_response(r#"{"456":{"hash":456,"displayProperties":{"name":"Synthetic set"},"setItems":[42],"setPerks":[{"requiredSetCount":2,"sandboxPerkHash":7}]}}"#.into())),
+            Ok(json_response("{}".into())),
+            Ok(json_response("{}".into())),
+            Ok(json_response("{}".into())),
             Ok(json_response(component_body())),
             Ok(json_response(component_body())),
             Ok(json_response(component_body())),
@@ -3216,7 +3323,7 @@ mod transport_tests {
         assert_eq!(batch.loadout_names.definitions[0].name(), "PvE");
         let requests = &gateway.transport().requests;
         assert_eq!(batch.armor_catalogs.len(), 2);
-        assert_eq!(requests.len(), 10);
+        assert_eq!(requests.len(), 13);
         assert!(requests[0].has_api_key);
         for (request, path) in requests[1..].iter().zip(paths) {
             assert_eq!(request.url, format!("{MANIFEST_ORIGIN}{path}"));

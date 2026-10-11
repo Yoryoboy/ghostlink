@@ -153,8 +153,10 @@ fn fake_sqlite_parity_revision_identity_and_batch_reads() {
     assert!(fake.publish_manifest(items(), duplicate).is_err());
     assert_eq!(store.current_metadata().unwrap(), Some(revision.clone()));
     assert!(store.migrate_to(27).is_err());
+    // Empty socket catalogs permit 29 -> 28; populated armor catalogs guard 28 -> 27.
     assert_eq!(store.schema_version().unwrap(), 28);
-    assert_eq!(store.current_metadata().unwrap(), Some(revision));
+    // The successful 29 down step invalidates freshness before the guarded 28 step.
+    assert_eq!(store.current_metadata().unwrap(), None);
 }
 
 #[test]
