@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 22;
+pub(crate) const LATEST_VERSION: u32 = 23;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 22] = [
+const MIGRATIONS: [Migration; 23] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -164,7 +164,40 @@ const MIGRATIONS: [Migration; 22] = [
         up: SCHEMA_V22_UP,
         down: "DROP TABLE definition_search;",
     },
+    Migration {
+        version: 23,
+        up: SCHEMA_V23_UP,
+        down: "CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1)); INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM builds) THEN 0 ELSE 1 END; DROP TABLE downgrade_guard; DROP TABLE builds;",
+    },
 ];
+
+// Local user-authored definitions survive replacing the active synced profile.
+// Membership is explicit, like active_profile, but not a cascading foreign key.
+const SCHEMA_V23_UP: &str = r#"
+CREATE TABLE builds (
+    membership_id TEXT NOT NULL CHECK (length(membership_id) BETWEEN 1 AND 128 AND membership_id NOT GLOB '*[^0-9]*'),
+    membership_type INTEGER NOT NULL CHECK (membership_type BETWEEN 0 AND 4294967295),
+    id TEXT NOT NULL CHECK (length(hex(id)) BETWEEN 2 AND 256),
+    name TEXT NOT NULL,
+    class_type INTEGER NOT NULL CHECK (class_type BETWEEN 0 AND 3),
+    source TEXT NOT NULL CHECK (source IN ('import','equipped','ingame')),
+    created_at TEXT NOT NULL CHECK (
+        length(created_at) BETWEEN 1 AND 20 AND created_at NOT GLOB '*[^0-9]*'
+        AND (created_at = '0' OR created_at GLOB '[1-9]*')
+        AND (length(created_at) < 20 OR created_at <= '18446744073709551615')
+    ),
+    updated_at TEXT NOT NULL CHECK (
+        length(updated_at) BETWEEN 1 AND 20 AND updated_at NOT GLOB '*[^0-9]*'
+        AND (updated_at = '0' OR updated_at GLOB '[1-9]*')
+        AND (length(updated_at) < 20 OR updated_at <= '18446744073709551615')
+    ),
+    normalized_build TEXT NOT NULL,
+    parameter_extra TEXT,
+    PRIMARY KEY (membership_type, membership_id, id)
+) STRICT;
+CREATE INDEX builds_name ON builds(membership_type, membership_id, name);
+CREATE INDEX builds_class ON builds(membership_type, membership_id, class_type);
+"#;
 
 const SCHEMA_V22_UP: &str = r#"
 CREATE TABLE definition_search (

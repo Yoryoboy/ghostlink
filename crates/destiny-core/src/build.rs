@@ -2,6 +2,71 @@
 use crate::{AppError, BucketHash, ErrorCategory, ItemHash, ItemInstanceId, PerkHash};
 use std::collections::BTreeMap;
 
+/// Local provenance, independent of the DIM payload's optional timestamps.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BuildSource {
+    Import,
+    Equipped,
+    InGameLoadout,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuildSummary {
+    pub id: String,
+    pub name: String,
+    pub class_type: u8,
+    pub source: BuildSource,
+    pub created_at: crate::Timestamp,
+    pub updated_at: crate::Timestamp,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredBuild {
+    pub summary: BuildSummary,
+    pub definition: BuildDefinition,
+}
+
+/// Transport-neutral offline codec failures. Share IDs are deliberately not fetched.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DimLoadoutError {
+    InvalidJson,
+    InvalidUrl,
+    Validation,
+    InputTooLarge,
+    ShareLinkRequiresOnlineImport,
+    RandomUnavailable,
+}
+impl std::fmt::Display for DimLoadoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::InvalidJson => "invalid DIM loadout JSON",
+            Self::InvalidUrl => "invalid DIM loadout URL",
+            Self::Validation => "invalid DIM build definition",
+            Self::InputTooLarge => "DIM input exceeds size limit",
+            Self::ShareLinkRequiresOnlineImport => "share link requires online import",
+            Self::RandomUnavailable => "could not generate build identifier",
+        })
+    }
+}
+impl std::error::Error for DimLoadoutError {}
+
+/// Exact normalized name matching; collisions are never silently selected.
+pub fn resolve_build_name(
+    summaries: Vec<BuildSummary>,
+    name: &str,
+) -> Result<crate::Resolution<BuildSummary>, AppError> {
+    let term = crate::SearchTerm::new(name)?;
+    let matches: Vec<_> = summaries
+        .into_iter()
+        .filter(|b| crate::SearchTerm::new(&b.name).is_ok_and(|n| n == term))
+        .collect();
+    Ok(match matches.as_slice() {
+        [] => crate::Resolution::Missing,
+        [value] => crate::Resolution::Unique(value.clone()),
+        _ => crate::Resolution::Ambiguous(matches),
+    })
+}
+
 pub const MAX_BUILD_ITEMS: usize = 256;
 pub const MAX_BUILD_SOCKETS: usize = 128;
 pub const MAX_BUILD_NAME_BYTES: usize = 1024;

@@ -86,9 +86,27 @@ DIM evidence here. Ask the owner only when DIM is ambiguous or does not fit
   `amount || 1` `loadout-type-converters.ts:69-118`. Workspace:
   2049 passed all-features, 2019 default, 0 failed; clippy both modes,
   fmt, diff check clean.
-- [ ] **BE-003 — Build store and sources.** SQLite migration and repository
+- [x] **BE-003a — Build store and sources.** SQLite migration and repository
   (fake parity); create from import, equipped snapshot and in-game loadout;
-  CLI `build import|list|show|delete|from-equipped|from-loadout`; MCP tools.
+  list/show/delete/export application use cases.
+  Done: migration 23 `builds` (membership-scoped, DIM-shaped JSON plus
+  indexed id/name/class/source; survives profile replacement; down step
+  refuses to drop stored builds), `BuildRepository` + `BuildCodec` ports,
+  SQLite and fake parity, `destiny-app/src/builds.rs`. DIM evidence:
+  equipped snapshot buckets/classType/armor mods `loadout-utils.ts:69,178-218`;
+  UUID ids `loadout-utils.ts:118-120`; in-game conversion skips unresolved
+  instances `loadout-type-converters.ts:186`, subclass/artifact overrides and
+  in-game identifiers `:213-238`. Reported omissions (no invented data):
+  equipped socket overrides (no persisted socket indices), artifact unlocks,
+  crafted dates → BE-005. Workspace: 2055 passed all-features, 2025 default,
+  0 failed; clippy both modes, fmt, diff check clean.
+- [ ] **BE-003b — Build CLI and MCP.** CLI
+  `build import|list|show|delete|export|from-equipped|from-loadout`; MCP
+  tools; docs (`docs/cli.md`, `docs/mcp.md`), skill.
+
+Review follow-ups (BE-002, non-blocking): bound per-bucket mod list length
+(`build.rs:190`); tighten `dim.gg` share-id detection heuristic
+(`dim_loadout.rs:333`).
 - [ ] **BE-004 — Resolution and analysis v1.** DIM resolution semantics;
   findings supported by current data (missing items, exotic mismatch,
   invalid/nonmatching search, location of each item); CLI `build check`,

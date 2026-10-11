@@ -1,5 +1,6 @@
 //! Application-facing configuration, services, and sanitized diagnostics.
 
+pub mod builds;
 pub mod clarity;
 pub use clarity::{ClaritySyncReport, ManifestAndClarityReport};
 pub use destiny_core::{ClarityInsight, ClarityRepository};

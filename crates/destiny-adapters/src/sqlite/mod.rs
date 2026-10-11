@@ -26,6 +26,7 @@
 //! single-active profile inventory repository, and the durable definition/instance
 //! search repository are the three of them.
 
+mod builds;
 mod clarity;
 mod definitions;
 mod inventory;

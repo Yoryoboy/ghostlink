@@ -3,6 +3,65 @@
 //! These types are test support only. They model normalized behavior and never
 //! perform network, filesystem, serialization, or credential-provider work.
 
+/// Exact membership-keyed build fake; order and upsert semantics match SQLite.
+#[derive(Default)]
+pub struct InMemoryBuildRepository {
+    builds: std::collections::BTreeMap<
+        (destiny_core::DestinyMembership, String),
+        destiny_core::build::StoredBuild,
+    >,
+}
+impl destiny_core::ports::BuildRepository for InMemoryBuildRepository {
+    fn save_build(
+        &mut self,
+        membership: &DestinyMembership,
+        build: &destiny_core::build::BuildDefinition,
+        source: destiny_core::build::BuildSource,
+        now: Timestamp,
+    ) -> Result<destiny_core::build::StoredBuild, AppError> {
+        build.validate()?;
+        let key = (membership.clone(), build.id.clone());
+        let created_at = self.builds.get(&key).map_or(now, |b| b.summary.created_at);
+        let stored = destiny_core::build::StoredBuild {
+            summary: destiny_core::build::BuildSummary {
+                id: build.id.clone(),
+                name: build.name.clone(),
+                class_type: build.class_type,
+                source,
+                created_at,
+                updated_at: now,
+            },
+            definition: build.clone(),
+        };
+        self.builds.insert(key, stored.clone());
+        Ok(stored)
+    }
+    fn list_builds(
+        &self,
+        membership: &DestinyMembership,
+    ) -> Result<Vec<destiny_core::build::BuildSummary>, AppError> {
+        Ok(self
+            .builds
+            .iter()
+            .filter(|((m, _), _)| m == membership)
+            .map(|(_, b)| b.summary.clone())
+            .collect())
+    }
+    fn get_build(
+        &self,
+        membership: &DestinyMembership,
+        id: &str,
+    ) -> Result<Option<destiny_core::build::StoredBuild>, AppError> {
+        Ok(self.builds.get(&(membership.clone(), id.into())).cloned())
+    }
+    fn delete_build(&mut self, membership: &DestinyMembership, id: &str) -> Result<bool, AppError> {
+        Ok(self
+            .builds
+            .remove(&(membership.clone(), id.into()))
+            .is_some())
+    }
+}
+
 use destiny_core::{
     AccessCredential, AppError, AuthorizationCallback, AuthorizationState, BrowserAuthorization,
     CallbackReceiver, Clock, CredentialStore, Dataset, DefinitionReplacementInput,

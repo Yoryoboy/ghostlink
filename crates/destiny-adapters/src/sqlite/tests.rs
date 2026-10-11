@@ -10,11 +10,12 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 25] = [
+const EXPECTED_TABLE_NAMES: [&str; 26] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
     "activity_type_definitions",
+    "builds",
     "characters",
     "clarity_insights",
     "clarity_metadata",
@@ -38,7 +39,9 @@ const EXPECTED_TABLE_NAMES: [&str; 25] = [
     "sync_metadata",
 ];
 
-const EXPECTED_INDEX_NAMES: [&str; 3] = [
+const EXPECTED_INDEX_NAMES: [&str; 5] = [
+    "builds_class",
+    "builds_name",
     "clarity_insights_name",
     "items_definition_hash_idx",
     "items_location_idx",
@@ -48,7 +51,17 @@ const EXPECTED_INDEX_NAMES: [&str; 3] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 126] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 136] = [
+    ("builds", "membership_id", "TEXT"),
+    ("builds", "membership_type", "INTEGER"),
+    ("builds", "id", "TEXT"),
+    ("builds", "name", "TEXT"),
+    ("builds", "class_type", "INTEGER"),
+    ("builds", "source", "TEXT"),
+    ("builds", "created_at", "TEXT"),
+    ("builds", "updated_at", "TEXT"),
+    ("builds", "normalized_build", "TEXT"),
+    ("builds", "parameter_extra", "TEXT"),
     ("definition_search", "hash", "INTEGER"),
     ("definition_search", "name", "TEXT"),
     ("definition_search", "name_norm", "TEXT"),
@@ -482,7 +495,14 @@ fn v16_preserves_all_children_metadata_and_representable_downgrade() {
                 "{table} at v{version}"
             );
         }
-        assert_eq!(index_names(&store), strings(EXPECTED_INDEX_NAMES));
+        assert_eq!(
+            index_names(&store),
+            strings([
+                "clarity_insights_name",
+                "items_definition_hash_idx",
+                "items_location_idx"
+            ])
+        );
         assert!(
             !store
                 .connection()
@@ -845,7 +865,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 22);
+    assert_eq!(LATEST_SCHEMA_VERSION, 23);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION

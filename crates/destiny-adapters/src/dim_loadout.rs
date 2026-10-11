@@ -1,37 +1,26 @@
 //! Offline DIM JSON/URL codec. Decode preserves identity; import assigns a fresh UUID.
+pub use destiny_core::build::DimLoadoutError;
 use destiny_core::build::*;
 use destiny_core::{BucketHash, ItemHash, ItemInstanceId, PerkHash};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::fmt;
 
 pub const MAX_DIM_INPUT_BYTES: usize = 1_048_576;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DimLoadoutError {
-    InvalidJson,
-    InvalidUrl,
-    Validation,
-    InputTooLarge,
-    ShareLinkRequiresOnlineImport,
-    RandomUnavailable,
-}
-
-impl fmt::Display for DimLoadoutError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::InvalidJson => "invalid DIM loadout JSON",
-            Self::InvalidUrl => "invalid DIM loadout URL",
-            Self::Validation => "invalid DIM build definition",
-            Self::InputTooLarge => "DIM input exceeds size limit",
-            Self::ShareLinkRequiresOnlineImport => "share link requires online import",
-            Self::RandomUnavailable => "could not generate build identifier",
-        })
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DimBuildCodec;
+impl destiny_core::ports::BuildCodec for DimBuildCodec {
+    fn import(&self, input: &str) -> Result<BuildDefinition, DimLoadoutError> {
+        import_dim_loadout(input)
+    }
+    fn export(&self, build: &BuildDefinition) -> Result<String, DimLoadoutError> {
+        export_dim_loadout(build)
+    }
+    fn fresh_id(&self) -> Result<String, DimLoadoutError> {
+        fresh_build_id()
     }
 }
-
-impl std::error::Error for DimLoadoutError {}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -378,11 +367,16 @@ pub fn import_dim_loadout(input: &str) -> Result<BuildDefinition, DimLoadoutErro
             item.amount = Some(1);
         }
     }
+    build.id = fresh_build_id()?;
+    Ok(build)
+}
+
+fn fresh_build_id() -> Result<String, DimLoadoutError> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|_| DimLoadoutError::RandomUnavailable)?;
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    build.id = bytes
+    Ok(bytes
         .iter()
         .enumerate()
         .map(|(index, byte)| {
@@ -393,8 +387,7 @@ pub fn import_dim_loadout(input: &str) -> Result<BuildDefinition, DimLoadoutErro
             };
             format!("{prefix}{byte:02x}")
         })
-        .collect();
-    Ok(build)
+        .collect())
 }
 
 impl From<&BuildItem> for DimLoadoutItem {

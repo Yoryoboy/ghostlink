@@ -411,6 +411,50 @@ pub trait StatDefinitionRepository {
     fn stat_definition_count(&self) -> Result<usize, AppError>;
 }
 
+/// Membership-keyed local builds, independent of active-profile replacement.
+/// Upsert retains local creation time and updates source/time; payload is exact.
+/// Lists and ambiguity candidates are ordered by ID. Invalid writes leave state
+/// unchanged; deletion reports whether a row existed. Names use SearchTerm.
+pub trait BuildRepository {
+    fn save_build(
+        &mut self,
+        membership: &DestinyMembership,
+        build: &crate::build::BuildDefinition,
+        source: crate::build::BuildSource,
+        now: Timestamp,
+    ) -> Result<crate::build::StoredBuild, AppError>;
+    fn list_builds(
+        &self,
+        membership: &DestinyMembership,
+    ) -> Result<Vec<crate::build::BuildSummary>, AppError>;
+    fn get_build(
+        &self,
+        membership: &DestinyMembership,
+        id: &str,
+    ) -> Result<Option<crate::build::StoredBuild>, AppError>;
+    fn delete_build(&mut self, membership: &DestinyMembership, id: &str) -> Result<bool, AppError>;
+    fn find_build_by_name(
+        &self,
+        membership: &DestinyMembership,
+        name: &str,
+    ) -> Result<Resolution<crate::build::BuildSummary>, AppError> {
+        crate::build::resolve_build_name(self.list_builds(membership)?, name)
+    }
+}
+
+/// Adapter-owned DIM parsing, export, and unpredictable identity generation.
+pub trait BuildCodec {
+    fn import(
+        &self,
+        input: &str,
+    ) -> Result<crate::build::BuildDefinition, crate::build::DimLoadoutError>;
+    fn export(
+        &self,
+        build: &crate::build::BuildDefinition,
+    ) -> Result<String, crate::build::DimLoadoutError>;
+    fn fresh_id(&self) -> Result<String, crate::build::DimLoadoutError>;
+}
+
 /// Reads and atomically replaces the current normalized inventory projection.
 pub trait InventoryRepository {
     /// Saved component 206 from the active profile; None means unavailable.
