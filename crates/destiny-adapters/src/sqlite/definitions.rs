@@ -125,6 +125,15 @@ impl SqliteStore {
         {
             return Err(storage_failure());
         }
+        if super::migrations::read_user_version(self.connection())? < 26
+            && replacement
+                .definitions
+                .definitions
+                .iter()
+                .any(|item| item.armor != destiny_core::ArmorDefinition::default())
+        {
+            return Err(storage_failure());
+        }
         if let Some(world) = &world {
             world.validate_for(&replacement.definitions.version)?;
         }
@@ -240,6 +249,7 @@ fn validate_publication(definitions: &ManifestDefinitions) -> Result<(), AppErro
     }
     let mut seen = HashSet::with_capacity(definitions.definitions.len());
     for definition in &definitions.definitions {
+        definition.armor.validate()?;
         if definition.version != definitions.version || !seen.insert(definition.hash) {
             return Err(provider_validation());
         }
@@ -372,6 +382,7 @@ fn replace_catalog(
                 .map_err(|_| storage_failure())?;
         }
     }
+    super::armor_definitions::write(connection, definitions)?;
     if schema >= 22 {
         write_search_rows(connection, definitions)?;
     }
@@ -548,6 +559,9 @@ fn read_definition(
             stack_unique_label,
             non_transferrable,
         )) => Ok(Some(ItemDefinition {
+            armor: super::armor_definitions::read(connection, Some(hash.value()))?
+                .remove(&hash.value())
+                .unwrap_or_default(),
             non_transferrable,
             does_postmaster_pull_have_side_effects,
             is_instance_item,
@@ -672,6 +686,7 @@ fn read_tags(connection: &Connection, hash: i64) -> Result<Vec<String>, AppError
 fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>, AppError> {
     let mut definitions = Vec::new();
     let mut positions = HashMap::new();
+    let mut armor = super::armor_definitions::read(connection, None)?;
 
     {
         let mut statement = connection
@@ -721,6 +736,7 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
             ) = row.map_err(|_| storage_failure())?;
             positions.insert(hash, definitions.len());
             definitions.push(ItemDefinition {
+                armor: armor.remove(&hash).unwrap_or_default(),
                 non_transferrable,
                 does_postmaster_pull_have_side_effects,
                 is_instance_item,
@@ -761,6 +777,9 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
         }
     }
 
+    if !armor.is_empty() {
+        return Err(storage_failure());
+    }
     Ok(definitions)
 }
 
@@ -825,6 +844,7 @@ mod live_publish_tests {
         let version = DefinitionVersion::new("large-synthetic-v1");
         let definitions = (0..40_000)
             .map(|hash| ItemDefinition {
+                armor: Default::default(),
                 non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,

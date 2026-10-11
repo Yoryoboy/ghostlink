@@ -279,6 +279,12 @@ impl<T> OptionalField<T> {
 #[serde(rename_all = "camelCase")]
 struct InventoryRecord {
     #[serde(default)]
+    investment_stats: Vec<InvestmentStatFields>,
+    #[serde(default)]
+    stats: Option<StatGroupFields>,
+    #[serde(default)]
+    equipping_block: Option<EquippingFields>,
+    #[serde(default)]
     non_transferrable: Option<bool>,
     hash: u32,
     #[serde(default)]
@@ -347,6 +353,44 @@ fn deserialize_inventory_fields<'de, D: de::Deserializer<'de>>(
 struct PlugFields {
     #[serde(default)]
     plug_category_identifier: Option<String>,
+    #[serde(default)]
+    plug_category_hash: Option<u32>,
+    #[serde(default)]
+    energy_cost: Option<EnergyCostFields>,
+    #[serde(default)]
+    energy_capacity: Option<CapacityFields>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InvestmentStatFields {
+    stat_type_hash: u32,
+    value: i32,
+    is_conditionally_active: bool,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StatGroupFields {
+    #[serde(default)]
+    stat_group_hash: Option<u32>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EquippingFields {
+    #[serde(default)]
+    equipable_item_set_hash: Option<u32>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EnergyCostFields {
+    energy_cost: i32,
+    energy_type: u32,
+    energy_type_hash: u32,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CapacityFields {
+    capacity_value: i32,
 }
 
 struct InventorySeed<'a>(&'a DefinitionVersion);
@@ -867,6 +911,40 @@ fn decode_record(
     if name.chars().count() > 256 {
         return Err(provider_validation());
     }
+    let armor = destiny_core::ArmorDefinition {
+        investment_stats: record
+            .investment_stats
+            .into_iter()
+            .map(|stat| destiny_core::InvestmentStat {
+                stat_type_hash: stat.stat_type_hash,
+                value: stat.value,
+                is_conditionally_active: stat.is_conditionally_active,
+            })
+            .collect(),
+        stat_group_hash: record.stats.and_then(|stats| stats.stat_group_hash),
+        equipable_item_set_hash: record
+            .equipping_block
+            .and_then(|block| block.equipable_item_set_hash),
+        plug_category_hash: record
+            .plug
+            .as_ref()
+            .and_then(|plug| plug.plug_category_hash),
+        energy_cost: record
+            .plug
+            .as_ref()
+            .and_then(|plug| plug.energy_cost.as_ref())
+            .map(|cost| destiny_core::PlugEnergyCost {
+                energy_cost: cost.energy_cost,
+                energy_type: cost.energy_type,
+                energy_type_hash: cost.energy_type_hash,
+            }),
+        aspect_capacity: record
+            .plug
+            .as_ref()
+            .and_then(|plug| plug.energy_capacity.as_ref())
+            .map(|capacity| capacity.capacity_value),
+    };
+    armor.validate()?;
     let plug_category = record.plug.and_then(|plug| plug.plug_category_identifier);
     if plug_category
         .as_ref()
@@ -892,6 +970,7 @@ fn decode_record(
         )
     });
     Ok(Some(ManifestDefinitionCandidate {
+        armor,
         non_transferrable: record.non_transferrable,
         does_postmaster_pull_have_side_effects: record.does_postmaster_pull_have_side_effects,
         is_instance_item,
@@ -3394,6 +3473,7 @@ mod transport_tests {
         let repository = InMemoryDefinitionRepository::new(
             prior_version.clone(),
             vec![ItemDefinition {
+                armor: Default::default(),
                 non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,

@@ -74,6 +74,7 @@ fn item_description_upgrade_forces_same_version_republish_then_skips() {
         version: DefinitionVersion::new("v1"),
         definitions: vec![ManifestDefinitionCandidate {
             perk_hashes: Vec::new(),
+            armor: Default::default(),
             non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
@@ -483,6 +484,7 @@ fn missing_stat_catalog_forces_same_version_download_then_skips() {
                 perk_hashes: Vec::new(),
                 hash: ItemHash::new(10),
                 bucket_hash: None,
+                armor: Default::default(),
                 non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
@@ -668,6 +670,7 @@ fn stat_migration_invalidates_only_manifest_metadata_and_is_reversible() {
 }
 
 fn items(version: &str, name: &str) -> DefinitionReplacementInput {
+    let armor = Default::default();
     DefinitionReplacementInput {
         definitions: ManifestDefinitions {
             version: DefinitionVersion::new(version),
@@ -679,6 +682,7 @@ fn items(version: &str, name: &str) -> DefinitionReplacementInput {
                 stack_unique_label: None,
                 hash: ItemHash::new(10),
                 bucket_hash: None,
+                armor,
                 name: name.into(),
                 item_type: None,
                 tier: None,
@@ -718,6 +722,7 @@ fn plug_category_upgrade_forces_same_version_republish_then_skips() {
                 item_type: None,
                 tier: None,
                 element: None,
+                armor: Default::default(),
                 non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
@@ -792,6 +797,7 @@ fn search_filter_upgrade_forces_same_version_republish_then_skips() {
                 tier: None,
                 element: None,
                 description: None,
+                armor: Default::default(),
                 non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
@@ -853,6 +859,7 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
                     bucket_hash: None,
                     description: None,
                     perk_hashes: Vec::new(),
+                    armor: Default::default(),
                     non_transferrable: None,
                     does_postmaster_pull_have_side_effects: None,
                     is_instance_item: None,

@@ -315,7 +315,9 @@ fn normalize_with_count(acquisition: ManifestAcquisition) -> Result<NormalizedMa
         if let Some(description) = compose_description(&candidate, &perks) {
             descriptions.push(description);
         }
+        candidate.armor.validate()?;
         definitions.push(ItemDefinition {
+            armor: candidate.armor,
             non_transferrable: candidate.non_transferrable,
             does_postmaster_pull_have_side_effects: candidate
                 .does_postmaster_pull_have_side_effects,
@@ -570,6 +572,7 @@ mod tests {
 
     fn candidate(hash: i64, name: &str) -> ManifestDefinitionCandidate {
         ManifestDefinitionCandidate {
+            armor: Default::default(),
             non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
@@ -626,6 +629,7 @@ mod tests {
                     is_instance_item: None,
                     max_stack_size: None,
                     stack_unique_label: None,
+                    armor: Default::default(),
                     name: "  Ri   FLE  ".into(),
                     item_type: Some("  WEAPON ".into()),
                     tier: Some(" Legendary ".into()),
@@ -654,6 +658,7 @@ mod tests {
                     is_instance_item: None,
                     max_stack_size: None,
                     stack_unique_label: None,
+                    armor: Default::default(),
                     name: "Ri FLE".into(),
                     item_type: Some("WEAPON".into()),
                     tier: Some("Legendary".into()),
@@ -861,6 +866,7 @@ mod tests {
         // the candidate or to the normalized
         // record, this test would stop compiling.
         let ManifestDefinitionCandidate {
+            armor: _,
             non_transferrable: _,
             does_postmaster_pull_have_side_effects: _,
             is_instance_item: _,
@@ -894,6 +900,7 @@ mod tests {
         let published =
             normalize_manifest(acquisition(VERSION, vec![candidate(1, "Alpha")])).unwrap();
         let ItemDefinition {
+            armor: _,
             non_transferrable: _,
             does_postmaster_pull_have_side_effects: _,
             is_instance_item: _,
@@ -1027,6 +1034,7 @@ mod tests {
 
         fn item_definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
             ItemDefinition {
+                armor: Default::default(),
                 non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,

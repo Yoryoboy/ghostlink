@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 25;
+pub(crate) const LATEST_VERSION: u32 = 26;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 25] = [
+const MIGRATIONS: [Migration; 26] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -179,7 +179,46 @@ const MIGRATIONS: [Migration; 25] = [
         up: SCHEMA_V25_UP,
         down: SCHEMA_V25_DOWN,
     },
+    Migration {
+        version: 26,
+        up: SCHEMA_V26_UP,
+        down: SCHEMA_V26_DOWN,
+    },
 ];
+
+const SCHEMA_V26_UP: &str = r#"
+CREATE TABLE definition_armor (
+    definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,
+    stat_group_hash INTEGER CHECK (stat_group_hash BETWEEN 0 AND 4294967295),
+    plug_category_hash INTEGER CHECK (plug_category_hash BETWEEN 0 AND 4294967295),
+    aspect_capacity INTEGER CHECK (aspect_capacity BETWEEN -2147483648 AND 2147483647),
+    equipable_item_set_hash INTEGER CHECK (equipable_item_set_hash BETWEEN 0 AND 4294967295)
+) STRICT;
+CREATE TABLE definition_investment_stats (
+    definition_hash INTEGER NOT NULL REFERENCES definitions(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 63),
+    stat_type_hash INTEGER NOT NULL CHECK (stat_type_hash BETWEEN 0 AND 4294967295),
+    value INTEGER NOT NULL CHECK (value BETWEEN -2147483648 AND 2147483647),
+    conditionally_active INTEGER NOT NULL CHECK (conditionally_active IN (0, 1)),
+    PRIMARY KEY (definition_hash, ordinal)
+) STRICT;
+CREATE TABLE definition_energy_costs (
+    definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,
+    energy_cost INTEGER NOT NULL CHECK (energy_cost BETWEEN -2147483648 AND 2147483647),
+    energy_type INTEGER NOT NULL CHECK (energy_type BETWEEN 0 AND 4294967295),
+    energy_type_hash INTEGER NOT NULL CHECK (energy_type_hash BETWEEN 0 AND 4294967295)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V26_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definition_armor) OR EXISTS (SELECT 1 FROM definition_investment_stats) OR EXISTS (SELECT 1 FROM definition_energy_costs) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE definition_energy_costs;
+DROP TABLE definition_investment_stats;
+DROP TABLE definition_armor;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
 
 const SCHEMA_V25_UP: &str = r#"
 CREATE TABLE item_energy (

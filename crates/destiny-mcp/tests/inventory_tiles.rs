@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 fn fixture() -> InventorySearchResult {
     let definition = ItemDefinition {
+        armor: Default::default(),
         non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,

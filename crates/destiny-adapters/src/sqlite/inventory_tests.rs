@@ -966,6 +966,7 @@ fn sync_filters_plugs_before_sqlite_publication_and_keeps_unknown_without_manife
     let definitions = [(60, "frames"), (61, "shader"), (64, "shader")]
         .into_iter()
         .map(|(hash, category)| ItemDefinition {
+            armor: Default::default(),
             non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
@@ -1153,6 +1154,7 @@ fn sync_publishes_only_named_known_subclass_options() {
     ]
     .into_iter()
     .map(|(hash, category, name)| ItemDefinition {
+        armor: Default::default(),
         non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
@@ -1724,6 +1726,7 @@ fn manifest_replacement() -> DefinitionReplacementInput {
         definitions: ManifestDefinitions {
             version: DefinitionVersion::new("manifest-v1"),
             definitions: vec![ItemDefinition {
+                armor: Default::default(),
                 non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,

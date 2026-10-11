@@ -2510,6 +2510,7 @@ mod tests {
             available_mods: Vec::new(),
             stats: Vec::new(),
             definition: destiny_app::ItemDefinition {
+                armor: Default::default(),
                 non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,

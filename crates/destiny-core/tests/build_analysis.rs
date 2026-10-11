@@ -18,6 +18,7 @@ fn definition(hash: i64, bucket: i64) -> ItemDefinition {
         plug_category: None,
         tags: vec![],
         version: DefinitionVersion::new("v1"),
+        armor: Default::default(),
         non_transferrable: Some(false),
         is_instance_item: Some(true),
         does_postmaster_pull_have_side_effects: None,

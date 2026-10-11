@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 29] = [
+const EXPECTED_TABLE_NAMES: [&str; 32] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -19,6 +19,9 @@ const EXPECTED_TABLE_NAMES: [&str; 29] = [
     "characters",
     "clarity_insights",
     "clarity_metadata",
+    "definition_armor",
+    "definition_energy_costs",
+    "definition_investment_stats",
     "definition_search",
     "definition_tags",
     "definitions",
@@ -54,7 +57,25 @@ const EXPECTED_INDEX_NAMES: [&str; 5] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 151] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 165] = [
+    ("definition_armor", "definition_hash", "INTEGER"),
+    ("definition_armor", "stat_group_hash", "INTEGER"),
+    ("definition_armor", "plug_category_hash", "INTEGER"),
+    ("definition_armor", "aspect_capacity", "INTEGER"),
+    ("definition_armor", "equipable_item_set_hash", "INTEGER"),
+    ("definition_investment_stats", "definition_hash", "INTEGER"),
+    ("definition_investment_stats", "ordinal", "INTEGER"),
+    ("definition_investment_stats", "stat_type_hash", "INTEGER"),
+    ("definition_investment_stats", "value", "INTEGER"),
+    (
+        "definition_investment_stats",
+        "conditionally_active",
+        "INTEGER",
+    ),
+    ("definition_energy_costs", "definition_hash", "INTEGER"),
+    ("definition_energy_costs", "energy_cost", "INTEGER"),
+    ("definition_energy_costs", "energy_type", "INTEGER"),
+    ("definition_energy_costs", "energy_type_hash", "INTEGER"),
     ("builds", "membership_id", "TEXT"),
     ("builds", "membership_type", "INTEGER"),
     ("builds", "id", "TEXT"),
@@ -883,7 +904,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 25);
+    assert_eq!(LATEST_SCHEMA_VERSION, 26);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION

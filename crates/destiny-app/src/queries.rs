@@ -1769,6 +1769,7 @@ mod tests {
         tags: Vec<&str>,
     ) -> ItemDefinition {
         ItemDefinition {
+            armor: Default::default(),
             non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,

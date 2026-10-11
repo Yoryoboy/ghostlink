@@ -73,6 +73,7 @@ fn catalog() -> DefinitionReplacementInput {
                 plug_category: category,
                 tags: vec!["baseline".into(), format!("family-{}", hash % 12)],
                 version: DefinitionVersion::new(VERSION),
+                armor: Default::default(),
                 non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: Some(hash <= 14_000),

@@ -267,6 +267,8 @@ parse_filter_name!(ClassType, Titan, Hunter, Warlock, Any, Unknown);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemDefinition {
+    /// Manifest-only investment and plug metadata, never runtime totals.
+    pub armor: crate::ArmorDefinition,
     /// Official top-level nonTransferrable; absence is retained.
     pub non_transferrable: Option<bool>,
     pub hash: ItemHash,

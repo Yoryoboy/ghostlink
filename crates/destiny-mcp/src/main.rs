@@ -1374,6 +1374,7 @@ mod tests {
             hash: ItemHash::new(1001),
             name: "Shared equipment".into(),
             bucket_hash: Some(BucketHash::new(1498876634)),
+            armor: Default::default(),
             non_transferrable: None,
             does_postmaster_pull_have_side_effects: Some(false),
             is_instance_item: Some(true),

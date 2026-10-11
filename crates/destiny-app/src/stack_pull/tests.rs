@@ -63,6 +63,7 @@ fn definition() -> ItemDefinition {
     ItemDefinition {
         hash: ItemHash::new(7),
         bucket_hash: Some(BucketHash::new(BUCKET)),
+        armor: Default::default(),
         non_transferrable: None,
         does_postmaster_pull_have_side_effects: Some(false),
         is_instance_item: Some(false),

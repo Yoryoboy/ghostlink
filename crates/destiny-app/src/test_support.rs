@@ -362,6 +362,7 @@ impl InMemoryDefinitionRepository {
         }
         let mut seen = HashSet::with_capacity(definitions.definitions.len());
         for definition in &definitions.definitions {
+            definition.armor.validate()?;
             if definition.version != definitions.version || !seen.insert(definition.hash) {
                 return Err(AppError::new(ErrorCategory::ProviderValidation));
             }
@@ -2372,6 +2373,7 @@ mod tests {
 
     fn item_definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
         ItemDefinition {
+            armor: Default::default(),
             non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
@@ -2944,6 +2946,7 @@ mod tests {
     fn repositories_and_gateways_cover_contract_outcomes() {
         let hash = ItemHash::new(7);
         let definition = ItemDefinition {
+            armor: Default::default(),
             non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,

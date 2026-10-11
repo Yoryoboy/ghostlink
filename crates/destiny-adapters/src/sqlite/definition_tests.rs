@@ -627,6 +627,7 @@ fn storage_error() -> AppError {
 
 fn item(hash: i64, name: &str) -> ItemDefinition {
     ItemDefinition {
+        armor: Default::default(),
         non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
@@ -653,6 +654,7 @@ fn versioned(mut definition: ItemDefinition, version: &str) -> ItemDefinition {
 
 fn full_definition(hash: i64, tags: &[&str]) -> ItemDefinition {
     ItemDefinition {
+        armor: Default::default(),
         non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
@@ -695,6 +697,7 @@ fn base_manifest() -> ManifestDefinitions {
                 stack_unique_label: None,
                 hash: ItemHash::new(10),
                 bucket_hash: Some(BucketHash::new(100)),
+                armor: Default::default(),
                 name: "Alpha".into(),
                 item_type: Some("Auto Rifle".into()),
                 tier: Some("Legendary".into()),
@@ -713,6 +716,7 @@ fn base_manifest() -> ManifestDefinitions {
                 stack_unique_label: None,
                 hash: ItemHash::new(20),
                 bucket_hash: None,
+                armor: Default::default(),
                 name: "Beta".into(),
                 item_type: None,
                 tier: None,

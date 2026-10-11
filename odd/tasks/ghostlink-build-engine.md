@@ -177,9 +177,24 @@ coverage (`domain.rs:123-126`).
     DIM evidence `d2-item-factory.ts:544,586`, `sockets.ts:133-141`.
     Workspace: 2082 passed all-features, 2050 default, 0 failed; clippy both
     modes, fmt, diff check, pattern-insertion check clean.
-  - [ ] **BE-005b — Manifest armor and socket catalog.** Investment stats,
-    stat groups, plug category hashes, socket topology/categories, plug sets,
-    energy costs, aspect capacity, equipable item sets.
+  - [x] **BE-005b1 — Manifest item armor fields.** Item `investmentStats`
+    (with conditional flag), `stats.statGroupHash`,
+    `equippingBlock.equipableItemSetHash`, numeric `plug.plugCategoryHash`,
+    `plug.energyCost`, aspect `plug.energyCapacity.capacityValue`.
+    Done: `destiny-core/src/armor_definition.rs`,
+    `sqlite/armor_definitions.rs`, migration 26 (STRICT, cascading, guarded
+    downgrade); the migration invalidates Manifest freshness so the next run
+    re-downloads the same version once (existing rows lack the new fields).
+    DIM evidence `inventory/store/stats.ts:140,230,342-390`,
+    `masterwork.ts:98-104`, `d2-item-factory.ts:563,817-818`,
+    `loadout-drawer/loadout-utils.ts:946-954`. Workspace: 2091 passed
+    all-features, 2059 default, 0 failed; clippy both modes, fmt, diff check,
+    pattern-insertion check clean.
+  - [ ] **BE-005b2 — Manifest socket and set catalog.** Item socket entries
+    and categories, reusable plug items; DestinyStatGroupDefinition,
+    DestinySocketTypeDefinition, DestinySocketCategoryDefinition,
+    DestinyPlugSetDefinition, DestinyEquipableItemSetDefinition (table names
+    confirmed in DIM `destiny2/d2-definitions.ts:56-95,121-149`).
   - [ ] **BE-005c — DIM armor model.** Base/masterwork/tuning/set-bonus
     derivations with fixtures.
   - [ ] **BE-005d — Build capture completion.** Equipped subclass/artifact
