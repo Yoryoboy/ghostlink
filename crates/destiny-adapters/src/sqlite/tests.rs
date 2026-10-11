@@ -51,7 +51,7 @@ const EXPECTED_INDEX_NAMES: [&str; 5] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 136] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 138] = [
     ("builds", "membership_id", "TEXT"),
     ("builds", "membership_type", "INTEGER"),
     ("builds", "id", "TEXT"),
@@ -169,6 +169,7 @@ const EXPECTED_COLUMNS: [(&str, &str, &str); 136] = [
     ("definitions", "is_instance_item", "INTEGER"),
     ("definitions", "max_stack_size", "INTEGER"),
     ("definitions", "stack_unique_label", "TEXT"),
+    ("definitions", "non_transferrable", "INTEGER"),
     ("item_stats", "instance_id", "TEXT"),
     ("item_stats", "stat_hash", "INTEGER"),
     ("item_stats", "value", "INTEGER"),
@@ -189,6 +190,7 @@ const EXPECTED_COLUMNS: [(&str, &str, &str); 136] = [
     ("items", "equipped", "INTEGER"),
     ("items", "locked", "INTEGER"),
     ("items", "power", "INTEGER"),
+    ("items", "transfer_status", "INTEGER"),
     ("sync_metadata", "dataset", "TEXT"),
     ("sync_metadata", "checked_at", "TEXT"),
     ("sync_metadata", "source", "TEXT"),
@@ -865,7 +867,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 23);
+    assert_eq!(LATEST_SCHEMA_VERSION, 24);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION

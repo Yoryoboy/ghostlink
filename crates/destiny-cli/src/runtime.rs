@@ -600,6 +600,7 @@ mod pull_store_tests {
         let definition = ItemDefinition {
             hash: ItemHash::new(7),
             bucket_hash: Some(BucketHash::new(1498876634)),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: Some(false),
             is_instance_item: Some(true),
             max_stack_size: None,
@@ -1312,6 +1313,7 @@ mod tests {
                         plug_category: None,
                         tags: vec![],
                         version,
+                        non_transferrable: None,
                         does_postmaster_pull_have_side_effects: None,
                         is_instance_item: None,
                         max_stack_size: None,
@@ -1943,6 +1945,7 @@ mod tests {
                                     class_type: None,
                                     plug_category: None,
                                     tags: Vec::new(),
+                                    non_transferrable: None,
                                     does_postmaster_pull_have_side_effects: None,
                                     is_instance_item: None,
                                     max_stack_size: None,
@@ -2040,6 +2043,7 @@ mod tests {
                                     class_type: None,
                                     plug_category: None,
                                     tags: Vec::new(),
+                                    non_transferrable: None,
                                     does_postmaster_pull_have_side_effects: None,
                                     is_instance_item: None,
                                     max_stack_size: None,
@@ -2166,6 +2170,7 @@ mod tests {
                                 definitions: destiny_app::ManifestDefinitions {
                                     version: destiny_app::DefinitionVersion::new("v1"),
                                     definitions: vec![destiny_app::ItemDefinition {
+                                        non_transferrable: None,
                                         does_postmaster_pull_have_side_effects: None,
                                         is_instance_item: None,
                                         max_stack_size: None,

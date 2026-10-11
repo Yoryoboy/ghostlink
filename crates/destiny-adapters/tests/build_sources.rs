@@ -19,6 +19,7 @@ fn definition(hash: i64, bucket: Option<BucketHash>, category: Option<&str>) -> 
         plug_category: category.map(str::to_owned),
         tags: vec![],
         version: DefinitionVersion::new("v1"),
+        non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
         max_stack_size: None,
@@ -73,6 +74,7 @@ fn fixture() -> ProfileSyncService<Gateway, SqliteStore> {
                 plug_hash: ItemHash::new(10),
                 enabled: true,
             }],
+            transfer_status: None,
             available_plugs: vec![],
         })
         .collect();

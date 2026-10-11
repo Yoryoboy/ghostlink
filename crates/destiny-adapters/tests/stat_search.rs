@@ -13,6 +13,7 @@ fn definitions(
         definitions: ManifestDefinitions {
             version: version.clone(),
             definitions: vec![ItemDefinition {
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -142,6 +143,7 @@ fn seeded(stats: Vec<StatDefinition>) -> (SqliteStore, InMemorySearchRepository)
     ]
     .into_iter()
     .map(|(id, stats)| ItemInstance {
+        transfer_status: None,
         available_plugs: vec![
             AvailablePlug {
                 socket_index: 0,

@@ -74,6 +74,7 @@ fn item_description_upgrade_forces_same_version_republish_then_skips() {
         version: DefinitionVersion::new("v1"),
         definitions: vec![ManifestDefinitionCandidate {
             perk_hashes: Vec::new(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -482,6 +483,7 @@ fn missing_stat_catalog_forces_same_version_download_then_skips() {
                 perk_hashes: Vec::new(),
                 hash: ItemHash::new(10),
                 bucket_hash: None,
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -670,6 +672,7 @@ fn items(version: &str, name: &str) -> DefinitionReplacementInput {
         definitions: ManifestDefinitions {
             version: DefinitionVersion::new(version),
             definitions: vec![ItemDefinition {
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -715,6 +718,7 @@ fn plug_category_upgrade_forces_same_version_republish_then_skips() {
                 item_type: None,
                 tier: None,
                 element: None,
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -788,6 +792,7 @@ fn search_filter_upgrade_forces_same_version_republish_then_skips() {
                 tier: None,
                 element: None,
                 description: None,
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -848,6 +853,7 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
                     bucket_hash: None,
                     description: None,
                     perk_hashes: Vec::new(),
+                    non_transferrable: None,
                     does_postmaster_pull_have_side_effects: None,
                     is_instance_item: None,
                     max_stack_size: None,
@@ -1003,7 +1009,7 @@ fn populated_v2_round_trip_restores_exact_schema_and_data() {
         .execute_batch(
             "INSERT INTO active_profile VALUES (1, 'membership', '3');
          INSERT INTO characters VALUES ('character', NULL, NULL, NULL, NULL, 2000);
-         INSERT INTO items VALUES ('instance', 10, 'character', 'character', NULL, 1, 1, 0, 2000);
+         INSERT INTO items(instance_id,item_hash,location_kind,location_character_id,location_other,quantity,equipped,locked,power) VALUES ('instance', 10, 'character', 'character', NULL, 1, 1, 0, 2000);
          INSERT INTO item_perks VALUES ('instance', 0, 4294967295, 1, 0);
          INSERT INTO sync_metadata VALUES ('profile_inventory', '100', 'profile', '1', 'v2');",
         )

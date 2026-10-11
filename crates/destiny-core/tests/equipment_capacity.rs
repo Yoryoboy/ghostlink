@@ -47,6 +47,7 @@ fn acquisition(count: usize) -> ProfileAcquisition {
             power: None,
             perks: vec![],
             plugs: vec![],
+            transfer_status: None,
             available_plugs: vec![],
             stats: vec![],
         })

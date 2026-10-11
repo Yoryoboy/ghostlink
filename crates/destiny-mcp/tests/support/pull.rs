@@ -60,6 +60,7 @@ fn snapshot(arrived: bool) -> ProfileAcquisition {
                 stats: vec![],
                 plugs: vec![],
                 perks: vec![],
+                transfer_status: None,
                 available_plugs: vec![],
             }],
             stacks: vec![],
@@ -139,6 +140,7 @@ impl Fixture {
         let definition = ItemDefinition {
             hash: ItemHash::new(7),
             bucket_hash: Some(BucketHash::new(1498876634)),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: Some(false),
             is_instance_item: Some(true),
             max_stack_size: None,

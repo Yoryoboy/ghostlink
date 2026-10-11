@@ -142,6 +142,7 @@ fn instance(id: &str, hash: i64, location: ItemLocation) -> ItemInstance {
         perks: vec![],
         plugs: vec![],
         stats: vec![],
+        transfer_status: None,
         available_plugs: vec![],
     }
 }
@@ -156,6 +157,7 @@ fn stack(hash: i64, quantity: i64, container: StackContainer) -> StackObservatio
 }
 fn definition(hash: i64, name: &str) -> ItemDefinition {
     ItemDefinition {
+        non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
         max_stack_size: None,

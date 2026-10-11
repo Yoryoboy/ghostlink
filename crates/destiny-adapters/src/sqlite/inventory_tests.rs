@@ -15,6 +15,87 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
+fn transfer_status_fake_sqlite_roundtrip_revision_and_search_parity() {
+    use destiny_core::SearchRepository;
+    let mut fake = destiny_app::test_support::InMemoryInventoryRepository::new();
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut input = full_input();
+    let mut previous = 0;
+    for status in [
+        None,
+        Some(0),
+        Some(1),
+        Some(2),
+        Some(3),
+        Some(4),
+        Some(u32::MAX),
+        None,
+    ] {
+        input.items[0].transfer_status = status;
+        let real = store.replace_current(input.clone()).unwrap();
+        assert_eq!(real, fake.replace_current(input.clone()).unwrap());
+        assert_eq!(real.metadata.revision.value(), previous + 1);
+        previous = real.metadata.revision.value();
+        assert_eq!(store.load_current().unwrap(), Some(real.clone()));
+        assert_eq!(
+            store
+                .replace_current(input.clone())
+                .unwrap()
+                .metadata
+                .revision,
+            real.metadata.revision
+        );
+        assert_eq!(
+            store.lookup_instance(&input.items[0].instance_id).unwrap(),
+            Resolution::Unique(input.items[0].clone())
+        );
+    }
+}
+
+#[test]
+fn transferability_v24_preserves_legacy_rows_and_guards_downgrade() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.replace_current(full_input()).unwrap();
+    store.replace_definitions(manifest_replacement()).unwrap();
+    let before = store.load_current().unwrap();
+    store.migrate_to(23).unwrap();
+    store.migrate_to(24).unwrap();
+    assert_eq!(store.load_current().unwrap(), before);
+    for (table, column, bad) in [
+        ("items", "transfer_status", -1_i64),
+        ("items", "transfer_status", 4294967296),
+        ("definitions", "non_transferrable", 2),
+    ] {
+        assert!(
+            store
+                .connection()
+                .execute(&format!("UPDATE {table} SET {column}=?1"), [bad])
+                .is_err()
+        );
+    }
+    store
+        .connection()
+        .execute("UPDATE items SET transfer_status=0", [])
+        .unwrap();
+    assert!(store.migrate_to(23).is_err());
+    assert_eq!(store.schema_version().unwrap(), 24);
+    store
+        .connection()
+        .execute("UPDATE items SET transfer_status=NULL", [])
+        .unwrap();
+    store
+        .connection()
+        .execute("UPDATE definitions SET non_transferrable=0", [])
+        .unwrap();
+    assert!(store.migrate_to(23).is_err());
+    store
+        .connection()
+        .execute("UPDATE definitions SET non_transferrable=NULL", [])
+        .unwrap();
+    store.migrate_to(23).unwrap();
+}
+
+#[test]
 fn publication_diff_preserves_untouched_rows() {
     let mut store = SqliteStore::open_in_memory().unwrap();
     let rows = Some(vec![]);
@@ -670,6 +751,7 @@ fn sync_filters_plugs_before_sqlite_publication_and_keeps_unknown_without_manife
     let definitions = [(60, "frames"), (61, "shader"), (64, "shader")]
         .into_iter()
         .map(|(hash, category)| ItemDefinition {
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -856,6 +938,7 @@ fn sync_publishes_only_named_known_subclass_options() {
     ]
     .into_iter()
     .map(|(hash, category, name)| ItemDefinition {
+        non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
         max_stack_size: None,
@@ -1073,6 +1156,7 @@ fn full_input() -> InventorySnapshotInput {
         ],
         items: vec![
             ItemInstance {
+                transfer_status: None,
                 available_plugs: Vec::new(),
                 instance_id: "instance-1".into(),
                 item_hash: ItemHash::new(-42),
@@ -1104,6 +1188,7 @@ fn full_input() -> InventorySnapshotInput {
                 ],
             },
             ItemInstance {
+                transfer_status: None,
                 available_plugs: Vec::new(),
                 instance_id: "instance-2".into(),
                 item_hash: ItemHash::new(7),
@@ -1121,6 +1206,7 @@ fn full_input() -> InventorySnapshotInput {
                 }],
             },
             ItemInstance {
+                transfer_status: None,
                 available_plugs: Vec::new(),
                 instance_id: "instance-3".into(),
                 item_hash: ItemHash::new(8),
@@ -1414,6 +1500,7 @@ fn manifest_replacement() -> DefinitionReplacementInput {
         definitions: ManifestDefinitions {
             version: DefinitionVersion::new("manifest-v1"),
             definitions: vec![ItemDefinition {
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,

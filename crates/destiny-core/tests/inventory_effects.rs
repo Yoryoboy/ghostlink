@@ -222,6 +222,7 @@ fn instance(value: &str, location: ItemLocation, equipped: bool) -> ItemInstance
             plug_hash: ItemHash::new(8),
             enabled: true,
         }],
+        transfer_status: None,
         available_plugs: vec![AvailablePlug {
             socket_index: 2,
             plug_hash: ItemHash::new(9),

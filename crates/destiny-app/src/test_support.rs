@@ -2260,6 +2260,7 @@ mod tests {
             source: SourceMarker::Profile,
             characters: Vec::<Character>::new(),
             items: vec![ItemInstance {
+                transfer_status: None,
                 available_plugs: Vec::new(),
                 instance_id: "instance".into(),
                 item_hash: ItemHash::new(7),
@@ -2307,6 +2308,7 @@ mod tests {
             ],
             items: vec![
                 ItemInstance {
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: "instance-1".into(),
                     item_hash: ItemHash::new(7),
@@ -2331,6 +2333,7 @@ mod tests {
                     ],
                 },
                 ItemInstance {
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: "instance-2".into(),
                     item_hash: ItemHash::new(8),
@@ -2360,6 +2363,7 @@ mod tests {
 
     fn item_definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
         ItemDefinition {
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -2397,6 +2401,7 @@ mod tests {
         perk_hashes: Vec<u32>,
     ) -> ItemInstance {
         ItemInstance {
+            transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
@@ -2927,6 +2932,7 @@ mod tests {
     fn repositories_and_gateways_cover_contract_outcomes() {
         let hash = ItemHash::new(7);
         let definition = ItemDefinition {
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,

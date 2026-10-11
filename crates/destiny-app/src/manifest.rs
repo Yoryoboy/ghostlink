@@ -316,6 +316,7 @@ fn normalize_with_count(acquisition: ManifestAcquisition) -> Result<NormalizedMa
             descriptions.push(description);
         }
         definitions.push(ItemDefinition {
+            non_transferrable: candidate.non_transferrable,
             does_postmaster_pull_have_side_effects: candidate
                 .does_postmaster_pull_have_side_effects,
             is_instance_item: candidate.is_instance_item,
@@ -569,6 +570,7 @@ mod tests {
 
     fn candidate(hash: i64, name: &str) -> ManifestDefinitionCandidate {
         ManifestDefinitionCandidate {
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -619,6 +621,7 @@ mod tests {
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(11)),
                     perk_hashes: Vec::new(),
+                    non_transferrable: None,
                     does_postmaster_pull_have_side_effects: None,
                     is_instance_item: None,
                     max_stack_size: None,
@@ -646,6 +649,7 @@ mod tests {
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(11)),
                     perk_hashes: Vec::new(),
+                    non_transferrable: None,
                     does_postmaster_pull_have_side_effects: None,
                     is_instance_item: None,
                     max_stack_size: None,
@@ -857,6 +861,7 @@ mod tests {
         // the candidate or to the normalized
         // record, this test would stop compiling.
         let ManifestDefinitionCandidate {
+            non_transferrable: _,
             does_postmaster_pull_have_side_effects: _,
             is_instance_item: _,
             max_stack_size: _,
@@ -889,6 +894,7 @@ mod tests {
         let published =
             normalize_manifest(acquisition(VERSION, vec![candidate(1, "Alpha")])).unwrap();
         let ItemDefinition {
+            non_transferrable: _,
             does_postmaster_pull_have_side_effects: _,
             is_instance_item: _,
             max_stack_size: _,
@@ -1021,6 +1027,7 @@ mod tests {
 
         fn item_definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
             ItemDefinition {
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,

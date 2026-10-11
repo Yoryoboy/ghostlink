@@ -847,6 +847,7 @@ impl DefinitionReplacementInput {
 /// record and needs no provider metadata to rule out.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ManifestDefinitionCandidate {
+    pub non_transferrable: Option<bool>,
     /// Optional untrusted tooltip text; application validation may omit it.
     pub description: Option<String>,
     /// Ordered, bounded references into the same-version effect catalog.

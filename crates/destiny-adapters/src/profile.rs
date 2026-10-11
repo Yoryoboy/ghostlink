@@ -313,6 +313,7 @@ pub fn decode_profile_with_observations(
             _ => {}
         }
         items.push(ItemInstance {
+            transfer_status: raw.transfer_status,
             available_plugs: decode_available_plugs(reusable, &raw.instance_id)?,
             instance_id: ItemInstanceId::new(raw.instance_id),
             item_hash: raw.item_hash,
@@ -557,6 +558,7 @@ enum RawItem {
 
 /// One retained item before its instance and perk components are resolved.
 struct RawInstance {
+    transfer_status: Option<u32>,
     instance_id: String,
     item_hash: ItemHash,
     quantity: u32,
@@ -891,6 +893,11 @@ fn decode_item(value: &Value, origin: ItemOrigin<'_>) -> Result<RawItem, AppErro
     let state = decode_state(object.get("state"))?;
     let locked = state & 1 != 0;
     Ok(RawItem::Instanced(RawInstance {
+        transfer_status: object
+            .get("transferStatus")
+            .filter(|v| !v.is_null())
+            .map(|v| decode_required_u32(Some(v)))
+            .transpose()?,
         instance_id,
         item_hash,
         quantity,
@@ -1785,6 +1792,34 @@ mod tests {
         assert_eq!(snapshot.stacks.len(), 2);
     }
 
+    #[test]
+    fn transfer_status_is_retained_and_absence_is_unknown() {
+        let absent = decode_mutated(|_| {}).unwrap();
+        assert_eq!(absent.items[0].transfer_status, None);
+        for status in [0_u32, 1, 2, 3, 4, u32::MAX] {
+            let input = decode_mutated(|value| {
+                value["Response"]["profileInventory"]["data"]["items"][0]["transferStatus"] =
+                    json!(status);
+            })
+            .unwrap();
+            assert_eq!(
+                input
+                    .items
+                    .iter()
+                    .find(|i| i.instance_id.as_str() == "700000000000000001")
+                    .unwrap()
+                    .transfer_status,
+                Some(status)
+            );
+        }
+        for invalid in [json!(-1), json!(4294967296_u64), json!(true), json!("1")] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["profileInventory"]["data"]["items"][0]["transferStatus"] =
+                    invalid;
+            }));
+        }
+    }
+
     fn fixture_value() -> Value {
         serde_json::from_slice(FIXTURE).expect("fixture is JSON")
     }
@@ -2178,6 +2213,7 @@ mod tests {
             ],
             items: vec![
                 ItemInstance {
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000001"),
                     item_hash: ItemHash::new(1001),
@@ -2200,6 +2236,7 @@ mod tests {
                     perks: Vec::new(),
                 },
                 ItemInstance {
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000003"),
                     item_hash: ItemHash::new(1003),
@@ -2213,6 +2250,7 @@ mod tests {
                     perks: Vec::new(),
                 },
                 ItemInstance {
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000004"),
                     item_hash: ItemHash::new(2001),
@@ -2226,6 +2264,7 @@ mod tests {
                     perks: Vec::new(),
                 },
                 ItemInstance {
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000005"),
                     item_hash: ItemHash::new(2003),
@@ -2239,6 +2278,7 @@ mod tests {
                     perks: Vec::new(),
                 },
                 ItemInstance {
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000006"),
                     item_hash: ItemHash::new(3001),
@@ -2281,6 +2321,7 @@ mod tests {
                     ],
                 },
                 ItemInstance {
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000007"),
                     item_hash: ItemHash::new(3002),

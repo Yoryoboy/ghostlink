@@ -30,6 +30,7 @@ fn inspection() -> ItemInspection {
         })
         .collect(),
         definition: ItemDefinition {
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -57,6 +58,7 @@ fn inspection() -> ItemInspection {
             stats: vec![],
             plugs: vec![],
             perks: vec![],
+            transfer_status: None,
             available_plugs: vec![],
         },
         metadata: QueryMetadata {

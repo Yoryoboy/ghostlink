@@ -2489,6 +2489,7 @@ mod tests {
             available_mods: Vec::new(),
             stats: Vec::new(),
             definition: destiny_app::ItemDefinition {
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -2506,6 +2507,7 @@ mod tests {
                 version: destiny_app::DefinitionVersion::new("manifest-v1"),
             },
             instance: destiny_app::ItemInstance {
+                transfer_status: None,
                 available_plugs: Vec::new(),
                 instance_id: ItemInstanceId::new("inst-1"),
                 item_hash: destiny_app::ItemHash::new(1),

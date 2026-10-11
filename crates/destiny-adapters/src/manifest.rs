@@ -278,6 +278,8 @@ impl<T> OptionalField<T> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct InventoryRecord {
+    #[serde(default)]
+    non_transferrable: Option<bool>,
     hash: u32,
     #[serde(default)]
     perks: Vec<InventoryPerk>,
@@ -890,6 +892,7 @@ fn decode_record(
         )
     });
     Ok(Some(ManifestDefinitionCandidate {
+        non_transferrable: record.non_transferrable,
         does_postmaster_pull_have_side_effects: record.does_postmaster_pull_have_side_effects,
         is_instance_item,
         max_stack_size,
@@ -3391,6 +3394,7 @@ mod transport_tests {
         let repository = InMemoryDefinitionRepository::new(
             prior_version.clone(),
             vec![ItemDefinition {
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,

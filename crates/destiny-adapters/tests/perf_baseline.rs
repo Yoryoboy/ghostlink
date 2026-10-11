@@ -73,6 +73,7 @@ fn catalog() -> DefinitionReplacementInput {
                 plug_category: category,
                 tags: vec!["baseline".into(), format!("family-{}", hash % 12)],
                 version: DefinitionVersion::new(VERSION),
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: Some(hash <= 14_000),
                 max_stack_size: Some(if hash > 19_700 { 999 } else { 1 }),
@@ -163,6 +164,7 @@ fn profile() -> InventorySnapshotInput {
                     enabled: true,
                 })
                 .collect(),
+            transfer_status: None,
             available_plugs: (0..5)
                 .flat_map(|socket_index| {
                     (0..3).map(move |p| AvailablePlug {

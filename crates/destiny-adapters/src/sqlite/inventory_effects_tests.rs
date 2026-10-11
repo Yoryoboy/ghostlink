@@ -206,6 +206,7 @@ fn input() -> InventorySnapshotInput {
                 perks: vec![],
                 plugs: vec![],
                 stats: vec![],
+                transfer_status: None,
                 available_plugs: vec![],
             })
             .collect(),

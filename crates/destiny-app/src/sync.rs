@@ -628,6 +628,7 @@ mod tests {
                 source: SourceMarker::Profile,
                 characters: Vec::new(),
                 items: vec![ItemInstance {
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: "instance-1".into(),
                     item_hash: ItemHash::new(7),
@@ -1363,6 +1364,7 @@ mod tests {
             ]
             .into_iter()
             .map(|(hash, category)| ItemDefinition {
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,

@@ -11,6 +11,7 @@ fn definition(
     slot: Option<domain::ItemSlot>,
 ) -> ItemDefinition {
     ItemDefinition {
+        non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
         max_stack_size: None,
@@ -50,6 +51,7 @@ fn catalog_kind_resolution_matches_sets_and_reports_surface_parity() {
     ]
     .into_iter()
     .map(|(id, hash, plugs)| ItemInstance {
+        transfer_status: None,
         available_plugs: vec![
             AvailablePlug {
                 socket_index: 1,

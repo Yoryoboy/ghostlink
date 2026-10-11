@@ -733,12 +733,16 @@ fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> 
 /// otherwise unexpected ordinal, an unknown item instance, or an unparseable perk
 /// value is corrupt local state and fails closed.
 fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
+    let transfer = if super::migrations::read_user_version(connection)? >= 24 {
+        "transfer_status"
+    } else {
+        "NULL"
+    };
+    let sql = format!(
+        "SELECT instance_id, item_hash, location_kind, location_character_id, location_other, quantity, equipped, locked, power, {transfer} FROM items ORDER BY instance_id"
+    );
     let mut statement = connection
-        .prepare_cached(
-            "SELECT instance_id, item_hash, location_kind, location_character_id, \
-             location_other, quantity, equipped, locked, power \
-             FROM items ORDER BY instance_id",
-        )
+        .prepare_cached(&sql)
         .map_err(|_| storage_failure())?;
     let rows = statement
         .query_map([], |row| {
@@ -752,6 +756,7 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
                 row.get::<_, i64>(6)?,
                 row.get::<_, i64>(7)?,
                 row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<i64>>(9)?,
             ))
         })
         .map_err(|_| storage_failure())?;
@@ -768,6 +773,7 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
             equipped,
             locked,
             power,
+            transfer_status,
         ) = row.map_err(|_| storage_failure())?;
 
         let location = match (
@@ -785,6 +791,10 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
         };
 
         items.push(ItemInstance {
+            transfer_status: transfer_status
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| storage_failure())?,
             available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
@@ -1271,30 +1281,34 @@ fn replace_projection(
         )?;
     }
 
+    let has_transfer = super::migrations::read_user_version(connection)? >= 24;
     for item in &input.items {
         if old_items.get(&item.instance_id).copied() == Some(item) {
             continue;
         }
         let (location_kind, location_character_id, location_other) =
             encode_location(&item.location);
-        execute_cached(
-            connection,
-            "INSERT INTO items \
-                 (instance_id, item_hash, location_kind, location_character_id, location_other, \
-                  quantity, equipped, locked, power) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                item.instance_id.as_str(),
-                item.item_hash.value(),
-                location_kind,
-                location_character_id,
-                location_other,
-                i64::from(item.quantity),
-                encode_boolean(item.equipped),
-                encode_boolean(item.locked),
-                item.power.map(i64::from),
-            ],
-        )?;
+        let mut values: Vec<rusqlite::types::Value> = vec![
+            item.instance_id.as_str().to_owned().into(),
+            item.item_hash.value().into(),
+            location_kind.to_owned().into(),
+            location_character_id.map(str::to_owned).into(),
+            location_other.map(str::to_owned).into(),
+            i64::from(item.quantity).into(),
+            encode_boolean(item.equipped).into(),
+            encode_boolean(item.locked).into(),
+            item.power.map(i64::from).into(),
+        ];
+        let sql = if has_transfer {
+            values.push(item.transfer_status.map(i64::from).into());
+            "INSERT INTO items(instance_id,item_hash,location_kind,location_character_id,location_other,quantity,equipped,locked,power,transfer_status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
+        } else {
+            if item.transfer_status.is_some() {
+                return Err(storage_failure());
+            }
+            "INSERT INTO items(instance_id,item_hash,location_kind,location_character_id,location_other,quantity,equipped,locked,power) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"
+        };
+        execute_cached(connection, sql, rusqlite::params_from_iter(values))?;
 
         let mut ordinals = std::collections::HashMap::new();
         for plug in &item.available_plugs {

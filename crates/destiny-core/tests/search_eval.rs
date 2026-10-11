@@ -14,6 +14,7 @@ fn definition() -> ItemDefinition {
     ItemDefinition {
         hash: ItemHash::new(1),
         bucket_hash: None,
+        non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
         max_stack_size: None,
@@ -65,6 +66,7 @@ fn term(text: &str) -> SearchTerm {
 }
 fn instance() -> ItemInstance {
     ItemInstance {
+        transfer_status: None,
         available_plugs: vec![],
         instance_id: ItemInstanceId::new("1"),
         item_hash: ItemHash::new(1),

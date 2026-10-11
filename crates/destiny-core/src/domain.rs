@@ -88,6 +88,8 @@ pub struct AvailablePlug {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemInstance {
+    /// Exact provider transferStatus; absent in legacy projections.
+    pub transfer_status: Option<u32>,
     /// Selectable weapon perks, armor mods and unknown plugs, stored separately
     /// from selected sockets. Socket order and per-socket plug order are content.
     pub available_plugs: Vec<AvailablePlug>,
@@ -117,6 +119,11 @@ pub struct ItemInstance {
 }
 
 impl ItemInstance {
+    /// DIM Boolean(nonTransferrable || transferStatus === NotTransferrable).
+    pub fn notransfer(&self, definition: &ItemDefinition) -> bool {
+        definition.non_transferrable == Some(true) || self.transfer_status == Some(2)
+    }
+
     /// Application publication filter. `None` means the definition is unknown
     /// and is retained; a known definition without a category supplies `Some("")`.
     /// The caller resolves hashes from the available definition catalog.
@@ -234,6 +241,8 @@ parse_filter_name!(ClassType, Titan, Hunter, Warlock, Any, Unknown);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemDefinition {
+    /// Official top-level nonTransferrable; absence is retained.
+    pub non_transferrable: Option<bool>,
     pub hash: ItemHash,
     /// Normal Manifest definition bucket, not an observed runtime container.
     pub bucket_hash: Option<BucketHash>,
@@ -441,6 +450,7 @@ mod plug_tests {
             power: None,
             perks: vec![],
             stats: vec![],
+            transfer_status: None,
             available_plugs: vec![AvailablePlug {
                 socket_index: 0,
                 plug_hash: ItemHash::new(1),
@@ -522,6 +532,7 @@ mod plug_tests {
         use super::{AvailablePlug, ItemInstance, ItemLocation, PlugSummary};
         use crate::{ItemHash, ItemInstanceId};
         let mut item = ItemInstance {
+            transfer_status: None,
             available_plugs: (1..=4)
                 .map(|hash| AvailablePlug {
                     socket_index: 0,
@@ -605,6 +616,7 @@ mod plug_tests {
         use super::{ItemInstance, ItemLocation, PlugSummary};
         use crate::{ItemHash, ItemInstanceId};
         let mut item = ItemInstance {
+            transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new("1"),
             item_hash: ItemHash::new(1),

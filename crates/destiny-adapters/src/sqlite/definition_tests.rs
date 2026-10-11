@@ -184,6 +184,34 @@ fn qualified_postmaster_metadata_is_refused_before_refresh_or_replacement() {
 }
 
 #[test]
+fn non_transferrable_fake_sqlite_roundtrip_and_revision_identity() {
+    let mut fake = destiny_app::test_support::InMemoryDefinitionRepository::new(
+        DefinitionVersion::new("v1"),
+        vec![],
+    );
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut next = replacement("v1", base_manifest().definitions);
+    let mut previous = None;
+    for flag in [None, Some(false), Some(true), None] {
+        next.definitions.definitions[0].non_transferrable = flag;
+        let real = store.replace_definitions(next.clone()).unwrap();
+        assert_eq!(real, fake.replace_definitions(next.clone()).unwrap());
+        if let Some(revision) = previous {
+            assert_eq!(real.revision.value(), revision + 1);
+        }
+        previous = Some(real.revision.value());
+        assert_eq!(
+            store.lookup_definition(ItemHash::new(10)).unwrap(),
+            Resolution::Unique(next.definitions.definitions[0].clone())
+        );
+        assert_eq!(
+            store.replace_definitions(next.clone()).unwrap().revision,
+            real.revision
+        );
+    }
+}
+
+#[test]
 fn qualified_metadata_v18_restart_and_content_identity() {
     let database = TempDatabase::new();
     let mut next = replacement("v1", base_manifest().definitions);
@@ -233,7 +261,7 @@ fn qualified_metadata_v18_all_publication_paths_and_identity() {
                 .connection()
                 .execute_batch(
                     "INSERT INTO active_profile VALUES(1,'123','3');
-                 INSERT INTO items VALUES('instance',10,'vault',NULL,NULL,1,0,0,NULL);
+                 INSERT INTO items(instance_id,item_hash,location_kind,location_character_id,location_other,quantity,equipped,locked,power) VALUES('instance',10,'vault',NULL,NULL,1,0,0,NULL);
                  INSERT INTO item_perks VALUES('instance',0,7,1,1);
                  INSERT INTO item_plugs VALUES('instance',0,8);
                  INSERT INTO item_stats VALUES('instance',9,-1);
@@ -599,6 +627,7 @@ fn storage_error() -> AppError {
 
 fn item(hash: i64, name: &str) -> ItemDefinition {
     ItemDefinition {
+        non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
         max_stack_size: None,
@@ -624,6 +653,7 @@ fn versioned(mut definition: ItemDefinition, version: &str) -> ItemDefinition {
 
 fn full_definition(hash: i64, tags: &[&str]) -> ItemDefinition {
     ItemDefinition {
+        non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
         max_stack_size: None,
@@ -658,6 +688,7 @@ fn base_manifest() -> ManifestDefinitions {
         version: DefinitionVersion::new("v1"),
         definitions: vec![
             ItemDefinition {
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -675,6 +706,7 @@ fn base_manifest() -> ManifestDefinitions {
                 version: DefinitionVersion::new("v1"),
             },
             ItemDefinition {
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,

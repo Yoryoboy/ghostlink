@@ -39,6 +39,7 @@ fn catalog() -> Vec<ItemDefinition> {
             6 => Some("armor_archetypes".into()),
             _ => None,
         },
+        non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
         max_stack_size: None,

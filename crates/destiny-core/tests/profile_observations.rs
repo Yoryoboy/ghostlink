@@ -26,6 +26,7 @@ fn input() -> InventorySnapshotInput {
             power: Some(10),
             perks: vec![],
             plugs: vec![],
+            transfer_status: None,
             available_plugs: vec![],
             stats: vec![],
         }],

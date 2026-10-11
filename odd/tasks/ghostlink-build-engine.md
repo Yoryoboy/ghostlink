@@ -118,7 +118,16 @@ Review follow-ups (non-blocking): bound per-bucket mod list length
 (`dim_loadout.rs:333`); equipped snapshot captures disabled plugs as mods
 (`destiny-app/src/builds.rs:176-185`); missing plug definitions skipped
 silently (`builds.rs:398-401`).
-- [ ] **BE-004 — Resolution and analysis v1.** DIM resolution semantics;
+- [x] **BE-004a — Transferability data.** DIM resolves hash-based items
+  (subclass, artifact, emblems) with a target-held copy, else the first
+  candidate only if not `notransfer` (`loadout-utils.ts:720-737`);
+  `notransfer = nonTransferrable || transferStatus === NotTransferrable`
+  (`store/d2-item-factory.ts:520-522`); `NotTransferrable = 2`
+  (`bungie-api-ts` 5.10.0 `destiny2/interfaces.d.ts:8995`). Done: definition
+  `non_transferrable` and instance `transfer_status` decoded from data
+  already acquired (no new Bungie components), synced and persisted
+  (migration 24, guarded downgrade), fake/SQLite parity, revision tests.
+- [ ] **BE-004b — Resolution and analysis v1.** DIM resolution semantics;
   findings supported by current data (missing items, exotic mismatch,
   invalid/nonmatching search, location of each item); CLI `build check`,
   MCP `analyze_build`.

@@ -1802,6 +1802,7 @@ mod tests {
 
     fn definition(hash: i64, name: &str) -> ItemDefinition {
         ItemDefinition {
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -1822,6 +1823,7 @@ mod tests {
 
     fn instance(identifier: &str, hash: i64) -> ItemInstance {
         ItemInstance {
+            transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(identifier),
             item_hash: ItemHash::new(hash),

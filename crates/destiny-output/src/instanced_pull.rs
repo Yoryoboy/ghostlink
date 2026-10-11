@@ -286,6 +286,7 @@ mod tests {
                 power: None,
                 stats: vec![],
                 plugs: vec![],
+                transfer_status: None,
                 available_plugs: vec![],
                 perks: vec![],
             }],
@@ -318,6 +319,7 @@ mod tests {
         let definition = ItemDefinition {
             hash: ItemHash::new(7),
             bucket_hash: Some(BucketHash::new(1498876634)),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: Some(false),
             is_instance_item: Some(true),
             max_stack_size: None,

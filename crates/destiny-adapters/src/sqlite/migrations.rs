@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 23;
+pub(crate) const LATEST_VERSION: u32 = 24;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 23] = [
+const MIGRATIONS: [Migration; 24] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -169,7 +169,24 @@ const MIGRATIONS: [Migration; 23] = [
         up: SCHEMA_V23_UP,
         down: "CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1)); INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM builds) THEN 0 ELSE 1 END; DROP TABLE downgrade_guard; DROP TABLE builds;",
     },
+    Migration {
+        version: 24,
+        up: SCHEMA_V24_UP,
+        down: SCHEMA_V24_DOWN,
+    },
 ];
+
+const SCHEMA_V24_UP: &str = r#"
+ALTER TABLE definitions ADD COLUMN non_transferrable INTEGER CHECK (non_transferrable IS NULL OR non_transferrable IN (0, 1));
+ALTER TABLE items ADD COLUMN transfer_status INTEGER CHECK (transfer_status IS NULL OR transfer_status BETWEEN 0 AND 4294967295);
+"#;
+const SCHEMA_V24_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definitions WHERE non_transferrable IS NOT NULL) OR EXISTS (SELECT 1 FROM items WHERE transfer_status IS NOT NULL) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+ALTER TABLE definitions DROP COLUMN non_transferrable;
+ALTER TABLE items DROP COLUMN transfer_status;
+"#;
 
 // Local user-authored definitions survive replacing the active synced profile.
 // Membership is explicit, like active_profile, but not a cascading foreign key.
