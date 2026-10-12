@@ -424,7 +424,7 @@ coverage (`domain.rs:123-126`).
   `EquipLoadout` check (dim-parity U4b/U4c) and live apply validation move
   to BE-010. A Ghostlink build is not an in-game loadout, so DIM-style
   preparation is needed regardless of that check.
-  - [ ] **BE-007a — Moves and equips.** DIM apply phases on top of the
+  - [x] **BE-007a — Moves and equips.** DIM apply phases on top of the
     existing move/equip actions: cross-character and Vault transfers,
     dequip with replacements, space, grouped equips, typed per-item
     outcomes; CLI `build apply`, MCP tool.
@@ -492,7 +492,18 @@ coverage (`domain.rs:123-126`).
       unit budget (~1,100 production, ~1,170 test lines), kept as one unit
       because executor and CLI are tested together. Workspace: 2238
       all-features, 2206 default, 0 failed; clippy both modes, fmt.
-    - [ ] **BE-007a2d — MCP tool.** `apply_build` with `dry_run`, schema
+    - [x] **BE-007a2d — MCP tool.** Done: MCP `apply_build`
+      ({id | name, character?, dry_run?}, no top-level oneOf, under the
+      500-byte description budget) returns the CLI `BuildOutput`;
+      outermost mutation decorator under the existing mutation lock;
+      24 tools. Grouped equips above 17 items are chunked in plan order:
+      a Ghostlink adaptation, since DIM sends one `equipItems` request and
+      a build never gets near the limit (`destiny2-api.ts:229-246`,
+      `loadout-apply.ts:580-594`). Exit-42 persistence-failure tests in
+      executor, CLI and MCP (characterization, written after the code).
+      Workspace: 2251 all-features, 2218 default, 0 failed; clippy both
+      modes, fmt. Follow-up: offline stdio fixture cannot run a real apply.
+      Original scope: `apply_build` with `dry_run`, schema
       and description byte budget, mutation decorator chain, gateway
       composition in `destiny-mcp/src/main.rs`, mutation-tool tests,
       `docs/mcp.md`. Also: chunk grouped equips above the 17-item

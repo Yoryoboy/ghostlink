@@ -20,7 +20,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - Local build definitions: prefer MCP `list_builds`, `get_build` (includes `dim_json` export), `save_build` (`source`: `import` / `equipped` / `in_game_loadout`), and `delete_build`; fallback `ghostlink build import|list|show|export|delete|from-equipped|from-loadout`. These never apply gear. Report omissions/unresolved source items; resolve name ambiguity with IDs. `dim.gg` online import is deferred. Export writes raw DIM JSON even with `--json`.
 - Inventory build checks: use MCP `analyze_build` or `ghostlink build check` with a build ID, `--character hunter`, and `--json` (names use `--name`). Omit the character only when the build class has one candidate. Report missing items, locations and counts; `not_evaluated` is not success, and search exclusions are `search_only` pending optimizer checks. Never claim optimization or application readiness from this report.
 - Build apply preview: `ghostlink build apply` with a build ID, `--character hunter`, `--dry-run` and `--json` shows the planned moves and equips without dispatching anything (`dispatched: 0`). Vault-staged moves need Vault evidence from `ghostlink sync-manifest` (schema 34 refresh, which also downloads the ~39 MB vendor table); without it they are skipped as `vault_capacity_unavailable` and `unknown` lists `vault_capacity`. Report `skipped` reasons and `unknown`/`not_applied` evidence.
-- Build apply: without `--dry-run`, `ghostlink build apply` executes the plan (moves, equips, Postmaster pulls; no sockets or mods yet, listed under `not_applied`). Only run it when the user explicitly asked to apply that build, and preview first. It has no prompt; Bungie acknowledgement is success and nothing is re-read. Read `result` (`applied`, `no_op`, `partial`, `failed`, `refused`) and each step's per-item `status`: `failed` carries a Bungie `reason`/`code`, `skipped` means a dependency failed. Exit 41 means partial or failed: report what completed and what did not, never retry blindly, and ask before any new mutation. Exit 20 or 11 with `refused` means nothing was sent.
+- Build apply: without `--dry-run`, `ghostlink build apply` executes the plan (moves, equips, Postmaster pulls; no sockets or mods yet, listed under `not_applied`). Only run it when the user explicitly asked to apply that build, and preview first. It has no prompt; Bungie acknowledgement is success and nothing is re-read. Read `result` (`applied`, `no_op`, `partial`, `failed`, `refused`) and each step's per-item `status`: `failed` carries a Bungie `reason`/`code`, `skipped` means a dependency failed. Exit 41 means partial or failed: report what completed and what did not, never retry blindly, and ask before any new mutation. Exit 20 or 11 with `refused` means nothing was sent. Exit 42 means Bungie acknowledged the actions but Ghostlink could not update its local state (`local_state: "failed"`): do not repeat the apply, run `ghostlink sync` and report. MCP `apply_build` (`id` or `name`, optional `character`, `dry_run`) returns the same JSON and `isError` for every non-zero exit; call it with `dry_run: true` first and only apply when the user explicitly asked.
 - For CLI operations, always add `--json`; never scrape human text. Exit 0 prints one JSON object on stdout; a non-zero exit prints one JSON object on stderr. Exceptions: `ghostlink login` first prints an `authorizing` instruction object, and `--help` / search `--filters` are plain text even with `--json`.
 - Before using a CLI command for the first time in a session, run `ghostlink <cmd> --help`. For DIM query syntax/filter support, use `ghostlink search-inventory --filters` (registry-generated help, no inventory read).
 - Never guess an item or character. Resolve ambiguity with a read command or ask the user.
@@ -109,6 +109,7 @@ codes remain uncertain. Received refusals retain CLI 41 / MCP error.
 | Saved in-game loadouts (compact discovery) | MCP `get_loadouts`; fallback `ghostlink loadouts` |
 | Full detail of one saved loadout | MCP `get_loadout`; fallback `ghostlink loadouts <slot-or-name>` |
 | Apply one saved loadout on an explicit character | MCP `apply_loadout`; fallback `ghostlink apply-loadout` |
+| Apply a stored build's moves and equips (preview first) | MCP `apply_build`; fallback `ghostlink build apply` |
 | Weekly rotation predictions (login required) | `ghostlink weekly-reset` |
 | Weekly progress for one character | `ghostlink weekly` |
 | Data looks outdated or after an in-game change | `ghostlink sync` |
@@ -178,7 +179,7 @@ and reassess intent after failures; never blindly repeat a batch.
 
 ## Shared action state contract
 
-For move, equip, equip_items, set_lock_state, pull_item, pull_stack and apply_loadout:
+For move, equip, equip_items, set_lock_state, pull_item, pull_stack, apply_loadout and apply_build:
 Plans from Ghostlink's local projection (synced only when missing, stale or invalidated).
 Bungie is the final validator. Acknowledged actions update local state immediately;
 rejections and uncertain outcomes mark it for refresh. Never retry an uncertain outcome.

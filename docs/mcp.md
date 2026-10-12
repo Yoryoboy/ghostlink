@@ -1,6 +1,6 @@
 # Ghostlink MCP server (`destiny-mcp`)
 
-`destiny-mcp` serves bounded read tools plus seven default-enabled semantic
+`destiny-mcp` serves bounded read tools plus eight default-enabled semantic
 mutations over the Model Context Protocol stdio transport:
 
 ```text
@@ -22,6 +22,7 @@ set_lock_state    lock or unlock one explicitly selected owned item, return acce
 pull_item         pull one genuine Postmaster equipment instance to its owner
 pull_stack        pull an explicit amount of a non-instanced Postmaster stack
 apply_loadout     apply one saved in-game loadout on an explicit character
+apply_build       apply a stored build's moves and equips (or plan them with dry_run)
 list_builds       list locally stored build definitions
 get_build         show one local build, including DIM JSON export
 save_build        import or capture equipped/in-game loadout as a local build
@@ -31,7 +32,7 @@ analyze_build     check a local build against synced inventory
 
 ## Local build tools
 
-Build tools never apply equipment or modify DIM/Bungie loadouts. They are
+Build tools other than `apply_build` never apply equipment or modify DIM/Bungie loadouts. They are
 composed in the production server with membership-scoped SQLite storage.
 
 | Tool | Arguments |
@@ -274,6 +275,32 @@ runtime failure is a sanitized message written to stderr; nothing else is writte
 to stdout. A missing stored credential fails closed with `authorization is
 required`, a legacy raw-material credential with `reauthorization is required`,
 and neither path guesses an expiry or falls back to an environment value.
+
+## Apply a stored build
+
+`apply_build` takes `{"id":"..."}` or `{"name":"Raid"}` (exactly one), an optional
+`character` (owned ID or unique class, as for `analyze_build`) and an optional
+`dry_run` boolean. Unknown fields and invalid selectors are rejected before service
+I/O; the input schema has no top-level `oneOf`/`anyOf`/`allOf`, and id/name
+exclusivity is enforced at runtime. The description is within the 500-byte budget.
+
+It runs the same planner and executor as `ghostlink build apply` and returns the same
+JSON (`kind: "build_apply"`, or `build_apply_plan` with `dispatched: 0` for
+`dry_run: true`; see [build apply](build-apply.md)). `isError` is true for every
+non-zero CLI exit: partial or failed results (41), a failed local write (42) and
+refusals (category exits). `result` is `applied`, `no_op`, `partial`, `failed` or
+`refused`; each step carries per-item `succeeded`, `failed` or `skipped` outcomes with
+typed reasons, and `local_state` is one of `unchanged`, `updated`, `refresh_pending`
+or `failed` (with `reason`). Bungie acknowledgements are not re-read and nothing is
+retried: never repeat a partial, failed or uncertain apply blindly. Sockets, mods and
+subclass are not applied (`not_applied`).
+
+When Bungie acknowledged actions but the projection write failed, the result keeps
+its per-step outcomes, reports `local_state: "failed"` and the reason "local state
+could not be updated after the action" (CLI 42), and freshness is invalidated so the
+next read re-syncs. The tool runs under the same mutation lock as the other
+mutations, so concurrent mutations are serialized; projection reads keep using their
+own connections and are not blocked, and requests are paced 100 ms apart.
 
 ## Bungie read errors and pacing
 

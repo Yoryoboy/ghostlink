@@ -192,6 +192,11 @@ fn compose_server<S: CredentialStore + Send + 'static>(
         transfer_source.clone(),
         destiny_adapters::EquipItemsApiKey::new(config.api_key().expose_secret())?,
     )?;
+    let build_apply = build_apply_ports(
+        SqliteStore::open(config.database_path())?,
+        &transfer_source,
+        config.api_key().expose_secret(),
+    )?;
     let stack = destiny_adapters::stack_pull::BungieStackPullGateway::new(
         destiny_adapters::stack_pull::HttpStackPullTransport::new()?,
         SystemClock::new(),
@@ -218,6 +223,7 @@ fn compose_server<S: CredentialStore + Send + 'static>(
             batch,
         ),
         repository,
+        build_apply,
         policy,
         (0..4)
             .map(|_| {
@@ -363,6 +369,64 @@ type MutationPorts<C> = (
     >,
 );
 
+/// Own local build handle and action gateways for `apply_build`; the credential session
+/// is shared with the other mutations.
+struct BuildApplyPorts<C> {
+    builds: SqliteStore,
+    gateways: BuildApplyGateways<C>,
+}
+type BuildApplyGateways<C> = destiny_app::build_apply_exec::BuildGateways<
+    BungieTransferGateway<HttpTransferTransport, SystemClock, C>,
+    destiny_adapters::BungieEquipGateway<destiny_adapters::HttpEquipTransport, SystemClock, C>,
+    destiny_adapters::BungieEquipItemsGateway<
+        destiny_adapters::HttpEquipItemsTransport,
+        SystemClock,
+        C,
+    >,
+    destiny_adapters::instanced_pull::BungieInstancedPullGateway<
+        destiny_adapters::instanced_pull::HttpInstancedPullTransport,
+        SystemClock,
+        C,
+    >,
+>;
+
+/// Fresh action gateways for `apply_build` over the shared credential session.
+fn build_apply_ports<C: destiny_app::CredentialSource + Clone>(
+    builds: SqliteStore,
+    source: &C,
+    key: &str,
+) -> Result<BuildApplyPorts<C>, AppError> {
+    Ok(BuildApplyPorts {
+        builds,
+        gateways: destiny_app::build_apply_exec::BuildGateways {
+            transfer: BungieTransferGateway::new(
+                HttpTransferTransport::new()?,
+                SystemClock::new(),
+                source.clone(),
+                TransferApiKey::new(key)?,
+            )?,
+            equip: destiny_adapters::BungieEquipGateway::new(
+                destiny_adapters::HttpEquipTransport::new()?,
+                SystemClock::new(),
+                source.clone(),
+                destiny_adapters::EquipApiKey::new(key)?,
+            )?,
+            equip_items: destiny_adapters::BungieEquipItemsGateway::new(
+                destiny_adapters::HttpEquipItemsTransport::new()?,
+                SystemClock::new(),
+                source.clone(),
+                destiny_adapters::EquipItemsApiKey::new(key)?,
+            )?,
+            pull: destiny_adapters::instanced_pull::BungieInstancedPullGateway::new(
+                destiny_adapters::instanced_pull::HttpInstancedPullTransport::new()?,
+                SystemClock::new(),
+                source.clone(),
+                destiny_adapters::instanced_pull::InstancedPullApiKey::new(key)?,
+            )?,
+        },
+    })
+}
+
 struct ReadResources {
     repository: SqliteStore,
     weekly: (PublicWeeklyService, destiny_app::calendar::Calendar),
@@ -380,6 +444,7 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     profile_gateway: BungieProfileGateway<HttpProfileTransport, SystemClock, C>,
     ports: MutationPorts<C>,
     repository: SqliteStore,
+    build_apply: BuildApplyPorts<C>,
     policy: FreshnessPolicy,
     reads: Vec<ReadResources>,
 ) -> ReadToolServer {
@@ -486,6 +551,10 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
     let apply_loadout = destiny_app::ApplyLoadoutService::new(
         ProfileSyncService::new_with_definitions(gateway.clone(), repository.clone()),
     );
+    // Same seam as the other mutations, with its own profile sync over the shared
+    // gateway and repository (the server's mutation lock already excludes publication).
+    let apply_build_sync =
+        ProfileSyncService::new_with_definitions(gateway.clone(), repository.clone());
     let mutations = MutationService::new(
         ProfileSyncService::new_with_definitions(gateway, repository),
         SystemPlanIds::new(SystemClock::new()),
@@ -506,6 +575,18 @@ fn assemble_server<C: destiny_app::CredentialSource + Send + 'static>(
         inner: mutation_service,
         service: apply_loadout,
         action: ports.7,
+        clock: SystemClock::new(),
+        policy,
+        last_attempt: None,
+    };
+    let mutation_service = crate::apply_build::ApplyBuildMutationService {
+        inner: mutation_service,
+        builds: destiny_app::builds::BuildService::new(
+            build_apply.builds,
+            destiny_adapters::dim_loadout::DimBuildCodec,
+        ),
+        sync: apply_build_sync,
+        gateways: build_apply.gateways,
         clock: SystemClock::new(),
         policy,
         last_attempt: None,
@@ -1507,6 +1588,7 @@ mod tests {
         use destiny_app::{DefinitionVersion, FreshnessPolicy};
 
         let credential = credential();
+        let credential_for_apply = credential.clone();
         let profile_gateway = BungieProfileGateway::new(
             HttpProfileTransport::new().expect("profile transport"),
             SystemClock::new(),
@@ -1590,6 +1672,12 @@ mod tests {
                 batch,
             ),
             store,
+            super::build_apply_ports(
+                SqliteStore::open_in_memory().unwrap(),
+                &destiny_app::StaticCredentialSource::new(credential_for_apply),
+                API_KEY_SENTINEL,
+            )
+            .unwrap(),
             FreshnessPolicy { ttl_seconds: 900 },
             vec![super::ReadResources {
                 repository: SqliteStore::open_in_memory().unwrap(),
@@ -1631,7 +1719,8 @@ mod tests {
                 "pull_item",
                 "pull_stack",
                 "apply_loadout",
-                "equip_items"
+                "equip_items",
+                "apply_build"
             ],
             "mutation must be default-enabled in the product composition"
         );

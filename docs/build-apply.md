@@ -1,10 +1,10 @@
-# Build apply: planner, dry-run and executor (BE-007a, incomplete)
+# Build apply: planner, dry-run, executor and MCP tool (BE-007a, incomplete)
 
 `ghostlink build apply ... --dry-run` prints the plan from the pure equipment planner
 and dispatches nothing (profile reads only; no mutation transport is composed).
-Without `--dry-run` the same plan is executed (see "Executor" below). **There is no MCP
-apply tool yet** (BE-007a2c, second half), and sockets, mods and subclass are not
-applied (BE-007b). Existing move, equip, batch equip and in-game apply-loadout
+Without `--dry-run` the same plan is executed (see "Executor" below). The MCP tool
+`apply_build` does the same with a `dry_run` argument (see "MCP tool"); sockets, mods
+and subclass are not applied (BE-007b). Existing move, equip, batch equip and in-game apply-loadout
 commands are unchanged.
 
 ## Implemented boundary
@@ -151,8 +151,28 @@ items could not be planned), 42 local state could not be updated, category exits
 nothing reached Bungie. Freshness is invalidated after any dispatched step that did not
 succeed, so the next read re-syncs.
 
+### Grouped equips above 17 items
+
+DIM sends one `equipItems` request with every item and does not chunk
+(`loadout-drawer/loadout-apply.ts:580-594`, `bungie-api/destiny2-api.ts:229-246`); a
+build holds one item per slot, so DIM never nears a limit. Ghostlink's
+`EquipItemsRequest` is capped at 17 items (`MAX_EQUIP_ITEMS`), so a larger group
+is sent as consecutive requests of at most 17, in plan order. Each chunk reports per
+item by Bungie code; a session-wide refusal on one chunk leaves later chunks unsent
+(`provider_stopped`). A group of 17 or fewer is unchanged (one request; a lone item
+stays an inline equip).
+
+## MCP tool (BE-007a2d)
+
+`apply_build` (`{id | name, character?, dry_run?}`) is composed outermost in the
+mutation chain with its own build-store connection and action gateways over the shared
+credential session. It calls `BuildService::plan_apply` for `dry_run: true` and
+`BuildService::apply` otherwise, and returns `BuildOutput`, the same value the CLI
+prints, so JSON and the failure class match. `isError` is set for every non-zero CLI
+exit. Local-state persistence failure (acknowledged actions whose projection write
+failed) is covered by dedicated tests for the executor, the CLI (exit 42) and the MCP
+service (the same output). See [MCP](mcp.md#apply-a-stored-build).
+
 ## Remaining work
 
-Stack amounts; the MCP mutation tool (BE-007a2c second half: `apply_build` with a
-`dry_run` argument, description byte budget and mutation-tool tests); live validation
-(BE-010). BE-007b (sockets, mods, subclass) remains separate.
+Stack amounts; live validation (BE-010). BE-007b (sockets, mods, subclass) remains separate.

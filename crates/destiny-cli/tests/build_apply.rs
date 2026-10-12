@@ -77,6 +77,9 @@ fn now() -> Timestamp {
 }
 /// Item 1 sits in the Vault, item 3 is equipped on the only Hunter; the build wants 1.
 fn fixture() -> (Service, Sync, String) {
+    fixture_in(SqliteStore::open_in_memory().unwrap())
+}
+fn profile_input(with_item_1: bool) -> InventorySnapshotInput {
     let characters = [("1", "Hunter"), ("2", "Titan")]
         .map(|(id, class)| Character {
             id: CharacterId::new(id),
@@ -88,7 +91,7 @@ fn fixture() -> (Service, Sync, String) {
             date_last_played: None,
         })
         .to_vec();
-    let input = InventorySnapshotInput {
+    InventorySnapshotInput {
         membership_id: MembershipId::new("99"),
         membership_type: MembershipType::new(3),
         definition_version: DefinitionVersion::new("v1"),
@@ -103,12 +106,17 @@ fn fixture() -> (Service, Sync, String) {
                 ItemLocation::Character(CharacterId::new("1")),
                 true,
             ),
-        ],
+        ]
+        .into_iter()
+        .filter(|i| with_item_1 || i.instance_id.as_str() != "1")
+        .collect(),
         profile_currencies_coverage: ProfileCurrenciesCoverage::NotObserved,
         stacks: vec![],
         plug_set_entries: vec![],
-    };
-    let mut repository = SqliteStore::open_in_memory().unwrap();
+    }
+}
+fn fixture_in(mut repository: SqliteStore) -> (Service, Sync, String) {
+    let input = profile_input(true);
     repository
         .replace_definitions(DefinitionReplacementInput {
             definitions: ManifestDefinitions {
@@ -164,6 +172,8 @@ fn args(id: &str, dry_run: bool) -> BuildApplyArgs {
 struct Script {
     transfer: VecDeque<Result<TransferOutcome, AppError>>,
     equip: VecDeque<Result<EquipOutcome, AppError>>,
+    /// Runs while a transfer is in flight, before Bungie's answer is returned.
+    during_transfer: Option<Box<dyn Fn()>>,
 }
 struct Recorder {
     log: Rc<RefCell<Vec<String>>>,
@@ -174,6 +184,9 @@ impl TransferGateway for Recorder {
         self.log
             .borrow_mut()
             .push(format!("transfer {}", r.item().as_str()));
+        if let Some(hook) = &self.script.borrow().during_transfer {
+            hook();
+        }
         self.script
             .borrow_mut()
             .transfer
@@ -271,6 +284,7 @@ fn apply_dispatches_in_plan_order_and_updates_local_state() {
     let (mut gateways, log) = gateways(Script {
         transfer: [Ok(TransferOutcome::Transferred)].into(),
         equip: [Ok(EquipOutcome::Equipped)].into(),
+        ..Default::default()
     });
     let output = run(&mut f, false, Some(&mut gateways));
     assert_eq!(*log.borrow(), ["transfer 1", "equip 1"]);
@@ -336,4 +350,42 @@ fn execution_without_gateways_is_unsupported_not_silent() {
     let output = run(&mut f, false, None);
     assert_eq!(output.exit_code, 40);
     assert_eq!(output.value["error"]["code"], "unsupported_operation");
+}
+
+#[test]
+fn local_state_persistence_failure_exits_42_after_bungie_acknowledged() {
+    // Bungie acknowledges both actions while another process replaces the stored
+    // profile without the moved item, so the acknowledged effects cannot be written.
+    let path =
+        std::env::temp_dir().join(format!("ghostlink-build-apply-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let mut f = fixture_in(SqliteStore::open(&path).unwrap());
+    let other = path.clone();
+    let (mut gateways, log) = gateways(Script {
+        transfer: [Ok(TransferOutcome::Transferred)].into(),
+        equip: [Ok(EquipOutcome::Equipped)].into(),
+        during_transfer: Some(Box::new(move || {
+            SqliteStore::open(&other)
+                .unwrap()
+                .replace_current_profile(profile_input(false), None, Some(vec![]))
+                .unwrap();
+        })),
+    });
+    let output = run(&mut f, false, Some(&mut gateways));
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(*log.borrow(), ["transfer 1", "equip 1"]);
+    assert_eq!(output.exit_code, 42, "{}", output.value);
+    assert_eq!(output.value["result"], "applied");
+    assert_eq!(output.value["dispatched"], 2);
+    assert_eq!(output.value["counts"]["succeeded"], 2);
+    assert_eq!(output.value["local_state"], "failed");
+    assert_eq!(
+        output.value["reason"],
+        "local state could not be updated after the action"
+    );
+    assert!(
+        output
+            .render_text()
+            .ends_with("local state could not be updated after the action\nLocal state: failed")
+    );
 }

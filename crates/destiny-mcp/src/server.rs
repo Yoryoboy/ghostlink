@@ -72,7 +72,7 @@ const READ_ONLY_INSTRUCTIONS: &str =
 /// The text must not claim the server is read-only: composing the seam adds the
 /// single intent-authorized `move_item` mutation, so the advertised capability
 /// has to match the discovery set.
-const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item`, `equip_item`, and `set_lock_state`, `pull_item`, `pull_stack`, `apply_loadout`, and `equip_items` mutations.";
+const MUTATION_INSTRUCTIONS: &str = "Bounded access to the signed-in Destiny inventory and Manifest definitions, plus the single intent-authorized `move_item`, `equip_item`, and `set_lock_state`, `pull_item`, `pull_stack`, `apply_loadout`, `apply_build`, and `equip_items` mutations.";
 
 /// The tools-only RMCP server over bounded read slots and an optional mutation seam.
 ///
@@ -178,6 +178,7 @@ impl ReadToolServer {
             tools.push(crate::schema::pull_stack_tool());
             tools.push(crate::schema::apply_loadout_tool());
             tools.push(crate::schema::equip_items_tool());
+            tools.push(crate::schema::apply_build_tool());
         }
         ListToolsResult {
             tools,
@@ -223,6 +224,7 @@ impl ReadToolServer {
             || name == crate::schema::PULL_STACK_TOOL
             || name == crate::schema::APPLY_LOADOUT_TOOL
             || name == crate::schema::EQUIP_ITEMS_TOOL
+            || name == crate::schema::APPLY_BUILD_TOOL
         {
             self.mutation.as_ref()
         } else {
@@ -653,6 +655,18 @@ fn dispatch_mutation_locked(
         }
         let mut guard = mutation.lock().map_err(|_| internal_error())?;
         return Ok(guard.equip_items(&args).map_or_else(tool_error, |output| {
+            let mut result = CallToolResult::structured(output.value);
+            result.is_error = Some(output.exit_code != 0);
+            result
+        }));
+    }
+    if name == crate::schema::APPLY_BUILD_TOOL {
+        let args: crate::schema::ApplyBuildArgs = deserialize(arguments)?;
+        if let Err(error) = args.request() {
+            return Ok(error.into_call_tool_result());
+        }
+        let mut guard = mutation.lock().map_err(|_| internal_error())?;
+        return Ok(guard.apply_build(&args).map_or_else(tool_error, |output| {
             let mut result = CallToolResult::structured(output.value);
             result.is_error = Some(output.exit_code != 0);
             result
@@ -1957,7 +1971,8 @@ mod tests {
                 crate::schema::PULL_ITEM_TOOL,
                 crate::schema::PULL_STACK_TOOL,
                 crate::schema::APPLY_LOADOUT_TOOL,
-                crate::schema::EQUIP_ITEMS_TOOL
+                crate::schema::EQUIP_ITEMS_TOOL,
+                crate::schema::APPLY_BUILD_TOOL
             ]
         );
         let tool = server
@@ -2095,6 +2110,52 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         assert_eq!(structured(&result)["status"], "verification_failed");
         assert_eq!(structured(&result)["local_state"], "refresh_pending");
+    }
+
+    #[test]
+    fn apply_build_local_state_failure_is_a_tool_error_and_invalid_args_never_reach_the_seam() {
+        struct Stub(std::sync::Arc<std::sync::Mutex<Vec<bool>>>);
+        impl MutationToolService for Stub {
+            fn move_item(&mut self, _: &MoveItemRequest) -> Result<MoveItemOutput, McpError> {
+                unreachable!()
+            }
+            fn apply_build(
+                &mut self,
+                args: &crate::schema::ApplyBuildArgs,
+            ) -> Result<destiny_output::builds::BuildOutput, McpError> {
+                self.0.lock().unwrap().push(args.dry_run());
+                Ok(destiny_output::builds::BuildOutput {
+                    value: serde_json::json!({"kind":"build_apply", "local_state":"failed"}),
+                    exit_code: 42,
+                    export: None,
+                })
+            }
+        }
+        let calls = Default::default();
+        let server = ReadToolServer::with_mutation(
+            Box::new(RecordingService::new()),
+            Box::new(Stub(std::sync::Arc::clone(&calls))),
+        );
+        for bad in [
+            serde_json::json!({}),
+            serde_json::json!({"id":"a", "name":"b"}),
+        ] {
+            let result = server
+                .dispatch(crate::schema::APPLY_BUILD_TOOL, args(bad))
+                .unwrap();
+            assert_eq!(result.is_error, Some(true));
+            assert_eq!(structured(&result)["code"], "provider_validation");
+        }
+        assert!(calls.lock().unwrap().is_empty());
+        let result = server
+            .dispatch(
+                crate::schema::APPLY_BUILD_TOOL,
+                args(serde_json::json!({"id":"b1", "dry_run":true})),
+            )
+            .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        assert_eq!(structured(&result)["local_state"], "failed");
+        assert_eq!(*calls.lock().unwrap(), [true]);
     }
 
     #[test]

@@ -572,3 +572,92 @@ fn a_failed_space_making_move_skips_the_move_that_needed_the_room() {
     );
     assert_eq!(find(&repository, "1").location, ItemLocation::Vault);
 }
+
+fn failures(ids: &[String]) -> Result<EquipItemsOutcome, AppError> {
+    let reported: Vec<_> = ids
+        .iter()
+        .map(|id| (id.as_str(), EquipItemStatus::Failure(1641)))
+        .collect();
+    ok_batch(&reported)
+}
+
+#[test]
+fn grouped_equips_above_the_request_limit_are_sent_in_chunks_in_plan_order() {
+    // DIM sends one request and never chunks (`destiny2-api.ts:229-246`); it cannot
+    // exceed the limit because a build holds one item per slot. Ghostlink's request
+    // type caps a request at MAX_EQUIP_ITEMS, so a larger group is split in order.
+    let (mut repository, revision) = store();
+    let ids: Vec<String> = (500..519).map(|n| n.to_string()).collect();
+    let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let script = Script {
+        batch: [failures(&ids[..17]), failures(&ids[17..])].into(),
+        ..Default::default()
+    };
+    let (execution, calls) = run(
+        &mut repository,
+        revision,
+        &plan(vec![equip(&refs, "1")]),
+        script,
+    );
+    assert_eq!(
+        calls,
+        [
+            format!("equip_items {} on 1", ids[..17].join(",")),
+            format!("equip_items {} on 1", ids[17..].join(",")),
+        ]
+    );
+    assert_eq!(execution.dispatched, 2);
+    assert_eq!(execution.status, ApplyStatus::Failed);
+    let outcomes = &statuses(&execution)[0];
+    assert_eq!(outcomes.len(), 19);
+    assert!(
+        outcomes
+            .iter()
+            .all(|s| *s == ItemStatus::Failed(StepFailure::BungieCode(1641)))
+    );
+}
+
+#[test]
+fn a_session_wide_refusal_on_a_chunk_leaves_later_chunks_unsent() {
+    let (mut repository, revision) = store();
+    let ids: Vec<String> = (500..519).map(|n| n.to_string()).collect();
+    let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let script = Script {
+        batch: [Err(AppError::new(ErrorCategory::ProviderRateLimit))].into(),
+        ..Default::default()
+    };
+    let (execution, calls) = run(
+        &mut repository,
+        revision,
+        &plan(vec![equip(&refs, "1")]),
+        script,
+    );
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    let outcomes = &statuses(&execution)[0];
+    assert_eq!(
+        outcomes[0],
+        ItemStatus::Failed(StepFailure::NotDispatched(ErrorCategory::ProviderRateLimit))
+    );
+    assert_eq!(
+        outcomes[18],
+        ItemStatus::Skipped(SkipCause::ProviderStopped)
+    );
+}
+
+#[test]
+fn a_rejected_local_projection_write_is_reported_as_failed_local_state() {
+    // Bungie acknowledges a move to a character the projection does not hold; the
+    // reducer refuses the dangling destination, so the acknowledged effect is not stored.
+    let (mut repository, revision) = store();
+    let plan = plan(vec![mv("1", ItemLocation::Vault, on("9"), &[])]);
+    let script = Script {
+        transfer: transferred(1),
+        ..Default::default()
+    };
+    let (execution, calls) = run(&mut repository, revision, &plan, script);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(statuses(&execution)[0], [ItemStatus::Succeeded]);
+    assert_eq!(execution.local_state, ApplyLocalState::Failed);
+    assert_eq!(execution.dispatched, 1);
+    assert_eq!(find(&repository, "1").location, ItemLocation::Vault);
+}

@@ -972,6 +972,12 @@ pub trait MutationToolService {
     ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
         Err(McpError::new(ErrorCategory::ConfigurationError))
     }
+    fn apply_build(
+        &mut self,
+        _request: &crate::schema::ApplyBuildArgs,
+    ) -> Result<destiny_output::builds::BuildOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
     fn apply_loadout(
         &mut self,
         _request: &crate::schema::ApplyLoadoutArgs,

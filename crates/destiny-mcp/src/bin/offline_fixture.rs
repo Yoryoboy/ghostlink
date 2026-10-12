@@ -332,8 +332,11 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         .unwrap_or_default()
         .starts_with("loadout-")
     {
-        return ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
-            .with_builds(Box::new(builds));
+        return ReadToolServer::with_mutation(
+            Box::new(read_service),
+            Box::new(apply_build(mutation_service)),
+        )
+        .with_builds(Box::new(builds));
     }
     let mut loadout_character = character("1");
     loadout_character.id = CharacterId::new("1");
@@ -378,8 +381,57 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         policy: TTL,
         last_attempt: None,
     };
-    ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
-        .with_builds(Box::new(builds))
+    ReadToolServer::with_mutation(
+        Box::new(read_service),
+        Box::new(apply_build(mutation_service)),
+    )
+    .with_builds(Box::new(builds))
+}
+
+/// `apply_build` over an empty build store and gateways that were never scripted: the
+/// fixture proves composition and the typed error, not a Bungie apply.
+fn apply_build<I>(
+    inner: I,
+) -> destiny_mcp::apply_build::ApplyBuildMutationService<
+    I,
+    WorldGateway,
+    FixtureRepository,
+    destiny_app::test_support::InMemoryBuildRepository,
+    destiny_adapters::dim_loadout::DimBuildCodec,
+    FakeClock,
+    destiny_app::test_support::QueuedTransferGateway,
+    destiny_app::test_support::QueuedEquipGateway,
+    destiny_app::test_support::QueuedEquipItemsGateway,
+    destiny_app::test_support::QueuedInstancedPullGateway,
+> {
+    destiny_mcp::apply_build::ApplyBuildMutationService {
+        inner,
+        builds: destiny_app::builds::BuildService::new(
+            destiny_app::test_support::InMemoryBuildRepository::default(),
+            destiny_adapters::dim_loadout::DimBuildCodec,
+        ),
+        sync: ProfileSyncService::new_with_definitions(
+            WorldGateway {
+                membership: membership(),
+                world: Arc::new(Mutex::new(FixtureWorld {
+                    characters: characters(),
+                    items: base_items(),
+                    refresh_failed: false,
+                    stack_arrived: false,
+                })),
+            },
+            FixtureRepository::seeded(&characters(), &base_items()),
+        ),
+        gateways: destiny_app::build_apply_exec::BuildGateways {
+            transfer: destiny_app::test_support::QueuedTransferGateway::new(),
+            equip: destiny_app::test_support::QueuedEquipGateway::new(),
+            equip_items: destiny_app::test_support::QueuedEquipItemsGateway::new(),
+            pull: destiny_app::test_support::QueuedInstancedPullGateway::new(),
+        },
+        clock: FakeClock::fixed(NOW),
+        policy: TTL,
+        last_attempt: None,
+    }
 }
 
 impl destiny_app::LoadoutGateway for WorldGateway {

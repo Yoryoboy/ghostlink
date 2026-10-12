@@ -188,6 +188,78 @@ impl AnalyzeBuildArgs {
     }
 }
 
+pub const APPLY_BUILD_TOOL: &str = "apply_build";
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApplyBuildArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub id: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub name: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub character: Option<String>,
+    /// Plan only: report the steps and dispatch nothing.
+    pub dry_run: Option<bool>,
+}
+impl ApplyBuildArgs {
+    pub fn request(&self) -> Result<destiny_app::builds::BuildCheckRequest, McpError> {
+        AnalyzeBuildArgs {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            character: self.character.clone(),
+        }
+        .request()
+    }
+    pub fn dry_run(&self) -> bool {
+        self.dry_run.unwrap_or(false)
+    }
+}
+#[derive(JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyBuildResultView {
+    Applied,
+    NoOp,
+    Partial,
+    Failed,
+    Refused,
+}
+#[derive(JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyBuildLocalStateView {
+    Unchanged,
+    Updated,
+    RefreshPending,
+    Failed,
+}
+#[derive(JsonSchema)]
+pub struct ApplyBuildOutputView {
+    /// `build_apply`, `build_apply_plan` (dry run) or absent on an error.
+    pub kind: Option<String>,
+    pub dry_run: Option<bool>,
+    pub result: Option<ApplyBuildResultView>,
+    pub local_state: Option<ApplyBuildLocalStateView>,
+    pub reason: Option<String>,
+    pub target_character: Option<String>,
+    pub dispatched: Option<u32>,
+    pub counts: Option<serde_json::Value>,
+    pub steps: Option<Vec<serde_json::Value>>,
+    pub skipped: Option<Vec<serde_json::Value>>,
+    pub not_applied: Option<Vec<serde_json::Value>>,
+    pub error: Option<serde_json::Value>,
+}
+pub fn apply_build_tool() -> Tool {
+    // No top-level oneOf: exactly one of id/name is enforced at runtime.
+    Tool::new(
+        APPLY_BUILD_TOOL,
+        "Apply a stored build's moves and equips (not mods/sockets/subclass): exactly one id/name, optional character ID/class. dry_run=true plans only. Failed steps never stop independent ones; see result, steps and local_state. Bungie acknowledgements are not re-read; never retry uncertain or partial results blindly.",
+        JsonObject::new(),
+    )
+    .with_input_schema::<ApplyBuildArgs>()
+    .with_object_output_schema::<ApplyBuildOutputView>()
+    .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(false))
+}
+
 pub fn build_tool_specs() -> Vec<Tool> {
     vec![
         Tool::new("list_builds", "List local builds for the committed profile membership; no synchronization.", JsonObject::new()).with_input_schema::<ListCharactersArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
@@ -2046,6 +2118,7 @@ mod tests {
             super::pull_item_tool(),
             super::pull_stack_tool(),
             super::apply_loadout_tool(),
+            super::apply_build_tool(),
         ]);
         let total: usize = tools
             .iter()
@@ -2082,6 +2155,7 @@ mod tests {
             super::pull_stack_tool(),
             super::apply_loadout_tool(),
             super::equip_items_tool(),
+            super::apply_build_tool(),
         ]);
         let invalid: Vec<_> = tools
             .iter()

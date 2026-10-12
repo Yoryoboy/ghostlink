@@ -342,7 +342,27 @@ impl<R: InventoryRepository + DefinitionRepository> Run<'_, R> {
             }
         }
     }
+    /// DIM sends one `equipItems` request with every item and never chunks
+    /// (`destiny2-api.ts:229-246`); a build holds one item per slot, so that stays small.
+    /// The request type caps a request at `MAX_EQUIP_ITEMS`, so a larger group is split
+    /// in plan order. Items of a chunk that was never sent are left out of the result
+    /// and reported as `provider_stopped`.
     fn equip_many(
+        &mut self,
+        character: &destiny_core::CharacterId,
+        ready: &[ItemInstanceId],
+        gateways: &mut dyn Gateways,
+    ) -> Sent {
+        let mut sent = Sent::new();
+        for chunk in ready.chunks(destiny_core::MAX_EQUIP_ITEMS) {
+            if self.stopped {
+                break;
+            }
+            sent.extend(self.equip_chunk(character, chunk, gateways));
+        }
+        sent
+    }
+    fn equip_chunk(
         &mut self,
         character: &destiny_core::CharacterId,
         ready: &[ItemInstanceId],

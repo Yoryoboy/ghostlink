@@ -274,6 +274,33 @@ const MOVE_ITEM_TOOL: &str = "move_item";
 mod equip_support;
 
 #[tokio::test]
+async fn apply_build_stdio_is_composed_and_reports_typed_errors_without_dispatch() {
+    let mut session = FixtureSession::spawn(None).await;
+    let response = session
+        .call_tool("apply_build", json!({"id":"missing", "dry_run":true}))
+        .await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(structured(&response)["error"]["code"], "item_not_found");
+    for invalid in [json!({}), json!({"id":"a", "name":"b"})] {
+        let response = session.call_tool("apply_build", invalid).await;
+        assert_eq!(response["result"]["isError"], true);
+        assert_eq!(structured(&response)["code"], "provider_validation");
+    }
+    let id = session.next_id();
+    let tools = session.request(id, "tools/list", None).await;
+    let tool = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "apply_build")
+        .unwrap()
+        .clone();
+    assert!(tool["description"].as_str().unwrap().len() <= 500);
+    assert!(tool["inputSchema"].get("oneOf").is_none());
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn batch_equip_stdio_reports_per_item_outcomes_and_storage_failure() {
     for (scenario, outcome, error) in [
         ("batch-success", "applied", false),
@@ -506,7 +533,7 @@ async fn stack_stdio_acknowledged_refused_uncertain_and_invalid() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 23);
+        assert_eq!(tools.len(), 24);
         let tool = tools.iter().find(|t| t["name"] == "pull_stack").unwrap();
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(tool["annotations"]["readOnlyHint"], false);
@@ -557,7 +584,7 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 23);
+        assert_eq!(tools.len(), 24);
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == "pull_item")
@@ -1389,7 +1416,8 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             "pull_item",
             "pull_stack",
             "apply_loadout",
-            "equip_items"
+            "equip_items",
+            "apply_build"
         ],
         "the product-equivalent server discovers reads, local builds and game mutations"
     );
