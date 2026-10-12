@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 56] = [
+const EXPECTED_TABLE_NAMES: [&str; 58] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -30,6 +30,8 @@ const EXPECTED_TABLE_NAMES: [&str; 56] = [
     "definition_energy_costs",
     "definition_equipping_labels",
     "definition_investment_stats",
+    "definition_item_categories",
+    "definition_item_classes",
     "definition_material_inputs",
     "definition_search",
     "definition_socket_categories",
@@ -81,7 +83,13 @@ const EXPECTED_INDEX_NAMES: [&str; 5] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 267] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 273] = [
+    ("definition_item_classes", "definition_hash", "INTEGER"),
+    ("definition_item_classes", "item_type", "INTEGER"),
+    ("definition_item_classes", "item_sub_type", "INTEGER"),
+    ("definition_item_categories", "definition_hash", "INTEGER"),
+    ("definition_item_categories", "ordinal", "INTEGER"),
+    ("definition_item_categories", "category_hash", "INTEGER"),
     ("inventory_buckets", "hash", "INTEGER"),
     ("inventory_buckets", "definition_version", "TEXT"),
     ("inventory_buckets", "item_count", "INTEGER"),
@@ -1034,7 +1042,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 34);
+    assert_eq!(LATEST_SCHEMA_VERSION, 35);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION

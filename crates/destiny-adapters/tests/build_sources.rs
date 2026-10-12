@@ -1162,3 +1162,184 @@ fn build_apply_plans_armor_mods_from_projected_catalogs_and_unlocks() {
     );
     assert!(preview.plan.mod_skipped.is_empty() && preview.plan.not_applied.is_empty());
 }
+
+#[test]
+fn build_apply_plans_fashion_from_projected_classification_and_exotic_unlocks() {
+    use destiny_core::armor_catalog::*;
+    use destiny_core::build_apply::{ApplyPhase, BuildAction};
+    use destiny_core::domain::{ClassType, PlugSetEntry, PlugSetScope, ReusablePlug};
+    const HELMET: i64 = 3448274439;
+    const DEFAULT_SHADER: i64 = 4248210736;
+    const DEFAULT_ORNAMENT: i64 = 702981643;
+    const SHADER: i64 = 3002;
+    const EXOTIC_ORNAMENT: i64 = 3101;
+    let mut sync = fixture();
+    let membership =
+        DestinyMembership::new(MembershipType::new(3), MembershipId::new("99")).unwrap();
+    let mut service = BuildService::new(
+        destiny_app::test_support::InMemoryBuildRepository::default(),
+        DimBuildCodec,
+    );
+    service
+        .execute_local(
+            &membership,
+            &destiny_app::builds::LocalBuildRequest::Import(
+                format!(
+                    r#"{{"id":"f1","name":"Fashion","classType":1,"equipped":[],"unequipped":[],"parameters":{{"modsByBucket":{{"{HELMET}":[{SHADER},{EXOTIC_ORNAMENT}]}}}}}}"#
+                )
+            ),
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let plug = |hash: i64, sub_type: u8, categories: &[u32]| {
+        let mut d = definition(hash, None, None);
+        d.armor.plug_category_hash = Some(7);
+        d.armor.item_sub_type_code = Some(sub_type);
+        d.armor.item_category_hashes = categories.to_vec();
+        d
+    };
+    let mut helmet = definition(20, Some(BucketHash::new(HELMET)), None);
+    helmet.tier = Some("Exotic".into());
+    helmet.class_type = Some(ClassType::Hunter);
+    helmet.is_instance_item = Some(true);
+    helmet.armor.socket_entries = ["810", "811"]
+        .iter()
+        .enumerate()
+        .map(|(index, set)| DefinitionSocketEntry {
+            socket_type_hash: 98 - index as u32,
+            reusable_plug_set_hash: Some(set.parse().unwrap()),
+            ..Default::default()
+        })
+        .collect();
+    helmet.armor.socket_categories = vec![DefinitionSocketCategory {
+        socket_category_hash: 1926152773,
+        socket_indexes: vec![0, 1],
+    }];
+    let definitions = vec![
+        helmet,
+        plug(DEFAULT_SHADER, 20, &[41]),
+        plug(SHADER, 20, &[41]),
+        plug(DEFAULT_ORNAMENT, 21, &[41]),
+        plug(EXOTIC_ORNAMENT, 21, &[]),
+    ];
+    let set = |hash, members: &[i64]| {
+        ArmorCatalogRecord::PlugSet(PlugSetDefinition {
+            hash,
+            reusable_plug_items: members
+                .iter()
+                .map(|m| PlugSetItem {
+                    plug_item_hash: *m as u32,
+                    currently_can_roll: true,
+                })
+                .collect(),
+        })
+    };
+    let kind = |hash| {
+        ArmorCatalogRecord::SocketType(SocketTypeDefinition {
+            hash,
+            socket_category_hash: 100,
+            always_randomize_sockets: false,
+            plug_whitelist: vec![],
+        })
+    };
+    let mut world = destiny_app::test_support::synthetic_world(DefinitionVersion::new("v1"));
+    world.armor_catalogs = vec![
+        kind(98),
+        kind(97),
+        set(810, &[DEFAULT_SHADER, SHADER]),
+        set(811, &[DEFAULT_ORNAMENT, EXOTIC_ORNAMENT]),
+    ];
+    sync.repository_mut()
+        .publish_manifest(
+            DefinitionReplacementInput {
+                definitions: ManifestDefinitions {
+                    version: DefinitionVersion::new("v1"),
+                    definitions,
+                },
+                checked_at: Timestamp::new(100),
+                source: SourceMarker::Manifest,
+            },
+            world,
+        )
+        .unwrap();
+    let socket = |index, plugged: i64, others: &[i64]| IndexedSocket {
+        socket_index: index,
+        plug_hash: Some(ItemHash::new(plugged)),
+        enabled: true,
+        visible: true,
+        reusable_plugs: Some(
+            others
+                .iter()
+                .chain(&[plugged])
+                .map(|hash| ReusablePlug {
+                    plug_hash: ItemHash::new(*hash),
+                    enabled: true,
+                    can_insert: true,
+                })
+                .collect(),
+        ),
+        plug_objectives: None,
+    };
+    let mut input =
+        InventorySnapshotInput::with_metadata(&sync.repository().load_current().unwrap().unwrap());
+    input.items = vec![ItemInstance {
+        instance_id: ItemInstanceId::new("1"),
+        item_hash: ItemHash::new(20),
+        location: ItemLocation::Character(CharacterId::new("1")),
+        quantity: 1,
+        equipped: true,
+        locked: false,
+        power: None,
+        stats: vec![],
+        perks: vec![],
+        plugs: vec![],
+        energy: None,
+        gear_tier: None,
+        // The exotic's cosmetic socket reports the ornament as insertable, which is the
+        // only ownership signal for exotic ornaments.
+        sockets: vec![
+            socket(0, DEFAULT_SHADER, &[]),
+            socket(1, DEFAULT_ORNAMENT, &[EXOTIC_ORNAMENT]),
+        ],
+        transfer_status: None,
+        available_plugs: vec![],
+    }];
+    input.plug_set_entries = vec![PlugSetEntry {
+        scope: PlugSetScope::Profile,
+        plug_hash: ItemHash::new(SHADER),
+        can_insert: true,
+        enabled: true,
+    }];
+    sync.repository_mut().replace_current(input).unwrap();
+    let preview = service
+        .plan_apply(
+            &mut sync,
+            &destiny_app::builds::BuildCheckRequest {
+                selector: destiny_app::builds::BuildSelector::Name("Fashion".into()),
+                character: None,
+            },
+            &destiny_adapters::pinned_equipment_capacity_policy(),
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let steps: Vec<_> = preview
+        .plan
+        .steps
+        .iter()
+        .map(|s| (s.phase, s.action.clone()))
+        .collect();
+    let insert = |socket_index, plug| {
+        (
+            ApplyPhase::Mods,
+            BuildAction::InsertPlug {
+                item: ItemInstanceId::new("1"),
+                character: CharacterId::new("1"),
+                socket_index,
+                plug: ItemHash::new(plug),
+            },
+        )
+    };
+    assert_eq!(steps, [insert(0, SHADER), insert(1, EXOTIC_ORNAMENT)]);
+    assert!(preview.plan.mod_skipped.is_empty() && preview.plan.not_applied.is_empty());
+}

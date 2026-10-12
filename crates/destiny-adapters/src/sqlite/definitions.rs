@@ -159,6 +159,15 @@ impl SqliteStore {
         {
             return Err(storage_failure());
         }
+        if super::migrations::read_user_version(self.connection())? < 35
+            && replacement.definitions.definitions.iter().any(|item| {
+                !item.armor.item_category_hashes.is_empty()
+                    || item.armor.item_type_code.is_some()
+                    || item.armor.item_sub_type_code.is_some()
+            })
+        {
+            return Err(storage_failure());
+        }
         if let Some(world) = &world {
             if super::migrations::read_user_version(self.connection())? < 32
                 && world.armor_catalogs.iter().any(|r| {

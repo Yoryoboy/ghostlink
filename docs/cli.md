@@ -73,10 +73,10 @@ item plan (Postmaster pulls, dequips, Vault-mediated moves, space-making moves,
 grouped equips, optional clear-space) as `build_apply_plan` JSON or text. It uses
 ordinary profile freshness and the same character selection as `build check`, reads
 only, composes no mutation transport and reports `dispatched: 0`. Skipped items carry
-typed reasons; subclass and artifact socket overrides appear as `sockets` steps (`insert_plug`), with `socket_skipped` and `socket_already_there`; armor mods and `clearMods` appear as `mods` steps (`insert_plug`) with `mod_skipped` (mod hash and reason) and `mods_in_place`; fashion (`modsByBucket`) is listed under `not_applied` (`fashion_deferred_to_be_007b3`).
+typed reasons; subclass and artifact socket overrides appear as `sockets` steps (`insert_plug`), with `socket_skipped` and `socket_already_there`; armor mods, `clearMods` and fashion (`modsByBucket` shaders and ornaments, after the mods) appear as `mods` steps (`insert_plug`) with `mod_skipped` (plug hash and reason, for example `fashion_not_unlocked` or `irreversible_shader`) and `mods_in_place`. Subclass and artifact items are equipped like other build items (they are never moved between characters).
 Evidence that is not available (Vault capacity, saved-loadout membership) is listed
 under `unknown`; Vault-staged moves use the Vault bucket mapping and capacity stored
-by `sync-manifest` (run it once after upgrading to schema 34; it now also downloads
+by `sync-manifest` (run it once after upgrading to schema 34 or later; it now also downloads
 the ~39 MB vendor table). Without stored evidence they are skipped as
 `vault_capacity_unavailable`.
 
@@ -92,7 +92,7 @@ reports per item `succeeded`, `failed` (a definitive Bungie `reason`, a batch `c
 `provider_stopped` after a rate-limit or authentication refusal). The result
 (`kind: build_apply`) has `result` of `applied`, `no_op`, `partial`, `failed` or
 `refused`, per-status `counts`, `local_state` (`updated`, `unchanged`,
-`refresh_pending`, `failed`; plug insertions always leave `refresh_pending`) and `not_applied` for what is not applied (fashion, or armor mods whose assignment could not be evaluated, for example `full_resolved_armor_set_required`).
+`refresh_pending`, `failed`; plug insertions always leave `refresh_pending`) and `not_applied` for what is not applied (for example armor mods whose assignment could not be evaluated, such as `armor_energy_unavailable`). Run `ghostlink sync-manifest` once after upgrading to schema 35, which projects the shader/ornament classification fashion needs.
 Exits reuse the action contract: 0 for `applied`/`no_op`; **41** for `partial`/`failed`
 (including build items that could not be planned; do not retry, run `ghostlink sync`);
 42 when local state could not be updated; and the category exit (for example 20 rate

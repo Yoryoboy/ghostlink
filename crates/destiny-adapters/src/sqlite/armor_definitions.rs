@@ -109,6 +109,31 @@ pub(super) fn write(
             }
         }
     }
+    if read_user_version(connection)? >= 35 {
+        let mut classes = connection
+            .prepare_cached("INSERT INTO definition_item_classes VALUES (?1,?2,?3)")
+            .map_err(|_| storage_failure())?;
+        let mut categories = connection
+            .prepare_cached("INSERT INTO definition_item_categories VALUES (?1,?2,?3)")
+            .map_err(|_| storage_failure())?;
+        for item in definitions {
+            let data = &item.armor;
+            if data.item_type_code.is_some() || data.item_sub_type_code.is_some() {
+                classes
+                    .execute(params![
+                        item.hash.value(),
+                        data.item_type_code,
+                        data.item_sub_type_code
+                    ])
+                    .map_err(|_| storage_failure())?;
+            }
+            for (ordinal, category) in data.item_category_hashes.iter().enumerate() {
+                categories
+                    .execute(params![item.hash.value(), ordinal as i64, category])
+                    .map_err(|_| storage_failure())?;
+            }
+        }
+    }
     super::definition_sockets::write(connection, definitions)?;
     Ok(())
 }
@@ -122,6 +147,50 @@ pub(super) fn read(
     let mut result: HashMap<i64, ArmorDefinition> = HashMap::new();
     if read_user_version(connection)? < 26 {
         return Ok(result);
+    }
+    if read_user_version(connection)? >= 35 {
+        let mut statement = connection
+            .prepare_cached(&read_sql(
+                "definition_item_classes",
+                "definition_hash, item_type, item_sub_type",
+                false,
+                hash,
+            ))
+            .map_err(|_| storage_failure())?;
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(hash), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<u8>>(1)?,
+                    row.get::<_, Option<u8>>(2)?,
+                ))
+            })
+            .map_err(|_| storage_failure())?;
+        for row in rows {
+            let (hash, item_type, sub_type) = row.map_err(|_| storage_failure())?;
+            let data = result.entry(hash).or_default();
+            data.item_type_code = item_type;
+            data.item_sub_type_code = sub_type;
+        }
+        let mut statement = connection
+            .prepare_cached(&read_sql(
+                "definition_item_categories",
+                "definition_hash, category_hash",
+                true,
+                hash,
+            ))
+            .map_err(|_| storage_failure())?;
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(hash), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, u32>(1)?))
+            })
+            .map_err(|_| storage_failure())?;
+        for row in rows {
+            let (hash, category) = row.map_err(|_| storage_failure())?;
+            let data = result.entry(hash).or_default();
+            data.item_category_hashes.push(category);
+            data.validate().map_err(|_| storage_failure())?;
+        }
     }
     if read_user_version(connection)? >= 33 {
         let mut statement = connection

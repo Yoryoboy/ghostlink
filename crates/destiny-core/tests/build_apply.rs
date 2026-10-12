@@ -765,3 +765,108 @@ fn grouped_dequip_equip_needs_every_replacement_and_later_moves_need_it() {
         assert!(step.needs.contains(&group), "{:?}", step);
     }
 }
+const SUBCLASS_BUCKET: i64 = 3284755031;
+const ARTIFACT_BUCKET: i64 = 1506418338;
+fn nontransferable(mut d: ItemDefinition) -> ItemDefinition {
+    d.non_transferrable = Some(true);
+    d
+}
+#[test]
+fn subclass_and_artifact_equip_in_dim_order_after_armor_without_a_skip() {
+    // DIM sorts weapons, armor, then Subclass and Artifacts (`d2-bucket-categories.ts:
+    // 21-23`, `loadout-apply.ts:118-129`) and equips them like any item.
+    let defs = [
+        nontransferable(def(60, SUBCLASS_BUCKET, "")),
+        nontransferable(def(61, ARTIFACT_BUCKET, "")),
+        nontransferable(def(62, SUBCLASS_BUCKET, "")),
+        def(30, 3448274439, ""),
+    ];
+    let items = [
+        item("60", 60, at("1"), false),
+        item("61", 61, at("1"), false),
+        item("62", 62, at("1"), true),
+        item("30", 30, at("1"), false),
+    ];
+    let selection = [
+        selected(Some(&items[1]), true),
+        selected(Some(&items[0]), true),
+        selected(Some(&items[3]), true),
+    ];
+    let p = plan(&selection, &items, &defs, Some(5), 10);
+    assert!(p.skipped.is_empty(), "{:?}", p.skipped);
+    assert_eq!(describe(&p), ["equip: equip 30,60,61 on 1"]);
+}
+#[test]
+fn subclass_already_equipped_on_the_target_is_already_there() {
+    let defs = [nontransferable(def(60, SUBCLASS_BUCKET, ""))];
+    let items = [item("60", 60, at("1"), true)];
+    let p = plan(&[selected(Some(&items[0]), true)], &items, &defs, None, 10);
+    assert!(p.skipped.is_empty());
+    assert_eq!(p.already_there, [0]);
+    assert!(p.steps.is_empty());
+}
+#[test]
+fn a_lone_subclass_equip_is_inline() {
+    let defs = [nontransferable(def(60, SUBCLASS_BUCKET, ""))];
+    let items = [item("60", 60, at("1"), false)];
+    let p = plan(&[selected(Some(&items[0]), true)], &items, &defs, None, 10);
+    assert!(p.skipped.is_empty());
+    assert_eq!(describe(&p), ["move: equip 60 on 1"]);
+}
+#[test]
+fn non_transferable_subclass_elsewhere_is_not_transferable_and_unproven_capacity_is_unsupported() {
+    // DIM only requests a move when `!item.notransfer` (`loadout-apply.ts:386-405`).
+    let defs = [
+        nontransferable(def(60, SUBCLASS_BUCKET, "")),
+        def(61, SUBCLASS_BUCKET, ""),
+    ];
+    let items = [
+        item("60", 60, at("2"), false),
+        item("61", 61, ItemLocation::Vault, false),
+    ];
+    let p = plan(
+        &[selected(Some(&items[0]), true)],
+        &items,
+        &defs,
+        Some(5),
+        10,
+    );
+    assert_eq!(p.skipped[0].reason, ApplySkipReason::NotTransferable);
+    // A transferable one would need character capacity the audited policy lacks.
+    let p = plan(
+        &[selected(Some(&items[1]), true)],
+        &items,
+        &defs,
+        Some(5),
+        10,
+    );
+    assert_eq!(p.skipped[0].reason, ApplySkipReason::UnsupportedBucket);
+    assert!(p.steps.is_empty());
+}
+#[test]
+fn clear_space_ignores_subclass_and_artifact_build_items() {
+    let defs = [
+        nontransferable(def(60, SUBCLASS_BUCKET, "")),
+        def(61, SUBCLASS_BUCKET, ""),
+    ];
+    let items = [
+        item("60", 60, at("1"), true),
+        item("61", 61, at("1"), false),
+    ];
+    let vault = vault_of(10);
+    let context = ApplyContext {
+        vault: Some(&vault),
+        clear_weapons: true,
+        clear_armor: true,
+        ..Default::default()
+    };
+    let p = plan_with(
+        &[selected(Some(&items[0]), true)],
+        &items,
+        &defs,
+        &context,
+        10,
+    );
+    assert!(p.steps.is_empty());
+    assert!(p.clear_skipped.is_empty());
+}

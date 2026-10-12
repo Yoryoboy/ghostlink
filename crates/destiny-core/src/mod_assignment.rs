@@ -198,6 +198,7 @@ pub fn analyze_bucket_mods_with_unlocks(
         catalogs,
         unlocked,
         None,
+        false,
     )
 }
 
@@ -225,6 +226,34 @@ pub fn stat_mod_assignments(
         catalogs,
         unlocked,
         Some(upgraded),
+        false,
+    )
+}
+
+/// Build apply fits with the in-game rules against whatever armor the apply collected:
+/// DIM's `fitMostMods` accepts any number of pieces (`loadout-apply.ts:1282-1330`,
+/// `mod-assignment-utils.ts:286-345`); a mod whose bucket has no piece is not assigned.
+pub fn apply_mod_assignments(
+    build: &BuildDefinition,
+    resolved: &[ResolvedBuildItem],
+    definitions: &[ItemDefinition],
+    catalogs: &[ArmorCatalogRecord],
+    unlocked: &[u32],
+) -> ModFitAnalysis {
+    let inventory: Vec<_> = resolved
+        .iter()
+        .filter(|r| r.should_equip)
+        .filter_map(|r| r.inventory.clone())
+        .collect();
+    analyze_with_rules(
+        build,
+        resolved,
+        &inventory,
+        definitions,
+        catalogs,
+        unlocked,
+        Some(false),
+        true,
     )
 }
 
@@ -237,6 +266,7 @@ fn analyze_with_rules(
     catalogs: &[ArmorCatalogRecord],
     unlocked: &[u32],
     stat_rules: Option<bool>,
+    partial_set: bool,
 ) -> ModFitAnalysis {
     let requested = build
         .parameters
@@ -325,8 +355,8 @@ fn analyze_with_rules(
         })
         .collect();
     // DIM analysis.ts:454 only assigns a full set. Excess free mods are left
-    // unassigned by DIM's single-use candidate lists.
-    if armor.len() != 5 {
+    // unassigned by DIM's single-use candidate lists. Apply fits any set.
+    if armor.len() != 5 && !partial_set {
         return ModFitAnalysis {
             evaluation: "not_evaluated",
             reason: Some("full_resolved_armor_set_required"),

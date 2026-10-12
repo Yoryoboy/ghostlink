@@ -1,11 +1,12 @@
-# Build apply: planner, dry-run, executor, MCP tool, sockets and armor mods (BE-007a/b, incomplete)
+# Build apply: planner, dry-run, executor, MCP tool, sockets, armor mods and fashion (BE-007)
 
 `ghostlink build apply ... --dry-run` prints the plan from the pure equipment planner
 and dispatches nothing (profile reads only; no mutation transport is composed).
 Without `--dry-run` the same plan is executed (see "Executor" below). The MCP tool
 `apply_build` does the same with a `dry_run` argument (see "MCP tool"). Subclass and
-artifact socket overrides and armor mods are applied as plug insertions (see "Sockets" and
-"Armor mods"); fashion is not applied yet (`not_applied`, BE-007b3). Existing move, equip,
+artifact socket overrides, armor mods and fashion are applied as plug insertions (see
+"Sockets", "Armor mods" and "Fashion"); subclass and artifact items are equipped like
+other build items (see "Subclass and artifact equips"). Existing move, equip,
 batch equip and in-game apply-loadout commands are unchanged.
 
 ## Implemented boundary
@@ -24,12 +25,11 @@ batch equip and in-game apply-loadout commands are unchanged.
 - Ordered steps describe source replacement equips, Vault-mediated transfers,
   incidental space-making transfers and grouped arrival equips. Skips retain
   specification indices and typed reasons; already-satisfied items are separate.
-  Socket overrides and armor mods become `InsertPlug` steps (see "Sockets" and "Armor
-  mods"). What a plan does not apply is listed in `not_applied` with a reason:
-  `fashion_deferred_to_be_007b3` (the build carries `modsByBucket`),
-  `socket_overrides_evidence_unavailable` (overrides but no socket catalogs) and the
-  assignment reason when armor mods cannot be evaluated (for example
-  `full_resolved_armor_set_required`).
+  Socket overrides, armor mods and fashion become `InsertPlug` steps (see "Sockets",
+  "Armor mods" and "Fashion"). What a plan does not apply is listed in `not_applied` with
+  a reason: `socket_overrides_evidence_unavailable` (overrides but no socket catalogs)
+  and the assignment reason when armor mods cannot be evaluated (for example
+  `armor_energy_unavailable`).
 - Planning clones its inventory and performs no repository or provider mutation.
   Failed preparation attempts discard their speculative local changes and steps.
   This is planning-time partial progress, **not** remote partial-failure handling.
@@ -228,12 +228,8 @@ Ghostlink adaptations and limits:
 - **Not checked locally.** The core settings lists of protected plugs and blocked
   socket types (`canInsertForFree`) are not fetched; Bungie rejects those. DIM's
   irreversible-shader guard and transmog swap concern fashion (BE-007b3).
-- **Subclass equip.** The planner still skips the subclass and artifact buckets as
-  `unsupported_bucket` (no move or equip), so the plugs go into the subclass on the
-  target character whether or not it is equipped, as in DIM, and Bungie decides. A
-  build with a subclass therefore keeps reporting that skip (and result `partial`,
-  exit 41) until subclass equips are planned. An empty `socketOverrides` object is
-  stored as no overrides, so DIM's defaults-only patch for `{}` does not run.
+- **Subclass equip.** See "Subclass and artifact equips". An empty `socketOverrides`
+  object is stored as no overrides, so DIM's defaults-only patch for `{}` does not run.
 - **Pacing.** The executor's 100 ms pacing also runs before each insertion; the gateway
   adds the 0.5 s spacing.
 
@@ -258,11 +254,12 @@ build's own armor. Items are judged where the plan leaves them.
 
 Ghostlink adaptations and limits:
 
-- **Evidence.** The assignment needs the five armor pieces with socket state, energy and
-  rarity, the armor-mod socket types and plug sets, and plug definitions with material
+- **Evidence.** The assignment needs the resolved armor pieces with socket state, energy
+  and rarity, the armor-mod socket types and plug sets, and plug definitions with material
   requirement sets (the `build check` inputs). Otherwise the phase is not planned and the
   assignment reason is listed in `not_applied`. DIM assigns mods to fewer than five
-  armor pieces; Ghostlink needs all five (`full_resolved_armor_set_required`).
+  armor pieces and so does the apply (see "Armor set"); `build check` still needs all
+  five, as DIM's analysis does.
 - **Skips** (`mod_skipped`, one entry per mod hash): `mod_not_unlocked`,
   `invalid_for_armor`, `unassigned`, `not_on_target_character`,
   `item_energy_unavailable`, `no_socket_for_mod`, `not_enough_energy`, the
@@ -273,12 +270,85 @@ Ghostlink adaptations and limits:
   for armor on the target character after the plan (the step is sent with the target).
 - **Dependencies.** A mod step `needs` every earlier move, pull or equip of its item.
   Steps of one item are not chained to each other (DIM continues after a failed mod).
-- **Not applied.** Fashion (`modsByBucket`: shaders and ornaments, the transmog swap and
-  the irreversible-shader guard of `advanced-write-actions.ts:105-135`) needs shader and
-  ornament classification Ghostlink does not store; it is `fashion_deferred_to_be_007b3`.
+
+### Armor set
+
+DIM collects the build's armor marked equip, else the equipped piece, per slot, and
+fits mods to whatever it found (`loadout-apply.ts:1282-1330`; `fitMostMods` takes any
+number of pieces and leaves a bucket mod without a piece unassigned,
+`mod-assignment-utils.ts:286-354`). The apply does the same with the
+in-game rules: with fewer than five pieces the mods of a slot that has no piece are
+`unassigned` (or `invalid_for_armor` when no piece admits them), and nothing is guessed.
+Only the stat/check analysis (`build check`, DIM `analysis.ts:454`) still requires the
+full set.
+
+## Subclass and artifact equips (BE-007b3)
+
+| Decision | DIM evidence (`src/app/`) |
+|---|---|
+| Subclass and Artifacts are ordinary build items, sorted after weapons and armor | `destiny2/d2-bucket-categories.ts:21-23`, `loadout-drawer/loadout-apply.ts:118-129,261-271` |
+| A move is requested only for items that are not on the target and are not `notransfer`; an equip only when `equip` is set and the item is not equipped | `loadout-apply.ts:386-405` |
+| Items are equipped with the same single or bulk equip as other items | `loadout-apply.ts:424-433,526-540,580-594` |
+
+Ghostlink adaptations:
+
+- The audited `EquipmentCapacityPolicy` still validates exactly the eight weapon/armor
+  buckets (their capacity is proven against the Manifest bucket artifact); it was **not**
+  widened. Subclass and artifact buckets are equip-only buckets of the planner: they
+  are equipped where they already are. A subclass that is not on the target character is
+  skipped as `not_transferable` when its definition says so (subclasses do not move), and
+  as `unsupported_bucket` when it would need a move, because their character capacity is
+  not audited.
+- They are excluded from `clearWeapons`/`clearArmor` and never take part in Vault
+  evidence.
+- Equipping one replaces whatever occupies its bucket on the target in the local
+  projection, like other equips. The single-item `equip` command still rejects them.
+- Builds with a subclass no longer report `unsupported_bucket`, so a build whose other
+  steps succeed is `applied`.
+
+## Fashion (BE-007b3)
+
+`plan_fashion` (`destiny_core::build_fashion_apply`) ports DIM's `modsByBucket` handling.
+Fashion steps are `insert_plug` steps in phase `mods`, after every armor mod step, for the
+same armor set as the mods.
+
+| Decision | DIM evidence (`src/app/`) |
+|---|---|
+| A fashion plug is applied only if it exists and is unlocked in the plug sets, is an owned exotic ornament, or is the default shader or a default ornament | `loadout-drawer/loadout-apply.ts:308-320,329-338` |
+| Each plug goes into the first socket of the armor piece it fits (empty plug, plug set member, or the item's own reusable plugs); otherwise it is unassigned | `loadout-apply.ts:1365-1380`, `utils/socket-utils.ts:228-237` |
+| Mods are plugged for all armor first, then fashion (shaders, ornaments, armor-type plugs) | `loadout-apply.ts:1388-1405`, `loadout-drawer/loadout-utils.ts:857-864` |
+| A plug already in its socket needs no request | `loadout-apply.ts:1502-1505` |
+| Transmog swap: an ornament made from the same item is replaced by the socket's default plug | `loadout-apply.ts:1489-1500`, `inventory/advanced-write-actions.ts:144-151` |
+| Only free insertions | `advanced-write-actions.ts:41-103` (shared with sockets and mods) |
+| Irreversible-shader guard: a plugged shader other than the default shader or default ornaments is never overwritten unless it is unlocked in the socket's plug set or enabled among the item's reusable plugs | `advanced-write-actions.ts:105-135,165-175` |
+| Exotic ornament unlocks are the `canInsert` plugs of the cosmetic sockets of any owned exotic armor, minus default ornaments | `inventory/selectors.ts:372-389` |
+
+Ghostlink adaptations and limits:
+
+- **Classification data (migration 35).** `itemType`, `itemSubType` and
+  `itemCategoryHashes` are projected for plug definitions only (STRICT tables
+  `definition_item_classes` and `definition_item_categories`, guarded downgrade, one
+  freshness invalidation, same conventions as migrations 23-34). No new Manifest
+  download: they come from the item table already fetched. Run `ghostlink sync-manifest`
+  after upgrading; without it fashion plugs have no classification and stay unclassified
+  (the irreversible-shader guard cannot recognize shaders, so a stale projection must be
+  refreshed before applying fashion).
+- **Evidence.** The cosmetic sockets' types and plug sets and the fashion plugs' insertion
+  cost sets are loaded per request; plug-set members are not loaded as definitions.
+- **Plug-set identity.** Plug-set entries are projected without their plug-set hash.
+  DIM's guard asks whether the shader is unlocked in the *socket's* plug set; Ghostlink
+  asks whether it is enabled in any profile or target-character plug set (or enabled on
+  the item), and requires the socket to have a plug set. Universal ornament plug sets
+  (which DIM reads through `canInsert`, `plugset-helpers.ts:26-36`) are approximated for
+  requested ornaments only: an ornament reported insertable counts as unlocked.
+- **Skips** (`mod_skipped`): `fashion_not_unlocked`, `fashion_unassigned`,
+  `fashion_no_armor` (no armor piece for that bucket), `irreversible_shader`,
+  `not_on_target_character`, `socket_state_unavailable` and the free-insertion reasons.
+  Plugs already in place count in `mods_in_place`.
+- **Core-settings lists.** Protected plug and blocked socket-type lists are not checked
+  locally (Bungie rejects them), as for sockets.
 
 ## Remaining work
 
-Fashion (BE-007b3); planning subclass and artifact equips (today they skip as
-`unsupported_bucket` because the capacity policy covers only weapons and armor); stack
-amounts; live validation (BE-010).
+Stack amounts; per-plug-set unlock scoping and the universal ornament plug-set list;
+live validation of plug insertion and the equip endpoints (BE-010).

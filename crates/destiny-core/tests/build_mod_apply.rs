@@ -191,6 +191,8 @@ impl World {
             build,
             unlocked,
             catalogs: &self.catalogs,
+            fashion_catalogs: &[],
+            ornament_unlocks: &[],
         };
         plan_armor_mods(&input, &self.defs, &CharacterId::new("1"), &armor)
     }
@@ -287,11 +289,39 @@ fn armor_that_is_not_on_the_target_character_is_skipped_per_mod() {
 }
 
 #[test]
-fn an_incomplete_armor_set_is_reported_not_guessed() {
+fn fewer_than_five_armor_pieces_still_receive_their_mods_like_dim() {
+    // `fitMostMods` takes whatever armor `applyLoadoutMods` collected
+    // (`loadout-apply.ts:1282-1296`, `mod-assignment-utils.ts:286-354`).
     let w = world();
+    let plan = w.plan(&build(&[2001], false), &[2001], &w.items[..1]);
+    assert_eq!(inserts(&plan), [("1", 0, 2001)]);
+    assert!(plan.skipped.is_empty() && plan.not_applied.is_empty());
     let plan = w.plan(&build(&[2001], false), &[2001], &w.items[..4]);
-    assert!(plan.inserts.is_empty());
-    assert_eq!(plan.not_applied, ["full_resolved_armor_set_required"]);
+    assert_eq!(inserts(&plan), [("1", 0, 2001)]);
+    assert!(plan.not_applied.is_empty());
+}
+
+#[test]
+fn a_mod_with_no_armor_piece_to_hold_it_is_skipped_and_never_sent() {
+    let w = world();
+    // Other pieces could hold it but the helmet mod's bucket has no piece
+    // (`mod-assignment-utils.ts:343-354`: unassigned); with no armor at all no piece
+    // admits it (invalid for the set).
+    for (armor, reason) in [
+        (&w.items[1..], "unassigned"),
+        (&w.items[..0], "invalid_for_armor"),
+    ] {
+        let plan = w.plan(&build(&[2001], false), &[2001], armor);
+        assert!(plan.inserts.is_empty());
+        assert!(plan.not_applied.is_empty());
+        assert_eq!(
+            plan.skipped,
+            [ModSkip {
+                plug: ItemHash::new(2001),
+                reason
+            }]
+        );
+    }
 }
 
 #[test]
@@ -359,6 +389,8 @@ mod planner {
                     build,
                     unlocked,
                     catalogs: &w.catalogs,
+                    fashion_catalogs: &[],
+                    ornament_unlocks: &[],
                 }),
                 ..Default::default()
             },
@@ -384,7 +416,7 @@ mod planner {
     }
 
     #[test]
-    fn skipped_and_unavailable_mods_are_listed_and_fashion_stays_not_applied() {
+    fn skipped_mods_and_fashion_are_listed_and_nothing_is_deferred() {
         let w = world();
         let mut wanted = build(&[2001], false);
         wanted.parameters.as_mut().unwrap().mods_by_bucket =
@@ -393,12 +425,18 @@ mod planner {
         assert!(plan.steps.is_empty());
         assert_eq!(
             plan.mod_skipped,
-            [ModSkip {
-                plug: ItemHash::new(2001),
-                reason: "mod_not_unlocked"
-            }]
+            [
+                ModSkip {
+                    plug: ItemHash::new(2001),
+                    reason: "mod_not_unlocked"
+                },
+                ModSkip {
+                    plug: ItemHash::new(2002),
+                    reason: "fashion_not_unlocked"
+                }
+            ]
         );
-        assert_eq!(plan.not_applied, ["fashion_deferred_to_be_007b3"]);
+        assert!(plan.not_applied.is_empty());
     }
 
     #[test]

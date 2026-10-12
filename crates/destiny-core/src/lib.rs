@@ -9,6 +9,7 @@ pub mod build;
 pub mod build_analysis;
 pub mod build_apply;
 pub mod build_capture;
+pub mod build_fashion_apply;
 pub mod build_mod_apply;
 pub mod build_sets;
 pub mod build_sockets;

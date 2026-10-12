@@ -8,8 +8,8 @@ use crate::{
     build_analysis::ResolvedBuildItem,
     build_sockets::{can_insert_free, sockets},
     mod_assignment::{
-        ARMOR_BUCKETS, assignment_sockets, exclusion_group, resolve_mod_cost_variant,
-        stat_mod_assignments,
+        ARMOR_BUCKETS, apply_mod_assignments, assignment_sockets, exclusion_group,
+        resolve_mod_cost_variant,
     },
     *,
 };
@@ -26,6 +26,12 @@ pub struct ModInput<'a> {
     pub unlocked: &'a [u32],
     /// Socket types, plug sets and material requirement sets of the armor.
     pub catalogs: &'a [ArmorCatalogRecord],
+    /// Socket types and plug sets of the armor cosmetic sockets, and the material
+    /// requirement sets of the fashion plugs (see `build_fashion_apply`).
+    pub fashion_catalogs: &'a [ArmorCatalogRecord],
+    /// Ornaments unlocked without an enabled plug-set entry: exotic ornaments owned
+    /// on any exotic armor instance, and `canInsert` ornament entries.
+    pub ornament_unlocks: &'a [u32],
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModInsert {
@@ -394,7 +400,7 @@ pub fn plan_armor_mods(
     }
     let mut build = input.build.clone();
     build.parameters.get_or_insert_with(Default::default).mods = Some(kept);
-    let fit = stat_mod_assignments(&build, armor, defs, input.catalogs, input.unlocked, false);
+    let fit = apply_mod_assignments(&build, armor, defs, input.catalogs, input.unlocked);
     let (Some(assignments), Some(unassigned), Some(invalid)) = (
         fit.item_mod_assignments,
         fit.unassigned_mods,

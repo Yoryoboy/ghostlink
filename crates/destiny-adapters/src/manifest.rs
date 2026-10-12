@@ -678,6 +678,12 @@ struct InventoryRecord {
     #[serde(default)]
     item_type_display_name: OptionalField<String>,
     #[serde(default)]
+    item_type: OptionalField<u8>,
+    #[serde(default)]
+    item_sub_type: OptionalField<u8>,
+    #[serde(default)]
+    item_category_hashes: OptionalField<Vec<u32>>,
+    #[serde(default)]
     class_type: OptionalField<u32>,
     #[serde(default)]
     default_damage_type: OptionalField<u32>,
@@ -1391,7 +1397,22 @@ fn decode_record(
             )
         },
     );
+    // Fashion classification is read from plug definitions only (DIM `isPluggableItem`).
+    let plug_classification = record.plug.is_some();
     let armor = destiny_core::ArmorDefinition {
+        item_category_hashes: record
+            .item_category_hashes
+            .into_option()
+            .filter(|_| plug_classification)
+            .unwrap_or_default(),
+        item_type_code: record
+            .item_type
+            .into_option()
+            .filter(|_| plug_classification),
+        item_sub_type_code: record
+            .item_sub_type
+            .into_option()
+            .filter(|_| plug_classification),
         unique_label: record
             .equipping_block
             .as_ref()

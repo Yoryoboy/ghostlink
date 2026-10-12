@@ -295,7 +295,11 @@ or `failed` (with `reason`). Bungie acknowledgements are not re-read and nothing
 retried: never repeat a partial, failed or uncertain apply blindly. Subclass and
 artifact socket overrides are applied as `sockets` steps (`insert_plug`; free plugs
 only, so `socket_skipped` can list `not_free`), after which `local_state` is
-`refresh_pending`. Armor mods are not applied yet (`not_applied`).
+`refresh_pending`. Subclass and artifact items are equipped like any other build item.
+Armor mods and fashion (`modsByBucket` shaders and ornaments) are `mods` steps too, after
+the socket overrides; their skips are listed in `mod_skipped` (for example
+`fashion_not_unlocked` or `irreversible_shader`) and `not_applied` names what could not
+be evaluated.
 
 When Bungie acknowledged actions but the projection write failed, the result keeps
 its per-step outcomes, reports `local_state: "failed"` and the reason "local state

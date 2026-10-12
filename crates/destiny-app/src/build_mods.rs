@@ -25,6 +25,21 @@ pub(crate) fn unlocked_mods(entries: &[domain::PlugSetEntry], target: &Character
         .collect()
 }
 
+/// Plugs the plug-set entries of the target (or the profile) report as insertable.
+pub(crate) fn insertable_plugs(entries: &[domain::PlugSetEntry], target: &CharacterId) -> Vec<u32> {
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.can_insert
+                && match &entry.scope {
+                    domain::PlugSetScope::Profile => true,
+                    domain::PlugSetScope::Character(id) => id == target,
+                }
+        })
+        .map(|entry| entry.plug_hash.value() as u32)
+        .collect()
+}
+
 pub(crate) fn findings(build: &BuildDefinition, analysis: &mut BuildAnalysis) {
     let artifact = build
         .parameters

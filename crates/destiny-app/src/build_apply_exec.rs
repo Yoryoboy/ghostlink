@@ -200,7 +200,12 @@ impl<R: InventoryRepository + DefinitionRepository> Run<'_, R> {
     }
     fn persist_equip(&mut self, item: &ItemInstanceId, character: &destiny_core::CharacterId) {
         let effect = self.instance(item).map(|instance| {
-            crate::mutation::equip_effect(&*self.repository, &instance, character, &self.projected)
+            crate::mutation::build_equip_effect(
+                &*self.repository,
+                &instance,
+                character,
+                &self.projected,
+            )
         });
         match effect {
             Some(Ok(effect)) => self.persist(effect),

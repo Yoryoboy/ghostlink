@@ -12,6 +12,7 @@ pub use destiny_core::{
     armor_catalog, build, build_analysis, build_apply, build_mod_apply, build_sets, build_sockets,
     mod_assignment,
 };
+mod build_fashion_evidence;
 mod build_mods;
 mod build_socket_evidence;
 mod build_stats;

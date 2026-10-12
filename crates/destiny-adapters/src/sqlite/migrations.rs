@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 34;
+pub(crate) const LATEST_VERSION: u32 = 35;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 34] = [
+const MIGRATIONS: [Migration; 35] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -224,7 +224,35 @@ const MIGRATIONS: [Migration; 34] = [
         up: SCHEMA_V34_UP,
         down: SCHEMA_V34_DOWN,
     },
+    Migration {
+        version: 35,
+        up: SCHEMA_V35_UP,
+        down: SCHEMA_V35_DOWN,
+    },
 ];
+const SCHEMA_V35_UP: &str = r#"
+CREATE TABLE definition_item_classes (
+    definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,
+    item_type INTEGER CHECK (item_type BETWEEN 0 AND 255),
+    item_sub_type INTEGER CHECK (item_sub_type BETWEEN 0 AND 255),
+    CHECK (item_type IS NOT NULL OR item_sub_type IS NOT NULL)
+) STRICT;
+CREATE TABLE definition_item_categories (
+    definition_hash INTEGER NOT NULL REFERENCES definitions(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 63),
+    category_hash INTEGER NOT NULL CHECK (category_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (definition_hash, ordinal)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V35_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definition_item_classes) OR EXISTS (SELECT 1 FROM definition_item_categories) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE definition_item_categories;
+DROP TABLE definition_item_classes;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
 const SCHEMA_V34_UP: &str = r#"
 CREATE TABLE inventory_buckets (
     hash INTEGER PRIMARY KEY CHECK (hash BETWEEN 0 AND 4294967295),

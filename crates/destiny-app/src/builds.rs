@@ -114,6 +114,8 @@ struct AnalyzedBuild {
     /// Armor mod socket types, plug sets and costs, with the mods unlocked on the target.
     mod_catalogs: Vec<ArmorCatalogRecord>,
     unlocked_mods: Vec<u32>,
+    /// Plugs the target's plug-set entries report as insertable (universal ornaments).
+    insertable_plugs: Vec<u32>,
 }
 
 /// Read-only apply plan; nothing has been dispatched.
@@ -285,6 +287,13 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             &analyzed.result.analysis.items,
             &mut analyzed.definitions,
         )?;
+        let fashion = crate::build_fashion_evidence::fashion_evidence(
+            sync.repository(),
+            &analyzed.definition,
+            &analyzed.items,
+            &analyzed.insertable_plugs,
+            &mut analyzed.definitions,
+        )?;
         let analysis = &analyzed.result.analysis;
         // Local projection of saved in-game loadouts; absent stays unknown.
         let saved = sync.repository().saved_loadouts()?;
@@ -330,6 +339,8 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
                 build: &analyzed.definition,
                 unlocked: &analyzed.unlocked_mods,
                 catalogs: &analyzed.mod_catalogs,
+                fashion_catalogs: &fashion.catalogs,
+                ornament_unlocks: &fashion.ornament_unlocks,
             }),
         };
         let plan = build_apply::plan_build_items(
@@ -496,6 +507,8 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
         }
         let unlocked_mods =
             crate::build_mods::unlocked_mods(&snapshot.plug_set_entries, &target.id);
+        let insertable_plugs =
+            crate::build_mods::insertable_plugs(&snapshot.plug_set_entries, &target.id);
         if let Some(mods) = build
             .definition
             .parameters
@@ -594,6 +607,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             definitions,
             mod_catalogs,
             unlocked_mods,
+            insertable_plugs,
         })
     }
 

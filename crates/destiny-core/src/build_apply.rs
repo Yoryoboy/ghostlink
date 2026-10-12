@@ -172,7 +172,7 @@ pub struct ApplyContext<'a> {
     pub clear_armor: bool,
     /// Socket type, plug set and material requirement records for socket overrides.
     pub catalogs: Option<&'a [crate::armor_catalog::ArmorCatalogRecord]>,
-    /// Armor mods and `clearMods`; fashion (`modsByBucket`) is reported as not applied.
+    /// Armor mods, `clearMods` and fashion (`modsByBucket`).
     pub armor_mods: Option<crate::build_mod_apply::ModInput<'a>>,
 }
 struct Planner<'a> {
@@ -237,7 +237,7 @@ impl Planner<'_> {
     fn bucket(&self, item: &ItemInstance) -> Result<BucketHash, ApplySkipReason> {
         self.definition(item)?
             .bucket_hash
-            .filter(|b| self.policy.capacity(*b).is_some())
+            .filter(|b| self.policy.capacity(*b).is_some() || is_equip_only_bucket(*b))
             .ok_or(ApplySkipReason::UnsupportedBucket)
     }
     fn label(&self, item: &ItemInstance) -> Option<&str> {
@@ -401,6 +401,11 @@ impl Planner<'_> {
         self.equip(vec![replacement], owner)
     }
     fn free(&self, target: &ItemLocation, bucket: BucketHash) -> Result<usize, ApplySkipReason> {
+        // Subclass and artifact capacity is not audited, so nothing is moved into or
+        // out of those buckets; they are only equipped where they already are.
+        if self.policy.capacity(bucket).is_none() {
+            return Err(ApplySkipReason::UnsupportedBucket);
+        }
         let unavailable = ApplySkipReason::VaultCapacityUnavailable;
         let (capacity, vault_bucket) = match (target, self.vault) {
             (ItemLocation::Vault, vault) => {
@@ -630,9 +635,25 @@ impl Planner<'_> {
     }
 }
 const WEAPON_BUCKETS: [i64; 3] = [1498876634, 2465295065, 953998645];
-const BUCKETS: [i64; 8] = [
-    1498876634, 2465295065, 953998645, 3448274439, 3551918588, 14239492, 20886954, 1585787867,
+/// DIM's bucket order: weapons, armor, then Subclass and Artifacts
+/// (`d2-bucket-categories.ts:5-26`, `loadout-apply.ts:118-129`).
+const BUCKETS: [i64; 10] = [
+    1498876634,
+    2465295065,
+    953998645,
+    3448274439,
+    3551918588,
+    14239492,
+    20886954,
+    1585787867,
+    SUBCLASS_BUCKET_HASH.value(),
+    ARTIFACT_BUCKET_HASH.value(),
 ];
+/// Equippable buckets outside the audited capacity policy (DIM treats them as
+/// ordinary items; Ghostlink only equips them in place, never moves them).
+fn is_equip_only_bucket(bucket: BucketHash) -> bool {
+    bucket == SUBCLASS_BUCKET_HASH || bucket == ARTIFACT_BUCKET_HASH
+}
 impl Planner<'_> {
     /// Equip with DIM's one-exotic handling: dequip conflicting labels first.
     fn equip_resolving(
@@ -683,6 +704,9 @@ impl Planner<'_> {
             let Ok(bucket) = self.bucket(&self.item(id)) else {
                 continue;
             };
+            if is_equip_only_bucket(bucket) {
+                continue;
+            }
             let weapon = WEAPON_BUCKETS.contains(&bucket.value());
             if seen.contains(&bucket) || !(if weapon { weapons } else { armor }) {
                 continue;
@@ -786,22 +810,10 @@ pub fn plan_build_items(
         socket_already_there: vec![],
         mod_skipped: vec![],
         mods_in_place: 0,
-        not_applied: [
-            (
-                has_overrides && context.catalogs.is_none(),
-                "socket_overrides_evidence_unavailable",
-            ),
-            (
-                context.armor_mods.is_some_and(|m| {
-                    m.build
-                        .parameters
-                        .as_ref()
-                        .and_then(|p| p.mods_by_bucket.as_ref())
-                        .is_some_and(|fashion| !fashion.is_empty())
-                }),
-                "fashion_deferred_to_be_007b3",
-            ),
-        ]
+        not_applied: [(
+            has_overrides && context.catalogs.is_none(),
+            "socket_overrides_evidence_unavailable",
+        )]
         .into_iter()
         .filter_map(|(pending, name)| pending.then_some(name))
         .collect(),
@@ -1048,6 +1060,19 @@ pub fn plan_build_items(
         plan.mod_skipped = mods.skipped;
         plan.mods_in_place = mods.in_place;
         plan.not_applied.extend(mods.not_applied);
+        // Fashion follows every mod insertion, as in DIM (`loadout-apply.ts:1380-1389`).
+        let fashion = crate::build_fashion_apply::plan_fashion(input, defs, target, &armor);
+        for insert in fashion.inserts {
+            p.push_insert(
+                ApplyPhase::Mods,
+                target,
+                insert.item,
+                insert.socket_index,
+                insert.plug,
+            );
+        }
+        plan.mod_skipped.extend(fashion.skipped);
+        plan.mods_in_place += fashion.in_place;
     }
     if context.clear_weapons || context.clear_armor {
         p.phase = ApplyPhase::ClearSpace;

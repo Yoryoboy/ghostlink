@@ -9,6 +9,7 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 const KINETIC: i64 = 1498876634;
 const ENERGY: i64 = 2465295065;
+const SUBCLASS: i64 = 3284755031;
 
 fn definition(hash: i64, bucket: i64) -> ItemDefinition {
     ItemDefinition {
@@ -69,6 +70,7 @@ fn store() -> (SqliteStore, SyncRevision) {
                     definition(101, KINETIC),
                     definition(200, ENERGY),
                     definition(201, ENERGY),
+                    definition(300, SUBCLASS),
                 ],
             },
             checked_at: Timestamp::new(100),
@@ -99,6 +101,8 @@ fn store() -> (SqliteStore, SyncRevision) {
             instance("3", 101, on("1"), true),
             instance("4", 201, on("1"), true),
             instance("5", 100, ItemLocation::Postmaster(c("1")), false),
+            instance("6", 300, on("1"), true),
+            instance("7", 300, on("1"), false),
         ],
         profile_currencies_coverage: ProfileCurrenciesCoverage::NotObserved,
         stacks: vec![],
@@ -850,4 +854,30 @@ fn mod_phase_insertions_dispatch_in_plan_order_and_a_failed_regain_never_stops_t
     );
     assert_eq!(execution.status, ApplyStatus::Partial);
     assert_eq!(execution.local_state, ApplyLocalState::RefreshPending);
+}
+
+#[test]
+fn subclass_equip_is_acknowledged_and_projected_like_any_equip() {
+    // Subclass buckets are outside the eight weapon/armor slots, but a planned
+    // subclass equip must still update the local projection (not exit 42).
+    let (mut repository, revision) = store();
+    let script = Script {
+        equip: [Ok(EquipOutcome::Equipped)].into(),
+        ..Default::default()
+    };
+    let (execution, calls) = run(
+        &mut repository,
+        revision,
+        &plan(vec![equip(&["7"], "1")]),
+        script,
+    );
+    assert_eq!(calls, ["equip 7 on 1"]);
+    assert_eq!(execution.status, ApplyStatus::Applied);
+    assert_eq!(execution.local_state, ApplyLocalState::Updated);
+    assert!(find(&repository, "7").equipped);
+    assert!(!find(&repository, "6").equipped);
+    assert!(
+        find(&repository, "4").equipped,
+        "other buckets stay equipped"
+    );
 }

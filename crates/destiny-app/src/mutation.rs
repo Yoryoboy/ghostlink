@@ -1706,16 +1706,42 @@ pub(crate) fn equip_effect<R: destiny_core::DefinitionRepository>(
     character: &destiny_core::CharacterId,
     snapshot: &InventorySnapshot,
 ) -> Result<destiny_core::InventoryEffect, MutationError> {
+    equip_effect_in(repository, item, character, snapshot, false)
+}
+
+/// Build apply also equips subclasses and artifacts, which have no weapon/armor slot but
+/// replace whatever sits in their own bucket. The single-item equip still rejects them.
+pub(crate) fn build_equip_effect<R: destiny_core::DefinitionRepository>(
+    repository: &R,
+    item: &ItemInstance,
+    character: &destiny_core::CharacterId,
+    snapshot: &InventorySnapshot,
+) -> Result<destiny_core::InventoryEffect, MutationError> {
+    equip_effect_in(repository, item, character, snapshot, true)
+}
+
+fn equip_effect_in<R: destiny_core::DefinitionRepository>(
+    repository: &R,
+    item: &ItemInstance,
+    character: &destiny_core::CharacterId,
+    snapshot: &InventorySnapshot,
+    bucket_equips: bool,
+) -> Result<destiny_core::InventoryEffect, MutationError> {
     let lookup = |hash| match repository.lookup_definition(hash)? {
         Resolution::Unique(definition) => Ok(definition),
         Resolution::Missing => Err(MutationError::NotEquippable),
         Resolution::Ambiguous(_) => Err(MutationError::InvalidProjection),
     };
     let target = lookup(item.item_hash)?;
-    let slot = target
-        .slot
-        .filter(|slot| is_equipment_slot(*slot))
-        .ok_or(MutationError::NotEquippable)?;
+    let slot = target.slot.filter(|slot| is_equipment_slot(*slot));
+    let bucket_equip = bucket_equips
+        && matches!(
+            target.bucket_hash,
+            Some(destiny_core::SUBCLASS_BUCKET_HASH | destiny_core::ARTIFACT_BUCKET_HASH)
+        );
+    if slot.is_none() && !bucket_equip {
+        return Err(MutationError::NotEquippable);
+    }
     let mut unequip = Vec::new();
     for other in snapshot.items.iter().filter(|other| {
         other.equipped
@@ -1725,7 +1751,7 @@ pub(crate) fn equip_effect<R: destiny_core::DefinitionRepository>(
         let definition = lookup(other.item_hash)?;
         let same_bucket = match (target.bucket_hash, definition.bucket_hash) {
             (Some(target), Some(other)) => target == other,
-            _ => definition.slot == Some(slot),
+            _ => slot.is_some() && definition.slot == slot,
         };
         if same_bucket {
             unequip.push(other.instance_id.clone());

@@ -419,7 +419,7 @@ coverage (`domain.rs:123-126`).
       deviation (DIM caches by rarity, `mod-assignment-utils.ts:180-226,
       964-989`); mixed-tier misses stay unknown. Workspace: 2194
       all-features, 2162 default, 0 failed; clippy both modes, fmt.
-- [ ] **BE-007 — Apply build.** DIM apply phases; covers dim-parity U4b/U4c.
+- [x] **BE-007 — Apply build.** DIM apply phases; covers dim-parity U4b/U4c.
   Owner decision (2026-10-12): implement offline with fakes now; the live
   `EquipLoadout` check (dim-parity U4b/U4c) and live apply validation move
   to BE-010. A Ghostlink build is not an in-game loadout, so DIM-style
@@ -517,7 +517,7 @@ coverage (`domain.rs:123-126`).
       CLI `build apply --dry-run` with no-dispatch verification; executor
       with partial-failure semantics, throttle and error mapping; MCP
       mutation tool.
-  - [ ] **BE-007b — Sockets.** Mods, aspects, fragments and subclass via
+  - [x] **BE-007b — Sockets.** Mods, aspects, fragments and subclass via
     `InsertSocketPlugFree` as DIM applies them.
     - [x] **BE-007b1 — Subclass and artifact overrides.** New
       `InsertSocketPlugFree` adapter (`plug{socketIndex, socketArrayType 0,
@@ -552,9 +552,30 @@ coverage (`domain.rs:123-126`).
       artifice sockets count (`:586-593`); shared free-insert check.
       `clearMods` included. Plan gains `mod_skipped` and `mods_in_place`.
       Workspace: 2294 all-features, 2261 default, 0 failed; clippy both
-      modes, fmt. Known deviation: Ghostlink requires all five armor pieces
-      where DIM plugs fewer.
-    - [ ] **BE-007b3 — Fashion and subclass equips.** Fashion needs
+      modes, fmt. (The all-five-pieces deviation was removed in BE-007b3.)
+    - [x] **BE-007b3 — Fashion and subclass equips.** Done: subclass and
+      artifact are equip-only planner buckets after armor
+      (`d2-bucket-categories.ts:21-23`, `loadout-apply.ts:118-129,261-271`),
+      moves only when transferable (`:386-405`), excluded from clear-space;
+      `EquipmentCapacityPolicy` untouched; build apply has its own
+      `build_equip_effect`. Mods plug on fewer than five pieces
+      (`loadout-apply.ts:1282-1330`, `mod-assignment-utils.ts:286-354`).
+      Fashion (`build_fashion_apply.rs`): unlock check
+      (`loadout-apply.ts:308-320,329-338`), socket fit (`:1365-1380`,
+      `socket-utils.ts:228-237`), mods before fashion (`:1388-1405`), transmog
+      swap (`:1489-1500`, `advanced-write-actions.ts:144-151`),
+      irreversible-shader guard (`advanced-write-actions.ts:105-135,165-175`),
+      exotic ornament unlocks (`selectors.ts:372-389`). Migration 35:
+      `definition_item_classes` and `definition_item_categories` for plug
+      definitions, no new Manifest table. Parent verified enums
+      (`DestinyItemSubType` Shader 20, Ornament 21) and live data
+      (244213.26.06.29.2000-1: 14,536 plugs, 39,814 category rows, max 6 per
+      plug vs cap 64; 721 shaders, 3,688 ornaments). Approximation: plug-set
+      identity is "unlocked in any plug set or enabled on the item" because
+      `PlugSetEntry` has no plug-set hash. Workspace: 2323 all-features, 2290
+      default, 0 failed; clippy both modes, fmt. Follow-up: project the
+      plug-set hash and embed DIM's universal-ornament plug-set list.
+      Original scope: Fashion needs
       shader/ornament classification and item category hashes (not in
       `ItemDefinition`, migration needed): irreversible-shader guard
       (`advanced-write-actions.ts:105-135`), transmog swap, exotic-ornament

@@ -16,6 +16,13 @@ pub struct ArmorDefinition {
     pub plug_availability: Option<u32>,
     pub insertion_material_requirement_hash: Option<u32>,
     pub equipable_item_set_hash: Option<u32>,
+    /// Raw `itemCategoryHashes`, projected for plug definitions only (fashion
+    /// classification); empty means none or unobserved.
+    pub item_category_hashes: Vec<u32>,
+    /// Raw `itemType` of a plug definition (`DestinyItemType`; armor is 2).
+    pub item_type_code: Option<u8>,
+    /// Raw `itemSubType` of a plug definition (`DestinyItemSubType`; shader 20, ornament 21).
+    pub item_sub_type_code: Option<u8>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,6 +64,7 @@ impl ArmorDefinition {
             .as_ref()
             .is_some_and(|label| label.len() > 256 || label.chars().any(char::is_control))
             || self.investment_stats.len() > 64
+            || self.item_category_hashes.len() > 64
             || self.socket_entries.len() > 32
             || self.socket_categories.len() > 32
             || self
