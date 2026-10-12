@@ -54,9 +54,11 @@ DIM evidence here. Ask the owner only when DIM is ambiguous or does not fit
   equivalent of DIM Sync).
 - D3 (DIM): resolution never substitutes silently; substitutes come only from
   the optimizer task.
-- D4 (owner pending): `dim.gg` share import needs a DIM API key
-  (`X-API-Key`, `src/app/dim-api/dim-api-helper.ts:9,35`) and a third-party
-  network dependency. Deferred to BE-009.
+- D4 (owner, 2026-10-12): no `dim.gg` support. Share import would need a
+  DIM API key (`X-API-Key`, `src/app/dim-api/dim-api-helper.ts:9,35`) and a
+  third-party network dependency. Ghostlink imports only full DIM links and
+  JSON; `dim.gg` share ids keep the typed error, which should tell the user
+  to open the link in DIM and copy the full loadout link or JSON.
 
 ## Constraints
 
@@ -335,10 +337,28 @@ coverage (`domain.rs:123-126`).
   - [ ] **BE-006b — Mods fit and armor upgrades.** DIM mod assignment
     (`loadout/mod-assignment-utils.ts`, >1,000 lines with dependencies);
     unassignable mods; upgrades needed for mods.
+    - [x] **BE-006b1 — Bucket-specific assignment.** `mod_assignment.rs`
+      (pure): categorization and full-set fitting
+      (`mod-assignment-utils.ts:84-151,346-370`, `analysis.ts:442-478`),
+      numeric bucket matching (`mod-utils.ts:15-21`), stable greedy
+      picky-first ordering, visibility/type gates, energy and exclusions
+      (`mod-assignment-utils.ts:576-675`), membership without flag
+      filtering (`socket-utils.ts:225-237`), energy-upgrade assumptions
+      (`analysis.ts:158-190`, `armor-upgrade-utils.ts:12-22,43-49`), Tier-5
+      max (`d2-known-values.ts:29-30`). Additive `mod_fit` in build check
+      text/JSON and MCP; `docs/build-mods.md`. Workspace: 2155
+      all-features, 2123 default, 0 failed; clippy both modes, fmt.
+    - [ ] **BE-006b2 — Remaining assignment.** General/activity
+      permutations, artifice/tuning assignment, material-cost
+      ranking/tie-breaking, seasonal/legacy/deprecated mod resolution
+      (`mod-utils.ts:120-132`, `reduced-cost-mod-mappings.ts`); all
+      `not_evaluated` today, never approximated.
   - [ ] **BE-006c — Stat constraints and fragment findings.** Stat
     aggregation vs `statConstraints`; fragment capacity findings;
     optimizer-based findings stay suppressed until BE-008.
 - [ ] **BE-007 — Apply build.** DIM apply phases; covers dim-parity U4b/U4c.
 - [ ] **BE-008 — Substitutes.** Optimizer-based armor sets.
-- [ ] **BE-009 — dim.gg import.** Blocked on owner decision D4.
+- [x] **BE-009 — dim.gg import.** Dropped by owner decision D4 (won't do).
+  Remaining check: the `dim.gg` typed error guides users to the full DIM
+  link/JSON (with follow-up `dim_loadout.rs:333`); verify in BE-010.
 - [ ] **BE-010 — Live validation.**

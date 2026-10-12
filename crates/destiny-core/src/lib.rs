@@ -11,6 +11,7 @@ pub mod build_capture;
 pub mod build_sets;
 pub mod calendar;
 pub mod clarity;
+pub mod mod_assignment;
 pub use calendar::*;
 pub mod loadout;
 pub use loadout::*;

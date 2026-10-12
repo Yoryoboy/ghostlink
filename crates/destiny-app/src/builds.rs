@@ -294,6 +294,14 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             hashes.extend(item.available_plugs.iter().map(|p| p.plug_hash));
             hashes.extend(item.sockets.iter().filter_map(|s| s.plug_hash));
         }
+        if let Some(mods) = build
+            .definition
+            .parameters
+            .as_ref()
+            .and_then(|p| p.mods.as_ref())
+        {
+            hashes.extend(mods.iter().copied());
+        }
         let mut definitions = Vec::new();
         for hash in hashes {
             if let Some(d) = lookup(sync.repository(), hash)? {
@@ -316,6 +324,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
                 }
             }
         }
+        let mod_catalogs = crate::build_mods::catalogs(sync.repository(), &mut definitions)?;
         let objectives = crafting_definitions(sync.repository(), &snapshot.items)?;
         let mut analysis = build_analysis::analyze_build(
             &build.definition,
@@ -339,6 +348,14 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
         }
         analysis.equipped_set_bonuses =
             build_sets::equipped_set_bonuses(&analysis.items, &definitions, &sets);
+        analysis.mod_fit = mod_assignment::analyze_bucket_mods(
+            &build.definition,
+            &analysis.items,
+            &snapshot.items,
+            &definitions,
+            &mod_catalogs,
+        );
+        crate::build_mods::findings(&build.definition, &mut analysis);
         Ok(BuildCheckResult {
             summary: build.summary,
             analysis,

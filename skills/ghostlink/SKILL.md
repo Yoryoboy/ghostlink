@@ -51,9 +51,13 @@ Build check/analyze additionally reports equipped_set_bonuses for build-equipped
 resolved armor using current inserted event selectors (not future assignments).
 Report active perks only when active is true. Partial counts are lower bounds;
 null perks/activation means unknown, never inactive. Native sets take precedence;
-event selectors require visible sockets and enabled inserted plugs. Stat/mod fit
-and upgrade checks remain explicitly not_evaluated pending the DIM assignment
-and loadout-stat aggregation slice; do not infer them from set activation.
+event selectors require visible sockets and enabled inserted plugs. The additive
+mod_fit object evaluates only DIM bucket-specific armor mods with complete evidence
+and a full resolved set. Report invalid_mods separately from unassigned_mods (after
+allowed energy upgrades; duplicates count). needs_upgrades_for_mods is not a material
+quote or a stat-masterwork upgrade claim. General/activity/artifice/tuning mods and
+seasonal cost variants remain not_evaluated, never clean. Positive stat constraints
+can leave the global upgrade finding unknown. Do not infer mod fit from set activation.
 
 ## Bungie action rejections
 

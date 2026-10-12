@@ -478,6 +478,10 @@ fn build_check_uses_current_projection_and_unique_class_target() {
         )
         .unwrap();
     assert_eq!(checked.analysis.target_character, CharacterId::new("1"));
+    assert_eq!(
+        checked.analysis.mod_fit.reason,
+        Some("armor_mod_socket_categories_unavailable")
+    );
     assert_eq!(checked.analysis.specified, 3);
     assert_eq!(checked.analysis.resolved, 3);
     assert_eq!(checked.analysis.missing, 0);

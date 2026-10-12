@@ -93,7 +93,7 @@ pub fn equipped_socket_overrides(
 
 /// DIM sockets.ts:584-645. Raw reusable empty precedes Manifest-set empty,
 /// inline empty, then initial plug. Ability/super defaults are never empty.
-fn socket_empty_plug(
+pub(crate) fn socket_empty_plug(
     entry: &crate::DefinitionSocketEntry,
     socket_type: &crate::armor_catalog::SocketTypeDefinition,
     set: Option<&crate::armor_catalog::PlugSetDefinition>,

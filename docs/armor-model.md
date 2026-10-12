@@ -216,3 +216,8 @@ remains unavailable. Better-stats optimization and search suppression remain
 BE-008; socket application readiness remains BE-007. The ODD tracker is unchanged
 because it is outside the delegated edit surfaces; this split is a proposal for
 the parent, not a replacement checklist.
+
+BE-006b now implements a faithful bucket-specific assignment slice and its energy
+upgrade checks. General/activity/artifice/tuning permutations, seasonal variant
+resolution and material-cost ranking are still deferred. See
+[the current scope, evidence and BE-006b2 proposal](build-mods.md).

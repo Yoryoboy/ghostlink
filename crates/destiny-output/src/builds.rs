@@ -89,6 +89,10 @@ impl BuildOutput {
                     "target_character":analysis.target_character.as_str(), "counts":{"specified":analysis.specified,
                         "resolved":analysis.resolved,"missing":analysis.missing}, "items":items,
                     "findings":findings, "not_evaluated":analysis.not_evaluated,
+                    "mod_fit":{"evaluation":analysis.mod_fit.evaluation, "reason":analysis.mod_fit.reason,
+                        "invalid_mods":analysis.mod_fit.invalid_mods,
+                        "unassigned_mods":analysis.mod_fit.unassigned_mods,
+                        "needs_upgrades_for_mods":analysis.mod_fit.needs_upgrades_for_mods},
                     "equipped_set_bonuses":{"evaluation":bonuses.evaluation,
                         "reasons":bonuses.reasons, "sets":sets},
                     "metadata":{"checked_at":result.metadata.sync.checked_at.seconds(),
@@ -276,6 +280,18 @@ impl BuildOutput {
                     }
                 }
             }
+            let mods = &self.value["mod_fit"];
+            lines.push(format!(
+                "Mods fit: {} (reason: {})",
+                mods["evaluation"].as_str().unwrap_or("not_evaluated"),
+                mods["reason"]
+            ));
+            lines.push(format!("Invalid mods: {}", mods["invalid_mods"]));
+            lines.push(format!("Unassigned mods: {}", mods["unassigned_mods"]));
+            lines.push(format!(
+                "Armor upgrades needed for mods: {}",
+                mods["needs_upgrades_for_mods"]
+            ));
             let bonuses = &self.value["equipped_set_bonuses"];
             lines.push(format!(
                 "Equipped set bonuses: {} (reasons: {})",

@@ -93,8 +93,15 @@ Missing items, incomplete resolved equipped armor, exotic constraints (including
 sentinels and definition-name matching), and invalid search are evaluated.
 Search exclusion is qualified `search_only`: optimizer filtering and suppression
 are deferred. Unsupported search capabilities/context are not called invalid.
-Mods, fragment capacity, armor upgrades/energy, stat constraints, seasonal costs
-and optimization are `not_evaluated`; socket overrides remain unevaluated.
+The additive `mod_fit` object evaluates DIM bucket-specific armor mods when a
+full resolved set and all socket/membership/energy inputs are available. It exposes
+nullable `invalid_mods`, `unassigned_mods` (after allowed energy upgrades), and
+`needs_upgrades_for_mods`. Duplicates are preserved. Independent/general, activity,
+artifice, tuning and seasonal cost variants remain `not_evaluated` with explicit
+reasons; they are never approximated. Positive stat constraints can keep the global
+armor-upgrades finding unknown even when mods need no upgrade. Fragment capacity,
+stat constraints and optimization remain deferred; socket overrides are unevaluated.
+See [mod fitting scope and DIM evidence](build-mods.md).
 Instanced resolution tries the ID first, then a nonzero crafted date, as DIM does
 (last matching instance, without a hash or target-character gate). Class compatibility is item metadata, not an invented
 DIM finding. A successful check (exit 0) is an analysis report, not a claim that

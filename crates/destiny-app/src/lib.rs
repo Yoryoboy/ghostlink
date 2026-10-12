@@ -7,7 +7,8 @@ pub use destiny_core::armor_model::{
 pub mod armor_model;
 pub mod builds;
 pub use destiny_core::ports::{BuildCodec, BuildRepository};
-pub use destiny_core::{armor_catalog, build, build_analysis, build_sets};
+pub use destiny_core::{armor_catalog, build, build_analysis, build_sets, mod_assignment};
+mod build_mods;
 pub mod clarity;
 pub use clarity::{ClaritySyncReport, ManifestAndClarityReport};
 pub use destiny_core::{ClarityInsight, ClarityRepository};

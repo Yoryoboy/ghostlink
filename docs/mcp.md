@@ -49,9 +49,13 @@ otherwise resolve ambiguity with an explicit ID. Results contain item resolution
 location/owner/equipped/class compatibility, counts (no percentage), and every DIM
 finding kind. `present: null` with `evaluation: not_evaluated` is not a clean bill
 of health. Search exclusion is `search_only`; optimizer-dependent suppression is
-not evaluated. Socket application, mods fit, fragment capacity, armor upgrades,
-stat constraints and optimization remain explicitly qualified/deferred. No gear is
-applied. The additive `equipped_set_bonuses` object reports set hash/name,
+not evaluated. The additive `mod_fit` object shares the CLI's bounded DIM
+bucket-specific assignment: nullable `invalid_mods`, `unassigned_mods` (after
+allowed energy upgrades, duplicates retained), and `needs_upgrades_for_mods`.
+Independent/general, activity, artifice, tuning and seasonal cost variants remain
+`not_evaluated` with explicit reasons. Positive stat constraints can keep the global
+upgrade finding unknown. Socket application, fragment capacity, stat constraints
+and optimization remain deferred. No gear is applied. See [scope and DIM evidence](build-mods.md). The additive `equipped_set_bonuses` object reports set hash/name,
 `equipped_count`, and nullable `perks` with `sandbox_perk_hash`,
 `required_set_count`, name/icon and nullable `active`. It uses build-equipped
 resolved armor and current inserted event selectors, not future mod assignment.

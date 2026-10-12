@@ -97,8 +97,18 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
             .contains("1 specified, 0 resolved, 1 missing")
     );
     assert!(output.render_text().contains("not_evaluated"));
+    assert_eq!(output.value["mod_fit"]["evaluation"], "not_evaluated");
+    assert!(output.value["mod_fit"]["unassigned_mods"].is_null());
+    assert!(output.render_text().contains("Mods fit: not_evaluated"));
     assert_eq!(output.exit_code, 0); // findings are data, not failed transport
     let mut result = result;
+    result.analysis.mod_fit = destiny_app::mod_assignment::ModFitAnalysis {
+        evaluation: "evaluated",
+        reason: None,
+        invalid_mods: Some(vec![40]),
+        unassigned_mods: Some(vec![42, 42]),
+        needs_upgrades_for_mods: Some(false),
+    };
     result.analysis.equipped_set_bonuses = build_sets::EquippedSetBonuses {
         evaluation: "evaluated",
         reasons: vec![],
@@ -118,6 +128,9 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
         }],
     };
     let output = BuildOutput::from_result(Ok(BuildReply::Analysis(Box::new(result))));
+    assert_eq!(output.value["mod_fit"]["unassigned_mods"], json!([42, 42]));
+    assert_eq!(output.value["mod_fit"]["needs_upgrades_for_mods"], false);
+    assert!(output.render_text().contains("Unassigned mods: [42,42]"));
     assert_eq!(
         output.value["equipped_set_bonuses"]["sets"][0]["perks"][0]["active"],
         true
