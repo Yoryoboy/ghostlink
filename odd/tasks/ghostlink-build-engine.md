@@ -633,9 +633,28 @@ coverage (`domain.rs:123-126`).
     For BE-008c: project `ProcessItem.stats` into the session stat order,
     one session per thread. For BE-008d: `unlocked` list, general/activity
     `ProcessMod` split, decision on Maverick-style tags.
-  - [ ] **BE-008c — Search core.** Five-loop DFS with pruning, constraints,
-    tuning variants, heap with DIM ordering, strict upgrades, stop on first,
-    time budget, parallel slicing. Golden tests from DIM `process.test.ts`.
+  - [x] **BE-008c — Search core.** `optimizer/{search,driver,
+    set_tracker}.rs` (~1,100 production lines without comments, over
+    budget; one unit because the single test file covers all three and they
+    do not compile apart). Inputs and bucket sort (`process.ts:40-65,
+    98-141`), suffix bounds and pruning (`:187-290`, `canPruneSubtree`
+    `:200-286`, `perkCountsPrune` `:1403-1425`, `setBonusPrune`
+    `:1427-1450`), levels as one recursion (`:297-770`), innermost
+    evaluation with tuning `mayMatter` (`:560-770`), result mapping and
+    strict upgrades (`:1117-1142`), tracker (`set-tracker.ts:1-190`),
+    slicing and merge (`process-wrapper.ts:296-390`), 100k-combo cadence.
+    Deviations (deterministic for any thread count): `could_insert` uses
+    `>=` and ties break on item ranks then tuning mod; strict-upgrade filter
+    after the merge; stop-on-first runs one slice; `max_combos` /
+    `time_limit` budget with `truncated` and combos visited/total; power 0
+    instead of NaN. `seedExactStatRanges` not ported (ranges verified
+    against a brute-force reference). 28 tests incl. thread counts
+    1/2/3/5/8 on shuffled input. Perf (informational): 1.89M combos pruned
+    to 19,818 evaluated in 12 ms release; 100k all-tied combos in ~150 ms
+    release. Workspace: 2412 all-features, 2379 default, 0 failed; clippy
+    both modes, fmt. Follow-ups: tie-heavy inventories cannot prune under
+    `>=` (budget bounds it; consider a cheaper tie pre-check); port
+    seeding if real inventories converge slowly.
   - [ ] **BE-008d — Analyzer wiring.** BetterStatsAvailable and full
     ItemsDoNotMatchSearchQuery in `build check` / `analyze_build`.
   - [ ] **BE-008e — Substitutes command.** `ghostlink build substitutes`

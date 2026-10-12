@@ -1,17 +1,21 @@
-//! Pure Loadout Optimizer model and pre-filter (BE-008a), following DIM 29c122e
+//! Pure Loadout Optimizer model, pre-filter and search (BE-008a/b/c), following DIM 29c122e
 //! `loadout-builder/`. Inputs that Ghostlink does not project stay typed unknown.
 use crate::armor_model::ARMOR_STATS;
 use crate::build::{AssumeArmorMasterwork, StatConstraint};
 
 mod auto_mods;
+mod driver;
 mod filter;
 mod items;
+mod search;
+mod set_tracker;
 mod stat_dupe;
 mod stat_mods;
 pub use auto_mods::{
     AutoMod, AutoModData, AutoModsCache, CacheForStat, GeneralAutoMods, ModsPick, auto_mod_data,
     build_auto_mods_map, choose_auto_mods,
 };
+pub use driver::{PROGRESS_CADENCE, SearchBudget, SearchOptions, SearchResult, search};
 pub use filter::{
     BucketFilterInfo, FilterError, FilterInfo, FilterParams, ItemsByBucket, filter_items,
 };
@@ -20,6 +24,10 @@ pub use items::{
     assumed_masterwork_stats, is_assumed_artifice, is_assumed_masterworked,
     map_armor_to_process_items,
 };
+pub use search::{
+    ArmorSet, ArmorSetData, ProcessStatistics, SearchError, SearchInputs, SkipReasons,
+};
+pub use set_tracker::{HeapEntry, HeapSetTracker, RETURNED_ARMOR_SETS, TieBreak, encode_stat_mix};
 pub use stat_dupe::{StatsSet, compute_stat_dupe_lower};
 pub use stat_mods::{
     ContextKey, FinalAssignmentStatistics, LoSessionInfo, MinMaxStat, ModAssignmentStatistics,

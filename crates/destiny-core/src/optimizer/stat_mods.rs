@@ -9,6 +9,7 @@ use super::auto_mods::{
 use super::*;
 use crate::ItemDefinition;
 use crate::mod_assignment::{SPECIALTY_SOCKETS, generate_permutations_of_five};
+use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -197,15 +198,19 @@ pub struct SetEnergyCache {
 }
 
 /// :85-134.
-fn remaining_energies_per_assignment(
+fn remaining_energies_per_assignment<I: Borrow<ProcessItem>>(
     permutations: &[Vec<Option<ProcessMod>>],
-    items: &[ProcessItem],
+    items: &[I],
 ) -> RemainingEnergies {
-    let set_energy = items.iter().map(|i| i.remaining_energy_capacity).sum();
+    let set_energy = items
+        .iter()
+        .map(Borrow::<ProcessItem>::borrow)
+        .map(|i| i.remaining_energy_capacity)
+        .sum();
     let mut per_assignment = Vec::new();
     'permutations: for permutation in permutations {
         let mut capacities = [0; 5];
-        for (i, item) in items.iter().enumerate() {
+        for (i, item) in items.iter().map(Borrow::<ProcessItem>::borrow).enumerate() {
             capacities[i] = item.remaining_energy_capacity;
             if let Some(Some(activity)) = permutation.get(i) {
                 if activity.energy_cost > item.remaining_energy_capacity
@@ -224,9 +229,9 @@ fn remaining_energies_per_assignment(
         remaining_energies_per_assignment: per_assignment,
     }
 }
-fn compute_remaining_energies(
+fn compute_remaining_energies<I: Borrow<ProcessItem>>(
     info: &LoSessionInfo,
-    items: &[ProcessItem],
+    items: &[I],
     cache: Option<&mut SetEnergyCache>,
 ) -> Rc<RemainingEnergies> {
     if let Some(result) = cache.as_deref().and_then(|c| c.result.clone()) {
@@ -245,9 +250,9 @@ fn compute_remaining_energies(
 /// DIM `updateMaxStats` (:170-313): raises `stat_ranges` by trying to individually get
 /// the highest value of each stat. Returns true if at least one stat can exceed the
 /// desired range's minimum.
-pub fn update_max_stats(
+pub fn update_max_stats<I: Borrow<ProcessItem>>(
     info: &LoSessionInfo,
-    armor: &[ProcessItem],
+    armor: &[I],
     set_stats: &[i32; 6],
     num_artifice_mods: i32,
     desired: &[DesiredStatRange],
@@ -351,15 +356,19 @@ pub fn update_max_stats(
 /// DIM `pickAndAssignSlotIndependentMods` (:333-432): can all user-chosen general and
 /// activity mods be assigned to the set, and can auto stat mods provide `needed_stats`?
 /// Returns the picked auto mods (empty when none are needed), `None` on failure.
-pub fn pick_and_assign_slot_independent_mods(
+pub fn pick_and_assign_slot_independent_mods<I: Borrow<ProcessItem>>(
     info: &LoSessionInfo,
     statistics: &mut ModAssignmentStatistics,
-    items: &[ProcessItem],
+    items: &[I],
     needed_stats: Option<&[i32; 6]>,
     num_artifice: i32,
 ) -> Option<Vec<Arc<ModsPick>>> {
     statistics.early_mods_check.times_checked += 1;
-    let set_energy: i32 = items.iter().map(|i| i.remaining_energy_capacity).sum();
+    let set_energy: i32 = items
+        .iter()
+        .map(Borrow::<ProcessItem>::borrow)
+        .map(|i| i.remaining_energy_capacity)
+        .sum();
     if set_energy < info.total_mod_energy_cost {
         statistics.early_mods_check.times_failed += 1;
         return None;
@@ -369,6 +378,7 @@ pub fn pick_and_assign_slot_independent_mods(
         for (tag, count) in &info.activity_tag_counts {
             let sockets = items
                 .iter()
+                .map(Borrow::<ProcessItem>::borrow)
                 .filter(|i| i.compatible_activity_mod == Some(*tag))
                 .count();
             if sockets < *count {
@@ -380,7 +390,7 @@ pub fn pick_and_assign_slot_independent_mods(
     let mut assigned_at_least_once = false;
     statistics.final_assignment.mod_assignment_attempted += 1;
     'permutations: for permutation in &info.activity_mod_permutations {
-        for (i, item) in items.iter().enumerate() {
+        for (i, item) in items.iter().map(Borrow::<ProcessItem>::borrow).enumerate() {
             let Some(Some(activity)) = permutation.get(i) else {
                 continue;
             };
@@ -393,7 +403,7 @@ pub fn pick_and_assign_slot_independent_mods(
         assigned_at_least_once = true;
         // A valid activity assignment: see how much energy is left per piece, descending.
         let mut capacities = [0; 5];
-        for (i, item) in items.iter().enumerate() {
+        for (i, item) in items.iter().map(Borrow::<ProcessItem>::borrow).enumerate() {
             let used = permutation
                 .get(i)
                 .and_then(Option::as_ref)
@@ -439,9 +449,9 @@ pub struct StatModPick {
 /// DIM `pickOptimalStatMods` (:441-498): assumes the stat minimums can be hit and
 /// maximizes the stats, earlier stats in the order first. `None` when no activity
 /// mod assignment is valid.
-pub fn pick_optimal_stat_mods(
+pub fn pick_optimal_stat_mods<I: Borrow<ProcessItem>>(
     info: &LoSessionInfo,
-    items: &[ProcessItem],
+    items: &[I],
     set_stats: &[i32; 6],
     desired: &[DesiredStatRange],
     num_artifice_mods: Option<i32>,
@@ -467,8 +477,13 @@ pub fn pick_optimal_stat_mods(
             max_added[i] = i32::from(filter.max_stat) - value;
         }
     }
-    let num_artifice =
-        num_artifice_mods.unwrap_or_else(|| items.iter().filter(|i| i.is_artifice).count() as i32);
+    let num_artifice = num_artifice_mods.unwrap_or_else(|| {
+        items
+            .iter()
+            .map(Borrow::<ProcessItem>::borrow)
+            .filter(|i| i.is_artifice)
+            .count() as i32
+    });
     let picks = greedy_pick_stat_mods(
         info,
         &mut exploration,
