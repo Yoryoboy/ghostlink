@@ -247,7 +247,7 @@ fn unresolved_and_unknown_vault_capacity_are_typed_without_substitution() {
             ApplySkipReason::VaultCapacityUnavailable
         ]
     );
-    assert_eq!(p.not_applied, ["sockets_mods_subclass_deferred_to_be_007b"]);
+    assert!(p.not_applied.is_empty() && p.socket_skipped.is_empty());
 }
 #[test]
 fn requested_items_are_never_chosen_as_replacements_and_failure_is_partial() {
@@ -309,6 +309,7 @@ fn describe(p: &BuildApplyPlan) -> Vec<String> {
                 ApplyPhase::Dequip => "dequip",
                 ApplyPhase::Move => "move",
                 ApplyPhase::Equip => "equip",
+                ApplyPhase::Sockets => "sockets",
                 ApplyPhase::ClearSpace => "clear",
             };
             match &s.action {
@@ -326,6 +327,16 @@ fn describe(p: &BuildApplyPlan) -> Vec<String> {
                         .collect::<Vec<_>>()
                         .join(","),
                     character.as_str()
+                ),
+                BuildAction::InsertPlug {
+                    item,
+                    socket_index,
+                    plug,
+                    ..
+                } => format!(
+                    "{phase}: plug {} {socket_index} {}",
+                    item.as_str(),
+                    plug.value()
                 ),
             }
         })

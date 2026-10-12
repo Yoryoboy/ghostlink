@@ -519,6 +519,32 @@ coverage (`domain.rs:123-126`).
       mutation tool.
   - [ ] **BE-007b — Sockets.** Mods, aspects, fragments and subclass via
     `InsertSocketPlugFree` as DIM applies them.
+    - [x] **BE-007b1 — Subclass and artifact overrides.** New
+      `InsertSocketPlugFree` adapter (`plug{socketIndex, socketArrayType 0,
+      plugItemHash}`, itemId, characterId, membershipType; 0.5 s spacing,
+      no retry); free insertions only (`advanced-write-actions.ts:41-103`).
+      Override gathering, vault/class guards, default abilities
+      (`loadout-apply.ts:272-299`); interchangeable aspects/fragments and
+      emptied leftovers (`:1142-1192`); active fragment sockets
+      (`:1196-1199`, `loadout-utils.ts:745-771`); artifact pass
+      (`:1010-1131`); plug already in place needs no request, failures
+      never stop the next plug (`:1303-1366`). Planner `Sockets` phase with
+      `needs`; executor dispatch; dry-run shows plugs. Deviations:
+      acknowledged plugs invalidate freshness (`local_state:
+      refresh_pending`) instead of editing the projection; subclass and
+      artifact buckets still skip as `unsupported_bucket`, so builds with a
+      subclass report `partial`; core-settings protected-plug lists not
+      checked locally; empty `{}` socketOverrides stored as none. OAuth: no
+      new scope expected (`MoveEquipDestinyItems`), unconfirmed until
+      BE-010. Over the unit budget (~1,220 production, ~1,260 test lines),
+      kept as one unit because adapter, planner, executor and wiring land
+      together. Workspace: 2279 all-features, 2246 default, 0 failed;
+      clippy both modes, fmt.
+    - [ ] **BE-007b2 — Armor mods.** Through the DIM mod assignment:
+      `pickPlugPositions`, `createPluggingStrategy`, fashion, `clearMods`;
+      reuse `analyze_bucket_mods` as-is energy rules; irreversible-shader
+      guard. Also plan subclass/artifact equips so builds with a subclass
+      stop reporting `partial`.
 - [ ] **BE-008 — Substitutes.** Optimizer-based armor sets.
 - [x] **BE-009 — dim.gg import.** Dropped by owner decision D4 (won't do).
   Remaining check: the `dim.gg` typed error guides users to the full DIM

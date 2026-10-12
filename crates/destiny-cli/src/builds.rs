@@ -7,9 +7,9 @@ use destiny_app::build_apply_exec::BuildGateways;
 use destiny_app::builds::{BuildError, BuildReply, BuildService, LocalBuildRequest};
 use destiny_app::{
     AppError, ArmorCatalogRepository, BuildCodec, BuildRepository, Clock, DestinyMembership,
-    EquipGateway, EquipItemsGateway, ErrorCategory, FreshnessPolicy, InstancedPullGateway,
-    InventoryRepository, ProfileGateway, ProfileSyncService, SearchTerm, StatDefinitionRepository,
-    Timestamp, TransferGateway, WorldDefinitionRepository,
+    EquipGateway, EquipItemsGateway, ErrorCategory, FreshnessPolicy, InsertPlugGateway,
+    InstancedPullGateway, InventoryRepository, ProfileGateway, ProfileSyncService, SearchTerm,
+    StatDefinitionRepository, Timestamp, TransferGateway, WorldDefinitionRepository,
 };
 
 use destiny_output::builds::BuildOutput;
@@ -43,11 +43,11 @@ pub fn read_input(reader: impl Read) -> Result<String, CliError> {
 /// `--dry-run` plans from fresh state and never touches the gateways; otherwise the plan
 /// is executed in order. Confirmation follows move/equip/apply-loadout: explicit
 /// arguments are the intent, there is no prompt.
-pub fn apply_build<G, I, R, C, T, E, B, P>(
+pub fn apply_build<G, I, R, C, T, E, B, P, S>(
     builds: &BuildService<R, C>,
     sync: &mut ProfileSyncService<G, I>,
     args: &BuildApplyArgs,
-    gateways: Option<&mut BuildGateways<T, E, B, P>>,
+    gateways: Option<&mut BuildGateways<T, E, B, P, S>>,
     policy: FreshnessPolicy,
     now: Timestamp,
     pace: &mut dyn FnMut(),
@@ -64,6 +64,7 @@ where
     E: EquipGateway,
     B: EquipItemsGateway,
     P: InstancedPullGateway,
+    S: InsertPlugGateway,
 {
     let request = args.request()?;
     let capacity = destiny_adapters::equipment_capacity_policy::pinned_equipment_capacity_policy();
@@ -190,9 +191,16 @@ pub fn compose(arguments: &BuildArgs) -> Result<BuildOutput, CliError> {
                 pull: destiny_adapters::instanced_pull::BungieInstancedPullGateway::new(
                     destiny_adapters::instanced_pull::HttpInstancedPullTransport::new()?,
                     SystemClock::new(),
-                    source,
+                    source.clone(),
                     destiny_adapters::instanced_pull::InstancedPullApiKey::new(&key)?,
                 )?,
+                socket: destiny_adapters::BungieInsertPlugGateway::new(
+                    destiny_adapters::HttpInsertPlugTransport::new()?,
+                    SystemClock::new(),
+                    source,
+                    destiny_adapters::InsertPlugApiKey::new(&key)?,
+                )?
+                .paced(),
             })
         };
         let mut last = None;

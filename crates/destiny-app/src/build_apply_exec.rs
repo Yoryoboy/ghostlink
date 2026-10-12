@@ -9,18 +9,19 @@ use destiny_core::build_apply::{BuildAction, BuildApplyPlan, BuildApplyStep};
 use destiny_core::{
     DefinitionRepository, DestinyMembership, EquipGateway, EquipItemRequest, EquipItemStatus,
     EquipItemsGateway, EquipItemsOutcome, EquipItemsRequest, EquipOutcome, EquipRejection,
-    ErrorCategory, InstancedPullGateway, InstancedPullOutcome, InstancedPullRejection,
-    InstancedPullRequest, InventoryEffect, InventoryRepository, InventorySnapshot, ItemInstance,
-    ItemInstanceId, SyncRevision, TransferGateway, TransferOutcome, TransferRejection,
-    TransferRequest, apply_inventory_effects,
+    ErrorCategory, InsertPlugGateway, InsertPlugOutcome, InsertPlugRequest, InstancedPullGateway,
+    InstancedPullOutcome, InstancedPullRejection, InstancedPullRequest, InventoryEffect,
+    InventoryRepository, InventorySnapshot, ItemInstance, ItemInstanceId, SyncRevision,
+    TransferGateway, TransferOutcome, TransferRejection, TransferRequest, apply_inventory_effects,
 };
 
-/// The four action adapters a plan can need. Production composes the Bungie ones.
-pub struct BuildGateways<T, E, B, P> {
+/// The five action adapters a plan can need. Production composes the Bungie ones.
+pub struct BuildGateways<T, E, B, P, S> {
     pub transfer: T,
     pub equip: E,
     pub equip_items: B,
     pub pull: P,
+    pub socket: S,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -154,7 +155,11 @@ fn items_of(step: &BuildApplyStep) -> Vec<ItemInstanceId> {
             vec![item.clone()]
         }
         BuildAction::Equip { items, .. } => items.clone(),
+        BuildAction::InsertPlug { item, .. } => vec![item.clone()],
     }
+}
+fn is_plug(step: &BuildApplyStep) -> bool {
+    matches!(step.action, BuildAction::InsertPlug { .. })
 }
 
 /// What the dispatch of one step reported, per item that was sent.
@@ -167,6 +172,8 @@ struct Run<'a, R> {
     dispatched: usize,
     persist_failed: bool,
     stopped: bool,
+    /// A plug insertion was acknowledged; the projection cannot rebuild its effects.
+    plugged: bool,
 }
 impl<R: InventoryRepository + DefinitionRepository> Run<'_, R> {
     fn instance(&self, id: &ItemInstanceId) -> Option<ItemInstance> {
@@ -300,6 +307,44 @@ impl<R: InventoryRepository + DefinitionRepository> Run<'_, R> {
                 }
                 one(item, result)
             }
+            BuildAction::InsertPlug {
+                item,
+                character,
+                socket_index,
+                plug,
+            } => {
+                let result = match InsertPlugRequest::new(
+                    self.membership.clone(),
+                    item.clone(),
+                    character.clone(),
+                    *socket_index,
+                    *plug,
+                ) {
+                    Err(e) => Err(StepFailure::NotDispatched(e.category())),
+                    Ok(request) => gateways
+                        .insert_plug(&request)
+                        .map(|o| {
+                            self.dispatched += 1;
+                            match o {
+                                InsertPlugOutcome::Inserted => Ok(()),
+                                InsertPlugOutcome::Rejected(r) => {
+                                    Err(StepFailure::Rejected(r.reason()))
+                                }
+                                InsertPlugOutcome::AuthenticationRefused => {
+                                    Err(StepFailure::AuthenticationRefused)
+                                }
+                                InsertPlugOutcome::Transient => Err(StepFailure::Transient),
+                                InsertPlugOutcome::Uncertain => Err(StepFailure::Uncertain),
+                            }
+                        })
+                        .unwrap_or_else(|e| Err(self.refuse(e.category()))),
+                };
+                // DIM swaps in the item Bungie returns (`advanced-write-actions.ts:243-258`).
+                // The projection derives perks, stats and energy from component data, so
+                // it is invalidated rather than patched with a guess.
+                self.plugged |= result.is_ok();
+                one(item, result)
+            }
             BuildAction::Equip { character, .. } => {
                 // DIM bulk-equips only when several items were planned; a lone equip is
                 // inline (`loadout-apply.ts:424-433,526-540`).
@@ -424,13 +469,22 @@ trait Gateways {
         &mut self,
         r: &InstancedPullRequest,
     ) -> Result<InstancedPullOutcome, destiny_core::AppError>;
+    fn insert_plug(
+        &mut self,
+        r: &InsertPlugRequest,
+    ) -> Result<InsertPlugOutcome, destiny_core::AppError>;
 }
-struct Paced<'a, T, E, B, P> {
-    gateways: &'a mut BuildGateways<T, E, B, P>,
+struct Paced<'a, T, E, B, P, S> {
+    gateways: &'a mut BuildGateways<T, E, B, P, S>,
     pace: &'a mut dyn FnMut(),
 }
-impl<T: TransferGateway, E: EquipGateway, B: EquipItemsGateway, P: InstancedPullGateway> Gateways
-    for Paced<'_, T, E, B, P>
+impl<
+    T: TransferGateway,
+    E: EquipGateway,
+    B: EquipItemsGateway,
+    P: InstancedPullGateway,
+    S: InsertPlugGateway,
+> Gateways for Paced<'_, T, E, B, P, S>
 {
     fn transfer(&mut self, r: &TransferRequest) -> Result<TransferOutcome, destiny_core::AppError> {
         (self.pace)();
@@ -453,6 +507,13 @@ impl<T: TransferGateway, E: EquipGateway, B: EquipItemsGateway, P: InstancedPull
     ) -> Result<InstancedPullOutcome, destiny_core::AppError> {
         (self.pace)();
         self.gateways.pull.pull(r)
+    }
+    fn insert_plug(
+        &mut self,
+        r: &InsertPlugRequest,
+    ) -> Result<InsertPlugOutcome, destiny_core::AppError> {
+        (self.pace)();
+        self.gateways.socket.insert_plug(r)
     }
 }
 
@@ -482,11 +543,11 @@ fn refused(plan: &BuildApplyPlan, category: ErrorCategory) -> PlanExecution {
 
 /// Runs `plan` in order against the projection it was planned from. `pace` runs before
 /// every request; adapters own the throttle (waits above 30 s fail before dispatch).
-pub fn execute_plan<R, T, E, B, P>(
+pub fn execute_plan<R, T, E, B, P, S>(
     repository: &mut R,
     plan: &BuildApplyPlan,
     expected_revision: SyncRevision,
-    gateways: &mut BuildGateways<T, E, B, P>,
+    gateways: &mut BuildGateways<T, E, B, P, S>,
     pace: &mut dyn FnMut(),
 ) -> PlanExecution
 where
@@ -495,6 +556,7 @@ where
     E: EquipGateway,
     B: EquipItemsGateway,
     P: InstancedPullGateway,
+    S: InsertPlugGateway,
 {
     if plan.steps.is_empty() {
         return PlanExecution {
@@ -525,6 +587,7 @@ where
         dispatched: 0,
         persist_failed: false,
         stopped: false,
+        plugged: false,
     };
     let mut gateways = Paced { gateways, pace };
     let mut reports: Vec<StepReport> = Vec::with_capacity(plan.steps.len());
@@ -549,13 +612,18 @@ where
         } else if let Some(dependency) = hard {
             skip(SkipCause::DependencyFailed(dependency))
         } else {
-            // Per item: the last earlier step that touched it must have applied.
+            // Per item: the last earlier step that touched it must have applied. Plug
+            // insertions only wait on their `needs`: DIM carries on after a failed plug.
             let blocked: Vec<Option<usize>> = items
                 .iter()
                 .map(|item| {
+                    if is_plug(step) {
+                        return None;
+                    }
                     reports
                         .iter()
                         .rev()
+                        .filter(|r| !is_plug(&r.step))
                         .find(|r| r.outcomes.iter().any(|o| &o.item == item))
                         .filter(|r| {
                             r.outcomes
@@ -605,7 +673,8 @@ where
     let all_ok = reports.iter().all(StepReport::succeeded);
     let dispatched = run.dispatched;
     let mut persist_failed = run.persist_failed;
-    if dispatched > 0 && (!all_ok || persist_failed) {
+    let plugged = run.plugged;
+    if dispatched > 0 && (!all_ok || persist_failed || plugged) {
         persist_failed |= run.repository.invalidate_freshness().is_err();
     }
     let first_refusal = reports
@@ -632,7 +701,7 @@ where
         ApplyLocalState::Failed
     } else if dispatched == 0 {
         ApplyLocalState::Unchanged
-    } else if all_ok {
+    } else if all_ok && !plugged {
         ApplyLocalState::Updated
     } else {
         ApplyLocalState::RefreshPending

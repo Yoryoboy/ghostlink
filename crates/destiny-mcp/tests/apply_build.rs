@@ -212,6 +212,14 @@ impl InstancedPullGateway for Recorder {
         panic!("unexpected mutation: pull")
     }
 }
+impl destiny_app::InsertPlugGateway for Recorder {
+    fn insert_plug(
+        &mut self,
+        _: &destiny_app::InsertPlugRequest,
+    ) -> Result<destiny_app::InsertPlugOutcome, AppError> {
+        panic!("unexpected mutation: insert_plug")
+    }
+}
 struct Inner;
 impl MutationToolService for Inner {
     fn move_item(
@@ -228,6 +236,7 @@ type Decorator = ApplyBuildMutationService<
     destiny_app::test_support::InMemoryBuildRepository,
     DimBuildCodec,
     destiny_app::test_support::FakeClock,
+    Recorder,
     Recorder,
     Recorder,
     Recorder,
@@ -287,6 +296,7 @@ fn decorator(
             equip: recorder(),
             equip_items: recorder(),
             pull: recorder(),
+            socket: recorder(),
         },
         clock: destiny_app::test_support::FakeClock::fixed(Timestamp::new(100)),
         policy: FRESH,

@@ -9,9 +9,10 @@ pub mod build_apply_exec;
 pub mod builds;
 pub use destiny_core::ports::{BuildCodec, BuildRepository};
 pub use destiny_core::{
-    armor_catalog, build, build_analysis, build_apply, build_sets, mod_assignment,
+    armor_catalog, build, build_analysis, build_apply, build_sets, build_sockets, mod_assignment,
 };
 mod build_mods;
+mod build_socket_evidence;
 mod build_stats;
 pub mod clarity;
 pub use clarity::{ClaritySyncReport, ManifestAndClarityReport};
@@ -57,6 +58,9 @@ pub use stack_pull::*;
 pub mod lock;
 pub mod manifest;
 pub mod mutation;
+pub use destiny_core::{
+    InsertPlugGateway, InsertPlugOutcome, InsertPlugRejection, InsertPlugRequest,
+};
 pub use destiny_core::{LockGateway, LockOutcome, LockRejection, LockRequest, SetLockStateRequest};
 pub use lock::{
     LockExecutionEvidence, LockExecutionFailure, LockExecutionOutcome, LockPlan,

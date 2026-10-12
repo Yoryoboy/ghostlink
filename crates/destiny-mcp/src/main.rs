@@ -388,6 +388,11 @@ type BuildApplyGateways<C> = destiny_app::build_apply_exec::BuildGateways<
         SystemClock,
         C,
     >,
+    destiny_adapters::BungieInsertPlugGateway<
+        destiny_adapters::HttpInsertPlugTransport,
+        SystemClock,
+        C,
+    >,
 >;
 
 /// Fresh action gateways for `apply_build` over the shared credential session.
@@ -423,6 +428,13 @@ fn build_apply_ports<C: destiny_app::CredentialSource + Clone>(
                 source.clone(),
                 destiny_adapters::instanced_pull::InstancedPullApiKey::new(key)?,
             )?,
+            socket: destiny_adapters::BungieInsertPlugGateway::new(
+                destiny_adapters::HttpInsertPlugTransport::new()?,
+                SystemClock::new(),
+                source.clone(),
+                destiny_adapters::InsertPlugApiKey::new(key)?,
+            )?
+            .paced(),
         },
     })
 }

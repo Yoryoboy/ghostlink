@@ -73,7 +73,7 @@ item plan (Postmaster pulls, dequips, Vault-mediated moves, space-making moves,
 grouped equips, optional clear-space) as `build_apply_plan` JSON or text. It uses
 ordinary profile freshness and the same character selection as `build check`, reads
 only, composes no mutation transport and reports `dispatched: 0`. Skipped items carry
-typed reasons; sockets, mods and subclass are listed under `not_applied` (BE-007b).
+typed reasons; subclass and artifact socket overrides appear as `sockets` steps (`insert_plug`), with `socket_skipped` and `socket_already_there`; armor mods are listed under `not_applied` (BE-007b2).
 Evidence that is not available (Vault capacity, saved-loadout membership) is listed
 under `unknown`; Vault-staged moves use the Vault bucket mapping and capacity stored
 by `sync-manifest` (run it once after upgrading to schema 34; it now also downloads
@@ -92,12 +92,12 @@ reports per item `succeeded`, `failed` (a definitive Bungie `reason`, a batch `c
 `provider_stopped` after a rate-limit or authentication refusal). The result
 (`kind: build_apply`) has `result` of `applied`, `no_op`, `partial`, `failed` or
 `refused`, per-status `counts`, `local_state` (`updated`, `unchanged`,
-`refresh_pending`, `failed`) and `not_applied` for the sockets deferred to BE-007b.
+`refresh_pending`, `failed`; plug insertions always leave `refresh_pending`) and `not_applied` for what is not applied (armor mods).
 Exits reuse the action contract: 0 for `applied`/`no_op`; **41** for `partial`/`failed`
 (including build items that could not be planned; do not retry, run `ghostlink sync`);
 42 when local state could not be updated; and the category exit (for example 20 rate
 limit, 11 reauthorization, 30 stale state) when nothing reached Bungie. See
-[build-apply.md](build-apply.md). No MCP tool applies builds yet.
+[build-apply.md](build-apply.md). The MCP tool `apply_build` does the same.
 
 ### Check a build against inventory
 

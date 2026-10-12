@@ -9,24 +9,24 @@ use destiny_app::build_apply_exec::BuildGateways;
 use destiny_app::builds::{BuildReply, BuildService};
 use destiny_app::{
     ArmorCatalogRepository, BuildCodec, BuildRepository, Clock, EquipGateway, EquipItemsGateway,
-    FreshnessPolicy, InstancedPullGateway, InventoryRepository, ProfileGateway, ProfileSyncService,
-    StatDefinitionRepository, TransferGateway, WorldDefinitionRepository,
+    FreshnessPolicy, InsertPlugGateway, InstancedPullGateway, InventoryRepository, ProfileGateway,
+    ProfileSyncService, StatDefinitionRepository, TransferGateway, WorldDefinitionRepository,
 };
 
 /// Reads and mutations are serialized by the server (the mutation lock and the shared
 /// publication guard); this service only reads and writes through its own handles.
-pub struct ApplyBuildMutationService<I, G, S, R, C, K, T, E, B, P> {
+pub struct ApplyBuildMutationService<I, G, S, R, C, K, T, E, B, P, X> {
     pub inner: I,
     pub builds: BuildService<R, C>,
     pub sync: ProfileSyncService<G, S>,
-    pub gateways: BuildGateways<T, E, B, P>,
+    pub gateways: BuildGateways<T, E, B, P, X>,
     pub clock: K,
     pub policy: FreshnessPolicy,
     /// Monotonic, process-local pacing between provider requests.
     pub last_attempt: Option<std::time::Instant>,
 }
-impl<I, G, S, R, C, K, T, E, B, P> MutationToolService
-    for ApplyBuildMutationService<I, G, S, R, C, K, T, E, B, P>
+impl<I, G, S, R, C, K, T, E, B, P, X> MutationToolService
+    for ApplyBuildMutationService<I, G, S, R, C, K, T, E, B, P, X>
 where
     I: MutationToolService,
     G: ProfileGateway,
@@ -41,6 +41,7 @@ where
     E: EquipGateway,
     B: EquipItemsGateway,
     P: InstancedPullGateway,
+    X: InsertPlugGateway,
 {
     fn apply_build(
         &mut self,

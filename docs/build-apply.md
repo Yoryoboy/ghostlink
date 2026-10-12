@@ -1,10 +1,11 @@
-# Build apply: planner, dry-run, executor and MCP tool (BE-007a, incomplete)
+# Build apply: planner, dry-run, executor, MCP tool and sockets (BE-007a/b, incomplete)
 
 `ghostlink build apply ... --dry-run` prints the plan from the pure equipment planner
 and dispatches nothing (profile reads only; no mutation transport is composed).
 Without `--dry-run` the same plan is executed (see "Executor" below). The MCP tool
-`apply_build` does the same with a `dry_run` argument (see "MCP tool"); sockets, mods
-and subclass are not applied (BE-007b). Existing move, equip, batch equip and in-game apply-loadout
+`apply_build` does the same with a `dry_run` argument (see "MCP tool"). Subclass and
+artifact socket overrides are applied as plug insertions (see "Sockets"); armor mods,
+fashion and `clearMods` are not applied yet (`not_applied`, BE-007b2). Existing move, equip, batch equip and in-game apply-loadout
 commands are unchanged.
 
 ## Implemented boundary
@@ -23,8 +24,10 @@ commands are unchanged.
 - Ordered steps describe source replacement equips, Vault-mediated transfers,
   incidental space-making transfers and grouped arrival equips. Skips retain
   specification indices and typed reasons; already-satisfied items are separate.
-  Sockets, mods and subclass application are explicitly `not_applied` with
-  `sockets_mods_subclass_deferred_to_be_007b`.
+  Socket overrides become `InsertPlug` steps (see "Sockets"). What a plan does not
+  apply is listed in `not_applied` with a reason: `armor_mods_deferred_to_be_007b2`
+  (the build carries `mods`, `modsByBucket` or `clearMods`) and
+  `socket_overrides_evidence_unavailable` (overrides but no socket catalogs).
 - Planning clones its inventory and performs no repository or provider mutation.
   Failed preparation attempts discard their speculative local changes and steps.
   This is planning-time partial progress, **not** remote partial-failure handling.
@@ -144,7 +147,7 @@ Ghostlink adaptations (DIM does not model these):
 
 Results (`kind: build_apply`): per item `succeeded`, `failed` (`rejected` with a stable
 `reason`, `bungie_code`, `not_reported`, `authentication_refused`, `transient`,
-`uncertain`, `not_dispatched`) or `skipped`; `not_applied` lists the BE-007b scope.
+`uncertain`, `not_dispatched`) or `skipped`; `not_applied` lists what is not applied.
 `result` is `applied`, `no_op`, `partial`, `failed` or `refused`. Exits reuse the action
 contract with no new code: 0 applied/no-op, 41 partial or failed (also when some build
 items could not be planned), 42 local state could not be updated, category exits when
@@ -173,6 +176,66 @@ exit. Local-state persistence failure (acknowledged actions whose projection wri
 failed) is covered by dedicated tests for the executor, the CLI (exit 42) and the MCP
 service (the same output). See [MCP](mcp.md#apply-a-stored-build).
 
+## Sockets (BE-007b1: subclass and artifact overrides)
+
+Builds store `socketOverrides` for the subclass (super, abilities, aspects, fragments)
+and the artifact (BE-005d2). `plan_socket_overrides` (`destiny_core::build_sockets`)
+ports DIM's socket phase; each changed socket becomes one `insert_plug` step in phase
+`sockets`, after the equips and before clear-space, like DIM. Items are judged where
+the plan leaves them (an item the plan moves to the target counts as there). A step
+`needs` every earlier move, pull or equip that handled its item.
+
+| Decision | DIM evidence (`src/app/`) |
+|---|---|
+| Overrides apply to every build item that has them, except for the Vault and class-incompatible items; nothing else is checked locally (equipped state included, Bungie decides) | `loadout-drawer/loadout-apply.ts:272-299` |
+| Subclass ability/super sockets with no override get their default choice (`singleInitialItemHash`, else the first plug-set entry) | `loadout-apply.ts:283-299`, `utils/socket-utils.ts:244-250` |
+| Aspects and fragments are interchangeable between their sockets: plugs already present stay, remaining overrides fill the excess sockets from the end of the list, leftover sockets go back to their empty plug; with no aspect/fragment override the category is not touched | `loadout-apply.ts:1142-1192` |
+| Only the active fragment sockets count: capacity is the sum of the loadout's own aspects, else of the plugged aspects | `loadout-apply.ts:1196-1199`, `loadout-drawer/loadout-utils.ts:745-771` |
+| Other sockets (super, abilities) take their override directly | `loadout-apply.ts:1201-1213` |
+| Artifact: a plug already in some socket of the loadout is kept and its override remapped; if the intended plug cannot move to that socket the socket is emptied first | `loadout-apply.ts:1010-1131` |
+| A plug already in its socket needs no request; one failed plug never stops the next, even on the same item | `loadout-apply.ts:1303-1366` |
+| Only free insertions: reusable or randomized plug set, no material cost on the new plug, none on the one it replaces; DIM never uses the paid AWA endpoint in releases (`$featureFlags.awa` is dev-only) | `inventory/advanced-write-actions.ts:41-103`, `config/feature-flags.ts:29` |
+| Request: `InsertSocketPlugFree` with `socketArrayType` Default for the item's owner | `inventory/advanced-write-actions.ts:196-208` |
+
+Ghostlink adaptations and limits:
+
+- **Endpoint and scope.** `POST /Destiny2/Actions/Items/InsertSocketPlugFree/`
+  (bungie-api-ts 5.10.0 `insertSocketPlugFree`, body `DestinyInsertPlugsFreeActionRequest`:
+  `plug {socketIndex, socketArrayType: 0, plugItemHash}`, `itemId`, `characterId`,
+  `membershipType`). It works for characters in orbit, a social space or offline and
+  needs at least 0.5 s between insertions; the gateway enforces that spacing itself and
+  never retries. Ghostlink's authorization URL carries no `scope` parameter (the
+  scopes are those of the registered Bungie application); the other item actions
+  already require `MoveEquipDestinyItems`, which Bungie also lists for plug
+  insertion, so no new scope and **no re-login** are expected. This could not be
+  verified offline: a rejected live call (`authentication_refused`) is the signal.
+- **Local state.** DIM replaces the item with the one Bungie returns after each
+  insertion (`advanced-write-actions.ts:243-258`). Ghostlink's projection derives
+  perks, stats and energy from component data and cannot rebuild them, so an
+  acknowledged insertion does not edit the projection: freshness is invalidated and
+  `local_state` is `refresh_pending`; the next read re-syncs.
+- **Evidence.** Socket types, plug sets and material requirement sets come from the
+  stored Manifest catalogs (and the definitions of the plugs the sockets can hold). A
+  plug with a missing definition or cost set, an unknown empty plug or fragment
+  capacity is skipped with a typed reason, never guessed. `socket_skipped` lists them
+  by override index; reasons: `unresolved`, `missing_definition`, `class_mismatch`,
+  `not_on_target_character`, `socket_state_unavailable`, `plug_definition_unavailable`,
+  `empty_plug_unknown`, `ability_default_unknown`, `fragment_capacity_unknown`,
+  `not_free`, `insertion_cost_unavailable`. `socket_already_there` counts plugs that
+  needed no request.
+- **Not checked locally.** The core settings lists of protected plugs and blocked
+  socket types (`canInsertForFree`) are not fetched; Bungie rejects those. DIM's
+  irreversible-shader guard and transmog swap concern armor ornaments (BE-007b2).
+- **Subclass equip.** The planner still skips the subclass and artifact buckets as
+  `unsupported_bucket` (no move or equip), so the plugs go into the subclass on the
+  target character whether or not it is equipped, as in DIM, and Bungie decides. A
+  build with a subclass therefore keeps reporting that skip (and result `partial`,
+  exit 41) until subclass equips are planned. An empty `socketOverrides` object is
+  stored as no overrides, so DIM's defaults-only patch for `{}` does not run.
+- **Pacing.** The executor's 100 ms pacing also runs before each insertion; the gateway
+  adds the 0.5 s spacing.
+
 ## Remaining work
 
-Stack amounts; live validation (BE-010). BE-007b (sockets, mods, subclass) remains separate.
+Armor mods, fashion and `clearMods` (BE-007b2); stack amounts; subclass/artifact
+equips; live validation (BE-010).

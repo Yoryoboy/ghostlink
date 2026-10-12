@@ -216,7 +216,12 @@ impl InstancedPullGateway for Recorder {
         panic!("unexpected mutation: pull")
     }
 }
-type Gateways = BuildGateways<Recorder, Recorder, Recorder, Recorder>;
+impl InsertPlugGateway for Recorder {
+    fn insert_plug(&mut self, _: &InsertPlugRequest) -> Result<InsertPlugOutcome, AppError> {
+        panic!("unexpected mutation: insert_plug")
+    }
+}
+type Gateways = BuildGateways<Recorder, Recorder, Recorder, Recorder, Recorder>;
 fn gateways(script: Script) -> (Gateways, Rc<RefCell<Vec<String>>>) {
     let log = Rc::new(RefCell::new(vec![]));
     let script = Rc::new(RefCell::new(script));
@@ -230,6 +235,7 @@ fn gateways(script: Script) -> (Gateways, Rc<RefCell<Vec<String>>>) {
             equip: recorder(),
             equip_items: recorder(),
             pull: recorder(),
+            socket: recorder(),
         },
         log,
     )

@@ -143,7 +143,9 @@ fn plan(steps: Vec<BuildApplyStep>) -> BuildApplyPlan {
         skipped: vec![],
         already_there: vec![],
         clear_skipped: vec![],
-        not_applied: vec!["sockets_mods_subclass_deferred_to_be_007b"],
+        socket_skipped: vec![],
+        socket_already_there: vec![],
+        not_applied: vec![],
         unknown: vec![],
     }
 }
@@ -171,6 +173,7 @@ struct Script {
     equip: VecDeque<Result<EquipOutcome, AppError>>,
     batch: VecDeque<Result<EquipItemsOutcome, AppError>>,
     pull: VecDeque<Result<InstancedPullOutcome, AppError>>,
+    socket: VecDeque<Result<InsertPlugOutcome, AppError>>,
 }
 struct Fake {
     log: Log,
@@ -189,6 +192,7 @@ struct FakeTransfer(Fake);
 struct FakeEquip(Fake);
 struct FakeBatch(Fake);
 struct FakePull(Fake);
+struct FakeSocket(Fake);
 impl TransferGateway for FakeTransfer {
     fn transfer(&mut self, r: &TransferRequest) -> Result<TransferOutcome, AppError> {
         let what = format!(
@@ -227,7 +231,20 @@ impl InstancedPullGateway for FakePull {
         pop(&mut self.0.script.borrow_mut().pull, &self.0.log, &what)
     }
 }
-type Gateways = BuildGateways<FakeTransfer, FakeEquip, FakeBatch, FakePull>;
+impl InsertPlugGateway for FakeSocket {
+    fn insert_plug(&mut self, r: &InsertPlugRequest) -> Result<InsertPlugOutcome, AppError> {
+        let what = format!(
+            "insert_plug {} on {} socket {} plug {}",
+            r.item().as_str(),
+            r.character().as_str(),
+            r.socket_index(),
+            r.plug().value()
+        );
+        self.0.log.borrow_mut().push(what.clone());
+        pop(&mut self.0.script.borrow_mut().socket, &self.0.log, &what)
+    }
+}
+type Gateways = BuildGateways<FakeTransfer, FakeEquip, FakeBatch, FakePull, FakeSocket>;
 fn gateways(script: Script) -> (Gateways, Log) {
     let log = Log::default();
     let script = Rc::new(RefCell::new(script));
@@ -241,6 +258,7 @@ fn gateways(script: Script) -> (Gateways, Log) {
             equip: FakeEquip(fake()),
             equip_items: FakeBatch(fake()),
             pull: FakePull(fake()),
+            socket: FakeSocket(fake()),
         },
         log,
     )
@@ -660,4 +678,138 @@ fn a_rejected_local_projection_write_is_reported_as_failed_local_state() {
     assert_eq!(execution.local_state, ApplyLocalState::Failed);
     assert_eq!(execution.dispatched, 1);
     assert_eq!(find(&repository, "1").location, ItemLocation::Vault);
+}
+
+fn plug(item: &str, socket: u8, plug: i64, needs: &[usize]) -> BuildApplyStep {
+    BuildApplyStep {
+        phase: ApplyPhase::Sockets,
+        action: BuildAction::InsertPlug {
+            item: ItemInstanceId::new(item),
+            character: c("1"),
+            socket_index: socket,
+            plug: ItemHash::new(plug),
+        },
+        needs: needs.to_vec(),
+    }
+}
+fn inserted() -> Result<InsertPlugOutcome, AppError> {
+    Ok(InsertPlugOutcome::Inserted)
+}
+
+#[test]
+fn plug_insertions_dispatch_in_order_and_invalidate_instead_of_guessing_derived_state() {
+    // DIM replaces the item from Bungie's response (advanced-write-actions.ts:243-258);
+    // the projection cannot rebuild perks, stats or energy, so freshness is invalidated.
+    let (mut repository, revision) = store();
+    let before = repository.load_current().unwrap().unwrap();
+    let p = plan(vec![plug("3", 0, 1002, &[]), plug("3", 2, 1005, &[])]);
+    let script = Script {
+        socket: [inserted(), inserted()].into(),
+        ..Default::default()
+    };
+    let (execution, calls) = run(&mut repository, revision, &p, script);
+    assert_eq!(
+        calls,
+        [
+            "insert_plug 3 on 1 socket 0 plug 1002",
+            "insert_plug 3 on 1 socket 2 plug 1005"
+        ]
+    );
+    assert_eq!(execution.status, ApplyStatus::Applied);
+    assert_eq!(execution.dispatched, 2);
+    assert_eq!(execution.local_state, ApplyLocalState::RefreshPending);
+    assert_eq!(
+        repository.load_current().unwrap().unwrap().items,
+        before.items
+    );
+}
+
+#[test]
+fn a_failed_plug_never_stops_the_next_plug_even_on_the_same_item() {
+    // DIM's mod loop catches each failure and continues (loadout-apply.ts:1337-1349).
+    let (mut repository, revision) = store();
+    let p = plan(vec![plug("3", 0, 1002, &[]), plug("3", 2, 1005, &[])]);
+    let script = Script {
+        socket: [
+            Ok(InsertPlugOutcome::Rejected(InsertPlugRejection::Provider(
+                ProviderRejection::ActionForbidden,
+            ))),
+            inserted(),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    let (execution, calls) = run(&mut repository, revision, &p, script);
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        statuses(&execution),
+        [
+            vec![ItemStatus::Failed(StepFailure::Rejected(
+                "action_forbidden"
+            ))],
+            vec![ItemStatus::Succeeded]
+        ]
+    );
+    assert_eq!(execution.status, ApplyStatus::Partial);
+}
+
+#[test]
+fn plugs_wait_for_the_item_moves_they_depend_on() {
+    let (mut repository, revision) = store();
+    let p = plan(vec![
+        mv("1", ItemLocation::Vault, on("1"), &[]),
+        plug("1", 0, 1002, &[0]),
+        plug("3", 0, 1002, &[]),
+    ]);
+    let script = Script {
+        transfer: [Ok(TransferOutcome::Rejected(
+            TransferRejection::NotTransferable,
+        ))]
+        .into(),
+        socket: [inserted()].into(),
+        ..Default::default()
+    };
+    let (execution, calls) = run(&mut repository, revision, &p, script);
+    assert_eq!(
+        calls,
+        [
+            "transfer 1 vault->c1",
+            "insert_plug 3 on 1 socket 0 plug 1002"
+        ]
+    );
+    assert_eq!(
+        statuses(&execution)[1],
+        [ItemStatus::Skipped(SkipCause::DependencyFailed(0))]
+    );
+}
+
+#[test]
+fn uncertain_plug_is_failed_and_unprojected_and_a_throttle_stops_the_rest() {
+    let (mut repository, revision) = store();
+    let p = plan(vec![
+        plug("3", 0, 1002, &[]),
+        plug("3", 1, 1003, &[]),
+        plug("3", 2, 1004, &[]),
+    ]);
+    let script = Script {
+        socket: [
+            Ok(InsertPlugOutcome::Uncertain),
+            Err(AppError::bungie_rate_limit(5)),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    let (execution, calls) = run(&mut repository, revision, &p, script);
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    assert_eq!(
+        statuses(&execution),
+        [
+            vec![ItemStatus::Failed(StepFailure::Uncertain)],
+            vec![ItemStatus::Failed(StepFailure::NotDispatched(
+                ErrorCategory::ProviderRateLimit
+            ))],
+            vec![ItemStatus::Skipped(SkipCause::ProviderStopped)],
+        ]
+    );
+    assert_eq!(execution.dispatched, 1);
 }

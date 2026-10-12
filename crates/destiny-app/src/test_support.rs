@@ -1287,6 +1287,39 @@ impl destiny_core::InstancedPullGateway for QueuedInstancedPullGateway {
     }
 }
 
+/// Queues plug insertion outcomes; exhaustion fails closed, never succeeds.
+#[derive(Debug, Default)]
+pub struct QueuedInsertPlugGateway {
+    outcomes: VecDeque<Result<destiny_core::InsertPlugOutcome, AppError>>,
+    requests: Vec<destiny_core::InsertPlugRequest>,
+}
+
+impl QueuedInsertPlugGateway {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn queue(&mut self, outcome: Result<destiny_core::InsertPlugOutcome, AppError>) {
+        self.outcomes.push_back(outcome);
+    }
+
+    pub fn requests(&self) -> &[destiny_core::InsertPlugRequest] {
+        &self.requests
+    }
+}
+
+impl destiny_core::InsertPlugGateway for QueuedInsertPlugGateway {
+    fn insert_plug(
+        &mut self,
+        request: &destiny_core::InsertPlugRequest,
+    ) -> Result<destiny_core::InsertPlugOutcome, AppError> {
+        self.requests.push(request.clone());
+        self.outcomes
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
+    }
+}
+
 /// Queues equip outcomes in call order; exhaustion fails closed, never succeeds.
 #[derive(Debug, Default)]
 pub struct QueuedEquipGateway {

@@ -1,6 +1,9 @@
 //! Typed projection of an executed build apply: per-step outcomes, overall result and the
 //! existing action exit codes (no new ones).
-use crate::builds::{category_exit, clean_text as clean, step_json, step_text, summary_json};
+use crate::builds::{
+    category_exit, clean_text as clean, socket_already_json, socket_skipped_json, step_json,
+    step_text, summary_json,
+};
 use destiny_app::build_apply_exec::{
     ApplyLocalState, ApplyStatus, BuildApplyExecution, ItemStatus, SkipCause, StepFailure,
 };
@@ -72,11 +75,18 @@ pub fn execution(applied: &BuildApplyExecution) -> (Value, i32) {
             .find(|(i, _)| i == id)
             .map(|(_, n)| n.clone())
     };
+    let plug_name = |hash: destiny_app::ItemHash| {
+        preview
+            .plug_names
+            .iter()
+            .find(|(h, _)| *h == hash)
+            .map(|(_, n)| n.clone())
+    };
     let steps: Vec<_> = run
         .steps
         .iter()
         .map(|report| {
-            let mut step = step_json(&report.step, &name);
+            let mut step = step_json(&report.step, &name, &plug_name);
             step["ordinal"] = json!(report.index + 1);
             step["needs"] = json!(report.step.needs.iter().map(|n| n + 1).collect::<Vec<_>>());
             step["outcomes"] = json!(
@@ -123,6 +133,8 @@ pub fn execution(applied: &BuildApplyExecution) -> (Value, i32) {
         "dispatched":run.dispatched, "steps":steps, "counts":counts,
         "skipped":plan.skipped.iter().map(|s| json!({"spec_index":s.spec_index, "reason":s.reason.as_str()})).collect::<Vec<_>>(),
         "already_there":plan.already_there,
+        "socket_skipped":socket_skipped_json(plan),
+        "socket_already_there":socket_already_json(plan),
         "clear_skipped":plan.clear_skipped.iter().map(|(i, r)| json!({"item":i.as_str(), "reason":r.as_str()})).collect::<Vec<_>>(),
         "not_applied":plan.not_applied.iter().map(|r| json!({"outcome":"not_applied", "reason":r})).collect::<Vec<_>>(),
         "unknown":plan.unknown, "local_state":local_state, "reason":reason,
@@ -184,11 +196,23 @@ pub fn render(v: &Value) -> String {
             skip["spec_index"], skip["reason"]
         ));
     }
+    for skip in v["socket_skipped"].as_array().into_iter().flatten() {
+        lines.push(format!(
+            "Skipped socket {} of item {}: {}",
+            skip["socket_index"], skip["spec_index"], skip["reason"]
+        ));
+    }
     for skip in v["clear_skipped"].as_array().into_iter().flatten() {
         lines.push(format!("Not cleared {}: {}", skip["item"], skip["reason"]));
     }
-    if !v["not_applied"].as_array().is_none_or(Vec::is_empty) {
-        lines.push("Not applied: sockets, mods and subclass (BE-007b)".into());
+    let not_applied: Vec<_> = v["not_applied"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|r| r["reason"].as_str())
+        .collect();
+    if !not_applied.is_empty() {
+        lines.push(format!("Not applied: {}", not_applied.join(", ")));
     }
     if let Some(reason) = v["reason"].as_str() {
         lines.push(clean(reason));

@@ -10,6 +10,7 @@ pub mod build_analysis;
 pub mod build_apply;
 pub mod build_capture;
 pub mod build_sets;
+pub mod build_sockets;
 pub mod build_stats;
 pub mod calendar;
 pub mod clarity;
@@ -34,6 +35,10 @@ pub use equipment_capacity::{
     QualifiedEquipmentCapacityPolicy,
 };
 pub mod ids;
+pub mod insert_plug;
+pub use insert_plug::{
+    InsertPlugGateway, InsertPlugOutcome, InsertPlugRejection, InsertPlugRequest,
+};
 pub mod instanced_pull;
 pub use instanced_pull::{InstancedPullOutcome, InstancedPullRejection, InstancedPullRequest};
 pub mod inventory_effects;

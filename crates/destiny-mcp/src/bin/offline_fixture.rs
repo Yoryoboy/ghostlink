@@ -403,6 +403,7 @@ fn apply_build<I>(
     destiny_app::test_support::QueuedEquipGateway,
     destiny_app::test_support::QueuedEquipItemsGateway,
     destiny_app::test_support::QueuedInstancedPullGateway,
+    destiny_app::test_support::QueuedInsertPlugGateway,
 > {
     destiny_mcp::apply_build::ApplyBuildMutationService {
         inner,
@@ -427,6 +428,7 @@ fn apply_build<I>(
             equip: destiny_app::test_support::QueuedEquipGateway::new(),
             equip_items: destiny_app::test_support::QueuedEquipItemsGateway::new(),
             pull: destiny_app::test_support::QueuedInstancedPullGateway::new(),
+            socket: destiny_app::test_support::QueuedInsertPlugGateway::new(),
         },
         clock: FakeClock::fixed(NOW),
         policy: TTL,

@@ -245,6 +245,8 @@ pub struct ApplyBuildOutputView {
     pub counts: Option<serde_json::Value>,
     pub steps: Option<Vec<serde_json::Value>>,
     pub skipped: Option<Vec<serde_json::Value>>,
+    pub socket_skipped: Option<Vec<serde_json::Value>>,
+    pub socket_already_there: Option<Vec<serde_json::Value>>,
     pub not_applied: Option<Vec<serde_json::Value>>,
     pub error: Option<serde_json::Value>,
 }
@@ -252,7 +254,7 @@ pub fn apply_build_tool() -> Tool {
     // No top-level oneOf: exactly one of id/name is enforced at runtime.
     Tool::new(
         APPLY_BUILD_TOOL,
-        "Apply a stored build's moves and equips (not mods/sockets/subclass): exactly one id/name, optional character ID/class. dry_run=true plans only. Failed steps never stop independent ones; see result, steps and local_state. Bungie acknowledgements are not re-read; never retry uncertain or partial results blindly.",
+        "Apply a stored build's moves, equips and subclass/artifact plugs (not armor mods): exactly one id/name, optional character ID/class. dry_run=true plans only. Failed steps never stop independent ones; see result, steps and local_state. Bungie acknowledgements are not re-read; never retry uncertain or partial results blindly.",
         JsonObject::new(),
     )
     .with_input_schema::<ApplyBuildArgs>()

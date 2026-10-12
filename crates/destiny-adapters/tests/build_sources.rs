@@ -871,3 +871,128 @@ fn build_apply_plans_vault_staged_moves_only_with_projected_vault_evidence() {
         ]
     );
 }
+
+#[test]
+fn build_apply_plans_subclass_socket_overrides_from_projected_catalogs() {
+    use destiny_core::armor_catalog::*;
+    use destiny_core::build_apply::{ApplyPhase, BuildAction};
+    let mut sync = fixture();
+    let membership =
+        DestinyMembership::new(MembershipType::new(3), MembershipId::new("99")).unwrap();
+    let mut service = BuildService::new(
+        destiny_app::test_support::InMemoryBuildRepository::default(),
+        DimBuildCodec,
+    );
+    service
+        .execute_local(
+            &membership,
+            &destiny_app::builds::LocalBuildRequest::Import(
+                r#"{"id":"s1","name":"Sockets","classType":1,"equipped":[{"id":"2","hash":3448274439,"socketOverrides":{"0":300}}],"unequipped":[]}"#
+                    .into(),
+            ),
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let mut subclass = definition(3448274439, Some(SUBCLASS_BUCKET_HASH), None);
+    subclass.class_type = Some(destiny_core::domain::ClassType::Any);
+    subclass.is_instance_item = Some(true);
+    subclass.armor.socket_entries = vec![DefinitionSocketEntry {
+        socket_type_hash: 20,
+        single_initial_item_hash: 301,
+        reusable_plug_set_hash: Some(800),
+        plug_sources: Some(2),
+        ..Default::default()
+    }];
+    subclass.armor.socket_categories = vec![DefinitionSocketCategory {
+        socket_category_hash: 1,
+        socket_indexes: vec![0],
+    }];
+    let definitions = ManifestDefinitions {
+        version: DefinitionVersion::new("v1"),
+        definitions: vec![
+            subclass,
+            definition(300, None, None),
+            definition(301, None, None),
+        ],
+    };
+    let mut world = destiny_app::test_support::synthetic_world(DefinitionVersion::new("v1"));
+    world.armor_catalogs = vec![
+        ArmorCatalogRecord::SocketType(SocketTypeDefinition {
+            hash: 20,
+            socket_category_hash: 1,
+            always_randomize_sockets: false,
+            plug_whitelist: vec![],
+        }),
+        ArmorCatalogRecord::SocketCategory(SocketCategoryDefinition {
+            hash: 1,
+            category_style: 0,
+            name: "Generic".into(),
+        }),
+        ArmorCatalogRecord::PlugSet(PlugSetDefinition {
+            hash: 800,
+            reusable_plug_items: [300, 301]
+                .map(|plug_item_hash| PlugSetItem {
+                    plug_item_hash,
+                    currently_can_roll: true,
+                })
+                .to_vec(),
+        }),
+    ];
+    sync.repository_mut()
+        .publish_manifest(
+            DefinitionReplacementInput {
+                definitions,
+                checked_at: Timestamp::new(100),
+                source: SourceMarker::Manifest,
+            },
+            world,
+        )
+        .unwrap();
+    let mut input =
+        InventorySnapshotInput::with_metadata(&sync.repository().load_current().unwrap().unwrap());
+    input.items[1].sockets = vec![IndexedSocket {
+        socket_index: 0,
+        plug_hash: Some(ItemHash::new(301)),
+        enabled: true,
+        visible: true,
+        reusable_plugs: Some(vec![]),
+        plug_objectives: None,
+    }];
+    sync.repository_mut().replace_current(input).unwrap();
+    let preview = service
+        .plan_apply(
+            &mut sync,
+            &destiny_app::builds::BuildCheckRequest {
+                selector: destiny_app::builds::BuildSelector::Name("Sockets".into()),
+                character: None,
+            },
+            &destiny_adapters::pinned_equipment_capacity_policy(),
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let steps: Vec<_> = preview
+        .plan
+        .steps
+        .iter()
+        .map(|s| (s.phase, s.action.clone(), s.needs.clone()))
+        .collect();
+    assert_eq!(
+        steps,
+        [(
+            ApplyPhase::Sockets,
+            BuildAction::InsertPlug {
+                item: ItemInstanceId::new("2"),
+                character: CharacterId::new("1"),
+                socket_index: 0,
+                plug: ItemHash::new(300),
+            },
+            vec![]
+        )]
+    );
+    assert!(preview.plan.socket_skipped.is_empty() && preview.plan.not_applied.is_empty());
+    assert_eq!(
+        preview.plug_names,
+        [(ItemHash::new(300), "Item 300".to_owned())]
+    );
+}

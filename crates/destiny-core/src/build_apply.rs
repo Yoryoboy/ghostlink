@@ -7,6 +7,8 @@ pub enum ApplyPhase {
     Dequip,
     Move,
     Equip,
+    /// Subclass and artifact socket overrides, after equips (`loadout-apply.ts:629-650`).
+    Sockets,
     ClearSpace,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,6 +26,13 @@ pub enum BuildAction {
     Equip {
         items: Vec<ItemInstanceId>,
         character: CharacterId,
+    },
+    /// One free plug insertion (`InsertSocketPlugFree`).
+    InsertPlug {
+        item: ItemInstanceId,
+        character: CharacterId,
+        socket_index: u8,
+        plug: ItemHash,
     },
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -86,6 +95,11 @@ pub struct BuildApplyPlan {
     pub already_there: Vec<usize>,
     /// Final clear-space items that could not be moved off the character.
     pub clear_skipped: Vec<(ItemInstanceId, ApplySkipReason)>,
+    /// Socket overrides DIM would refuse or that need evidence Ghostlink lacks.
+    pub socket_skipped: Vec<crate::build_sockets::SocketSkip>,
+    /// Requested socket overrides already in place, as (spec index, override index).
+    pub socket_already_there: Vec<(usize, u16)>,
+    /// What DIM applies that this plan does not, with an explicit reason.
     pub not_applied: Vec<&'static str>,
     /// Ranking or capacity evidence that was not supplied, never guessed.
     pub unknown: Vec<&'static str>,
@@ -150,6 +164,10 @@ pub struct ApplyContext<'a> {
     pub loadouts: Option<&'a [(CharacterId, ItemInstanceId)]>,
     pub clear_weapons: bool,
     pub clear_armor: bool,
+    /// Socket type, plug set and material requirement records for socket overrides.
+    pub catalogs: Option<&'a [crate::armor_catalog::ArmorCatalogRecord]>,
+    /// The build carries armor mods, fashion or clearMods, which are not applied yet.
+    pub armor_mods_requested: bool,
 }
 struct Planner<'a> {
     items: Vec<ItemInstance>,
@@ -686,6 +704,15 @@ impl Planner<'_> {
         skipped
     }
 }
+/// Whether an item move, pull or equip step handled `item` (a plug insertion needs it).
+fn step_touches(action: &BuildAction, item: &ItemInstanceId) -> bool {
+    match action {
+        BuildAction::Move { item: moved, .. }
+        | BuildAction::PullFromPostmaster { item: moved, .. } => moved == item,
+        BuildAction::Equip { items, .. } => items.contains(item),
+        BuildAction::InsertPlug { .. } => false,
+    }
+}
 /// Vault evidence is explicit, never inferred from character capacities.
 /// The current production projection cannot supply it; previews report that gap.
 pub fn plan_build_items(
@@ -715,16 +742,35 @@ pub fn plan_build_items(
         hard_from: None,
         pinned: vec![],
     };
+    let has_overrides = selected.iter().any(|s| !s.spec.socket_overrides.is_empty());
     let mut plan = BuildApplyPlan {
         target: target.clone(),
         steps: vec![],
         skipped: vec![],
         already_there: vec![],
         clear_skipped: vec![],
-        not_applied: vec!["sockets_mods_subclass_deferred_to_be_007b"],
+        socket_skipped: vec![],
+        socket_already_there: vec![],
+        not_applied: [
+            (
+                has_overrides && context.catalogs.is_none(),
+                "socket_overrides_evidence_unavailable",
+            ),
+            (
+                context.armor_mods_requested,
+                "armor_mods_deferred_to_be_007b2",
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(pending, name)| pending.then_some(name))
+        .collect(),
         unknown: [
             (context.vault.is_none(), "vault_capacity"),
             (context.loadouts.is_none(), "in_game_loadout_membership"),
+            (
+                has_overrides && context.catalogs.is_none(),
+                "socket_catalogs",
+            ),
         ]
         .into_iter()
         .filter_map(|(missing, name)| missing.then_some(name))
@@ -913,6 +959,47 @@ pub fn plan_build_items(
                 });
             }
         }
+    }
+    // DIM applies socket overrides after the equips and before mods and clear-space
+    // (`loadout-apply.ts:629-650`). Items are judged where the plan leaves them.
+    if let (true, Some(catalogs)) = (has_overrides, context.catalogs) {
+        p.phase = ApplyPhase::Sockets;
+        let after: Vec<_> = selected
+            .iter()
+            .map(|s| ResolvedBuildItem {
+                inventory: s.inventory.as_ref().map(|i| {
+                    p.items
+                        .iter()
+                        .find(|moved| moved.instance_id == i.instance_id)
+                        .unwrap_or(i)
+                        .clone()
+                }),
+                ..s.clone()
+            })
+            .collect();
+        let sockets =
+            crate::build_sockets::plan_socket_overrides(target, &after, defs, characters, catalogs);
+        for insert in sockets.inserts {
+            let needs = p
+                .steps
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| step_touches(&s.action, &insert.item))
+                .map(|(i, _)| i)
+                .collect();
+            p.steps.push(BuildApplyStep {
+                phase: ApplyPhase::Sockets,
+                action: BuildAction::InsertPlug {
+                    item: insert.item,
+                    character: target.clone(),
+                    socket_index: insert.socket_index,
+                    plug: insert.plug,
+                },
+                needs,
+            });
+        }
+        plan.socket_skipped = sockets.skipped;
+        plan.socket_already_there = sockets.already_there;
     }
     if context.clear_weapons || context.clear_armor {
         p.phase = ApplyPhase::ClearSpace;

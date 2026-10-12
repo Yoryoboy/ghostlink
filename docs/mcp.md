@@ -22,7 +22,7 @@ set_lock_state    lock or unlock one explicitly selected owned item, return acce
 pull_item         pull one genuine Postmaster equipment instance to its owner
 pull_stack        pull an explicit amount of a non-instanced Postmaster stack
 apply_loadout     apply one saved in-game loadout on an explicit character
-apply_build       apply a stored build's moves and equips (or plan them with dry_run)
+apply_build       apply a stored build's moves, equips and subclass/artifact plugs (or plan them with dry_run)
 list_builds       list locally stored build definitions
 get_build         show one local build, including DIM JSON export
 save_build        import or capture equipped/in-game loadout as a local build
@@ -292,8 +292,10 @@ refusals (category exits). `result` is `applied`, `no_op`, `partial`, `failed` o
 `refused`; each step carries per-item `succeeded`, `failed` or `skipped` outcomes with
 typed reasons, and `local_state` is one of `unchanged`, `updated`, `refresh_pending`
 or `failed` (with `reason`). Bungie acknowledgements are not re-read and nothing is
-retried: never repeat a partial, failed or uncertain apply blindly. Sockets, mods and
-subclass are not applied (`not_applied`).
+retried: never repeat a partial, failed or uncertain apply blindly. Subclass and
+artifact socket overrides are applied as `sockets` steps (`insert_plug`; free plugs
+only, so `socket_skipped` can list `not_free`), after which `local_state` is
+`refresh_pending`. Armor mods are not applied yet (`not_applied`).
 
 When Bungie acknowledged actions but the projection write failed, the result keeps
 its per-step outcomes, reports `local_state: "failed"` and the reason "local state

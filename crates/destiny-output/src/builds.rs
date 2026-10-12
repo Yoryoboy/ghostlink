@@ -44,12 +44,14 @@ fn location(l: &destiny_app::ItemLocation) -> String {
 pub(crate) fn step_json(
     step: &destiny_app::build_apply::BuildApplyStep,
     name: &dyn Fn(&destiny_app::ItemInstanceId) -> Option<String>,
+    plug_name: &dyn Fn(destiny_app::ItemHash) -> Option<String>,
 ) -> Value {
     use destiny_app::build_apply::{ApplyPhase, BuildAction};
     let phase = match step.phase {
         ApplyPhase::Dequip => "dequip",
         ApplyPhase::Move => "move",
         ApplyPhase::Equip => "equip",
+        ApplyPhase::Sockets => "sockets",
         ApplyPhase::ClearSpace => "clear_space",
     };
     match &step.action {
@@ -61,6 +63,15 @@ pub(crate) fn step_json(
         BuildAction::Equip { items, character } => json!({"phase":phase, "action":"equip",
             "items":items.iter().map(|i| json!({"item":i.as_str(), "name":name(i)})).collect::<Vec<_>>(),
             "character":character.as_str()}),
+        BuildAction::InsertPlug {
+            item,
+            character,
+            socket_index,
+            plug,
+        } => json!({"phase":phase,
+            "action":"insert_plug", "item":item.as_str(), "name":name(item),
+            "character":character.as_str(), "socket_index":socket_index,
+            "plug":plug.value(), "plug_name":plug_name(*plug)}),
     }
 }
 pub(crate) fn summary_json(s: &BuildSummary) -> Value {
@@ -80,6 +91,13 @@ pub(crate) fn step_text(step: &Value) -> String {
             label(step),
             clean(step["from"].as_str().unwrap_or("")),
             clean(step["to"].as_str().unwrap_or(""))
+        ),
+        Some("insert_plug") => format!(
+            "insert {} ({}) into socket {} of {}",
+            clean(step["plug_name"].as_str().unwrap_or("plug")),
+            step["plug"],
+            step["socket_index"],
+            label(step)
         ),
         Some("pull_from_postmaster") => format!(
             "pull {} from the Postmaster of {}",
@@ -111,19 +129,46 @@ fn apply_plan(preview: &destiny_app::builds::BuildApplyPreview) -> Value {
             .find(|(i, _)| i == id)
             .map(|(_, n)| n.clone())
     };
+    let plug_name = |hash: destiny_app::ItemHash| {
+        preview
+            .plug_names
+            .iter()
+            .find(|(h, _)| *h == hash)
+            .map(|(_, n)| n.clone())
+    };
     let steps: Vec<_> = plan
         .steps
         .iter()
-        .map(|step| step_json(step, &name))
+        .map(|step| step_json(step, &name, &plug_name))
         .collect();
     json!({"kind":"build_apply_plan", "dry_run":true, "dispatched":0, "summary":summary(&preview.summary),
         "target_character":plan.target.as_str(), "steps":steps,
         "skipped":plan.skipped.iter().map(|s| json!({"spec_index":s.spec_index, "reason":s.reason.as_str()})).collect::<Vec<_>>(),
         "already_there":plan.already_there,
+        "socket_skipped":socket_skipped_json(plan),
+        "socket_already_there":socket_already_json(plan),
         "clear_skipped":plan.clear_skipped.iter().map(|(i, r)| json!({"item":i.as_str(), "reason":r.as_str()})).collect::<Vec<_>>(),
         "not_applied":plan.not_applied, "unknown":plan.unknown,
         "metadata":{"checked_at":preview.metadata.sync.checked_at.seconds(),
             "revision":preview.metadata.sync.revision.value()}})
+}
+pub(crate) fn socket_skipped_json(plan: &destiny_app::build_apply::BuildApplyPlan) -> Value {
+    json!(
+        plan.socket_skipped
+            .iter()
+            .map(|s| json!({"spec_index":s.spec_index,
+        "socket_index":s.socket_index, "reason":s.reason.as_str()}))
+            .collect::<Vec<_>>()
+    )
+}
+pub(crate) fn socket_already_json(plan: &destiny_app::build_apply::BuildApplyPlan) -> Value {
+    json!(
+        plan.socket_already_there
+            .iter()
+            .map(|(spec, socket)| json!({"spec_index":spec,
+        "socket_index":socket}))
+            .collect::<Vec<_>>()
+    )
 }
 pub(crate) fn category_exit(category: destiny_app::ErrorCategory) -> (&'static str, i32) {
     use destiny_app::ErrorCategory as E;
@@ -387,10 +432,20 @@ impl BuildOutput {
                     skip["spec_index"], skip["reason"]
                 ));
             }
+            for skip in v["socket_skipped"].as_array().into_iter().flatten() {
+                lines.push(format!(
+                    "Skipped socket {} of item {}: {}",
+                    skip["socket_index"], skip["spec_index"], skip["reason"]
+                ));
+            }
             for skip in v["clear_skipped"].as_array().into_iter().flatten() {
                 lines.push(format!("Not cleared {}: {}", skip["item"], skip["reason"]));
             }
             lines.push(format!("Already in place: {}", v["already_there"]));
+            lines.push(format!(
+                "Sockets already in place: {}",
+                v["socket_already_there"].as_array().map_or(0, Vec::len)
+            ));
             lines.push(format!("Not applied: {}", v["not_applied"]));
             lines.push(format!("Unknown evidence: {}", v["unknown"]));
             return lines.join("\n");

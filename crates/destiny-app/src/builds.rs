@@ -119,6 +119,8 @@ pub struct BuildApplyPreview {
     pub summary: BuildSummary,
     pub plan: build_apply::BuildApplyPlan,
     pub names: Vec<(ItemInstanceId, String)>,
+    /// Names of the plugs the plan inserts, for display.
+    pub plug_names: Vec<(ItemHash, String)>,
     pub metadata: QueryMetadata,
 }
 
@@ -268,12 +270,17 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             + StatDefinitionRepository
             + ArmorCatalogRepository,
     {
-        let analyzed = self.analyze(
+        let mut analyzed = self.analyze(
             sync,
             &request.selector,
             request.character.as_ref(),
             policy,
             now,
+        )?;
+        let socket_catalogs = crate::build_socket_evidence::socket_catalogs(
+            sync.repository(),
+            &analyzed.result.analysis.items,
+            &mut analyzed.definitions,
         )?;
         let analysis = &analyzed.result.analysis;
         // Local projection of saved in-game loadouts; absent stays unknown.
@@ -315,6 +322,12 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             loadouts: membership.as_deref(),
             clear_weapons: parameters.and_then(|p| p.clear_weapons).unwrap_or(false),
             clear_armor: parameters.and_then(|p| p.clear_armor).unwrap_or(false),
+            catalogs: Some(&socket_catalogs),
+            armor_mods_requested: parameters.is_some_and(|p| {
+                p.mods.as_ref().is_some_and(|m| !m.is_empty())
+                    || p.mods_by_bucket.as_ref().is_some_and(|m| !m.is_empty())
+                    || p.clear_mods == Some(true)
+            }),
         };
         let plan = build_apply::plan_build_items(
             &analysis.target_character,
@@ -336,10 +349,26 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
                     .map(|d| (i.instance_id.clone(), d.name.clone()))
             })
             .collect();
+        let plug_names = plan
+            .steps
+            .iter()
+            .filter_map(|s| match &s.action {
+                build_apply::BuildAction::InsertPlug { plug, .. } => Some(*plug),
+                _ => None,
+            })
+            .filter_map(|plug| {
+                analyzed
+                    .definitions
+                    .iter()
+                    .find(|d| d.hash == plug)
+                    .map(|d| (plug, d.name.clone()))
+            })
+            .collect();
         Ok(BuildApplyPreview {
             summary: analyzed.result.summary,
             plan,
             names,
+            plug_names,
             metadata: analyzed.result.metadata,
         })
     }
@@ -347,12 +376,12 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
     /// Plans from fresh state, then executes the plan. Reads once; every action is
     /// dispatched at most once, in plan order, with no retry and no post-action read.
     #[allow(clippy::too_many_arguments)]
-    pub fn apply<G, I, T, E, B, P>(
+    pub fn apply<G, I, T, E, B, P, S>(
         &self,
         sync: &mut ProfileSyncService<G, I>,
         request: &BuildCheckRequest,
         capacity: &EquipmentCapacityPolicy,
-        gateways: &mut crate::build_apply_exec::BuildGateways<T, E, B, P>,
+        gateways: &mut crate::build_apply_exec::BuildGateways<T, E, B, P, S>,
         policy: FreshnessPolicy,
         now: Timestamp,
         pace: &mut dyn FnMut(),
@@ -367,6 +396,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
         E: EquipGateway,
         B: EquipItemsGateway,
         P: InstancedPullGateway,
+        S: InsertPlugGateway,
     {
         let preview = self.plan_apply(sync, request, capacity, policy, now)?;
         let execution = crate::build_apply_exec::execute_plan(

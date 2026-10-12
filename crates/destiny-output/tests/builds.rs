@@ -316,10 +316,13 @@ fn apply_preview() -> destiny_app::builds::BuildApplyPreview {
             }],
             already_there: vec![0],
             clear_skipped: vec![(ItemInstanceId::new("9"), ApplySkipReason::NoSpace)],
-            not_applied: vec!["sockets_mods_subclass_deferred_to_be_007b"],
+            socket_skipped: vec![],
+            socket_already_there: vec![],
+            not_applied: vec!["armor_mods_deferred_to_be_007b2"],
             unknown: vec!["vault_capacity"],
         },
         names: vec![(ItemInstanceId::new("7"), "Hawkmoon".into())],
+        plug_names: vec![],
         metadata: QueryMetadata {
             sync: SyncMetadata {
                 dataset: Dataset::ProfileInventory,
@@ -358,7 +361,8 @@ fn apply_plan_renders_typed_steps_in_json_and_text() {
 Skipped item 2: \"no_space\"\n\
 Not cleared \"9\": \"no_space\"\n\
 Already in place: [0]\n\
-Not applied: [\"sockets_mods_subclass_deferred_to_be_007b\"]\n\
+Sockets already in place: 0\n\
+Not applied: [\"armor_mods_deferred_to_be_007b2\"]\n\
 Unknown evidence: [\"vault_capacity\"]"
     );
 }
@@ -379,6 +383,7 @@ fn execution(
         .map(|(index, (step, statuses))| {
             let items = match &step.action {
                 destiny_app::build_apply::BuildAction::Move { item, .. }
+                | destiny_app::build_apply::BuildAction::InsertPlug { item, .. }
                 | destiny_app::build_apply::BuildAction::PullFromPostmaster { item, .. } => {
                     vec![item.clone()]
                 }
@@ -443,7 +448,7 @@ fn apply_execution_renders_typed_outcomes_text_and_exit_code() {
     assert_eq!(v["counts"], json!({"succeeded":1,"failed":1,"skipped":1}));
     assert_eq!(
         v["not_applied"],
-        json!([{"outcome":"not_applied","reason":"sockets_mods_subclass_deferred_to_be_007b"}])
+        json!([{"outcome":"not_applied","reason":"armor_mods_deferred_to_be_007b2"}])
     );
     assert_eq!(v["skipped"], json!([{"spec_index":2,"reason":"no_space"}]));
     assert_eq!(
@@ -455,7 +460,7 @@ Bungie acknowledgements are not re-read; do not blindly retry.\n\
 3. [equip] skipped (step 2 did not succeed): equip Hawkmoon (7) on 1\n\
 Skipped item 2: \"no_space\"\n\
 Not cleared \"9\": \"no_space\"\n\
-Not applied: sockets, mods and subclass (BE-007b)\n\
+Not applied: armor_mods_deferred_to_be_007b2\n\
 Local state: refresh pending"
     );
 }
@@ -531,4 +536,69 @@ fn apply_execution_exit_codes_reuse_existing_action_exits() {
     assert_eq!(refused(E::ProviderRateLimit), 20);
     assert_eq!(refused(E::StaleState), 30);
     assert_eq!(refused(E::ReauthorizationRequired), 11);
+}
+
+fn with_plug_step() -> destiny_app::builds::BuildApplyPreview {
+    use destiny_app::build_apply::*;
+    use destiny_app::*;
+    let mut preview = apply_preview();
+    preview.plan.steps.push(BuildApplyStep {
+        phase: ApplyPhase::Sockets,
+        action: BuildAction::InsertPlug {
+            item: ItemInstanceId::new("7"),
+            character: CharacterId::new("1"),
+            socket_index: 3,
+            plug: ItemHash::new(555),
+        },
+        needs: vec![2],
+    });
+    preview.plug_names = vec![(ItemHash::new(555), "Fusion\u{7} Rig".into())];
+    preview.plan.socket_skipped = vec![destiny_app::build_sockets::SocketSkip {
+        spec_index: 1,
+        socket_index: Some(4),
+        reason: destiny_app::build_sockets::SocketSkipReason::NotFree,
+    }];
+    preview.plan.socket_already_there = vec![(1, 2)];
+    preview
+}
+
+#[test]
+fn plug_steps_and_socket_skips_render_in_the_plan_and_the_result() {
+    use destiny_app::build_apply_exec::*;
+    let plan = BuildOutput::from_result(Ok(BuildReply::ApplyPlan(Box::new(with_plug_step()))));
+    let step = &plan.value["steps"][3];
+    assert_eq!(
+        step,
+        &json!({"phase":"sockets","action":"insert_plug","item":"7","name":"Hawkmoon",
+            "character":"1","socket_index":3,"plug":555,"plug_name":"Fusion\u{7} Rig"})
+    );
+    assert_eq!(
+        plan.value["socket_skipped"],
+        json!([{"spec_index":1,"socket_index":4,"reason":"not_free"}])
+    );
+    assert_eq!(
+        plan.value["socket_already_there"],
+        json!([{"spec_index":1,"socket_index":2}])
+    );
+    let text = plan.render_text();
+    assert!(text.contains("4. [sockets] insert Fusion Rig (555) into socket 3 of Hawkmoon (7)"));
+    assert!(text.contains("Skipped socket 4 of item 1: \"not_free\""));
+    assert!(text.contains("Sockets already in place: 1"));
+    let applied = execution(
+        with_plug_step(),
+        vec![vec![ItemStatus::Succeeded]; 4],
+        ApplyStatus::Applied,
+        ApplyLocalState::RefreshPending,
+    );
+    let output = BuildOutput::from_result(Ok(applied));
+    assert_eq!(
+        output.value["steps"][3]["outcomes"][0]["status"],
+        "succeeded"
+    );
+    assert_eq!(output.value["steps"][3]["needs"], json!([3]));
+    assert!(
+        output
+            .render_text()
+            .contains("4. [sockets] succeeded: insert Fusion Rig (555) into socket 3")
+    );
 }
