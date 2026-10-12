@@ -348,11 +348,23 @@ coverage (`domain.rs:123-126`).
       max (`d2-known-values.ts:29-30`). Additive `mod_fit` in build check
       text/JSON and MCP; `docs/build-mods.md`. Workspace: 2155
       all-features, 2123 default, 0 failed; clippy both modes, fmt.
-    - [ ] **BE-006b2 — Remaining assignment.** General/activity
-      permutations, artifice/tuning assignment, material-cost
-      ranking/tie-breaking, seasonal/legacy/deprecated mod resolution
-      (`mod-utils.ts:120-132`, `reduced-cost-mod-mappings.ts`); all
-      `not_evaluated` today, never approximated.
+    - [x] **BE-006b2a — Mod resolution.** Seasonal reduced-cost
+      variants by availability (`mod-utils.ts:120-132`,
+      `reduced-cost-mod-mappings.ts:1-117`), all 12 legacy migrations and
+      deprecated placeholders before fitting (`loadout-utils.ts:880-936`),
+      target-scoped unlocks (`selectors.ts:333-346`,
+      `plugset-helpers.ts:20-40`), eager rejection
+      (`mod-assignment-utils.ts:99-145`). Saved/exported builds keep their
+      hashes. Advisory R3-full-set-membership: not a deviation
+      (`analysis.ts:454` checks five entries), regression added.
+      Workspace: 2162 all-features, 2130 default, 0 failed; clippy both
+      modes, fmt.
+    - [ ] **BE-006b2b — Permutations and ranking.** Project insertion
+      material requirements and material catalogs (persistence + fake
+      parity) first; then general/activity permutations, specialty
+      metadata, artifice/tuning assignment, material ranking and
+      expensive-variant re-fitting (`mod-assignment-utils.ts:162-265,
+      481-528,964-989`); all `not_evaluated` today, never approximated.
   - [ ] **BE-006c — Stat constraints and fragment findings.** Stat
     aggregation vs `statConstraints`; fragment capacity findings;
     optimizer-based findings stay suppressed until BE-008.

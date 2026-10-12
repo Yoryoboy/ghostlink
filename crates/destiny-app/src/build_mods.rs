@@ -8,6 +8,23 @@ use destiny_core::{
 };
 use std::collections::BTreeSet;
 
+/// DIM selectors.ts:333-346 and records/plugset-helpers.ts:26-36.
+/// Cost-pair armor mods use enabled, not canInsert. The ornament and Harmonic
+/// Resistance exceptions do not include any member of the pinned cost table.
+pub(crate) fn unlocked_mods(entries: &[domain::PlugSetEntry], target: &CharacterId) -> Vec<u32> {
+    entries
+        .iter()
+        .filter(|entry| {
+            entry.enabled
+                && match &entry.scope {
+                    domain::PlugSetScope::Profile => true,
+                    domain::PlugSetScope::Character(id) => id == target,
+                }
+        })
+        .map(|entry| entry.plug_hash.value() as u32)
+        .collect()
+}
+
 pub(crate) fn findings(build: &BuildDefinition, analysis: &mut BuildAnalysis) {
     let artifact = build
         .parameters
@@ -136,6 +153,37 @@ pub(crate) fn catalogs<R: WorldDefinitionRepository + ArmorCatalogRepository>(
 mod tests {
     use super::*;
     use destiny_core::{build::*, build_analysis::analyze_build};
+
+    #[test]
+    fn mod_unlocks_are_enabled_and_target_scoped_not_insertable() {
+        let entries = [
+            (domain::PlugSetScope::Profile, 1, true, false),
+            (
+                domain::PlugSetScope::Character(CharacterId::new("target")),
+                2,
+                true,
+                false,
+            ),
+            (
+                domain::PlugSetScope::Character(CharacterId::new("other")),
+                3,
+                true,
+                true,
+            ),
+            (domain::PlugSetScope::Profile, 4, false, true),
+        ]
+        .map(|(scope, hash, enabled, can_insert)| domain::PlugSetEntry {
+            scope,
+            plug_hash: ItemHash::new(hash),
+            enabled,
+            can_insert,
+        });
+        assert_eq!(
+            unlocked_mods(&entries, &CharacterId::new("target")),
+            vec![1, 2]
+        );
+        assert!(unlocked_mods(&[], &CharacterId::new("target")).is_empty());
+    }
 
     #[test]
     fn findings_distinguish_mod_upgrades_from_unimplemented_stat_upgrades() {

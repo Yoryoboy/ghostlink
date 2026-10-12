@@ -97,8 +97,12 @@ The additive `mod_fit` object evaluates DIM bucket-specific armor mods when a
 full resolved set and all socket/membership/energy inputs are available. It exposes
 nullable `invalid_mods`, `unassigned_mods` (after allowed energy upgrades), and
 `needs_upgrades_for_mods`. Duplicates are preserved. Independent/general, activity,
-artifice, tuning and seasonal cost variants remain `not_evaluated` with explicit
-reasons; they are never approximated. Positive stat constraints can keep the global
+artifice and tuning assignment remain `not_evaluated` with explicit reasons;
+they are never approximated. Mod hashes are migrated and cost-resolved like DIM:
+use enabled account/target-character reduced variants, otherwise normal variants.
+Missing/non-pluggable definitions use DIM's deprecated placeholder; if that is
+unavailable, fitting stays unknown. Missing plug-set responses default to no unlocks
+as in DIM. See [build mod fitting](build-mods.md). Positive stat constraints can keep the global
 armor-upgrades finding unknown even when mods need no upgrade. Fragment capacity,
 stat constraints and optimization remain deferred; socket overrides are unevaluated.
 See [mod fitting scope and DIM evidence](build-mods.md).

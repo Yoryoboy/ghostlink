@@ -52,8 +52,11 @@ of health. Search exclusion is `search_only`; optimizer-dependent suppression is
 not evaluated. The additive `mod_fit` object shares the CLI's bounded DIM
 bucket-specific assignment: nullable `invalid_mods`, `unassigned_mods` (after
 allowed energy upgrades, duplicates retained), and `needs_upgrades_for_mods`.
-Independent/general, activity, artifice, tuning and seasonal cost variants remain
-`not_evaluated` with explicit reasons. Positive stat constraints can keep the global
+Independent/general, activity, artifice and tuning assignment remain
+`not_evaluated` with explicit reasons. Legacy hashes and seasonal costs resolve
+like DIM using enabled account/target-character unlocks (missing plug sets mean
+no unlocks). Missing/non-pluggable definitions use the deprecated placeholder;
+missing placeholder data stays unknown. See [build mod fitting](build-mods.md). Positive stat constraints can keep the global
 upgrade finding unknown. Socket application, fragment capacity, stat constraints
 and optimization remain deferred. No gear is applied. See [scope and DIM evidence](build-mods.md). The additive `equipped_set_bonuses` object reports set hash/name,
 `equipped_count`, and nullable `perks` with `sandbox_perk_hash`,

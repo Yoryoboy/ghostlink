@@ -159,6 +159,19 @@ pub fn analyze_bucket_mods(
     definitions: &[ItemDefinition],
     catalogs: &[ArmorCatalogRecord],
 ) -> ModFitAnalysis {
+    analyze_bucket_mods_with_unlocks(build, resolved, inventory, definitions, catalogs, &[])
+}
+
+/// Unlock hashes must be scoped to the target character plus account-wide entries.
+/// DIM defaults missing profile plug sets to an empty set (selectors.ts:333-346).
+pub fn analyze_bucket_mods_with_unlocks(
+    build: &BuildDefinition,
+    resolved: &[ResolvedBuildItem],
+    inventory: &[ItemInstance],
+    definitions: &[ItemDefinition],
+    catalogs: &[ArmorCatalogRecord],
+    unlocked: &[u32],
+) -> ModFitAnalysis {
     let requested = build
         .parameters
         .as_ref()
@@ -166,19 +179,21 @@ pub fn analyze_bucket_mods(
         .unwrap_or(&[]);
     let mut mods = Vec::new();
     for hash in requested {
-        if cost_variant(hash.value() as u32) {
-            return ModFitAnalysis::unknown("seasonal_mod_cost_resolution_unavailable");
-        }
-        let Some(d) = definitions.iter().find(|d| d.hash == *hash) else {
-            return ModFitAnalysis::unknown("requested_mod_definition_unavailable");
+        let hash = resolve_mod_cost_variant(hash.value() as u32, unlocked);
+        // DIM loadout-utils.ts:906-923: non-pluggable/missing definitions become
+        // the deprecated placeholder, which is subsequently categorized normally.
+        let Some(d) = definitions
+            .iter()
+            .find(|d| d.hash.value() == i64::from(hash) && d.armor.plug_category_hash.is_some())
+            .or_else(|| {
+                definitions.iter().find(|d| {
+                    d.hash.value() == i64::from(DEPRECATED_MOD_PLACEHOLDER)
+                        && d.armor.plug_category_hash.is_some()
+                })
+            })
+        else {
+            return ModFitAnalysis::unknown("deprecated_mod_placeholder_definition_unavailable");
         };
-        if d.armor
-            .plug_category_hash
-            .and_then(bucket_for_category)
-            .is_none()
-        {
-            return ModFitAnalysis::unknown("dim_independent_mod_assignment_not_implemented");
-        }
         mods.push(d);
     }
     let mut invalid = Vec::new();
@@ -210,6 +225,13 @@ pub fn analyze_bucket_mods(
             }
         }
         if found {
+            if m.armor
+                .plug_category_hash
+                .and_then(bucket_for_category)
+                .is_none()
+            {
+                return ModFitAnalysis::unknown("dim_independent_mod_assignment_not_implemented");
+            }
             valid.push(m);
         } else if let Some(reason) = unknown {
             return ModFitAnalysis::unknown(reason);
@@ -359,9 +381,29 @@ pub fn analyze_bucket_mods(
     }
 }
 
-/// DIM reduced-cost-mod-mappings.ts:1-112. This slice cannot resolve unlocks,
-/// so BOTH members of every seasonal pair are rejected, not guessed expensive.
-fn cost_variant(hash: u32) -> bool {
+pub const DEPRECATED_MOD_PLACEHOLDER: u32 = 444600262;
+
+/// Legacy stat-mod migration, then available-cost resolution, preserving order
+/// and duplicates at the call site. DIM loadout-drawer/loadout-utils.ts:880-910
+/// and loadout/mod-utils.ts:120-132, commit 29c122e.
+pub fn resolve_mod_cost_variant(hash: u32, unlocked: &[u32]) -> u32 {
+    let hash = match hash {
+        204137529 => 1703647492,
+        3961599962 => 4183296050,
+        3682186345 => 2532323436,
+        2850583378 => 1180408010,
+        555005975 => 1237786518,
+        2645858828 => 4204488676,
+        2623485440 => 4021790309,
+        4048838440 => 1435557120,
+        1227870362 => 350061697,
+        3355995799 => 2724608735,
+        3699676109 => 2639422088,
+        3253038666 => 4287799666,
+        _ => hash,
+    };
+    // Static DIM src/data/d2/reduced-cost-mod-mappings.ts:1-117, commit 29c122e.
+    // Tuple order is (normal, reduced); the reverse lookup is derived in DIM.
     #[rustfmt::skip] // Keep the pinned mapping compact and easy to compare.
     const PAIRS: &[(u32, u32)] = &[
         (14520248,2318667184),(40751621,4149682173),(48578555,3047946307),(84503918,1208761894),
@@ -393,7 +435,17 @@ fn cost_variant(hash: u32) -> bool {
         (4204488676,2493161484),(4244246940,95934356),(4255093903,1086997255),(4287799666,1763607626),
         (4287822553,2303417969),(4294909663,3798468567),
     ];
-    PAIRS.iter().any(|(a, b)| hash == *a || hash == *b)
+    if let Some(&(normal, reduced)) = PAIRS.iter().find(|(a, b)| hash == *a || hash == *b) {
+        if unlocked.contains(&reduced) {
+            reduced
+        } else if unlocked.contains(&hash) {
+            hash
+        } else {
+            normal
+        }
+    } else {
+        hash
+    }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AssignmentMod {

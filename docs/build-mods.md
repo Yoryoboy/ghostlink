@@ -3,7 +3,7 @@
 `build check` and MCP `analyze_build` share an additive `mod_fit` object:
 
 - `evaluation` and nullable `reason` qualify the whole assignment result.
-- `invalid_mods`: requested bucket-specific mods which cannot fit any active
+- `invalid_mods`: resolved requested mods which cannot fit any active
   ArmorMods socket in the entire inventory. These are excluded before fitting,
   as DIM does; invalid mods do not themselves imply `mods_dont_fit`.
 - `unassigned_mods`: valid mods that still cannot fit the build's resolved armor
@@ -15,9 +15,18 @@
 
 Null lists are unknown, never empty. A missing full resolved set, raw membership,
 Manifest data, energy or rarity retains `not_evaluated` with a reason. General,
-activity, artifice and tuning mods are deliberately outside this first slice.
-Both halves of every pinned seasonal cost pair remain unevaluated: Ghostlink
-cannot yet reproduce DIM's unlocked-cost-variant resolution. Fashion
+activity, artifice and tuning assignment remain outside this slice.
+Seasonal cost variants now resolve before categorization, using DIM's static
+110-pair table at commit `29c122e`. Enabled account-wide plus target-character
+plug-set entries select reduced variants; `canInsert` and other characters do not.
+If neither variant is unlocked, resolution falls back to the normal variant,
+including when plug-set responses are absent, matching DIM's empty-set default.
+The ornament and Harmonic Resistance unlock exceptions do not affect any cost pair.
+All twelve legacy stat-mod hashes migrate before cost resolution. Missing or
+non-pluggable definitions become DIM's deprecated placeholder (`444600262`);
+a missing/non-pluggable placeholder retains
+`deprecated_mod_placeholder_definition_unavailable`. Reported hashes are resolved
+hashes, while saved/exported build hashes remain unchanged. Fashion
 `modsByBucket` is not mixed into `parameters.mods`.
 
 The global `needs_armor_upgrades` finding is true when mod upgrades are proven.
@@ -43,17 +52,19 @@ Paths are under DIM commit `29c122e`, `src/app/` unless noted.
 | Analyzer as-is vs upgrade fitting; only full resolved sets are assigned | `loadout-analyzer/analysis.ts:454-478` |
 | Infer assumption using capacity <10, not stat masterwork tier or Tier-5 maximum | `loadout-analyzer/analysis.ts:158-190` |
 | As-is floor 1; upgraded floor 9; All/ArtificeExotic or nonexotic Legendary uses maximum 10/11 for gear tier 5 | `loadout-builder/types.ts:165-180`; `loadout/armor-upgrade-utils.ts:12-22,43-49`; `search/d2-known-values.ts:29-30` |
-| Preserve requested order/duplicates, do not use cosmetics; seasonal variants require unlock resolution | `loadout-drawer/loadout-utils.ts:200-218,901-936`; `loadout/mod-utils.ts:120-132`; `src/data/d2/reduced-cost-mod-mappings.ts:1-117` |
+| Preserve requested order/duplicates and saved hashes; migrate legacy stat mods, resolve available seasonal variants, then use deprecated placeholder for non-pluggable definitions | `loadout-drawer/loadout-utils.ts:880-936`; `loadout/mod-utils.ts:120-132`; `src/data/d2/reduced-cost-mod-mappings.ts:1-117` |
+| Enabled profile/target-character unlocks; missing responses default to empty | `inventory/selectors.ts:333-346`; `records/plugset-helpers.ts:20-40` |
+| R3-full-set-membership is not a deviation: DIM gates fitting on length === 5, not distinct bucket membership | `loadout-analyzer/analysis.ts:454`; regression fixture covers repeated buckets |
 
 Ghostlink's missing-data handling is intentionally more conservative than DIM's
 fallbacks. This does not authorize approximating its assignment ordering.
 Pure deterministic fixtures cover greedy ordering, duplicates, exclusion groups,
 energy failure without socket consumption, Tier-5 capacity, invisible/disabled
-sockets, unknown versus observed-empty membership, seasonal pairs and cannot-roll
-Manifest membership. The shared output reaches both CLI and MCP without new
+sockets, unknown versus observed-empty membership, seasonal unlock/fallback choices,
+legacy migrations, deprecated placeholders and cannot-roll Manifest membership. The shared output reaches both CLI and MCP without new
 transport-specific wiring, migrations or component requests.
 
-## Split proposal: BE-006b2 (not completed)
+## BE-006b2 resolution slice and split remainder
 
 Port the remainder as a separate work unit, preserving this completed slice:
 
@@ -65,9 +76,15 @@ Port the remainder as a separate work unit, preserving this completed slice:
    insertion-material requirements and energy-upgrade plugs
    (`mod-assignment-utils.ts:162-265,481-528,964-989`). Ghostlink does not yet
    project all cost inputs; do not replace them with guessed costs.
-4. Legacy and seasonal mod resolution, deprecated placeholders and complete
-   InvalidMods/UsesSeasonalMods coverage (`loadout-utils.ts:880-936`,
-   `analysis.ts:480-501`).
+4. Complete UsesSeasonalMods coverage (`analysis.ts:449-501`), including expensive-
+   variant re-fitting. Resolution and deprecated-placeholder InvalidMods coverage
+   are implemented in this slice; seasonal dependence is still `not_evaluated`.
+
+Material ranking needs Manifest insertion-material requirement hashes and
+`DestinyMaterialRequirementSetDefinition` catalogs, which Ghostlink does not yet
+project. Carry those through decoding, persistence, repositories and request-local
+assembly with fake/SQLite parity before implementing ranking. Splitting that data
+work from permutation/specialty/artifice/tuning assignment avoids inventing prices.
 
 The full port plus dependencies exceeds the roughly 700-production-line budget.
 The ODD tracker is outside the allowed edit surfaces and was not changed. This

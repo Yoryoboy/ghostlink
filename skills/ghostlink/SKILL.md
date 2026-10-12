@@ -55,8 +55,12 @@ event selectors require visible sockets and enabled inserted plugs. The additive
 mod_fit object evaluates only DIM bucket-specific armor mods with complete evidence
 and a full resolved set. Report invalid_mods separately from unassigned_mods (after
 allowed energy upgrades; duplicates count). needs_upgrades_for_mods is not a material
-quote or a stat-masterwork upgrade claim. General/activity/artifice/tuning mods and
-seasonal cost variants remain not_evaluated, never clean. Positive stat constraints
+quote or a stat-masterwork upgrade claim. General/activity/artifice/tuning
+assignment remains not_evaluated, never clean. Legacy mod hashes and seasonal costs
+resolve like DIM using enabled account/target-character unlocks; missing plug sets
+mean no unlocks. Missing/non-pluggable mods become DIM's deprecated placeholder;
+missing placeholder data stays unknown. Report hashes in mod_fit as resolved hashes,
+not necessarily the original saved hashes. Saved/exported builds are unchanged. Positive stat constraints
 can leave the global upgrade finding unknown. Do not infer mod fit from set activation.
 
 ## Bungie action rejections

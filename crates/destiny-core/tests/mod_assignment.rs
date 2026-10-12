@@ -211,6 +211,17 @@ fn analyzer_unknown_and_negative_cases() {
     }
     assert_eq!(analyze_fixture(&b, &i, &d, &c).invalid_mods, Some(vec![42]));
     d[0].armor.plug_category_hash = Some(3481777685);
+    assert_eq!(analyze_fixture(&b, &i, &d, &c).invalid_mods, Some(vec![42]));
+    // Once eager membership succeeds, independent assignment remains unknown.
+    i[0].sockets[0]
+        .reusable_plugs
+        .as_mut()
+        .unwrap()
+        .push(domain::ReusablePlug {
+            plug_hash: ItemHash::new(42),
+            enabled: true,
+            can_insert: true,
+        });
     assert_eq!(
         analyze_fixture(&b, &i, &d, &c).reason,
         Some("dim_independent_mod_assignment_not_implemented")
@@ -219,13 +230,79 @@ fn analyzer_unknown_and_negative_cases() {
     seasonal.parameters.as_mut().unwrap().mods = Some(vec![ItemHash::new(14520248)]);
     assert_eq!(
         analyze_fixture(&seasonal, &i, &d, &c).reason,
-        Some("seasonal_mod_cost_resolution_unavailable")
+        Some("deprecated_mod_placeholder_definition_unavailable")
     );
     seasonal.parameters.as_mut().unwrap().mods = Some(vec![ItemHash::new(2318667184)]);
     assert_eq!(
         analyze_fixture(&seasonal, &i, &d, &c).reason,
-        Some("seasonal_mod_cost_resolution_unavailable")
+        Some("deprecated_mod_placeholder_definition_unavailable")
     );
+}
+
+#[test]
+fn seasonal_bucket_mods_resolve_to_normal_without_unlocks() {
+    let (mut b, mut i, mut d, c) = fixture(3, 10);
+    let normal = 14520248;
+    d[0].hash = ItemHash::new(normal);
+    b.parameters.as_mut().unwrap().mods = Some(vec![ItemHash::new(2318667184)]);
+    for item in &mut i {
+        item.sockets[0].plug_hash = Some(ItemHash::new(normal));
+        item.sockets[0].reusable_plugs.as_mut().unwrap()[0].plug_hash = ItemHash::new(normal);
+    }
+    let result = analyze_fixture(&b, &i, &d, &c);
+    assert_eq!(result.evaluation, "evaluated");
+    assert_eq!(result.invalid_mods, Some(vec![]));
+    assert_eq!(result.unassigned_mods, Some(vec![]));
+}
+
+#[test]
+fn unlocked_reduced_bucket_mods_fit_with_their_actual_cost_and_duplicates() {
+    let (mut b, mut i, mut d, c) = fixture(9, 10);
+    let mut reduced = d[0].clone();
+    d[0].hash = ItemHash::new(14520248);
+    reduced.hash = ItemHash::new(2318667184);
+    reduced.armor.energy_cost.as_mut().unwrap().energy_cost = 3;
+    d.push(reduced);
+    b.parameters.as_mut().unwrap().mods = Some(vec![ItemHash::new(14520248); 2]);
+    for item in &mut i {
+        item.sockets[0].plug_hash = Some(ItemHash::new(14520248));
+        item.sockets[0].reusable_plugs.as_mut().unwrap()[0].plug_hash = ItemHash::new(2318667184);
+    }
+    let resolved = analyze_build(&b, &CharacterId::new("1"), &i, &d, &[], &[], &[]);
+    let result = analyze_bucket_mods_with_unlocks(&b, &resolved.items, &i, &d, &c, &[2318667184]);
+    assert_eq!(result.evaluation, "evaluated");
+    assert_eq!(result.invalid_mods, Some(vec![]));
+    assert_eq!(result.unassigned_mods, Some(vec![2318667184]));
+    assert_eq!(
+        b.parameters.unwrap().mods.unwrap(),
+        vec![ItemHash::new(14520248); 2]
+    );
+}
+
+#[test]
+fn deprecated_missing_or_nonpluggable_mods_use_dim_placeholder() {
+    let (mut b, i, mut d, c) = fixture(3, 10);
+    let mut placeholder = d[0].clone();
+    placeholder.hash = ItemHash::new(DEPRECATED_MOD_PLACEHOLDER.into());
+    d.push(placeholder);
+    // Both an absent definition and an existing non-pluggable definition resolve
+    // to the placeholder. It is invalid because no inventory socket admits it.
+    b.parameters.as_mut().unwrap().mods = Some(vec![ItemHash::new(999), ItemHash::new(1)]);
+    let result = analyze_fixture(&b, &i, &d, &c);
+    assert_eq!(result.evaluation, "evaluated");
+    assert_eq!(
+        result.invalid_mods,
+        Some(vec![DEPRECATED_MOD_PLACEHOLDER; 2])
+    );
+    assert_eq!(result.unassigned_mods, Some(vec![]));
+}
+
+#[test]
+fn five_resolved_entries_match_dim_full_set_gate_even_with_repeated_bucket() {
+    // R3: DIM analysis.ts:454 checks length, not full-set bucket membership.
+    let (b, i, mut d, c) = fixture(3, 10);
+    d[2].bucket_hash = d[1].bucket_hash;
+    assert_eq!(analyze_fixture(&b, &i, &d, &c).evaluation, "evaluated");
 }
 
 #[test]

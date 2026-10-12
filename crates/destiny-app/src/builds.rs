@@ -294,13 +294,23 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             hashes.extend(item.available_plugs.iter().map(|p| p.plug_hash));
             hashes.extend(item.sockets.iter().filter_map(|s| s.plug_hash));
         }
+        let unlocked_mods =
+            crate::build_mods::unlocked_mods(&snapshot.plug_set_entries, &target.id);
         if let Some(mods) = build
             .definition
             .parameters
             .as_ref()
             .and_then(|p| p.mods.as_ref())
         {
-            hashes.extend(mods.iter().copied());
+            hashes.extend(mods.iter().map(|hash| {
+                ItemHash::new(i64::from(mod_assignment::resolve_mod_cost_variant(
+                    hash.value() as u32,
+                    &unlocked_mods,
+                )))
+            }));
+            hashes.insert(ItemHash::new(i64::from(
+                mod_assignment::DEPRECATED_MOD_PLACEHOLDER,
+            )));
         }
         let mut definitions = Vec::new();
         for hash in hashes {
@@ -348,12 +358,13 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
         }
         analysis.equipped_set_bonuses =
             build_sets::equipped_set_bonuses(&analysis.items, &definitions, &sets);
-        analysis.mod_fit = mod_assignment::analyze_bucket_mods(
+        analysis.mod_fit = mod_assignment::analyze_bucket_mods_with_unlocks(
             &build.definition,
             &analysis.items,
             &snapshot.items,
             &definitions,
             &mod_catalogs,
+            &unlocked_mods,
         );
         crate::build_mods::findings(&build.definition, &mut analysis);
         Ok(BuildCheckResult {
