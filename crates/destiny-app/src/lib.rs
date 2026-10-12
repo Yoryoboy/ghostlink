@@ -1,8 +1,11 @@
 //! Application-facing configuration, services, and sanitized diagnostics.
 
+pub use destiny_core::armor_catalog::ArmorCatalogRepository;
+pub use destiny_core::armor_model::{ArmorModel, ArmorStat, ArmorStats};
+pub mod armor_model;
 pub mod builds;
 pub use destiny_core::ports::{BuildCodec, BuildRepository};
-pub use destiny_core::{build, build_analysis};
+pub use destiny_core::{armor_catalog, build, build_analysis};
 pub mod clarity;
 pub use clarity::{ClaritySyncReport, ManifestAndClarityReport};
 pub use destiny_core::{ClarityInsight, ClarityRepository};
@@ -104,14 +107,15 @@ pub use destiny_core::{
     DestinationSelector, DestinyMembership, ErrorCategory, ExecutionEvidence, FreshnessPolicy,
     FreshnessStatus, InspectItemRequest, InstanceSearchQuery, InventoryEffect, InventoryRepository,
     InventorySearchHit, InventorySearchResult, InventorySnapshot, InventorySnapshotInput,
-    ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstance, ItemInstanceId,
-    ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET,
-    MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS, MembershipId, MembershipType, MoveEffects,
-    MoveIntentAuthorization, MovePlan, MoveRequest, PerkHash, PerkSummary, PlanId, PlanIdGenerator,
-    PlanLifetime, ProfileAcquisition, ProfileGateway, ProfileSyncOutcome, ProfileSyncReason,
-    QueryMetadata, RefreshGrant, RefreshToken, Resolution, SearchRepository, SearchTerm,
-    SourceMarker, StaticCredentialSource, StepAction, StepOutcome, SyncMetadata, SyncRevision,
-    Timestamp, TokenRefresh, TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
+    ItemDefinition, ItemEnergy, ItemHash, ItemHashFilter, ItemInspection, ItemInstance,
+    ItemInstanceId, ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT,
+    MAX_SEARCH_OFFSET, MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS, MembershipId, MembershipType,
+    MoveEffects, MoveIntentAuthorization, MovePlan, MoveRequest, PerkHash, PerkSummary, PlanId,
+    PlanIdGenerator, PlanLifetime, ProfileAcquisition, ProfileGateway, ProfileSyncOutcome,
+    ProfileSyncReason, QueryMetadata, RefreshGrant, RefreshToken, Resolution, SearchRepository,
+    SearchTerm, SourceMarker, StaticCredentialSource, StepAction, StepOutcome, SyncMetadata,
+    SyncRevision, Timestamp, TokenRefresh, TransferGateway, TransferOutcome, TransferRejection,
+    TransferRequest,
 };
 pub use destiny_core::{
     ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, MilestoneDefinition,

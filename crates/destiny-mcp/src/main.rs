@@ -816,6 +816,16 @@ impl SearchRepository for SharedRepository {
     }
 }
 
+impl destiny_app::ArmorCatalogRepository for SharedRepository {
+    fn armor_catalog(
+        &self,
+        kind: destiny_app::armor_catalog::ArmorCatalogKind,
+        hash: Option<u32>,
+    ) -> Result<Vec<destiny_app::armor_catalog::ArmorCatalogRecord>, AppError> {
+        self.lock()?.armor_catalog(kind, hash)
+    }
+}
+
 impl destiny_app::StatDefinitionRepository for SharedRepository {
     fn lookup_stat(&self, hash: u32) -> Result<Option<destiny_app::StatDefinition>, AppError> {
         self.lock()?.lookup_stat(hash)

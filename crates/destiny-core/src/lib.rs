@@ -2,6 +2,7 @@
 
 pub mod armor_catalog;
 pub mod armor_definition;
+pub mod armor_model;
 pub use armor_definition::*;
 pub use clarity::*;
 pub mod build;

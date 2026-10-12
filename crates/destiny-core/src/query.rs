@@ -1011,6 +1011,8 @@ pub struct InventorySearchResult {
 /// [`InventorySearchResult`] instead and never reaches this type directly.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemInspection {
+    /// DIM investment-derived armor model; absent for non-armor.
+    pub armor_model: Option<crate::armor_model::ArmorModel>,
     /// Same resolved, socket-ordered enrichment as inventory search hits.
     pub perk_names: Vec<String>,
     pub mod_names: Vec<String>,

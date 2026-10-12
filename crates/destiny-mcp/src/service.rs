@@ -474,7 +474,8 @@ where
         + DefinitionRepository
         + SearchRepository
         + destiny_app::StatDefinitionRepository
-        + destiny_app::WorldDefinitionRepository,
+        + destiny_app::WorldDefinitionRepository
+        + destiny_app::ArmorCatalogRepository,
     C: Clock,
 {
     fn get_postmaster(
@@ -751,7 +752,8 @@ where
         + SearchRepository
         + DefinitionRepository
         + destiny_app::StatDefinitionRepository
-        + destiny_app::WorldDefinitionRepository,
+        + destiny_app::WorldDefinitionRepository
+        + destiny_app::ArmorCatalogRepository,
     C: Clock,
 {
     fn get_postmaster(
@@ -2371,6 +2373,10 @@ pub fn inspect_item_output(
     match resolution {
         Resolution::Missing => Ok(InspectItemOutput::Missing),
         Resolution::Unique(inspection) => Ok(InspectItemOutput::Found(Box::new(FoundInspection {
+            armor_model: inspection
+                .armor_model
+                .as_ref()
+                .map(destiny_output::armor_model::armor_model_json),
             plug_details: inspection
                 .plug_details
                 .iter()
@@ -2843,6 +2849,16 @@ mod tests {
         search: InMemorySearchRepository,
         definitions: InMemoryDefinitionRepository,
         calls: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    impl destiny_app::ArmorCatalogRepository for CompositeRepository {
+        fn armor_catalog(
+            &self,
+            kind: destiny_app::armor_catalog::ArmorCatalogKind,
+            hash: Option<u32>,
+        ) -> Result<Vec<destiny_app::armor_catalog::ArmorCatalogRecord>, AppError> {
+            self.definitions.armor_catalog(kind, hash)
+        }
     }
 
     impl CompositeRepository {

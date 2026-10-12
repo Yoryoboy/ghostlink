@@ -1038,6 +1038,16 @@ impl destiny_app::Clock for LocalPublicationClock {
     }
 }
 
+impl destiny_app::ArmorCatalogRepository for FixtureRepository {
+    fn armor_catalog(
+        &self,
+        kind: destiny_app::armor_catalog::ArmorCatalogKind,
+        hash: Option<u32>,
+    ) -> Result<Vec<destiny_app::armor_catalog::ArmorCatalogRecord>, AppError> {
+        self.definitions.armor_catalog(kind, hash)
+    }
+}
+
 impl FixtureRepository {
     /// Seeds one committed projection for the supplied characters and items.
     fn seeded(characters: &[Character], items: &[ItemInstance]) -> Self {

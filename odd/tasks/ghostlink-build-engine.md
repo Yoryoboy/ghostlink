@@ -234,14 +234,21 @@ coverage (`domain.rs:123-126`).
     Armor 3.0 masterwork tier and +5 rule, gear tier, energy, additive
     `inspect-item` exposure; **BE-005c2** tuning stat, set bonuses, fragment
     capacity.
-    PAUSED 2026-10-12 (owner): three worker runs and a minimal explore probe
-    failed with "assistant reported an error" (provider-side; the last two
-    with zero tool calls). Partial, UNVERIFIED, uncommitted BE-005c1 work is
-    in the worktree: new `crates/destiny-{core,app,output}/src/armor_model.rs`,
-    `crates/destiny-core/tests/armor_model.rs` (454 lines) and +220/-12 across
-    12 modified files. Resume: confirm subagents work, then a fresh worker
-    reviews that partial against DIM (keep/fix/discard) and finishes
-    BE-005c1 only.
+    - [x] **BE-005c1 done** (resumed 2026-10-12 after the provider-side
+      subagent outage). The partial was audited against DIM: kept
+      investment + enabled intrinsic-first stats, conditional merging,
+      armor interpolation bypass, gear tier `?? 0` (raw unknown kept),
+      component-300 energy; fixed masterwork eligibility (requires nonempty
+      active projected plug stats, `masterwork.ts:63-74,98-104`,
+      `stats.ts:489-514`), no silent Armor 2.0 assumption for unresolved
+      plugs (`item-utils.ts:318-325`, `stats.ts:405-414`), CLI text
+      exposure; replaced the wrong negative-interpolation expectation
+      (`stats.ts:626-640`). Additive `inspect-item` CLI text/JSON and MCP;
+      read-only `ArmorCatalogRepository` forwarding in CLI runtime and MCP.
+      Audit in `docs/armor-model.md`. 360 new production lines. Workspace:
+      2122 passed all-features, 2090 default, 0 failed; clippy both modes,
+      fmt, diff check. Follow-up: split large inspection assembly/rendering
+      files (app queries, CLI output, MCP service).
   - [ ] **BE-005d — Build capture completion.** Equipped subclass/artifact
     socket overrides, unlocked plug evidence (102/206), component 309 crafted
     dates and resolution fallback.

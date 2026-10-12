@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 fn inspection() -> ItemInspection {
     ItemInspection {
+        armor_model: None,
         perk_names: vec!["Frame".into()],
         mod_names: vec!["Mod".into()],
         archetype: Some("Specialist".into()),
@@ -223,6 +224,70 @@ fn inspection_clarity_cli_mcp_parity_and_human_all_roles() {
                 assert!(plug.get("clarity").is_none());
                 assert!(plug.get("clarity_match").is_none());
             }
+        }
+    }
+}
+
+#[test]
+fn armor_model_cli_mcp_parity_and_unknowns() {
+    let mut inspected = inspection();
+    inspected.armor_model = Some(destiny_app::ArmorModel {
+        stats: Some(destiny_app::ArmorStats {
+            total_base: 30,
+            stats: vec![destiny_app::ArmorStat {
+                stat_hash: 2996146975,
+                base: 30,
+                current: 40,
+                base_masterworked: Some(30),
+                maximum_value: Some(100),
+            }],
+        }),
+        masterwork_tier: Some(5),
+        gear_tier: Some(3),
+        effective_gear_tier: 3,
+        energy: Some(destiny_app::ItemEnergy {
+            energy_capacity: 10,
+            energy_used: 7,
+            energy_unused: 3,
+            ..Default::default()
+        }),
+    });
+    for unknown in [false, true] {
+        if unknown {
+            let model = inspected.armor_model.as_mut().unwrap();
+            model.stats = None;
+            model.masterwork_tier = None;
+            model.gear_tier = None;
+            model.effective_gear_tier = 0;
+            model.energy = None;
+        }
+        let cli: Value =
+            serde_json::from_str(&render_inspection(OutputMode::Json, &inspected)).unwrap();
+        let mcp = serde_json::to_value(
+            inspect_item_output(&Resolution::Unique(inspected.clone())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cli["armor_model"], mcp["armor_model"]);
+        let human = render_inspection(OutputMode::Human, &inspected);
+        assert!(human.contains("armor model:"));
+        if unknown {
+            assert!(human.contains("total base: unknown"));
+            assert!(human.contains("masterwork tier: unknown"));
+        } else {
+            assert!(human.contains("total base: 30"));
+            assert!(human.contains("masterwork tier: 5"));
+            assert!(human.contains("energy: capacity 10, used 7"));
+        }
+        if unknown {
+            assert!(cli["armor_model"]["base_stats"].is_null());
+            assert!(cli["armor_model"]["total_base"].is_null());
+            assert!(cli["armor_model"]["gear_tier"].is_null());
+            assert_eq!(cli["armor_model"]["effective_gear_tier"], 0);
+        } else {
+            assert_eq!(cli["armor_model"]["total_base"], 30);
+            assert_eq!(cli["armor_model"]["masterwork_tier"], 5);
+            assert_eq!(cli["armor_model"]["energy"]["capacity"], 10);
+            assert_eq!(cli["armor_model"]["base_stats"][0]["current"], 40);
         }
     }
 }

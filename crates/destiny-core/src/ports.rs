@@ -345,6 +345,28 @@ impl InventorySnapshotInput {
 pub trait DefinitionRepository {
     fn current_definition_version(&self) -> Result<DefinitionVersion, AppError>;
     fn lookup_definition(&self, hash: ItemHash) -> Result<Resolution<ItemDefinition>, AppError>;
+    /// Bounded, deduplicated definition batch for request-local derivations.
+    fn lookup_definition_batch(
+        &self,
+        hashes: &[ItemHash],
+    ) -> Result<Vec<ItemDefinition>, AppError> {
+        if hashes.len() > 1024 {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut definitions = Vec::new();
+        for hash in hashes {
+            if !seen.insert(*hash) {
+                continue;
+            }
+            match self.lookup_definition(*hash)? {
+                Resolution::Unique(definition) => definitions.push(definition),
+                Resolution::Missing => {}
+                Resolution::Ambiguous(_) => return Err(AppError::new(ErrorCategory::LocalStorage)),
+            }
+        }
+        Ok(definitions)
+    }
     /// Reads the committed metadata of the current definition projection, if any.
     fn current_metadata(&self) -> Result<Option<SyncMetadata>, AppError>;
     /// Atomically publishes one complete normalized set and returns its committed metadata.

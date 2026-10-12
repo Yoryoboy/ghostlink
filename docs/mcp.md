@@ -547,6 +547,14 @@ Run that CLI command, or `ghostlink login` (which syncs an absent catalog after
 successful authorization). The server can observe a subsequent local sync
 without restarting.
 
+Armor `inspect_item` results also include the same `armor_model` object as CLI
+JSON: investment-derived `base_stats`, `total_base`, plug-derived `masterwork_tier`,
+raw `gear_tier`, `effective_gear_tier` (DIM's missing-tier fallback of 0), and
+`energy` (capacity, used, unused, type and type hash). Stat entries include `base`,
+`current`, assumed `base_masterworked`, and `maximum_value`. Missing data is
+`null`, never an invented roll; non-armor results omit the object. Existing
+`stats` are unchanged. No extra Manifest acquisition is performed for this model.
+
 `inspect_item` returns the same enriched names as CLI inspection:
 `perk_names`, `mod_names`, `mods`, `archetype`, `available_perks`,
 `available_mods` and `stats`, alongside the definition, instance and metadata.

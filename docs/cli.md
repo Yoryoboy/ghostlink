@@ -948,6 +948,16 @@ MCP `apply_loadout` uses the same service and output.
 
 ### Inspect one owned item
 
+Armor inspection adds an `armor model` section (JSON: `armor_model`) without
+changing existing stats or fields. `base_stats` and `total_base` are derived from
+Manifest investment stats and enabled intrinsic plugs, not component-304 totals.
+Each stat includes `base`, `current`, `base_masterworked` (an assumed upgrade,
+not an applied upgrade), and `maximum_value`. Armor 3.0 masterwork tier comes from
+the masterwork plug, not energy capacity. The model also includes raw `gear_tier`,
+`effective_gear_tier` (missing tier defaults to 0, as in DIM), and energy capacity,
+used and unused values. Unknown inputs remain `unknown` in text or `null` in JSON;
+non-armor items omit the model. This uses already committed data only.
+
 Use exactly one of `ghostlink inspect-item <INSTANCE_ID>` or
 `ghostlink inspect-item --name "Ace of Spades"`. Name lookup is normalized exact
 matching (case/whitespace), never fuzzy. Multiple owned matches return

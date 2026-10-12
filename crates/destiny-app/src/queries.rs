@@ -943,7 +943,8 @@ where
         now: Timestamp,
     ) -> Result<Resolution<ItemInspection>, AppError>
     where
-        R: destiny_core::ports::WorldDefinitionRepository,
+        R: destiny_core::ports::WorldDefinitionRepository
+            + destiny_core::armor_catalog::ArmorCatalogRepository,
     {
         self.require_definitions()?;
         let outcome = self.synchronize(policy, now)?;
@@ -962,7 +963,13 @@ where
         let mut enrichment = InstanceEnrichment::default();
         let hit = enrichment.resolve(self.repository(), definition, instance)?;
         let plug_details = enrichment.inspect_details(self.repository(), &hit)?;
+        let armor_model = crate::armor_model::inspect_armor_model(
+            self.repository(),
+            &hit.definition,
+            &hit.instance,
+        )?;
         Ok(Resolution::Unique(ItemInspection {
+            armor_model,
             plug_details,
             perk_names: hit.perk_names,
             mod_names: hit.mod_names,
@@ -1140,7 +1147,8 @@ where
         + SearchRepository
         + DefinitionRepository
         + destiny_core::StatDefinitionRepository
-        + destiny_core::ports::WorldDefinitionRepository,
+        + destiny_core::ports::WorldDefinitionRepository
+        + destiny_core::armor_catalog::ArmorCatalogRepository,
 {
     fn postmaster(
         &mut self,
@@ -1293,6 +1301,16 @@ mod tests {
         definitions: InMemoryDefinitionRepository,
         clarity_entries: Vec<destiny_core::ClarityInsight>,
         calls: RefCell<Vec<&'static str>>,
+    }
+
+    impl destiny_core::armor_catalog::ArmorCatalogRepository for CompositeRepository {
+        fn armor_catalog(
+            &self,
+            kind: destiny_core::armor_catalog::ArmorCatalogKind,
+            hash: Option<u32>,
+        ) -> Result<Vec<destiny_core::armor_catalog::ArmorCatalogRecord>, AppError> {
+            self.definitions.armor_catalog(kind, hash)
+        }
     }
 
     impl CompositeRepository {
@@ -3517,6 +3535,97 @@ mod tests {
             )
             .expect("empty candidate set search succeeds");
         assert!(no_instances.hits.is_empty());
+    }
+
+    #[test]
+    fn inspection_derives_armor_from_committed_inputs_not_component_totals() {
+        use destiny_core::ports::WorldDefinitionRepository;
+        use destiny_core::{armor_catalog::*, armor_model::*, domain::ItemSlot};
+        let mut armor = definition(1, "Armor", Some("armor"), vec![]);
+        armor.slot = Some(ItemSlot::Helmet);
+        armor.armor.stat_group_hash = Some(7);
+        armor.armor.investment_stats = vec![destiny_core::InvestmentStat {
+            stat_type_hash: ARMOR_STATS[0],
+            value: 30,
+            is_conditionally_active: false,
+        }];
+        let mut item = instance("armor", 1, ItemLocation::Vault, vec![]);
+        item.sockets = vec![destiny_core::IndexedSocket {
+            socket_index: 0,
+            plug_hash: None,
+            enabled: true,
+            visible: false,
+        }];
+        item.energy = Some(destiny_core::ItemEnergy {
+            energy_capacity: 10,
+            energy_used: 7,
+            energy_unused: 3,
+            ..Default::default()
+        });
+        let mut repository = CompositeRepository::with_definitions(vec![armor.clone()]);
+        let version = armor.version.clone();
+        let mut world = crate::test_support::synthetic_world(version.clone());
+        world.stats.definitions = ARMOR_STATS
+            .iter()
+            .map(|&hash| destiny_core::StatDefinition::new(hash, format!("Stat {hash}")).unwrap())
+            .collect();
+        world.armor_catalogs = vec![ArmorCatalogRecord::StatGroup(StatGroupDefinition {
+            hash: 7,
+            maximum_value: Some(100),
+            scaled_stats: ARMOR_STATS
+                .iter()
+                .map(|&hash| ScaledStat {
+                    stat_hash: hash,
+                    maximum_value: 100,
+                    display_as_numeric: false,
+                    display_interpolation: vec![
+                        InterpolationPoint {
+                            value: 0,
+                            weight: 0,
+                        },
+                        InterpolationPoint {
+                            value: 100,
+                            weight: 100,
+                        },
+                    ],
+                })
+                .collect(),
+        })];
+        repository
+            .definitions
+            .publish_manifest(
+                destiny_core::DefinitionReplacementInput {
+                    definitions: destiny_core::ManifestDefinitions {
+                        version,
+                        definitions: vec![armor],
+                    },
+                    checked_at: NOW,
+                    source: SourceMarker::Manifest,
+                },
+                world,
+            )
+            .unwrap();
+        repository.commit(snapshot_input(fresh_checked_at(), vec![], vec![item]));
+        let shared = gateway();
+        let mut service = service(&shared, repository);
+        let Resolution::Unique(inspected) = service
+            .inspect_item(
+                &InspectItemRequest {
+                    instance_id: ItemInstanceId::new("armor"),
+                },
+                TTL,
+                NOW,
+            )
+            .unwrap()
+        else {
+            panic!("missing armor")
+        };
+        let model = inspected.armor_model.unwrap();
+        assert_eq!(model.stats.unwrap().total_base, 30);
+        assert_eq!(model.energy.unwrap().energy_capacity, 10);
+        assert_eq!(model.masterwork_tier, None);
+        assert_eq!(model.gear_tier, None);
+        assert_eq!(model.effective_gear_tier, 0);
     }
 
     #[test]

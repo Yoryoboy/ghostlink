@@ -184,6 +184,7 @@ impl QueryOperations for Reads {
             return Ok(Resolution::Missing);
         };
         Ok(Resolution::Unique(ItemInspection {
+            armor_model: None,
             definition: hit.definition.clone(),
             instance: hit.instance.clone(),
             metadata: self.0.metadata.clone(),

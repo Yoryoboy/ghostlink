@@ -1879,6 +1879,7 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            armor_model: None,
             plug_details: Vec::new(),
             perk_names: Vec::new(),
             mod_names: Vec::new(),

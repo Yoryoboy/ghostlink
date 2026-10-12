@@ -254,6 +254,15 @@ fn publication_order(read_first: bool) {
     }
     #[derive(Clone)]
     struct SharedStore(Arc<Mutex<SqliteStore>>, Option<Publication>);
+    impl destiny_app::ArmorCatalogRepository for SharedStore {
+        fn armor_catalog(
+            &self,
+            kind: destiny_app::armor_catalog::ArmorCatalogKind,
+            hash: Option<u32>,
+        ) -> Result<Vec<destiny_app::armor_catalog::ArmorCatalogRecord>, AppError> {
+            self.0.lock().unwrap().armor_catalog(kind, hash)
+        }
+    }
     impl InventoryRepository for SharedStore {
         fn apply_acknowledged_effects(
             &mut self,

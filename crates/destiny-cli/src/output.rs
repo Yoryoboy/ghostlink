@@ -1153,6 +1153,9 @@ fn inspection_human(inspection: &ItemInspection) -> String {
                 .join(", ")
         ));
     }
+    if let Some(model) = &inspection.armor_model {
+        lines.extend(destiny_output::armor_model::armor_model_text(model));
+    }
     lines.push(metadata_text(&inspection.metadata));
     lines.join("\n")
 }
@@ -1239,6 +1242,9 @@ fn inspection_json(inspection: &ItemInspection) -> String {
         "kind": "item_inspection",
         "metadata": metadata_json(&inspection.metadata),
     });
+    if let Some(model) = &inspection.armor_model {
+        value["armor_model"] = destiny_output::armor_model::armor_model_json(model);
+    }
     if !inspection.plug_details.is_empty() {
         value["plug_details"] = json!(inspection.plug_details.iter().map(|plug| with_insights(
             json!({"hash": plug.hash.value(), "name": plug.name, "role": plug.role.as_str()}),
@@ -1988,6 +1994,7 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            armor_model: None,
             plug_details: Vec::new(),
             perk_names: Vec::new(),
             mod_names: Vec::new(),

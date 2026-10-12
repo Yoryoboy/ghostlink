@@ -1641,6 +1641,8 @@ pub struct InspectionPlugView {
 /// A found inspection: one exact definition beside one concrete instance.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct FoundInspection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub armor_model: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plug_details: Vec<InspectionPlugView>,
     pub perk_names: Vec<String>,
