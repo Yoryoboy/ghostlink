@@ -182,6 +182,19 @@ where
         if acquisition.version != version {
             return Err(invalid());
         }
+        // The sandbox table is already fetched with inventory definitions. Retain
+        // only display fields referenced by set perks in the atomic catalog projection.
+        let mut perk_display = std::collections::HashMap::new();
+        for perk in &acquisition.sandbox_perks {
+            let name = normalize_optional_presentation(perk.name.as_deref())?;
+            let icon = perk
+                .icon
+                .as_deref()
+                .map(|icon| normalize_presentation(icon, 1024))
+                .transpose()?
+                .filter(|icon| !icon.is_empty());
+            perk_display.insert(perk.hash, (name, icon));
+        }
         let (definitions, skipped, descriptions) = normalize_with_count(acquisition)?;
         let mut world = self.gateway.load_world_components(&index)?;
         world.item_descriptions = descriptions;
@@ -191,6 +204,13 @@ where
             match record {
                 ArmorCatalogRecord::EquipableSet(set) => {
                     set.name = normalize_presentation(&set.name, MAX_TEXT_LENGTH)?;
+                    // DIM SetBonus.tsx:55-57,108-109,184: no isDisplayable gate.
+                    for perk in &mut set.set_perks {
+                        if let Some((name, icon)) = perk_display.get(&perk.sandbox_perk_hash) {
+                            perk.name = name.clone();
+                            perk.icon = icon.clone();
+                        }
+                    }
                 }
                 ArmorCatalogRecord::SocketCategory(category) => {
                     category.name = normalize_presentation(&category.name, MAX_TEXT_LENGTH)?;
@@ -548,6 +568,8 @@ mod tests {
     fn sandbox_description_composition_preserves_order_and_policy() {
         use destiny_core::ports::SandboxPerkCandidate;
         let perk = |hash, is_displayable, description: &str| SandboxPerkCandidate {
+            name: None,
+            icon: None,
             hash,
             is_displayable,
             description: description.into(),

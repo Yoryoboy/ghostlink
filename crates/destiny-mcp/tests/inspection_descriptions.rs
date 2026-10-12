@@ -234,14 +234,20 @@ fn armor_model_cli_mcp_parity_and_unknowns() {
     let mut inspected = inspection();
     inspected.armor_model = Some(destiny_app::ArmorModel {
         tuning: Some(destiny_app::ArmorTuning {
+            reusable_membership_known: true,
             socket_index: 7,
             plug_hash: 3122197216,
-            tuned_stat_hash: None,
+            tuned_stat_hash: Some(1735777505),
         }),
         armor_set: Some(destiny_app::ArmorSet {
             hash: 88,
             name: Some("Test Set".into()),
-            perks: Some(vec![]),
+            perks: Some(vec![destiny_app::armor_catalog::SetPerk {
+                sandbox_perk_hash: 99,
+                required_set_count: 2,
+                name: Some("Renewal".into()),
+                icon: Some("/common/perk.png".into()),
+            }]),
         }),
         stats: Some(destiny_app::ArmorStats {
             total_base: 30,
@@ -271,6 +277,8 @@ fn armor_model_cli_mcp_parity_and_unknowns() {
             model.gear_tier = None;
             model.effective_gear_tier = 0;
             model.energy = None;
+            model.tuning.as_mut().unwrap().tuned_stat_hash = None;
+            model.tuning.as_mut().unwrap().reusable_membership_known = false;
         }
         let cli: Value =
             serde_json::from_str(&render_inspection(OutputMode::Json, &inspected)).unwrap();
@@ -279,10 +287,29 @@ fn armor_model_cli_mcp_parity_and_unknowns() {
         )
         .unwrap();
         assert_eq!(cli["armor_model"], mcp["armor_model"]);
-        assert!(cli["armor_model"]["tuning"]["tuned_stat_hash"].is_null());
+        if unknown {
+            assert!(cli["armor_model"]["tuning"]["tuned_stat_hash"].is_null());
+        } else {
+            assert_eq!(cli["armor_model"]["tuning"]["tuned_stat_hash"], 1735777505);
+            assert!(cli["armor_model"]["tuning"]["tuned_stat_not_evaluated_reason"].is_null());
+        }
+        assert_eq!(
+            cli["armor_model"]["armor_set"]["perks"][0]["name"],
+            "Renewal"
+        );
+        assert_eq!(
+            cli["armor_model"]["armor_set"]["perks"][0]["icon"],
+            "/common/perk.png"
+        );
         assert_eq!(cli["armor_model"]["tuning"]["socket_index"], 7);
         assert_eq!(cli["armor_model"]["armor_set"]["hash"], 88);
-        assert!(render_inspection(OutputMode::Human, &inspected).contains("tuned stat: unknown"));
+        assert!(
+            render_inspection(OutputMode::Human, &inspected).contains(if unknown {
+                "tuned stat: unknown"
+            } else {
+                "tuned stat: 1735777505"
+            })
+        );
         let human = render_inspection(OutputMode::Human, &inspected);
         assert!(human.contains("armor model:"));
         if unknown {

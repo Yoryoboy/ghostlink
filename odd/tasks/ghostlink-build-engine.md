@@ -262,7 +262,19 @@ coverage (`domain.rs:123-126`).
       (`socket-utils.ts:278-283`, `loadout-utils.ts:940-954`). Additive
       inspect-item CLI/JSON/MCP. Workspace: 2126 all-features, 2094
       default, 0 failed; clippy both modes, fmt, diff check.
-    - [ ] **BE-005c3 — Raw reusable plug fidelity.** Preserve raw
+    - [x] **BE-005c3 — Raw reusable plug fidelity.** Done: migration 30
+      (STRICT observed-membership markers + ordered raw plug children,
+      cascading, guarded downgrade, nullable set-perk name/icon columns from
+      the already-fetched sandbox table, once-per-upgrade refresh, no
+      inventory backfill: legacy membership stays unknown until resync).
+      Exact tuned stat with all 30 tuner mappings and conflict -> unknown
+      (`item-utils.ts:409-432`, `d2-known-values.ts:445-476`); set perk
+      names/icons without isDisplayable gate (`SetBonus.tsx:55-57,108-109,
+      175-184`). Raw lists keep oversized sockets (DIM retains them);
+      defensive 65,536-entry ceiling rejects, never truncates. Selectable
+      plug semantics unchanged. Workspace: 2132 all-features, 2100 default,
+      0 failed; clippy both modes, fmt, diff check.
+      Original scope: Preserve raw
       per-socket instance reusable plug membership (component 305, as DIM
       `sockets.ts:77-79,133-140,784`) through decode, sync and SQLite
       alongside the existing selectable plugs; derive the exact tuned stat

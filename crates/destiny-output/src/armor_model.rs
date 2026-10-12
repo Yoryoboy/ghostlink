@@ -46,7 +46,16 @@ pub fn armor_model_text(model: &ArmorModel) -> Vec<String> {
     ));
     lines.push(model.tuning.as_ref().map_or_else(
         || "  tuning socket: unknown or absent".to_owned(),
-        |tuning| format!("  tuning socket: {}, plug {}; tuned stat: unknown (raw reusable plugs not projected)", tuning.socket_index, tuning.plug_hash),
+        |tuning| {
+            format!(
+                "  tuning socket: {}, plug {}; tuned stat: {}",
+                tuning.socket_index,
+                tuning.plug_hash,
+                tuning
+                    .tuned_stat_hash
+                    .map_or_else(|| "unknown".to_owned(), |hash| hash.to_string())
+            )
+        },
     ));
     if let Some(set) = &model.armor_set {
         lines.push(format!(
@@ -62,8 +71,11 @@ pub fn armor_model_text(model: &ArmorModel) -> Vec<String> {
         if let Some(perks) = &set.perks {
             for perk in perks {
                 lines.push(format!(
-                    "    perk {}: requires {} pieces",
-                    perk.sandbox_perk_hash, perk.required_set_count
+                    "    perk {}: requires {} pieces; name: {}; icon: {}",
+                    perk.sandbox_perk_hash,
+                    perk.required_set_count,
+                    safe_text(perk.name.as_deref()),
+                    safe_text(perk.icon.as_deref())
                 ));
             }
         } else {
@@ -73,6 +85,14 @@ pub fn armor_model_text(model: &ArmorModel) -> Vec<String> {
         lines.push("  armor set: unknown or absent".to_owned());
     }
     lines
+}
+
+fn safe_text(value: Option<&str>) -> String {
+    value
+        .unwrap_or("unknown")
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect()
 }
 
 pub fn fragment_capacity_json(model: &destiny_app::FragmentCapacity) -> Value {
@@ -93,12 +113,14 @@ pub fn armor_model_json(model: &ArmorModel) -> Value {
         "tuning": model.tuning.as_ref().map(|tuning| json!({
             "socket_index": tuning.socket_index, "plug_hash": tuning.plug_hash,
             "tuned_stat_hash": tuning.tuned_stat_hash,
-            "tuned_stat_not_evaluated_reason": "raw_reusable_plugs_not_projected",
+            "reusable_membership_known": tuning.reusable_membership_known,
+            "tuned_stat_not_evaluated_reason": if !tuning.reusable_membership_known { Some("raw_reusable_plugs_not_projected") } else if tuning.tuned_stat_hash.is_none() { Some("no_unique_directional_tuner") } else { None },
         })),
         "armor_set": model.armor_set.as_ref().map(|set| json!({
             "hash": set.hash, "name": set.name,
             "perks": set.perks.as_ref().map(|perks| perks.iter().map(|perk| json!({
                 "sandbox_perk_hash": perk.sandbox_perk_hash, "required_set_count": perk.required_set_count,
+                "name": perk.name, "icon": perk.icon,
             })).collect::<Vec<_>>()),
         })),
         "base_stats": model.stats.as_ref().map(|stats| stats.stats.iter().map(|stat| json!({

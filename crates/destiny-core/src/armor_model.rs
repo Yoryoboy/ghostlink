@@ -42,9 +42,10 @@ pub struct ArmorModel {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArmorTuning {
+    pub reusable_membership_known: bool,
     pub socket_index: u8,
     pub plug_hash: u32,
-    /// Deliberately unknown until raw reusable plug membership is projected (BE-005c3).
+    /// DIM's unique directional tuner; absent membership or conflicting directions is unknown.
     pub tuned_stat_hash: Option<u32>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -68,12 +69,35 @@ pub fn armor_tuning<'a>(
         let hash = socket.plug_hash?.value() as u32;
         (socket.visible && definition(hash)?.plug_category_hash == Some(3481777685)).then_some(
             ArmorTuning {
+                reusable_membership_known: socket.reusable_plugs.is_some(),
                 socket_index: socket.socket_index,
                 plug_hash: hash,
-                tuned_stat_hash: None,
+                tuned_stat_hash: socket.reusable_plugs.as_deref().and_then(tuned_stat),
             },
         )
     })
+}
+
+/// DIM item-utils.ts:409-432 and search/d2-known-values.ts:445-476.
+/// Flags, duplicates and unrecognized plugs do not affect directional membership.
+pub fn tuned_stat(plugs: &[crate::domain::ReusablePlug]) -> Option<u32> {
+    let mut tuned = None;
+    for plug in plugs {
+        let stat = match plug.plug_hash.value() {
+            309000506 | 455024236 | 1672416975 | 1922571986 | 4116389173 => 1735777505,
+            311164277 | 534630542 | 4020349587 | 4164883102 | 4210715468 => 4244567218,
+            323635379 | 957763733 | 1510949672 | 1879022254 | 4030660414 => 1943323491,
+            388618952 | 2125798995 | 3310526732 | 3681082702 | 4088823605 => 392767087,
+            673231129 | 2244422610 | 3554800389 | 3946669007 | 4026414261 => 144602215,
+            691392383 | 891771298 | 1918710127 | 3121760799 | 3284443097 => 2996146975,
+            _ => continue,
+        };
+        if tuned.is_some_and(|previous| previous != stat) {
+            return None;
+        }
+        tuned = Some(stat);
+    }
+    tuned
 }
 
 /// DIM utils/socket-utils.ts:278-283; loadout-drawer/loadout-utils.ts:940-954.

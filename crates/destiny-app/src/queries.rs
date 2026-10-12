@@ -3558,6 +3558,7 @@ mod tests {
         }];
         let mut item = instance("armor", 1, ItemLocation::Vault, vec![]);
         item.sockets = vec![destiny_core::IndexedSocket {
+            reusable_plugs: None,
             socket_index: 0,
             plug_hash: None,
             enabled: true,
@@ -3583,10 +3584,14 @@ mod tests {
                 set_items: vec![1],
                 set_perks: vec![
                     SetPerk {
+                        name: None,
+                        icon: None,
                         required_set_count: 2,
                         sandbox_perk_hash: 123,
                     },
                     SetPerk {
+                        name: None,
+                        icon: None,
                         required_set_count: 4,
                         sandbox_perk_hash: 456,
                     },
@@ -3680,6 +3685,7 @@ mod tests {
         aspect.armor.aspect_capacity = Some(3);
         let mut item = instance("subclass", 1, ItemLocation::Vault, vec![]);
         item.sockets = vec![IndexedSocket {
+            reusable_plugs: None,
             socket_index: 7,
             plug_hash: Some(ItemHash::new(2)),
             enabled: false,

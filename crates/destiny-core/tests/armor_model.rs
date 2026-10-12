@@ -1,12 +1,13 @@
 use destiny_core::{armor_catalog::*, armor_model::*, *};
 
 #[test]
-fn tuning_uses_visible_current_plug_even_when_disabled_and_never_infers_stat() {
+fn tuning_uses_visible_socket_and_raw_membership_not_selectable_flags() {
     let definition = ArmorDefinition {
         plug_category_hash: Some(3481777685),
         ..Default::default()
     };
     let mut sockets = vec![domain::IndexedSocket {
+        reusable_plugs: None,
         socket_index: 7,
         plug_hash: Some(ItemHash::new(3122197216)),
         enabled: false,
@@ -16,10 +17,81 @@ fn tuning_uses_visible_current_plug_even_when_disabled_and_never_infers_stat() {
     assert_eq!(tuning.socket_index, 7);
     assert_eq!(tuning.plug_hash, 3122197216);
     assert_eq!(tuning.tuned_stat_hash, None);
+    sockets[0].reusable_plugs = Some(vec![domain::ReusablePlug {
+        plug_hash: ItemHash::new(309000506),
+        can_insert: false,
+        enabled: false,
+    }]);
+    assert_eq!(
+        armor_tuning(&sockets, |_| Some(&definition))
+            .unwrap()
+            .tuned_stat_hash,
+        Some(1735777505)
+    );
+    sockets[0]
+        .reusable_plugs
+        .as_mut()
+        .unwrap()
+        .push(domain::ReusablePlug {
+            plug_hash: ItemHash::new(311164277),
+            can_insert: true,
+            enabled: true,
+        });
+    assert_eq!(
+        armor_tuning(&sockets, |_| Some(&definition))
+            .unwrap()
+            .tuned_stat_hash,
+        None
+    );
     sockets[0].visible = false;
     assert!(armor_tuning(&sockets, |_| Some(&definition)).is_none());
     sockets[0].visible = true;
     assert!(armor_tuning(&sockets, |_| None).is_none());
+}
+
+#[test]
+fn tuning_hash_mapping_matches_all_dim_directions() {
+    let directions = [
+        (
+            1735777505,
+            [309000506, 455024236, 1672416975, 1922571986, 4116389173],
+        ),
+        (
+            4244567218,
+            [311164277, 534630542, 4020349587, 4164883102, 4210715468],
+        ),
+        (
+            1943323491,
+            [323635379, 957763733, 1510949672, 1879022254, 4030660414],
+        ),
+        (
+            392767087,
+            [388618952, 2125798995, 3310526732, 3681082702, 4088823605],
+        ),
+        (
+            144602215,
+            [673231129, 2244422610, 3554800389, 3946669007, 4026414261],
+        ),
+        (
+            2996146975,
+            [691392383, 891771298, 1918710127, 3121760799, 3284443097],
+        ),
+    ];
+    let raw = |hash| domain::ReusablePlug {
+        plug_hash: ItemHash::new(hash),
+        can_insert: false,
+        enabled: false,
+    };
+    assert_eq!(tuned_stat(&[]), None);
+    assert_eq!(tuned_stat(&[raw(3122197216)]), None);
+    for (stat, hashes) in directions {
+        for hash in hashes {
+            assert_eq!(
+                tuned_stat(&[raw(hash), raw(hash), raw(3122197216)]),
+                Some(stat)
+            );
+        }
+    }
 }
 
 #[test]
@@ -38,6 +110,7 @@ fn fragment_capacity_sums_inserted_aspects_without_enabled_or_visibility_gate() 
     let sockets: Vec<_> = [3, 7]
         .into_iter()
         .map(|socket_index| domain::IndexedSocket {
+            reusable_plugs: None,
             socket_index,
             plug_hash: Some(ItemHash::new(99)),
             enabled: false,

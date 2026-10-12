@@ -42,20 +42,19 @@ The approved narrowed scope adds read-only inspection fields using committed dat
   3481777685, exposing real `socket_index` and current `plug_hash`. Enabled is
   intentionally not a gate (`utils/socket-utils.ts:677-686`). Missing plug
   definitions cannot establish tuning; absent/unresolved tuning is `null`.
-- `tuned_stat_hash` is deliberately always `null`, with reason
-  `raw_reusable_plugs_not_projected`. DIM scans raw reusable plug membership and
-  returns undefined for conflicting tuners (`utils/item-utils.ts:409-432`,
-  mapping `search/d2-known-values.ts:445` onward). DIM retains the raw instance
-  list (`inventory/store/sockets.ts:77-79,133-140,784`); Ghostlink's
-  `profile.rs:476-529` filters disabled/non-insertable alternatives and oversized
-  lists. Neither selectable plugs nor Manifest plug sets are used to guess a
-  tuned stat. Current tuning contributions remain included in current stats.
+- `tuned_stat_hash` follows DIM's raw membership scan (`utils/item-utils.ts:409-432`,
+  mapping `search/d2-known-values.ts:445-476`, stat IDs `src/data/d2/generated-enums.ts:1422-1467`).
+  BE-005c2 kept it unknown; BE-005c3 now preserves raw membership. Disabled and
+  non-insertable tuners count; repeated same-stat tuners agree; conflicting
+  directions, balanced-only and empty lists stay unknown. No selectable-plug or
+  Manifest-plug-set fallback is used. Current tuning contributions remain included
+  in current stats.
 - `armor_model.armor_set`: identity from nonzero `equipableItemSetHash`
   (`inventory/store/d2-item-factory.ts:817-818`), set name and all projected
   `sandbox_perk_hash`/`required_set_count` pairs (`item-popup/SetBonus.tsx:55-64`).
-  An unresolved catalog retains the hash with unknown name/perks. No perk names,
-  icons or active-bonus claims are emitted; thresholds are requirements, not
-  activation evidence. Event selector membership is not evaluated.
+  An unresolved catalog retains the hash with unknown name/perks. BE-005c3 adds
+  optional perk name/icon; no active-bonus claims are emitted. Thresholds are
+  requirements, not activation evidence. Event selector membership is not evaluated.
 - Subclass inspection adds `fragment_capacity: {capacity: number|null}` outside
   the armor-only object. DIM identifies four aspect categories
   (`utils/socket-utils.ts:278-283`) and sums inserted aspects'
@@ -69,5 +68,33 @@ Equipped-set activation is deferred: build analysis does not currently assemble
 this item/catalog model, and DIM also accounts for event selector sockets
 (`utils/socket-utils.ts:793-809`). A separate equipped-set analysis task should
 count resolved armor pieces and compare thresholds (`SetBonus.tsx:23-64`).
-BE-005c3 is parent-owned: raw reusable plug fidelity, exact tuned stat, and set
-perk display names/icons. No decode, sync, migration or fetch changes here.
+## BE-005c3: raw reusable fidelity and set-perk display
+
+- DIM `inventory/store/sockets.ts:77-79,133-140,784` attaches the complete instance
+  reusable list to the corresponding real socket, with no size-based omission.
+  Ghostlink now stores hash, `canInsert`, `enabled`, duplicates and provider order
+  on `IndexedSocket.reusable_plugs`, independently of publication filtering.
+  Missing per-socket data remains `None`; observed empty data is `Some([])`.
+  As in DIM, only corresponding real sockets acquire membership. The existing
+  selectable view still filters flags, deduplicates and omits lists above 64.
+- Oversized raw lists are retained intact (500-entry regression fixture), never
+  truncated. Safety ceilings remain explicit: 32 real sockets, existing profile
+  response byte bound, and 65,536 raw entries per socket, matching the Manifest
+  plug-set ceiling. Exceeding that ceiling rejects acquisition/publication instead
+  of manufacturing partial membership. This defensive ceiling is not a DIM rule.
+- Migration 30 adds STRICT `item_reusable_sockets` (observed membership marker) and
+  `item_reusable_plugs` (ordered children), cascading through real sockets/items.
+  Legacy rows are not backfilled. Downgrade refuses observed membership, including
+  empty lists, or populated perk display fields. All fields participate in revisions.
+- `reusable_membership_known` distinguishes legacy/unobserved tuning from an
+  observed list without a unique direction. JSON reasons are respectively
+  `raw_reusable_plugs_not_projected` and `no_unique_directional_tuner`; a known
+  stat has a null reason. CLI text and MCP share the same projection.
+- DIM `item-popup/SetBonus.tsx:55-57,108-109,175-184` resolves sandbox definitions
+  and uses their name/icon without an `isDisplayable` gate. Ghostlink extends the
+  already-fetched sandbox candidates, joins only referenced display fields into
+  set-perk catalogs during atomic Manifest publication, and persists them as nullable
+  `catalog_set_perks.name`/`icon`. Missing/redacted references stay unknown; this
+  is not a new sandbox catalog or a new request. Description composition is unchanged.
+  Migration 30 invalidates Manifest freshness once so the same version refreshes
+  after upgrade. Inventory membership requires an ordinary profile resync.

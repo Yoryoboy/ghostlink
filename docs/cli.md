@@ -958,11 +958,16 @@ the masterwork plug, not energy capacity. The model also includes raw `gear_tier
 used and unused values. Unknown inputs remain `unknown` in text or `null` in JSON;
 non-armor items omit the model. This uses already committed data only.
 
-The model also adds `tuning` (visible tuning socket index and current plug hash;
-`tuned_stat_hash` is deliberately `null` with reason
-`raw_reusable_plugs_not_projected`) and `armor_set` (set hash/name and perk hashes
-with `required_set_count` thresholds, not active bonuses). Unresolved set catalogs
-retain the set hash but have null name/perks; perk names/icons are not exposed.
+The model also adds `tuning` (visible tuning socket index, current plug hash and
+`tuned_stat_hash`, derived from raw instance reusable membership, including disabled
+and non-insertable plugs). Conflicting directions or no directional tuner yield
+`null` with reason `no_unique_directional_tuner`; legacy/unobserved membership yields
+`raw_reusable_plugs_not_projected`. `reusable_membership_known` distinguishes these.
+`armor_set` includes set hash/name and perk hashes, optional `name`/`icon` display
+fields and `required_set_count` thresholds, not active bonuses. Unresolved set
+catalogs retain the set hash with null name/perks; unresolved perk display stays null.
+Upgrade migration 30 refreshes the same Manifest version once; profile resync is
+needed to populate raw membership on legacy inventory rows.
 Subclass inspection adds `fragment capacity` in text and
 `fragment_capacity: {"capacity": number|null}` in JSON, summing inserted aspects.
 Non-subclass items omit that field. See [DIM evidence](armor-model.md).

@@ -300,7 +300,9 @@ pub fn decode_profile_with_observations(
         }
         let power = decode_power(instance)?;
         let item_perks = decode_perks(perks, &raw.instance_id)?;
-        let indexed_sockets = decode_sockets(sockets, &raw.instance_id)?;
+        let mut indexed_sockets = decode_sockets(sockets, &raw.instance_id)?;
+        let available_plugs =
+            decode_available_plugs(reusable, &raw.instance_id, &mut indexed_sockets)?;
         let plugs = indexed_sockets
             .iter()
             .filter_map(|socket| {
@@ -329,7 +331,7 @@ pub fn decode_profile_with_observations(
             gear_tier: optional_u32(instance, "gearTier")?,
             sockets: indexed_sockets,
             transfer_status: raw.transfer_status,
-            available_plugs: decode_available_plugs(reusable, &raw.instance_id)?,
+            available_plugs,
             instance_id: ItemInstanceId::new(raw.instance_id),
             item_hash: raw.item_hash,
             location: raw.location,
@@ -477,6 +479,7 @@ fn decode_plug_sets(
 fn decode_available_plugs(
     data: &Map<String, Value>,
     instance_id: &str,
+    indexed_sockets: &mut [destiny_core::IndexedSocket],
 ) -> Result<Vec<destiny_core::domain::AvailablePlug>, AppError> {
     let Some(entry) = data.get(instance_id) else {
         return Ok(Vec::new());
@@ -500,11 +503,18 @@ fn decode_available_plugs(
     ordered.sort_by_key(|(index, _)| *index);
     let mut plugs = Vec::new();
     for (socket_index, entries) in ordered {
+        if entries.len() > destiny_core::domain::MAX_REUSABLE_PLUGS {
+            return Err(provider_validation());
+        }
         // Cosmetic sockets can expose hundreds of alternatives. Validate every
         // entry, but omit oversized sockets rather than rejecting the profile or
         // presenting an arbitrary partial selection. The response byte limit
         // still bounds input; retained alternatives remain capped at 64/socket.
         let retain_socket = entries.len() <= 64;
+        // DIM sockets.ts:133-140,784 retains the entire raw list, including
+        // duplicates and disabled/non-insertable entries. The profile response
+        // byte cap bounds acquisition; the selectable view keeps its old cap.
+        let mut raw = Vec::with_capacity(entries.len());
         let mut seen = HashSet::new();
         for entry in entries {
             let hash = decode_required_u32(entry.get("plugItemHash"))?;
@@ -516,12 +526,23 @@ fn decode_available_plugs(
                 .get("enabled")
                 .and_then(Value::as_bool)
                 .ok_or_else(provider_validation)?;
+            raw.push(destiny_core::domain::ReusablePlug {
+                plug_hash: ItemHash::new(i64::from(hash)),
+                can_insert,
+                enabled,
+            });
             if retain_socket && can_insert && enabled && seen.insert(hash) {
                 plugs.push(destiny_core::domain::AvailablePlug {
                     socket_index,
                     plug_hash: ItemHash::new(i64::from(hash)),
                 });
             }
+        }
+        if let Some(socket) = indexed_sockets
+            .iter_mut()
+            .find(|s| s.socket_index == socket_index)
+        {
+            socket.reusable_plugs = Some(raw);
         }
     }
     Ok(plugs)
@@ -1049,6 +1070,7 @@ fn decode_sockets(
             ),
         };
         indexed.push(destiny_core::IndexedSocket {
+            reusable_plugs: None,
             socket_index: u8::try_from(index).map_err(|_| provider_validation())?,
             plug_hash: hash.map(|hash| ItemHash::new(i64::from(hash))),
             enabled,
@@ -1974,6 +1996,22 @@ mod tests {
     }
 
     #[test]
+    fn raw_reusable_membership_keeps_oversized_disabled_duplicates() {
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000001"] = json!({"sockets": [{"isEnabled": true, "isVisible": true, "plugHash": 3122197216_u32}]});
+            value["Response"]["itemComponents"]["reusablePlugs"]["data"] = json!({"700000000000000001": {"plugs": {"0": vec![json!({"plugItemHash": 309000506, "canInsert": false, "enabled": false}); 500]}}});
+        }).unwrap();
+        let raw = snapshot.items[0].sockets[0]
+            .reusable_plugs
+            .as_ref()
+            .unwrap();
+        assert_eq!(raw.len(), 500);
+        assert_eq!(raw[0].plug_hash, ItemHash::new(309000506));
+        assert!(!raw[0].can_insert && !raw[0].enabled);
+        assert!(snapshot.items[0].available_plugs.is_empty());
+    }
+
+    #[test]
     fn reusable_plugs_component_is_required() {
         assert_validation(decode_mutated(|value| {
             value["Response"]["itemComponents"]
@@ -2224,18 +2262,21 @@ mod tests {
             decoded.sockets,
             vec![
                 destiny_core::IndexedSocket {
+                    reusable_plugs: None,
                     socket_index: 0,
                     plug_hash: None,
                     enabled: true,
                     visible: true
                 },
                 destiny_core::IndexedSocket {
+                    reusable_plugs: None,
                     socket_index: 1,
                     plug_hash: Some(ItemHash::new(123)),
                     enabled: false,
                     visible: true
                 },
                 destiny_core::IndexedSocket {
+                    reusable_plugs: None,
                     socket_index: 2,
                     plug_hash: Some(ItemHash::new(456)),
                     enabled: true,
@@ -2493,6 +2534,7 @@ mod tests {
                     .enumerate()
                     .map(
                         |(index, (hash, enabled, visible))| destiny_core::IndexedSocket {
+                            reusable_plugs: None,
                             socket_index: index as u8,
                             plug_hash: hash.map(ItemHash::new),
                             enabled,

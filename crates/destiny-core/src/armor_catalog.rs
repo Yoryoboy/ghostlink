@@ -66,6 +66,9 @@ pub struct StatGroupDefinition {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SetPerk {
+    /// Sandbox perk display projection; unresolved/legacy references stay unknown.
+    pub name: Option<String>,
+    pub icon: Option<String>,
     pub required_set_count: i32,
     pub sandbox_perk_hash: u32,
 }
@@ -186,6 +189,15 @@ impl ArmorCatalogRecord {
                         .any(|c| c.is_control() && !c.is_whitespace())
                     && value.set_items.len() <= 1024
                     && value.set_perks.len() <= 64
+                    && value.set_perks.iter().all(|perk| {
+                        perk.name
+                            .as_deref()
+                            .is_none_or(|name| bounded_text(name, 256))
+                            && perk
+                                .icon
+                                .as_deref()
+                                .is_none_or(|icon| bounded_text(icon, 1024))
+                    })
             }
         };
         if valid {

@@ -34,6 +34,30 @@ fn items() -> DefinitionReplacementInput {
 }
 
 #[test]
+fn sandbox_display_is_joined_to_set_perks_and_persisted() {
+    let mut acquisition = decode_inventory_items(DefinitionVersion::new("v1"), ITEM).unwrap();
+    acquisition.sandbox_perks = destiny_adapters::manifest::decode_sandbox_perks(br#"{"333":{"hash":333,"isDisplayable":false,"displayProperties":{"name":"Renewal","icon":"/common/perk.png","description":"Effect"}}}"#).unwrap();
+    let mut gateway = QueuedManifestGateway::new();
+    let mut world = synthetic_world(DefinitionVersion::new("v1"));
+    world.armor_catalogs = catalogs();
+    gateway.queue_world(Ok(world));
+    gateway.queue(Ok(acquisition));
+    let store = SqliteStore::open_in_memory().unwrap();
+    let mut service = destiny_app::ManifestService::new(gateway, store);
+    service.sync(Timestamp::new(2)).unwrap();
+    let records = service
+        .repository()
+        .armor_catalog(ArmorCatalogKind::EquipableSet, Some(456))
+        .unwrap();
+    let ArmorCatalogRecord::EquipableSet(set) = &records[0] else {
+        panic!()
+    };
+    assert_eq!(set.set_perks[0].name.as_deref(), Some("Renewal"));
+    assert_eq!(set.set_perks[0].icon.as_deref(), Some("/common/perk.png"));
+    assert_eq!(set.set_perks[1].name, None);
+}
+
+#[test]
 fn stat_group_and_equipable_set_projection() {
     let records = catalogs();
     let ArmorCatalogRecord::StatGroup(group) = &records[0] else {
@@ -94,7 +118,7 @@ fn fake_sqlite_parity_revision_identity_and_batch_reads() {
         fake.publish_manifest(items(), world.clone()).unwrap(),
         revision
     );
-    for field in 0..11 {
+    for field in 0..13 {
         match &mut world.armor_catalogs[0] {
             ArmorCatalogRecord::StatGroup(group) => match field {
                 0 => group.scaled_stats[0].stat_hash += 1,
@@ -114,6 +138,8 @@ fn fake_sqlite_parity_revision_identity_and_batch_reads() {
                 7 => set.set_perks[0].required_set_count += 1,
                 8 => set.set_perks[0].sandbox_perk_hash += 1,
                 9 => set.set_items.reverse(),
+                11 => set.set_perks[0].name = Some("Renewal".into()),
+                12 => set.set_perks[0].icon = Some("/common/icon.png".into()),
                 _ => {}
             },
             _ => panic!(),
@@ -152,11 +178,39 @@ fn fake_sqlite_parity_revision_identity_and_batch_reads() {
     assert!(store.publish_manifest(items(), duplicate.clone()).is_err());
     assert!(fake.publish_manifest(items(), duplicate).is_err());
     assert_eq!(store.current_metadata().unwrap(), Some(revision.clone()));
-    assert!(store.migrate_to(27).is_err());
-    // Empty socket catalogs permit 29 -> 28; populated armor catalogs guard 28 -> 27.
-    assert_eq!(store.schema_version().unwrap(), 28);
-    // The successful 29 down step invalidates freshness before the guarded 28 step.
-    assert_eq!(store.current_metadata().unwrap(), None);
+    assert!(store.migrate_to(29).is_err());
+    assert_eq!(store.schema_version().unwrap(), 30);
+    assert_eq!(store.current_metadata().unwrap(), Some(revision));
+}
+
+#[test]
+fn migration_30_forces_same_version_refresh_once() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(29).unwrap();
+    store
+        .publish_manifest(items(), synthetic_world(DefinitionVersion::new("v1")))
+        .unwrap();
+    store.migrate_to(30).unwrap();
+    assert!(store.current_metadata().unwrap().is_none());
+    let mut gateway = QueuedManifestGateway::new();
+    for _ in 0..2 {
+        gateway.queue(Ok(decode_inventory_items(
+            DefinitionVersion::new("v1"),
+            ITEM,
+        )
+        .unwrap()));
+    }
+    let mut service = destiny_app::ManifestService::new(gateway, store);
+    assert!(matches!(
+        service.sync(Timestamp::new(2)).unwrap(),
+        destiny_app::ManifestSyncReport::Updated { .. }
+    ));
+    assert!(matches!(
+        service.sync(Timestamp::new(3)).unwrap(),
+        destiny_app::ManifestSyncReport::Unchanged { .. }
+    ));
+    assert_eq!(service.gateway().component_calls(), 1);
+    assert_eq!(service.gateway().world_calls(), 1);
 }
 
 #[test]

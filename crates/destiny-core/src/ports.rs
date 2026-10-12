@@ -301,6 +301,12 @@ impl InventorySnapshotInput {
             if item.sockets.len() > crate::MAX_ITEM_SOCKETS
                 || item.sockets.iter().enumerate().any(|(index, socket)| {
                     usize::from(socket.socket_index) != index
+                        || socket.reusable_plugs.as_ref().is_some_and(|plugs| {
+                            plugs.len() > crate::domain::MAX_REUSABLE_PLUGS
+                                || plugs
+                                    .iter()
+                                    .any(|plug| u32::try_from(plug.plug_hash.value()).is_err())
+                        })
                         || socket
                             .plug_hash
                             .is_some_and(|hash| u32::try_from(hash.value()).is_err())
@@ -937,6 +943,8 @@ pub struct ManifestAcquisition {
 /// Untrusted provider-neutral effect text acquired with inventory definitions.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SandboxPerkCandidate {
+    pub name: Option<String>,
+    pub icon: Option<String>,
     pub hash: u32,
     pub is_displayable: bool,
     pub description: String,

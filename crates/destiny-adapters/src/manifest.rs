@@ -229,6 +229,8 @@ impl<'de> Visitor<'de> for ArmorCatalogSeed {
                             .ok_or_else(missing)?
                             .into_iter()
                             .map(|perk| SetPerk {
+                                name: None,
+                                icon: None,
                                 required_set_count: perk.required_set_count,
                                 sandbox_perk_hash: perk.sandbox_perk_hash,
                             })
@@ -766,6 +768,8 @@ struct WorldRecord {
 #[derive(Deserialize)]
 struct WorldDisplay {
     #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
     name: String,
     #[serde(default)]
     description: String,
@@ -807,6 +811,7 @@ impl WorldKind for destiny_core::StatDefinition {
             is_displayable: false,
             redacted: stat.redacted,
             display_properties: stat.display_properties.map(|display| WorldDisplay {
+                icon: None,
                 name: display.name,
                 description: String::new(),
             }),
@@ -844,26 +849,39 @@ struct SandboxPerkRecord {
 #[derive(Deserialize)]
 struct SandboxPerkDisplay {
     #[serde(default)]
+    name: OptionalField<String>,
+    #[serde(default)]
+    icon: OptionalField<String>,
+    #[serde(default)]
     description: OptionalField<String>,
 }
 impl WorldKind for destiny_core::ports::SandboxPerkCandidate {
     const ALLOW_EMPTY: bool = true;
     fn is_blank(display: &WorldDisplay) -> bool {
         display.description.trim().is_empty()
+            && display.name.trim().is_empty()
+            && display.icon.is_none()
     }
     fn read_record<'de, M: MapAccess<'de>>(map: &mut M) -> Result<WorldRecord, M::Error> {
         let record = map.next_value::<SandboxPerkRecord>()?;
-        let description = record
-            .display_properties
-            .into_option()
-            .and_then(|display| display.description.into_option())
-            .unwrap_or_default();
+        let display = record.display_properties.into_option();
+        let (name, icon, description) = display.map_or_else(
+            || (String::new(), None, String::new()),
+            |display| {
+                (
+                    display.name.into_option().unwrap_or_default(),
+                    display.icon.into_option(),
+                    display.description.into_option().unwrap_or_default(),
+                )
+            },
+        );
         Ok(WorldRecord {
             hash: record.hash,
             redacted: record.redacted.into_option() == Some(true),
             is_displayable: record.is_displayable.into_option() == Some(true),
             display_properties: Some(WorldDisplay {
-                name: String::new(),
+                name,
+                icon,
                 description,
             }),
             milestone_type: 0,
@@ -879,6 +897,8 @@ fn project_sandbox_perk(
     display: WorldDisplay,
 ) -> Result<destiny_core::ports::SandboxPerkCandidate, AppError> {
     Ok(destiny_core::ports::SandboxPerkCandidate {
+        name: (!display.name.trim().is_empty()).then_some(display.name),
+        icon: display.icon.filter(|icon| !icon.trim().is_empty()),
         hash: record.hash,
         is_displayable: record.is_displayable,
         description: display.description,
@@ -908,6 +928,7 @@ impl WorldKind for destiny_core::LoadoutNameDefinition {
             is_displayable: false,
             redacted: record.redacted,
             display_properties: Some(WorldDisplay {
+                icon: None,
                 name: record.name,
                 description: String::new(),
             }),
@@ -1001,6 +1022,7 @@ impl<'de, T: WorldKind> Visitor<'de> for WorldSeed<T> {
             let objective = !T::REQUIRES_DISPLAY;
             let display = if objective {
                 WorldDisplay {
+                    icon: None,
                     name: String::new(),
                     description: String::new(),
                 }

@@ -1398,6 +1398,17 @@ mod tests {
             let mut observed_inputs = Vec::new();
             for cosmetic in [61, 64] {
                 let mut candidate = inventory(&resolved, NOW, 1);
+                candidate.items[0].sockets = vec![destiny_core::IndexedSocket {
+                    socket_index: 0,
+                    plug_hash: None,
+                    enabled: false,
+                    visible: false,
+                    reusable_plugs: Some(vec![destiny_core::domain::ReusablePlug {
+                        plug_hash: ItemHash::new(61),
+                        can_insert: false,
+                        enabled: false,
+                    }]),
+                }];
                 candidate.items[0].available_plugs = [60, cosmetic, 65, 66, 62, 63]
                     .into_iter()
                     .map(|hash| destiny_core::AvailablePlug {
@@ -1427,6 +1438,14 @@ mod tests {
                     .iter()
                     .map(|plug| plug.plug_hash.value())
                     .collect();
+                assert_eq!(
+                    snapshot.items[0].sockets[0]
+                        .reusable_plugs
+                        .as_ref()
+                        .unwrap()[0]
+                        .plug_hash,
+                    ItemHash::new(61)
+                );
                 // Known non-plugs (category None) are dropped, missing definitions kept.
                 assert_eq!(hashes, [60, 65, 66, 62, 60]);
                 assert_eq!(

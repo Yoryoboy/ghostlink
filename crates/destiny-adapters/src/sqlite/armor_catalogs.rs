@@ -82,7 +82,7 @@ pub(super) fn write(
                 }
                 for (ordinal, perk) in set.set_perks.iter().enumerate() {
                     connection
-                        .prepare_cached("INSERT INTO catalog_set_perks VALUES (1,?1,?2,?3,?4)")
+                        .prepare_cached("INSERT INTO catalog_set_perks(kind,hash,ordinal,required_count,perk_hash) VALUES (1,?1,?2,?3,?4)")
                         .map_err(|_| storage_failure())?
                         .execute(params![
                             set.hash,
@@ -91,6 +91,12 @@ pub(super) fn write(
                             perk.sandbox_perk_hash
                         ])
                         .map_err(|_| storage_failure())?;
+                    if read_user_version(connection)? >= 30 {
+                        connection.prepare_cached("UPDATE catalog_set_perks SET name=?1,icon=?2 WHERE hash=?3 AND ordinal=?4").map_err(|_| storage_failure())?
+                            .execute(params![perk.name, perk.icon, set.hash, ordinal as i64]).map_err(|_| storage_failure())?;
+                    } else if perk.name.is_some() || perk.icon.is_some() {
+                        return Err(storage_failure());
+                    }
                 }
             }
         }
@@ -268,7 +274,11 @@ fn read(
         let mut statement = connection
             .prepare_cached(&sql(
                 "catalog_set_perks",
-                "hash, ordinal, required_count, perk_hash",
+                if read_user_version(connection)? >= 30 {
+                    "hash, ordinal, required_count, perk_hash, name, icon"
+                } else {
+                    "hash, ordinal, required_count, perk_hash, NULL, NULL"
+                },
                 hash,
             ))
             .map_err(|_| storage_failure())?;
@@ -279,11 +289,13 @@ fn read(
                     row.get::<_, u32>(1)? as usize,
                     row.get::<_, i32>(2)?,
                     row.get::<_, u32>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
                 ))
             })
             .map_err(|_| storage_failure())?;
         for row in rows {
-            let (hash, ordinal, required_set_count, sandbox_perk_hash) =
+            let (hash, ordinal, required_set_count, sandbox_perk_hash, name, icon) =
                 row.map_err(|_| storage_failure())?;
             let Some(ArmorCatalogRecord::EquipableSet(set)) = records.get_mut(&hash) else {
                 return Err(storage_failure());
@@ -292,6 +304,8 @@ fn read(
                 return Err(storage_failure());
             }
             set.set_perks.push(SetPerk {
+                name,
+                icon,
                 required_set_count,
                 sandbox_perk_hash,
             });

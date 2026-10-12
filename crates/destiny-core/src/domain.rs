@@ -98,9 +98,22 @@ pub struct ItemEnergy {
 
 pub const MAX_ITEM_SOCKETS: usize = 32;
 
+/// Safety ceiling with cosmetic headroom, matching Manifest plug-set bounds.
+pub const MAX_REUSABLE_PLUGS: usize = 65_536;
+
+/// Raw component-305 reusable membership, independent of selectable alternatives.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReusablePlug {
+    pub plug_hash: ItemHash,
+    pub can_insert: bool,
+    pub enabled: bool,
+}
+
 /// Component-305 socket state. Index is the real provider array position.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IndexedSocket {
+    /// None is unobserved/legacy membership; Some(empty) is an observed empty list.
+    pub reusable_plugs: Option<Vec<ReusablePlug>>,
     pub socket_index: u8,
     pub plug_hash: Option<ItemHash>,
     pub enabled: bool,

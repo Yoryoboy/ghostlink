@@ -129,7 +129,8 @@ fn sockets_persist_with_fake_parity_and_revision_identity() {
     }
     assert!(store.migrate_to(28).is_err());
     assert_eq!(store.schema_version().unwrap(), 29);
-    assert_eq!(store.current_metadata().unwrap(), Some(prior));
+    // Successful 30 down step invalidates freshness before the guarded 29 step.
+    assert_eq!(store.current_metadata().unwrap(), None);
 }
 #[test]
 fn invalid_socket_catalogs_are_rejected() {

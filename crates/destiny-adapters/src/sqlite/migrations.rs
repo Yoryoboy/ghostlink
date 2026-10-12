@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 29;
+pub(crate) const LATEST_VERSION: u32 = 30;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 29] = [
+const MIGRATIONS: [Migration; 30] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -199,7 +199,41 @@ const MIGRATIONS: [Migration; 29] = [
         up: SCHEMA_V29_UP,
         down: SCHEMA_V29_DOWN,
     },
+    Migration {
+        version: 30,
+        up: SCHEMA_V30_UP,
+        down: SCHEMA_V30_DOWN,
+    },
 ];
+const SCHEMA_V30_UP: &str = r#"
+CREATE TABLE item_reusable_sockets (
+    instance_id TEXT NOT NULL, socket_index INTEGER NOT NULL,
+    PRIMARY KEY (instance_id, socket_index),
+    FOREIGN KEY (instance_id, socket_index) REFERENCES item_sockets(instance_id, socket_index) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE item_reusable_plugs (
+    instance_id TEXT NOT NULL, socket_index INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 65535),
+    plug_hash INTEGER NOT NULL CHECK (plug_hash BETWEEN 0 AND 4294967295),
+    can_insert INTEGER NOT NULL CHECK (can_insert IN (0,1)),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0,1)),
+    PRIMARY KEY (instance_id, socket_index, ordinal),
+    FOREIGN KEY (instance_id, socket_index) REFERENCES item_reusable_sockets(instance_id, socket_index) ON DELETE CASCADE
+) STRICT;
+ALTER TABLE catalog_set_perks ADD COLUMN name TEXT CHECK (length(name) <= 256);
+ALTER TABLE catalog_set_perks ADD COLUMN icon TEXT CHECK (length(icon) <= 1024);
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V30_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM item_reusable_sockets) OR EXISTS (SELECT 1 FROM item_reusable_plugs) OR EXISTS (SELECT 1 FROM catalog_set_perks WHERE name IS NOT NULL OR icon IS NOT NULL) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE item_reusable_plugs;
+DROP TABLE item_reusable_sockets;
+ALTER TABLE catalog_set_perks DROP COLUMN icon;
+ALTER TABLE catalog_set_perks DROP COLUMN name;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
 const SCHEMA_V29_UP: &str = r#"
 CREATE TABLE socket_catalogs (
     kind INTEGER NOT NULL CHECK (kind IN (2,3,4)),

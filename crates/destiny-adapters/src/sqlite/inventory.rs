@@ -1159,6 +1159,7 @@ pub(super) fn attach_instance_fidelity(
                         return Err(storage_failure());
                     }
                     Ok(destiny_core::IndexedSocket {
+                        reusable_plugs: None,
                         socket_index: u8::try_from(stored).map_err(|_| storage_failure())?,
                         plug_hash: hash
                             .map(|hash| {
@@ -1170,6 +1171,68 @@ pub(super) fn attach_instance_fidelity(
                     })
                 })
                 .collect::<Result<_, AppError>>()?;
+            Ok(())
+        },
+    )?;
+    if super::migrations::read_user_version(connection)? < 30 {
+        return Ok(());
+    }
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, socket_index FROM item_reusable_sockets",
+        "socket_index",
+        |row| row.get::<_, u8>(1),
+        |item, rows| {
+            for index in rows {
+                let socket = item
+                    .sockets
+                    .iter_mut()
+                    .find(|s| s.socket_index == index)
+                    .ok_or_else(storage_failure)?;
+                if socket.reusable_plugs.is_some() {
+                    return Err(storage_failure());
+                }
+                socket.reusable_plugs = Some(Vec::new());
+            }
+            Ok(())
+        },
+    )?;
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, socket_index, ordinal, plug_hash, can_insert, enabled FROM item_reusable_plugs",
+        "socket_index, ordinal",
+        |row| {
+            Ok((
+                row.get::<_, u8>(1)?,
+                row.get::<_, u32>(2)?,
+                row.get::<_, u32>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        },
+        |item, rows| {
+            for (index, ordinal, hash, can_insert, enabled) in rows {
+                let raw = item
+                    .sockets
+                    .iter_mut()
+                    .find(|s| s.socket_index == index)
+                    .and_then(|s| s.reusable_plugs.as_mut())
+                    .ok_or_else(storage_failure)?;
+                if ordinal as usize != raw.len()
+                    || ordinal as usize >= destiny_core::domain::MAX_REUSABLE_PLUGS
+                {
+                    return Err(storage_failure());
+                }
+                raw.push(destiny_core::domain::ReusablePlug {
+                    plug_hash: ItemHash::new(i64::from(hash)),
+                    can_insert: decode_boolean(can_insert)?,
+                    enabled: decode_boolean(enabled)?,
+                });
+            }
             Ok(())
         },
     )
@@ -1453,6 +1516,30 @@ fn replace_projection(
                         encode_boolean(socket.visible)
                     ],
                 )?;
+                if let Some(raw) = &socket.reusable_plugs {
+                    if super::migrations::read_user_version(connection)? < 30 {
+                        return Err(storage_failure());
+                    }
+                    execute_cached(
+                        connection,
+                        "INSERT INTO item_reusable_sockets VALUES (?1,?2)",
+                        params![item.instance_id.as_str(), socket.socket_index],
+                    )?;
+                    for (ordinal, plug) in raw.iter().enumerate() {
+                        execute_cached(
+                            connection,
+                            "INSERT INTO item_reusable_plugs VALUES (?1,?2,?3,?4,?5,?6)",
+                            params![
+                                item.instance_id.as_str(),
+                                socket.socket_index,
+                                ordinal as i64,
+                                plug.plug_hash.value(),
+                                encode_boolean(plug.can_insert),
+                                encode_boolean(plug.enabled)
+                            ],
+                        )?;
+                    }
+                }
             }
         } else if item.energy.is_some() || item.gear_tier.is_some() || !item.sockets.is_empty() {
             return Err(storage_failure());

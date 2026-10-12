@@ -554,10 +554,15 @@ raw `gear_tier`, `effective_gear_tier` (DIM's missing-tier fallback of 0), and
 `current`, assumed `base_masterworked`, and `maximum_value`. Missing data is
 `null`, never an invented roll; non-armor results omit the object. Existing
 `stats` are unchanged. No extra Manifest acquisition is performed for this model.
-`tuning` adds the visible socket index and current tuning plug hash, but
-`tuned_stat_hash` is deliberately null (`raw_reusable_plugs_not_projected`).
-`armor_set` adds set hash/name and perk hashes with required-piece thresholds;
-no perk names/icons or active-bonus claims. Missing catalogs retain the set hash
+`tuning` adds the visible socket index, current tuning plug hash and exact
+`tuned_stat_hash` from raw reusable membership (flags do not gate membership).
+`reusable_membership_known` is false for legacy/unobserved rows: the stat stays null
+with `raw_reusable_plugs_not_projected` until profile resync. Known membership with
+no unique directional tuner stays null with `no_unique_directional_tuner`;
+a resolved stat has a null reason. `armor_set` adds set hash/name and perk hashes
+with required-piece thresholds and optional `name`/`icon` from sandbox definitions;
+no active-bonus claims. Migration 30 forces one same-version Manifest refresh.
+Missing catalogs retain the set hash
 with null name/perks. Subclass results add `fragment_capacity: {"capacity":
 number|null}`, derived from inserted aspects; non-subclasses omit it.
 See [DIM evidence and deliberate unknowns](armor-model.md).
