@@ -420,6 +420,38 @@ coverage (`domain.rs:123-126`).
       964-989`); mixed-tier misses stay unknown. Workspace: 2194
       all-features, 2162 default, 0 failed; clippy both modes, fmt.
 - [ ] **BE-007 — Apply build.** DIM apply phases; covers dim-parity U4b/U4c.
+  Owner decision (2026-10-12): implement offline with fakes now; the live
+  `EquipLoadout` check (dim-parity U4b/U4c) and live apply validation move
+  to BE-010. A Ghostlink build is not an in-game loadout, so DIM-style
+  preparation is needed regardless of that check.
+  - [ ] **BE-007a — Moves and equips.** DIM apply phases on top of the
+    existing move/equip actions: cross-character and Vault transfers,
+    dequip with replacements, space, grouped equips, typed per-item
+    outcomes; CLI `build apply`, MCP tool.
+    Data decisions (parent, DIM-first): project `equippingBlock.uniqueLabel`
+    (never approximate unique rules from rarity, `item-move-service.ts:
+    535-546`); DIM user tags and manual-move timestamps have no Ghostlink
+    equivalent and are treated as DIM treats untagged, unmoved items
+    (neutral); Vault capacity reuses existing DIM-style capacity logic.
+    - [x] **BE-007a1 — Unique labels and pure planner.** Migration 33
+      (`uniqueLabel` projection, STRICT, guarded downgrade, refresh);
+      `build_apply.rs` pure planner: DIM phase order and exclusions
+      (`loadout-apply.ts:355-604,417-436`), replacement preference and
+      ranking (`item-move-service.ts:216-257,1220-1279`), space destination
+      and ranking (`item-move-service.ts:677-741,1138-1211`), grouped
+      equips, typed skips; `docs/build-apply.md`. Not exposed in CLI/MCP
+      yet. Workspace: 2202 all-features, 2170 default, 0 failed; clippy
+      both modes, fmt.
+    - [ ] **BE-007a2 — Planner completion and exposure.** Saved-loadout
+      displacement ranking, final clear-space flags, Postmaster/stacks,
+      single-item inline equip parity, source grouping across interleaved
+      transfers; Vault correspondence/capacity (`stores-helpers.ts:65-66,
+      101-107`; today missing evidence yields `vault_capacity_unavailable`);
+      CLI `build apply --dry-run` with no-dispatch verification; executor
+      with partial-failure semantics, throttle and error mapping; MCP
+      mutation tool.
+  - [ ] **BE-007b — Sockets.** Mods, aspects, fragments and subclass via
+    `InsertSocketPlugFree` as DIM applies them.
 - [ ] **BE-008 — Substitutes.** Optimizer-based armor sets.
 - [x] **BE-009 — dim.gg import.** Dropped by owner decision D4 (won't do).
   Remaining check: the `dim.gg` typed error guides users to the full DIM

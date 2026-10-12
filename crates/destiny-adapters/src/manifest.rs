@@ -725,6 +725,8 @@ struct StatGroupFields {
 #[serde(rename_all = "camelCase")]
 struct EquippingFields {
     #[serde(default)]
+    unique_label: Option<String>,
+    #[serde(default)]
     equipable_item_set_hash: Option<u32>,
 }
 #[derive(Deserialize)]
@@ -1322,6 +1324,10 @@ fn decode_record(
         },
     );
     let armor = destiny_core::ArmorDefinition {
+        unique_label: record
+            .equipping_block
+            .as_ref()
+            .and_then(|block| block.unique_label.clone()),
         socket_entries,
         socket_categories,
         investment_stats: record

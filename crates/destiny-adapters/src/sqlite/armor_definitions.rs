@@ -97,6 +97,18 @@ pub(super) fn write(
             }
         }
     }
+    if read_user_version(connection)? >= 33 {
+        let mut statement = connection
+            .prepare_cached("INSERT INTO definition_equipping_labels VALUES (?1,?2)")
+            .map_err(|_| storage_failure())?;
+        for item in definitions {
+            if let Some(label) = &item.armor.unique_label {
+                statement
+                    .execute(params![item.hash.value(), label])
+                    .map_err(|_| storage_failure())?;
+            }
+        }
+    }
     super::definition_sockets::write(connection, definitions)?;
     Ok(())
 }
@@ -110,6 +122,27 @@ pub(super) fn read(
     let mut result: HashMap<i64, ArmorDefinition> = HashMap::new();
     if read_user_version(connection)? < 26 {
         return Ok(result);
+    }
+    if read_user_version(connection)? >= 33 {
+        let mut statement = connection
+            .prepare_cached(&read_sql(
+                "definition_equipping_labels",
+                "definition_hash, unique_label",
+                false,
+                hash,
+            ))
+            .map_err(|_| storage_failure())?;
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(hash), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|_| storage_failure())?;
+        for row in rows {
+            let (hash, label) = row.map_err(|_| storage_failure())?;
+            let data = result.entry(hash).or_default();
+            data.unique_label = Some(label);
+            data.validate().map_err(|_| storage_failure())?;
+        }
     }
     if read_user_version(connection)? >= 32 {
         let mut statement = connection

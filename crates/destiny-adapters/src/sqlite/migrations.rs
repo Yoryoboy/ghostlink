@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 32;
+pub(crate) const LATEST_VERSION: u32 = 33;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 32] = [
+const MIGRATIONS: [Migration; 33] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -214,7 +214,26 @@ const MIGRATIONS: [Migration; 32] = [
         up: SCHEMA_V32_UP,
         down: SCHEMA_V32_DOWN,
     },
+    Migration {
+        version: 33,
+        up: SCHEMA_V33_UP,
+        down: SCHEMA_V33_DOWN,
+    },
 ];
+const SCHEMA_V33_UP: &str = r#"
+CREATE TABLE definition_equipping_labels (
+    definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,
+    unique_label TEXT NOT NULL CHECK (length(unique_label) <= 256)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V33_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definition_equipping_labels) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE definition_equipping_labels;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
 const SCHEMA_V32_UP: &str = r#"
 CREATE TABLE definition_material_inputs (
     definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,

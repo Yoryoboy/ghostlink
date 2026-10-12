@@ -7,6 +7,7 @@ pub use armor_definition::*;
 pub use clarity::*;
 pub mod build;
 pub mod build_analysis;
+pub mod build_apply;
 pub mod build_capture;
 pub mod build_sets;
 pub mod build_stats;

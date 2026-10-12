@@ -1,6 +1,8 @@
 //! Raw Manifest armor metadata. No instance totals or derived armor values.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ArmorDefinition {
+    /// Raw equippingBlock.uniqueLabel; empty means unconstrained, None unobserved.
+    pub unique_label: Option<String>,
     /// Array position is the real socket index, including zero-type entries.
     pub socket_entries: Vec<DefinitionSocketEntry>,
     pub socket_categories: Vec<DefinitionSocketCategory>,
@@ -50,7 +52,11 @@ pub struct DefinitionSocketCategory {
 impl ArmorDefinition {
     /// Bound provider-owned collections at every publication boundary.
     pub fn validate(&self) -> Result<(), crate::AppError> {
-        if self.investment_stats.len() > 64
+        if self
+            .unique_label
+            .as_ref()
+            .is_some_and(|label| label.len() > 256 || label.chars().any(char::is_control))
+            || self.investment_stats.len() > 64
             || self.socket_entries.len() > 32
             || self.socket_categories.len() > 32
             || self

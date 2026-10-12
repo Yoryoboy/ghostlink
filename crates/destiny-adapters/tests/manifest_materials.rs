@@ -104,6 +104,8 @@ fn material_catalog_keeps_zero_duplicate_and_empty_requirements() {
 #[test]
 fn material_inputs_and_catalog_have_fake_sqlite_revision_parity() {
     let mut store = SqliteStore::open_in_memory().unwrap();
+    // Exercise the v32 downgrade guard without a later migration's freshness reset.
+    store.migrate_to(32).unwrap();
     let mut fake = InMemoryDefinitionRepository::default();
     let mut input = items(PLUG);
     let mut world = world();
