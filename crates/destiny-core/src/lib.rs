@@ -17,6 +17,7 @@ pub mod build_stats;
 pub mod calendar;
 pub mod clarity;
 pub mod mod_assignment;
+pub mod optimizer;
 pub use calendar::*;
 pub mod loadout;
 pub use loadout::*;

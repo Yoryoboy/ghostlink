@@ -584,6 +584,48 @@ coverage (`domain.rs:123-126`).
       with a subclass report `partial`. Also: plug mods on fewer than five
       armor pieces like DIM.
 - [ ] **BE-008 — Substitutes.** Optimizer-based armor sets.
+  DIM map (2026-10-12, DIM 29c122e): inputs `process-worker/process.ts:
+  40-65`, item mapping `process/mappers.ts:61-190` (assumed masterwork
+  stats `loadout-utils.ts:356-405`, capacity `armor-upgrade-utils.ts:12-50`,
+  tuning variants), pre-filter `item-filter.ts:67-292` with strictly-worse
+  dedupe `utils/stats.ts:15-80`, five-loop search with subtree pruning
+  `process.ts:72-1200`, auto stat mods `process-utils.ts:333-610`, 200-set
+  min-heap `set-tracker.ts:23-60`. Analyzer findings
+  ItemsDoNotMatchSearchQuery (`analysis.ts:293-307`) and
+  BetterStatsAvailable (`:309-367`, `stopOnFirstSet`, strict upgrades).
+  Parent defaults (reversible; owner to confirm before BE-008d/e expose
+  them): `--limit` default 10, max 200 (DIM's cap); per-invocation time
+  budget with a `truncated` flag on timeout (analyzer: `not_evaluated` with
+  a budget reason); deterministic tie-break on item ids; candidate armor
+  from every store DIM includes; masterwork assumption and unlocked plugs
+  from the build parameters and synced profile; substitutes respect saved
+  constraints (min and max) like DIM's optimizer, while the analyzer
+  follows DIM's strict-upgrade merge.
+  - [x] **BE-008a — Model and pre-filter.** `optimizer/{mod,items,filter,
+    stat_dupe}.rs` (680 production lines, internal): ProcessItem mapping and
+    tuning variants (`process/mappers.ts:61-190`), assumed masterwork
+    (`loadout-utils.ts:356-405`), capacity/artifice rules
+    (`armor-upgrade-utils.ts:12-50`), constants (`types.ts:105-155`),
+    Balanced Tuning on base-zero stats (`stats-conditional.ts:62-78,
+    190-210`), pre-filter order (`item-filter.ts:67-292`), strictly-worse
+    dedupe (`utils/stats.ts:15-80`; a linear scan with the same relation
+    instead of DIM's trie), exotic class-item keys, desired stat ranges
+    (`loadout-params.ts:14-34`). Missing inputs are typed unknown
+    (`bucket_sockets: None` -> `FilterError::BucketSocketsUnavailable`).
+    BE-008d must build the `ArmorCandidate` adapter and pass DIM's extra
+    dedupe columns (energy, activity-slot tags, set-bonus membership)
+    through `get_stats`, as DIM's optimizer callback does. Workspace: 2350
+    all-features, 2317 default, 0 failed; clippy both modes, fmt.
+  - [ ] **BE-008b — Auto mods and stat math.** Auto-mod map from
+    definitions and unlocked plugs, `chooseAutoMods`, greedy stat mods,
+    `updateMaxStats`, activity permutations. Internal.
+  - [ ] **BE-008c — Search core.** Five-loop DFS with pruning, constraints,
+    tuning variants, heap with DIM ordering, strict upgrades, stop on first,
+    time budget, parallel slicing. Golden tests from DIM `process.test.ts`.
+  - [ ] **BE-008d — Analyzer wiring.** BetterStatsAvailable and full
+    ItemsDoNotMatchSearchQuery in `build check` / `analyze_build`.
+  - [ ] **BE-008e — Substitutes command.** `ghostlink build substitutes`
+    and MCP tool; D3: never alters check or apply resolution.
 - [x] **BE-009 — dim.gg import.** Dropped by owner decision D4 (won't do).
   Remaining check: the `dim.gg` typed error guides users to the full DIM
   link/JSON (with follow-up `dim_loadout.rs:333`); verify in BE-010.
