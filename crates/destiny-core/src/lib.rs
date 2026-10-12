@@ -9,6 +9,7 @@ pub mod build;
 pub mod build_analysis;
 pub mod build_capture;
 pub mod build_sets;
+pub mod build_stats;
 pub mod calendar;
 pub mod clarity;
 pub mod mod_assignment;

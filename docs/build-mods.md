@@ -63,9 +63,10 @@ migrate. Missing/non-pluggable definitions use deprecated placeholder `444600262
 a missing/non-pluggable placeholder remains unknown. Saved/exported builds keep
 original hashes. Fashion `modsByBucket` is not mixed into `parameters.mods`.
 
-The global `needs_armor_upgrades` finding is true when mod upgrades are proven.
-If mods need no upgrades but positive minimum stat constraints exist, it stays
-unknown until BE-006c2 implements upgrades for stats. No optimizer/percentage claims.
+The global `needs_armor_upgrades` finding combines mod upgrades and the stat
+upgrade comparison below. Either proven upgrade requirement makes it true;
+false requires both checks to establish no upgrade requirement. Unknown inputs
+stay explicit. No optimizer/percentage claims.
 
 ## DIM evidence
 
@@ -101,8 +102,38 @@ fallback; nonzero empty plugs count. Missing projections/definitions remain unkn
 Evidence: `loadout-analyzer/analysis.ts:90-98,420-438`,
 `loadout-drawer/loadout-utils.ts:745-770,946-954`, `utils/socket-utils.ts:77-112,278-290`.
 
-BE-006c2 remains separate: assigned item-conditional stat contributions
-(`loadout-utils.ts:284-358`, `loadout/stats.ts:101-214`), minima-only analyzer
-checks and stat upgrades (`analysis.ts:158-190,228-265,516-561`). Maxima are optimizer
-constraints, not this analyzer's findings. Better-stat findings remain BE-008.
-The parent owns ODD checklist updates; this task does not mark all of BE-006 complete.
+## BE-006c2: stats and stat upgrades
+
+The additive `stats` object reports `evaluation`, nullable `reason`, six
+`values: [{stat_hash, as_is, assumed}]`, `satisfies_constraints` and
+`needs_upgrades_for_stats`. Missing base stats, energy, plug definitions or
+assignment inputs leave totals null with an explicit reason. No API component
+304 totals are relabelled as base stats. No provider request or migration is added.
+
+| Decision | DIM evidence, commit `29c122e` (under `src/app/`) |
+|---|---|
+| Sum base rolls, not current socket totals; legacy maximum-energy armor gets +2 each; Armor 3 base-zero stats get current masterwork contributions or assumed +5 | `loadout-drawer/loadout-utils.ts:284-325,355-413` |
+| Infer masterwork setting from energy, threshold 10 even for Tier 5 | `loadout-analyzer/analysis.ts:158-190`; `loadout/armor-upgrade-utils.ts:12-49` |
+| Fit separately with as-is and assumed rules, including when all mods fit as-is | `loadout-drawer/loadout-utils.ts:326-349`; `loadout-analyzer/analysis.ts:516-541` |
+| Include assigned and unassigned mods; exclude invalid-for-set mods; use all saved subclass override plugs, not current sockets | `loadout/stats.ts:101-187`; `loadout/mod-assignment-utils.ts:346-352` |
+| Consolidate duplicate investments with first activation flag; Balanced Tuning/masterworks require assigned base-zero stats; Persistence/Focus affect class-specific stats | `inventory/store/stats-conditional.ts:52-107,155-174,190-210` |
+| Optional runtime Fonts: 20/40/50 for 1/2/3+ stacks, including reduced variants; disabled by default | `loadout/stats.ts:25-76,189-210`; `loadout-analyzer/analysis.ts:92` |
+| Last duplicate constraint wins; unknown stat hashes are ignored; minima only, with totals clamped to zero for comparison, not output | `loadout-builder/loadout-params.ts:14-42`; `loadout-analyzer/analysis.ts:516-541` |
+| Stat upgrades needed only if assumed totals satisfy minima and as-is totals do not; combine with mod upgrade requirement | `loadout-analyzer/analysis.ts:235-239,535-540` |
+
+Totals are hypothetical benefits of planned mods, including unassigned ones;
+constraint satisfaction does not imply mod fit or socket application readiness.
+There is no stat-material quote, upgrade action or optimizer evaluation. Maximum
+constraints and `better_stats_available` remain BE-008 (`optimizer_unavailable`).
+
+### R3 mixed-tier rarity cache
+
+The cache key is faithfully rarity-only, with the first item's maximum tier:
+`loadout/mod-assignment-utils.ts:180-226`. A lower-tier first item can leave a
+later Tier-5 capacity 11 outside the cache. DIM then returns an empty cost array;
+its reduction at `:964-989` can produce undefined/NaN costs. Ghostlink preserves
+an explicit `energy_cost_original_capacity_out_of_range` or
+`energy_cost_target_capacity_out_of_range` unknown instead of inventing Tier-11
+prices or silently changing the cache key. A mixed-tier regression tests this
+boundary and the Tier-5-first evaluated alternate. No cache-key fix is warranted.
+The parent owns ODD checklist updates.

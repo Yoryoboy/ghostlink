@@ -109,6 +109,9 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
     assert_eq!(output.value["mod_fit"]["evaluation"], "not_evaluated");
     assert!(output.value["mod_fit"]["unassigned_mods"].is_null());
     assert!(output.render_text().contains("Mods fit: not_evaluated"));
+    assert_eq!(output.value["stats"]["evaluation"], "not_evaluated");
+    assert!(output.value["stats"]["values"][0]["as_is"].is_null());
+    assert!(output.value["stats"]["needs_upgrades_for_stats"].is_null());
     assert_eq!(output.exit_code, 0); // findings are data, not failed transport
     let mut result = result;
     result
@@ -118,6 +121,12 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
         .find(|f| f.kind == build_analysis::FindingKind::EmptyFragmentSlots)
         .unwrap()
         .present = Some(true);
+    result.analysis.stats.evaluation = "evaluated";
+    result.analysis.stats.reason = None;
+    result.analysis.stats.as_is = Some([10; 6]);
+    result.analysis.stats.assumed = Some([25; 6]);
+    result.analysis.stats.satisfies_constraints = Some(true);
+    result.analysis.stats.needs_upgrades_for_stats = Some(true);
     result.analysis.mod_fit = destiny_app::mod_assignment::ModFitAnalysis {
         evaluation: "evaluated",
         reason: None,
@@ -148,6 +157,16 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
     };
     let output = BuildOutput::from_result(Ok(BuildReply::Analysis(Box::new(result))));
     assert!(output.render_text().contains("empty_fragment_slots"));
+    assert_eq!(output.value["stats"]["needs_upgrades_for_stats"], true);
+    assert_eq!(
+        output.value["stats"]["values"][0],
+        json!({"stat_hash":2996146975_u32,"as_is":10,"assumed":25})
+    );
+    assert!(
+        output
+            .render_text()
+            .contains("Stat 2996146975: as-is 10, assumed 25")
+    );
     assert_eq!(output.value["mod_fit"]["unassigned_mods"], json!([42, 42]));
     assert_eq!(output.value["mod_fit"]["needs_upgrades_for_mods"], false);
     assert_eq!(output.value["mod_fit"]["uses_seasonal_mods"], true);

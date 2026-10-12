@@ -659,3 +659,70 @@ fn socket_membership_uses_sets_even_when_cannot_roll_and_excludes_masterwork() {
         Some(vec![42])
     );
 }
+
+#[test]
+#[rustfmt::skip] // Keep the behavior-level totals alongside their compact fixtures.
+fn stat_fits_are_independent_and_total_unassigned_mods_with_masterworks() {
+    use destiny_core::{armor_model::*, build_stats::*};
+    let (mut b, items, mut defs, catalogs) = fixture(10, 7);
+    b.parameters.as_mut().unwrap().assume_armor_masterwork = Some(AssumeArmorMasterwork::All);
+    defs[0].armor.investment_stats = vec![InvestmentStat {
+        stat_type_hash: ARMOR_STATS[0],
+        value: 10,
+        is_conditionally_active: false,
+    }];
+    let resolved = analyze_build(&b, &CharacterId::new("1"), &items, &defs, &[], &[], &[]);
+    let as_is = stat_mod_assignments(&b, &resolved.items, &defs, &catalogs, &[], false);
+    let assumed = stat_mod_assignments(&b, &resolved.items, &defs, &catalogs, &[], true);
+    assert_eq!(as_is.unassigned_mods, Some(vec![42]));
+    assert_eq!(assumed.unassigned_mods, Some(vec![]));
+    let stats = ArmorStats {
+        stats: ARMOR_STATS.iter().enumerate().map(|(i, hash)| ArmorStat {
+            stat_hash: *hash,
+            base: if i < 3 { 10 } else { 0 },
+            current: 99, // Must not count currently inserted mods/tuning twice.
+            base_masterworked: None,
+            maximum_value: None,
+        }).collect(),
+        total_base: 30,
+    };
+    let armor: Vec<_> = items.iter().map(|item| StatArmor {
+        item,
+        definition: defs.iter().find(|d| d.hash == item.item_hash).unwrap(),
+        stats: &stats,
+        masterwork: Some([0, 0, 0, 2, 2, 2]),
+    }).collect();
+    assert_eq!(total_stats(&armor, &as_is, &defs, &[], 0, false, None).unwrap(), [60, 50, 50, 10, 10, 10]);
+    assert_eq!(total_stats(&armor, &assumed, &defs, &[], 0, false, Some(AssumeArmorMasterwork::All)).unwrap(), [60, 50, 50, 25, 25, 25]);
+    let legacy: Vec<_> = armor.iter().map(|a| StatArmor { masterwork: None, ..*a }).collect();
+    assert_eq!(total_stats(&legacy, &assumed, &defs, &[], 0, false, Some(AssumeArmorMasterwork::All)).unwrap(), [70, 60, 60, 10, 10, 10]);
+    let mut font = defs[0].clone();
+    font.hash = ItemHash::new(4046357305);
+    font.armor.investment_stats.clear();
+    let font_defs = vec![font];
+    let mut fonts = as_is.clone();
+    fonts.unassigned_mods = Some(vec![4046357305; 4]);
+    let empty_assigned = fonts.item_mod_assignments.as_mut().unwrap();
+    empty_assigned.iter_mut().for_each(|(_, mods)| mods.clear());
+    assert_eq!(total_stats(&armor, &fonts, &font_defs, &[], 0, false, None).unwrap()[0], 50);
+    assert_eq!(total_stats(&armor, &fonts, &font_defs, &[], 0, true, None).unwrap()[0], 100);
+}
+
+#[test]
+fn mixed_tier_rarity_cache_remains_unknown_instead_of_inventing_prices() {
+    let (mut b, mut items, defs, catalogs) = fixture(0, 10);
+    b.parameters.as_mut().unwrap().mods = Some(vec![]);
+    items[0].gear_tier = Some(4);
+    items[1].energy.as_mut().unwrap().energy_capacity = 11;
+    let result = analyze_fixture(&b, &items, &defs, &catalogs);
+    assert_eq!(result.evaluation, "not_evaluated");
+    assert_eq!(
+        result.reason,
+        Some("energy_cost_original_capacity_out_of_range")
+    );
+    items[0].gear_tier = Some(5);
+    assert_eq!(
+        analyze_fixture(&b, &items, &defs, &catalogs).evaluation,
+        "evaluated"
+    );
+}

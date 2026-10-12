@@ -374,6 +374,15 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             &unlocked_mods,
         );
         crate::build_mods::findings(&build.definition, &mut analysis);
+        crate::build_stats::evaluate(
+            sync.repository(),
+            &build.definition,
+            &mut analysis,
+            &definitions,
+            &mod_catalogs,
+            &unlocked_mods,
+            character_class(&target)?,
+        )?;
         Ok(BuildCheckResult {
             summary: build.summary,
             analysis,

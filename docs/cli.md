@@ -109,14 +109,19 @@ Migration 32 supplies the material inputs. Mod hashes are migrated and cost-reso
 use enabled account/target-character reduced variants, otherwise normal variants.
 Missing/non-pluggable definitions use DIM's deprecated placeholder; if that is
 unavailable, fitting stays unknown. Missing plug-set responses default to no unlocks
-as in DIM. See [build mod fitting](build-mods.md). Positive stat constraints can keep the global
-armor-upgrades finding unknown even when mods need no upgrade. Fragment findings
+as in DIM. See [build mod fitting](build-mods.md). The additive `stats` object
+reports six `{stat_hash, as_is, assumed}` values, `satisfies_constraints` and
+`needs_upgrades_for_stats`. It includes assigned and unassigned mod benefits,
+subclass overrides and optional runtime Font benefits, not current socket totals.
+Only minima count; maxima belong to the optimizer. The global armor-upgrades
+finding combines mod and stat upgrade requirements. Unknown inputs retain null
+values and an explicit reason. Fragment findings
 compare nonzero saved fragment overrides at real socket indices against saved
 aspect capacity (no fallback to currently inserted aspects). No selected aspects
 means zero capacity; nonzero explicit empty plugs count, matching DIM. Missing
 subclass socket projections or selected aspect definitions remain unknown with
-reasons. Stat constraints and optimization remain deferred; socket application
-readiness is unevaluated. See [fragment evidence and stat dependency](build-mods.md#be-006c-fragment-findings-and-stat-dependency).
+reasons. Optimization remains deferred; socket application readiness is
+unevaluated. See [stat and fragment evidence](build-mods.md).
 See [mod fitting scope and DIM evidence](build-mods.md).
 Instanced resolution tries the ID first, then a nonzero crafted date, as DIM does
 (last matching instance, without a hash or target-character gate). Class compatibility is item metadata, not an invented

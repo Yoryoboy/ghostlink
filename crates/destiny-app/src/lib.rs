@@ -2,13 +2,14 @@
 
 pub use destiny_core::armor_catalog::ArmorCatalogRepository;
 pub use destiny_core::armor_model::{
-    ArmorModel, ArmorSet, ArmorStat, ArmorStats, ArmorTuning, FragmentCapacity,
+    ARMOR_STATS, ArmorModel, ArmorSet, ArmorStat, ArmorStats, ArmorTuning, FragmentCapacity,
 };
 pub mod armor_model;
 pub mod builds;
 pub use destiny_core::ports::{BuildCodec, BuildRepository};
 pub use destiny_core::{armor_catalog, build, build_analysis, build_sets, mod_assignment};
 mod build_mods;
+mod build_stats;
 pub mod clarity;
 pub use clarity::{ClaritySyncReport, ManifestAndClarityReport};
 pub use destiny_core::{ClarityInsight, ClarityRepository};

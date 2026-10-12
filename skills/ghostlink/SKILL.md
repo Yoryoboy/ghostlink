@@ -68,13 +68,19 @@ Legacy mod hashes and seasonal costs
 resolve like DIM using enabled account/target-character unlocks; missing plug sets
 mean no unlocks. Missing/non-pluggable mods become DIM's deprecated placeholder;
 missing placeholder data stays unknown. Report hashes in mod_fit as resolved hashes,
-not necessarily the original saved hashes. Saved/exported builds are unchanged. Positive stat constraints
-can leave the global upgrade finding unknown. Do not infer mod fit from set activation.
+not necessarily the original saved hashes. Saved/exported builds are unchanged.
+The stats object reports as-is and assumed totals, minima-only satisfaction and
+needs_upgrades_for_stats. Maxima are optimizer-only. Totals include planned mods
+(even unassigned ones), saved subclass overrides and optional runtime Font effects;
+they are hypothetical, not observed game stats. The global upgrade finding combines
+mod and stat requirements. Missing evidence stays null with a reason; never infer
+satisfaction from null totals or mod fit from set activation.
 Fragment findings compare saved fragment overrides against saved aspect capacity,
 not the current subclass configuration. Nonzero explicit empty plugs count like
 DIM; no selected aspects means zero capacity. Missing subclass socket projections
 or selected aspect definitions remain not_evaluated. Report findings from the
-output, never infer stat-constraint satisfaction or socket application readiness.
+output; use stats.satisfies_constraints for minima and never infer socket
+application readiness.
 
 ## Bungie action rejections
 

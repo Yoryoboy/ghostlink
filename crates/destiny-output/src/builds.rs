@@ -89,6 +89,11 @@ impl BuildOutput {
                     "target_character":analysis.target_character.as_str(), "counts":{"specified":analysis.specified,
                         "resolved":analysis.resolved,"missing":analysis.missing}, "items":items,
                     "findings":findings, "not_evaluated":analysis.not_evaluated,
+                    "stats":{"evaluation":analysis.stats.evaluation, "reason":analysis.stats.reason,
+                        "values":destiny_app::ARMOR_STATS.iter().enumerate().map(|(i, hash)| json!({"stat_hash":hash,
+                            "as_is":analysis.stats.as_is.map(|v| v[i]), "assumed":analysis.stats.assumed.map(|v| v[i])})).collect::<Vec<_>>(),
+                        "satisfies_constraints":analysis.stats.satisfies_constraints,
+                        "needs_upgrades_for_stats":analysis.stats.needs_upgrades_for_stats},
                     "mod_fit":{"evaluation":analysis.mod_fit.evaluation, "reason":analysis.mod_fit.reason,
                         "invalid_mods":analysis.mod_fit.invalid_mods,
                         "unassigned_mods":analysis.mod_fit.unassigned_mods,
@@ -281,6 +286,20 @@ impl BuildOutput {
                             finding["kind"], finding["evaluation"], finding["reason"]
                         ));
                     }
+                }
+            }
+            let stats = &self.value["stats"];
+            lines.push(format!(
+                "Build stats: {} (reason: {})",
+                stats["evaluation"].as_str().unwrap_or("not_evaluated"),
+                stats["reason"]
+            ));
+            if let Some(values) = stats["values"].as_array() {
+                for value in values {
+                    lines.push(format!(
+                        "  Stat {}: as-is {}, assumed {}",
+                        value["stat_hash"], value["as_is"], value["assumed"]
+                    ));
                 }
             }
             let mods = &self.value["mod_fit"];

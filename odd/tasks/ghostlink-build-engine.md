@@ -150,7 +150,7 @@ silently (`builds.rs:398-401`).
 Review follow-ups (BE-004a, non-blocking): legacy search read path and
 `transfer_status` (`sqlite/search.rs:206`); add direct `notransfer`
 coverage (`domain.rs:123-126`).
-- [ ] **BE-005 — Armor 3.0 data.** Base stats, set bonuses, energy, tuning,
+- [x] **BE-005 — Armor 3.0 data.** Base stats, set bonuses, energy, tuning,
   masterwork, socket indices for inventory plugs (DIM sources first).
   DIM sources (research 2026-10-11, paths under DIM `src/app/`):
   base stats = definition `investmentStats` + enabled intrinsic/ArmorStats
@@ -230,7 +230,7 @@ coverage (`domain.rs:123-126`).
     others 16 MiB. DIM evidence `sockets.ts:601,607-612,664-681,734,765,768,802`,
     `utils/socket-utils.ts:640-642`. Workspace: 2112 passed all-features,
     2080 default, 0 failed; clippy both modes, fmt, diff check.
-  - [ ] **BE-005c — DIM armor model.** Base/masterwork/tuning/set-bonus
+  - [x] **BE-005c — DIM armor model.** Base/masterwork/tuning/set-bonus
     derivations with fixtures. Split: **BE-005c1** stats (investment +
     intrinsic plugs, interpolation, conditional stats, total base),
     Armor 3.0 masterwork tier and +5 rule, gear tier, energy, additive
@@ -321,7 +321,7 @@ coverage (`domain.rs:123-126`).
       apply-readiness stays `not_evaluated` until BE-007.
     Review follow-up (BE-005c3, non-blocking): unreferenced display
     validation `destiny-app/src/manifest.rs:189`.
-- [ ] **BE-006 — Analysis v2.** Stat constraints, mods fit, armor upgrades,
+- [x] **BE-006 — Analysis v2.** Stat constraints, mods fit, armor upgrades,
   equipped set-bonus activation (`SetBonus.tsx:23-64`, event selectors
   `socket-utils.ts:793-809`).
   - [x] **BE-006a — Equipped set activation.** `build_sets.rs`: per-set
@@ -334,7 +334,7 @@ coverage (`domain.rs:123-126`).
     deviation (`socket-utils.ts:77-85`, `loadout-utils.ts:136-174`),
     regression test added. Workspace: 2149 all-features, 2117 default,
     0 failed; clippy both modes, fmt, diff check.
-  - [ ] **BE-006b — Mods fit and armor upgrades.** DIM mod assignment
+  - [x] **BE-006b — Mods fit and armor upgrades.** DIM mod assignment
     (`loadout/mod-assignment-utils.ts`, >1,000 lines with dependencies);
     unassignable mods; upgrades needed for mods.
     - [x] **BE-006b1 — Bucket-specific assignment.** `mod_assignment.rs`
@@ -397,7 +397,7 @@ coverage (`domain.rs:123-126`).
       seasonal re-fitting and findings (`analysis.ts:449-501`). Mutation
       checks confirmed the tests catch removals. Workspace: 2188
       all-features, 2156 default, 0 failed; clippy both modes, fmt.
-  - [ ] **BE-006c — Stat constraints and fragment findings.** Stat
+  - [x] **BE-006c — Stat constraints and fragment findings.** Stat
     aggregation vs `statConstraints`; fragment capacity findings;
     optimizer-based findings stay suppressed until BE-008.
     - [x] **BE-006c1 — Fragment findings.** First resolved subclass
@@ -407,11 +407,18 @@ coverage (`domain.rs:123-126`).
       (`loadout-utils.ts:745-770`), capacity sum default zero
       (`loadout-utils.ts:946-954`). Workspace: 2164 all-features, 2132
       default, 0 failed; clippy both modes, fmt.
-    - [ ] **BE-006c2 — Stats and stat upgrades.** Depends on BE-006b2b:
-      DIM assigns mods before item-conditional stat evaluation
-      (`loadout-utils.ts:326-349`). Stat aggregation (`loadout/stats.ts:
-      101-214`), non-ignored minima only (`analysis.ts:516-561`), stat
-      masterwork upgrades.
+    - [x] **BE-006c2 — Stats and stat upgrades.** `build_stats.rs`
+      (core + app): base/masterwork totals (`loadout-utils.ts:284-325,
+      355-413`), separate assignment fits and unassigned benefits
+      (`loadout-utils.ts:326-349`, `loadout/stats.ts:101-187`),
+      conditional tuning/class effects (`stats-conditional.ts:52-107,
+      155-174,190-210`), runtime Fonts (`loadout/stats.ts:25-76,189-210`),
+      masterwork inference (`analysis.ts:158-190`), non-ignored minima
+      only and stat upgrades (`loadout-params.ts:14-42`,
+      `analysis.ts:516-541`). Advisory R3-mixed-tier-cost-cache: not a
+      deviation (DIM caches by rarity, `mod-assignment-utils.ts:180-226,
+      964-989`); mixed-tier misses stay unknown. Workspace: 2194
+      all-features, 2162 default, 0 failed; clippy both modes, fmt.
 - [ ] **BE-007 — Apply build.** DIM apply phases; covers dim-parity U4b/U4c.
 - [ ] **BE-008 — Substitutes.** Optimizer-based armor sets.
 - [x] **BE-009 — dim.gg import.** Dropped by owner decision D4 (won't do).

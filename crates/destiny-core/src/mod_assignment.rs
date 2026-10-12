@@ -190,6 +190,54 @@ pub fn analyze_bucket_mods_with_unlocks(
     catalogs: &[ArmorCatalogRecord],
     unlocked: &[u32],
 ) -> ModFitAnalysis {
+    analyze_with_rules(
+        build,
+        resolved,
+        inventory,
+        definitions,
+        catalogs,
+        unlocked,
+        None,
+    )
+}
+
+/// DIM getLoadoutStats always fits with the supplied rules, independently of
+/// the mod-problem analyzer's as-is-first shortcut. Invalid-for-set mods do not
+/// contribute stats (fitMostMods returns them separately from unassignedMods).
+pub fn stat_mod_assignments(
+    build: &BuildDefinition,
+    resolved: &[ResolvedBuildItem],
+    definitions: &[ItemDefinition],
+    catalogs: &[ArmorCatalogRecord],
+    unlocked: &[u32],
+    upgraded: bool,
+) -> ModFitAnalysis {
+    let inventory: Vec<_> = resolved
+        .iter()
+        .filter(|r| r.should_equip)
+        .filter_map(|r| r.inventory.clone())
+        .collect();
+    analyze_with_rules(
+        build,
+        resolved,
+        &inventory,
+        definitions,
+        catalogs,
+        unlocked,
+        Some(upgraded),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn analyze_with_rules(
+    build: &BuildDefinition,
+    resolved: &[ResolvedBuildItem],
+    inventory: &[ItemInstance],
+    definitions: &[ItemDefinition],
+    catalogs: &[ArmorCatalogRecord],
+    unlocked: &[u32],
+    stat_rules: Option<bool>,
+) -> ModFitAnalysis {
     let requested = build
         .parameters
         .as_ref()
@@ -436,6 +484,28 @@ pub fn analyze_bucket_mods_with_unlocks(
         }
         Ok::<_, &'static str>((unassigned, assigned, ranked.upgrade_costs))
     };
+    if let Some(upgraded) = stat_rules {
+        let (unassigned, assigned, costs) = match fit(upgraded, &valid) {
+            Ok(v) => v,
+            Err(reason) => return ModFitAnalysis::unknown(reason),
+        };
+        return ModFitAnalysis {
+            evaluation: "evaluated",
+            reason: None,
+            invalid_mods: Some(invalid),
+            unassigned_mods: Some(unassigned),
+            needs_upgrades_for_mods: None,
+            uses_seasonal_mods: None,
+            item_mod_assignments: Some(
+                armor
+                    .iter()
+                    .zip(assigned)
+                    .map(|((item, _), mods)| (item.instance_id.clone(), mods))
+                    .collect(),
+            ),
+            upgrade_costs: Some(costs),
+        };
+    }
     let as_is = match fit(false, &valid) {
         Ok(v) => v,
         Err(r) => return ModFitAnalysis::unknown(r),

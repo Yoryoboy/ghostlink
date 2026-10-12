@@ -68,6 +68,7 @@ pub struct BuildAnalysis {
     pub findings: Vec<BuildFinding>,
     pub equipped_set_bonuses: crate::build_sets::EquippedSetBonuses,
     pub mod_fit: crate::mod_assignment::ModFitAnalysis,
+    pub stats: crate::build_stats::BuildStats,
     pub not_evaluated: Vec<&'static str>,
 }
 fn definition(defs: &[ItemDefinition], hash: ItemHash) -> Option<&ItemDefinition> {
@@ -510,6 +511,7 @@ pub fn analyze_build(
         findings,
         equipped_set_bonuses: Default::default(),
         mod_fit: Default::default(),
+        stats: Default::default(),
         not_evaluated: vec!["socket_overrides_not_evaluated"],
     }
 }
