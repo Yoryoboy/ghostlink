@@ -249,10 +249,31 @@ coverage (`domain.rs:123-126`).
       2122 passed all-features, 2090 default, 0 failed; clippy both modes,
       fmt, diff check. Follow-up: split large inspection assembly/rendering
       files (app queries, CLI output, MCP service).
+    - [x] **BE-005c2 done (narrowed).** Visible tuning socket + current
+      tuning plug (`socket-utils.ts:677-686`, no enabled gate); tuned stat
+      deliberately unknown: DIM scans raw instance `reusablePlugItems`
+      (`item-utils.ts:409-432`, `sockets.ts:77-79,133-140,784`) but
+      Ghostlink drops non-insertable/disabled plugs at decode
+      (`profile.rs:476-529`, `domain.rs:161`), so neither available plugs
+      nor Manifest plug sets are used to infer it. Per-item set identity,
+      set perk hashes and `requiredSetCount` thresholds
+      (`d2-item-factory.ts:817-818`, `SetBonus.tsx:55-64`), no names/icons.
+      Fragment capacity = sum of inserted aspects' capacity
+      (`socket-utils.ts:278-283`, `loadout-utils.ts:940-954`). Additive
+      inspect-item CLI/JSON/MCP. Workspace: 2126 all-features, 2094
+      default, 0 failed; clippy both modes, fmt, diff check.
+    - [ ] **BE-005c3 — Raw reusable plug fidelity.** Preserve raw
+      per-socket instance reusable plug membership (component 305, as DIM
+      `sockets.ts:77-79,133-140,784`) through decode, sync and SQLite
+      alongside the existing selectable plugs; derive the exact tuned stat
+      (`item-utils.ts:409-432`); project `DestinySandboxPerkDefinition`
+      name/icon for set perks.
   - [ ] **BE-005d — Build capture completion.** Equipped subclass/artifact
     socket overrides, unlocked plug evidence (102/206), component 309 crafted
     dates and resolution fallback.
-- [ ] **BE-006 — Analysis v2.** Stat constraints, mods fit, armor upgrades.
+- [ ] **BE-006 — Analysis v2.** Stat constraints, mods fit, armor upgrades,
+  equipped set-bonus activation (`SetBonus.tsx:23-64`, event selectors
+  `socket-utils.ts:793-809`).
 - [ ] **BE-007 — Apply build.** DIM apply phases; covers dim-parity U4b/U4c.
 - [ ] **BE-008 — Substitutes.** Optimizer-based armor sets.
 - [ ] **BE-009 — dim.gg import.** Blocked on owner decision D4.
