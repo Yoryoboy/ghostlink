@@ -678,3 +678,78 @@ fn vault_evidence_follows_dim_accepted_items_and_bucket_capacity() {
     // Nothing usable is missing evidence, never an empty mapping.
     assert_eq!(VaultEvidence::from_catalogs(&vendor, &[bucket(1, 5)]), None);
 }
+#[test]
+fn steps_record_the_earlier_steps_they_depend_on() {
+    // DIM runs a lone dequip inline with the move (loadout-apply.ts:437-513), so the
+    // move and its second Vault leg cannot succeed unless that preparation did.
+    let defs = [
+        def(10, 1498876634, "exotic_weapon"),
+        def(11, 1498876634, ""),
+        def(20, 2465295065, ""),
+    ];
+    let items = [
+        item(
+            "10",
+            10,
+            ItemLocation::Character(CharacterId::new("2")),
+            true,
+        ),
+        item(
+            "11",
+            11,
+            ItemLocation::Character(CharacterId::new("2")),
+            false,
+        ),
+        item("20", 20, ItemLocation::Vault, false),
+    ];
+    let p = plan(
+        &[
+            selected(Some(&items[0]), true),
+            selected(Some(&items[2]), true),
+        ],
+        &items,
+        &defs,
+        Some(4),
+        10,
+    );
+    let needs: Vec<_> = p.steps.iter().map(|s| s.needs.clone()).collect();
+    assert_eq!(needs, [vec![], vec![0], vec![0, 1], vec![], vec![]]);
+}
+#[test]
+fn grouped_dequip_equip_needs_every_replacement_and_later_moves_need_it() {
+    // Several dequips per owner share one equip (loadout-apply.ts:437-513); a failed
+    // replacement move fails the group, and the dequipped items' moves wait for it.
+    let defs = [
+        def(10, 1498876634, ""),
+        def(11, 1498876634, ""),
+        def(20, 2465295065, ""),
+        def(21, 2465295065, ""),
+    ];
+    let on2 = ItemLocation::Character(CharacterId::new("2"));
+    let items = [
+        item("10", 10, on2.clone(), true),
+        item("20", 20, on2.clone(), true),
+        item("11", 11, ItemLocation::Vault, false),
+        item("21", 21, ItemLocation::Vault, false),
+    ];
+    let p = plan(
+        &[
+            selected(Some(&items[0]), false),
+            selected(Some(&items[1]), false),
+        ],
+        &items,
+        &defs,
+        Some(4),
+        10,
+    );
+    assert!(p.skipped.is_empty(), "{:?}", p.skipped);
+    let group = p
+        .steps
+        .iter()
+        .position(|s| matches!(&s.action, BuildAction::Equip { items, .. } if items.len() == 2))
+        .expect("one grouped equip");
+    assert_eq!(p.steps[group].needs, (0..group).collect::<Vec<_>>());
+    for step in &p.steps[group + 1..] {
+        assert!(step.needs.contains(&group), "{:?}", step);
+    }
+}

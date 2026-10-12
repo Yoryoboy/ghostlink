@@ -5,6 +5,7 @@ pub use destiny_core::armor_model::{
     ARMOR_STATS, ArmorModel, ArmorSet, ArmorStat, ArmorStats, ArmorTuning, FragmentCapacity,
 };
 pub mod armor_model;
+pub mod build_apply_exec;
 pub mod builds;
 pub use destiny_core::ports::{BuildCodec, BuildRepository};
 pub use destiny_core::{
@@ -97,6 +98,9 @@ pub use config::{
 // through this crate. This block is the smallest additive surface that lets the
 // presentation layer implement that translation and lets its binary composition
 // root load a credential; it adds no behavior and no new abstraction.
+pub use destiny_core::ArmorDefinition;
+pub use destiny_core::InstancedPullRequest;
+pub use destiny_core::domain;
 pub use destiny_core::domain::ItemSlot;
 pub use destiny_core::name_matching;
 pub use destiny_core::ports::{

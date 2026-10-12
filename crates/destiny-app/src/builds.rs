@@ -81,6 +81,7 @@ pub enum LocalBuildRequest {
 pub enum BuildReply {
     Analysis(Box<BuildCheckResult>),
     ApplyPlan(Box<BuildApplyPreview>),
+    Applied(Box<crate::build_apply_exec::BuildApplyExecution>),
     List(Vec<BuildSummary>),
     Build {
         result: Box<BuildSourceResult>,
@@ -341,6 +342,41 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             names,
             metadata: analyzed.result.metadata,
         })
+    }
+
+    /// Plans from fresh state, then executes the plan. Reads once; every action is
+    /// dispatched at most once, in plan order, with no retry and no post-action read.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply<G, I, T, E, B, P>(
+        &self,
+        sync: &mut ProfileSyncService<G, I>,
+        request: &BuildCheckRequest,
+        capacity: &EquipmentCapacityPolicy,
+        gateways: &mut crate::build_apply_exec::BuildGateways<T, E, B, P>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+        pace: &mut dyn FnMut(),
+    ) -> Result<crate::build_apply_exec::BuildApplyExecution, BuildError>
+    where
+        G: ProfileGateway,
+        I: InventoryRepository
+            + WorldDefinitionRepository
+            + StatDefinitionRepository
+            + ArmorCatalogRepository,
+        T: TransferGateway,
+        E: EquipGateway,
+        B: EquipItemsGateway,
+        P: InstancedPullGateway,
+    {
+        let preview = self.plan_apply(sync, request, capacity, policy, now)?;
+        let execution = crate::build_apply_exec::execute_plan(
+            sync.repository_mut(),
+            &preview.plan,
+            preview.metadata.sync.revision,
+            gateways,
+            pace,
+        );
+        Ok(crate::build_apply_exec::BuildApplyExecution { preview, execution })
     }
 
     fn analyze<G, I>(

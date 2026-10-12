@@ -41,8 +41,68 @@ fn location(l: &destiny_app::ItemLocation) -> String {
         destiny_app::ItemLocation::Other(_) => "other".into(),
     }
 }
-fn apply_plan(preview: &destiny_app::builds::BuildApplyPreview) -> Value {
+pub(crate) fn step_json(
+    step: &destiny_app::build_apply::BuildApplyStep,
+    name: &dyn Fn(&destiny_app::ItemInstanceId) -> Option<String>,
+) -> Value {
     use destiny_app::build_apply::{ApplyPhase, BuildAction};
+    let phase = match step.phase {
+        ApplyPhase::Dequip => "dequip",
+        ApplyPhase::Move => "move",
+        ApplyPhase::Equip => "equip",
+        ApplyPhase::ClearSpace => "clear_space",
+    };
+    match &step.action {
+        BuildAction::Move { item, from, to } => json!({"phase":phase, "action":"move",
+            "item":item.as_str(), "name":name(item), "from":location(from), "to":location(to)}),
+        BuildAction::PullFromPostmaster { item, character } => json!({"phase":phase,
+            "action":"pull_from_postmaster", "item":item.as_str(), "name":name(item),
+            "character":character.as_str()}),
+        BuildAction::Equip { items, character } => json!({"phase":phase, "action":"equip",
+            "items":items.iter().map(|i| json!({"item":i.as_str(), "name":name(i)})).collect::<Vec<_>>(),
+            "character":character.as_str()}),
+    }
+}
+pub(crate) fn summary_json(s: &BuildSummary) -> Value {
+    summary(s)
+}
+pub(crate) fn step_text(step: &Value) -> String {
+    let label = |item: &Value| {
+        format!(
+            "{} ({})",
+            clean(item["name"].as_str().unwrap_or("item")),
+            clean(item["item"].as_str().unwrap_or(""))
+        )
+    };
+    match step["action"].as_str() {
+        Some("move") => format!(
+            "move {} {} -> {}",
+            label(step),
+            clean(step["from"].as_str().unwrap_or("")),
+            clean(step["to"].as_str().unwrap_or(""))
+        ),
+        Some("pull_from_postmaster") => format!(
+            "pull {} from the Postmaster of {}",
+            label(step),
+            clean(step["character"].as_str().unwrap_or(""))
+        ),
+        _ => format!(
+            "equip {} on {}",
+            step["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(label)
+                .collect::<Vec<_>>()
+                .join(", "),
+            clean(step["character"].as_str().unwrap_or(""))
+        ),
+    }
+}
+pub(crate) fn clean_text(s: &str) -> String {
+    clean(s)
+}
+fn apply_plan(preview: &destiny_app::builds::BuildApplyPreview) -> Value {
     let plan = &preview.plan;
     let name = |id: &destiny_app::ItemInstanceId| {
         preview
@@ -51,24 +111,11 @@ fn apply_plan(preview: &destiny_app::builds::BuildApplyPreview) -> Value {
             .find(|(i, _)| i == id)
             .map(|(_, n)| n.clone())
     };
-    let steps: Vec<_> = plan.steps.iter().map(|step| {
-        let phase = match step.phase {
-            ApplyPhase::Dequip => "dequip",
-            ApplyPhase::Move => "move",
-            ApplyPhase::Equip => "equip",
-            ApplyPhase::ClearSpace => "clear_space",
-        };
-        match &step.action {
-            BuildAction::Move { item, from, to } => json!({"phase":phase, "action":"move",
-                "item":item.as_str(), "name":name(item), "from":location(from), "to":location(to)}),
-            BuildAction::PullFromPostmaster { item, character } => json!({"phase":phase,
-                "action":"pull_from_postmaster", "item":item.as_str(), "name":name(item),
-                "character":character.as_str()}),
-            BuildAction::Equip { items, character } => json!({"phase":phase, "action":"equip",
-                "items":items.iter().map(|i| json!({"item":i.as_str(), "name":name(i)})).collect::<Vec<_>>(),
-                "character":character.as_str()}),
-        }
-    }).collect();
+    let steps: Vec<_> = plan
+        .steps
+        .iter()
+        .map(|step| step_json(step, &name))
+        .collect();
     json!({"kind":"build_apply_plan", "dry_run":true, "dispatched":0, "summary":summary(&preview.summary),
         "target_character":plan.target.as_str(), "steps":steps,
         "skipped":plan.skipped.iter().map(|s| json!({"spec_index":s.spec_index, "reason":s.reason.as_str()})).collect::<Vec<_>>(),
@@ -77,6 +124,33 @@ fn apply_plan(preview: &destiny_app::builds::BuildApplyPreview) -> Value {
         "not_applied":plan.not_applied, "unknown":plan.unknown,
         "metadata":{"checked_at":preview.metadata.sync.checked_at.seconds(),
             "revision":preview.metadata.sync.revision.value()}})
+}
+pub(crate) fn category_exit(category: destiny_app::ErrorCategory) -> (&'static str, i32) {
+    use destiny_app::ErrorCategory as E;
+    match category {
+        E::ProviderValidation => ("invalid_request", 2),
+        E::AmbiguousMatch => ("ambiguous_match", 31),
+        E::UnsupportedOperation => ("unsupported_operation", 40),
+        E::StaleState => ("stale_state", 30),
+        E::DefinitionsUnavailable => ("definitions_unavailable", 33),
+        E::LocalStorage => ("local_storage", 51),
+        E::ConfigurationError => ("configuration_error", 52),
+        E::AuthorizationRequired => ("authorization_required", 10),
+        E::AuthorizationDenied => ("authorization_denied", 10),
+        E::AlreadyAuthorizing | E::AlreadyAuthorized | E::CsrfStateMismatch => {
+            ("authorization_state", 10)
+        }
+        E::ReauthorizationRequired | E::ProviderAuthentication => ("reauthorization_required", 11),
+        E::ProviderRateLimit => ("provider_rate_limit", 20),
+        E::ProviderUnavailable | E::CallbackTimeout => ("provider_unavailable", 21),
+        E::CredentialStoreUnavailable => ("credential_store_unavailable", 50),
+        E::PartialFailure => ("partial_failure", 41),
+        E::VerificationFailed => ("verification_failed", 42),
+        E::UnknownStatName => ("unknown_stat_name", 2),
+        E::UnknownSearchName => ("unknown_search_name", 2),
+        E::AmbiguousSearchName => ("ambiguous_search_name", 2),
+        E::ClockOverflow | E::PlanIdExhausted => ("internal_error", 70),
+    }
 }
 impl BuildOutput {
     pub fn from_result(result: Result<BuildReply, BuildError>) -> Self {
@@ -154,6 +228,14 @@ impl BuildOutput {
                 )
             }
             Ok(BuildReply::ApplyPlan(preview)) => Self::success(apply_plan(&preview)),
+            Ok(BuildReply::Applied(applied)) => {
+                let (value, exit_code) = crate::build_apply_result::execution(&applied);
+                Self {
+                    value,
+                    exit_code,
+                    export: None,
+                }
+            }
             Ok(BuildReply::List(builds)) => Self::success(
                 json!({"kind":"builds", "builds":builds.iter().map(summary).collect::<Vec<_>>()}),
             ),
@@ -244,32 +326,7 @@ impl BuildOutput {
         let (code, exit_code) = if not_found {
             ("item_not_found", 32)
         } else {
-            match category {
-                E::ProviderValidation => ("invalid_request", 2),
-                E::AmbiguousMatch => ("ambiguous_match", 31),
-                E::UnsupportedOperation => ("unsupported_operation", 40),
-                E::StaleState => ("stale_state", 30),
-                E::DefinitionsUnavailable => ("definitions_unavailable", 33),
-                E::LocalStorage => ("local_storage", 51),
-                E::ConfigurationError => ("configuration_error", 52),
-                E::AuthorizationRequired => ("authorization_required", 10),
-                E::AuthorizationDenied => ("authorization_denied", 10),
-                E::AlreadyAuthorizing | E::AlreadyAuthorized | E::CsrfStateMismatch => {
-                    ("authorization_state", 10)
-                }
-                E::ReauthorizationRequired | E::ProviderAuthentication => {
-                    ("reauthorization_required", 11)
-                }
-                E::ProviderRateLimit => ("provider_rate_limit", 20),
-                E::ProviderUnavailable | E::CallbackTimeout => ("provider_unavailable", 21),
-                E::CredentialStoreUnavailable => ("credential_store_unavailable", 50),
-                E::PartialFailure => ("partial_failure", 41),
-                E::VerificationFailed => ("verification_failed", 42),
-                E::UnknownStatName => ("unknown_stat_name", 2),
-                E::UnknownSearchName => ("unknown_search_name", 2),
-                E::AmbiguousSearchName => ("ambiguous_search_name", 2),
-                E::ClockOverflow | E::PlanIdExhausted => ("internal_error", 70),
-            }
+            category_exit(category)
         };
         Self {
             value: json!({"error":{"code":code, "message":message, "reason":reason, "candidates":candidates}}),
@@ -306,6 +363,9 @@ impl BuildOutput {
                     .join("\n")
             };
         }
+        if self.value["kind"] == "build_apply" {
+            return crate::build_apply_result::render(&self.value);
+        }
         if self.value["kind"] == "build_apply_plan" {
             let v = &self.value;
             let mut lines = vec![format!(
@@ -314,37 +374,7 @@ impl BuildOutput {
                 clean(v["target_character"].as_str().unwrap_or(""))
             )];
             for (n, step) in v["steps"].as_array().into_iter().flatten().enumerate() {
-                let label = |item: &Value| {
-                    format!(
-                        "{} ({})",
-                        clean(item["name"].as_str().unwrap_or("item")),
-                        clean(item["item"].as_str().unwrap_or(""))
-                    )
-                };
-                let text = match step["action"].as_str() {
-                    Some("move") => format!(
-                        "move {} {} -> {}",
-                        label(step),
-                        clean(step["from"].as_str().unwrap_or("")),
-                        clean(step["to"].as_str().unwrap_or(""))
-                    ),
-                    Some("pull_from_postmaster") => format!(
-                        "pull {} from the Postmaster of {}",
-                        label(step),
-                        clean(step["character"].as_str().unwrap_or(""))
-                    ),
-                    _ => format!(
-                        "equip {} on {}",
-                        step["items"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .map(label)
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        clean(step["character"].as_str().unwrap_or(""))
-                    ),
-                };
+                let text = step_text(step);
                 lines.push(format!(
                     "{}. [{}] {text}",
                     n + 1,

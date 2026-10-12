@@ -78,20 +78,3 @@ fn stdin_input_is_bounded_utf8() {
     let oversized = vec![b' '; destiny_adapters::dim_loadout::MAX_DIM_INPUT_BYTES + 1];
     assert!(destiny_cli::builds::read_input(oversized.as_slice()).is_err());
 }
-
-#[test]
-fn apply_without_dry_run_is_refused_before_configuration_or_io() {
-    let args = destiny_cli::command::BuildArgs {
-        command: destiny_cli::command::BuildCommand::Apply(destiny_cli::command::BuildApplyArgs {
-            selection: destiny_cli::command::BuildSelection {
-                id: Some("id".into()),
-                name: None,
-            },
-            character: None,
-            dry_run: false,
-        }),
-    };
-    let output = destiny_cli::builds::compose(&args).unwrap();
-    assert_eq!(output.exit_code, 40);
-    assert_eq!(output.value["error"]["code"], "unsupported_operation");
-}

@@ -267,13 +267,12 @@ fn export_and_typed_offline_error() {
     assert_eq!(missing.value["error"]["code"], "item_not_found");
 }
 
-#[test]
-fn apply_plan_renders_typed_steps_in_json_and_text() {
+fn apply_preview() -> destiny_app::builds::BuildApplyPreview {
     use destiny_app::build_apply::*;
     use destiny_app::builds::BuildApplyPreview;
     use destiny_app::*;
     let character = CharacterId::new("1");
-    let preview = BuildApplyPreview {
+    BuildApplyPreview {
         summary: BuildSummary {
             id: "b".into(),
             name: "Raid\u{7}".into(),
@@ -291,6 +290,7 @@ fn apply_plan_renders_typed_steps_in_json_and_text() {
                         item: ItemInstanceId::new("7"),
                         character: character.clone(),
                     },
+                    needs: vec![],
                 },
                 BuildApplyStep {
                     phase: ApplyPhase::Move,
@@ -299,6 +299,7 @@ fn apply_plan_renders_typed_steps_in_json_and_text() {
                         from: ItemLocation::Vault,
                         to: ItemLocation::Character(character.clone()),
                     },
+                    needs: vec![0],
                 },
                 BuildApplyStep {
                     phase: ApplyPhase::Equip,
@@ -306,6 +307,7 @@ fn apply_plan_renders_typed_steps_in_json_and_text() {
                         items: vec![ItemInstanceId::new("7")],
                         character,
                     },
+                    needs: vec![],
                 },
             ],
             skipped: vec![BuildApplySkip {
@@ -328,7 +330,12 @@ fn apply_plan_renders_typed_steps_in_json_and_text() {
             },
             freshness: FreshnessStatus::Fresh,
         },
-    };
+    }
+}
+
+#[test]
+fn apply_plan_renders_typed_steps_in_json_and_text() {
+    let preview = apply_preview();
     let output = BuildOutput::from_result(Ok(BuildReply::ApplyPlan(Box::new(preview))));
     assert_eq!(output.exit_code, 0);
     assert_eq!(output.value["kind"], "build_apply_plan");
@@ -354,4 +361,174 @@ Already in place: [0]\n\
 Not applied: [\"sockets_mods_subclass_deferred_to_be_007b\"]\n\
 Unknown evidence: [\"vault_capacity\"]"
     );
+}
+
+fn execution(
+    preview: destiny_app::builds::BuildApplyPreview,
+    outcomes: Vec<Vec<destiny_app::build_apply_exec::ItemStatus>>,
+    status: destiny_app::build_apply_exec::ApplyStatus,
+    local_state: destiny_app::build_apply_exec::ApplyLocalState,
+) -> BuildReply {
+    use destiny_app::build_apply_exec::*;
+    let steps = preview
+        .plan
+        .steps
+        .iter()
+        .zip(outcomes)
+        .enumerate()
+        .map(|(index, (step, statuses))| {
+            let items = match &step.action {
+                destiny_app::build_apply::BuildAction::Move { item, .. }
+                | destiny_app::build_apply::BuildAction::PullFromPostmaster { item, .. } => {
+                    vec![item.clone()]
+                }
+                destiny_app::build_apply::BuildAction::Equip { items, .. } => items.clone(),
+            };
+            StepReport {
+                index,
+                step: step.clone(),
+                outcomes: items
+                    .into_iter()
+                    .zip(statuses)
+                    .map(|(item, status)| ItemOutcome { item, status })
+                    .collect(),
+            }
+        })
+        .collect();
+    BuildReply::Applied(Box::new(BuildApplyExecution {
+        preview,
+        execution: PlanExecution {
+            steps,
+            status,
+            local_state,
+            dispatched: 1,
+        },
+    }))
+}
+
+#[test]
+fn apply_execution_renders_typed_outcomes_text_and_exit_code() {
+    use destiny_app::build_apply_exec::*;
+    let reply = execution(
+        apply_preview(),
+        vec![
+            vec![ItemStatus::Succeeded],
+            vec![ItemStatus::Failed(StepFailure::Rejected(
+                "not_transferable",
+            ))],
+            vec![ItemStatus::Skipped(SkipCause::DependencyFailed(1))],
+        ],
+        ApplyStatus::Partial,
+        ApplyLocalState::RefreshPending,
+    );
+    let output = BuildOutput::from_result(Ok(reply));
+    assert_eq!(output.exit_code, 41);
+    let v = &output.value;
+    assert_eq!(v["kind"], "build_apply");
+    assert_eq!(v["dry_run"], false);
+    assert_eq!(v["result"], "partial");
+    assert_eq!(v["local_state"], "refresh_pending");
+    assert_eq!(v["dispatched"], 1);
+    assert_eq!(v["steps"][0]["outcomes"][0]["status"], "succeeded");
+    assert_eq!(
+        v["steps"][1]["outcomes"][0],
+        json!({"item":"7","name":"Hawkmoon","status":"failed","failure":"rejected",
+            "reason":"not_transferable","message":destiny_output::rejection_message("not_transferable")})
+    );
+    assert_eq!(
+        v["steps"][2]["outcomes"][0],
+        json!({"item":"7","name":"Hawkmoon","status":"skipped","cause":"dependency_failed","depends_on_step":2})
+    );
+    assert_eq!(v["steps"][1]["needs"], json!([1]));
+    assert_eq!(v["counts"], json!({"succeeded":1,"failed":1,"skipped":1}));
+    assert_eq!(
+        v["not_applied"],
+        json!([{"outcome":"not_applied","reason":"sockets_mods_subclass_deferred_to_be_007b"}])
+    );
+    assert_eq!(v["skipped"], json!([{"spec_index":2,"reason":"no_space"}]));
+    assert_eq!(
+        output.render_text(),
+        "Applied Raid on character 1: partial (1 succeeded, 1 failed, 1 skipped)\n\
+Bungie acknowledgements are not re-read; do not blindly retry.\n\
+1. [move] succeeded: pull Hawkmoon (7) from the Postmaster of 1\n\
+2. [move] failed (not_transferable): move Hawkmoon (7) vault -> character:1\n\
+3. [equip] skipped (step 2 did not succeed): equip Hawkmoon (7) on 1\n\
+Skipped item 2: \"no_space\"\n\
+Not cleared \"9\": \"no_space\"\n\
+Not applied: sockets, mods and subclass (BE-007b)\n\
+Local state: refresh pending"
+    );
+}
+
+#[test]
+fn apply_execution_exit_codes_reuse_existing_action_exits() {
+    use destiny_app::ErrorCategory as E;
+    use destiny_app::build_apply_exec::*;
+    let ok = || vec![vec![ItemStatus::Succeeded]; 3];
+    let exit = |preview, outcomes, status, local| {
+        BuildOutput::from_result(Ok(execution(preview, outcomes, status, local))).exit_code
+    };
+    let mut clean = apply_preview();
+    clean.plan.skipped.clear();
+    clean.plan.clear_skipped.clear();
+    // Every step applied and nothing left unplanned.
+    assert_eq!(
+        exit(
+            clean.clone(),
+            ok(),
+            ApplyStatus::Applied,
+            ApplyLocalState::Updated
+        ),
+        0
+    );
+    // Unplanned build items mean the build is not fully applied.
+    assert_eq!(
+        exit(
+            apply_preview(),
+            ok(),
+            ApplyStatus::Applied,
+            ApplyLocalState::Updated
+        ),
+        41
+    );
+    // Nothing to send is not a failure.
+    let mut empty = clean.clone();
+    empty.plan.steps.clear();
+    assert_eq!(
+        exit(empty, vec![], ApplyStatus::NoOp, ApplyLocalState::Unchanged),
+        0
+    );
+    let failed = || vec![vec![ItemStatus::Failed(StepFailure::Uncertain)]; 3];
+    assert_eq!(
+        exit(
+            clean.clone(),
+            failed(),
+            ApplyStatus::Failed,
+            ApplyLocalState::RefreshPending
+        ),
+        41
+    );
+    // Persistence failure keeps the existing verification exit.
+    assert_eq!(
+        exit(
+            clean.clone(),
+            ok(),
+            ApplyStatus::Applied,
+            ApplyLocalState::Failed
+        ),
+        42
+    );
+    // Nothing reached Bungie: category exits (rate limit 20, stale state 30).
+    let refused = |category| {
+        let outcome = ItemStatus::Failed(StepFailure::NotDispatched(category));
+        exit(
+            clean.clone(),
+            vec![vec![outcome]; 3],
+            ApplyStatus::Refused(category),
+            ApplyLocalState::Unchanged,
+        )
+    };
+    assert_eq!(refused(E::ProviderRateLimit), 20);
+    assert_eq!(refused(E::StaleState), 30);
+    assert_eq!(refused(E::ReauthorizationRequired), 11);
 }

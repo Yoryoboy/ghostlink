@@ -1,13 +1,17 @@
 //! Invocation-owned build composition. Local operations do not acquire credentials.
-use crate::command::{BuildArgs, BuildCommand, CliError};
+use crate::command::{BuildApplyArgs, BuildArgs, BuildCommand, CliError};
 use crate::runtime::{ProductionFoundations, ReadFoundations};
 use destiny_adapters::dim_loadout::{DimBuildCodec, MAX_DIM_INPUT_BYTES};
 use destiny_adapters::{BungieProfileGateway, ProfileApiKey, SystemClock};
-use destiny_app::builds::{BuildError, BuildService, LocalBuildRequest};
+use destiny_app::build_apply_exec::BuildGateways;
+use destiny_app::builds::{BuildError, BuildReply, BuildService, LocalBuildRequest};
 use destiny_app::{
-    AppError, Clock, DestinyMembership, ErrorCategory, InventoryRepository, ProfileSyncService,
-    SearchTerm,
+    AppError, ArmorCatalogRepository, BuildCodec, BuildRepository, Clock, DestinyMembership,
+    EquipGateway, EquipItemsGateway, ErrorCategory, FreshnessPolicy, InstancedPullGateway,
+    InventoryRepository, ProfileGateway, ProfileSyncService, SearchTerm, StatDefinitionRepository,
+    Timestamp, TransferGateway, WorldDefinitionRepository,
 };
+
 use destiny_output::builds::BuildOutput;
 use std::io::Read;
 
@@ -36,6 +40,45 @@ pub fn read_input(reader: impl Read) -> Result<String, CliError> {
     }
     String::from_utf8(bytes).map_err(|_| CliError::invalid_request())
 }
+/// `--dry-run` plans from fresh state and never touches the gateways; otherwise the plan
+/// is executed in order. Confirmation follows move/equip/apply-loadout: explicit
+/// arguments are the intent, there is no prompt.
+pub fn apply_build<G, I, R, C, T, E, B, P>(
+    builds: &BuildService<R, C>,
+    sync: &mut ProfileSyncService<G, I>,
+    args: &BuildApplyArgs,
+    gateways: Option<&mut BuildGateways<T, E, B, P>>,
+    policy: FreshnessPolicy,
+    now: Timestamp,
+    pace: &mut dyn FnMut(),
+) -> Result<BuildOutput, CliError>
+where
+    G: ProfileGateway,
+    I: InventoryRepository
+        + WorldDefinitionRepository
+        + StatDefinitionRepository
+        + ArmorCatalogRepository,
+    R: BuildRepository,
+    C: BuildCodec,
+    T: TransferGateway,
+    E: EquipGateway,
+    B: EquipItemsGateway,
+    P: InstancedPullGateway,
+{
+    let request = args.request()?;
+    let capacity = destiny_adapters::equipment_capacity_policy::pinned_equipment_capacity_policy();
+    Ok(BuildOutput::from_result(match (args.dry_run, gateways) {
+        (false, Some(gateways)) => builds
+            .apply(sync, &request, &capacity, gateways, policy, now, pace)
+            .map(|applied| BuildReply::Applied(Box::new(applied))),
+        (true, _) => builds
+            .plan_apply(sync, &request, &capacity, policy, now)
+            .map(|preview| BuildReply::ApplyPlan(Box::new(preview))),
+        (false, None) => Err(BuildError::App(AppError::new(
+            ErrorCategory::UnsupportedOperation,
+        ))),
+    }))
+}
 pub fn compose(arguments: &BuildArgs) -> Result<BuildOutput, CliError> {
     let local = match &arguments.command {
         BuildCommand::Import { input: value } => {
@@ -60,12 +103,6 @@ pub fn compose(arguments: &BuildArgs) -> Result<BuildOutput, CliError> {
         }
         BuildCommand::Apply(a) => {
             a.request()?;
-            if !a.dry_run {
-                // No executor yet: refuse before any configuration or I/O.
-                return Ok(BuildOutput::from_result(Err(BuildError::App(
-                    AppError::new(ErrorCategory::UnsupportedOperation),
-                ))));
-            }
             None
         }
         BuildCommand::List => Some(LocalBuildRequest::List),
@@ -125,19 +162,49 @@ pub fn compose(arguments: &BuildArgs) -> Result<BuildOutput, CliError> {
         ));
     }
     if let BuildCommand::Apply(a) = &arguments.command {
-        // Read-only: profile reads only, no mutation transport is composed.
-        return Ok(BuildOutput::from_result(
-            builds
-                .plan_apply(
-                    &mut sync,
-                    &a.request()?,
-                    &destiny_adapters::equipment_capacity_policy::pinned_equipment_capacity_policy(
-                    ),
-                    config.freshness_policy(),
-                    now,
-                )
-                .map(|preview| destiny_app::builds::BuildReply::ApplyPlan(Box::new(preview))),
-        ));
+        // --dry-run composes no mutation transport at all.
+        let mut gateways = if a.dry_run {
+            None
+        } else {
+            let source = foundations.credential_source(&config)?;
+            let key = config.api_key().expose_secret().to_owned();
+            Some(BuildGateways {
+                transfer: destiny_adapters::BungieTransferGateway::new(
+                    destiny_adapters::HttpTransferTransport::new()?,
+                    SystemClock::new(),
+                    source.clone(),
+                    destiny_adapters::TransferApiKey::new(&key)?,
+                )?,
+                equip: destiny_adapters::BungieEquipGateway::new(
+                    destiny_adapters::HttpEquipTransport::new()?,
+                    SystemClock::new(),
+                    source.clone(),
+                    destiny_adapters::EquipApiKey::new(&key)?,
+                )?,
+                equip_items: destiny_adapters::BungieEquipItemsGateway::new(
+                    destiny_adapters::HttpEquipItemsTransport::new()?,
+                    SystemClock::new(),
+                    source.clone(),
+                    destiny_adapters::EquipItemsApiKey::new(&key)?,
+                )?,
+                pull: destiny_adapters::instanced_pull::BungieInstancedPullGateway::new(
+                    destiny_adapters::instanced_pull::HttpInstancedPullTransport::new()?,
+                    SystemClock::new(),
+                    source,
+                    destiny_adapters::instanced_pull::InstancedPullApiKey::new(&key)?,
+                )?,
+            })
+        };
+        let mut last = None;
+        return apply_build(
+            &builds,
+            &mut sync,
+            a,
+            gateways.as_mut(),
+            config.freshness_policy(),
+            now,
+            &mut || destiny_app::equip_items::pace(&mut last),
+        );
     }
     let result = match &arguments.command {
         BuildCommand::FromEquipped { name, character } => builds.from_equipped(

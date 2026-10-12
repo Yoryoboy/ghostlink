@@ -66,21 +66,38 @@ names return candidates (exit 31); missing builds use `item_not_found` (32).
 Delete by ID is idempotent and reports `deleted: false` if absent. Existing
 [exit codes](../skills/ghostlink/references/exit-codes.md) apply; no new exits.
 
-### Preview applying a build
+### Preview and apply a build
 
 `ghostlink build apply <ID|--name N> [--character C] --dry-run` prints the DIM-style
 item plan (Postmaster pulls, dequips, Vault-mediated moves, space-making moves,
 grouped equips, optional clear-space) as `build_apply_plan` JSON or text. It uses
 ordinary profile freshness and the same character selection as `build check`, reads
-only, and reports `dispatched: 0`. Skipped items carry typed reasons; sockets, mods
-and subclass are listed under `not_applied` (BE-007b). Evidence that is not
-available (Vault capacity, saved-loadout membership) is listed under `unknown`;
-Vault-staged moves use the Vault bucket mapping and capacity stored by
-`sync-manifest` (run it once after upgrading to schema 34; it now also downloads the
-~39 MB vendor table). Without stored evidence they are skipped as
-`vault_capacity_unavailable`. **Without `--dry-run` the command exits 40
-(`unsupported_operation`)**: the executor is not implemented yet. See
-[build-apply.md](build-apply.md).
+only, composes no mutation transport and reports `dispatched: 0`. Skipped items carry
+typed reasons; sockets, mods and subclass are listed under `not_applied` (BE-007b).
+Evidence that is not available (Vault capacity, saved-loadout membership) is listed
+under `unknown`; Vault-staged moves use the Vault bucket mapping and capacity stored
+by `sync-manifest` (run it once after upgrading to schema 34; it now also downloads
+the ~39 MB vendor table). Without stored evidence they are skipped as
+`vault_capacity_unavailable`.
+
+**Without `--dry-run` the command executes the plan**, in order, through the same
+transfer, equip, batch-equip and Postmaster-pull actions as `move`, `equip`,
+`equip-items` and `pull`. Like them it has no confirmation prompt (the arguments are
+the intent), acknowledgement is success (no post-action read), acknowledged steps
+update the local projection, nothing is retried, and the shared throttle fails fast
+above 30 s. A failed step only stops what depends on it: independent steps still run
+and a bulk equip takes the items that arrived (DIM `loadout-apply.ts`). Each step
+reports per item `succeeded`, `failed` (a definitive Bungie `reason`, a batch `code`,
+`uncertain`, ...) or `skipped` (`dependency_failed` with `depends_on_step`,
+`provider_stopped` after a rate-limit or authentication refusal). The result
+(`kind: build_apply`) has `result` of `applied`, `no_op`, `partial`, `failed` or
+`refused`, per-status `counts`, `local_state` (`updated`, `unchanged`,
+`refresh_pending`, `failed`) and `not_applied` for the sockets deferred to BE-007b.
+Exits reuse the action contract: 0 for `applied`/`no_op`; **41** for `partial`/`failed`
+(including build items that could not be planned; do not retry, run `ghostlink sync`);
+42 when local state could not be updated; and the category exit (for example 20 rate
+limit, 11 reauthorization, 30 stale state) when nothing reached Bungie. See
+[build-apply.md](build-apply.md). No MCP tool applies builds yet.
 
 ### Check a build against inventory
 

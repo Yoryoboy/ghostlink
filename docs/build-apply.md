@@ -1,10 +1,11 @@
-# Build apply: planner and dry-run (BE-007a, incomplete)
+# Build apply: planner, dry-run and executor (BE-007a, incomplete)
 
-`ghostlink build apply ... --dry-run` prints the plan from the pure equipment
-planner and dispatches nothing (profile reads only; no mutation transport is
-composed). There is **no executor and no MCP apply tool yet**: `build apply`
-without `--dry-run` exits 40 (`unsupported_operation`). Existing move, equip,
-batch equip and in-game apply-loadout commands are unchanged.
+`ghostlink build apply ... --dry-run` prints the plan from the pure equipment planner
+and dispatches nothing (profile reads only; no mutation transport is composed).
+Without `--dry-run` the same plan is executed (see "Executor" below). **There is no MCP
+apply tool yet** (BE-007a2c, second half), and sockets, mods and subclass are not
+applied (BE-007b). Existing move, equip, batch equip and in-game apply-loadout
+commands are unchanged.
 
 ## Implemented boundary
 
@@ -100,11 +101,58 @@ without being stored (the Vault record is 2,576 bytes, 14 entries). Ceilings:
 buckets 10,000 records / 4 MiB; vendors 20,000 records scanned / 128 MiB, 256 accepted
 entries kept. A table without the Vault vendor yields no evidence, not an error.
 
+## Executor (BE-007a2c)
+
+`destiny_app::build_apply_exec::execute_plan` runs the plan's steps in order through
+the existing adapters: `TransferGateway` (moves), `EquipGateway` (a lone equip),
+`EquipItemsGateway` (a planned grouped equip) and `InstancedPullGateway` (Postmaster
+pulls). Optimistic semantics are unchanged: a Bungie acknowledgement is success, the
+intended result is applied to the local projection per succeeded step (the same
+effects the single actions use), there is no post-action refresh and no retry. Requests
+are paced 100 ms apart like batch equip; the adapters own the shared throttle, which
+fails before dispatch when a wait would exceed 30 s. The plan is only valid for the
+projection revision it was computed from; a changed revision is refused as
+`stale_state` before anything is sent.
+
+Partial failure follows DIM, adapted:
+
+| Decision | DIM evidence (`src/app/`) |
+|---|---|
+| A failed step never aborts the plan; independent steps keep running | `loadout-drawer/loadout-apply.ts:527-578` (per-item try/catch inside the move loop) |
+| The bulk equip takes only the items that arrived; failed or skipped ones are dropped | `loadout-drawer/loadout-apply.ts:580-593` |
+| A failed grouped dequip (replacement move or equip) fails every item of that group | `loadout-drawer/loadout-apply.ts:471-523` |
+| Bulk-equip partial failure is per item, by Bungie error code | `loadout-drawer/loadout-apply.ts:595-611` |
+| A lone dequip, Postmaster pull or move-aside is part of the move it prepares, so its failure fails that move | `loadout-drawer/loadout-apply.ts:456-466,527-578`, `inventory/item-move-service.ts:677-741,1072-1083` |
+
+Ghostlink adaptations (DIM does not model these):
+
+- **Dependencies are explicit.** Planner steps carry `needs`, the earlier steps whose
+  success they rely on (dequip, pull, space-making and earlier legs of the same
+  move; a grouped dequip equip needs every replacement move). A step with a failed
+  need is `skipped` with `dependency_failed` and the step it waited for. Equips also
+  wait per item on the last step that touched that item.
+- **Uncertain is not success.** A dispatched step with an unknown effect is `failed`
+  (`uncertain`), is not projected, is not retried, and its dependents are skipped. DIM
+  has no equivalent because it re-reads inventory.
+- **Session-wide refusals stop the rest.** Rate-limit (including the throttle
+  fail-fast), authentication, authorization or Bungie-unavailable refusals mark the
+  remaining steps `skipped` with `provider_stopped`, because they would hit the same
+  gate. DIM retries throttles with backoff; Ghostlink never retries.
+- **Equip-not-possible** (DIM `checkEquipNotPossible`, `loadout-apply.ts:1584-1591`)
+  is only a UI hint in DIM; here it is an ordinary typed rejection
+  (`not_in_social_space`, `unequippable`).
+
+Results (`kind: build_apply`): per item `succeeded`, `failed` (`rejected` with a stable
+`reason`, `bungie_code`, `not_reported`, `authentication_refused`, `transient`,
+`uncertain`, `not_dispatched`) or `skipped`; `not_applied` lists the BE-007b scope.
+`result` is `applied`, `no_op`, `partial`, `failed` or `refused`. Exits reuse the action
+contract with no new code: 0 applied/no-op, 41 partial or failed (also when some build
+items could not be planned), 42 local state could not be updated, category exits when
+nothing reached Bungie. Freshness is invalidated after any dispatched step that did not
+succeed, so the next read re-syncs.
+
 ## Remaining work
 
-Stack amounts; the executor (reusing the move,
-equip, batch equip and Postmaster pull adapters, throttle and error mapping, with
-DIM's per-item partial failure adapted to optimistic semantics: continue
-independent items, track dependency failures, never blindly retry, never claim
-provider-observed success); a no-dispatch test that fails any mutation transport;
-and the MCP mutation tool. BE-007b (sockets, mods, subclass) remains separate.
+Stack amounts; the MCP mutation tool (BE-007a2c second half: `apply_build` with a
+`dry_run` argument, description byte budget and mutation-tool tests); live validation
+(BE-010). BE-007b (sockets, mods, subclass) remains separate.

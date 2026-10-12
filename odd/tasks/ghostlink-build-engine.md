@@ -476,9 +476,28 @@ coverage (`domain.rs:123-126`).
       `BuildService::plan_apply`. Workspace: 2219 all-features, 2187
       default, 0 failed; clippy both modes, fmt. Follow-up: conditional
       vendor fetch if the download cost matters.
-    - [ ] **BE-007a2c — Executor and MCP.** Executor with DIM partial
-      failure adapted to optimistic semantics, fail-on-mutation fake,
-      MCP mutation tool, `docs/mcp.md`.
+    - [x] **BE-007a2c — Executor and CLI.** `build_apply_exec.rs`:
+      failed steps never abort the plan (`loadout-apply.ts:527-578`), bulk
+      equip takes only arrived items (`:580-593`), failed grouped dequip
+      fails its group (`:471-523`), per-item bulk-equip failures by Bungie
+      code (`:595-611`); planner steps carry `needs`, so dependents of a
+      failed step are skipped. Ghostlink adaptations: uncertain step =
+      failed (never projected or retried); rate-limit/auth/unavailable
+      stops the rest as `provider_stopped` (fail-fast instead of DIM
+      retries); 100 ms pacing like batch equip; stale-plan refusal when the
+      projection revision changed. No confirmation prompt (move, equip and
+      apply-loadout have none). `ghostlink build apply` executes; results
+      applied/no_op/partial/failed/refused; exits 0, 41, 42 or category
+      exit, no new codes. Fakes panic on any unscripted mutation. Over the
+      unit budget (~1,100 production, ~1,170 test lines), kept as one unit
+      because executor and CLI are tested together. Workspace: 2238
+      all-features, 2206 default, 0 failed; clippy both modes, fmt.
+    - [ ] **BE-007a2d — MCP tool.** `apply_build` with `dry_run`, schema
+      and description byte budget, mutation decorator chain, gateway
+      composition in `destiny-mcp/src/main.rs`, mutation-tool tests,
+      `docs/mcp.md`. Also: chunk grouped equips above the 17-item
+      `EquipItemsRequest` limit (check DIM), and a dedicated test for the
+      local-state persistence failure path (exit 42).
     - Original BE-007a2 scope: **Planner completion and exposure.** Saved-loadout
       displacement ranking, final clear-space flags, Postmaster/stacks,
       single-item inline equip parity, source grouping across interleaved

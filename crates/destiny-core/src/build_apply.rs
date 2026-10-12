@@ -30,6 +30,9 @@ pub enum BuildAction {
 pub struct BuildApplyStep {
     pub phase: ApplyPhase,
     pub action: BuildAction,
+    /// Earlier steps (indices into the plan) whose success this step relies on:
+    /// dequip, Postmaster pull, space-making and earlier legs of the same move.
+    pub needs: Vec<usize>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApplySkipReason {
@@ -161,6 +164,10 @@ struct Planner<'a> {
     active: Vec<ItemInstanceId>,
     steps: Vec<BuildApplyStep>,
     phase: ApplyPhase,
+    /// A grouped dequip equip needs every replacement move since this index.
+    hard_from: Option<usize>,
+    /// Items whose later moves wait for a grouped dequip equip.
+    pinned: Vec<(ItemInstanceId, usize)>,
 }
 impl Planner<'_> {
     fn definition(&self, item: &ItemInstance) -> Result<&ItemDefinition, ApplySkipReason> {
@@ -317,12 +324,16 @@ impl Planner<'_> {
                 }
             }
         }
+        let needs = self
+            .hard_from
+            .map_or(vec![], |from| (from..self.steps.len()).collect());
         self.steps.push(BuildApplyStep {
             phase: self.phase,
             action: BuildAction::Equip {
                 items: ids,
                 character: character.clone(),
             },
+            needs,
         });
         Ok(())
     }
@@ -464,6 +475,8 @@ impl Planner<'_> {
         if &item.location == target {
             return Ok(());
         }
+        // Everything pushed from here on prepares this move (DIM moveToStore).
+        let start = self.steps.len();
         self.bucket(&item)?;
         if self.active.contains(id) {
             return Err(ApplySkipReason::NoSpace);
@@ -490,6 +503,7 @@ impl Planner<'_> {
                     item: id.clone(),
                     character: owner,
                 },
+                needs: (start..self.steps.len()).collect(),
             });
             self.relocate(id, &home);
             item = self.item(id);
@@ -510,9 +524,9 @@ impl Planner<'_> {
         let result = (|| {
             self.dequip(id)?;
             if item.location != ItemLocation::Vault && *target != ItemLocation::Vault {
-                self.leg(id, &ItemLocation::Vault)?;
+                self.leg(id, &ItemLocation::Vault, start)?;
             }
-            self.leg(id, target)
+            self.leg(id, target, start)
         })();
         self.active.pop();
         result
@@ -526,9 +540,18 @@ impl Planner<'_> {
         changed.location = to.clone();
         changed.equipped = false;
     }
-    fn leg(&mut self, id: &ItemInstanceId, target: &ItemLocation) -> Result<(), ApplySkipReason> {
+    fn leg(
+        &mut self,
+        id: &ItemInstanceId,
+        target: &ItemLocation,
+        start: usize,
+    ) -> Result<(), ApplySkipReason> {
         let item = self.item(id);
         self.space(target, &item)?;
+        let mut needs: Vec<_> = (start..self.steps.len()).collect();
+        needs.extend(self.pinned.iter().filter(|(i, _)| i == id).map(|(_, n)| *n));
+        needs.sort_unstable();
+        needs.dedup();
         self.steps.push(BuildApplyStep {
             phase: self.phase,
             action: BuildAction::Move {
@@ -536,6 +559,7 @@ impl Planner<'_> {
                 from: item.location,
                 to: target.clone(),
             },
+            needs,
         });
         self.relocate(id, target);
         Ok(())
@@ -688,6 +712,8 @@ pub fn plan_build_items(
         active: vec![],
         steps: vec![],
         phase: ApplyPhase::Dequip,
+        hard_from: None,
+        pinned: vec![],
     };
     let mut plan = BuildApplyPlan {
         target: target.clone(),
@@ -801,6 +827,7 @@ pub fn plan_build_items(
     let mut dequip_failed = vec![];
     for (owner, group) in owners.iter().filter(|(_, g)| g.len() > 1) {
         let home = ItemLocation::Character(owner.clone());
+        let group_start = p.steps.len();
         let mut replacements = vec![];
         for (index, id) in group {
             let result = p.attempt(|p| {
@@ -820,19 +847,32 @@ pub fn plan_build_items(
                 }
             }
         }
-        if !replacements.is_empty()
-            && let Err(reason) = p.attempt(|p| p.equip(replacements, owner))
-        {
-            let rest: Vec<_> = group
-                .iter()
-                .filter(|(i, _)| !dequip_failed.contains(i))
-                .collect();
-            for (index, _) in rest {
-                dequip_failed.push(*index);
-                plan.skipped.push(BuildApplySkip {
-                    spec_index: *index,
-                    reason,
-                });
+        if !replacements.is_empty() {
+            p.hard_from = Some(group_start);
+            let equipped = p.attempt(|p| p.equip(replacements, owner));
+            p.hard_from = None;
+            match equipped {
+                Ok(()) => {
+                    let equip = p.steps.len() - 1;
+                    for (index, id) in group {
+                        if !dequip_failed.contains(index) {
+                            p.pinned.push((id.clone(), equip));
+                        }
+                    }
+                }
+                Err(reason) => {
+                    let rest: Vec<_> = group
+                        .iter()
+                        .filter(|(i, _)| !dequip_failed.contains(i))
+                        .collect();
+                    for (index, _) in rest {
+                        dequip_failed.push(*index);
+                        plan.skipped.push(BuildApplySkip {
+                            spec_index: *index,
+                            reason,
+                        });
+                    }
+                }
             }
         }
     }

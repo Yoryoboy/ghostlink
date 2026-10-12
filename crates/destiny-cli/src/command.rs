@@ -230,8 +230,8 @@ pub enum BuildCommand {
     Show(BuildSelection),
     /// Check inventory resolution and supported DIM findings; never applies gear.
     Check(BuildCheckArgs),
-    /// Plan item moves and equips for a build. Only --dry-run is available
-    /// until the executor lands; it prints the plan and dispatches nothing.
+    /// Move and equip a build's items (sockets and mods are not applied yet).
+    /// With --dry-run it prints the plan and dispatches nothing.
     Apply(BuildApplyArgs),
     /// Delete a local build; ID deletion is idempotent.
     Delete(BuildSelection),
