@@ -968,7 +968,13 @@ where
             &hit.definition,
             &hit.instance,
         )?;
+        let fragment_capacity = crate::armor_model::inspect_fragment_capacity(
+            self.repository(),
+            &hit.definition,
+            &hit.instance,
+        )?;
         Ok(Resolution::Unique(ItemInspection {
+            fragment_capacity,
             armor_model,
             plug_details,
             perk_names: hit.perk_names,
@@ -3544,6 +3550,7 @@ mod tests {
         let mut armor = definition(1, "Armor", Some("armor"), vec![]);
         armor.slot = Some(ItemSlot::Helmet);
         armor.armor.stat_group_hash = Some(7);
+        armor.armor.equipable_item_set_hash = Some(88);
         armor.armor.investment_stats = vec![destiny_core::InvestmentStat {
             stat_type_hash: ARMOR_STATS[0],
             value: 30,
@@ -3569,28 +3576,45 @@ mod tests {
             .iter()
             .map(|&hash| destiny_core::StatDefinition::new(hash, format!("Stat {hash}")).unwrap())
             .collect();
-        world.armor_catalogs = vec![ArmorCatalogRecord::StatGroup(StatGroupDefinition {
-            hash: 7,
-            maximum_value: Some(100),
-            scaled_stats: ARMOR_STATS
-                .iter()
-                .map(|&hash| ScaledStat {
-                    stat_hash: hash,
-                    maximum_value: 100,
-                    display_as_numeric: false,
-                    display_interpolation: vec![
-                        InterpolationPoint {
-                            value: 0,
-                            weight: 0,
-                        },
-                        InterpolationPoint {
-                            value: 100,
-                            weight: 100,
-                        },
-                    ],
-                })
-                .collect(),
-        })];
+        world.armor_catalogs = vec![
+            ArmorCatalogRecord::EquipableSet(EquipableSetDefinition {
+                hash: 88,
+                name: "Fixture Set".into(),
+                set_items: vec![1],
+                set_perks: vec![
+                    SetPerk {
+                        required_set_count: 2,
+                        sandbox_perk_hash: 123,
+                    },
+                    SetPerk {
+                        required_set_count: 4,
+                        sandbox_perk_hash: 456,
+                    },
+                ],
+            }),
+            ArmorCatalogRecord::StatGroup(StatGroupDefinition {
+                hash: 7,
+                maximum_value: Some(100),
+                scaled_stats: ARMOR_STATS
+                    .iter()
+                    .map(|&hash| ScaledStat {
+                        stat_hash: hash,
+                        maximum_value: 100,
+                        display_as_numeric: false,
+                        display_interpolation: vec![
+                            InterpolationPoint {
+                                value: 0,
+                                weight: 0,
+                            },
+                            InterpolationPoint {
+                                value: 100,
+                                weight: 100,
+                            },
+                        ],
+                    })
+                    .collect(),
+            }),
+        ];
         repository
             .definitions
             .publish_manifest(
@@ -3626,6 +3650,69 @@ mod tests {
         assert_eq!(model.masterwork_tier, None);
         assert_eq!(model.gear_tier, None);
         assert_eq!(model.effective_gear_tier, 0);
+        let set = model.armor_set.unwrap();
+        assert_eq!(set.hash, 88);
+        assert_eq!(set.name.as_deref(), Some("Fixture Set"));
+        let perks = set.perks.unwrap();
+        assert_eq!(
+            (perks[0].sandbox_perk_hash, perks[0].required_set_count),
+            (123, 2)
+        );
+        assert_eq!(
+            (perks[1].sandbox_perk_hash, perks[1].required_set_count),
+            (456, 4)
+        );
+        assert!(inspected.fragment_capacity.is_none());
+    }
+
+    #[test]
+    fn inspection_additions_resolve_subclass_and_preserve_missing_set_identity() {
+        use destiny_core::{DefinitionSocketCategory, IndexedSocket, domain::ItemSlot};
+        let mut subclass = definition(1, "Subclass", Some("subclass"), vec![]);
+        subclass.slot = None;
+        subclass.bucket_hash = Some(destiny_core::SUBCLASS_BUCKET_HASH);
+        subclass.armor.socket_entries = vec![destiny_core::DefinitionSocketEntry::default(); 8];
+        subclass.armor.socket_categories = vec![DefinitionSocketCategory {
+            socket_category_hash: 2140934067,
+            socket_indexes: vec![7],
+        }];
+        let mut aspect = definition(2, "Aspect", None, vec![]);
+        aspect.armor.aspect_capacity = Some(3);
+        let mut item = instance("subclass", 1, ItemLocation::Vault, vec![]);
+        item.sockets = vec![IndexedSocket {
+            socket_index: 7,
+            plug_hash: Some(ItemHash::new(2)),
+            enabled: false,
+            visible: false,
+        }];
+        let repository = CompositeRepository::with_definitions(vec![subclass.clone(), aspect]);
+        assert!(
+            crate::armor_model::inspect_armor_model(&repository, &subclass, &item)
+                .unwrap()
+                .is_none()
+        );
+        let capacity = crate::armor_model::inspect_fragment_capacity(&repository, &subclass, &item)
+            .unwrap()
+            .unwrap();
+        assert_eq!(capacity.capacity, Some(3));
+        item.sockets[0].plug_hash = Some(ItemHash::new(999));
+        assert_eq!(
+            crate::armor_model::inspect_fragment_capacity(&repository, &subclass, &item)
+                .unwrap()
+                .unwrap()
+                .capacity,
+            None
+        );
+        subclass.slot = Some(ItemSlot::Helmet);
+        subclass.armor.equipable_item_set_hash = Some(88);
+        let set = crate::armor_model::inspect_armor_model(&repository, &subclass, &item)
+            .unwrap()
+            .unwrap()
+            .armor_set
+            .unwrap();
+        assert_eq!(set.hash, 88);
+        assert!(set.name.is_none());
+        assert!(set.perks.is_none());
     }
 
     #[test]

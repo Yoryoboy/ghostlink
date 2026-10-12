@@ -2373,6 +2373,10 @@ pub fn inspect_item_output(
     match resolution {
         Resolution::Missing => Ok(InspectItemOutput::Missing),
         Resolution::Unique(inspection) => Ok(InspectItemOutput::Found(Box::new(FoundInspection {
+            fragment_capacity: inspection
+                .fragment_capacity
+                .as_ref()
+                .map(destiny_output::armor_model::fragment_capacity_json),
             armor_model: inspection
                 .armor_model
                 .as_ref()

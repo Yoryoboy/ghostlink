@@ -1011,6 +1011,8 @@ pub struct InventorySearchResult {
 /// [`InventorySearchResult`] instead and never reaches this type directly.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemInspection {
+    /// Subclass aspect-derived capacity, including an explicit unknown capacity.
+    pub fragment_capacity: Option<crate::armor_model::FragmentCapacity>,
     /// DIM investment-derived armor model; absent for non-armor.
     pub armor_model: Option<crate::armor_model::ArmorModel>,
     /// Same resolved, socket-ordered enrichment as inventory search hits.

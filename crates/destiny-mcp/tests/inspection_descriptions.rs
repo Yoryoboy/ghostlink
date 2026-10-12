@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 fn inspection() -> ItemInspection {
     ItemInspection {
+        fragment_capacity: None,
         armor_model: None,
         perk_names: vec!["Frame".into()],
         mod_names: vec!["Mod".into()],
@@ -232,6 +233,16 @@ fn inspection_clarity_cli_mcp_parity_and_human_all_roles() {
 fn armor_model_cli_mcp_parity_and_unknowns() {
     let mut inspected = inspection();
     inspected.armor_model = Some(destiny_app::ArmorModel {
+        tuning: Some(destiny_app::ArmorTuning {
+            socket_index: 7,
+            plug_hash: 3122197216,
+            tuned_stat_hash: None,
+        }),
+        armor_set: Some(destiny_app::ArmorSet {
+            hash: 88,
+            name: Some("Test Set".into()),
+            perks: Some(vec![]),
+        }),
         stats: Some(destiny_app::ArmorStats {
             total_base: 30,
             stats: vec![destiny_app::ArmorStat {
@@ -268,6 +279,10 @@ fn armor_model_cli_mcp_parity_and_unknowns() {
         )
         .unwrap();
         assert_eq!(cli["armor_model"], mcp["armor_model"]);
+        assert!(cli["armor_model"]["tuning"]["tuned_stat_hash"].is_null());
+        assert_eq!(cli["armor_model"]["tuning"]["socket_index"], 7);
+        assert_eq!(cli["armor_model"]["armor_set"]["hash"], 88);
+        assert!(render_inspection(OutputMode::Human, &inspected).contains("tuned stat: unknown"));
         let human = render_inspection(OutputMode::Human, &inspected);
         assert!(human.contains("armor model:"));
         if unknown {
@@ -290,6 +305,38 @@ fn armor_model_cli_mcp_parity_and_unknowns() {
             assert_eq!(cli["armor_model"]["base_stats"][0]["current"], 40);
         }
     }
+}
+
+#[test]
+fn fragment_capacity_cli_mcp_parity_and_unknowns() {
+    let mut inspected = inspection();
+    for capacity in [Some(4), Some(0), None] {
+        inspected.fragment_capacity = Some(destiny_app::FragmentCapacity { capacity });
+        let cli: Value =
+            serde_json::from_str(&render_inspection(OutputMode::Json, &inspected)).unwrap();
+        let mcp = serde_json::to_value(
+            inspect_item_output(&Resolution::Unique(inspected.clone())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cli["fragment_capacity"], mcp["fragment_capacity"]);
+        assert_eq!(
+            cli["fragment_capacity"]["capacity"],
+            serde_json::to_value(capacity).unwrap()
+        );
+        let expected = capacity.map_or_else(|| "unknown".into(), |c| c.to_string());
+        assert!(
+            render_inspection(OutputMode::Human, &inspected)
+                .contains(&format!("fragment capacity: {expected}"))
+        );
+        assert!(cli.get("armor_model").is_none());
+    }
+    inspected.fragment_capacity = None;
+    let cli: Value =
+        serde_json::from_str(&render_inspection(OutputMode::Json, &inspected)).unwrap();
+    assert!(cli.get("fragment_capacity").is_none());
+    let mcp =
+        serde_json::to_value(inspect_item_output(&Resolution::Unique(inspected)).unwrap()).unwrap();
+    assert!(mcp.get("fragment_capacity").is_none());
 }
 
 #[test]

@@ -1,7 +1,9 @@
 //! Application-facing configuration, services, and sanitized diagnostics.
 
 pub use destiny_core::armor_catalog::ArmorCatalogRepository;
-pub use destiny_core::armor_model::{ArmorModel, ArmorStat, ArmorStats};
+pub use destiny_core::armor_model::{
+    ArmorModel, ArmorSet, ArmorStat, ArmorStats, ArmorTuning, FragmentCapacity,
+};
 pub mod armor_model;
 pub mod builds;
 pub use destiny_core::ports::{BuildCodec, BuildRepository};

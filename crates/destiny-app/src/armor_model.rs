@@ -1,4 +1,32 @@
 //! Request-local, read-only armor derivation from committed instance/Manifest data.
+
+pub fn inspect_fragment_capacity<R: DefinitionRepository>(
+    repository: &R,
+    definition: &ItemDefinition,
+    instance: &ItemInstance,
+) -> Result<Option<FragmentCapacity>, AppError> {
+    if definition.bucket_hash != Some(SUBCLASS_BUCKET_HASH) {
+        return Ok(None);
+    }
+    let hashes: Vec<_> = instance
+        .sockets
+        .iter()
+        .filter_map(|socket| socket.plug_hash)
+        .collect();
+    let definitions = repository.lookup_definition_batch(&hashes)?;
+    Ok(Some(FragmentCapacity {
+        capacity: subclass_fragment_capacity(
+            &definition.armor,
+            (!instance.sockets.is_empty()).then_some(instance.sockets.as_slice()),
+            |hash| {
+                definitions
+                    .iter()
+                    .find(|definition| definition.hash.value() == i64::from(hash))
+                    .map(|definition| &definition.armor)
+            },
+        ),
+    }))
+}
 use destiny_core::domain::ItemSlot;
 use destiny_core::{armor_catalog::*, armor_model::*, *};
 
@@ -71,7 +99,29 @@ where
         None
     };
     let masterwork_tier = armor3_masterwork_tier(known_sockets, stats.as_ref());
+    let armor_set = definition
+        .armor
+        .equipable_item_set_hash
+        .filter(|hash| *hash != 0)
+        .map(|hash| -> Result<ArmorSet, AppError> {
+            let catalog = repository.lookup_armor_catalog(ArmorCatalogKind::EquipableSet, hash)?;
+            let (name, perks) = match catalog {
+                Some(ArmorCatalogRecord::EquipableSet(set)) => {
+                    (Some(set.name), Some(set.set_perks))
+                }
+                _ => (None, None),
+            };
+            Ok(ArmorSet { hash, name, perks })
+        })
+        .transpose()?;
     Ok(Some(ArmorModel {
+        tuning: armor_tuning(&instance.sockets, |hash| {
+            definitions
+                .iter()
+                .find(|definition| definition.hash.value() == i64::from(hash))
+                .map(|definition| &definition.armor)
+        }),
+        armor_set,
         stats,
         masterwork_tier,
         gear_tier: instance.gear_tier,

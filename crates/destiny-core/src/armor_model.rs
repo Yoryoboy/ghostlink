@@ -30,12 +30,83 @@ pub struct ArmorStats {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArmorModel {
+    pub tuning: Option<ArmorTuning>,
+    pub armor_set: Option<ArmorSet>,
     pub stats: Option<ArmorStats>,
     pub masterwork_tier: Option<i32>,
     /// Raw unknown is preserved alongside DIM's consumer fallback.
     pub gear_tier: Option<u32>,
     pub effective_gear_tier: u32,
     pub energy: Option<ItemEnergy>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArmorTuning {
+    pub socket_index: u8,
+    pub plug_hash: u32,
+    /// Deliberately unknown until raw reusable plug membership is projected (BE-005c3).
+    pub tuned_stat_hash: Option<u32>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArmorSet {
+    pub hash: u32,
+    pub name: Option<String>,
+    /// None means the referenced catalog is unresolved, not an empty perk list.
+    pub perks: Option<Vec<crate::armor_catalog::SetPerk>>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FragmentCapacity {
+    pub capacity: Option<i32>,
+}
+
+/// DIM utils/socket-utils.ts:677-686: visibility, not enabled, gates tuning.
+pub fn armor_tuning<'a>(
+    sockets: &[crate::domain::IndexedSocket],
+    definition: impl Fn(u32) -> Option<&'a ArmorDefinition>,
+) -> Option<ArmorTuning> {
+    sockets.iter().find_map(|socket| {
+        let hash = socket.plug_hash?.value() as u32;
+        (socket.visible && definition(hash)?.plug_category_hash == Some(3481777685)).then_some(
+            ArmorTuning {
+                socket_index: socket.socket_index,
+                plug_hash: hash,
+                tuned_stat_hash: None,
+            },
+        )
+    })
+}
+
+/// DIM utils/socket-utils.ts:278-283; loadout-drawer/loadout-utils.ts:940-954.
+/// Missing projections/definitions remain unknown; known empty aspects contribute zero.
+pub fn subclass_fragment_capacity<'a>(
+    item: &ArmorDefinition,
+    sockets: Option<&[crate::domain::IndexedSocket]>,
+    definition: impl Fn(u32) -> Option<&'a ArmorDefinition>,
+) -> Option<i32> {
+    let sockets = sockets?;
+    if item.socket_categories.is_empty() {
+        return None;
+    }
+    let mut capacity: i32 = 0;
+    for category in &item.socket_categories {
+        if ![2047681910, 2140934067, 764703411, 3400923910].contains(&category.socket_category_hash)
+        {
+            continue;
+        }
+        for index in &category.socket_indexes {
+            let socket = sockets
+                .iter()
+                .find(|s| u32::from(s.socket_index) == *index)?;
+            if let Some(hash) = socket.plug_hash {
+                capacity = capacity.checked_add(
+                    definition(hash.value() as u32)?
+                        .aspect_capacity
+                        .unwrap_or(0),
+                )?;
+            }
+        }
+    }
+    Some(capacity)
 }
 
 /// DIM inventory/store/stats.ts:614-651. Armor deliberately bypasses interpolation/clamping.

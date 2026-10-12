@@ -554,6 +554,13 @@ raw `gear_tier`, `effective_gear_tier` (DIM's missing-tier fallback of 0), and
 `current`, assumed `base_masterworked`, and `maximum_value`. Missing data is
 `null`, never an invented roll; non-armor results omit the object. Existing
 `stats` are unchanged. No extra Manifest acquisition is performed for this model.
+`tuning` adds the visible socket index and current tuning plug hash, but
+`tuned_stat_hash` is deliberately null (`raw_reusable_plugs_not_projected`).
+`armor_set` adds set hash/name and perk hashes with required-piece thresholds;
+no perk names/icons or active-bonus claims. Missing catalogs retain the set hash
+with null name/perks. Subclass results add `fragment_capacity: {"capacity":
+number|null}`, derived from inserted aspects; non-subclasses omit it.
+See [DIM evidence and deliberate unknowns](armor-model.md).
 
 `inspect_item` returns the same enriched names as CLI inspection:
 `perk_names`, `mod_names`, `mods`, `archetype`, `available_perks`,

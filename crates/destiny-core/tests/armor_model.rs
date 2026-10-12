@@ -1,5 +1,84 @@
 use destiny_core::{armor_catalog::*, armor_model::*, *};
 
+#[test]
+fn tuning_uses_visible_current_plug_even_when_disabled_and_never_infers_stat() {
+    let definition = ArmorDefinition {
+        plug_category_hash: Some(3481777685),
+        ..Default::default()
+    };
+    let mut sockets = vec![domain::IndexedSocket {
+        socket_index: 7,
+        plug_hash: Some(ItemHash::new(3122197216)),
+        enabled: false,
+        visible: true,
+    }];
+    let tuning = armor_tuning(&sockets, |_| Some(&definition)).unwrap();
+    assert_eq!(tuning.socket_index, 7);
+    assert_eq!(tuning.plug_hash, 3122197216);
+    assert_eq!(tuning.tuned_stat_hash, None);
+    sockets[0].visible = false;
+    assert!(armor_tuning(&sockets, |_| Some(&definition)).is_none());
+    sockets[0].visible = true;
+    assert!(armor_tuning(&sockets, |_| None).is_none());
+}
+
+#[test]
+fn fragment_capacity_sums_inserted_aspects_without_enabled_or_visibility_gate() {
+    let item = ArmorDefinition {
+        socket_categories: vec![DefinitionSocketCategory {
+            socket_category_hash: 2047681910,
+            socket_indexes: vec![3, 7],
+        }],
+        ..Default::default()
+    };
+    let aspect = ArmorDefinition {
+        aspect_capacity: Some(2),
+        ..Default::default()
+    };
+    let sockets: Vec<_> = [3, 7]
+        .into_iter()
+        .map(|socket_index| domain::IndexedSocket {
+            socket_index,
+            plug_hash: Some(ItemHash::new(99)),
+            enabled: false,
+            visible: false,
+        })
+        .collect();
+    assert_eq!(
+        subclass_fragment_capacity(&item, Some(&sockets), |_| Some(&aspect)),
+        Some(4)
+    );
+    assert_eq!(
+        subclass_fragment_capacity(&item, Some(&sockets), |_| None),
+        None
+    );
+    assert_eq!(
+        subclass_fragment_capacity(&item, None, |_| Some(&aspect)),
+        None
+    );
+    let empty: Vec<domain::IndexedSocket> = sockets
+        .iter()
+        .cloned()
+        .map(|mut s| {
+            s.plug_hash = None;
+            s
+        })
+        .collect();
+    assert_eq!(
+        subclass_fragment_capacity(&item, Some(&empty), |_| None),
+        Some(0)
+    );
+    assert_eq!(
+        subclass_fragment_capacity(&item, Some(&sockets[..1]), |_| Some(&aspect)),
+        None
+    );
+    let no_capacity = ArmorDefinition::default();
+    assert_eq!(
+        subclass_fragment_capacity(&item, Some(&sockets), |_| Some(&no_capacity)),
+        Some(0)
+    );
+}
+
 fn investment(hash: u32, value: i32, conditional: bool) -> InvestmentStat {
     InvestmentStat {
         stat_type_hash: hash,

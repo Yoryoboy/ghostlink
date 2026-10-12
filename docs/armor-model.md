@@ -34,7 +34,40 @@ fall back to component-304 totals.
 2. Review request-local assembly in `destiny-app/src/armor_model.rs`.
 3. Compare shared output with CLI/MCP parity tests (known and unknown values).
 
-Tuning-stat identification, set bonuses and fragment capacity remain BE-005c2.
-Existing tuning plug contributions are still included in current stats, as DIM
-does; no new tuning model is exposed. All derived values are inspection only,
-not upgrade actions or build-analysis findings.
+## BE-005c2: tuning, sets and fragments
+
+The approved narrowed scope adds read-only inspection fields using committed data:
+
+- `armor_model.tuning`: the first visible socket whose inserted plug has category
+  3481777685, exposing real `socket_index` and current `plug_hash`. Enabled is
+  intentionally not a gate (`utils/socket-utils.ts:677-686`). Missing plug
+  definitions cannot establish tuning; absent/unresolved tuning is `null`.
+- `tuned_stat_hash` is deliberately always `null`, with reason
+  `raw_reusable_plugs_not_projected`. DIM scans raw reusable plug membership and
+  returns undefined for conflicting tuners (`utils/item-utils.ts:409-432`,
+  mapping `search/d2-known-values.ts:445` onward). DIM retains the raw instance
+  list (`inventory/store/sockets.ts:77-79,133-140,784`); Ghostlink's
+  `profile.rs:476-529` filters disabled/non-insertable alternatives and oversized
+  lists. Neither selectable plugs nor Manifest plug sets are used to guess a
+  tuned stat. Current tuning contributions remain included in current stats.
+- `armor_model.armor_set`: identity from nonzero `equipableItemSetHash`
+  (`inventory/store/d2-item-factory.ts:817-818`), set name and all projected
+  `sandbox_perk_hash`/`required_set_count` pairs (`item-popup/SetBonus.tsx:55-64`).
+  An unresolved catalog retains the hash with unknown name/perks. No perk names,
+  icons or active-bonus claims are emitted; thresholds are requirements, not
+  activation evidence. Event selector membership is not evaluated.
+- Subclass inspection adds `fragment_capacity: {capacity: number|null}` outside
+  the armor-only object. DIM identifies four aspect categories
+  (`utils/socket-utils.ts:278-283`) and sums inserted aspects'
+  `energyCapacity.capacityValue` without enabled/visible gates
+  (`loadout-drawer/loadout-utils.ts:940-954`). A resolved plug without capacity
+  contributes zero as in DIM; missing socket projections or plug definitions
+  stay unknown. Real socket indices are used, never filtered positions.
+
+All values are inspection only, not upgrade actions or build-analysis findings.
+Equipped-set activation is deferred: build analysis does not currently assemble
+this item/catalog model, and DIM also accounts for event selector sockets
+(`utils/socket-utils.ts:793-809`). A separate equipped-set analysis task should
+count resolved armor pieces and compare thresholds (`SetBonus.tsx:23-64`).
+BE-005c3 is parent-owned: raw reusable plug fidelity, exact tuned stat, and set
+perk display names/icons. No decode, sync, migration or fetch changes here.

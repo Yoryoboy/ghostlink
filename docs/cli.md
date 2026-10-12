@@ -958,6 +958,15 @@ the masterwork plug, not energy capacity. The model also includes raw `gear_tier
 used and unused values. Unknown inputs remain `unknown` in text or `null` in JSON;
 non-armor items omit the model. This uses already committed data only.
 
+The model also adds `tuning` (visible tuning socket index and current plug hash;
+`tuned_stat_hash` is deliberately `null` with reason
+`raw_reusable_plugs_not_projected`) and `armor_set` (set hash/name and perk hashes
+with `required_set_count` thresholds, not active bonuses). Unresolved set catalogs
+retain the set hash but have null name/perks; perk names/icons are not exposed.
+Subclass inspection adds `fragment capacity` in text and
+`fragment_capacity: {"capacity": number|null}` in JSON, summing inserted aspects.
+Non-subclass items omit that field. See [DIM evidence](armor-model.md).
+
 Use exactly one of `ghostlink inspect-item <INSTANCE_ID>` or
 `ghostlink inspect-item --name "Ace of Spades"`. Name lookup is normalized exact
 matching (case/whitespace), never fuzzy. Multiple owned matches return

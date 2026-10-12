@@ -2502,6 +2502,7 @@ mod tests {
     #[test]
     fn unique_inspection_is_returned_unchanged() {
         let inspection = ItemInspection {
+            fragment_capacity: None,
             armor_model: None,
             plug_details: Vec::new(),
             perk_names: Vec::new(),

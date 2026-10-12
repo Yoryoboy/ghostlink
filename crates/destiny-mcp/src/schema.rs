@@ -1642,6 +1642,8 @@ pub struct InspectionPlugView {
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct FoundInspection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fragment_capacity: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub armor_model: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plug_details: Vec<InspectionPlugView>,

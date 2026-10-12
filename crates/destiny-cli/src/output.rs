@@ -1156,6 +1156,9 @@ fn inspection_human(inspection: &ItemInspection) -> String {
     if let Some(model) = &inspection.armor_model {
         lines.extend(destiny_output::armor_model::armor_model_text(model));
     }
+    if let Some(model) = &inspection.fragment_capacity {
+        lines.push(destiny_output::armor_model::fragment_capacity_text(model));
+    }
     lines.push(metadata_text(&inspection.metadata));
     lines.join("\n")
 }
@@ -1244,6 +1247,9 @@ fn inspection_json(inspection: &ItemInspection) -> String {
     });
     if let Some(model) = &inspection.armor_model {
         value["armor_model"] = destiny_output::armor_model::armor_model_json(model);
+    }
+    if let Some(model) = &inspection.fragment_capacity {
+        value["fragment_capacity"] = destiny_output::armor_model::fragment_capacity_json(model);
     }
     if !inspection.plug_details.is_empty() {
         value["plug_details"] = json!(inspection.plug_details.iter().map(|plug| with_insights(
@@ -1994,6 +2000,7 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            fragment_capacity: None,
             armor_model: None,
             plug_details: Vec::new(),
             perk_names: Vec::new(),
