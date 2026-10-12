@@ -7,6 +7,7 @@ pub use armor_definition::*;
 pub use clarity::*;
 pub mod build;
 pub mod build_analysis;
+pub mod build_capture;
 pub mod calendar;
 pub mod clarity;
 pub use calendar::*;

@@ -353,7 +353,7 @@ const PROFILE_PATH_PREFIX: &str = "/Platform/Destiny2/";
 const PROFILE_PATH_INFIX: &str = "/Profile/";
 
 /// The exact, ordered profile component query this adapter may request.
-const PROFILE_COMPONENTS_QUERY: &str = "components=102,103,200,201,205,206,300,302,304,305,310";
+const PROFILE_COMPONENTS_QUERY: &str = "components=102,103,200,201,205,206,300,302,304,305,309,310";
 
 /// Strict upper bound on the current-user membership response body (256 KiB).
 pub const MEMBERSHIP_RESPONSE_LIMIT: usize = 256 * 1024;
@@ -2022,7 +2022,7 @@ mod tests {
 
     const API_KEY_SENTINEL: &str = "sentinel-profile-api-key";
     const BEARER_SENTINEL: &str = "sentinel-profile-bearer-token";
-    const PROFILE_QUERY: &str = "?components=102,103,200,201,205,206,300,302,304,305,310";
+    const PROFILE_QUERY: &str = "?components=102,103,200,201,205,206,300,302,304,305,309,310";
     const PROFILE_PREFIX: &str =
         "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/";
     const RESPONSE_BODY: &str = "{\"ErrorCode\":1,\"Response\":{}}";
@@ -2602,7 +2602,7 @@ mod tests {
         assert!(is_allowed_profile_url(&url));
         assert_eq!(
             url,
-            "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/?components=102,103,200,201,205,206,300,302,304,305,310"
+            "https://www.bungie.net/Platform/Destiny2/3/Profile/4611686018484639825/?components=102,103,200,201,205,206,300,302,304,305,309,310"
         );
     }
 

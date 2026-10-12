@@ -54,7 +54,15 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
             created_at: Timestamp::new(100),
             updated_at: Timestamp::new(100),
         },
-        analysis: build_analysis::analyze_build(&build, &CharacterId::new("1"), &[], &[], &[], &[]),
+        analysis: build_analysis::analyze_build(
+            &build,
+            &CharacterId::new("1"),
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+        ),
         metadata: QueryMetadata {
             sync: SyncMetadata {
                 dataset: Dataset::ProfileInventory,

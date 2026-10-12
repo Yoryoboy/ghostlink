@@ -49,7 +49,7 @@ otherwise resolve ambiguity with an explicit ID. Results contain item resolution
 location/owner/equipped/class compatibility, counts (no percentage), and every DIM
 finding kind. `present: null` with `evaluation: not_evaluated` is not a clean bill
 of health. Search exclusion is `search_only`; optimizer-dependent suppression is
-not evaluated. Crafted dates, sockets, mods fit, fragment capacity, armor upgrades,
+not evaluated. Socket application, mods fit, fragment capacity, armor upgrades,
 stat constraints and optimization remain explicitly qualified/deferred. No gear is
 applied. See [CLI build checking](cli.md#check-a-build-against-inventory).
 
@@ -64,7 +64,12 @@ Manifest, exact character ID or unique class, and ordinary profile freshness.
 Server exclusion covers conversion and storage; build sync does not reenter
 the same guard. List returns `kind: builds`; get/save return `kind: build`,
 `summary`, `dim_json` (DIM export string), `omissions`, `unresolved_items`.
-Report omissions rather than promising complete socket/crafted/artifact data.
+Equipped/in-game capture includes `craftedDate` in DIM JSON when component-309
+objectives and Manifest styles establish complete crafting information.
+`analyze_build` resolves by instance ID first, then nonzero crafted date (DIM's
+last match, without hash/owner restrictions). Missing evidence stays unknown;
+report capture omissions rather than promising complete socket/artifact data.
+Per-capture missing crafting evidence is not separately retained on later get.
 Unresolved instances are reported during conversion; stored DIM does not retain
 those discarded entries (`unresolved_items: null` on later get). Ambiguity is an
 error with candidates; ask for an ID

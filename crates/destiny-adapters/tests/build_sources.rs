@@ -4,6 +4,7 @@ use destiny_app::{
     builds::{BuildOmission, BuildService},
 };
 use destiny_core::domain::ItemSlot;
+use destiny_core::ports::WorldDefinitionRepository;
 use destiny_core::*;
 
 fn definition(hash: i64, bucket: Option<BucketHash>, category: Option<&str>) -> ItemDefinition {
@@ -11,7 +12,7 @@ fn definition(hash: i64, bucket: Option<BucketHash>, category: Option<&str>) -> 
         hash: ItemHash::new(hash),
         bucket_hash: bucket,
         name: format!("Item {hash}"),
-        item_type: None,
+        item_type: category.map(|_| "Armor Mod".into()),
         tier: None,
         element: None,
         slot: bucket.and_then(ItemSlot::from_equipment_bucket),
@@ -19,7 +20,10 @@ fn definition(hash: i64, bucket: Option<BucketHash>, category: Option<&str>) -> 
         plug_category: category.map(str::to_owned),
         tags: vec![],
         version: DefinitionVersion::new("v1"),
-        armor: Default::default(),
+        armor: ArmorDefinition {
+            plug_category_hash: category.map(|_| 2912171003),
+            ..Default::default()
+        },
         non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
@@ -135,6 +139,195 @@ fn fixture() -> ProfileSyncService<Gateway, SqliteStore> {
         .unwrap();
     ProfileSyncService::new_with_definitions(Gateway(input, saved, 0), repository)
 }
+#[test]
+fn dim_mod_classification_uses_hashes_not_display_names() {
+    let mut plug = definition(10, None, Some("enhancements.v2_head"));
+    plug.name = "Empty misleading Socket".into();
+    assert!(build_capture::insertable_armor_mod(&plug));
+    plug.hash = ItemHash::new(807186981);
+    plug.name = "Not empty by name".into();
+    assert!(!build_capture::insertable_armor_mod(&plug));
+    plug.hash = ItemHash::new(10);
+    plug.bucket_hash = Some(BucketHash::new(3313201758));
+    assert!(!build_capture::insertable_armor_mod(&plug));
+    plug.bucket_hash = None;
+    plug.armor.plug_category_hash = None;
+    assert!(!build_capture::insertable_armor_mod(&plug));
+    plug.armor.plug_category_hash = Some(2912171003);
+    plug.item_type = None;
+    assert!(!build_capture::insertable_armor_mod(&plug));
+}
+
+#[test]
+fn equipped_capture_retains_disabled_inserted_mods_like_dim() {
+    let mut sync = fixture();
+    let mut input =
+        InventorySnapshotInput::with_metadata(&sync.repository().load_current().unwrap().unwrap());
+    input.items[2].plugs.clear();
+    input.items[2].sockets = vec![IndexedSocket {
+        socket_index: 0,
+        plug_hash: Some(ItemHash::new(10)),
+        enabled: false,
+        visible: false,
+        reusable_plugs: None,
+        plug_objectives: None,
+    }];
+    sync.repository_mut().replace_current(input).unwrap();
+    let mut service = BuildService::new(SqliteStore::open_in_memory().unwrap(), DimBuildCodec);
+    let capture = service
+        .from_equipped(
+            &mut sync,
+            &CharacterId::new("1"),
+            "Disabled",
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    assert_eq!(
+        capture.build.definition.parameters.unwrap().mods,
+        Some(vec![ItemHash::new(10)])
+    );
+}
+
+fn table<T>(definitions: Vec<T>) -> WorldDefinitionTable<T> {
+    WorldDefinitionTable {
+        definitions,
+        skipped_count: 0,
+    }
+}
+
+#[test]
+fn equipped_and_in_game_capture_crafted_date_and_resolve_changed_identity() {
+    let mut sync = fixture();
+    let mut input =
+        InventorySnapshotInput::with_metadata(&sync.repository().load_current().unwrap().unwrap());
+    let mut weapon = definition(1498876634, Some(BucketHash::new(1498876634)), None);
+    weapon.is_instance_item = Some(true);
+    weapon.armor.socket_entries = vec![DefinitionSocketEntry::default()];
+    weapon.armor.socket_categories = vec![DefinitionSocketCategory {
+        socket_category_hash: 3583996951,
+        socket_indexes: vec![0],
+    }];
+    input.items[0].sockets = vec![IndexedSocket {
+        socket_index: 0,
+        plug_hash: Some(ItemHash::new(99)),
+        enabled: false,
+        visible: false,
+        reusable_plugs: None,
+        plug_objectives: Some(vec![(1, Some(5)), (2, Some(1)), (3, Some(1700000000))]),
+    }];
+    let mut definitions = vec![weapon];
+    for hash in [3448274439, 3284755031, 999, 10] {
+        if let Resolution::Unique(d) = sync
+            .repository()
+            .lookup_definition(ItemHash::new(hash))
+            .unwrap()
+        {
+            definitions.push(d);
+        }
+    }
+    let world = WorldDefinitionsAcquisition {
+        version: DefinitionVersion::new("v1"),
+        armor_catalogs: vec![],
+        item_descriptions: vec![],
+        milestones: table(vec![
+            MilestoneDefinition::new(1, "Milestone".into(), "".into(), 1).unwrap(),
+        ]),
+        activities: table(vec![
+            ActivityDefinition::new(1, "Activity".into(), "".into(), 1, 1).unwrap(),
+        ]),
+        modifiers: table(vec![
+            ActivityModifierDefinition::new(1, "Modifier".into(), "".into()).unwrap(),
+        ]),
+        activity_types: table(vec![
+            ActivityTypeDefinition::new(1, "Type".into(), "".into()).unwrap(),
+        ]),
+        stats: table(vec![StatDefinition::new(1, "Stat".into()).unwrap()]),
+        loadout_names: table(vec![]),
+        objectives: table(
+            (1..=3)
+                .map(|hash| {
+                    ObjectiveDefinition::new(hash, "".into(), 0)
+                        .unwrap()
+                        .with_ui_style(Some(hash + 1))
+                })
+                .collect(),
+        ),
+    };
+    sync.repository_mut()
+        .publish_manifest(
+            DefinitionReplacementInput {
+                definitions: ManifestDefinitions {
+                    version: DefinitionVersion::new("v1"),
+                    definitions,
+                },
+                checked_at: Timestamp::new(100),
+                source: SourceMarker::Manifest,
+            },
+            world,
+        )
+        .unwrap();
+    let saved = sync.repository().saved_loadouts().unwrap();
+    sync.repository_mut()
+        .replace_current_profile(input.clone(), None, saved.clone())
+        .unwrap();
+    let builds = SqliteStore::open_in_memory().unwrap();
+    let mut service = BuildService::new(builds, DimBuildCodec);
+    let captured = service
+        .from_equipped(
+            &mut sync,
+            &CharacterId::new("1"),
+            "Crafted",
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    assert_eq!(
+        captured.build.definition.equipped[0].crafted_date,
+        Some(1700000000)
+    );
+    assert!(
+        !captured
+            .omissions
+            .contains(&BuildOmission::CraftedDatesUnavailable)
+    );
+    let converted = service
+        .from_loadout(
+            &mut sync,
+            &CharacterId::new("1"),
+            &destiny_app::LoadoutSelector::Slot(3),
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    assert_eq!(
+        converted.build.definition.equipped[0].crafted_date,
+        Some(1700000000)
+    );
+    input.items[0].instance_id = ItemInstanceId::new("555");
+    sync.repository_mut()
+        .replace_current_profile(input, None, saved)
+        .unwrap();
+    let checked = service
+        .check(
+            &mut sync,
+            &destiny_app::builds::BuildSelector::Id(captured.build.definition.id),
+            None,
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    assert_eq!(
+        checked.analysis.items[0]
+            .inventory
+            .as_ref()
+            .unwrap()
+            .instance_id
+            .as_str(),
+        "555"
+    );
+}
+
 #[test]
 fn build_check_uses_current_projection_and_unique_class_target() {
     let mut sync = fixture();

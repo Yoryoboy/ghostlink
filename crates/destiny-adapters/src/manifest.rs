@@ -747,6 +747,8 @@ impl<'de> Visitor<'de> for InventorySeed<'_> {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WorldRecord {
+    #[serde(default)]
+    ui_style: Option<u32>,
     hash: u32,
     #[serde(default)]
     redacted: bool,
@@ -808,6 +810,7 @@ impl WorldKind for destiny_core::StatDefinition {
         let stat = map.next_value::<StatRecord>()?;
         Ok(WorldRecord {
             hash: stat.hash,
+            ui_style: None,
             is_displayable: false,
             redacted: stat.redacted,
             display_properties: stat.display_properties.map(|display| WorldDisplay {
@@ -877,6 +880,7 @@ impl WorldKind for destiny_core::ports::SandboxPerkCandidate {
         );
         Ok(WorldRecord {
             hash: record.hash,
+            ui_style: None,
             redacted: record.redacted.into_option() == Some(true),
             is_displayable: record.is_displayable.into_option() == Some(true),
             display_properties: Some(WorldDisplay {
@@ -925,6 +929,7 @@ impl WorldKind for destiny_core::LoadoutNameDefinition {
         let record = map.next_value::<LoadoutNameRecord>()?;
         Ok(WorldRecord {
             hash: record.hash,
+            ui_style: None,
             is_displayable: false,
             redacted: record.redacted,
             display_properties: Some(WorldDisplay {
@@ -956,6 +961,8 @@ pub fn decode_loadout_names(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ObjectiveRecord {
+    #[serde(default)]
+    ui_style: Option<u32>,
     hash: u32,
     #[serde(default)]
     redacted: bool,
@@ -970,6 +977,7 @@ impl WorldKind for destiny_core::ObjectiveDefinition {
         let record = map.next_value::<ObjectiveRecord>()?;
         Ok(WorldRecord {
             hash: record.hash,
+            ui_style: record.ui_style,
             is_displayable: false,
             redacted: record.redacted,
             display_properties: None,
@@ -1137,6 +1145,7 @@ fn project_objective(
         record.progress_description,
         record.completion_value,
     )
+    .map(|definition| definition.with_ui_style(record.ui_style))
 }
 fn project_activity_type(
     record: WorldRecord,

@@ -3558,6 +3558,7 @@ mod tests {
         }];
         let mut item = instance("armor", 1, ItemLocation::Vault, vec![]);
         item.sockets = vec![destiny_core::IndexedSocket {
+            plug_objectives: None,
             reusable_plugs: None,
             socket_index: 0,
             plug_hash: None,
@@ -3685,6 +3686,7 @@ mod tests {
         aspect.armor.aspect_capacity = Some(3);
         let mut item = instance("subclass", 1, ItemLocation::Vault, vec![]);
         item.sockets = vec![IndexedSocket {
+            plug_objectives: None,
             reusable_plugs: None,
             socket_index: 7,
             plug_hash: Some(ItemHash::new(2)),

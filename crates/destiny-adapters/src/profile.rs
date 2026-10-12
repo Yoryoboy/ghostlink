@@ -303,6 +303,9 @@ pub fn decode_profile_with_observations(
         let mut indexed_sockets = decode_sockets(sockets, &raw.instance_id)?;
         let available_plugs =
             decode_available_plugs(reusable, &raw.instance_id, &mut indexed_sockets)?;
+        if let Some(data) = optional_plug_set_data(item_components, "plugObjectives")? {
+            decode_plug_objectives(data, &raw.instance_id, &mut indexed_sockets)?;
+        }
         let plugs = indexed_sockets
             .iter()
             .filter_map(|socket| {
@@ -473,6 +476,44 @@ fn decode_plug_sets(
         }
     }
     Ok(entries.into_values().collect())
+}
+
+/// Component 309 is joined by inserted plug hash, not by objective or socket ordinal.
+fn decode_plug_objectives(
+    data: &Map<String, Value>,
+    instance_id: &str,
+    sockets: &mut [destiny_core::IndexedSocket],
+) -> Result<(), AppError> {
+    let Some(entry) = data.get(instance_id) else {
+        return Ok(());
+    };
+    let objectives = entry
+        .get("objectivesPerPlug")
+        .and_then(Value::as_object)
+        .ok_or_else(provider_validation)?;
+    for socket in sockets {
+        let Some(hash) = socket.plug_hash else {
+            continue;
+        };
+        let Some(values) = objectives.get(&hash.value().to_string()) else {
+            continue;
+        };
+        let values = values.as_array().ok_or_else(provider_validation)?;
+        if values.len() > 128 {
+            return Err(provider_validation());
+        }
+        let mut raw = Vec::with_capacity(values.len());
+        for value in values {
+            let hash = decode_required_u32(value.get("objectiveHash"))?;
+            let progress = match value.get("progress") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(decode_required_u32(Some(value))?),
+            };
+            raw.push((hash, progress));
+        }
+        socket.plug_objectives = Some(raw);
+    }
+    Ok(())
 }
 
 /// Selectable plugs are bounded before filtering and sorted by numeric socket index.
@@ -1070,6 +1111,7 @@ fn decode_sockets(
             ),
         };
         indexed.push(destiny_core::IndexedSocket {
+            plug_objectives: None,
             reusable_plugs: None,
             socket_index: u8::try_from(index).map_err(|_| provider_validation())?,
             plug_hash: hash.map(|hash| ItemHash::new(i64::from(hash))),
@@ -1885,6 +1927,35 @@ mod tests {
         serde_json::from_slice(FIXTURE).expect("fixture is JSON")
     }
 
+    #[test]
+    fn component_309_objectives_join_inserted_plug_without_enabled_gate() {
+        let decoded = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000001"] = json!({"sockets": [{"plugHash": 123, "isEnabled": false, "isVisible": false}]});
+            value["Response"]["itemComponents"]["plugObjectives"] = json!({"privacy": 1, "data": {"700000000000000001": {"objectivesPerPlug": {"123": [{"objectiveHash": 7, "progress": 1700000000}, {"objectiveHash": 8}], "456": [{"objectiveHash": 9, "progress": 99}]}}}});
+        }).unwrap();
+        assert_eq!(
+            decoded.items[0].sockets[0].plug_objectives,
+            Some(vec![(7, Some(1700000000)), (8, None)])
+        );
+        assert!(!decoded.items[0].sockets[0].enabled);
+        assert!(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["plugObjectives"] = json!({"privacy": 1, "data": {"700000000000000001": {"objectivesPerPlug": {"111": [{"objectiveHash": 7, "progress": -1}]}}}});
+            value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000001"] = json!({"sockets": [{"plugHash": 111, "isEnabled": true, "isVisible": true}]});
+        }).is_err());
+        let private = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["plugObjectives"] =
+                json!({"privacy": 2, "data": null});
+        })
+        .unwrap();
+        assert!(
+            private
+                .items
+                .iter()
+                .flat_map(|i| &i.sockets)
+                .all(|s| s.plug_objectives.is_none())
+        );
+    }
+
     fn decode_mutated(mutate: impl FnOnce(&mut Value)) -> Result<InventorySnapshotInput, AppError> {
         let mut value = fixture_value();
         mutate(&mut value);
@@ -2262,6 +2333,7 @@ mod tests {
             decoded.sockets,
             vec![
                 destiny_core::IndexedSocket {
+                    plug_objectives: None,
                     reusable_plugs: None,
                     socket_index: 0,
                     plug_hash: None,
@@ -2269,6 +2341,7 @@ mod tests {
                     visible: true
                 },
                 destiny_core::IndexedSocket {
+                    plug_objectives: None,
                     reusable_plugs: None,
                     socket_index: 1,
                     plug_hash: Some(ItemHash::new(123)),
@@ -2276,6 +2349,7 @@ mod tests {
                     visible: true
                 },
                 destiny_core::IndexedSocket {
+                    plug_objectives: None,
                     reusable_plugs: None,
                     socket_index: 2,
                     plug_hash: Some(ItemHash::new(456)),
@@ -2534,6 +2608,7 @@ mod tests {
                     .enumerate()
                     .map(
                         |(index, (hash, enabled, visible))| destiny_core::IndexedSocket {
+                            plug_objectives: None,
                             reusable_plugs: None,
                             socket_index: index as u8,
                             plug_hash: hash.map(ItemHash::new),

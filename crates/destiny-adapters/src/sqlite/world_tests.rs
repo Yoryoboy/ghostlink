@@ -4,6 +4,48 @@ use destiny_core::ports::{DefinitionCatalogRepository, WorldDefinitionRepository
 use destiny_core::*;
 
 #[test]
+fn objective_styles_decode_publish_revision_and_guard() {
+    let decoded = crate::manifest::decode_objectives(
+        br#"{"7":{"hash":7,"uiStyle":4,"progressDescription":"","completionValue":0}}"#,
+    )
+    .unwrap();
+    assert_eq!(decoded.definitions[0].ui_style(), Some(4));
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(30).unwrap();
+    store
+        .publish_manifest(items("v1", "prior"), world("v1", "World"))
+        .unwrap();
+    store.migrate_to(31).unwrap();
+    assert!(store.current_metadata().unwrap().is_none());
+    let mut data = world("v1", "World");
+    data.objectives = decoded;
+    let first = store
+        .publish_manifest(items("v1", "prior"), data.clone())
+        .unwrap();
+    assert_eq!(
+        store.lookup_objective(7).unwrap().unwrap().ui_style(),
+        Some(4)
+    );
+    assert_eq!(
+        store
+            .publish_manifest(items("v1", "prior"), data.clone())
+            .unwrap(),
+        first
+    );
+    assert!(store.migrate_to(30).is_err());
+    data.objectives.definitions[0] = data.objectives.definitions[0]
+        .clone()
+        .with_ui_style(Some(2));
+    let next = store
+        .publish_manifest(items("v1", "prior"), data.clone())
+        .unwrap();
+    assert!(next.revision > first.revision);
+    data.objectives.definitions[0] = data.objectives.definitions[0].clone().with_ui_style(None);
+    store.publish_manifest(items("v1", "prior"), data).unwrap();
+    store.migrate_to(30).unwrap();
+}
+
+#[test]
 fn item_description_v14_migration_invalidates_metadata_and_is_reversible() {
     let mut connection = rusqlite::Connection::open_in_memory().unwrap();
     migrations::migrate_to(&mut connection, 13).unwrap();

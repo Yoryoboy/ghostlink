@@ -113,7 +113,7 @@ fn sqlite_fake_roundtrip_and_revision_parity_for_each_armor_field() {
 #[test]
 fn migration_26_guards_populated_armor_and_legacy_publication() {
     let mut store = SqliteStore::open_in_memory().unwrap();
-    assert_eq!(store.schema_version().unwrap(), 30);
+    assert_eq!(store.schema_version().unwrap(), 31);
     store.migrate_to(25).unwrap();
     store
         .replace_definitions(replacement())

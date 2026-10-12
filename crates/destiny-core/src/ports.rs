@@ -301,6 +301,10 @@ impl InventorySnapshotInput {
             if item.sockets.len() > crate::MAX_ITEM_SOCKETS
                 || item.sockets.iter().enumerate().any(|(index, socket)| {
                     usize::from(socket.socket_index) != index
+                        || socket
+                            .plug_objectives
+                            .as_ref()
+                            .is_some_and(|raw| raw.len() > 128 || socket.plug_hash.is_none())
                         || socket.reusable_plugs.as_ref().is_some_and(|plugs| {
                             plugs.len() > crate::domain::MAX_REUSABLE_PLUGS
                                 || plugs

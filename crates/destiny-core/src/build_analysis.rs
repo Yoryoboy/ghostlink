@@ -138,6 +138,44 @@ fn skipped(kind: FindingKind, reason: &'static str) -> BuildFinding {
         reason: Some(reason),
     }
 }
+fn crafting_unavailable(
+    inventory: &[ItemInstance],
+    defs: &[ItemDefinition],
+    objectives: &[ObjectiveDefinition],
+) -> bool {
+    inventory.iter().any(|item| {
+        let Some(d) = definition(defs, item.item_hash) else {
+            return true;
+        };
+        let Some(category) = d
+            .armor
+            .socket_categories
+            .iter()
+            .find(|c| c.socket_category_hash == 3583996951)
+        else {
+            return false;
+        };
+        let raw = category
+            .socket_indexes
+            .first()
+            .and_then(|index| {
+                item.sockets
+                    .iter()
+                    .find(|s| u32::from(s.socket_index) == *index)
+            })
+            .and_then(|s| s.plug_objectives.as_ref());
+        raw.is_none_or(|raw| {
+            raw.iter().any(|(hash, _)| {
+                objectives
+                    .iter()
+                    .find(|d| d.hash() == *hash)
+                    .and_then(|d| d.ui_style())
+                    .is_none()
+            })
+        })
+    })
+}
+
 /// Inventory order is the projection's canonical order. Like DIM, fallback examines
 /// only its first hash candidate, never a later transferable substitute.
 pub fn analyze_build(
@@ -147,6 +185,7 @@ pub fn analyze_build(
     defs: &[ItemDefinition],
     stat_defs: &[StatDefinition],
     characters: &[Character],
+    objectives: &[ObjectiveDefinition],
 ) -> BuildAnalysis {
     let items: Vec<_> = build
         .equipped
@@ -165,11 +204,25 @@ pub fn analyze_build(
                         .copied()
                         .or_else(|| candidates.first().copied().filter(|i| !i.notransfer(d)))
                 } else {
-                    spec.instance_id.as_ref().and_then(|id| {
-                        inventory
-                            .iter()
-                            .find(|i| &i.instance_id == id && id.as_str() != "0")
-                    })
+                    spec.instance_id
+                        .as_ref()
+                        .and_then(|id| {
+                            inventory
+                                .iter()
+                                .find(|i| &i.instance_id == id && id.as_str() != "0")
+                        })
+                        .or_else(|| {
+                            let date = spec.crafted_date.filter(|date| *date != 0)?;
+                            // DIM keyBy keeps the last instanced crafted-date match;
+                            // neither hash nor target ownership constrains this fallback.
+                            inventory.iter().rev().find(|item| {
+                                definition(defs, item.item_hash).is_some_and(|d| {
+                                    d.is_instance_item == Some(true)
+                                        && crate::build_capture::crafted_date(item, d, objectives)
+                                            == Some(date)
+                                })
+                            })
+                        })
                 }
             });
             ResolvedBuildItem {
@@ -182,7 +235,9 @@ pub fn analyze_build(
                     None
                 } else if info.is_none() {
                     Some("item_definition_unavailable")
-                } else if spec.crafted_date.is_some() && info.is_some_and(|d| !resolves_by_hash(d))
+                } else if spec.crafted_date.is_some_and(|date| date != 0)
+                    && info.is_some_and(|d| !resolves_by_hash(d))
+                    && crafting_unavailable(inventory, defs, objectives)
                 {
                     Some("crafted_dates_unavailable")
                 } else {
@@ -380,9 +435,6 @@ pub fn analyze_build(
         missing,
         items,
         findings,
-        not_evaluated: vec![
-            "crafted_dates_unavailable",
-            "socket_overrides_not_evaluated",
-        ],
+        not_evaluated: vec!["socket_overrides_not_evaluated"],
     }
 }

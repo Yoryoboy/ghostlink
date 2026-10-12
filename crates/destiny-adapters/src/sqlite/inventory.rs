@@ -1159,6 +1159,7 @@ pub(super) fn attach_instance_fidelity(
                         return Err(storage_failure());
                     }
                     Ok(destiny_core::IndexedSocket {
+                        plug_objectives: None,
                         reusable_plugs: None,
                         socket_index: u8::try_from(stored).map_err(|_| storage_failure())?,
                         plug_hash: hash
@@ -1232,6 +1233,61 @@ pub(super) fn attach_instance_fidelity(
                     can_insert: decode_boolean(can_insert)?,
                     enabled: decode_boolean(enabled)?,
                 });
+            }
+            Ok(())
+        },
+    )?;
+    if super::migrations::read_user_version(connection)? < 31 {
+        return Ok(());
+    }
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, socket_index FROM item_objective_sockets",
+        "socket_index",
+        |row| row.get::<_, u8>(1),
+        |item, rows| {
+            for index in rows {
+                let socket = item
+                    .sockets
+                    .iter_mut()
+                    .find(|s| s.socket_index == index)
+                    .ok_or_else(storage_failure)?;
+                if socket.plug_objectives.is_some() {
+                    return Err(storage_failure());
+                }
+                socket.plug_objectives = Some(Vec::new());
+            }
+            Ok(())
+        },
+    )?;
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, socket_index, ordinal, objective_hash, progress FROM item_plug_objectives",
+        "socket_index, ordinal",
+        |row| {
+            Ok((
+                row.get::<_, u8>(1)?,
+                row.get::<_, u32>(2)?,
+                row.get::<_, u32>(3)?,
+                row.get::<_, Option<u32>>(4)?,
+            ))
+        },
+        |item, rows| {
+            for (index, ordinal, hash, progress) in rows {
+                let raw = item
+                    .sockets
+                    .iter_mut()
+                    .find(|s| s.socket_index == index)
+                    .and_then(|s| s.plug_objectives.as_mut())
+                    .ok_or_else(storage_failure)?;
+                if ordinal as usize != raw.len() || ordinal >= 128 {
+                    return Err(storage_failure());
+                }
+                raw.push((hash, progress));
             }
             Ok(())
         },
@@ -1516,6 +1572,29 @@ fn replace_projection(
                         encode_boolean(socket.visible)
                     ],
                 )?;
+                if let Some(raw) = &socket.plug_objectives {
+                    if super::migrations::read_user_version(connection)? < 31 {
+                        return Err(storage_failure());
+                    }
+                    execute_cached(
+                        connection,
+                        "INSERT INTO item_objective_sockets VALUES (?1, ?2)",
+                        params![item.instance_id.as_str(), socket.socket_index],
+                    )?;
+                    for (ordinal, (hash, progress)) in raw.iter().enumerate() {
+                        execute_cached(
+                            connection,
+                            "INSERT INTO item_plug_objectives VALUES (?1, ?2, ?3, ?4, ?5)",
+                            params![
+                                item.instance_id.as_str(),
+                                socket.socket_index,
+                                ordinal as i64,
+                                hash,
+                                progress
+                            ],
+                        )?;
+                    }
+                }
                 if let Some(raw) = &socket.reusable_plugs {
                     if super::migrations::read_user_version(connection)? < 30 {
                         return Err(storage_failure());

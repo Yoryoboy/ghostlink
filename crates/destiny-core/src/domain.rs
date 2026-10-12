@@ -112,6 +112,8 @@ pub struct ReusablePlug {
 /// Component-305 socket state. Index is the real provider array position.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IndexedSocket {
+    /// Component 309 objectives for the inserted plug. None is unobserved.
+    pub plug_objectives: Option<Vec<(u32, Option<u32>)>>,
     /// None is unobserved/legacy membership; Some(empty) is an observed empty list.
     pub reusable_plugs: Option<Vec<ReusablePlug>>,
     pub socket_index: u8,

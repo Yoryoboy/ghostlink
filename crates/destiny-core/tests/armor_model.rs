@@ -7,6 +7,7 @@ fn tuning_uses_visible_socket_and_raw_membership_not_selectable_flags() {
         ..Default::default()
     };
     let mut sockets = vec![domain::IndexedSocket {
+        plug_objectives: None,
         reusable_plugs: None,
         socket_index: 7,
         plug_hash: Some(ItemHash::new(3122197216)),
@@ -110,6 +111,7 @@ fn fragment_capacity_sums_inserted_aspects_without_enabled_or_visibility_gate() 
     let sockets: Vec<_> = [3, 7]
         .into_iter()
         .map(|socket_index| domain::IndexedSocket {
+            plug_objectives: None,
             reusable_plugs: None,
             socket_index,
             plug_hash: Some(ItemHash::new(99)),

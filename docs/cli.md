@@ -41,11 +41,14 @@ typed `share_link_requires_online_import` reason under `unsupported_operation`
 
 JSON list output is `kind: builds`; show/source output is `kind: build` with
 `summary`, `dim_json`, `omissions`, and `unresolved_items`. Human output shows
-IDs/names and source limitations. Equipped sources cannot recover socket
-indices, artifact unlocks, socket categories or crafted dates; in-game sources
-cannot recover socket categories/crafted dates and report unresolved instances
+IDs/names and source limitations. Equipped and in-game sources now capture
+`craftedDate` (epoch seconds) from complete component-309 crafting objectives;
+unavailable crafting evidence stays unknown and is reported during capture.
+Equipped subclass/artifact overrides and full socket-category conversion remain
+deferred; in-game sources report unresolved instances
 at conversion time (`unresolved_items: null` on later show, since discarded
-entries are not persisted). Known omissions remain visible on show. No substitutions
+entries are not persisted). Fixed source limitations remain visible on show; per-capture missing crafting
+evidence is not persisted separately. No same-hash substitutions
 are invented. Export is the **raw DIM JSON object**, even with `--json`, not an
 envelope; inspect source warnings before exporting.
 
@@ -73,8 +76,9 @@ sentinels and definition-name matching), and invalid search are evaluated.
 Search exclusion is qualified `search_only`: optimizer filtering and suppression
 are deferred. Unsupported search capabilities/context are not called invalid.
 Mods, fragment capacity, armor upgrades/energy, stat constraints, seasonal costs
-and optimization are `not_evaluated`; crafted-date fallback and socket overrides
-are explicitly unevaluated. Class compatibility is item metadata, not an invented
+and optimization are `not_evaluated`; socket overrides remain unevaluated.
+Instanced resolution tries the ID first, then a nonzero crafted date, as DIM does
+(last matching instance, without a hash or target-character gate). Class compatibility is item metadata, not an invented
 DIM finding. A successful check (exit 0) is an analysis report, not a claim that
 the build can be optimized or applied. There is no percentage coverage.
 

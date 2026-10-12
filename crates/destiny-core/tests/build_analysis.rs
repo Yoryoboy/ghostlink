@@ -59,11 +59,88 @@ fn analyze(
     items: &[ItemInstance],
     defs: &[ItemDefinition],
 ) -> BuildAnalysis {
-    analyze_build(build, &CharacterId::new("1"), items, defs, &[], &[])
+    analyze_build(build, &CharacterId::new("1"), items, defs, &[], &[], &[])
 }
 fn finding(result: &BuildAnalysis, kind: FindingKind) -> &BuildFinding {
     result.findings.iter().find(|f| f.kind == kind).unwrap()
 }
+#[test]
+fn crafted_date_fallback_preserves_id_priority_and_dim_last_match_without_hash_gate() {
+    let mut d = definition(10, 1498876634);
+    d.armor.socket_categories = vec![DefinitionSocketCategory {
+        socket_category_hash: 3583996951,
+        socket_indexes: vec![0],
+    }];
+    let mut other = d.clone();
+    other.hash = ItemHash::new(20);
+    let objectives: Vec<_> = (1..=3)
+        .map(|hash| {
+            ObjectiveDefinition::new(hash, String::new(), 0)
+                .unwrap()
+                .with_ui_style(Some(hash + 1))
+        })
+        .collect();
+    let mut items = vec![
+        item("2", 10, ItemLocation::Vault),
+        item("3", 20, ItemLocation::Vault),
+    ];
+    for item in &mut items {
+        item.sockets = vec![IndexedSocket {
+            socket_index: 0,
+            plug_hash: Some(ItemHash::new(100)),
+            enabled: false,
+            visible: false,
+            reusable_plugs: None,
+            plug_objectives: Some(vec![(1, Some(1)), (2, Some(0)), (3, Some(123))]),
+        }];
+    }
+    let mut build = BuildDefinition {
+        equipped: vec![spec(Some("404"), 10)],
+        ..Default::default()
+    };
+    build.equipped[0].crafted_date = Some(123);
+    let run = |build: &BuildDefinition| {
+        analyze_build(
+            build,
+            &CharacterId::new("1"),
+            &items,
+            &[d.clone(), other.clone()],
+            &[],
+            &[],
+            &objectives,
+        )
+    };
+    assert_eq!(
+        run(&build).items[0]
+            .inventory
+            .as_ref()
+            .unwrap()
+            .instance_id
+            .as_str(),
+        "3"
+    );
+    build.equipped[0].instance_id = Some(ItemInstanceId::new("2"));
+    assert_eq!(
+        run(&build).items[0]
+            .inventory
+            .as_ref()
+            .unwrap()
+            .instance_id
+            .as_str(),
+        "2"
+    );
+    build.equipped[0].instance_id = None;
+    build.equipped[0].crafted_date = Some(0);
+    assert_eq!(run(&build).resolved, 0);
+    build.equipped[0].crafted_date = Some(124);
+    assert_eq!(run(&build).resolved, 0);
+    assert!(
+        !run(&build)
+            .not_evaluated
+            .contains(&"crafted_dates_unavailable")
+    );
+}
+
 #[test]
 fn instance_identity_never_substitutes_and_preserves_missing_spec() {
     let defs = [definition(10, 3448274439)];
@@ -77,10 +154,7 @@ fn instance_identity_never_substitutes_and_preserves_missing_spec() {
     let missing = analyze(&build, &items, &defs);
     assert_eq!(missing.items[0].spec, build.equipped[0]);
     assert!(missing.items[0].inventory.is_none());
-    assert_eq!(
-        missing.items[0].resolution_reason,
-        Some("crafted_dates_unavailable")
-    );
+    assert_eq!(missing.items[0].resolution_reason, Some("item_not_found"));
     assert_eq!(
         finding(&missing, FindingKind::MissingItems).present,
         Some(true)

@@ -15,6 +15,62 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[test]
+fn crafting_objectives_roundtrip_revision_guard_and_atomicity() {
+    use destiny_core::SearchRepository;
+    let database = TempDatabase::new();
+    let mut store = SqliteStore::open(database.path()).unwrap();
+    let mut fake = destiny_app::test_support::InMemoryInventoryRepository::new();
+    let mut input = full_input();
+    input.items[0].sockets = vec![destiny_core::IndexedSocket {
+        socket_index: 0,
+        plug_hash: Some(ItemHash::new(10)),
+        enabled: false,
+        visible: false,
+        reusable_plugs: None,
+        plug_objectives: None,
+    }];
+    for (index, raw) in [
+        None,
+        Some(vec![]),
+        Some(vec![(1, Some(u32::MAX)), (2, None)]),
+        Some(vec![(1, Some(0)), (2, None)]),
+        Some(vec![(2, None), (1, Some(0))]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        input.items[0].sockets[0].plug_objectives = raw;
+        let real = store.replace_current(input.clone()).unwrap();
+        assert_eq!(real, fake.replace_current(input.clone()).unwrap());
+        assert_eq!(real.metadata.revision.value(), index as u64 + 1);
+        assert_eq!(
+            store.lookup_instance(&input.items[0].instance_id).unwrap(),
+            destiny_core::Resolution::Unique(input.items[0].clone())
+        );
+        assert_eq!(store.load_current().unwrap(), Some(real));
+        if index > 0 {
+            assert!(store.migrate_to(30).is_err());
+        }
+    }
+    let before = store.load_current().unwrap();
+    store.connection().execute_batch("CREATE TEMP TRIGGER reject_objectives BEFORE INSERT ON item_plug_objectives BEGIN SELECT RAISE(ABORT, 'objective write'); END;").unwrap();
+    input.items[0].sockets[0].plug_objectives = Some(vec![(1, Some(1))]);
+    assert!(store.replace_current(input.clone()).is_err());
+    assert_eq!(store.load_current().unwrap(), before);
+    drop(store);
+    let mut store = SqliteStore::open(database.path()).unwrap();
+    assert_eq!(store.load_current().unwrap(), before);
+    input.items[0].sockets[0].plug_objectives = None;
+    store.replace_current(input.clone()).unwrap();
+    store.migrate_to(30).unwrap();
+    store.migrate_to(31).unwrap();
+    assert_eq!(store.load_current().unwrap().unwrap().items, input.items);
+    input.items[0].sockets[0].plug_objectives = Some(vec![(1, Some(0)); 129]);
+    assert!(!input.is_structurally_valid());
+    assert!(store.replace_current(input).is_err());
+}
+
+#[test]
 fn instance_fidelity_fake_sqlite_roundtrip_and_every_field_revision() {
     use destiny_core::{IndexedSocket, ItemEnergy, SearchRepository};
     let mut fake = destiny_app::test_support::InMemoryInventoryRepository::new();
@@ -48,6 +104,7 @@ fn instance_fidelity_fake_sqlite_roundtrip_and_every_field_revision() {
     variants.push(item.clone());
     item.sockets = vec![
         IndexedSocket {
+            plug_objectives: None,
             reusable_plugs: None,
             socket_index: 0,
             plug_hash: None,
@@ -55,6 +112,7 @@ fn instance_fidelity_fake_sqlite_roundtrip_and_every_field_revision() {
             visible: false,
         },
         IndexedSocket {
+            plug_objectives: None,
             reusable_plugs: None,
             socket_index: 1,
             plug_hash: Some(ItemHash::new(123)),
@@ -62,6 +120,7 @@ fn instance_fidelity_fake_sqlite_roundtrip_and_every_field_revision() {
             visible: true,
         },
         IndexedSocket {
+            plug_objectives: None,
             reusable_plugs: None,
             socket_index: 2,
             plug_hash: Some(ItemHash::new(456)),
@@ -123,6 +182,7 @@ fn raw_reusable_fields_corruption_and_write_failures_are_atomic() {
     use destiny_core::{SearchRepository, domain::ReusablePlug};
     let mut input = full_input();
     input.items[0].sockets = vec![destiny_core::IndexedSocket {
+        plug_objectives: None,
         socket_index: 0,
         plug_hash: None,
         enabled: false,
@@ -204,6 +264,7 @@ fn raw_reusable_roundtrip_revision_guard_and_legacy() {
     let mut fake = destiny_app::test_support::InMemoryInventoryRepository::new();
     let mut input = full_input();
     input.items[0].sockets = vec![destiny_core::IndexedSocket {
+        plug_objectives: None,
         reusable_plugs: None,
         socket_index: 0,
         plug_hash: None,
@@ -259,6 +320,7 @@ fn instance_fidelity_v25_legacy_and_guard_each_projection() {
             1 => changed.items[0].gear_tier = Some(0),
             _ => {
                 changed.items[0].sockets = vec![destiny_core::IndexedSocket {
+                    plug_objectives: None,
                     reusable_plugs: None,
                     socket_index: 0,
                     plug_hash: None,
@@ -285,6 +347,7 @@ fn instance_fidelity_reopen_and_failed_write_preserve_projection() {
     input.items[0].energy = Some(destiny_core::ItemEnergy::default());
     input.items[0].gear_tier = Some(0);
     input.items[0].sockets = vec![destiny_core::IndexedSocket {
+        plug_objectives: None,
         reusable_plugs: None,
         socket_index: 0,
         plug_hash: None,
@@ -309,6 +372,7 @@ fn instance_fidelity_bounds_corruption_and_atomic_writes() {
     input.items[0].energy = Some(ItemEnergy::default());
     input.items[0].sockets = (0..32)
         .map(|index| IndexedSocket {
+            plug_objectives: None,
             reusable_plugs: None,
             socket_index: index,
             plug_hash: None,
@@ -319,6 +383,7 @@ fn instance_fidelity_bounds_corruption_and_atomic_writes() {
     store.replace_current(input.clone()).unwrap();
     let before = store.load_current().unwrap();
     input.items[0].sockets.push(IndexedSocket {
+        plug_objectives: None,
         reusable_plugs: None,
         socket_index: 32,
         plug_hash: None,

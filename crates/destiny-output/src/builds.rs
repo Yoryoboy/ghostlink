@@ -99,8 +99,7 @@ impl BuildOutput {
                     .collect::<Vec<_>>();
                 // Known source limitations remain visible on subsequent show.
                 if result.build.summary.source != BuildSource::Import {
-                    omissions
-                        .extend(["socket_categories_unavailable", "crafted_dates_unavailable"]);
+                    omissions.push("socket_categories_unavailable");
                     if result.build.summary.source == BuildSource::Equipped {
                         omissions.extend([
                             "inventory_socket_indices_unavailable",

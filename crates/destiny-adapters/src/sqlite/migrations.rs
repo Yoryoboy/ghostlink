@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 30;
+pub(crate) const LATEST_VERSION: u32 = 31;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 30] = [
+const MIGRATIONS: [Migration; 31] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -204,7 +204,40 @@ const MIGRATIONS: [Migration; 30] = [
         up: SCHEMA_V30_UP,
         down: SCHEMA_V30_DOWN,
     },
+    Migration {
+        version: 31,
+        up: SCHEMA_V31_UP,
+        down: SCHEMA_V31_DOWN,
+    },
 ];
+const SCHEMA_V31_UP: &str = r#"
+CREATE TABLE objective_styles (
+    hash INTEGER PRIMARY KEY REFERENCES objective_definitions(hash) ON DELETE CASCADE,
+    ui_style INTEGER NOT NULL CHECK (ui_style BETWEEN 0 AND 4294967295)
+) STRICT;
+CREATE TABLE item_objective_sockets (
+    instance_id TEXT NOT NULL, socket_index INTEGER NOT NULL,
+    PRIMARY KEY (instance_id, socket_index),
+    FOREIGN KEY (instance_id, socket_index) REFERENCES item_sockets(instance_id, socket_index) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE item_plug_objectives (
+    instance_id TEXT NOT NULL, socket_index INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 127),
+    objective_hash INTEGER NOT NULL CHECK (objective_hash BETWEEN 0 AND 4294967295),
+    progress INTEGER CHECK (progress BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (instance_id, socket_index, ordinal),
+    FOREIGN KEY (instance_id, socket_index) REFERENCES item_objective_sockets(instance_id, socket_index) ON DELETE CASCADE
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V31_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM objective_styles) OR EXISTS (SELECT 1 FROM item_objective_sockets) OR EXISTS (SELECT 1 FROM item_plug_objectives) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE item_plug_objectives;
+DROP TABLE item_objective_sockets;
+DROP TABLE objective_styles;
+"#;
 const SCHEMA_V30_UP: &str = r#"
 CREATE TABLE item_reusable_sockets (
     instance_id TEXT NOT NULL, socket_index INTEGER NOT NULL,

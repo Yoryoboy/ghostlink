@@ -311,6 +311,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
                 }
             }
         }
+        let objectives = crafting_definitions(sync.repository(), &snapshot.items)?;
         Ok(BuildCheckResult {
             summary: build.summary,
             analysis: build_analysis::analyze_build(
@@ -320,6 +321,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
                 &definitions,
                 &stats,
                 &snapshot.characters,
+                &objectives,
             ),
             metadata: crate::queries::query_metadata(&outcome, policy, now),
         })
@@ -348,8 +350,8 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             BuildOmission::InventorySocketIndicesUnavailable,
             BuildOmission::ArtifactUnlocksUnavailable,
             BuildOmission::SocketCategoriesUnavailable,
-            BuildOmission::CraftedDatesUnavailable,
         ];
+        let objectives = crafting_definitions(sync.repository(), &snapshot.items)?;
         let mut mods = Vec::new();
         let mut fashion = BTreeMap::new();
         for item in snapshot
@@ -366,16 +368,44 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             }
             let bucket = item_definition.bucket_hash.expect("recognized bucket");
             if is_armor(bucket) {
-                collect_mods(
-                    sync.repository(),
-                    bucket,
-                    item.plugs.iter().map(|p| p.plug_hash),
-                    &mut mods,
-                    &mut fashion,
-                )?;
+                if item.sockets.is_empty() {
+                    // Legacy projections cannot establish disabled inserted plugs.
+                    collect_mods(
+                        sync.repository(),
+                        bucket,
+                        item.plugs.iter().map(|p| p.plug_hash),
+                        &mut mods,
+                        &mut fashion,
+                    )?;
+                } else {
+                    for socket in &item.sockets {
+                        let Some(hash) = socket.plug_hash else {
+                            continue;
+                        };
+                        let Some(plug) = lookup(sync.repository(), hash)? else {
+                            add_omission(&mut omissions, BuildOmission::ItemDefinitionsUnavailable);
+                            continue;
+                        };
+                        // DIM extracts inserted armor mods without an enabled gate.
+                        if build_capture::insertable_armor_mod(&plug) {
+                            mods.push(hash);
+                        }
+                        if item_definition.armor.socket_categories.iter().any(|c| {
+                            c.socket_category_hash == 1926152773
+                                && c.socket_indexes.contains(&u32::from(socket.socket_index))
+                        }) {
+                            fashion.entry(bucket).or_insert_with(Vec::new).push(hash);
+                        }
+                    }
+                }
             }
             // PlugSummary has no socket index. Never use its ordinal as an index.
-            definition.equipped.push(build_item(item));
+            definition.equipped.push(build_item(
+                item,
+                &item_definition,
+                &objectives,
+                &mut omissions,
+            ));
         }
         if !mods.is_empty() || !fashion.is_empty() {
             definition.parameters = Some(BuildParameters {
@@ -442,10 +472,8 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
         let mut unresolved_items = Vec::new();
         let mut mods = Vec::new();
         let mut fashion = BTreeMap::new();
-        let mut omissions = vec![
-            BuildOmission::SocketCategoriesUnavailable,
-            BuildOmission::CraftedDatesUnavailable,
-        ];
+        let mut omissions = vec![BuildOmission::SocketCategoriesUnavailable];
+        let objectives = crafting_definitions(sync.repository(), &snapshot.items)?;
         for saved_item in &loadout.items {
             let Some(item) = snapshot
                 .items
@@ -460,7 +488,16 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             if bucket.is_none() {
                 add_omission(&mut omissions, BuildOmission::ItemDefinitionsUnavailable);
             }
-            let mut build_item = build_item(item);
+            let mut build_item = match &item_definition {
+                Some(definition) => build_item(item, definition, &objectives, &mut omissions),
+                None => BuildItem {
+                    instance_id: Some(item.instance_id.clone()),
+                    hash: item.item_hash,
+                    amount: Some(item.quantity),
+                    socket_overrides: vec![],
+                    crafted_date: None,
+                },
+            };
             if matches!(bucket, Some(SUBCLASS_BUCKET_HASH | ARTIFACT_BUCKET_HASH)) {
                 build_item.socket_overrides = saved_item
                     .plugs
@@ -542,13 +579,48 @@ fn character_class(character: &Character) -> Result<u8, AppError> {
         _ => Err(AppError::new(ErrorCategory::ProviderValidation)),
     }
 }
-fn build_item(item: &ItemInstance) -> BuildItem {
+fn crafting_definitions<R: WorldDefinitionRepository>(
+    repository: &R,
+    items: &[ItemInstance],
+) -> Result<Vec<ObjectiveDefinition>, AppError> {
+    let hashes: std::collections::BTreeSet<_> = items
+        .iter()
+        .flat_map(|i| &i.sockets)
+        .filter_map(|s| s.plug_objectives.as_ref())
+        .flatten()
+        .map(|(hash, _)| *hash)
+        .collect();
+    let mut definitions = Vec::new();
+    for hash in hashes {
+        if let Some(definition) = repository.lookup_objective(hash)? {
+            definitions.push(definition);
+        }
+    }
+    Ok(definitions)
+}
+
+fn build_item(
+    item: &ItemInstance,
+    definition: &ItemDefinition,
+    objectives: &[ObjectiveDefinition],
+    omissions: &mut Vec<BuildOmission>,
+) -> BuildItem {
+    let crafted_date = build_capture::crafted_date(item, definition, objectives);
+    if definition
+        .armor
+        .socket_categories
+        .iter()
+        .any(|c| c.socket_category_hash == 3583996951)
+        && crafted_date.is_none()
+    {
+        add_omission(omissions, BuildOmission::CraftedDatesUnavailable);
+    }
     BuildItem {
         instance_id: Some(item.instance_id.clone()),
         hash: item.item_hash,
         amount: Some(item.quantity),
         socket_overrides: vec![],
-        crafted_date: None,
+        crafted_date,
     }
 }
 fn lookup<R: DefinitionRepository>(
@@ -592,7 +664,7 @@ fn collect_mods<R: DefinitionRepository>(
         let Some(d) = lookup(repository, hash)? else {
             continue;
         };
-        if query::is_named_armor_mod(&d) {
+        if build_capture::insertable_armor_mod(&d) {
             mods.push(hash);
         } else if d.plug_category.as_deref().is_some_and(|c| {
             c.starts_with("shader") || c.contains("skins") || c.contains("ornament")

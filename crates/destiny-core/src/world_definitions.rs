@@ -171,6 +171,7 @@ pub fn normalize_stat_name(name: &str) -> Result<String, AppError> {
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct ObjectiveDefinition {
+    ui_style: Option<u32>,
     hash: u32,
     progress_description: String,
     completion_value: i32,
@@ -200,10 +201,18 @@ impl ObjectiveDefinition {
             hash,
             progress_description,
             completion_value,
+            ui_style: None,
         })
     }
     pub const fn hash(&self) -> u32 {
         self.hash
+    }
+    pub fn with_ui_style(mut self, ui_style: Option<u32>) -> Self {
+        self.ui_style = ui_style;
+        self
+    }
+    pub const fn ui_style(&self) -> Option<u32> {
+        self.ui_style
     }
     pub fn progress_description(&self) -> &str {
         &self.progress_description

@@ -283,6 +283,29 @@ coverage (`domain.rs:123-126`).
   - [ ] **BE-005d — Build capture completion.** Equipped subclass/artifact
     socket overrides, unlocked plug evidence (102/206), component 309 crafted
     dates and resolution fallback.
+    - [x] **BE-005d1 — Crafted dates and DIM mod capture.** Component 309
+      added to the profile request; migration 31 (STRICT, cascading
+      objective-style and raw socket-objective tables, observed-empty
+      markers, guarded downgrade, once-per-upgrade refresh, no backfill).
+      Capture stores `craftedDate` from complete crafting objectives
+      (`crafted.ts:23-90`, `loadout-utils.ts:524-534`); resolution tries
+      instance id, then nonzero crafted date, last match, cross-hash
+      (`loadout-utils.ts:694-710`); missing evidence stays unknown. Disabled
+      inserted armor mods are retained like DIM (`loadout-utils.ts:538-546`,
+      `sockets.ts:501-512`), so the `builds.rs:176-185` follow-up resolves
+      as "matches DIM"; numeric categories replace name-based mod
+      classification (`mod-utils.ts:53-65`, `known-values.ts:26-31`);
+      fashion uses ArmorCosmetics indices (`loadout-utils.ts:204-218`).
+      Workspace: 2140 all-features, 2108 default, 0 failed; clippy both
+      modes, fmt, diff check.
+    - [ ] **BE-005d2 — Socket overrides.** Equipped subclass/artifact
+      socket overrides (modern artifact `socketOverrides`, not legacy
+      `artifactUnlocks`, `loadout-drawer-reducer.ts:119-122`), DIM
+      empty/default rules and fragment gating, plug-membership validation
+      (102/206), in-game override normalization/category conversion
+      (`loadout-type-converters.ts:213-238`).
+    Review follow-up (BE-005c3, non-blocking): unreferenced display
+    validation `destiny-app/src/manifest.rs:189`.
 - [ ] **BE-006 — Analysis v2.** Stat constraints, mods fit, armor upgrades,
   equipped set-bonus activation (`SetBonus.tsx:23-64`, event selectors
   `socket-utils.ts:793-809`).

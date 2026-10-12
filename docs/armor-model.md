@@ -98,3 +98,43 @@ count resolved armor pieces and compare thresholds (`SetBonus.tsx:23-64`).
   is not a new sandbox catalog or a new request. Description composition is unchanged.
   Migration 30 invalidates Manifest freshness once so the same version refreshes
   after upgrade. Inventory membership requires an ordinary profile resync.
+
+## BE-005d: crafted identity and equipped armor capture (first slice)
+
+DIM evidence refers to commit `29c122e`:
+
+- `inventory/store/crafted.ts:23-90`: only weapons' first crafting-category
+  socket (3583996951) supplies crafting information. Component 309 objectives
+  are joined by the inserted plug hash; Objective `uiStyle` identifies level
+  (2), level progress (3), and timestamp (4). All three are required. The
+  timestamp is seconds, not sync time. Disabled/invisible sockets still count.
+- `loadout-drawer/loadout-utils.ts:524-534,694-710`: capture `craftedDate`, then
+  resolve instance ID before nonzero crafted date. DIM's `keyBy` keeps the last
+  date match and does not add a hash or owner constraint. Missing projections
+  remain unknown; absent evidence never permits same-hash substitution.
+- Migration 31 adds STRICT objective-style children and observed socket markers
+  with ordered objective hash/progress children. Cascading references preserve
+  profile replacement semantics; guarded downgrade refuses populated styles or
+  observed objectives, including empty lists. Manifest freshness is invalidated
+  once; legacy inventory is not backfilled. All raw objectives participate in
+  profile revision equality, including order and absent progress.
+- `loadout-drawer/loadout-utils.ts:193,204-218,538-546`,
+  `inventory/store/sockets.ts:501-512`, `loadout/mod-utils.ts:53-65`: inserted
+  armor mods are captured without an enabled gate. The old disabled-plug
+  follow-up (`builds.rs:176-185` in the original report) is resolved as
+  **matches DIM**. Capture now reads raw sockets so publication filtering does
+  not discard disabled inserted mods. Known numeric mod categories, pinned
+  empty-plug hashes, consumable bucket exclusion and item-type presence replace
+  name-based classification. Observed cosmetics use ArmorCosmetics socket
+  indexes and retain default plugs. Legacy socket-less projections retain the
+  prior partial capture and explicitly report socket-category limitations.
+
+Split remainder: equipped subclass/artifact overrides, DIM empty/default socket
+rules, fragment-capacity gating, plug membership validation, and in-game override
+normalization. These need a separate bounded catalog-assembly slice to keep the
+full production change near the requested ~700-line budget. Current source
+omissions remain explicit. `loadout-drawer/loadout-drawer-reducer.ts:119-122`
+clears legacy `artifactUnlocks`; the remaining artifact capture must use modern
+artifact-item `socketOverrides`, not resurrect legacy parameters. Existing
+102/206 plug sets are already requested, but no additional unlocked-evidence
+projection is claimed by this slice. Component 309 is the only new request.

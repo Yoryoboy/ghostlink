@@ -35,6 +35,13 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - Explain perk, mod, aspect, fragment and ability effects only from output `description` (official Bungie tooltip) and optional `clarity` (community research). Attribute community numbers to Clarity; never invent numbers, percentages or durations absent from both fields. If neither gives an exact value, say it is unavailable.
 - Missing `clarity` is not evidence of no effect. For `clarity_match: "variant"`, explicitly qualify the text as an enhanced/base fallback, not exact values for the inspected variant; never infer improved numbers.
 
+Build capture stores `craftedDate` only from complete crafting objectives.
+Build checks try instance ID first, then a nonzero crafted date; this is DIM
+identity recovery, not an arbitrary same-hash substitute. Missing crafting
+evidence stays unknown. Equipped armor-mod capture retains disabled inserted
+mods as DIM does; it does not promise those mods are currently usable.
+Equipped subclass/artifact socket override capture remains deferred.
+
 ## Bungie action rejections
 
 Use the [shared reason table](references/exit-codes.md#definitive-bungie-action-rejections)

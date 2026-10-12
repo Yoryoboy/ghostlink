@@ -1399,6 +1399,7 @@ mod tests {
             for cosmetic in [61, 64] {
                 let mut candidate = inventory(&resolved, NOW, 1);
                 candidate.items[0].sockets = vec![destiny_core::IndexedSocket {
+                    plug_objectives: None,
                     socket_index: 0,
                     plug_hash: None,
                     enabled: false,

@@ -140,9 +140,21 @@ impl WorldDefinitionRepository for SqliteStore {
         "SELECT name, description FROM activity_type_definitions WHERE hash = ?1"
     );
     fn lookup_objective(&self, hash: u32) -> Result<Option<ObjectiveDefinition>, AppError> {
-        self.connection().query_row("SELECT progress_description, completion_value FROM objective_definitions WHERE hash = ?1", [hash], |row| {
-            Ok(ObjectiveDefinition::new(hash, row.get(0)?, row.get(1)?))
-        }).optional().map_err(|_| storage_failure())?.transpose().map_err(|_| storage_failure())
+        let sql = if super::migrations::read_user_version(self.connection())? >= 31 {
+            "SELECT progress_description, completion_value, ui_style FROM objective_definitions LEFT JOIN objective_styles USING(hash) WHERE hash = ?1"
+        } else {
+            "SELECT progress_description, completion_value, NULL FROM objective_definitions WHERE hash = ?1"
+        };
+        self.connection()
+            .query_row(sql, [hash], |row| {
+                let style = row.get(2)?;
+                Ok(ObjectiveDefinition::new(hash, row.get(0)?, row.get(1)?)
+                    .map(|d| d.with_ui_style(style)))
+            })
+            .optional()
+            .map_err(|_| storage_failure())?
+            .transpose()
+            .map_err(|_| storage_failure())
     }
     fn world_definition_counts(&self) -> Result<[usize; 5], AppError> {
         let mut counts = [0; 5];
@@ -315,6 +327,10 @@ pub(super) fn replace_catalog(
             .map_err(|_| storage_failure())?;
     }
     for definition in &world.objectives.definitions {
+        if definition.ui_style().is_some() && super::migrations::read_user_version(connection)? < 31
+        {
+            return Err(storage_failure());
+        }
         connection
             .execute(
                 "INSERT INTO objective_definitions VALUES (?1, ?2, ?3, ?4)",
@@ -326,6 +342,14 @@ pub(super) fn replace_catalog(
                 ],
             )
             .map_err(|_| storage_failure())?;
+        if let Some(style) = definition.ui_style() {
+            connection
+                .execute(
+                    "INSERT INTO objective_styles VALUES (?1, ?2)",
+                    params![definition.hash(), style],
+                )
+                .map_err(|_| storage_failure())?;
+        }
     }
     for definition in &world.activity_types.definitions {
         connection
@@ -341,6 +365,39 @@ pub(super) fn replace_catalog(
             .map_err(|_| storage_failure())?;
     }
     Ok(())
+}
+
+fn objectives_match(
+    connection: &Connection,
+    world: &WorldDefinitionsAcquisition,
+) -> Result<bool, AppError> {
+    let sql = if super::migrations::read_user_version(connection)? >= 31 {
+        "SELECT hash, progress_description, completion_value, definition_version, ui_style FROM objective_definitions LEFT JOIN objective_styles USING(hash) ORDER BY hash"
+    } else {
+        "SELECT hash, progress_description, completion_value, definition_version, NULL FROM objective_definitions ORDER BY hash"
+    };
+    let mut statement = connection.prepare(sql).map_err(|_| storage_failure())?;
+    let rows = statement
+        .query_map([], |row| {
+            let style = row.get(4)?;
+            Ok((
+                ObjectiveDefinition::new(row.get(0)?, row.get(1)?, row.get(2)?)
+                    .map(|d| d.with_ui_style(style)),
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|_| storage_failure())?;
+    let mut stored = Vec::new();
+    for row in rows {
+        let (definition, version) = row.map_err(|_| storage_failure())?;
+        if version != world.version.as_str() {
+            return Ok(false);
+        }
+        stored.push(definition.map_err(|_| storage_failure())?);
+    }
+    let mut incoming = world.objectives.definitions.clone();
+    incoming.sort_by_key(ObjectiveDefinition::hash);
+    Ok(incoming == stored)
 }
 
 macro_rules! table_matches {
@@ -471,11 +528,5 @@ pub(super) fn contents_match(
             "SELECT hash, name, description, definition_version FROM activity_type_definitions ORDER BY hash",
             ActivityTypeDefinition
         )
-        && table_matches!(
-            connection,
-            world,
-            objectives,
-            "SELECT hash, progress_description, completion_value, definition_version FROM objective_definitions ORDER BY hash",
-            ObjectiveDefinition
-        ))
+        && objectives_match(connection, world)?)
 }
