@@ -58,6 +58,16 @@ pub fn compose(arguments: &BuildArgs) -> Result<BuildOutput, CliError> {
             a.request()?;
             None
         }
+        BuildCommand::Apply(a) => {
+            a.request()?;
+            if !a.dry_run {
+                // No executor yet: refuse before any configuration or I/O.
+                return Ok(BuildOutput::from_result(Err(BuildError::App(
+                    AppError::new(ErrorCategory::UnsupportedOperation),
+                ))));
+            }
+            None
+        }
         BuildCommand::List => Some(LocalBuildRequest::List),
         BuildCommand::Show(s) => Some(LocalBuildRequest::Show(s.selector()?)),
         BuildCommand::Delete(s) => Some(LocalBuildRequest::Delete(s.selector()?)),
@@ -112,6 +122,21 @@ pub fn compose(arguments: &BuildArgs) -> Result<BuildOutput, CliError> {
                     now,
                 )
                 .map(|result| destiny_app::builds::BuildReply::Analysis(Box::new(result))),
+        ));
+    }
+    if let BuildCommand::Apply(a) = &arguments.command {
+        // Read-only: profile reads only, no mutation transport is composed.
+        return Ok(BuildOutput::from_result(
+            builds
+                .plan_apply(
+                    &mut sync,
+                    &a.request()?,
+                    &destiny_adapters::equipment_capacity_policy::pinned_equipment_capacity_policy(
+                    ),
+                    config.freshness_policy(),
+                    now,
+                )
+                .map(|preview| destiny_app::builds::BuildReply::ApplyPlan(Box::new(preview))),
         ));
     }
     let result = match &arguments.command {

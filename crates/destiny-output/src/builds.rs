@@ -33,6 +33,51 @@ fn omission(o: BuildOmission) -> &'static str {
         BuildOmission::ItemDefinitionsUnavailable => "item_definitions_unavailable",
     }
 }
+fn location(l: &destiny_app::ItemLocation) -> String {
+    match l {
+        destiny_app::ItemLocation::Vault => "vault".into(),
+        destiny_app::ItemLocation::Character(id) => format!("character:{}", id.as_str()),
+        destiny_app::ItemLocation::Postmaster(id) => format!("postmaster:{}", id.as_str()),
+        destiny_app::ItemLocation::Other(_) => "other".into(),
+    }
+}
+fn apply_plan(preview: &destiny_app::builds::BuildApplyPreview) -> Value {
+    use destiny_app::build_apply::{ApplyPhase, BuildAction};
+    let plan = &preview.plan;
+    let name = |id: &destiny_app::ItemInstanceId| {
+        preview
+            .names
+            .iter()
+            .find(|(i, _)| i == id)
+            .map(|(_, n)| n.clone())
+    };
+    let steps: Vec<_> = plan.steps.iter().map(|step| {
+        let phase = match step.phase {
+            ApplyPhase::Dequip => "dequip",
+            ApplyPhase::Move => "move",
+            ApplyPhase::Equip => "equip",
+            ApplyPhase::ClearSpace => "clear_space",
+        };
+        match &step.action {
+            BuildAction::Move { item, from, to } => json!({"phase":phase, "action":"move",
+                "item":item.as_str(), "name":name(item), "from":location(from), "to":location(to)}),
+            BuildAction::PullFromPostmaster { item, character } => json!({"phase":phase,
+                "action":"pull_from_postmaster", "item":item.as_str(), "name":name(item),
+                "character":character.as_str()}),
+            BuildAction::Equip { items, character } => json!({"phase":phase, "action":"equip",
+                "items":items.iter().map(|i| json!({"item":i.as_str(), "name":name(i)})).collect::<Vec<_>>(),
+                "character":character.as_str()}),
+        }
+    }).collect();
+    json!({"kind":"build_apply_plan", "dry_run":true, "dispatched":0, "summary":summary(&preview.summary),
+        "target_character":plan.target.as_str(), "steps":steps,
+        "skipped":plan.skipped.iter().map(|s| json!({"spec_index":s.spec_index, "reason":s.reason.as_str()})).collect::<Vec<_>>(),
+        "already_there":plan.already_there,
+        "clear_skipped":plan.clear_skipped.iter().map(|(i, r)| json!({"item":i.as_str(), "reason":r.as_str()})).collect::<Vec<_>>(),
+        "not_applied":plan.not_applied, "unknown":plan.unknown,
+        "metadata":{"checked_at":preview.metadata.sync.checked_at.seconds(),
+            "revision":preview.metadata.sync.revision.value()}})
+}
 impl BuildOutput {
     pub fn from_result(result: Result<BuildReply, BuildError>) -> Self {
         match result {
@@ -108,6 +153,7 @@ impl BuildOutput {
                         "freshness":match result.metadata.freshness { destiny_app::FreshnessStatus::Fresh => "fresh", destiny_app::FreshnessStatus::Stale => "stale", destiny_app::FreshnessStatus::Missing => "missing", destiny_app::FreshnessStatus::InvalidSource => "invalid_source"}}}),
                 )
             }
+            Ok(BuildReply::ApplyPlan(preview)) => Self::success(apply_plan(&preview)),
             Ok(BuildReply::List(builds)) => Self::success(
                 json!({"kind":"builds", "builds":builds.iter().map(summary).collect::<Vec<_>>()}),
             ),
@@ -259,6 +305,65 @@ impl BuildOutput {
                     .collect::<Vec<_>>()
                     .join("\n")
             };
+        }
+        if self.value["kind"] == "build_apply_plan" {
+            let v = &self.value;
+            let mut lines = vec![format!(
+                "Dry run: {} on character {} (nothing was dispatched)",
+                clean(v["summary"]["name"].as_str().unwrap_or("")),
+                clean(v["target_character"].as_str().unwrap_or(""))
+            )];
+            for (n, step) in v["steps"].as_array().into_iter().flatten().enumerate() {
+                let label = |item: &Value| {
+                    format!(
+                        "{} ({})",
+                        clean(item["name"].as_str().unwrap_or("item")),
+                        clean(item["item"].as_str().unwrap_or(""))
+                    )
+                };
+                let text = match step["action"].as_str() {
+                    Some("move") => format!(
+                        "move {} {} -> {}",
+                        label(step),
+                        clean(step["from"].as_str().unwrap_or("")),
+                        clean(step["to"].as_str().unwrap_or(""))
+                    ),
+                    Some("pull_from_postmaster") => format!(
+                        "pull {} from the Postmaster of {}",
+                        label(step),
+                        clean(step["character"].as_str().unwrap_or(""))
+                    ),
+                    _ => format!(
+                        "equip {} on {}",
+                        step["items"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(label)
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        clean(step["character"].as_str().unwrap_or(""))
+                    ),
+                };
+                lines.push(format!(
+                    "{}. [{}] {text}",
+                    n + 1,
+                    step["phase"].as_str().unwrap_or("")
+                ));
+            }
+            for skip in v["skipped"].as_array().into_iter().flatten() {
+                lines.push(format!(
+                    "Skipped item {}: {}",
+                    skip["spec_index"], skip["reason"]
+                ));
+            }
+            for skip in v["clear_skipped"].as_array().into_iter().flatten() {
+                lines.push(format!("Not cleared {}: {}", skip["item"], skip["reason"]));
+            }
+            lines.push(format!("Already in place: {}", v["already_there"]));
+            lines.push(format!("Not applied: {}", v["not_applied"]));
+            lines.push(format!("Unknown evidence: {}", v["unknown"]));
+            return lines.join("\n");
         }
         if self.value["kind"] == "build_analysis" {
             let counts = &self.value["counts"];

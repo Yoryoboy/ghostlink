@@ -230,6 +230,9 @@ pub enum BuildCommand {
     Show(BuildSelection),
     /// Check inventory resolution and supported DIM findings; never applies gear.
     Check(BuildCheckArgs),
+    /// Plan item moves and equips for a build. Only --dry-run is available
+    /// until the executor lands; it prints the plan and dispatches nothing.
+    Apply(BuildApplyArgs),
     /// Delete a local build; ID deletion is idempotent.
     Delete(BuildSelection),
     /// Write raw DIM JSON to stdout (also with --json).
@@ -260,6 +263,29 @@ impl BuildCheckArgs {
             selector: self.selection.selector()?,
             character: self.character.as_ref().map(destiny_app::CharacterId::new),
         })
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct BuildApplyArgs {
+    #[command(flatten)]
+    pub selection: BuildSelection,
+    #[arg(long)]
+    pub character: Option<String>,
+    /// Print the plan without dispatching any action.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+impl BuildApplyArgs {
+    pub fn request(&self) -> Result<destiny_app::builds::BuildCheckRequest, CliError> {
+        BuildCheckArgs {
+            selection: BuildSelection {
+                id: self.selection.id.clone(),
+                name: self.selection.name.clone(),
+            },
+            character: self.character.clone(),
+        }
+        .request()
     }
 }
 

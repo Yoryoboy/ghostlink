@@ -1,9 +1,10 @@
-# Build apply: planning slice (BE-007a, incomplete)
+# Build apply: planner and dry-run (BE-007a, incomplete)
 
-There is **no CLI build apply command or MCP apply_build tool yet**. The current
-slice supplies Manifest equipping labels and a pure equipment planner; it does
-not dispatch actions. Existing move, equip, batch equip and in-game apply-loadout
-commands are unchanged. This is not a completed build-application feature.
+`ghostlink build apply ... --dry-run` prints the plan from the pure equipment
+planner and dispatches nothing (profile reads only; no mutation transport is
+composed). There is **no executor and no MCP apply tool yet**: `build apply`
+without `--dry-run` exits 40 (`unsupported_operation`). Existing move, equip,
+batch equip and in-game apply-loadout commands are unchanged.
 
 ## Implemented boundary
 
@@ -45,26 +46,43 @@ Ghostlink has no DIM user-tag or manual-move data. Per owner decision, these
 criteria are neutral: DIM's untagged item and no manual move. Definition search
 `tags` are not DIM user tags and are never used as a substitute.
 
-## Remainder before production exposure
+## BE-007a2 planner completion
 
-The existing audited Postmaster-pull capacity policy covers only the eight
-**character** equipment buckets (10 including equipped), not Vault capacity or
-Vault-bucket correspondence. Production must not invent a Vault capacity. The
-planner accepts optional explicit Vault evidence for equipment-only fixtures;
-without it, cross-character staging reports `vault_capacity_unavailable`.
-Unknown/unsupported occupants report `occupancy_unknown`, not a guessed free slot.
-A general Vault bucket catalog and stack occupancy are still needed before this
-input can be safely supplied in production. No network evidence was acquired.
+| Decision | DIM evidence (`src/app/`) |
+|---|---|
+| Space-making ranking adds saved in-game loadout membership: displace owner's non-loadout items first, prefer destination characters that have the item in a loadout, then owner-cannot-use, destination-can-use | `inventory/item-move-service.ts:1138-1211`, `loadout/selectors.ts:109-120` |
+| Lone dequip per owner happens inline with the move; several are replaced together per owner (replacements moved first, then one grouped equip) | `loadout-drawer/loadout-apply.ts:437-513` |
+| Equips are counted before moving: one equip is inline with its move, several use one bulk equip afterwards | `loadout-drawer/loadout-apply.ts:424-433,526-540` |
+| `clearWeapons`/`clearArmor`: only buckets present in the build, unequipped non-build and transferable items leave the character; Vault with one slot left prefers another character; reservations keep non-build items from refilling the bucket | `loadout-drawer/loadout-apply.ts:680-692,822-955`, `inventory/item-move-service.ts:775-790` |
+| Postmaster items are pulled to their owner before any other move, even on the target character | `loadout-drawer/loadout-apply.ts:395-396`, `inventory/item-move-service.ts:1072-1083` |
+| Vault slots are counted per corresponding Vault bucket, from the Vault vendor's accepted-item mapping and that bucket's capacity | `inventory/stores-helpers.ts:65-66,101-107`, `destiny2/d2-buckets.ts:60-66` |
 
-Further work: complete DIM displacement ranking using saved in-game loadout
-membership; optional clearWeapons/clearArmor final phase; Postmaster/stack
-handling; single-item inline equip phase parity; source replacement preparation
-and grouping across interleaved transfers. The current planner is equipment-only
-and is **not an execution-ready DIM parity contract**.
+Ghostlink adaptations:
 
-Then wire revision/freshness-bound application planning and CLI `build apply
---dry-run` with shared text/JSON, prove zero action dispatches with fakes, and add
-the executor plus MCP mutation tool. Execution must reuse optimistic action
-adapters, pacing and typed Bungie rejection mapping, track dependency failures,
-continue independent item work where DIM does, and never blindly retry or claim
-provider-observed success. BE-007b remains separate.
+- A Postmaster pull follows the existing pull policy: side effects `Some(true)` and
+  unknown (`None`) are typed skips (`postmaster_side_effects`,
+  `postmaster_side_effects_unknown`).
+- Stackable definitions (`max_stack_size > 1` or non-instanced) are the typed skip
+  `stack_unsupported`; stack amounts are not planned. DIM moves amounts
+  (`loadout-apply.ts:752-800`). This is a follow-up.
+- Character occupancy counts only items of the destination bucket; an occupant
+  with no definition or bucket makes occupancy `occupancy_unknown`.
+- Saved-loadout membership comes from the local profile projection. When absent it
+  is listed in `unknown` as `in_game_loadout_membership`, and every item ranks as
+  outside any loadout.
+- Vault evidence (`VaultEvidence`: equipment bucket to Vault bucket plus capacity) is
+  a pure planner input. Production supplies none, so `unknown` lists
+  `vault_capacity` and Vault-staged moves are skipped as
+  `vault_capacity_unavailable`. DIM derives it from the Vault vendor `acceptedItems`
+  and `DestinyInventoryBucketDefinition.itemCount`, which Ghostlink does not
+  project or download. Projecting them (a migration 34 plus new sync components)
+  could not be audited offline, so no capacity is guessed.
+
+## Remaining work
+
+Vault bucket/capacity projection; stack amounts; the executor (reusing the move,
+equip, batch equip and Postmaster pull adapters, throttle and error mapping, with
+DIM's per-item partial failure adapted to optimistic semantics: continue
+independent items, track dependency failures, never blindly retry, never claim
+provider-observed success); a no-dispatch test that fails any mutation transport;
+and the MCP mutation tool. BE-007b (sockets, mods, subclass) remains separate.

@@ -442,7 +442,32 @@ coverage (`domain.rs:123-126`).
       equips, typed skips; `docs/build-apply.md`. Not exposed in CLI/MCP
       yet. Workspace: 2202 all-features, 2170 default, 0 failed; clippy
       both modes, fmt.
-    - [ ] **BE-007a2 — Planner completion and exposure.** Saved-loadout
+    - [x] **BE-007a2a — Planner completion and dry-run.** Displacement
+      ranking with saved loadouts (`item-move-service.ts:1138-1211`,
+      `loadout/selectors.ts:109-120`), lone vs grouped dequip
+      (`loadout-apply.ts:437-513`), inline single equip vs bulk
+      (`loadout-apply.ts:424-433,526-540`), clear-space flags
+      (`loadout-apply.ts:680-692,822-955`, `item-move-service.ts:775-790`),
+      Postmaster first (`loadout-apply.ts:395-396`,
+      `item-move-service.ts:1072-1083`), per-Vault-bucket slots
+      (`stores-helpers.ts:65-66,101-107`); fixed occupancy counting any
+      known bucket. CLI `ghostlink build apply <ID|--name N> [--character C]
+      [--dry-run] [--json]`: dry-run emits `build_apply_plan` with
+      `dispatched: 0` (test asserts zero provider calls); without
+      `--dry-run` exits 40 `unsupported_operation`. Production passes no
+      Vault evidence yet, so Vault-staged moves skip as
+      `vault_capacity_unavailable`; stacks skip as `stack_unsupported`.
+      Tests written after code; mutation checks confirmed they fail when
+      behavior is removed. Workspace: 2213 all-features, 2181 default,
+      0 failed; clippy both modes, fmt.
+    - [ ] **BE-007a2b — Vault evidence.** Project Vault bucket
+      correspondence and capacity as DIM does (Vault vendor
+      `acceptedItems`, bucket `itemCount`, `d2-buckets.ts:60-66`),
+      migration 34; wire into `build apply`.
+    - [ ] **BE-007a2c — Executor and MCP.** Executor with DIM partial
+      failure adapted to optimistic semantics, fail-on-mutation fake,
+      MCP mutation tool, `docs/mcp.md`.
+    - Original BE-007a2 scope: **Planner completion and exposure.** Saved-loadout
       displacement ranking, final clear-space flags, Postmaster/stacks,
       single-item inline equip parity, source grouping across interleaved
       transfers; Vault correspondence/capacity (`stores-helpers.ts:65-66,

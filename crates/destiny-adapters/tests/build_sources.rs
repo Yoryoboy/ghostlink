@@ -646,3 +646,94 @@ fn stale_source_syncs_and_invalid_slot_does_not_save() {
     );
     assert_eq!(sync.into_parts().0.2, 2);
 }
+
+#[test]
+fn build_apply_plan_reads_only_and_marks_missing_vault_evidence() {
+    use destiny_core::build_apply::{ApplyPhase, BuildAction};
+    let mut sync = fixture();
+    let service = BuildService::new(
+        destiny_app::test_support::InMemoryBuildRepository::default(),
+        DimBuildCodec,
+    );
+    let mut service = service;
+    let source = service
+        .from_equipped(
+            &mut sync,
+            &CharacterId::new("1"),
+            "Apply",
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let mut definitions = vec![
+        definition(1498876634, Some(BucketHash::new(1498876634)), None),
+        definition(3448274439, Some(SUBCLASS_BUCKET_HASH), None),
+        definition(3284755031, Some(BucketHash::new(3448274439)), None),
+        definition(999, Some(BucketHash::new(999)), None),
+    ];
+    for d in &mut definitions {
+        d.class_type = Some(destiny_core::domain::ClassType::Any);
+    }
+    sync.repository_mut()
+        .replace_definitions(DefinitionReplacementInput {
+            definitions: ManifestDefinitions {
+                version: DefinitionVersion::new("v1"),
+                definitions,
+            },
+            checked_at: Timestamp::new(100),
+            source: SourceMarker::Manifest,
+        })
+        .unwrap();
+    let mut input =
+        InventorySnapshotInput::with_metadata(&sync.repository().load_current().unwrap().unwrap());
+    input.items[0].location = ItemLocation::Vault;
+    input.items[0].equipped = false;
+    sync.repository_mut().replace_current(input).unwrap();
+    let policy = destiny_adapters::pinned_equipment_capacity_policy();
+    let preview = service
+        .plan_apply(
+            &mut sync,
+            &destiny_app::builds::BuildCheckRequest {
+                selector: destiny_app::builds::BuildSelector::Id(source.build.definition.id),
+                character: None,
+            },
+            &policy,
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let steps: Vec<_> = preview
+        .plan
+        .steps
+        .iter()
+        .map(|s| (s.phase, s.action.clone()))
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            (
+                ApplyPhase::Move,
+                BuildAction::Move {
+                    item: ItemInstanceId::new("1"),
+                    from: ItemLocation::Vault,
+                    to: ItemLocation::Character(CharacterId::new("1")),
+                }
+            ),
+            (
+                ApplyPhase::Move,
+                BuildAction::Equip {
+                    items: vec![ItemInstanceId::new("1")],
+                    character: CharacterId::new("1"),
+                }
+            ),
+        ]
+    );
+    // No Vault bucket projection or saved-loadout ranking evidence is invented.
+    assert!(preview.plan.unknown.contains(&"vault_capacity"));
+    assert_eq!(preview.names[0].1, "Item 1498876634");
+    assert_eq!(
+        sync.into_parts().0.2,
+        0,
+        "fresh state needs no provider call"
+    );
+}

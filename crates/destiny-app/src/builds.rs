@@ -80,6 +80,7 @@ pub enum LocalBuildRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BuildReply {
     Analysis(Box<BuildCheckResult>),
+    ApplyPlan(Box<BuildApplyPreview>),
     List(Vec<BuildSummary>),
     Build {
         result: Box<BuildSourceResult>,
@@ -100,6 +101,23 @@ pub struct BuildCheckRequest {
 pub struct BuildCheckResult {
     pub summary: BuildSummary,
     pub analysis: build_analysis::BuildAnalysis,
+    pub metadata: QueryMetadata,
+}
+
+struct AnalyzedBuild {
+    result: BuildCheckResult,
+    definition: BuildDefinition,
+    items: Vec<ItemInstance>,
+    characters: Vec<Character>,
+    definitions: Vec<ItemDefinition>,
+}
+
+/// Read-only apply plan; nothing has been dispatched.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuildApplyPreview {
+    pub summary: BuildSummary,
+    pub plan: build_apply::BuildApplyPlan,
+    pub names: Vec<(ItemInstanceId, String)>,
     pub metadata: QueryMetadata,
 }
 
@@ -221,6 +239,100 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
         policy: FreshnessPolicy,
         now: Timestamp,
     ) -> Result<BuildCheckResult, BuildError>
+    where
+        G: ProfileGateway,
+        I: InventoryRepository
+            + WorldDefinitionRepository
+            + StatDefinitionRepository
+            + ArmorCatalogRepository,
+    {
+        self.analyze(sync, selector, character, policy, now)
+            .map(|analyzed| analyzed.result)
+    }
+
+    /// Fresh-state apply plan. Reads and plans only; it has no transport
+    /// dependency beyond the profile sync that `check` already performs.
+    pub fn plan_apply<G, I>(
+        &self,
+        sync: &mut ProfileSyncService<G, I>,
+        request: &BuildCheckRequest,
+        capacity: &EquipmentCapacityPolicy,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<BuildApplyPreview, BuildError>
+    where
+        G: ProfileGateway,
+        I: InventoryRepository
+            + WorldDefinitionRepository
+            + StatDefinitionRepository
+            + ArmorCatalogRepository,
+    {
+        let analyzed = self.analyze(
+            sync,
+            &request.selector,
+            request.character.as_ref(),
+            policy,
+            now,
+        )?;
+        let analysis = &analyzed.result.analysis;
+        // Local projection of saved in-game loadouts; absent stays unknown.
+        let saved = sync.repository().saved_loadouts()?;
+        let membership: Option<Vec<_>> = saved.map(|characters| {
+            characters
+                .iter()
+                .flat_map(|c| {
+                    c.loadouts.iter().flat_map(move |l| {
+                        l.items
+                            .iter()
+                            .map(move |i| (c.character_id.clone(), i.instance_id.clone()))
+                    })
+                })
+                .collect()
+        });
+        let parameters = analyzed.definition.parameters.as_ref();
+        let context = build_apply::ApplyContext {
+            // No Vault bucket projection exists yet (BE-007a2 follow-up).
+            vault: None,
+            loadouts: membership.as_deref(),
+            clear_weapons: parameters.and_then(|p| p.clear_weapons).unwrap_or(false),
+            clear_armor: parameters.and_then(|p| p.clear_armor).unwrap_or(false),
+        };
+        let plan = build_apply::plan_build_items(
+            &analysis.target_character,
+            &analysis.items,
+            &analyzed.items,
+            &analyzed.definitions,
+            &analyzed.characters,
+            capacity,
+            &context,
+        );
+        let names = analyzed
+            .items
+            .iter()
+            .filter_map(|i| {
+                analyzed
+                    .definitions
+                    .iter()
+                    .find(|d| d.hash == i.item_hash)
+                    .map(|d| (i.instance_id.clone(), d.name.clone()))
+            })
+            .collect();
+        Ok(BuildApplyPreview {
+            summary: analyzed.result.summary,
+            plan,
+            names,
+            metadata: analyzed.result.metadata,
+        })
+    }
+
+    fn analyze<G, I>(
+        &self,
+        sync: &mut ProfileSyncService<G, I>,
+        selector: &BuildSelector,
+        character: Option<&CharacterId>,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<AnalyzedBuild, BuildError>
     where
         G: ProfileGateway,
         I: InventoryRepository
@@ -383,10 +495,16 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             &unlocked_mods,
             character_class(&target)?,
         )?;
-        Ok(BuildCheckResult {
-            summary: build.summary,
-            analysis,
-            metadata: crate::queries::query_metadata(&outcome, policy, now),
+        Ok(AnalyzedBuild {
+            result: BuildCheckResult {
+                summary: build.summary,
+                analysis,
+                metadata: crate::queries::query_metadata(&outcome, policy, now),
+            },
+            definition: build.definition,
+            items: snapshot.items,
+            characters: snapshot.characters,
+            definitions,
         })
     }
 

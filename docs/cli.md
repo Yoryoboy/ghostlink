@@ -8,7 +8,8 @@ Install the `ghostlink` executable from a release; see the
 ## Local builds
 
 Build definitions are stored per committed profile membership in SQLite. These
-commands **never apply gear** or write to DIM/Bungie saved loadouts.
+commands **never apply gear** (except the `build apply` plan below, which only
+previews) or write to DIM/Bungie saved loadouts.
 
 ```sh
 ghostlink build import raid.json --json
@@ -22,6 +23,7 @@ ghostlink build show --name Raid --json
 ghostlink build show <ID> --json
 ghostlink build check <ID> --character hunter --json
 ghostlink build check --name Raid --json
+ghostlink build apply <ID> --character hunter --dry-run --json
 ghostlink build export <ID> > raid.json
 ghostlink build delete <ID> --json
 ```
@@ -63,6 +65,20 @@ Select a build by positional ID or `--name` (normalized exact match). Ambiguous
 names return candidates (exit 31); missing builds use `item_not_found` (32).
 Delete by ID is idempotent and reports `deleted: false` if absent. Existing
 [exit codes](../skills/ghostlink/references/exit-codes.md) apply; no new exits.
+
+### Preview applying a build
+
+`ghostlink build apply <ID|--name N> [--character C] --dry-run` prints the DIM-style
+item plan (Postmaster pulls, dequips, Vault-mediated moves, space-making moves,
+grouped equips, optional clear-space) as `build_apply_plan` JSON or text. It uses
+ordinary profile freshness and the same character selection as `build check`, reads
+only, and reports `dispatched: 0`. Skipped items carry typed reasons; sockets, mods
+and subclass are listed under `not_applied` (BE-007b). Evidence that is not
+available (Vault capacity, saved-loadout membership) is listed under `unknown`;
+without Vault capacity, moves that stage through the Vault are skipped as
+`vault_capacity_unavailable`. **Without `--dry-run` the command exits 40
+(`unsupported_operation`)**: the executor is not implemented yet. See
+[build-apply.md](build-apply.md).
 
 ### Check a build against inventory
 

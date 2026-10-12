@@ -7,6 +7,7 @@ pub enum ApplyPhase {
     Dequip,
     Move,
     Equip,
+    ClearSpace,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum BuildAction {
@@ -14,6 +15,11 @@ pub enum BuildAction {
         item: ItemInstanceId,
         from: ItemLocation,
         to: ItemLocation,
+    },
+    /// DIM pulls from the owner's Postmaster before any other move.
+    PullFromPostmaster {
+        item: ItemInstanceId,
+        character: CharacterId,
     },
     Equip {
         items: Vec<ItemInstanceId>,
@@ -39,6 +45,9 @@ pub enum ApplySkipReason {
     UniqueConflict,
     UnsupportedLocation,
     DuplicateSlot,
+    StackUnsupported,
+    PostmasterSideEffects,
+    PostmasterSideEffectsUnknown,
 }
 impl ApplySkipReason {
     pub const fn as_str(self) -> &'static str {
@@ -55,6 +64,9 @@ impl ApplySkipReason {
             Self::UniqueConflict => "unique_conflict",
             Self::UnsupportedLocation => "unsupported_location",
             Self::DuplicateSlot => "duplicate_slot",
+            Self::StackUnsupported => "stack_unsupported",
+            Self::PostmasterSideEffects => "postmaster_side_effects",
+            Self::PostmasterSideEffectsUnknown => "postmaster_side_effects_unknown",
         }
     }
 }
@@ -69,14 +81,48 @@ pub struct BuildApplyPlan {
     pub steps: Vec<BuildApplyStep>,
     pub skipped: Vec<BuildApplySkip>,
     pub already_there: Vec<usize>,
+    /// Final clear-space items that could not be moved off the character.
+    pub clear_skipped: Vec<(ItemInstanceId, ApplySkipReason)>,
     pub not_applied: Vec<&'static str>,
+    /// Ranking or capacity evidence that was not supplied, never guessed.
+    pub unknown: Vec<&'static str>,
+}
+/// DIM Vault correspondence: equipment bucket to its Vault bucket and that
+/// bucket's capacity (`stores-helpers.ts:65-66,101-107`, `d2-buckets.ts:60-66`).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct VaultEvidence {
+    pub mapping: Vec<(BucketHash, BucketHash)>,
+    pub capacity: Vec<(BucketHash, usize)>,
+}
+impl VaultEvidence {
+    pub fn single(accepted: &[BucketHash], vault: BucketHash, capacity: usize) -> Self {
+        Self {
+            mapping: accepted.iter().map(|b| (*b, vault)).collect(),
+            capacity: vec![(vault, capacity)],
+        }
+    }
+    fn vault_bucket(&self, bucket: BucketHash) -> Option<BucketHash> {
+        self.mapping.iter().find(|(b, _)| *b == bucket).map(|m| m.1)
+    }
+}
+/// Optional evidence and DIM loadout parameters. Absent evidence is typed.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ApplyContext<'a> {
+    pub vault: Option<&'a VaultEvidence>,
+    /// Saved in-game loadout membership as (owner, item), when known.
+    pub loadouts: Option<&'a [(CharacterId, ItemInstanceId)]>,
+    pub clear_weapons: bool,
+    pub clear_armor: bool,
 }
 struct Planner<'a> {
     items: Vec<ItemInstance>,
     defs: &'a [ItemDefinition],
     characters: &'a [Character],
     policy: &'a EquipmentCapacityPolicy,
-    vault: Option<usize>,
+    vault: Option<&'a VaultEvidence>,
+    loadouts: Option<&'a [(CharacterId, ItemInstanceId)]>,
+    /// DIM clear-space reservations on the target character (item-move-service.ts:775-790).
+    reserve: Option<(CharacterId, Vec<(BucketHash, usize)>)>,
     excluded: Vec<ItemInstanceId>,
     active: Vec<ItemInstanceId>,
     steps: Vec<BuildApplyStep>,
@@ -144,8 +190,13 @@ impl Planner<'_> {
         &self,
         item: &ItemInstance,
         owner: &CharacterId,
+        taken: &[ItemInstanceId],
     ) -> Result<ItemInstanceId, ApplySkipReason> {
         let bucket = self.bucket(item)?;
+        let taken_labels: Vec<_> = taken
+            .iter()
+            .filter_map(|id| self.label(&self.item(id)))
+            .collect();
         let mut candidates: Vec<_> = self
             .items
             .iter()
@@ -154,6 +205,8 @@ impl Planner<'_> {
                     && !i.equipped
                     && !self.excluded.contains(&i.instance_id)
                     && !self.active.contains(&i.instance_id)
+                    && !taken.contains(&i.instance_id)
+                    && self.label(i).is_none_or(|l| !taken_labels.contains(&l))
                     && self.bucket(i) == Ok(bucket)
                     && self.usable(i, owner)
                     && matches!(i.location, ItemLocation::Character(_) | ItemLocation::Vault)
@@ -247,31 +300,56 @@ impl Planner<'_> {
         let ItemLocation::Character(owner) = &item.location else {
             return Err(ApplySkipReason::UnsupportedLocation);
         };
-        let replacement = self.replacement(&item, owner)?;
+        let replacement = self.replacement(&item, owner, &[])?;
         self.move_item(&replacement, &item.location)?;
         self.equip(vec![replacement], owner)
     }
     fn free(&self, target: &ItemLocation, bucket: BucketHash) -> Result<usize, ApplySkipReason> {
-        let capacity = match target {
-            ItemLocation::Vault => self
-                .vault
-                .ok_or(ApplySkipReason::VaultCapacityUnavailable)?,
-            ItemLocation::Character(_) => self
-                .policy
-                .capacity(bucket)
-                .ok_or(ApplySkipReason::UnsupportedBucket)?,
+        let unavailable = ApplySkipReason::VaultCapacityUnavailable;
+        let (capacity, vault_bucket) = match (target, self.vault) {
+            (ItemLocation::Vault, vault) => {
+                let vault = vault.ok_or(unavailable)?;
+                let vault_bucket = vault.vault_bucket(bucket).ok_or(unavailable)?;
+                let capacity = vault.capacity.iter().find(|(b, _)| *b == vault_bucket);
+                (capacity.ok_or(unavailable)?.1, Some((vault, vault_bucket)))
+            }
+            (ItemLocation::Character(_), _) => (
+                self.policy
+                    .capacity(bucket)
+                    .ok_or(ApplySkipReason::UnsupportedBucket)?,
+                None,
+            ),
             _ => return Err(ApplySkipReason::UnsupportedLocation),
         };
         let mut occupied = 0;
         for i in self.items.iter().filter(|i| &i.location == target) {
+            // Any known bucket counts; a missing definition or bucket is unknown.
             let b = self
-                .bucket(i)
-                .map_err(|_| ApplySkipReason::OccupancyUnknown)?;
-            if *target == ItemLocation::Vault || b == bucket {
-                occupied += 1;
+                .definition(i)
+                .ok()
+                .and_then(|d| d.bucket_hash)
+                .ok_or(ApplySkipReason::OccupancyUnknown)?;
+            match vault_bucket {
+                // Vault slots are shared per Vault bucket, not per equipment slot.
+                Some((vault, vault_bucket)) => match vault.vault_bucket(b) {
+                    Some(found) => occupied += usize::from(found == vault_bucket),
+                    None => return Err(ApplySkipReason::OccupancyUnknown),
+                },
+                None => occupied += usize::from(b == bucket),
             }
         }
-        Ok(capacity.saturating_sub(occupied))
+        let reserved = match (&self.reserve, target) {
+            (Some((owner, buckets)), ItemLocation::Character(id)) if owner == id => buckets
+                .iter()
+                .find(|(b, _)| *b == bucket)
+                .map_or(0, |(_, n)| *n),
+            _ => 0,
+        };
+        Ok(capacity.saturating_sub(occupied).saturating_sub(reserved))
+    }
+    fn in_loadout(&self, item: &ItemInstance, owner: &CharacterId) -> bool {
+        self.loadouts
+            .is_some_and(|l| l.iter().any(|(c, i)| c == owner && i == &item.instance_id))
     }
     fn space(
         &mut self,
@@ -300,10 +378,19 @@ impl Planner<'_> {
             .filter(|c| *target != ItemLocation::Character(c.id.clone()))
             .collect();
         characters.sort_by_key(|c| c.date_last_played.map_or(0, |t| t.seconds()));
+        let from = match target {
+            ItemLocation::Character(id) => Some(id.clone()),
+            _ => None,
+        };
         for character in characters {
+            // DIM sortMoveAsideCandidatesForStore (item-move-service.ts:1138-1211);
+            // true sorts first, tags and manual-move times are neutral.
             candidates.sort_by_key(|i| {
                 (
                     i.equipped,
+                    std::cmp::Reverse(from.as_ref().is_some_and(|f| !self.in_loadout(i, f))),
+                    std::cmp::Reverse(self.in_loadout(i, &character.id)),
+                    std::cmp::Reverse(from.as_ref().is_some_and(|f| !self.usable(i, f))),
                     std::cmp::Reverse(self.usable(i, &character.id)),
                     if *target == ItemLocation::Vault {
                         std::cmp::Reverse(self.rarity(i))
@@ -339,11 +426,43 @@ impl Planner<'_> {
         id: &ItemInstanceId,
         target: &ItemLocation,
     ) -> Result<(), ApplySkipReason> {
-        let item = self.item(id);
+        let mut item = self.item(id);
         if &item.location == target {
             return Ok(());
         }
         self.bucket(&item)?;
+        if self.active.contains(id) {
+            return Err(ApplySkipReason::NoSpace);
+        }
+        if let ItemLocation::Postmaster(owner) = item.location.clone() {
+            // Pull to the owner first (item-move-service.ts:1072-1083), under the
+            // existing Postmaster pull policy (instanced_pull.rs:482-488).
+            match self
+                .definition(&item)?
+                .does_postmaster_pull_have_side_effects
+            {
+                Some(false) => {}
+                Some(true) => return Err(ApplySkipReason::PostmasterSideEffects),
+                None => return Err(ApplySkipReason::PostmasterSideEffectsUnknown),
+            }
+            let home = ItemLocation::Character(owner.clone());
+            self.active.push(id.clone());
+            let pulled = self.space(&home, &item);
+            self.active.pop();
+            pulled?;
+            self.steps.push(BuildApplyStep {
+                phase: self.phase,
+                action: BuildAction::PullFromPostmaster {
+                    item: id.clone(),
+                    character: owner,
+                },
+            });
+            self.relocate(id, &home);
+            item = self.item(id);
+            if &item.location == target {
+                return Ok(());
+            }
+        }
         if item.notransfer(self.definition(&item)?) {
             return Err(ApplySkipReason::NotTransferable);
         }
@@ -352,9 +471,6 @@ impl Planner<'_> {
             ItemLocation::Character(_) | ItemLocation::Vault
         ) {
             return Err(ApplySkipReason::UnsupportedLocation);
-        }
-        if self.active.contains(id) {
-            return Err(ApplySkipReason::NoSpace);
         }
         self.active.push(id.clone());
         let result = (|| {
@@ -367,6 +483,15 @@ impl Planner<'_> {
         self.active.pop();
         result
     }
+    fn relocate(&mut self, id: &ItemInstanceId, to: &ItemLocation) {
+        let changed = self
+            .items
+            .iter_mut()
+            .find(|i| &i.instance_id == id)
+            .expect("planner-owned identity");
+        changed.location = to.clone();
+        changed.equipped = false;
+    }
     fn leg(&mut self, id: &ItemInstanceId, target: &ItemLocation) -> Result<(), ApplySkipReason> {
         let item = self.item(id);
         self.space(target, &item)?;
@@ -378,19 +503,13 @@ impl Planner<'_> {
                 to: target.clone(),
             },
         });
-        let changed = self
-            .items
-            .iter_mut()
-            .find(|i| &i.instance_id == id)
-            .expect("planner-owned identity");
-        changed.location = target.clone();
-        changed.equipped = false;
+        self.relocate(id, target);
         Ok(())
     }
-    fn attempt(
+    fn attempt<T>(
         &mut self,
-        f: impl FnOnce(&mut Self) -> Result<(), ApplySkipReason>,
-    ) -> Result<(), ApplySkipReason> {
+        f: impl FnOnce(&mut Self) -> Result<T, ApplySkipReason>,
+    ) -> Result<T, ApplySkipReason> {
         let items = self.items.clone();
         let length = self.steps.len();
         let result = f(self);
@@ -401,7 +520,115 @@ impl Planner<'_> {
         result
     }
 }
-/// Vault capacity is explicit evidence, never inferred from character capacities.
+const WEAPON_BUCKETS: [i64; 3] = [1498876634, 2465295065, 953998645];
+const BUCKETS: [i64; 8] = [
+    1498876634, 2465295065, 953998645, 3448274439, 3551918588, 14239492, 20886954, 1585787867,
+];
+impl Planner<'_> {
+    /// Equip with DIM's one-exotic handling: dequip conflicting labels first.
+    fn equip_resolving(
+        &mut self,
+        mut ids: Vec<ItemInstanceId>,
+        target: &CharacterId,
+    ) -> Result<(), ApplySkipReason> {
+        let destination = ItemLocation::Character(target.clone());
+        for id in ids.clone() {
+            let item = self.item(&id);
+            let bucket = self.bucket(&item)?;
+            let conflicts: Vec<_> = self
+                .items
+                .iter()
+                .filter(|other| {
+                    other.equipped
+                        && other.location == destination
+                        && self.label(&item).is_some()
+                        && self.label(other) == self.label(&item)
+                        && self.bucket(other) != Ok(bucket)
+                        && !ids
+                            .iter()
+                            .any(|id| self.bucket(&self.item(id)) == self.bucket(other))
+                })
+                .cloned()
+                .collect();
+            for other in conflicts {
+                let replacement = self.replacement(&other, target, &ids)?;
+                self.move_item(&replacement, &destination)?;
+                ids.push(replacement);
+            }
+        }
+        self.equip(ids, target)
+    }
+    /// DIM clearSpaceAfterLoadout/clearItemsOffCharacter (loadout-apply.ts:822-955).
+    fn clear_space(
+        &mut self,
+        target: &CharacterId,
+        build_items: &[ItemInstanceId],
+        weapons: bool,
+        armor: bool,
+    ) -> Vec<(ItemInstanceId, ApplySkipReason)> {
+        let home = ItemLocation::Character(target.clone());
+        let mut remove = vec![];
+        let mut reserve = vec![];
+        let mut seen = vec![];
+        for id in build_items {
+            let Ok(bucket) = self.bucket(&self.item(id)) else {
+                continue;
+            };
+            let weapon = WEAPON_BUCKETS.contains(&bucket.value());
+            if seen.contains(&bucket) || !(if weapon { weapons } else { armor }) {
+                continue;
+            }
+            seen.push(bucket);
+            let mut kept = 0;
+            for existing in self
+                .items
+                .iter()
+                .filter(|i| i.location == home && !i.equipped && self.bucket(i) == Ok(bucket))
+            {
+                let pinned = self
+                    .definition(existing)
+                    .is_ok_and(|d| existing.notransfer(d));
+                if pinned || build_items.contains(&existing.instance_id) {
+                    kept += 1;
+                } else {
+                    remove.push(existing.instance_id.clone());
+                }
+            }
+            let capacity = self.policy.capacity(bucket).unwrap_or(0);
+            reserve.push((bucket, capacity.saturating_sub(kept)));
+        }
+        self.reserve = Some((target.clone(), reserve));
+        self.excluded.extend(remove.iter().cloned());
+        let mut skipped = vec![];
+        for id in remove {
+            let bucket = self.bucket(&self.item(&id));
+            let result = self.attempt(|p| {
+                let bucket = bucket?;
+                let vault_free = p.free(&ItemLocation::Vault, bucket)?;
+                if vault_free <= 1 {
+                    // Down to one Vault slot: prefer another character with space.
+                    let other = p.characters.iter().map(|c| c.id.clone()).find(|c| {
+                        c != target
+                            && p.free(&ItemLocation::Character(c.clone()), bucket)
+                                .is_ok_and(|n| n > 0)
+                    });
+                    if let Some(other) = other {
+                        return p.move_item(&id, &ItemLocation::Character(other));
+                    }
+                    if vault_free == 0 {
+                        return Err(ApplySkipReason::NoSpace);
+                    }
+                }
+                p.move_item(&id, &ItemLocation::Vault)
+            });
+            if let Err(reason) = result {
+                skipped.push((id, reason));
+            }
+        }
+        skipped
+    }
+}
+/// Vault evidence is explicit, never inferred from character capacities.
 /// The current production projection cannot supply it; previews report that gap.
 pub fn plan_build_items(
     target: &CharacterId,
@@ -410,14 +637,16 @@ pub fn plan_build_items(
     defs: &[ItemDefinition],
     characters: &[Character],
     policy: &EquipmentCapacityPolicy,
-    vault_capacity: Option<usize>,
+    context: &ApplyContext,
 ) -> BuildApplyPlan {
     let mut p = Planner {
         items: inventory.to_vec(),
         defs,
         characters,
         policy,
-        vault: vault_capacity,
+        vault: context.vault,
+        loadouts: context.loadouts,
+        reserve: None,
         excluded: selected
             .iter()
             .filter_map(|s| s.inventory.as_ref().map(|i| i.instance_id.clone()))
@@ -431,17 +660,22 @@ pub fn plan_build_items(
         steps: vec![],
         skipped: vec![],
         already_there: vec![],
+        clear_skipped: vec![],
         not_applied: vec!["sockets_mods_subclass_deferred_to_be_007b"],
+        unknown: [
+            (context.vault.is_none(), "vault_capacity"),
+            (context.loadouts.is_none(), "in_game_loadout_membership"),
+        ]
+        .into_iter()
+        .filter_map(|(missing, name)| missing.then_some(name))
+        .collect(),
     };
     let mut order: Vec<_> = selected.iter().enumerate().collect();
-    let buckets = [
-        1498876634, 2465295065, 953998645, 3448274439, 3551918588, 14239492, 20886954, 1585787867,
-    ];
     order.sort_by_key(|(_, s)| {
         s.inventory
             .as_ref()
             .and_then(|i| p.bucket(i).ok())
-            .and_then(|b| buckets.iter().position(|h| *h == b.value()))
+            .and_then(|b| BUCKETS.iter().position(|h| *h == b.value()))
             .unwrap_or(usize::MAX)
     });
     let destination = ItemLocation::Character(target.clone());
@@ -455,12 +689,23 @@ pub fn plan_build_items(
             if !p.items.iter().any(|i| i.instance_id == item.instance_id) {
                 return Err(ApplySkipReason::Unresolved);
             }
-            if item.location != destination && item.notransfer(p.definition(item)?) {
+            let definition = p.definition(item)?;
+            if definition.max_stack_size.is_some_and(|n| n > 1)
+                || definition.is_instance_item == Some(false)
+            {
+                return Err(ApplySkipReason::StackUnsupported);
+            }
+            let pulled_home = item.location == ItemLocation::Postmaster(target.clone());
+            if item.location != destination && !pulled_home && item.notransfer(definition) {
                 return Err(ApplySkipReason::NotTransferable);
             }
             if item.location != destination
-                && matches!(item.location, ItemLocation::Character(_))
-                && vault_capacity.is_none()
+                && !pulled_home
+                && matches!(
+                    item.location,
+                    ItemLocation::Character(_) | ItemLocation::Postmaster(_)
+                )
+                && context.vault.is_none()
             {
                 return Err(ApplySkipReason::VaultCapacityUnavailable);
             }
@@ -485,20 +730,6 @@ pub fn plan_build_items(
                 reason,
             }),
             Ok((id, bucket)) => {
-                let result = p.attempt(|p| {
-                    let item = p.item(&id);
-                    if item.location != destination {
-                        p.dequip(&id)?;
-                    }
-                    Ok(())
-                });
-                if let Err(reason) = result {
-                    plan.skipped.push(BuildApplySkip {
-                        spec_index: index,
-                        reason,
-                    });
-                    continue;
-                }
                 if s.should_equip {
                     slots.push(bucket);
                     if let Some(label) = p.label(&p.item(&id)) {
@@ -509,6 +740,69 @@ pub fn plan_build_items(
             }
         }
     }
+    // DIM counts equips before moving (loadout-apply.ts:424-433): one equip is
+    // handled inline with its move, several use one bulk equip afterwards.
+    let bulk = pending
+        .iter()
+        .filter(|(_, id, equip)| {
+            let item = p.item(id);
+            *equip && !(item.location == destination && item.equipped)
+        })
+        .count()
+        > 1;
+    // Equipped items on other characters: a lone one dequips inline when moved,
+    // several are dequipped together per owner first (loadout-apply.ts:437-513).
+    let mut owners: Vec<(CharacterId, Vec<(usize, ItemInstanceId)>)> = vec![];
+    for (index, id, _) in &pending {
+        let item = p.item(id);
+        if let (true, ItemLocation::Character(owner)) = (item.equipped, &item.location)
+            && owner != target
+        {
+            match owners.iter_mut().find(|(o, _)| o == owner) {
+                Some((_, group)) => group.push((*index, id.clone())),
+                None => owners.push((owner.clone(), vec![(*index, id.clone())])),
+            }
+        }
+    }
+    let mut dequip_failed = vec![];
+    for (owner, group) in owners.iter().filter(|(_, g)| g.len() > 1) {
+        let home = ItemLocation::Character(owner.clone());
+        let mut replacements = vec![];
+        for (index, id) in group {
+            let result = p.attempt(|p| {
+                let item = p.item(id);
+                let replacement = p.replacement(&item, owner, &replacements)?;
+                p.move_item(&replacement, &home)?;
+                Ok(replacement)
+            });
+            match result {
+                Ok(replacement) => replacements.push(replacement),
+                Err(reason) => {
+                    dequip_failed.push(*index);
+                    plan.skipped.push(BuildApplySkip {
+                        spec_index: *index,
+                        reason,
+                    });
+                }
+            }
+        }
+        if !replacements.is_empty()
+            && let Err(reason) = p.attempt(|p| p.equip(replacements, owner))
+        {
+            let rest: Vec<_> = group
+                .iter()
+                .filter(|(i, _)| !dequip_failed.contains(i))
+                .collect();
+            for (index, _) in rest {
+                dequip_failed.push(*index);
+                plan.skipped.push(BuildApplySkip {
+                    spec_index: *index,
+                    reason,
+                });
+            }
+        }
+    }
+    pending.retain(|(index, _, _)| !dequip_failed.contains(index));
     p.phase = ApplyPhase::Move;
     let mut equips = vec![];
     for (index, id, equip) in pending {
@@ -517,49 +811,27 @@ pub fn plan_build_items(
             plan.already_there.push(index);
             continue;
         }
-        match p.attempt(|p| p.move_item(&id, &destination)) {
+        let inline = equip && !bulk;
+        let result = p.attempt(|p| {
+            p.move_item(&id, &destination)?;
+            if inline {
+                p.equip_resolving(vec![id.clone()], target)?;
+            }
+            Ok(())
+        });
+        match result {
             Err(reason) => plan.skipped.push(BuildApplySkip {
                 spec_index: index,
                 reason,
             }),
-            Ok(()) => {
-                if equip {
-                    equips.push((index, id));
-                }
-            }
+            Ok(()) if equip && bulk => equips.push((index, id)),
+            Ok(()) => {}
         }
     }
     p.phase = ApplyPhase::Equip;
     if !equips.is_empty() {
-        let result = p.attempt(|p| {
-            let mut ids: Vec<_> = equips.iter().map(|(_, id)| id.clone()).collect();
-            for (_, id) in &equips {
-                let item = p.item(id);
-                let bucket = p.bucket(&item)?;
-                let conflicts: Vec<_> = p
-                    .items
-                    .iter()
-                    .filter(|other| {
-                        other.equipped
-                            && other.location == destination
-                            && p.label(&item).is_some()
-                            && p.label(other) == p.label(&item)
-                            && p.bucket(other) != Ok(bucket)
-                            && !ids
-                                .iter()
-                                .any(|id| p.bucket(&p.item(id)) == p.bucket(other))
-                    })
-                    .cloned()
-                    .collect();
-                for other in conflicts {
-                    let replacement = p.replacement(&other, target)?;
-                    p.move_item(&replacement, &destination)?;
-                    ids.push(replacement);
-                }
-            }
-            p.equip(ids, target)
-        });
-        if let Err(reason) = result {
+        let ids: Vec<_> = equips.iter().map(|(_, id)| id.clone()).collect();
+        if let Err(reason) = p.attempt(|p| p.equip_resolving(ids, target)) {
             for (index, _) in equips {
                 plan.skipped.push(BuildApplySkip {
                     spec_index: index,
@@ -568,22 +840,20 @@ pub fn plan_build_items(
             }
         }
     }
-    plan.skipped.sort_by_key(|s| s.spec_index);
-    for step in p.steps {
-        if let (Some(previous), BuildAction::Equip { items, character }) =
-            (plan.steps.last_mut(), &step.action)
-            && previous.phase == ApplyPhase::Dequip
-            && step.phase == ApplyPhase::Dequip
-            && let BuildAction::Equip {
-                items: prior,
-                character: owner,
-            } = &mut previous.action
-            && owner == character
-        {
-            prior.extend(items.iter().cloned());
-            continue;
-        }
-        plan.steps.push(step);
+    if context.clear_weapons || context.clear_armor {
+        p.phase = ApplyPhase::ClearSpace;
+        let build_items: Vec<_> = selected
+            .iter()
+            .filter_map(|s| s.inventory.as_ref().map(|i| i.instance_id.clone()))
+            .collect();
+        plan.clear_skipped = p.clear_space(
+            target,
+            &build_items,
+            context.clear_weapons,
+            context.clear_armor,
+        );
     }
+    plan.skipped.sort_by_key(|s| s.spec_index);
+    plan.steps = p.steps;
     plan
 }

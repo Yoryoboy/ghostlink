@@ -15,6 +15,18 @@ fn build_commands_parse_all_sources_and_selectors() {
             "--json",
         ],
         vec!["ghostlink", "build", "check", "--name", "Raid"],
+        vec!["ghostlink", "build", "apply", "id", "--dry-run"],
+        vec![
+            "ghostlink",
+            "build",
+            "apply",
+            "--name",
+            "Raid",
+            "--character",
+            "hunter",
+            "--dry-run",
+            "--json",
+        ],
         vec!["ghostlink", "build", "import", "-"],
         vec!["ghostlink", "build", "show", "--name", "Raid"],
         vec!["ghostlink", "build", "export", "id"],
@@ -65,4 +77,21 @@ fn stdin_input_is_bounded_utf8() {
     assert!(destiny_cli::builds::read_input(&b"\xff"[..]).is_err());
     let oversized = vec![b' '; destiny_adapters::dim_loadout::MAX_DIM_INPUT_BYTES + 1];
     assert!(destiny_cli::builds::read_input(oversized.as_slice()).is_err());
+}
+
+#[test]
+fn apply_without_dry_run_is_refused_before_configuration_or_io() {
+    let args = destiny_cli::command::BuildArgs {
+        command: destiny_cli::command::BuildCommand::Apply(destiny_cli::command::BuildApplyArgs {
+            selection: destiny_cli::command::BuildSelection {
+                id: Some("id".into()),
+                name: None,
+            },
+            character: None,
+            dry_run: false,
+        }),
+    };
+    let output = destiny_cli::builds::compose(&args).unwrap();
+    assert_eq!(output.exit_code, 40);
+    assert_eq!(output.value["error"]["code"], "unsupported_operation");
 }

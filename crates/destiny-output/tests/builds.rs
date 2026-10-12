@@ -266,3 +266,92 @@ fn export_and_typed_offline_error() {
     assert_eq!(missing.exit_code, 32);
     assert_eq!(missing.value["error"]["code"], "item_not_found");
 }
+
+#[test]
+fn apply_plan_renders_typed_steps_in_json_and_text() {
+    use destiny_app::build_apply::*;
+    use destiny_app::builds::BuildApplyPreview;
+    use destiny_app::*;
+    let character = CharacterId::new("1");
+    let preview = BuildApplyPreview {
+        summary: BuildSummary {
+            id: "b".into(),
+            name: "Raid\u{7}".into(),
+            class_type: 1,
+            source: BuildSource::Import,
+            created_at: Timestamp::new(1),
+            updated_at: Timestamp::new(1),
+        },
+        plan: BuildApplyPlan {
+            target: character.clone(),
+            steps: vec![
+                BuildApplyStep {
+                    phase: ApplyPhase::Move,
+                    action: BuildAction::PullFromPostmaster {
+                        item: ItemInstanceId::new("7"),
+                        character: character.clone(),
+                    },
+                },
+                BuildApplyStep {
+                    phase: ApplyPhase::Move,
+                    action: BuildAction::Move {
+                        item: ItemInstanceId::new("7"),
+                        from: ItemLocation::Vault,
+                        to: ItemLocation::Character(character.clone()),
+                    },
+                },
+                BuildApplyStep {
+                    phase: ApplyPhase::Equip,
+                    action: BuildAction::Equip {
+                        items: vec![ItemInstanceId::new("7")],
+                        character,
+                    },
+                },
+            ],
+            skipped: vec![BuildApplySkip {
+                spec_index: 2,
+                reason: ApplySkipReason::NoSpace,
+            }],
+            already_there: vec![0],
+            clear_skipped: vec![(ItemInstanceId::new("9"), ApplySkipReason::NoSpace)],
+            not_applied: vec!["sockets_mods_subclass_deferred_to_be_007b"],
+            unknown: vec!["vault_capacity"],
+        },
+        names: vec![(ItemInstanceId::new("7"), "Hawkmoon".into())],
+        metadata: QueryMetadata {
+            sync: SyncMetadata {
+                dataset: Dataset::ProfileInventory,
+                checked_at: Timestamp::new(100),
+                source: SourceMarker::Profile,
+                revision: SyncRevision::new(1),
+                definition_version: DefinitionVersion::new("v1"),
+            },
+            freshness: FreshnessStatus::Fresh,
+        },
+    };
+    let output = BuildOutput::from_result(Ok(BuildReply::ApplyPlan(Box::new(preview))));
+    assert_eq!(output.exit_code, 0);
+    assert_eq!(output.value["kind"], "build_apply_plan");
+    assert_eq!(output.value["dry_run"], true);
+    assert_eq!(output.value["dispatched"], 0);
+    assert_eq!(output.value["steps"][0]["action"], "pull_from_postmaster");
+    assert_eq!(output.value["steps"][1]["to"], "character:1");
+    assert_eq!(output.value["steps"][2]["items"][0]["name"], "Hawkmoon");
+    assert_eq!(
+        output.value["skipped"],
+        json!([{"spec_index":2,"reason":"no_space"}])
+    );
+    assert_eq!(output.value["unknown"], json!(["vault_capacity"]));
+    assert_eq!(
+        output.render_text(),
+        "Dry run: Raid on character 1 (nothing was dispatched)\n\
+1. [move] pull Hawkmoon (7) from the Postmaster of 1\n\
+2. [move] move Hawkmoon (7) vault -> character:1\n\
+3. [equip] equip Hawkmoon (7) on 1\n\
+Skipped item 2: \"no_space\"\n\
+Not cleared \"9\": \"no_space\"\n\
+Already in place: [0]\n\
+Not applied: [\"sockets_mods_subclass_deferred_to_be_007b\"]\n\
+Unknown evidence: [\"vault_capacity\"]"
+    );
+}

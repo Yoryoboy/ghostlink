@@ -76,22 +76,24 @@ fn chars() -> Vec<Character> {
         })
         .to_vec()
 }
-fn plan(
+const BUCKETS: [i64; 8] = [
+    1498876634, 2465295065, 953998645, 3448274439, 3551918588, 14239492, 20886954, 1585787867,
+];
+fn vault_of(capacity: usize) -> VaultEvidence {
+    let buckets = BUCKETS.map(BucketHash::new);
+    VaultEvidence::single(&buckets, BucketHash::new(138197802), capacity)
+}
+fn plan_with(
     selected: &[ResolvedBuildItem],
     inventory: &[ItemInstance],
     defs: &[ItemDefinition],
-    vault: Option<usize>,
+    context: &ApplyContext,
     slots: usize,
 ) -> BuildApplyPlan {
     let policy = EquipmentCapacityPolicy::new(
         DefinitionVersion::new("v1"),
         "fixture",
-        [
-            1498876634, 2465295065, 953998645, 3448274439, 3551918588, 14239492, 20886954,
-            1585787867,
-        ]
-        .map(|b| (BucketHash::new(b), slots))
-        .to_vec(),
+        BUCKETS.map(|b| (BucketHash::new(b), slots)).to_vec(),
     )
     .unwrap();
     plan_build_items(
@@ -101,8 +103,22 @@ fn plan(
         defs,
         &chars(),
         &policy,
-        vault,
+        context,
     )
+}
+fn plan(
+    selected: &[ResolvedBuildItem],
+    inventory: &[ItemInstance],
+    defs: &[ItemDefinition],
+    vault: Option<usize>,
+    slots: usize,
+) -> BuildApplyPlan {
+    let evidence = vault.map(vault_of);
+    let context = ApplyContext {
+        vault: evidence.as_ref(),
+        ..Default::default()
+    };
+    plan_with(selected, inventory, defs, &context, slots)
 }
 #[test]
 fn source_dequip_precedes_vault_transfers_and_grouped_equips() {
@@ -142,7 +158,8 @@ fn source_dequip_precedes_vault_transfers_and_grouped_equips() {
     assert!(
         matches!(&p.steps[0].action, BuildAction::Equip { items, character } if items == &[ItemInstanceId::new("11")] && character.as_str()=="2")
     );
-    assert_eq!(p.steps[0].phase, ApplyPhase::Dequip);
+    // A lone source dequip is handled inline with the move (loadout-apply.ts:461).
+    assert_eq!(p.steps[0].phase, ApplyPhase::Move);
     assert!(
         matches!(&p.steps[4].action, BuildAction::Equip { items, character } if items == &[ItemInstanceId::new("10"),ItemInstanceId::new("20")] && character.as_str()=="1")
     );
@@ -274,4 +291,348 @@ fn requested_items_are_never_chosen_as_replacements_and_failure_is_partial() {
     assert!(
         matches!(&p.steps.last().unwrap().action,BuildAction::Equip { items,.. } if items==&[ItemInstanceId::new("20")])
     );
+}
+fn at(c: &str) -> ItemLocation {
+    ItemLocation::Character(CharacterId::new(c))
+}
+fn describe(p: &BuildApplyPlan) -> Vec<String> {
+    let loc = |l: &ItemLocation| match l {
+        ItemLocation::Vault => "V".to_string(),
+        ItemLocation::Character(c) => c.as_str().to_string(),
+        ItemLocation::Postmaster(c) => format!("P{}", c.as_str()),
+        ItemLocation::Other(o) => o.clone(),
+    };
+    p.steps
+        .iter()
+        .map(|s| {
+            let phase = match s.phase {
+                ApplyPhase::Dequip => "dequip",
+                ApplyPhase::Move => "move",
+                ApplyPhase::Equip => "equip",
+                ApplyPhase::ClearSpace => "clear",
+            };
+            match &s.action {
+                BuildAction::Move { item, from, to } => {
+                    format!("{phase}: {} {}>{}", item.as_str(), loc(from), loc(to))
+                }
+                BuildAction::PullFromPostmaster { item, character } => {
+                    format!("{phase}: pull {} {}", item.as_str(), character.as_str())
+                }
+                BuildAction::Equip { items, character } => format!(
+                    "{phase}: equip {} on {}",
+                    items
+                        .iter()
+                        .map(|i| i.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    character.as_str()
+                ),
+            }
+        })
+        .collect()
+}
+fn safe(mut d: ItemDefinition) -> ItemDefinition {
+    d.does_postmaster_pull_have_side_effects = Some(false);
+    d
+}
+#[test]
+fn several_dequips_per_owner_group_replacements_before_one_equip() {
+    let defs = [
+        def(10, 1498876634, ""),
+        def(11, 1498876634, ""),
+        def(20, 2465295065, ""),
+        def(21, 2465295065, ""),
+    ];
+    let items = [
+        item("10", 10, at("2"), true),
+        item("20", 20, at("2"), true),
+        item("11", 11, ItemLocation::Vault, false),
+        item("21", 21, ItemLocation::Vault, false),
+    ];
+    let p = plan(
+        &[
+            selected(Some(&items[0]), true),
+            selected(Some(&items[1]), true),
+        ],
+        &items,
+        &defs,
+        Some(10),
+        10,
+    );
+    assert!(p.skipped.is_empty());
+    assert_eq!(
+        describe(&p)[..3],
+        [
+            "dequip: 11 V>2",
+            "dequip: 21 V>2",
+            "dequip: equip 11,21 on 2"
+        ]
+    );
+    assert_eq!(describe(&p).last().unwrap(), "equip: equip 10,20 on 1");
+}
+#[test]
+fn a_single_equip_runs_inline_with_its_move() {
+    let defs = [def(10, 1498876634, ""), def(20, 2465295065, "")];
+    let items = [
+        item("10", 10, ItemLocation::Vault, false),
+        item("20", 20, ItemLocation::Vault, false),
+    ];
+    let p = plan(
+        &[
+            selected(Some(&items[0]), true),
+            selected(Some(&items[1]), false),
+        ],
+        &items,
+        &defs,
+        Some(10),
+        10,
+    );
+    assert_eq!(
+        describe(&p),
+        ["move: 10 V>1", "move: equip 10 on 1", "move: 20 V>1"]
+    );
+}
+#[test]
+fn displacement_prefers_items_outside_the_owners_saved_loadouts() {
+    let defs = [
+        def(10, 1498876634, ""),
+        def(11, 1498876634, ""),
+        def(12, 1498876634, ""),
+    ];
+    let items = [
+        item("11", 11, at("1"), false),
+        item("12", 12, at("1"), false),
+        item("10", 10, ItemLocation::Vault, false),
+    ];
+    let vault = vault_of(5);
+    let membership = [(CharacterId::new("1"), ItemInstanceId::new("11"))];
+    let context = ApplyContext {
+        vault: Some(&vault),
+        loadouts: Some(&membership),
+        ..Default::default()
+    };
+    let p = plan_with(
+        &[selected(Some(&items[2]), false)],
+        &items,
+        &defs,
+        &context,
+        2,
+    );
+    assert_eq!(describe(&p), ["move: 12 1>V", "move: 10 V>1"]);
+    assert!(p.unknown.is_empty());
+    let unknown = plan_with(
+        &[selected(Some(&items[2]), false)],
+        &items,
+        &defs,
+        &Default::default(),
+        2,
+    );
+    assert_eq!(
+        unknown.unknown,
+        ["vault_capacity", "in_game_loadout_membership"]
+    );
+}
+#[test]
+fn postmaster_items_are_pulled_to_their_owner_under_the_pull_policy() {
+    let defs = [safe(def(10, 1498876634, "")), safe(def(20, 2465295065, ""))];
+    let items = [
+        item(
+            "10",
+            10,
+            ItemLocation::Postmaster(CharacterId::new("1")),
+            false,
+        ),
+        item(
+            "20",
+            20,
+            ItemLocation::Postmaster(CharacterId::new("2")),
+            false,
+        ),
+    ];
+    let p = plan(
+        &[
+            selected(Some(&items[0]), false),
+            selected(Some(&items[1]), false),
+        ],
+        &items,
+        &defs,
+        Some(10),
+        10,
+    );
+    assert_eq!(
+        describe(&p),
+        [
+            "move: pull 10 1",
+            "move: pull 20 2",
+            "move: 20 2>V",
+            "move: 20 V>1"
+        ]
+    );
+    let unsafe_defs = [def(10, 1498876634, ""), {
+        let mut d = def(20, 2465295065, "");
+        d.does_postmaster_pull_have_side_effects = Some(true);
+        d
+    }];
+    let p = plan(
+        &[
+            selected(Some(&items[0]), false),
+            selected(Some(&items[1]), false),
+        ],
+        &items,
+        &unsafe_defs,
+        Some(10),
+        10,
+    );
+    assert!(p.steps.is_empty());
+    assert_eq!(
+        p.skipped.iter().map(|s| s.reason).collect::<Vec<_>>(),
+        [
+            ApplySkipReason::PostmasterSideEffectsUnknown,
+            ApplySkipReason::PostmasterSideEffects
+        ]
+    );
+}
+#[test]
+fn stackable_definitions_are_a_typed_skip() {
+    let mut stack = def(10, 1498876634, "");
+    stack.max_stack_size = Some(100);
+    let items = [item("10", 10, ItemLocation::Vault, false)];
+    let p = plan(
+        &[selected(Some(&items[0]), false)],
+        &items,
+        &[stack],
+        Some(10),
+        10,
+    );
+    assert!(p.steps.is_empty());
+    assert_eq!(p.skipped[0].reason, ApplySkipReason::StackUnsupported);
+}
+#[test]
+fn clear_space_moves_unlisted_unequipped_items_only_for_selected_categories() {
+    let defs = [
+        def(10, 1498876634, ""),
+        def(11, 1498876634, ""),
+        def(12, 1498876634, ""),
+        def(30, 3448274439, ""),
+    ];
+    let items = [
+        item("10", 10, at("1"), false),
+        item("11", 11, at("1"), false),
+        item("12", 12, at("1"), true),
+        item("30", 30, at("1"), false),
+    ];
+    let vault = vault_of(10);
+    let weapons = ApplyContext {
+        vault: Some(&vault),
+        clear_weapons: true,
+        ..Default::default()
+    };
+    let selection = [selected(Some(&items[0]), false)];
+    let p = plan_with(&selection, &items, &defs, &weapons, 10);
+    assert_eq!(describe(&p), ["clear: 11 1>V"]);
+    assert!(p.clear_skipped.is_empty());
+    let none = plan_with(
+        &selection,
+        &items,
+        &defs,
+        &ApplyContext {
+            vault: Some(&vault),
+            ..Default::default()
+        },
+        10,
+    );
+    assert!(none.steps.is_empty());
+    let full = vault_of(0);
+    let blocked = plan_with(
+        &selection,
+        &items,
+        &defs,
+        &ApplyContext {
+            vault: Some(&full),
+            clear_weapons: true,
+            ..Default::default()
+        },
+        10,
+    );
+    assert!(blocked.steps.is_empty());
+    assert_eq!(
+        blocked.clear_skipped,
+        [(ItemInstanceId::new("11"), ApplySkipReason::NoSpace)]
+    );
+}
+#[test]
+fn vault_capacity_is_per_corresponding_vault_bucket() {
+    let defs = [def(10, 1498876634, ""), def(11, 2465295065, "")];
+    let items = [
+        item("10", 10, at("2"), false),
+        item("11", 11, ItemLocation::Vault, false),
+    ];
+    let separate = VaultEvidence {
+        mapping: vec![
+            (BucketHash::new(1498876634), BucketHash::new(1)),
+            (BucketHash::new(2465295065), BucketHash::new(2)),
+        ],
+        capacity: vec![(BucketHash::new(1), 1), (BucketHash::new(2), 1)],
+    };
+    let context = ApplyContext {
+        vault: Some(&separate),
+        ..Default::default()
+    };
+    let p = plan_with(
+        &[selected(Some(&items[0]), false)],
+        &items,
+        &defs,
+        &context,
+        10,
+    );
+    assert!(p.skipped.is_empty());
+    assert_eq!(describe(&p), ["move: 10 2>V", "move: 10 V>1"]);
+    let unmapped = VaultEvidence {
+        mapping: vec![(BucketHash::new(2465295065), BucketHash::new(2))],
+        capacity: vec![(BucketHash::new(2), 1)],
+    };
+    let context = ApplyContext {
+        vault: Some(&unmapped),
+        ..Default::default()
+    };
+    let p = plan_with(
+        &[selected(Some(&items[0]), false)],
+        &items,
+        &defs,
+        &context,
+        10,
+    );
+    assert_eq!(
+        p.skipped[0].reason,
+        ApplySkipReason::VaultCapacityUnavailable
+    );
+}
+#[test]
+fn occupants_of_other_known_buckets_do_not_block_character_space() {
+    // A subclass-like item (unsupported bucket) occupies the character but is
+    // not in the destination bucket; a bucketless definition stays unknown.
+    let defs = [def(10, 1498876634, ""), def(50, 3284755031, "")];
+    let items = [
+        item("10", 10, ItemLocation::Vault, false),
+        item("50", 50, at("1"), false),
+    ];
+    let p = plan(
+        &[selected(Some(&items[0]), false)],
+        &items,
+        &defs,
+        Some(5),
+        1,
+    );
+    assert!(p.skipped.is_empty());
+    assert_eq!(describe(&p), ["move: 10 V>1"]);
+    let mut bucketless = def(50, 3284755031, "");
+    bucketless.bucket_hash = None;
+    let p = plan(
+        &[selected(Some(&items[0]), false)],
+        &items,
+        &[defs[0].clone(), bucketless],
+        Some(5),
+        1,
+    );
+    assert_eq!(p.skipped[0].reason, ApplySkipReason::OccupancyUnknown);
 }
