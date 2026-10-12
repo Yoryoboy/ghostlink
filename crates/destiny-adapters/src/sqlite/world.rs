@@ -225,6 +225,11 @@ fn read_loadout_names(
 }
 
 pub(super) fn clear_catalog(connection: &Connection) -> Result<(), AppError> {
+    if super::migrations::read_user_version(connection)? >= 32 {
+        connection
+            .execute("DELETE FROM material_requirement_sets", [])
+            .map_err(|_| storage_failure())?;
+    }
     if super::migrations::read_user_version(connection)? >= 29 {
         connection
             .execute("DELETE FROM socket_catalogs", [])

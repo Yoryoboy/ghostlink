@@ -141,7 +141,24 @@ impl SqliteStore {
         {
             return Err(storage_failure());
         }
+        if super::migrations::read_user_version(self.connection())? < 32
+            && replacement.definitions.definitions.iter().any(|item| {
+                item.armor.insertion_material_requirement_hash.is_some()
+                    || item.armor.energy_capacity_type.is_some()
+                    || item.armor.plug_availability.is_some()
+            })
+        {
+            return Err(storage_failure());
+        }
         if let Some(world) = &world {
+            if super::migrations::read_user_version(self.connection())? < 32
+                && world.armor_catalogs.iter().any(|r| {
+                    r.kind()
+                        == destiny_core::armor_catalog::ArmorCatalogKind::MaterialRequirementSet
+                })
+            {
+                return Err(storage_failure());
+            }
             world.validate_for(&replacement.definitions.version)?;
             if super::migrations::read_user_version(self.connection())? < 29
                 && world.armor_catalogs.iter().any(|r| r.kind().id() >= 2)

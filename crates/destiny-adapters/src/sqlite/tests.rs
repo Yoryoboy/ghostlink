@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 49] = [
+const EXPECTED_TABLE_NAMES: [&str; 52] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -29,6 +29,7 @@ const EXPECTED_TABLE_NAMES: [&str; 49] = [
     "definition_armor",
     "definition_energy_costs",
     "definition_investment_stats",
+    "definition_material_inputs",
     "definition_search",
     "definition_socket_categories",
     "definition_socket_entries",
@@ -51,6 +52,8 @@ const EXPECTED_TABLE_NAMES: [&str; 49] = [
     "item_stats",
     "items",
     "loadout_name_definitions",
+    "material_requirement_sets",
+    "material_requirements",
     "milestone_definitions",
     "objective_definitions",
     "objective_styles",
@@ -74,7 +77,17 @@ const EXPECTED_INDEX_NAMES: [&str; 5] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 246] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 256] = [
+    ("definition_material_inputs", "definition_hash", "INTEGER"),
+    ("definition_material_inputs", "requirement_hash", "INTEGER"),
+    ("definition_material_inputs", "capacity_type", "INTEGER"),
+    ("definition_material_inputs", "availability", "INTEGER"),
+    ("material_requirement_sets", "hash", "INTEGER"),
+    ("material_requirement_sets", "definition_version", "TEXT"),
+    ("material_requirements", "hash", "INTEGER"),
+    ("material_requirements", "ordinal", "INTEGER"),
+    ("material_requirements", "item_hash", "INTEGER"),
+    ("material_requirements", "count", "INTEGER"),
     ("objective_styles", "hash", "INTEGER"),
     ("objective_styles", "ui_style", "INTEGER"),
     ("item_objective_sockets", "instance_id", "TEXT"),
@@ -1006,7 +1019,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 31);
+    assert_eq!(LATEST_SCHEMA_VERSION, 32);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION

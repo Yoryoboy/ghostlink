@@ -76,6 +76,27 @@ pub(super) fn write(
                 .map_err(|_| storage_failure())?;
         }
     }
+    if read_user_version(connection)? >= 32 {
+        let mut statement = connection
+            .prepare_cached("INSERT INTO definition_material_inputs VALUES (?1,?2,?3,?4)")
+            .map_err(|_| storage_failure())?;
+        for item in definitions {
+            let data = &item.armor;
+            if data.insertion_material_requirement_hash.is_some()
+                || data.energy_capacity_type.is_some()
+                || data.plug_availability.is_some()
+            {
+                statement
+                    .execute(params![
+                        item.hash.value(),
+                        data.insertion_material_requirement_hash,
+                        data.energy_capacity_type,
+                        data.plug_availability
+                    ])
+                    .map_err(|_| storage_failure())?;
+            }
+        }
+    }
     super::definition_sockets::write(connection, definitions)?;
     Ok(())
 }
@@ -89,6 +110,36 @@ pub(super) fn read(
     let mut result: HashMap<i64, ArmorDefinition> = HashMap::new();
     if read_user_version(connection)? < 26 {
         return Ok(result);
+    }
+    if read_user_version(connection)? >= 32 {
+        let mut statement = connection
+            .prepare_cached(&read_sql(
+                "definition_material_inputs",
+                "definition_hash, requirement_hash, capacity_type, availability",
+                false,
+                hash,
+            ))
+            .map_err(|_| storage_failure())?;
+        let rows = statement
+            .query_map(rusqlite::params_from_iter(hash), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<u32>>(1)?,
+                    row.get::<_, Option<u32>>(2)?,
+                    row.get::<_, Option<u32>>(3)?,
+                ))
+            })
+            .map_err(|_| storage_failure())?;
+        for row in rows {
+            let (hash, requirement, capacity, availability) = row.map_err(|_| storage_failure())?;
+            if requirement.is_none() && capacity.is_none() && availability.is_none() {
+                return Err(storage_failure());
+            }
+            let data = result.entry(hash).or_default();
+            data.insertion_material_requirement_hash = requirement;
+            data.energy_capacity_type = capacity;
+            data.plug_availability = availability;
+        }
     }
     let mut statement = connection.prepare_cached(&read_sql("definition_armor", "definition_hash, stat_group_hash, plug_category_hash, aspect_capacity, equipable_item_set_hash", false, hash)).map_err(|_| storage_failure())?;
     let rows = statement
@@ -107,7 +158,11 @@ pub(super) fn read(
         .map_err(|_| storage_failure())?;
     for row in rows {
         let (hash, armor) = row.map_err(|_| storage_failure())?;
-        result.insert(hash, armor);
+        let data = result.entry(hash).or_default();
+        data.stat_group_hash = armor.stat_group_hash;
+        data.plug_category_hash = armor.plug_category_hash;
+        data.aspect_capacity = armor.aspect_capacity;
+        data.equipable_item_set_hash = armor.equipable_item_set_hash;
     }
     let mut statement = connection
         .prepare_cached(&read_sql(

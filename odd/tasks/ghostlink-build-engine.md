@@ -359,12 +359,25 @@ coverage (`domain.rs:123-126`).
       (`analysis.ts:454` checks five entries), regression added.
       Workspace: 2162 all-features, 2130 default, 0 failed; clippy both
       modes, fmt.
-    - [ ] **BE-006b2b — Permutations and ranking.** Project insertion
-      material requirements and material catalogs (persistence + fake
-      parity) first; then general/activity permutations, specialty
-      metadata, artifice/tuning assignment, material ranking and
-      expensive-variant re-fitting (`mod-assignment-utils.ts:162-265,
-      481-528,964-989`); all `not_evaluated` today, never approximated.
+    - [x] **BE-006b2b1 — Material prerequisites.** Migration 32 (three
+      STRICT tables, bounded integers, cascading children, guarded
+      downgrade, one same-version Manifest refresh): plug
+      `insertionMaterialRequirementHash`,
+      DestinyMaterialRequirementSetDefinition (ordered itemHash/count;
+      `mod-assignment-utils.ts:162-265,964-989` ranks by fixed item
+      hashes, no extra catalog), capacity `energyType` and
+      `plugAvailability` (`energy.ts:18-49`). Live 244213.26.06.29.2000-1:
+      116,945 bytes, 332 sets, max 4 materials; caps 16 MiB, 10,000
+      records, 256 materials/set. World requests 12 -> 13. Advisory
+      R3-category-coverage: no deviation (`socket-utils.ts:278-290`,
+      `generated-enums.ts:1604-1619`), regression for all 16 pairs.
+      Workspace: 2172 all-features, 2140 default, 0 failed; clippy both
+      modes, fmt.
+    - [ ] **BE-006b2b2 — Permutations and ranking.** General/activity
+      permutations, specialty metadata, artifice/tuning assignment,
+      material ranking and expensive-variant re-fitting
+      (`mod-assignment-utils.ts:162-265,481-528,964-989`); all
+      `not_evaluated` today, never approximated. Unblocks BE-006c2.
   - [ ] **BE-006c — Stat constraints and fragment findings.** Stat
     aggregation vs `statConstraints`; fragment capacity findings;
     optimizer-based findings stay suppressed until BE-008.

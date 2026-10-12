@@ -13,6 +13,10 @@ pub(super) fn write(
         return Ok(());
     }
     for record in records {
+        if let ArmorCatalogRecord::MaterialRequirementSet(value) = record {
+            super::material_catalogs::write(connection, value, version)?;
+            continue;
+        }
         if record.kind().id() >= 2 {
             super::socket_catalogs::write(connection, record, version)?;
             continue;
@@ -69,7 +73,8 @@ pub(super) fn write(
                     }
                 }
             }
-            ArmorCatalogRecord::SocketType(_)
+            ArmorCatalogRecord::MaterialRequirementSet(_)
+            | ArmorCatalogRecord::SocketType(_)
             | ArmorCatalogRecord::SocketCategory(_)
             | ArmorCatalogRecord::PlugSet(_) => unreachable!(),
             ArmorCatalogRecord::EquipableSet(set) => {
@@ -122,6 +127,9 @@ fn read(
     kind: ArmorCatalogKind,
     hash: Option<u32>,
 ) -> Result<Vec<ArmorCatalogRecord>, AppError> {
+    if kind == ArmorCatalogKind::MaterialRequirementSet {
+        return super::material_catalogs::read(connection, hash);
+    }
     if kind.id() >= 2 {
         return super::socket_catalogs::read(connection, kind, hash);
     }

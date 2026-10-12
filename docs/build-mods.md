@@ -80,11 +80,39 @@ Port the remainder as a separate work unit, preserving this completed slice:
    variant re-fitting. Resolution and deprecated-placeholder InvalidMods coverage
    are implemented in this slice; seasonal dependence is still `not_evaluated`.
 
-Material ranking needs Manifest insertion-material requirement hashes and
-`DestinyMaterialRequirementSetDefinition` catalogs, which Ghostlink does not yet
-project. Carry those through decoding, persistence, repositories and request-local
-assembly with fake/SQLite parity before implementing ranking. Splitting that data
-work from permutation/specialty/artifice/tuning assignment avoids inventing prices.
+### BE-006b2b data boundary: completed prerequisites
+
+Migration 32 projects plug `insertionMaterialRequirementHash`,
+`energyCapacity.energyType` and `plugAvailability`, alongside the existing raw
+`energyCapacity.capacityValue` (currently named `aspect_capacity` in core).
+Absent fields stay unknown; zero remains zero. DIM's upgrade-plug selection needs
+these fields (`inventory/store/energy.ts:18-49`).
+`DestinyMaterialRequirementSetDefinition` is now fetched and projected through the
+shared armor-catalog port: ordered `materials[].itemHash/count`, including zero
+counts, duplicates and observed-empty sets. Other material flags do not participate
+in DIM's ranking (`loadout/mod-assignment-utils.ts:162-265,964-989`). DIM ranks five
+fixed material item hashes; no additional material display catalog is needed.
+
+Parent-measured live Manifest `244213.26.06.29.2000-1-bnet.65864`: **116,945 bytes,
+332 requirement sets, maximum 4 materials per set**. Safety ceilings allow seasonal
+headroom: 16 MiB decompressed, 10,000 records (including skipped redacted records),
+256 materials per set. One additional world-table request: 12 → 13. SQLite stores
+`definition_material_inputs`, `material_requirement_sets` and `material_requirements`:
+STRICT, bounded integers, cascading children, indexed single-hash queries, guarded
+downgrade. The upgrade invalidates only Manifest freshness, forcing a same-version
+refresh once. Legacy schemas reject unrepresentable publication; no inferred
+backfill. Fake/SQLite parity includes every new field in revision identity.
+
+R3-category-coverage: **no deviation**. The four aspect and four fragment hashes
+match `utils/socket-utils.ts:278-290` and `src/data/d2/generated-enums.ts:1604-1619`.
+A regression exercises all sixteen aspect/fragment category pairs.
+
+This is a data-only boundary, not material-cost calculation or assignment.
+Request-local energy-upgrade plug and material assembly belongs with the remaining
+ranking port. General/activity permutations, specialty metadata, artifice/tuning,
+assignment-change tie breaking and expensive-variant re-fitting remain deferred;
+matching `not_evaluated` reasons are intentionally retained. Port them together
+without guessed prices before BE-006c2 stat aggregation.
 
 The full port plus dependencies exceeds the roughly 700-production-line budget.
 The ODD tracker is outside the allowed edit surfaces and was not changed. This

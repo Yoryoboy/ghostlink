@@ -121,6 +121,68 @@ fn fragment_findings_use_selected_aspects_and_truthy_real_socket_overrides() {
 }
 
 #[test]
+fn fragment_findings_cover_every_dim_aspect_and_fragment_category() {
+    // DIM socket-utils.ts:278-290; generated-enums.ts:1604-1619.
+    for aspect_category in [2047681910, 2140934067, 764703411, 3400923910] {
+        for fragment_category in [271461480, 1313488945, 193371309, 2819965312] {
+            let mut subclass = definition(10, 3284755031);
+            subclass.armor.socket_categories = vec![
+                DefinitionSocketCategory {
+                    socket_category_hash: aspect_category,
+                    socket_indexes: vec![0],
+                },
+                DefinitionSocketCategory {
+                    socket_category_hash: fragment_category,
+                    socket_indexes: vec![1],
+                },
+            ];
+            let mut aspect = definition(20, 0);
+            aspect.armor.aspect_capacity = Some(2);
+            let mut inventory = item("1", 10, ItemLocation::Vault);
+            inventory.sockets = [0, 1]
+                .map(|socket_index| IndexedSocket {
+                    socket_index,
+                    plug_hash: None,
+                    enabled: false,
+                    visible: false,
+                    reusable_plugs: None,
+                    plug_objectives: None,
+                })
+                .to_vec();
+            let mut selected = spec(Some("1"), 10);
+            selected.socket_overrides = vec![(0, ItemHash::new(20)), (1, ItemHash::new(99))];
+            let result = analyze(
+                &BuildDefinition {
+                    equipped: vec![selected],
+                    ..Default::default()
+                },
+                &[inventory],
+                &[subclass, aspect],
+            );
+            assert_eq!(
+                result
+                    .findings
+                    .iter()
+                    .find(|f| f.kind == FindingKind::EmptyFragmentSlots)
+                    .unwrap()
+                    .present,
+                Some(true),
+                "{aspect_category}/{fragment_category}"
+            );
+            assert_eq!(
+                result
+                    .findings
+                    .iter()
+                    .find(|f| f.kind == FindingKind::TooManyFragments)
+                    .unwrap()
+                    .present,
+                Some(false)
+            );
+        }
+    }
+}
+
+#[test]
 fn fragment_findings_keep_missing_selected_aspect_definitions_unknown() {
     let mut subclass = definition(10, 3284755031);
     subclass.armor.socket_categories = vec![DefinitionSocketCategory {

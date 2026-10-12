@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 31;
+pub(crate) const LATEST_VERSION: u32 = 32;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 31] = [
+const MIGRATIONS: [Migration; 32] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -209,7 +209,42 @@ const MIGRATIONS: [Migration; 31] = [
         up: SCHEMA_V31_UP,
         down: SCHEMA_V31_DOWN,
     },
+    Migration {
+        version: 32,
+        up: SCHEMA_V32_UP,
+        down: SCHEMA_V32_DOWN,
+    },
 ];
+const SCHEMA_V32_UP: &str = r#"
+CREATE TABLE definition_material_inputs (
+    definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,
+    requirement_hash INTEGER CHECK (requirement_hash BETWEEN 0 AND 4294967295),
+    capacity_type INTEGER CHECK (capacity_type BETWEEN 0 AND 4294967295),
+    availability INTEGER CHECK (availability BETWEEN 0 AND 4294967295),
+    CHECK (requirement_hash IS NOT NULL OR capacity_type IS NOT NULL OR availability IS NOT NULL)
+) STRICT;
+CREATE TABLE material_requirement_sets (
+    hash INTEGER PRIMARY KEY CHECK (hash BETWEEN 0 AND 4294967295),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128)
+) STRICT;
+CREATE TABLE material_requirements (
+    hash INTEGER NOT NULL REFERENCES material_requirement_sets(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 255),
+    item_hash INTEGER NOT NULL CHECK (item_hash BETWEEN 0 AND 4294967295),
+    count INTEGER NOT NULL CHECK (count BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (hash, ordinal)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V32_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definition_material_inputs) OR EXISTS (SELECT 1 FROM material_requirement_sets) OR EXISTS (SELECT 1 FROM material_requirements) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE material_requirements;
+DROP TABLE material_requirement_sets;
+DROP TABLE definition_material_inputs;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
 const SCHEMA_V31_UP: &str = r#"
 CREATE TABLE objective_styles (
     hash INTEGER PRIMARY KEY REFERENCES objective_definitions(hash) ON DELETE CASCADE,

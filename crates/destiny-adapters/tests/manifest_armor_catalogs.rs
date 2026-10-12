@@ -180,7 +180,8 @@ fn fake_sqlite_parity_revision_identity_and_batch_reads() {
     assert_eq!(store.current_metadata().unwrap(), Some(revision.clone()));
     assert!(store.migrate_to(29).is_err());
     assert_eq!(store.schema_version().unwrap(), 30);
-    assert_eq!(store.current_metadata().unwrap(), Some(revision));
+    // The empty 32 down step invalidates freshness before guarded step 30.
+    assert_eq!(store.current_metadata().unwrap(), None);
 }
 
 #[test]

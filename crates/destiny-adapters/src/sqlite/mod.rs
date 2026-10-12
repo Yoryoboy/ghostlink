@@ -34,6 +34,7 @@ mod definition_sockets;
 mod definitions;
 mod inventory;
 mod loadouts;
+mod material_catalogs;
 mod migrations;
 mod search;
 mod socket_catalogs;

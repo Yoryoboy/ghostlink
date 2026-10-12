@@ -8,14 +8,16 @@ pub enum ArmorCatalogKind {
     SocketType,
     SocketCategory,
     PlugSet,
+    MaterialRequirementSet,
 }
 impl ArmorCatalogKind {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::StatGroup,
         Self::EquipableSet,
         Self::SocketType,
         Self::SocketCategory,
         Self::PlugSet,
+        Self::MaterialRequirementSet,
     ];
     pub const fn component(self) -> &'static str {
         match self {
@@ -24,6 +26,7 @@ impl ArmorCatalogKind {
             Self::SocketType => "DestinySocketTypeDefinition",
             Self::SocketCategory => "DestinySocketCategoryDefinition",
             Self::PlugSet => "DestinyPlugSetDefinition",
+            Self::MaterialRequirementSet => "DestinyMaterialRequirementSetDefinition",
         }
     }
     /// Safety ceilings with seasonal headroom, not DIM/gameplay restrictions.
@@ -42,6 +45,7 @@ impl ArmorCatalogKind {
             Self::SocketType => 2,
             Self::SocketCategory => 3,
             Self::PlugSet => 4,
+            Self::MaterialRequirementSet => 5,
         }
     }
 }
@@ -132,6 +136,19 @@ pub struct PlugSetDefinition {
     pub hash: u32,
     pub reusable_plug_items: Vec<PlugSetItem>,
 }
+/// Live Manifest 244213.26.06.29.2000-1-bnet.65864: 332 sets / max 4 materials.
+/// Safety headroom, not a gameplay limit.
+pub const MAX_MATERIAL_REQUIREMENTS: usize = 256;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterialRequirement {
+    pub item_hash: u32,
+    pub count: u32,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MaterialRequirementSetDefinition {
+    pub hash: u32,
+    pub materials: Vec<MaterialRequirement>,
+}
 fn bounded_text(value: &str, limit: usize) -> bool {
     value.chars().count() <= limit && !value.chars().any(|c| c.is_control() && !c.is_whitespace())
 }
@@ -142,6 +159,7 @@ pub enum ArmorCatalogRecord {
     SocketType(SocketTypeDefinition),
     SocketCategory(SocketCategoryDefinition),
     PlugSet(PlugSetDefinition),
+    MaterialRequirementSet(MaterialRequirementSetDefinition),
 }
 impl ArmorCatalogRecord {
     pub const fn kind(&self) -> ArmorCatalogKind {
@@ -151,6 +169,7 @@ impl ArmorCatalogRecord {
             Self::SocketType(_) => ArmorCatalogKind::SocketType,
             Self::SocketCategory(_) => ArmorCatalogKind::SocketCategory,
             Self::PlugSet(_) => ArmorCatalogKind::PlugSet,
+            Self::MaterialRequirementSet(_) => ArmorCatalogKind::MaterialRequirementSet,
         }
     }
     pub const fn hash(&self) -> u32 {
@@ -160,6 +179,7 @@ impl ArmorCatalogRecord {
             Self::SocketType(value) => value.hash,
             Self::SocketCategory(value) => value.hash,
             Self::PlugSet(value) => value.hash,
+            Self::MaterialRequirementSet(value) => value.hash,
         }
     }
     pub fn validate(&self) -> Result<(), AppError> {
@@ -170,6 +190,9 @@ impl ArmorCatalogRecord {
                         .plug_whitelist
                         .iter()
                         .all(|entry| bounded_text(&entry.category_identifier, 256))
+            }
+            Self::MaterialRequirementSet(value) => {
+                value.materials.len() <= MAX_MATERIAL_REQUIREMENTS
             }
             Self::SocketCategory(value) => bounded_text(&value.name, 256),
             Self::PlugSet(value) => value.reusable_plug_items.len() <= MAX_PLUG_SET_ITEMS,
@@ -210,7 +233,7 @@ impl ArmorCatalogRecord {
 /// Validate complete batches before publication; empty catalogs are legitimate.
 pub fn validate_catalogs(records: &[ArmorCatalogRecord]) -> Result<(), AppError> {
     let mut seen = std::collections::HashSet::new();
-    let mut counts = [0; 5];
+    let mut counts = [0; 6];
     for record in records {
         record.validate()?;
         counts[record.kind().id() as usize] += 1;

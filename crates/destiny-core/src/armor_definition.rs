@@ -8,7 +8,11 @@ pub struct ArmorDefinition {
     pub stat_group_hash: Option<u32>,
     pub plug_category_hash: Option<u32>,
     pub energy_cost: Option<PlugEnergyCost>,
+    /// Raw plug energyCapacity.capacityValue, also used for aspect capacity.
     pub aspect_capacity: Option<i32>,
+    pub energy_capacity_type: Option<u32>,
+    pub plug_availability: Option<u32>,
+    pub insertion_material_requirement_hash: Option<u32>,
     pub equipable_item_set_hash: Option<u32>,
 }
 

@@ -53,7 +53,9 @@ not evaluated. The additive `mod_fit` object shares the CLI's bounded DIM
 bucket-specific assignment: nullable `invalid_mods`, `unassigned_mods` (after
 allowed energy upgrades, duplicates retained), and `needs_upgrades_for_mods`.
 Independent/general, activity, artifice and tuning assignment remain
-`not_evaluated` with explicit reasons. Legacy hashes and seasonal costs resolve
+`not_evaluated` with explicit reasons. Migration 32 persists material-ranking inputs
+and refreshes Manifest data once; this is not a material quote or expanded fitting.
+Legacy hashes and seasonal costs resolve
 like DIM using enabled account/target-character unlocks (missing plug sets mean
 no unlocks). Missing/non-pluggable definitions use the deprecated placeholder;
 missing placeholder data stays unknown. See [build mod fitting](build-mods.md). Positive stat constraints can keep the global

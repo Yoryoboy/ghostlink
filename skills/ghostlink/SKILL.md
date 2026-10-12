@@ -56,7 +56,9 @@ mod_fit object evaluates only DIM bucket-specific armor mods with complete evide
 and a full resolved set. Report invalid_mods separately from unassigned_mods (after
 allowed energy upgrades; duplicates count). needs_upgrades_for_mods is not a material
 quote or a stat-masterwork upgrade claim. General/activity/artifice/tuning
-assignment remains not_evaluated, never clean. Legacy mod hashes and seasonal costs
+assignment remains not_evaluated, never clean. Persisted insertion-material inputs
+are prerequisites only: do not infer a material quote or ranking from their presence.
+Legacy mod hashes and seasonal costs
 resolve like DIM using enabled account/target-character unlocks; missing plug sets
 mean no unlocks. Missing/non-pluggable mods become DIM's deprecated placeholder;
 missing placeholder data stays unknown. Report hashes in mod_fit as resolved hashes,

@@ -98,7 +98,9 @@ full resolved set and all socket/membership/energy inputs are available. It expo
 nullable `invalid_mods`, `unassigned_mods` (after allowed energy upgrades), and
 `needs_upgrades_for_mods`. Duplicates are preserved. Independent/general, activity,
 artifice and tuning assignment remain `not_evaluated` with explicit reasons;
-they are never approximated. Mod hashes are migrated and cost-resolved like DIM:
+they are never approximated. Migration 32 persists the material-ranking prerequisites
+and refreshes Manifest data once, but does not calculate upgrade costs or expand
+assignment coverage. Mod hashes are migrated and cost-resolved like DIM:
 use enabled account/target-character reduced variants, otherwise normal variants.
 Missing/non-pluggable definitions use DIM's deprecated placeholder; if that is
 unavailable, fitting stays unknown. Missing plug-set responses default to no unlocks
