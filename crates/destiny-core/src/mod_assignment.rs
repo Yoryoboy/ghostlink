@@ -257,6 +257,39 @@ pub fn apply_mod_assignments(
     )
 }
 
+/// The saved mods as DIM resolves them (loadout-utils.ts:906-923): legacy stat-mod
+/// migration, then available-cost resolution; non-pluggable or missing definitions become the
+/// deprecated placeholder. Order and duplicates are kept.
+pub fn resolve_requested_mods<'a>(
+    build: &BuildDefinition,
+    definitions: &'a [ItemDefinition],
+    unlocked: &[u32],
+) -> Result<Vec<&'a ItemDefinition>, &'static str> {
+    let requested = build
+        .parameters
+        .as_ref()
+        .and_then(|p| p.mods.as_deref())
+        .unwrap_or(&[]);
+    let mut mods = Vec::new();
+    for hash in requested {
+        let hash = resolve_mod_cost_variant(hash.value() as u32, unlocked);
+        let Some(d) = definitions
+            .iter()
+            .find(|d| d.hash.value() == i64::from(hash) && d.armor.plug_category_hash.is_some())
+            .or_else(|| {
+                definitions.iter().find(|d| {
+                    d.hash.value() == i64::from(DEPRECATED_MOD_PLACEHOLDER)
+                        && d.armor.plug_category_hash.is_some()
+                })
+            })
+        else {
+            return Err("deprecated_mod_placeholder_definition_unavailable");
+        };
+        mods.push(d);
+    }
+    Ok(mods)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn analyze_with_rules(
     build: &BuildDefinition,
@@ -268,30 +301,10 @@ fn analyze_with_rules(
     stat_rules: Option<bool>,
     partial_set: bool,
 ) -> ModFitAnalysis {
-    let requested = build
-        .parameters
-        .as_ref()
-        .and_then(|p| p.mods.as_deref())
-        .unwrap_or(&[]);
-    let mut mods = Vec::new();
-    for hash in requested {
-        let hash = resolve_mod_cost_variant(hash.value() as u32, unlocked);
-        // DIM loadout-utils.ts:906-923: non-pluggable/missing definitions become
-        // the deprecated placeholder, which is subsequently categorized normally.
-        let Some(d) = definitions
-            .iter()
-            .find(|d| d.hash.value() == i64::from(hash) && d.armor.plug_category_hash.is_some())
-            .or_else(|| {
-                definitions.iter().find(|d| {
-                    d.hash.value() == i64::from(DEPRECATED_MOD_PLACEHOLDER)
-                        && d.armor.plug_category_hash.is_some()
-                })
-            })
-        else {
-            return ModFitAnalysis::unknown("deprecated_mod_placeholder_definition_unavailable");
-        };
-        mods.push(d);
-    }
+    let mods = match resolve_requested_mods(build, definitions, unlocked) {
+        Ok(mods) => mods,
+        Err(reason) => return ModFitAnalysis::unknown(reason),
+    };
     let mut invalid = Vec::new();
     let mut valid = Vec::new();
     for m in mods {

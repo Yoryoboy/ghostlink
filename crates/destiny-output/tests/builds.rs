@@ -644,3 +644,78 @@ fn mod_steps_skips_and_counts_render_in_the_plan_and_the_result() {
             .contains("Skipped mod 2001: \"mod_not_unlocked\"")
     );
 }
+
+#[test]
+fn build_analysis_reports_optimizer_evidence_additively() {
+    use destiny_app::*;
+    let result = |optimizer: optimizer::OptimizerAnalysis| {
+        let mut analysis = build_analysis::analyze_build(
+            &build::BuildDefinition::default(),
+            &CharacterId::new("1"),
+            &[],
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        analysis.optimizer = optimizer;
+        BuildOutput::from_result(Ok(BuildReply::Analysis(Box::new(
+            builds::BuildCheckResult {
+                summary: BuildSummary {
+                    id: "id".into(),
+                    name: "Raid".into(),
+                    class_type: 1,
+                    source: BuildSource::Import,
+                    created_at: Timestamp::new(100),
+                    updated_at: Timestamp::new(100),
+                },
+                analysis,
+                metadata: QueryMetadata {
+                    sync: SyncMetadata {
+                        dataset: Dataset::ProfileInventory,
+                        checked_at: Timestamp::new(100),
+                        source: SourceMarker::Profile,
+                        revision: SyncRevision::new(1),
+                        definition_version: DefinitionVersion::new("v1"),
+                    },
+                    freshness: FreshnessStatus::Fresh,
+                },
+            },
+        ))))
+    };
+    // Default: the optimizer never ran.
+    let output = result(Default::default());
+    assert_eq!(
+        output.value["optimizer"],
+        json!({"evaluation":"not_evaluated", "reason":"optimizer_not_run", "candidates_per_bucket":null,
+            "combinations_total":null, "combinations_visited":null, "truncated":false, "threads":null, "font_note":false})
+    );
+    assert!(
+        output
+            .render_text()
+            .contains("Optimizer: not_evaluated (reason: \"optimizer_not_run\"")
+    );
+    assert!(!output.render_text().contains("Font of"));
+    // An evaluated run reports its counts, and the Font note appears only when set.
+    let output = result(optimizer::OptimizerAnalysis {
+        evaluation: "evaluated",
+        reason: None,
+        candidates: Some([3, 2, 1, 4, 5]),
+        combos_total: Some(120),
+        combos_visited: Some(7),
+        truncated: false,
+        threads: Some(8),
+        font_note: true,
+    });
+    assert_eq!(
+        output.value["optimizer"]["candidates_per_bucket"],
+        json!([3, 2, 1, 4, 5])
+    );
+    assert_eq!(output.value["optimizer"]["combinations_visited"], 7);
+    assert_eq!(output.value["optimizer"]["font_note"], true);
+    let text = output.render_text();
+    assert!(text.contains("Optimizer: evaluated"));
+    assert!(text.contains("combinations visited: 7 of 120"));
+    assert!(text.contains("Font of ... mods push a stat past the cap"));
+    assert_eq!(output.exit_code, 0);
+}

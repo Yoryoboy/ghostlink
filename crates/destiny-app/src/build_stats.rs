@@ -107,35 +107,10 @@ fn assemble<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogRep
         let Some(stats) = model.stats.as_ref() else {
             return Ok(BuildStats::unknown("armor_base_stats_unavailable"));
         };
-        let mut mw = None;
-        for socket in &item.sockets {
-            let Some(hash) = socket.plug_hash else {
-                continue;
-            };
-            let Some(plug) = definitions.iter().find(|d| d.hash == hash) else {
-                return Ok(BuildStats::unknown("inserted_plug_definition_unavailable"));
-            };
-            if plug.armor.plug_category_hash == Some(ARMOR3_MASTERWORK_PLUG) && mw.is_none() {
-                let mut values = [0; 6];
-                let mut base = [0; 6];
-                for (i, hash) in ARMOR_STATS.iter().enumerate() {
-                    let Some(stat) = stats.stats.iter().find(|s| s.stat_hash == *hash) else {
-                        return Ok(BuildStats::unknown("armor_base_stats_unavailable"));
-                    };
-                    base[i] = stat.base;
-                }
-                if let Err(reason) = add_plug_stats(
-                    &mut values,
-                    hash.value() as u32,
-                    &plug.armor,
-                    class,
-                    Some(&base),
-                ) {
-                    return Ok(BuildStats::unknown(reason));
-                }
-                mw = Some(values);
-            }
-        }
+        let mw = match masterwork_plug_stats(item, definitions, stats, class) {
+            Ok(mw) => mw,
+            Err(reason) => return Ok(BuildStats::unknown(reason)),
+        };
         masterworks.push(mw);
         models.push(model);
     }
@@ -150,30 +125,10 @@ fn assemble<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogRep
             masterwork,
         })
         .collect();
-    let subclass = analysis.items.iter().find_map(|r| {
-        let item = r.inventory.as_ref()?;
-        definitions
-            .iter()
-            .find(|d| {
-                d.hash == item.item_hash && d.bucket_hash == Some(BucketHash::new(3284755031))
-            })
-            .map(|_| r)
-    });
-    // getTotalModStatChanges uses every saved override, not current sockets or
-    // only fragments. A known non-pluggable definition is omitted by DIM.
-    let mut plugs = Vec::new();
-    if let Some(subclass) = subclass {
-        for (_, hash) in &subclass.spec.socket_overrides {
-            let Some(plug) = definitions.iter().find(|d| d.hash == *hash) else {
-                return Ok(BuildStats::unknown(
-                    "subclass_stat_plug_definition_unavailable",
-                ));
-            };
-            if plug.armor.plug_category_hash.is_some() {
-                plugs.push(hash.value() as u32);
-            }
-        }
-    }
+    let plugs = match subclass_plugs(analysis, definitions) {
+        Ok(plugs) => plugs,
+        Err(reason) => return Ok(BuildStats::unknown(reason)),
+    };
     let runtime = build
         .parameters
         .as_ref()
@@ -234,6 +189,71 @@ fn assemble<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogRep
         satisfies_constraints: Some(satisfies),
         needs_upgrades_for_stats: Some(satisfies && !satisfies_minima(&as_is, constraints)),
     })
+}
+
+/// The Armor 3 masterwork socket's projected stat contribution; `None` is legacy armor.
+pub(crate) fn masterwork_plug_stats(
+    item: &ItemInstance,
+    definitions: &[ItemDefinition],
+    stats: &ArmorStats,
+    class: u8,
+) -> Result<Option<[i32; 6]>, &'static str> {
+    for socket in &item.sockets {
+        let Some(hash) = socket.plug_hash else {
+            continue;
+        };
+        let Some(plug) = definitions.iter().find(|d| d.hash == hash) else {
+            return Err("inserted_plug_definition_unavailable");
+        };
+        if plug.armor.plug_category_hash == Some(ARMOR3_MASTERWORK_PLUG) {
+            let mut values = [0; 6];
+            let mut base = [0; 6];
+            for (i, hash) in ARMOR_STATS.iter().enumerate() {
+                let Some(stat) = stats.stats.iter().find(|s| s.stat_hash == *hash) else {
+                    return Err("armor_base_stats_unavailable");
+                };
+                base[i] = stat.base;
+            }
+            add_plug_stats(
+                &mut values,
+                hash.value() as u32,
+                &plug.armor,
+                class,
+                Some(&base),
+            )?;
+            return Ok(Some(values));
+        }
+    }
+    Ok(None)
+}
+
+/// getTotalModStatChanges uses every saved override, not current sockets or
+/// only fragments. A known non-pluggable definition is omitted by DIM.
+pub(crate) fn subclass_plugs(
+    analysis: &BuildAnalysis,
+    definitions: &[ItemDefinition],
+) -> Result<Vec<u32>, &'static str> {
+    let subclass = analysis.items.iter().find_map(|r| {
+        let item = r.inventory.as_ref()?;
+        definitions
+            .iter()
+            .find(|d| {
+                d.hash == item.item_hash && d.bucket_hash == Some(BucketHash::new(3284755031))
+            })
+            .map(|_| r)
+    });
+    let mut plugs = Vec::new();
+    if let Some(subclass) = subclass {
+        for (_, hash) in &subclass.spec.socket_overrides {
+            let Some(plug) = definitions.iter().find(|d| d.hash == *hash) else {
+                return Err("subclass_stat_plug_definition_unavailable");
+            };
+            if plug.armor.plug_category_hash.is_some() {
+                plugs.push(hash.value() as u32);
+            }
+        }
+    }
+    Ok(plugs)
 }
 
 #[cfg(test)]

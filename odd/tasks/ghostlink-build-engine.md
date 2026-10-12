@@ -593,8 +593,7 @@ coverage (`domain.rs:123-126`).
   min-heap `set-tracker.ts:23-60`. Analyzer findings
   ItemsDoNotMatchSearchQuery (`analysis.ts:293-307`) and
   BetterStatsAvailable (`:309-367`, `stopOnFirstSet`, strict upgrades).
-  Parent defaults (reversible; owner to confirm before BE-008d/e expose
-  them): `--limit` default 10, max 200 (DIM's cap); per-invocation time
+  Defaults (proposed by the parent, CONFIRMED by the owner 2026-10-12): `--limit` default 10, max 200 (DIM's cap); per-invocation time
   budget with a `truncated` flag on timeout (analyzer: `not_evaluated` with
   a budget reason); deterministic tie-break on item ids; candidate armor
   from every store DIM includes; masterwork assumption and unlocked plugs
@@ -655,8 +654,29 @@ coverage (`domain.rs:123-126`).
     both modes, fmt. Follow-ups: tie-heavy inventories cannot prune under
     `>=` (budget bounds it; consider a cheaper tie pre-check); port
     seeding if real inventories converge slowly.
-  - [ ] **BE-008d — Analyzer wiring.** BetterStatsAvailable and full
-    ItemsDoNotMatchSearchQuery in `build check` / `analyze_build`.
+  - [x] **BE-008d — Analyzer wiring.** BetterStatsAvailable and full
+    ItemsDoNotMatchSearchQuery in `build check` / `analyze_build`. A first
+    worker ended without a report; its partial (`optimizer/analyzer.rs`,
+    build_stats/mod_assignment refactors) was audited and kept. App adapter
+    `destiny-app/src/build_optimizer.rs` (candidates per
+    `mappers.ts:65-190`, dedupe columns `item-filter.ts:262-300`, mods via
+    `categorizeArmorMods` `mod-assignment-utils.ts:84-150` and
+    `autoAssignmentPCHs` `loadout-builder/types.ts:114`, Maverick through
+    existing specialty sockets `specialty-modslots.ts:36-37,111-117`).
+    Findings per `analysis.ts:250-367`, blocking set `types.ts:72-76`,
+    strict-upgrade merge `utils.ts:16-60`, Font note
+    (`loadout/stats.ts:190-205`). 2 s + combo cap per build;
+    `not_evaluated` on exhaustion or missing inputs. Required armor perks
+    -> `not_evaluated` (`armor_perk_requirements_unsupported`: plug category
+    identifiers not projected). Postmaster/Other excluded from candidates.
+    ~1,100 production lines, one unit (findings need the adapter to be
+    testable). Tests written after code; mutation checks fail as expected.
+    `docs/optimizer.md`. Workspace: 2433 all-features, 2400 default,
+    0 failed; clippy both modes, fmt. Untested paths: real auto-mod plug-set
+    loading with Font/general stat mods, tuning variants end to end,
+    real-vault timing. Follow-up: apply DIM's All+artifice exotic ->
+    ArtificeExotic (`analysis.ts:211-217`) to the existing stats and mod
+    findings too.
   - [ ] **BE-008e — Substitutes command.** `ghostlink build substitutes`
     and MCP tool; D3: never alters check or apply resolution.
 - [x] **BE-009 — dim.gg import.** Dropped by owner decision D4 (won't do).

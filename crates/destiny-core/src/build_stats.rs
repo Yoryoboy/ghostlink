@@ -103,25 +103,26 @@ pub fn inferred_masterwork(
     build: &BuildDefinition,
     armor: &[StatArmor<'_>],
 ) -> AssumeArmorMasterwork {
-    let mut assumption = build
-        .parameters
-        .as_ref()
-        .and_then(|p| p.assume_armor_masterwork)
-        .unwrap_or(AssumeArmorMasterwork::None);
-    let low = |a: &StatArmor<'_>| {
-        a.item
-            .energy
+    let pairs: Vec<_> = armor.iter().map(|a| (a.item, a.definition)).collect();
+    infer_masterwork_assumption(
+        build
+            .parameters
             .as_ref()
-            .is_some_and(|e| e.energy_capacity < 10)
-    };
-    let legendary_low = armor
-        .iter()
-        .filter(|a| a.definition.tier.as_deref() != Some("Exotic"))
-        .any(low);
-    let exotic_low = armor
-        .iter()
-        .filter(|a| a.definition.tier.as_deref() == Some("Exotic"))
-        .any(low);
+            .and_then(|p| p.assume_armor_masterwork)
+            .unwrap_or(AssumeArmorMasterwork::None),
+        &pairs,
+    )
+}
+
+/// The same inference for any resolved armor, given the saved assumption.
+pub fn infer_masterwork_assumption(
+    mut assumption: AssumeArmorMasterwork,
+    armor: &[(&ItemInstance, &ItemDefinition)],
+) -> AssumeArmorMasterwork {
+    let low = |item: &ItemInstance| item.energy.as_ref().is_some_and(|e| e.energy_capacity < 10);
+    let is_exotic = |definition: &ItemDefinition| definition.tier.as_deref() == Some("Exotic");
+    let legendary_low = armor.iter().any(|(i, d)| !is_exotic(d) && low(i));
+    let exotic_low = armor.iter().any(|(i, d)| is_exotic(d) && low(i));
     if !legendary_low && assumption != AssumeArmorMasterwork::ArtificeExotic {
         assumption = if exotic_low && assumption != AssumeArmorMasterwork::All {
             AssumeArmorMasterwork::Legendary
@@ -130,6 +131,58 @@ pub fn inferred_masterwork(
         };
     }
     assumption
+}
+
+/// DIM loadout/stats.ts getFontMods: "Font of ..." mods per stat in `ARMOR_STATS` order.
+const FONT_MODS: [u32; 6] = [
+    4046357305, 686455429, 1193713026, 1781551382, 1130820873, 633101315,
+];
+
+/// The runtime stat bonus of the Font mods among `mods` (cost-pair variants count as the
+/// same mod): none, 20, 40, then 50 from three of them. Same pinned table as mod assignment.
+pub fn font_bonuses(mods: &[u32]) -> [i32; 6] {
+    std::array::from_fn(|i| {
+        let count = mods
+            .iter()
+            .filter(|m| crate::mod_assignment::resolve_mod_cost_variant(**m, &[]) == FONT_MODS[i])
+            .count();
+        [0, 20, 40, 50][count.min(3)]
+    })
+}
+
+/// DIM stats.ts:102-214 `getTotalModStatChanges` without item assignments: the subclass
+/// plugs, then the locked mods (no item, so item-conditional stats stay off), then Fonts.
+pub fn locked_mod_stat_totals(
+    definitions: &[ItemDefinition],
+    subclass_plugs: &[u32],
+    mods: &[&ItemDefinition],
+    class: u8,
+    runtime: bool,
+) -> Result<[i32; 6], &'static str> {
+    let mut totals = [0_i32; 6];
+    for hash in subclass_plugs {
+        let plug = definitions
+            .iter()
+            .find(|d| d.hash.value() == i64::from(*hash) && d.armor.plug_category_hash.is_some())
+            .ok_or("stat_plug_definition_unavailable")?;
+        add_plug_stats(&mut totals, *hash, &plug.armor, class, None)?;
+    }
+    for plug in mods {
+        add_plug_stats(
+            &mut totals,
+            plug.hash.value() as u32,
+            &plug.armor,
+            class,
+            None,
+        )?;
+    }
+    if runtime {
+        let hashes: Vec<u32> = mods.iter().map(|m| m.hash.value() as u32).collect();
+        for (total, bonus) in totals.iter_mut().zip(font_bonuses(&hashes)) {
+            *total = total.checked_add(bonus).ok_or("loadout_stat_overflow")?;
+        }
+    }
+    Ok(totals)
 }
 
 pub fn total_stats(
@@ -231,19 +284,8 @@ pub fn total_stats(
         mods.push(*hash);
     }
     if runtime {
-        // Cost-pair mapping is the same pinned table used by mod assignment.
-        let fonts = [
-            4046357305, 686455429, 1193713026, 1781551382, 1130820873, 633101315,
-        ];
-        for (i, hash) in fonts.iter().enumerate() {
-            let count = mods
-                .iter()
-                .filter(|m| crate::mod_assignment::resolve_mod_cost_variant(**m, &[]) == *hash)
-                .count();
-            let bonus = [0, 20, 40, 50][count.min(3)];
-            totals[i] = totals[i]
-                .checked_add(bonus)
-                .ok_or("loadout_stat_overflow")?;
+        for (total, bonus) in totals.iter_mut().zip(font_bonuses(&mods)) {
+            *total = total.checked_add(bonus).ok_or("loadout_stat_overflow")?;
         }
     }
     Ok(totals)

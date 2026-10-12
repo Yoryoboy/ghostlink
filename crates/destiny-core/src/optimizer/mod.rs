@@ -3,6 +3,7 @@
 use crate::armor_model::ARMOR_STATS;
 use crate::build::{AssumeArmorMasterwork, StatConstraint};
 
+mod analyzer;
 mod auto_mods;
 mod driver;
 mod filter;
@@ -11,6 +12,10 @@ mod search;
 mod set_tracker;
 mod stat_dupe;
 mod stat_mods;
+pub use analyzer::{
+    AnalyzerBudget, AnalyzerInputs, AnalyzerOutcome, OptimizerAnalysis, ResolvedStatConstraint,
+    merge_strict_upgrade_stat_constraints, resolve_stat_constraints, run_analyzer,
+};
 pub use auto_mods::{
     AutoMod, AutoModData, AutoModsCache, CacheForStat, GeneralAutoMods, ModsPick, auto_mod_data,
     build_auto_mods_map, choose_auto_mods,
@@ -74,29 +79,16 @@ pub struct DesiredStatRange {
     pub max_stat: u16,
 }
 
-/// DIM loadout-params.ts:14-34 (constrained stats first in priority order, then
-/// ignored stats in game order) with loadout-analyzer/utils.ts:32-33 (ignored => 0/0).
+/// DIM `desiredStatRange` from a resolved constraint: ignored => 0/0 (loadout-analyzer/utils.ts:32-33).
 pub fn desired_stat_ranges(constraints: &[StatConstraint]) -> Vec<DesiredStatRange> {
-    let mut resolved: Vec<_> = ARMOR_STATS
-        .iter()
-        .enumerate()
-        .map(|(game_index, hash)| {
-            // keyBy: the last constraint for a hash wins; ordering uses the first (findIndex).
-            let c = constraints.iter().rev().find(|c| c.stat_hash == *hash);
-            let priority = constraints
-                .iter()
-                .position(|c| c.stat_hash == *hash)
-                .unwrap_or(100 + game_index);
-            let range = DesiredStatRange {
-                stat_hash: *hash,
-                min_stat: c.map_or(0, |c| c.min_stat.unwrap_or(0)),
-                max_stat: c.map_or(0, |c| c.max_stat.unwrap_or(MAX_STAT as u16)),
-            };
-            (priority, range)
+    resolve_stat_constraints(constraints)
+        .into_iter()
+        .map(|c| DesiredStatRange {
+            stat_hash: c.stat_hash,
+            min_stat: if c.ignored { 0 } else { c.min_stat },
+            max_stat: if c.ignored { 0 } else { c.max_stat },
         })
-        .collect();
-    resolved.sort_by_key(|(priority, _)| *priority);
-    resolved.into_iter().map(|(_, range)| range).collect()
+        .collect()
 }
 
 /// DIM lockedExoticHash: undefined (None), LOCKED_EXOTIC_NO_EXOTIC (-1),

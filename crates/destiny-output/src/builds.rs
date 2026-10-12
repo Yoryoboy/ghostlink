@@ -275,6 +275,10 @@ impl BuildOutput {
                         "uses_seasonal_mods":analysis.mod_fit.uses_seasonal_mods,
                         "item_mod_assignments":analysis.mod_fit.item_mod_assignments.as_ref().map(|items| items.iter().map(|(id, mods)| json!({"instance_id":id.as_str(),"mods":mods})).collect::<Vec<_>>()),
                         "upgrade_costs":analysis.mod_fit.upgrade_costs.map(|costs| destiny_app::mod_assignment::RANKED_MATERIALS.iter().zip(costs).filter(|(_, amount)| *amount > 0).map(|(hash, amount)| json!({"material_hash":hash,"amount":amount})).collect::<Vec<_>>())},
+                    "optimizer":{"evaluation":analysis.optimizer.evaluation, "reason":analysis.optimizer.reason,
+                        "candidates_per_bucket":analysis.optimizer.candidates, "combinations_total":analysis.optimizer.combos_total,
+                        "combinations_visited":analysis.optimizer.combos_visited, "truncated":analysis.optimizer.truncated,
+                        "threads":analysis.optimizer.threads, "font_note":analysis.optimizer.font_note},
                     "equipped_set_bonuses":{"evaluation":bonuses.evaluation,
                         "reasons":bonuses.reasons, "sets":sets},
                     "metadata":{"checked_at":result.metadata.sync.checked_at.seconds(),
@@ -527,6 +531,21 @@ impl BuildOutput {
                 "Item mod assignments: {}",
                 mods["item_mod_assignments"]
             ));
+            let optimizer = &self.value["optimizer"];
+            lines.push(format!(
+                "Optimizer: {} (reason: {}, candidates per bucket: {}, combinations visited: {} of {})",
+                optimizer["evaluation"].as_str().unwrap_or("not_evaluated"),
+                optimizer["reason"],
+                optimizer["candidates_per_bucket"],
+                optimizer["combinations_visited"],
+                optimizer["combinations_total"]
+            ));
+            if optimizer["font_note"] == true {
+                lines.push(
+                    "Note: Font of ... mods push a stat past the cap, so better stats may only apply with Fonts removed."
+                        .into(),
+                );
+            }
             let bonuses = &self.value["equipped_set_bonuses"];
             lines.push(format!(
                 "Equipped set bonuses: {} (reasons: {})",

@@ -254,7 +254,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             + StatDefinitionRepository
             + ArmorCatalogRepository,
     {
-        self.analyze(sync, selector, character, policy, now)
+        self.analyze(sync, selector, character, policy, now, true)
             .map(|analyzed| analyzed.result)
     }
 
@@ -281,6 +281,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             request.character.as_ref(),
             policy,
             now,
+            false,
         )?;
         let socket_catalogs = crate::build_socket_evidence::socket_catalogs(
             sync.repository(),
@@ -430,6 +431,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
         character: Option<&CharacterId>,
         policy: FreshnessPolicy,
         now: Timestamp,
+        optimize: bool,
     ) -> Result<AnalyzedBuild, BuildError>
     where
         G: ProfileGateway,
@@ -595,6 +597,18 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             &unlocked_mods,
             character_class(&target)?,
         )?;
+        if optimize {
+            crate::build_optimizer::evaluate(
+                sync.repository(),
+                &build.definition,
+                &mut analysis,
+                &snapshot.items,
+                &definitions,
+                &mod_catalogs,
+                &unlocked_mods,
+                character_class(&target)?,
+            )?;
+        }
         Ok(AnalyzedBuild {
             result: BuildCheckResult {
                 summary: build.summary,

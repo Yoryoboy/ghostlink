@@ -124,7 +124,8 @@ assignment inputs leave totals null with an explicit reason. No API component
 Totals are hypothetical benefits of planned mods, including unassigned ones;
 constraint satisfaction does not imply mod fit or socket application readiness.
 There is no stat-material quote, upgrade action or optimizer evaluation. Maximum
-constraints and `better_stats_available` remain BE-008 (`optimizer_unavailable`).
+constraints stay unevaluated; `better_stats_available` is evaluated by the analyzer
+search, see [optimizer findings](optimizer.md).
 
 ### R3 mixed-tier rarity cache
 

@@ -126,8 +126,13 @@ and unknown states; see [DIM evidence and split](armor-model.md#be-006-first-sli
 Every DIM finding kind has `evaluation`, nullable `present`, and a reason code.
 Missing items, incomplete resolved equipped armor, exotic constraints (including
 sentinels and definition-name matching), and invalid search are evaluated.
-Search exclusion is qualified `search_only`: optimizer filtering and suppression
-are deferred. Unsupported search capabilities/context are not called invalid.
+Search exclusion (`items_do_not_match_search_query`) and `better_stats_available` come
+from DIM's analyzer search for a full, unblocked armor set; see
+[optimizer findings](optimizer.md). Unsupported search capabilities/context are not
+called invalid. When the 2 s per-build budget ends the findings are `not_evaluated`
+(`optimizer_budget_exhausted`). The additive `optimizer` object reports the evaluation,
+reason, candidates per bucket, combinations visited/total, `truncated`, `threads` and
+`font_note`; text output prints an `Optimizer:` line and the Font note.
 The additive `mod_fit` object evaluates all DIM armor-mod categories when a
 full resolved set and all socket/membership/energy inputs are available. It exposes
 nullable `invalid_mods`, `unassigned_mods` (after allowed energy upgrades), and

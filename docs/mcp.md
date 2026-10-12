@@ -49,8 +49,10 @@ Without a character selector the build class must have one owned character;
 otherwise resolve ambiguity with an explicit ID. Results contain item resolution,
 location/owner/equipped/class compatibility, counts (no percentage), and every DIM
 finding kind. `present: null` with `evaluation: not_evaluated` is not a clean bill
-of health. Search exclusion is `search_only`; optimizer-dependent suppression is
-not evaluated. The additive `mod_fit` object shares the CLI's bounded DIM
+of health. `items_do_not_match_search_query` and `better_stats_available` come from DIM's analyzer
+search for a full, unblocked armor set (budget 2 s per build; exhaustion is
+`not_evaluated` with `optimizer_budget_exhausted`); the additive `optimizer` object
+reports its counts and `font_note`. See [optimizer findings](optimizer.md). The additive `mod_fit` object shares the CLI's bounded DIM
 armor-mod assignment across all categories: nullable `invalid_mods`, `unassigned_mods` (after
 allowed energy upgrades, duplicates retained), and `needs_upgrades_for_mods`.
 Artifice prefers current placement then nonexotics; tuning uses canonical slot
@@ -69,7 +71,7 @@ missing placeholder data stays unknown. See [build mod fitting](build-mods.md).
 The additive `stats` object matches CLI JSON: six `{stat_hash, as_is, assumed}`
 values, `satisfies_constraints`, `needs_upgrades_for_stats`, evaluation and reason.
 DIM minima-only checks include assigned/unassigned mods, subclass overrides and
-optional runtime Font effects. Maxima and better-stats optimization are not evaluated.
+optional runtime Font effects. Maxima are not evaluated; better stats come from the `optimizer` analysis.
 The global upgrade finding combines mod and stat requirements; missing evidence
 remains null, never a successful constraint check. `empty_fragment_slots` and `too_many_fragments` now
 compare saved fragment overrides with saved aspect capacity, never current aspects.

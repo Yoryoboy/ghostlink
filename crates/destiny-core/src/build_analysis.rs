@@ -58,6 +58,14 @@ pub struct ResolvedBuildItem {
     pub class_compatible: Option<bool>,
     pub resolution_reason: Option<&'static str>,
 }
+/// The analyzer's `itemFilter` (analysis.ts:206-221): a pass-all stub unless the saved query
+/// compiled and everything it references is known.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ItemFilter {
+    PassAll,
+    Unavailable(&'static str),
+    Query(Box<search_query::ResolvedQuery>),
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuildAnalysis {
     pub target_character: CharacterId,
@@ -70,6 +78,8 @@ pub struct BuildAnalysis {
     pub mod_fit: crate::mod_assignment::ModFitAnalysis,
     pub stats: crate::build_stats::BuildStats,
     pub not_evaluated: Vec<&'static str>,
+    pub item_filter: ItemFilter,
+    pub optimizer: crate::optimizer::OptimizerAnalysis,
 }
 fn definition(defs: &[ItemDefinition], hash: ItemHash) -> Option<&ItemDefinition> {
     defs.iter().find(|d| d.hash == hash)
@@ -381,6 +391,7 @@ pub fn analyze_build(
         present: Some(false),
         reason: Some("optimizer_filtering_and_suppression_not_evaluated"),
     };
+    let mut item_filter = ItemFilter::PassAll;
     if !equipped_armor.is_empty()
         && let Some(query) = parameter
             .and_then(|p| p.query.as_deref())
@@ -403,6 +414,7 @@ pub fn analyze_build(
                     FindingKind::ItemsDoNotMatchSearchQuery,
                     "search_engine_capability_unavailable",
                 );
+                item_filter = ItemFilter::Unavailable("search_engine_capability_unavailable");
             }
             Err(_) => invalid.present = Some(true),
             Ok(query) => {
@@ -442,6 +454,7 @@ pub fn analyze_build(
                         FindingKind::ItemsDoNotMatchSearchQuery,
                         "query_context_unavailable",
                     );
+                    item_filter = ItemFilter::Unavailable("query_context_unavailable");
                 } else {
                     nonmatching.present = Some(
                         equipped_armor
@@ -463,6 +476,7 @@ pub fn analyze_build(
                                 !execution.matches(i, Some(d), &selected, &available, true)
                             }),
                     );
+                    item_filter = ItemFilter::Query(Box::new(execution));
                 }
             }
         }
@@ -513,5 +527,7 @@ pub fn analyze_build(
         mod_fit: Default::default(),
         stats: Default::default(),
         not_evaluated: vec!["socket_overrides_not_evaluated"],
+        item_filter,
+        optimizer: Default::default(),
     }
 }
