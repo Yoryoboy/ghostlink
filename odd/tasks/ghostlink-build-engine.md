@@ -280,7 +280,7 @@ coverage (`domain.rs:123-126`).
       alongside the existing selectable plugs; derive the exact tuned stat
       (`item-utils.ts:409-432`); project `DestinySandboxPerkDefinition`
       name/icon for set perks.
-  - [ ] **BE-005d — Build capture completion.** Equipped subclass/artifact
+  - [x] **BE-005d — Build capture completion.** Equipped subclass/artifact
     socket overrides, unlocked plug evidence (102/206), component 309 crafted
     dates and resolution fallback.
     - [x] **BE-005d1 — Crafted dates and DIM mod capture.** Component 309
@@ -298,12 +298,25 @@ coverage (`domain.rs:123-126`).
       fashion uses ArmorCosmetics indices (`loadout-utils.ts:204-218`).
       Workspace: 2140 all-features, 2108 default, 0 failed; clippy both
       modes, fmt, diff check.
-    - [ ] **BE-005d2 — Socket overrides.** Equipped subclass/artifact
+    - [x] **BE-005d2 — Socket overrides.** Equipped subclass/artifact
       socket overrides (modern artifact `socketOverrides`, not legacy
       `artifactUnlocks`, `loadout-drawer-reducer.ts:119-122`), DIM
       empty/default rules and fragment gating, plug-membership validation
       (102/206), in-game override normalization/category conversion
       (`loadout-type-converters.ts:213-238`).
+      Done: `build_capture.rs` socket rules; equipped capture and
+      positional fragment gating (`loadout-utils.ts:136-174,178-190`);
+      empty/default precedence (`sockets.ts:584-645`); membership ignores
+      unlock/enabled flags like DIM (`socket-utils.ts:225-237`,
+      `sockets.ts:683-687,792-825`), so the existing 102/206 requests need
+      no new projection; in-game category conversion keeps empties
+      (`loadout-type-converters.ts:190-238,249-260`). Fixed review advisory
+      R3: incomplete crafting tuples stay unknown (`crafted.ts:65-90`).
+      Additive `equipped_socket_overrides` in show/MCP. No migration.
+      Workspace: 2145 all-features, 2113 default, 0 failed; clippy both
+      modes, fmt, diff check. Follow-ups: capture diagnostics not
+      persisted (`source_capture_evidence_not_persisted`); socket
+      apply-readiness stays `not_evaluated` until BE-007.
     Review follow-up (BE-005c3, non-blocking): unreferenced display
     validation `destiny-app/src/manifest.rs:189`.
 - [ ] **BE-006 — Analysis v2.** Stat constraints, mods fit, armor upgrades,

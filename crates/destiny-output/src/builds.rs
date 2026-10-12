@@ -97,16 +97,24 @@ impl BuildOutput {
                     .copied()
                     .map(omission)
                     .collect::<Vec<_>>();
-                // Known source limitations remain visible on subsequent show.
-                if result.build.summary.source != BuildSource::Import {
-                    omissions.push("socket_categories_unavailable");
-                    if result.build.summary.source == BuildSource::Equipped {
-                        omissions.extend([
-                            "inventory_socket_indices_unavailable",
-                            "artifact_unlocks_unavailable",
-                        ]);
-                    }
+                // Stored DIM JSON keeps overrides, not acquisition diagnostics.
+                // Do not manufacture source-specific missing-data claims on show.
+                if !source_capture && result.build.summary.source != BuildSource::Import {
+                    omissions.push("source_capture_evidence_not_persisted");
                 }
+                let overrides: Vec<_> = result
+                    .build
+                    .definition
+                    .equipped
+                    .iter()
+                    .map(|item| {
+                        json!({"id": item.instance_id.as_ref().map(|id| id.as_str()),
+                        "hash": item.hash.value(),
+                        "socket_overrides": item.socket_overrides.iter()
+                            .map(|(index, hash)| (index.to_string(), json!(hash.value())))
+                            .collect::<serde_json::Map<_, _>>()})
+                    })
+                    .collect();
                 omissions.sort_unstable();
                 omissions.dedup();
                 let unresolved = if !source_capture
@@ -125,6 +133,7 @@ impl BuildOutput {
                 Self::success(json!({
                     "kind":"build", "summary":summary(&result.build.summary),
                     "dim_json":dim_json, "omissions":omissions,
+                    "equipped_socket_overrides":overrides,
                     "unresolved_items":unresolved,
                 }))
             }

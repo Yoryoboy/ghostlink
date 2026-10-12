@@ -65,6 +65,51 @@ fn finding(result: &BuildAnalysis, kind: FindingKind) -> &BuildFinding {
     result.findings.iter().find(|f| f.kind == kind).unwrap()
 }
 #[test]
+fn incomplete_crafting_objectives_do_not_claim_a_known_missing_date() {
+    let mut d = definition(10, 1498876634);
+    d.armor.socket_categories = vec![DefinitionSocketCategory {
+        socket_category_hash: 3583996951,
+        socket_indexes: vec![0],
+    }];
+    let objectives = vec![
+        ObjectiveDefinition::new(1, String::new(), 0)
+            .unwrap()
+            .with_ui_style(Some(2)),
+        ObjectiveDefinition::new(3, String::new(), 0)
+            .unwrap()
+            .with_ui_style(Some(4)),
+    ];
+    let mut inventory = item("2", 10, ItemLocation::Vault);
+    inventory.sockets = vec![IndexedSocket {
+        socket_index: 0,
+        plug_hash: Some(ItemHash::new(100)),
+        enabled: true,
+        visible: true,
+        reusable_plugs: None,
+        plug_objectives: Some(vec![(1, Some(1)), (3, Some(123))]),
+    }];
+    let mut wanted = spec(Some("404"), 10);
+    wanted.crafted_date = Some(123);
+    let build = BuildDefinition {
+        equipped: vec![wanted],
+        ..Default::default()
+    };
+    let result = analyze_build(
+        &build,
+        &CharacterId::new("1"),
+        &[inventory],
+        &[d],
+        &[],
+        &[],
+        &objectives,
+    );
+    assert_eq!(
+        result.items[0].resolution_reason,
+        Some("crafted_dates_unavailable")
+    );
+}
+
+#[test]
 fn crafted_date_fallback_preserves_id_priority_and_dim_last_match_without_hash_gate() {
     let mut d = definition(10, 1498876634);
     d.armor.socket_categories = vec![DefinitionSocketCategory {

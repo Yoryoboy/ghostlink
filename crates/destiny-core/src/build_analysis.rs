@@ -165,13 +165,17 @@ fn crafting_unavailable(
             })
             .and_then(|s| s.plug_objectives.as_ref());
         raw.is_none_or(|raw| {
-            raw.iter().any(|(hash, _)| {
-                objectives
-                    .iter()
-                    .find(|d| d.hash() == *hash)
-                    .and_then(|d| d.ui_style())
-                    .is_none()
-            })
+            // Observed empty objectives identify a non-crafted item. A nonempty
+            // but incomplete crafting tuple cannot establish a known date.
+            (!raw.is_empty()
+                && crate::build_capture::crafted_date_from_objectives(raw, objectives).is_none())
+                || raw.iter().any(|(hash, _)| {
+                    objectives
+                        .iter()
+                        .find(|d| d.hash() == *hash)
+                        .and_then(|d| d.ui_style())
+                        .is_none()
+                })
         })
     })
 }

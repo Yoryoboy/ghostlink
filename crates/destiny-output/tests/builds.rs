@@ -92,6 +92,54 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
 }
 
 #[test]
+fn captured_socket_overrides_are_exposed_without_fabricated_omissions() {
+    use destiny_app::{build::*, builds::*, *};
+    let build = StoredBuild {
+        definition: BuildDefinition {
+            equipped: vec![BuildItem {
+                instance_id: Some(ItemInstanceId::new("1")),
+                hash: ItemHash::new(10),
+                amount: Some(1),
+                socket_overrides: vec![(7, ItemHash::new(20))],
+                crafted_date: None,
+            }],
+            ..Default::default()
+        },
+        summary: BuildSummary {
+            id: "id".into(),
+            name: "Raid".into(),
+            class_type: 1,
+            source: BuildSource::Equipped,
+            created_at: Timestamp::new(100),
+            updated_at: Timestamp::new(100),
+        },
+    };
+    for source_capture in [true, false] {
+        let output = BuildOutput::from_result(Ok(BuildReply::Build {
+            result: Box::new(BuildSourceResult {
+                build: build.clone(),
+                unresolved_items: vec![],
+                omissions: vec![],
+            }),
+            dim_json: "{}".into(),
+            source_capture,
+        }));
+        assert_eq!(
+            output.value["equipped_socket_overrides"][0]["socket_overrides"],
+            json!({"7":20})
+        );
+        assert_eq!(
+            output.value["omissions"],
+            if source_capture {
+                json!([])
+            } else {
+                json!(["source_capture_evidence_not_persisted"])
+            }
+        );
+    }
+}
+
+#[test]
 fn export_and_typed_offline_error() {
     let export = BuildOutput::from_result(Ok(BuildReply::Export("{\"name\":\"Raid\"}".into())));
     assert_eq!(export.render_text(), "{\"name\":\"Raid\"}");

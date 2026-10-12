@@ -40,7 +40,13 @@ Build checks try instance ID first, then a nonzero crafted date; this is DIM
 identity recovery, not an arbitrary same-hash substitute. Missing crafting
 evidence stays unknown. Equipped armor-mod capture retains disabled inserted
 mods as DIM does; it does not promise those mods are currently usable.
-Equipped subclass/artifact socket override capture remains deferred.
+Equipped subclass/artifact capture now records DIM socket overrides, not legacy
+artifactUnlocks. Membership does not imply unlocked/usable; inactive fragment
+positions and default/empty plugs are omitted under DIM rules. In-game conversion
+retains explicit empty overrides and removes only unset zero hashes. Show/get
+exposes equipped_socket_overrides; check/analyze still does not validate socket
+application readiness. Capture diagnostics are not stored: later show/get reports
+source_capture_evidence_not_persisted, so never infer completeness from an export.
 
 ## Bungie action rejections
 

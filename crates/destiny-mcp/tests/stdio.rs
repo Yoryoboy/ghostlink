@@ -98,11 +98,15 @@ async fn build_sources_stdio_report_omissions_and_unresolved_items() {
         )
         .await;
     assert_eq!(equipped["result"]["isError"], false, "{equipped}");
-    assert!(
-        equipped["result"]["structuredContent"]["omissions"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("inventory_socket_indices_unavailable"))
+    // This character has no equipped fixture items: no missing socket data
+    // should be fabricated merely because the source is equipped.
+    assert_eq!(
+        equipped["result"]["structuredContent"]["omissions"],
+        json!([])
+    );
+    assert_eq!(
+        equipped["result"]["structuredContent"]["equipped_socket_overrides"],
+        json!([])
     );
     let saved = session
         .call_tool(
@@ -118,6 +122,10 @@ async fn build_sources_stdio_report_omissions_and_unresolved_items() {
     let id = saved["result"]["structuredContent"]["summary"]["id"].clone();
     let shown = session.call_tool("get_build", json!({"id":id})).await;
     assert!(shown["result"]["structuredContent"]["unresolved_items"].is_null());
+    assert_eq!(
+        shown["result"]["structuredContent"]["omissions"],
+        json!(["source_capture_evidence_not_persisted"])
+    );
     let analyzed = session
         .call_tool("analyze_build", json!({"id":id,"character":"1"}))
         .await;

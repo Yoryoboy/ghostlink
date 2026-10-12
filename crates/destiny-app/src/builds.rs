@@ -1,6 +1,7 @@
 //! Local build use cases. Offline imports never synchronize; inventory sources
 //! use the same ordinary freshness gate as saved-loadout reads.
 use crate::ProfileSyncService;
+use destiny_core::armor_catalog::*;
 use destiny_core::{
     build::*,
     ports::{BuildCodec, BuildRepository, WorldDefinitionRepository},
@@ -337,7 +338,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
     ) -> Result<BuildSourceResult, BuildError>
     where
         G: ProfileGateway,
-        I: InventoryRepository + WorldDefinitionRepository,
+        I: InventoryRepository + WorldDefinitionRepository + ArmorCatalogRepository,
     {
         let (snapshot, selected, membership) = source_snapshot(sync, character, policy, now)?;
         let mut definition = BuildDefinition {
@@ -346,11 +347,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             class_type: character_class(&selected)?,
             ..Default::default()
         };
-        let mut omissions = vec![
-            BuildOmission::InventorySocketIndicesUnavailable,
-            BuildOmission::ArtifactUnlocksUnavailable,
-            BuildOmission::SocketCategoriesUnavailable,
-        ];
+        let mut omissions = Vec::new();
         let objectives = crafting_definitions(sync.repository(), &snapshot.items)?;
         let mut mods = Vec::new();
         let mut fashion = BTreeMap::new();
@@ -367,6 +364,12 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
                 continue;
             }
             let bucket = item_definition.bucket_hash.expect("recognized bucket");
+            if item.sockets.is_empty() {
+                add_omission(
+                    &mut omissions,
+                    BuildOmission::InventorySocketIndicesUnavailable,
+                );
+            }
             if is_armor(bucket) {
                 if item.sockets.is_empty() {
                     // Legacy projections cannot establish disabled inserted plugs.
@@ -399,13 +402,22 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
                     }
                 }
             }
-            // PlugSummary has no socket index. Never use its ordinal as an index.
-            definition.equipped.push(build_item(
-                item,
-                &item_definition,
-                &objectives,
-                &mut omissions,
-            ));
+            let mut captured = build_item(item, &item_definition, &objectives, &mut omissions);
+            if matches!(bucket, SUBCLASS_BUCKET_HASH | ARTIFACT_BUCKET_HASH) {
+                let sockets = capture_sockets(sync.repository(), item, &item_definition)?;
+                captured.socket_overrides = sockets.overrides;
+                if sockets.incomplete {
+                    add_omission(&mut omissions, BuildOmission::SocketCategoriesUnavailable);
+                    if bucket == ARTIFACT_BUCKET_HASH {
+                        add_omission(&mut omissions, BuildOmission::ArtifactUnlocksUnavailable);
+                    }
+                }
+            } else if is_armor(bucket)
+                && (item.sockets.is_empty() || item_definition.armor.socket_categories.is_empty())
+            {
+                add_omission(&mut omissions, BuildOmission::SocketCategoriesUnavailable);
+            }
+            definition.equipped.push(captured);
         }
         if !mods.is_empty() || !fashion.is_empty() {
             definition.parameters = Some(BuildParameters {
@@ -472,7 +484,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
         let mut unresolved_items = Vec::new();
         let mut mods = Vec::new();
         let mut fashion = BTreeMap::new();
-        let mut omissions = vec![BuildOmission::SocketCategoriesUnavailable];
+        let mut omissions = Vec::new();
         let objectives = crafting_definitions(sync.repository(), &snapshot.items)?;
         for saved_item in &loadout.items {
             let Some(item) = snapshot
@@ -499,20 +511,38 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
                 },
             };
             if matches!(bucket, Some(SUBCLASS_BUCKET_HASH | ARTIFACT_BUCKET_HASH)) {
-                build_item.socket_overrides = saved_item
-                    .plugs
-                    .iter()
-                    .map(|p| (u16::from(p.socket_index), p.plug_hash))
-                    .collect();
-                build_item.socket_overrides.sort_by_key(|p| p.0);
+                build_item.socket_overrides = build_capture::in_game_socket_overrides(
+                    &saved_item
+                        .plugs
+                        .iter()
+                        .map(|p| (u16::from(p.socket_index), p.plug_hash))
+                        .collect::<Vec<_>>(),
+                );
             } else if bucket.is_some_and(is_armor) {
-                collect_mods(
-                    sync.repository(),
-                    bucket.expect("armor bucket"),
-                    saved_item.plugs.iter().map(|p| p.plug_hash),
-                    &mut mods,
-                    &mut fashion,
-                )?;
+                let armor = &item_definition.as_ref().expect("armor definition").armor;
+                if armor.socket_categories.is_empty() {
+                    add_omission(&mut omissions, BuildOmission::SocketCategoriesUnavailable);
+                }
+                for plug in &saved_item.plugs {
+                    if plug.plug_hash.value() == 0 {
+                        continue;
+                    }
+                    let in_category = |hash| {
+                        armor.socket_categories.iter().any(|c| {
+                            c.socket_category_hash == hash
+                                && c.socket_indexes.contains(&u32::from(plug.socket_index))
+                        })
+                    };
+                    if !build_capture::empty_plug(plug.plug_hash.value()) && in_category(590099826)
+                    {
+                        mods.push(plug.plug_hash);
+                    } else if in_category(1926152773) {
+                        fashion
+                            .entry(bucket.expect("armor bucket"))
+                            .or_insert_with(Vec::new)
+                            .push(plug.plug_hash);
+                    }
+                }
             }
             definition.equipped.push(build_item);
         }
@@ -539,6 +569,69 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
         })
     }
 }
+fn capture_sockets<R: DefinitionRepository + ArmorCatalogRepository>(
+    repository: &R,
+    item: &ItemInstance,
+    definition: &ItemDefinition,
+) -> Result<build_capture::SocketCapture, AppError> {
+    let mut types = Vec::new();
+    let mut sets = Vec::new();
+    let mut incomplete = false;
+    for entry in &definition.armor.socket_entries {
+        if !types
+            .iter()
+            .any(|t: &SocketTypeDefinition| t.hash == entry.socket_type_hash)
+            && let Some(ArmorCatalogRecord::SocketType(t)) = repository
+                .lookup_armor_catalog(ArmorCatalogKind::SocketType, entry.socket_type_hash)?
+        {
+            if repository
+                .lookup_armor_catalog(ArmorCatalogKind::SocketCategory, t.socket_category_hash)?
+                .is_some()
+            {
+                types.push(t);
+            } else {
+                incomplete = true;
+            }
+        }
+        if let Some(hash) = entry
+            .reusable_plug_set_hash
+            .or(entry.randomized_plug_set_hash)
+            && !sets.iter().any(|s: &PlugSetDefinition| s.hash == hash)
+            && let Some(ArmorCatalogRecord::PlugSet(set)) =
+                repository.lookup_armor_catalog(ArmorCatalogKind::PlugSet, hash)?
+        {
+            // DIM precomputes the empty hash from raw set entries. Membership
+            // needs only the inserted plug, whose definition is checked below.
+            sets.push(set);
+        }
+    }
+    let capacity = if definition.bucket_hash == Some(SUBCLASS_BUCKET_HASH) {
+        crate::armor_model::inspect_fragment_capacity(repository, definition, item)?
+            .and_then(|c| c.capacity)
+    } else {
+        Some(0)
+    };
+    let mut result = build_capture::equipped_socket_overrides(
+        &definition.armor,
+        &item.sockets,
+        &types,
+        &sets,
+        capacity,
+    );
+    // DIM requires a resolved inserted plug definition too.
+    let mut overrides = Vec::new();
+    for (index, hash) in result.overrides {
+        if lookup(repository, hash)?.is_some_and(|d| d.armor.plug_category_hash.is_some()) {
+            overrides.push((index, hash));
+        } else {
+            incomplete = true;
+        }
+    }
+    result.overrides = overrides;
+    result.incomplete |= incomplete;
+    Ok(result)
+}
+
 fn source_snapshot<G: ProfileGateway, R: InventoryRepository + WorldDefinitionRepository>(
     sync: &mut ProfileSyncService<G, R>,
     character: &CharacterId,

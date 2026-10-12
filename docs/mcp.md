@@ -69,6 +69,14 @@ objectives and Manifest styles establish complete crafting information.
 `analyze_build` resolves by instance ID first, then nonzero crafted date (DIM's
 last match, without hash/owner restrictions). Missing evidence stays unknown;
 report capture omissions rather than promising complete socket/artifact data.
+Equipped saves capture subclass/artifact `socketOverrides` (not legacy
+`artifactUnlocks`) with DIM empty/default rules, positional fragment gating and
+membership validation, without unlock/enabled filtering. In-game saves classify
+armor mods/fashion by socket category and retain empty overrides, removing only
+unset zero hashes. Get/save add `equipped_socket_overrides`; analysis retains
+`spec.socket_overrides` but still reports socket application checks as
+`not_evaluated`. Capture diagnostics are not stored: later get reports
+`source_capture_evidence_not_persisted`. Unknown inputs are not substituted.
 Per-capture missing crafting evidence is not separately retained on later get.
 Unresolved instances are reported during conversion; stored DIM does not retain
 those discarded entries (`unresolved_items: null` on later get). Ambiguity is an

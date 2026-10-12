@@ -881,7 +881,8 @@ where
     G: destiny_app::ProfileGateway,
     I: destiny_app::InventoryRepository
         + destiny_app::WorldDefinitionRepository
-        + destiny_app::StatDefinitionRepository,
+        + destiny_app::StatDefinitionRepository
+        + destiny_app::ArmorCatalogRepository,
     R: destiny_app::BuildRepository,
     C: destiny_app::BuildCodec,
     K: destiny_app::Clock,

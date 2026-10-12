@@ -44,12 +44,19 @@ JSON list output is `kind: builds`; show/source output is `kind: build` with
 IDs/names and source limitations. Equipped and in-game sources now capture
 `craftedDate` (epoch seconds) from complete component-309 crafting objectives;
 unavailable crafting evidence stays unknown and is reported during capture.
-Equipped subclass/artifact overrides and full socket-category conversion remain
-deferred; in-game sources report unresolved instances
-at conversion time (`unresolved_items: null` on later show, since discarded
-entries are not persisted). Fixed source limitations remain visible on show; per-capture missing crafting
-evidence is not persisted separately. No same-hash substitutions
-are invented. Export is the **raw DIM JSON object**, even with `--json`, not an
+Equipped sources capture subclass and artifact-item `socketOverrides` using
+DIM membership, empty/default and fragment-capacity rules. Artifact capture does
+not create legacy `artifactUnlocks`. In-game conversion uses real socket categories
+for armor mods/fashion and removes only unset (zero) subclass/artifact overrides,
+retaining explicit empty plugs. Show/source JSON additionally exposes
+`equipped_socket_overrides`; check exposes them in each item's `spec`.
+In-game sources report unresolved instances at conversion time
+(`unresolved_items: null` on later show, since discarded entries are not persisted).
+Capture diagnostics are not persisted: later show reports
+`source_capture_evidence_not_persisted`, not invented socket-data omissions.
+Missing definitions, membership or fragment capacity remain unknown and produce
+capture omissions. Membership is not a claim that a plug is unlocked or usable.
+No same-hash substitutions are invented. Export is the **raw DIM JSON object**, even with `--json`, not an
 envelope; inspect source warnings before exporting.
 
 Select a build by positional ID or `--name` (normalized exact match). Ambiguous

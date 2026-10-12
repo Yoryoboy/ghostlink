@@ -129,12 +129,44 @@ DIM evidence refers to commit `29c122e`:
   indexes and retain default plugs. Legacy socket-less projections retain the
   prior partial capture and explicitly report socket-category limitations.
 
-Split remainder: equipped subclass/artifact overrides, DIM empty/default socket
-rules, fragment-capacity gating, plug membership validation, and in-game override
-normalization. These need a separate bounded catalog-assembly slice to keep the
-full production change near the requested ~700-line budget. Current source
-omissions remain explicit. `loadout-drawer/loadout-drawer-reducer.ts:119-122`
-clears legacy `artifactUnlocks`; the remaining artifact capture must use modern
-artifact-item `socketOverrides`, not resurrect legacy parameters. Existing
-102/206 plug sets are already requested, but no additional unlocked-evidence
-projection is claimed by this slice. Component 309 is the only new request.
+## BE-005d2: socket overrides
+
+DIM evidence (commit `29c122e`, paths under `src/app/`):
+
+- `loadout-drawer/loadout-utils.ts:136-174,178-190`: equipped subclass/artifact
+  capture walks socket categories in definition order and indexes in category
+  order. Fragment capacity is consumed by every fragment position, even empty
+  ones, before membership/empty tests; inactive positions are not captured.
+  Missing capacity suppresses fragment capture with an omission, never zero
+  inferred capacity. Disabled/invisible plugs are not independently excluded.
+- `inventory/store/sockets.ts:584-645`: empty choice precedence is raw reusable
+  known-empty, Manifest plug-set known-empty, inline known-empty, initial plug.
+  Inventory-only sockets (except the locked ghost activity type), Y2 masterwork,
+  pinned no-default socket categories, and pinned whitelist identifiers cannot
+  be emptied. Abilities/supers therefore retain default choices.
+- `utils/socket-utils.ts:225-237`, `inventory/store/sockets.ts:683-687,792-825`:
+  membership uses empty choice, reusable-before-randomized Manifest plug set,
+  or raw instance reusable membership. It explicitly does **not** validate
+  unlocked/enabled/canInsert flags. The inserted plug must resolve as pluggable;
+  Ghostlink does not use selectable/publication-filtered plugs as evidence.
+  Existing 102/206 acquisition remains unchanged: no extra unlocked evidence,
+  component or migration is needed for this DIM capture contract.
+- `loadout-drawer/loadout-drawer-reducer.ts:119-122`: artifact configuration is
+  artifact-item `socketOverrides`, not legacy `parameters.artifactUnlocks`.
+- `loadout/loadout-type-converters.ts:190-210,213-238,249-260`: in-game armor
+  mods use ArmorMods socket indexes and exclude known empty hashes; cosmetics
+  use ArmorCosmetics indexes and keep empties. Subclass/artifact overrides drop
+  only `UNSET_PLUG_HASH` (zero), retaining empty hashes despite the converter's
+  broader comment. Missing categories do not fall back to plug names.
+- `inventory/store/crafted.ts:65-90`: the R3 advisory was a real analysis gap:
+  a nonempty objective list missing level, level-progress or timestamp now
+  reports crafted-date evidence unavailable rather than known item-not-found.
+  Observed empty objectives still establish no crafted tuple; existing DIM
+  NaN progress semantics are unchanged.
+
+No new schema or provider requests. The shared app service feeds CLI and MCP;
+show/save add `equipped_socket_overrides`, and check retains override specs
+without claiming apply-time socket validity. Stored DIM JSON preserves overrides
+but not source diagnostics: later show/get reports
+`source_capture_evidence_not_persisted`. Missing catalogs, plug definitions,
+raw membership or socket projections remain explicit capture omissions.

@@ -226,9 +226,69 @@ fn equipped_and_in_game_capture_crafted_date_and_resolve_changed_identity() {
             definitions.push(d);
         }
     }
+    for index in [1, 3] {
+        input.items[index].sockets = (0..7)
+            .map(|socket_index| IndexedSocket {
+                socket_index,
+                plug_hash: None,
+                enabled: false,
+                visible: false,
+                reusable_plugs: None,
+                plug_objectives: None,
+            })
+            .collect();
+        input.items[index].sockets.push(IndexedSocket {
+            socket_index: 7,
+            plug_hash: Some(ItemHash::new(10)),
+            enabled: false,
+            visible: false,
+            reusable_plugs: Some(vec![destiny_core::domain::ReusablePlug {
+                plug_hash: ItemHash::new(10),
+                can_insert: false,
+                enabled: false,
+            }]),
+            plug_objectives: None,
+        });
+        let d = &mut definitions[index];
+        d.armor.socket_entries = vec![
+            DefinitionSocketEntry {
+                socket_type_hash: 123,
+                single_initial_item_hash: 10,
+                plug_sources: Some(2),
+                ..Default::default()
+            };
+            8
+        ];
+        d.armor.socket_categories = vec![DefinitionSocketCategory {
+            socket_category_hash: 457473665,
+            socket_indexes: vec![7],
+        }];
+    }
+    definitions[3].bucket_hash = Some(ARTIFACT_BUCKET_HASH);
+    definitions[2].armor.socket_entries = vec![DefinitionSocketEntry::default(); 8];
+    definitions[2].armor.socket_categories = vec![DefinitionSocketCategory {
+        socket_category_hash: 590099826,
+        socket_indexes: vec![7],
+    }];
     let world = WorldDefinitionsAcquisition {
         version: DefinitionVersion::new("v1"),
-        armor_catalogs: vec![],
+        armor_catalogs: vec![
+            destiny_core::armor_catalog::ArmorCatalogRecord::SocketType(
+                destiny_core::armor_catalog::SocketTypeDefinition {
+                    hash: 123,
+                    socket_category_hash: 457473665,
+                    always_randomize_sockets: false,
+                    plug_whitelist: vec![],
+                },
+            ),
+            destiny_core::armor_catalog::ArmorCatalogRecord::SocketCategory(
+                destiny_core::armor_catalog::SocketCategoryDefinition {
+                    hash: 457473665,
+                    category_style: 7,
+                    name: "Super".into(),
+                },
+            ),
+        ],
         item_descriptions: vec![],
         milestones: table(vec![
             MilestoneDefinition::new(1, "Milestone".into(), "".into(), 1).unwrap(),
@@ -291,6 +351,33 @@ fn equipped_and_in_game_capture_crafted_date_and_resolve_changed_identity() {
             .omissions
             .contains(&BuildOmission::CraftedDatesUnavailable)
     );
+    for index in [1, 3] {
+        assert_eq!(
+            captured.build.definition.equipped[index].socket_overrides,
+            vec![(7, ItemHash::new(10))]
+        );
+    }
+    assert!(
+        !captured
+            .omissions
+            .contains(&BuildOmission::ArtifactUnlocksUnavailable)
+    );
+    assert!(
+        captured
+            .build
+            .definition
+            .parameters
+            .as_ref()
+            .and_then(|p| p.artifact_unlocks.as_ref())
+            .is_none()
+    );
+    let reloaded = service
+        .show(
+            &DestinyMembership::new(MembershipType::new(3), MembershipId::new("99")).unwrap(),
+            &destiny_app::builds::BuildSelector::Id(captured.build.definition.id.clone()),
+        )
+        .unwrap();
+    assert_eq!(reloaded.definition, captured.build.definition);
     let converted = service
         .from_loadout(
             &mut sync,
@@ -303,6 +390,14 @@ fn equipped_and_in_game_capture_crafted_date_and_resolve_changed_identity() {
     assert_eq!(
         converted.build.definition.equipped[0].crafted_date,
         Some(1700000000)
+    );
+    assert_eq!(
+        converted.build.definition.equipped[1].socket_overrides,
+        vec![(7, ItemHash::new(10))]
+    );
+    assert_eq!(
+        converted.build.definition.parameters.as_ref().unwrap().mods,
+        Some(vec![ItemHash::new(10)])
     );
     input.items[0].instance_id = ItemInstanceId::new("555");
     sync.repository_mut()
@@ -444,7 +539,7 @@ fn equipped_snapshot_is_faithful_and_reports_unavailable_indices() {
             .contains(&BuildOmission::InventorySocketIndicesUnavailable)
     );
     assert!(
-        result
+        !result
             .omissions
             .contains(&BuildOmission::ArtifactUnlocksUnavailable)
     );
@@ -483,7 +578,13 @@ fn saved_loadout_skips_missing_items_and_retains_subclass_socket_gaps() {
     );
     let parameters = result.build.definition.parameters.unwrap();
     assert_eq!(parameters.in_game_identifiers.unwrap().name_hash, 7);
-    assert_eq!(parameters.mods, Some(vec![ItemHash::new(10)]));
+    // Missing socket-category projection is not replaced by plug-name guessing.
+    assert_eq!(parameters.mods, Some(vec![]));
+    assert!(
+        result
+            .omissions
+            .contains(&BuildOmission::SocketCategoriesUnavailable)
+    );
     assert_eq!(sync.into_parts().0.2, 0);
 }
 #[test]
