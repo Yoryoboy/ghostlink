@@ -14,8 +14,10 @@
   or claim about Armor 3.0 stat-masterwork tiers.
 
 Null lists are unknown, never empty. A missing full resolved set, raw membership,
-Manifest data, energy or rarity retains `not_evaluated` with a reason. General,
-activity, artifice and tuning assignment remain outside this slice.
+Manifest data, energy or rarity retains `not_evaluated` with a reason. Artifice
+and tuning now use DIM's free-mod greedy assignment. General/activity requests
+retain `dim_general_activity_ranking_not_implemented`; permutation generation and
+specialty metadata are ported, but are not used to select unranked assignments.
 Seasonal cost variants now resolve before categorization, using DIM's static
 110-pair table at commit `29c122e`. Enabled account-wide plus target-character
 plug-set entries select reduced variants; `canInsert` and other characters do not.
@@ -109,16 +111,62 @@ A regression exercises all sixteen aspect/fragment category pairs.
 
 This is a data-only boundary, not material-cost calculation or assignment.
 Request-local energy-upgrade plug and material assembly belongs with the remaining
-ranking port. General/activity permutations, specialty metadata, artifice/tuning,
+ranking port. Heap permutations, specialty metadata and artifice/tuning are now
+ported in the bounded slice below. General/activity candidate evaluation,
 assignment-change tie breaking and expensive-variant re-fitting remain deferred;
-matching `not_evaluated` reasons are intentionally retained. Port them together
-without guessed prices before BE-006c2 stat aggregation.
+matching `not_evaluated` reasons are retained. Complete ranking without guessed
+prices before BE-006c2 stat aggregation.
 
 The full port plus dependencies exceeds the roughly 700-production-line budget.
 The ODD tracker is outside the allowed edit surfaces and was not changed. This
 proposal does not mark BE-006b as fully complete; BE-006c remains responsible for
 loadout stat constraints and upgrades for stats. Fragment findings are implemented
 in the bounded BE-006c slice below.
+
+## BE-006b2b2: permutations and free assignment boundary
+
+The pure `mod_assignment/independent.rs` module ports Heap permutations and
+specialty socket metadata as prerequisites for ranking. Permutations retain DIM
+order, deduplicate by mod hash (including null padding), and preserve trailing
+entries on inputs longer than five. Specialty metadata selects the first visible,
+plugged socket in instance order, without an enabled gate; its numeric category
+represents DIM's exact slot-tag equivalence, not arbitrary whitelist membership.
+These helpers do not claim a general/activity fit before ranking is implemented.
+
+`mod_fit` now evaluates artifice/tuning requests alongside bucket-specific mods:
+
+- Artifice prefers the requested mod already plugged anywhere on the candidate,
+  then a nonexotic candidate, then the first candidate. Each candidate is used once.
+- Visible plugged artifice category or intrinsic `3727270518` proves artifice.
+  `ArtificeExotic` can assume artifice only for legacy exotics with energy;
+  Armor 3.0 detection ignores socket visibility/enabled flags.
+- Tuning candidates are sorted helmet/arms/chest/legs/class. Exotics are dropped
+  unless request count exceeds the number of tuning-capable legendaries. Directional
+  mods match the item's unique raw-membership tuner; balanced mods or items without
+  a unique direction accept any tuning mod. Known empty/conflicting membership is
+  unrestricted, unlike unobserved membership (`raw_reusable_plugs_not_projected`).
+- Duplicate requests consume distinct candidates. Unsupported plug categories are
+  invalid even when membership admits them, matching DIM's categorizer.
+
+| Decision | DIM evidence (commit `29c122e`, under `src/app/`) |
+|---|---|
+| Hash-deduplicated, five-position Heap order; no truncation of longer inputs | `loadout/mod-permutations.ts:3-64` |
+| Ten specialty socket/category pairs and first visible plugged socket | `search/specialty-modslots.ts:43-150`; `utils/item-utils.ts:69-100` |
+| Artifice preference and single-use candidates | `loadout/mod-assignment-utils.ts:359-381` |
+| Artifice intrinsic/visibility, legacy exotic assumption, Armor 3 detection | `utils/item-utils.ts:298-325`; `loadout/armor-upgrade-utils.ts:29-36` |
+| Slot-ordered tuning and exotic request-count rule | `loadout/mod-assignment-utils.ts:383-420` |
+| Visible tuning socket, raw membership, all thirty tuner hashes | `utils/socket-utils.ts:677-686`; `utils/item-utils.ts:409-432`; `search/d2-known-values.ts:445-476` |
+| Unknown plug categories are invalid, not guessed independent mods | `loadout/mod-assignment-utils.ts:113-145` |
+
+**Split remainder:** selecting general/activity permutations requires the cumulative
+per-rarity cost model, energy-upgrade plug discovery, exotic enhancement costs,
+lexicographic material ranking, assignment-change tie breaking and analyzer
+expensive-variant re-fitting. This slice intentionally does not approximate that
+transaction. The full port plus input assembly would exceed the roughly 700-new-
+production-line boundary. Seasonal dependence remains `not_evaluated`. No new
+Manifest requests, network measurement or migration is required for this slice;
+CLI text/JSON and MCP inherit expanded free-mod coverage through the shared analyzer.
+The ODD tracker remains parent-owned and was not edited.
 
 ## BE-006c: fragment findings and stat dependency
 

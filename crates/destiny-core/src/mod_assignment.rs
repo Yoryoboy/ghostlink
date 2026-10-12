@@ -1,6 +1,12 @@
-//! DIM bucket-specific mod assignment (commit 29c122e).
-//! Independent mods deliberately remain outside this first port slice.
+//! DIM bucket-specific and free mod assignment (commit 29c122e).
+//! General/activity ranking remains outside this bounded slice.
 use crate::{armor_catalog::*, build::*, build_analysis::ResolvedBuildItem, *};
+
+mod independent;
+pub use independent::{
+    ARTIFICE_CATEGORY, FreeModAssignment, FreeModItem, SPECIALTY_SOCKETS, TUNING_CATEGORY,
+    assign_free_mods, generate_mod_permutations, specialty_category,
+};
 
 pub const ARMOR_BUCKETS: [i64; 5] = [3448274439, 3551918588, 14239492, 20886954, 1585787867];
 
@@ -149,9 +155,9 @@ pub fn assignment_sockets(
     Ok(result)
 }
 
-/// Analyzer's exact bucket-specific subset: first categorize against all owned
+/// Analyzer's bucket-specific/free subset: first categorize against all owned
 /// armor, then fit valid mods against the resolved set with as-is/upgraded rules.
-/// No material-cost ranking is needed in this subset (there are no permutations).
+/// No material-cost ranking is needed here: bucket/free choices are DIM-greedy.
 pub fn analyze_bucket_mods(
     build: &BuildDefinition,
     resolved: &[ResolvedBuildItem],
@@ -225,14 +231,19 @@ pub fn analyze_bucket_mods_with_unlocks(
             }
         }
         if found {
-            if m.armor
-                .plug_category_hash
-                .and_then(bucket_for_category)
-                .is_none()
-            {
-                return ModFitAnalysis::unknown("dim_independent_mod_assignment_not_implemented");
+            let category = m.armor.plug_category_hash.expect("resolved pluggable");
+            if category == 2487827355 || SPECIALTY_SOCKETS.iter().any(|(_, c)| *c == category) {
+                return ModFitAnalysis::unknown("dim_general_activity_ranking_not_implemented");
             }
-            valid.push(m);
+            if bucket_for_category(category).is_some()
+                || [ARTIFICE_CATEGORY, TUNING_CATEGORY].contains(&category)
+            {
+                valid.push(m);
+            } else {
+                // DIM categorizeArmorMods: unknown categories are invalid, even
+                // when a socket admits the plug (not guessed independent mods).
+                invalid.push(m.hash.value() as u32);
+            }
         } else if let Some(reason) = unknown {
             return ModFitAnalysis::unknown(reason);
         } else {
@@ -254,8 +265,8 @@ pub fn analyze_bucket_mods_with_unlocks(
                 .is_some_and(|b| ARMOR_BUCKETS.contains(&b.value()))
         })
         .collect();
-    // DIM analysis.ts:454 only assigns a full set. Initial category limits
-    // cannot be exceeded by this bucket-only slice.
+    // DIM analysis.ts:454 only assigns a full set. Excess free mods are left
+    // unassigned by DIM's single-use candidate lists.
     if armor.len() != 5 {
         return ModFitAnalysis {
             evaluation: "not_evaluated",
@@ -311,6 +322,24 @@ pub fn analyze_bucket_mods_with_unlocks(
             } else {
                 unassigned.push(m.hash.value() as u32);
             }
+        }
+        let hashes_for = |category| {
+            eligible
+                .iter()
+                .filter(|m| m.armor.plug_category_hash == Some(category))
+                .map(|m| m.hash.value() as u32)
+                .collect::<Vec<_>>()
+        };
+        let artifice = hashes_for(ARTIFICE_CATEGORY);
+        let tuning = hashes_for(TUNING_CATEGORY);
+        if !artifice.is_empty() || !tuning.is_empty() {
+            let items = independent::free_mod_items(
+                &armor,
+                definitions,
+                upgraded && assumption == AssumeArmorMasterwork::ArtificeExotic,
+                !tuning.is_empty(),
+            )?;
+            unassigned.extend(assign_free_mods(&items, &artifice, &tuning).unassigned);
         }
         // Object.entries numeric bucket keys are enumerated ascending in JS.
         let mut buckets = ARMOR_BUCKETS;

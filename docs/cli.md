@@ -93,14 +93,15 @@ Missing items, incomplete resolved equipped armor, exotic constraints (including
 sentinels and definition-name matching), and invalid search are evaluated.
 Search exclusion is qualified `search_only`: optimizer filtering and suppression
 are deferred. Unsupported search capabilities/context are not called invalid.
-The additive `mod_fit` object evaluates DIM bucket-specific armor mods when a
+The additive `mod_fit` object evaluates DIM bucket-specific, artifice and tuning mods when a
 full resolved set and all socket/membership/energy inputs are available. It exposes
 nullable `invalid_mods`, `unassigned_mods` (after allowed energy upgrades), and
-`needs_upgrades_for_mods`. Duplicates are preserved. Independent/general, activity,
-artifice and tuning assignment remain `not_evaluated` with explicit reasons;
-they are never approximated. Migration 32 persists the material-ranking prerequisites
-and refreshes Manifest data once, but does not calculate upgrade costs or expand
-assignment coverage. Mod hashes are migrated and cost-resolved like DIM:
+`needs_upgrades_for_mods`. Duplicates are preserved. Artifice uses DIM's current-mod
+then nonexotic preference; tuning uses canonical armor-slot order and the exotic
+request-count rule. Missing raw tuning membership stays unknown. General/activity
+ranking remains `not_evaluated` (`dim_general_activity_ranking_not_implemented`),
+never approximated. Migration 32 persists the material-ranking prerequisites
+and refreshes Manifest data once, but does not calculate upgrade costs. Mod hashes are migrated and cost-resolved like DIM:
 use enabled account/target-character reduced variants, otherwise normal variants.
 Missing/non-pluggable definitions use DIM's deprecated placeholder; if that is
 unavailable, fitting stays unknown. Missing plug-set responses default to no unlocks

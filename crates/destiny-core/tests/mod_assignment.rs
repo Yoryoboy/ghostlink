@@ -212,7 +212,7 @@ fn analyzer_unknown_and_negative_cases() {
     assert_eq!(analyze_fixture(&b, &i, &d, &c).invalid_mods, Some(vec![42]));
     d[0].armor.plug_category_hash = Some(3481777685);
     assert_eq!(analyze_fixture(&b, &i, &d, &c).invalid_mods, Some(vec![42]));
-    // Once eager membership succeeds, independent assignment remains unknown.
+    // Once eager membership succeeds, free tuning assignment is evaluated.
     i[0].sockets[0]
         .reusable_plugs
         .as_mut()
@@ -222,10 +222,7 @@ fn analyzer_unknown_and_negative_cases() {
             enabled: true,
             can_insert: true,
         });
-    assert_eq!(
-        analyze_fixture(&b, &i, &d, &c).reason,
-        Some("dim_independent_mod_assignment_not_implemented")
-    );
+    assert_eq!(analyze_fixture(&b, &i, &d, &c).reason, None);
     let mut seasonal = b.clone();
     seasonal.parameters.as_mut().unwrap().mods = Some(vec![ItemHash::new(14520248)]);
     assert_eq!(
@@ -237,6 +234,87 @@ fn analyzer_unknown_and_negative_cases() {
         analyze_fixture(&seasonal, &i, &d, &c).reason,
         Some("deprecated_mod_placeholder_definition_unavailable")
     );
+}
+
+#[test]
+fn dim_free_mod_assignment_table() {
+    // DIM mod-assignment-utils.ts:359-420: free slots are consumed once,
+    // current artifice placement wins, and tuning ignores enabled flags.
+    for (category, requested, expected) in [
+        (3773173029, 1, vec![]),
+        (3773173029, 6, vec![42]),
+        (3481777685, 1, vec![]),
+        (3481777685, 6, vec![42]),
+    ] {
+        let (mut b, i, mut d, c) = fixture(0, 10);
+        d[0].armor.plug_category_hash = Some(category);
+        b.parameters.as_mut().unwrap().mods = Some(vec![ItemHash::new(42); requested]);
+        let result = analyze_fixture(&b, &i, &d, &c);
+        assert_eq!(result.evaluation, "evaluated", "{category}/{requested}");
+        assert_eq!(result.unassigned_mods, Some(expected));
+        assert_eq!(result.needs_upgrades_for_mods, Some(false));
+    }
+}
+
+#[test]
+fn artifice_exotic_assumption_requires_legacy_armor_and_raw_tuning_stays_unknown() {
+    let (mut b, mut i, mut d, c) = fixture(0, 10);
+    d[0].armor.plug_category_hash = Some(ARTIFICE_CATEGORY);
+    // Hidden artifice sockets still eagerly admit mods, but don't prove artifice.
+    for item in &mut i {
+        item.sockets[0].visible = false;
+    }
+    d[1].tier = Some("Exotic".into());
+    b.parameters.as_mut().unwrap().assume_armor_masterwork =
+        Some(AssumeArmorMasterwork::ArtificeExotic);
+    let result = analyze_fixture(&b, &i, &d, &c);
+    assert_eq!(result.unassigned_mods, Some(vec![]));
+    assert_eq!(result.needs_upgrades_for_mods, Some(true));
+
+    let mut masterwork = d[0].clone();
+    masterwork.hash = ItemHash::new(99);
+    masterwork.armor.plug_category_hash = Some(armor_model::ARMOR3_MASTERWORK_PLUG);
+    d.push(masterwork);
+    let mut socket = i[0].sockets[0].clone();
+    socket.socket_index = 1;
+    socket.plug_hash = Some(ItemHash::new(99));
+    socket.visible = false; // Armor 3 detection ignores visibility and enabled.
+    i[0].sockets.push(socket);
+    assert_eq!(
+        analyze_fixture(&b, &i, &d, &c).unassigned_mods,
+        Some(vec![42])
+    );
+
+    d[0].armor.plug_category_hash = Some(TUNING_CATEGORY);
+    i[0].sockets[0].visible = true;
+    i[0].sockets[0].reusable_plugs = None;
+    assert_eq!(
+        analyze_fixture(&b, &i, &d, &c).reason,
+        Some("raw_reusable_plugs_not_projected")
+    );
+}
+
+#[test]
+fn general_activity_ranking_remains_explicitly_unknown_and_other_categories_are_invalid() {
+    for (category, expected_reason, expected_invalid) in [
+        (
+            2487827355,
+            Some("dim_general_activity_ranking_not_implemented"),
+            None,
+        ),
+        (
+            13646368,
+            Some("dim_general_activity_ranking_not_implemented"),
+            None,
+        ),
+        (123, None, Some(vec![42])),
+    ] {
+        let (b, i, mut d, c) = fixture(0, 10);
+        d[0].armor.plug_category_hash = Some(category);
+        let result = analyze_fixture(&b, &i, &d, &c);
+        assert_eq!(result.reason, expected_reason);
+        assert_eq!(result.invalid_mods, expected_invalid);
+    }
 }
 
 #[test]

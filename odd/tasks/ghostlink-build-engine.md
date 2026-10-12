@@ -373,11 +373,23 @@ coverage (`domain.rs:123-126`).
       `generated-enums.ts:1604-1619`), regression for all 16 pairs.
       Workspace: 2172 all-features, 2140 default, 0 failed; clippy both
       modes, fmt.
-    - [ ] **BE-006b2b2 — Permutations and ranking.** General/activity
-      permutations, specialty metadata, artifice/tuning assignment,
-      material ranking and expensive-variant re-fitting
-      (`mod-assignment-utils.ts:162-265,481-528,964-989`); all
-      `not_evaluated` today, never approximated. Unblocks BE-006c2.
+    - [x] **BE-006b2b2 — Permutations, specialty, artifice/tuning.**
+      `mod_assignment/independent.rs` (pure): Heap order + hash dedup
+      (`mod-permutations.ts:3-64`), specialty pairs and visible/plugged
+      first match (`specialty-modslots.ts:43-150`,
+      `item-utils.ts:69-100`), artifice preference and single-use
+      candidates (`mod-assignment-utils.ts:359-381`), legacy exotic
+      assumption vs Armor 3 (`armor-upgrade-utils.ts:29-36`,
+      `item-utils.ts:298-325`), canonical tuning order and exotic-count
+      rule (`mod-assignment-utils.ts:383-420`), shared 30-hash tuning map.
+      Free mods now evaluated in build check/MCP. Workspace: 2179
+      all-features, 2147 default, 0 failed; clippy both modes, fmt.
+    - [ ] **BE-006b2b3 — Ranking and re-fitting.** General/activity
+      candidate evaluation, cumulative material costs, energy-upgrade
+      plug input assembly in `build_mods.rs`, lexicographic ranking,
+      assignment-change tie-breaking, expensive-variant re-fitting
+      (`mod-assignment-utils.ts:162-265,481-528,964-989`). Unblocks
+      BE-006c2.
   - [ ] **BE-006c — Stat constraints and fragment findings.** Stat
     aggregation vs `statConstraints`; fragment capacity findings;
     optimizer-based findings stay suppressed until BE-008.
