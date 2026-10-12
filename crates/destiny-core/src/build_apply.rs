@@ -9,6 +9,8 @@ pub enum ApplyPhase {
     Equip,
     /// Subclass and artifact socket overrides, after equips (`loadout-apply.ts:629-650`).
     Sockets,
+    /// Armor mods, after the socket overrides (`loadout-apply.ts:652-672`).
+    Mods,
     ClearSpace,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -99,6 +101,10 @@ pub struct BuildApplyPlan {
     pub socket_skipped: Vec<crate::build_sockets::SocketSkip>,
     /// Requested socket overrides already in place, as (spec index, override index).
     pub socket_already_there: Vec<(usize, u16)>,
+    /// Requested armor mods that will not be plugged, with the reason.
+    pub mod_skipped: Vec<crate::build_mod_apply::ModSkip>,
+    /// Requested armor mods already in their socket.
+    pub mods_in_place: usize,
     /// What DIM applies that this plan does not, with an explicit reason.
     pub not_applied: Vec<&'static str>,
     /// Ranking or capacity evidence that was not supplied, never guessed.
@@ -166,8 +172,8 @@ pub struct ApplyContext<'a> {
     pub clear_armor: bool,
     /// Socket type, plug set and material requirement records for socket overrides.
     pub catalogs: Option<&'a [crate::armor_catalog::ArmorCatalogRecord]>,
-    /// The build carries armor mods, fashion or clearMods, which are not applied yet.
-    pub armor_mods_requested: bool,
+    /// Armor mods and `clearMods`; fashion (`modsByBucket`) is reported as not applied.
+    pub armor_mods: Option<crate::build_mod_apply::ModInput<'a>>,
 }
 struct Planner<'a> {
     items: Vec<ItemInstance>,
@@ -188,6 +194,33 @@ struct Planner<'a> {
     pinned: Vec<(ItemInstanceId, usize)>,
 }
 impl Planner<'_> {
+    /// One plug insertion; it waits for every move, pull or equip of its item.
+    fn push_insert(
+        &mut self,
+        phase: ApplyPhase,
+        target: &CharacterId,
+        item: ItemInstanceId,
+        socket_index: u8,
+        plug: ItemHash,
+    ) {
+        let needs = self
+            .steps
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| step_touches(&s.action, &item))
+            .map(|(i, _)| i)
+            .collect();
+        self.steps.push(BuildApplyStep {
+            phase,
+            action: BuildAction::InsertPlug {
+                item,
+                character: target.clone(),
+                socket_index,
+                plug,
+            },
+            needs,
+        });
+    }
     fn definition(&self, item: &ItemInstance) -> Result<&ItemDefinition, ApplySkipReason> {
         self.defs
             .iter()
@@ -751,14 +784,22 @@ pub fn plan_build_items(
         clear_skipped: vec![],
         socket_skipped: vec![],
         socket_already_there: vec![],
+        mod_skipped: vec![],
+        mods_in_place: 0,
         not_applied: [
             (
                 has_overrides && context.catalogs.is_none(),
                 "socket_overrides_evidence_unavailable",
             ),
             (
-                context.armor_mods_requested,
-                "armor_mods_deferred_to_be_007b2",
+                context.armor_mods.is_some_and(|m| {
+                    m.build
+                        .parameters
+                        .as_ref()
+                        .and_then(|p| p.mods_by_bucket.as_ref())
+                        .is_some_and(|fashion| !fashion.is_empty())
+                }),
+                "fashion_deferred_to_be_007b3",
             ),
         ]
         .into_iter()
@@ -960,46 +1001,53 @@ pub fn plan_build_items(
             }
         }
     }
-    // DIM applies socket overrides after the equips and before mods and clear-space
-    // (`loadout-apply.ts:629-650`). Items are judged where the plan leaves them.
+    // DIM applies socket overrides after the equips, then mods, before clear-space
+    // (`loadout-apply.ts:629-672`). Items are judged where the plan leaves them.
+    let after: Vec<_> = selected
+        .iter()
+        .map(|s| ResolvedBuildItem {
+            inventory: s.inventory.as_ref().map(|i| {
+                p.items
+                    .iter()
+                    .find(|moved| moved.instance_id == i.instance_id)
+                    .unwrap_or(i)
+                    .clone()
+            }),
+            ..s.clone()
+        })
+        .collect();
     if let (true, Some(catalogs)) = (has_overrides, context.catalogs) {
         p.phase = ApplyPhase::Sockets;
-        let after: Vec<_> = selected
-            .iter()
-            .map(|s| ResolvedBuildItem {
-                inventory: s.inventory.as_ref().map(|i| {
-                    p.items
-                        .iter()
-                        .find(|moved| moved.instance_id == i.instance_id)
-                        .unwrap_or(i)
-                        .clone()
-                }),
-                ..s.clone()
-            })
-            .collect();
         let sockets =
             crate::build_sockets::plan_socket_overrides(target, &after, defs, characters, catalogs);
         for insert in sockets.inserts {
-            let needs = p
-                .steps
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| step_touches(&s.action, &insert.item))
-                .map(|(i, _)| i)
-                .collect();
-            p.steps.push(BuildApplyStep {
-                phase: ApplyPhase::Sockets,
-                action: BuildAction::InsertPlug {
-                    item: insert.item,
-                    character: target.clone(),
-                    socket_index: insert.socket_index,
-                    plug: insert.plug,
-                },
-                needs,
-            });
+            p.push_insert(
+                ApplyPhase::Sockets,
+                target,
+                insert.item,
+                insert.socket_index,
+                insert.plug,
+            );
         }
         plan.socket_skipped = sockets.skipped;
         plan.socket_already_there = sockets.already_there;
+    }
+    if let Some(input) = &context.armor_mods {
+        p.phase = ApplyPhase::Mods;
+        let armor = crate::build_mod_apply::armor_set(target, &after, &p.items, defs);
+        let mods = crate::build_mod_apply::plan_armor_mods(input, defs, target, &armor);
+        for insert in mods.inserts {
+            p.push_insert(
+                ApplyPhase::Mods,
+                target,
+                insert.item,
+                insert.socket_index,
+                insert.plug,
+            );
+        }
+        plan.mod_skipped = mods.skipped;
+        plan.mods_in_place = mods.in_place;
+        plan.not_applied.extend(mods.not_applied);
     }
     if context.clear_weapons || context.clear_armor {
         p.phase = ApplyPhase::ClearSpace;

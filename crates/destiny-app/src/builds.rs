@@ -111,6 +111,9 @@ struct AnalyzedBuild {
     items: Vec<ItemInstance>,
     characters: Vec<Character>,
     definitions: Vec<ItemDefinition>,
+    /// Armor mod socket types, plug sets and costs, with the mods unlocked on the target.
+    mod_catalogs: Vec<ArmorCatalogRecord>,
+    unlocked_mods: Vec<u32>,
 }
 
 /// Read-only apply plan; nothing has been dispatched.
@@ -323,10 +326,10 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             clear_weapons: parameters.and_then(|p| p.clear_weapons).unwrap_or(false),
             clear_armor: parameters.and_then(|p| p.clear_armor).unwrap_or(false),
             catalogs: Some(&socket_catalogs),
-            armor_mods_requested: parameters.is_some_and(|p| {
-                p.mods.as_ref().is_some_and(|m| !m.is_empty())
-                    || p.mods_by_bucket.as_ref().is_some_and(|m| !m.is_empty())
-                    || p.clear_mods == Some(true)
+            armor_mods: Some(build_mod_apply::ModInput {
+                build: &analyzed.definition,
+                unlocked: &analyzed.unlocked_mods,
+                catalogs: &analyzed.mod_catalogs,
             }),
         };
         let plan = build_apply::plan_build_items(
@@ -589,6 +592,8 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             items: snapshot.items,
             characters: snapshot.characters,
             definitions,
+            mod_catalogs,
+            unlocked_mods,
         })
     }
 

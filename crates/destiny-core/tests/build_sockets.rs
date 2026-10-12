@@ -610,16 +610,15 @@ mod in_plan {
     }
 
     #[test]
-    fn armor_mods_stay_explicitly_not_applied() {
+    fn an_override_already_in_place_needs_no_request() {
         let (_, defs, cats) = weapon();
         let item = instance(3, here(), vec![socket(0, 1002)]);
         let context = ApplyContext {
             catalogs: Some(&cats),
-            armor_mods_requested: true,
             ..Default::default()
         };
         let plan = plan_with(item, &context, &defs);
-        assert_eq!(plan.not_applied, ["armor_mods_deferred_to_be_007b2"]);
+        assert!(plan.not_applied.is_empty());
         // Plug 1002 is already in place: nothing to dispatch.
         assert!(plan.steps.is_empty());
         assert_eq!(plan.socket_already_there, [(0, 0)]);

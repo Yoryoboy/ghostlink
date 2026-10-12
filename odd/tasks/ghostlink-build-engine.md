@@ -540,11 +540,28 @@ coverage (`domain.rs:123-126`).
       kept as one unit because adapter, planner, executor and wiring land
       together. Workspace: 2279 all-features, 2246 default, 0 failed;
       clippy both modes, fmt.
-    - [ ] **BE-007b2 — Armor mods.** Through the DIM mod assignment:
-      `pickPlugPositions`, `createPluggingStrategy`, fashion, `clearMods`;
-      reuse `analyze_bucket_mods` as-is energy rules; irreversible-shader
-      guard. Also plan subclass/artifact equips so builds with a subclass
-      stop reporting `partial`.
+    - [x] **BE-007b2 — Armor mods.** `build_mod_apply.rs`: armor set =
+      build armor marked equip, else equipped piece
+      (`loadout-apply.ts:1282-1296`); unlocked mods only (`:306-328`); mod
+      phase after socket overrides (`:629-672`); early exit when every mod
+      is in place (`:1302-1310,1410-1458`); `fitMostMods` with in-game
+      rules (`:1317-1330`); only required steps, sequential, failures don't
+      stop the next (`:1383-1405,1461-1546`); `pickPlugPositions`,
+      `createPluggingStrategy`, `isAssigningToDefault`
+      (`mod-assignment-utils.ts:576-614,689-770,780-1000,1037`); hidden
+      artifice sockets count (`:586-593`); shared free-insert check.
+      `clearMods` included. Plan gains `mod_skipped` and `mods_in_place`.
+      Workspace: 2294 all-features, 2261 default, 0 failed; clippy both
+      modes, fmt. Known deviation: Ghostlink requires all five armor pieces
+      where DIM plugs fewer.
+    - [ ] **BE-007b3 — Fashion and subclass equips.** Fashion needs
+      shader/ornament classification and item category hashes (not in
+      `ItemDefinition`, migration needed): irreversible-shader guard
+      (`advanced-write-actions.ts:105-135`), transmog swap, exotic-ornament
+      unlocks. Subclass/artifact equips need `EquipmentCapacityPolicy`
+      (validated to eight weapon/armor buckets) reworked; until then builds
+      with a subclass report `partial`. Also: plug mods on fewer than five
+      armor pieces like DIM.
 - [ ] **BE-008 — Substitutes.** Optimizer-based armor sets.
 - [x] **BE-009 — dim.gg import.** Dropped by owner decision D4 (won't do).
   Remaining check: the `dim.gg` typed error guides users to the full DIM

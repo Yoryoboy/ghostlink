@@ -52,6 +52,7 @@ pub(crate) fn step_json(
         ApplyPhase::Move => "move",
         ApplyPhase::Equip => "equip",
         ApplyPhase::Sockets => "sockets",
+        ApplyPhase::Mods => "mods",
         ApplyPhase::ClearSpace => "clear_space",
     };
     match &step.action {
@@ -147,6 +148,7 @@ fn apply_plan(preview: &destiny_app::builds::BuildApplyPreview) -> Value {
         "already_there":plan.already_there,
         "socket_skipped":socket_skipped_json(plan),
         "socket_already_there":socket_already_json(plan),
+        "mod_skipped":mod_skipped_json(plan), "mods_in_place":plan.mods_in_place,
         "clear_skipped":plan.clear_skipped.iter().map(|(i, r)| json!({"item":i.as_str(), "reason":r.as_str()})).collect::<Vec<_>>(),
         "not_applied":plan.not_applied, "unknown":plan.unknown,
         "metadata":{"checked_at":preview.metadata.sync.checked_at.seconds(),
@@ -158,6 +160,14 @@ pub(crate) fn socket_skipped_json(plan: &destiny_app::build_apply::BuildApplyPla
             .iter()
             .map(|s| json!({"spec_index":s.spec_index,
         "socket_index":s.socket_index, "reason":s.reason.as_str()}))
+            .collect::<Vec<_>>()
+    )
+}
+pub(crate) fn mod_skipped_json(plan: &destiny_app::build_apply::BuildApplyPlan) -> Value {
+    json!(
+        plan.mod_skipped
+            .iter()
+            .map(|s| json!({"mod":s.plug.value(), "reason":s.reason}))
             .collect::<Vec<_>>()
     )
 }
@@ -438,6 +448,9 @@ impl BuildOutput {
                     skip["socket_index"], skip["spec_index"], skip["reason"]
                 ));
             }
+            for skip in v["mod_skipped"].as_array().into_iter().flatten() {
+                lines.push(format!("Skipped mod {}: {}", skip["mod"], skip["reason"]));
+            }
             for skip in v["clear_skipped"].as_array().into_iter().flatten() {
                 lines.push(format!("Not cleared {}: {}", skip["item"], skip["reason"]));
             }
@@ -446,6 +459,7 @@ impl BuildOutput {
                 "Sockets already in place: {}",
                 v["socket_already_there"].as_array().map_or(0, Vec::len)
             ));
+            lines.push(format!("Mods already in place: {}", v["mods_in_place"]));
             lines.push(format!("Not applied: {}", v["not_applied"]));
             lines.push(format!("Unknown evidence: {}", v["unknown"]));
             return lines.join("\n");

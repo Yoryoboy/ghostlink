@@ -318,6 +318,8 @@ fn apply_preview() -> destiny_app::builds::BuildApplyPreview {
             clear_skipped: vec![(ItemInstanceId::new("9"), ApplySkipReason::NoSpace)],
             socket_skipped: vec![],
             socket_already_there: vec![],
+            mod_skipped: vec![],
+            mods_in_place: 0,
             not_applied: vec!["armor_mods_deferred_to_be_007b2"],
             unknown: vec!["vault_capacity"],
         },
@@ -362,6 +364,7 @@ Skipped item 2: \"no_space\"\n\
 Not cleared \"9\": \"no_space\"\n\
 Already in place: [0]\n\
 Sockets already in place: 0\n\
+Mods already in place: 0\n\
 Not applied: [\"armor_mods_deferred_to_be_007b2\"]\n\
 Unknown evidence: [\"vault_capacity\"]"
     );
@@ -600,5 +603,44 @@ fn plug_steps_and_socket_skips_render_in_the_plan_and_the_result() {
         output
             .render_text()
             .contains("4. [sockets] succeeded: insert Fusion Rig (555) into socket 3")
+    );
+}
+
+#[test]
+fn mod_steps_skips_and_counts_render_in_the_plan_and_the_result() {
+    use destiny_app::build_apply::*;
+    use destiny_app::build_apply_exec::*;
+    use destiny_app::*;
+    let mut preview = with_plug_step();
+    preview.plan.steps[3].phase = ApplyPhase::Mods;
+    preview.plan.mod_skipped = vec![destiny_app::build_mod_apply::ModSkip {
+        plug: ItemHash::new(2001),
+        reason: "mod_not_unlocked",
+    }];
+    preview.plan.mods_in_place = 2;
+    let plan = BuildOutput::from_result(Ok(BuildReply::ApplyPlan(Box::new(preview.clone()))));
+    assert_eq!(plan.value["steps"][3]["phase"], "mods");
+    assert_eq!(
+        plan.value["mod_skipped"],
+        json!([{"mod":2001,"reason":"mod_not_unlocked"}])
+    );
+    assert_eq!(plan.value["mods_in_place"], 2);
+    let text = plan.render_text();
+    assert!(text.contains("4. [mods] insert Fusion Rig (555) into socket 3 of Hawkmoon (7)"));
+    assert!(text.contains("Skipped mod 2001: \"mod_not_unlocked\""));
+    assert!(text.contains("Mods already in place: 2"));
+    let applied = execution(
+        preview,
+        vec![vec![ItemStatus::Succeeded]; 4],
+        ApplyStatus::Applied,
+        ApplyLocalState::RefreshPending,
+    );
+    let output = BuildOutput::from_result(Ok(applied));
+    assert_eq!(output.value["mod_skipped"][0]["reason"], "mod_not_unlocked");
+    assert_eq!(output.value["mods_in_place"], 2);
+    assert!(
+        output
+            .render_text()
+            .contains("Skipped mod 2001: \"mod_not_unlocked\"")
     );
 }

@@ -996,3 +996,169 @@ fn build_apply_plans_subclass_socket_overrides_from_projected_catalogs() {
         [(ItemHash::new(300), "Item 300".to_owned())]
     );
 }
+
+#[test]
+fn build_apply_plans_armor_mods_from_projected_catalogs_and_unlocks() {
+    use destiny_core::armor_catalog::*;
+    use destiny_core::build_apply::{ApplyPhase, BuildAction};
+    use destiny_core::domain::{ClassType, PlugSetEntry, PlugSetScope, ReusablePlug};
+    const BUCKETS: [i64; 5] = [3448274439, 3551918588, 14239492, 20886954, 1585787867];
+    const EMPTY: i64 = 235531041;
+    let mut sync = fixture();
+    let membership =
+        DestinyMembership::new(MembershipType::new(3), MembershipId::new("99")).unwrap();
+    let mut service = BuildService::new(
+        destiny_app::test_support::InMemoryBuildRepository::default(),
+        DimBuildCodec,
+    );
+    service
+        .execute_local(
+            &membership,
+            &destiny_app::builds::LocalBuildRequest::Import(
+                r#"{"id":"m1","name":"Mods","classType":1,"equipped":[],"unequipped":[],"parameters":{"mods":[2001]}}"#
+                    .into(),
+            ),
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let mut definitions = vec![
+        definition(EMPTY, None, Some("enhancements.v2_head")),
+        definition(2001, None, Some("enhancements.v2_head")),
+    ];
+    for def in &mut definitions {
+        def.armor.energy_cost = Some(PlugEnergyCost {
+            energy_cost: 3,
+            energy_type: 1,
+            energy_type_hash: 1,
+        });
+    }
+    let mut items = vec![];
+    for (index, bucket) in BUCKETS.into_iter().enumerate() {
+        let mut armor = definition(20 + index as i64, Some(BucketHash::new(bucket)), None);
+        armor.tier = Some("Legendary".into());
+        armor.class_type = Some(ClassType::Hunter);
+        armor.is_instance_item = Some(true);
+        armor.armor.socket_entries = vec![DefinitionSocketEntry {
+            socket_type_hash: 99,
+            reusable_plug_set_hash: Some(800),
+            plug_sources: Some(2),
+            ..Default::default()
+        }];
+        armor.armor.socket_categories = vec![DefinitionSocketCategory {
+            socket_category_hash: 590099826,
+            socket_indexes: vec![0],
+        }];
+        items.push((index, armor.hash));
+        definitions.push(armor);
+    }
+    let mut world = destiny_app::test_support::synthetic_world(DefinitionVersion::new("v1"));
+    world.armor_catalogs = vec![
+        ArmorCatalogRecord::SocketType(SocketTypeDefinition {
+            hash: 99,
+            socket_category_hash: 100,
+            always_randomize_sockets: false,
+            plug_whitelist: vec![],
+        }),
+        ArmorCatalogRecord::SocketCategory(SocketCategoryDefinition {
+            hash: 100,
+            category_style: 0,
+            name: "Mods".into(),
+        }),
+        ArmorCatalogRecord::PlugSet(PlugSetDefinition {
+            hash: 800,
+            reusable_plug_items: [EMPTY as u32, 2001]
+                .map(|plug_item_hash| PlugSetItem {
+                    plug_item_hash,
+                    currently_can_roll: true,
+                })
+                .to_vec(),
+        }),
+    ];
+    sync.repository_mut()
+        .publish_manifest(
+            DefinitionReplacementInput {
+                definitions: ManifestDefinitions {
+                    version: DefinitionVersion::new("v1"),
+                    definitions,
+                },
+                checked_at: Timestamp::new(100),
+                source: SourceMarker::Manifest,
+            },
+            world,
+        )
+        .unwrap();
+    let mut input =
+        InventorySnapshotInput::with_metadata(&sync.repository().load_current().unwrap().unwrap());
+    input.items = items
+        .into_iter()
+        .map(|(index, hash)| ItemInstance {
+            instance_id: ItemInstanceId::new((index + 1).to_string()),
+            item_hash: hash,
+            location: ItemLocation::Character(CharacterId::new("1")),
+            quantity: 1,
+            equipped: true,
+            locked: false,
+            power: None,
+            stats: vec![],
+            perks: vec![],
+            plugs: vec![],
+            energy: Some(ItemEnergy {
+                energy_capacity: 10,
+                ..Default::default()
+            }),
+            gear_tier: None,
+            sockets: vec![IndexedSocket {
+                socket_index: 0,
+                plug_hash: Some(ItemHash::new(EMPTY)),
+                enabled: true,
+                visible: true,
+                reusable_plugs: Some(vec![ReusablePlug {
+                    plug_hash: ItemHash::new(EMPTY),
+                    enabled: true,
+                    can_insert: true,
+                }]),
+                plug_objectives: None,
+            }],
+            transfer_status: None,
+            available_plugs: vec![],
+        })
+        .collect();
+    input.plug_set_entries = vec![PlugSetEntry {
+        scope: PlugSetScope::Profile,
+        plug_hash: ItemHash::new(2001),
+        can_insert: true,
+        enabled: true,
+    }];
+    sync.repository_mut().replace_current(input).unwrap();
+    let preview = service
+        .plan_apply(
+            &mut sync,
+            &destiny_app::builds::BuildCheckRequest {
+                selector: destiny_app::builds::BuildSelector::Name("Mods".into()),
+                character: None,
+            },
+            &destiny_adapters::pinned_equipment_capacity_policy(),
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let steps: Vec<_> = preview
+        .plan
+        .steps
+        .iter()
+        .map(|s| (s.phase, s.action.clone()))
+        .collect();
+    assert_eq!(
+        steps,
+        [(
+            ApplyPhase::Mods,
+            BuildAction::InsertPlug {
+                item: ItemInstanceId::new("1"),
+                character: CharacterId::new("1"),
+                socket_index: 0,
+                plug: ItemHash::new(2001),
+            }
+        )]
+    );
+    assert!(preview.plan.mod_skipped.is_empty() && preview.plan.not_applied.is_empty());
+}

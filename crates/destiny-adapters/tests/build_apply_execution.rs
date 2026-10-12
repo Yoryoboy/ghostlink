@@ -145,6 +145,8 @@ fn plan(steps: Vec<BuildApplyStep>) -> BuildApplyPlan {
         clear_skipped: vec![],
         socket_skipped: vec![],
         socket_already_there: vec![],
+        mod_skipped: vec![],
+        mods_in_place: 0,
         not_applied: vec![],
         unknown: vec![],
     }
@@ -812,4 +814,40 @@ fn uncertain_plug_is_failed_and_unprojected_and_a_throttle_stops_the_rest() {
         ]
     );
     assert_eq!(execution.dispatched, 1);
+}
+
+#[test]
+fn mod_phase_insertions_dispatch_in_plan_order_and_a_failed_regain_never_stops_the_spend() {
+    // DIM applies a mod plan sequentially and carries on after a failure
+    // (loadout-apply.ts:1337-1349); the mod phase reuses the plug step unchanged.
+    let (mut repository, revision) = store();
+    let mut regain = plug("3", 1, 1001, &[]);
+    let mut spend = plug("3", 0, 1002, &[]);
+    regain.phase = ApplyPhase::Mods;
+    spend.phase = ApplyPhase::Mods;
+    let script = Script {
+        socket: [
+            Ok(InsertPlugOutcome::Rejected(InsertPlugRejection::Provider(
+                ProviderRejection::ActionForbidden,
+            ))),
+            inserted(),
+        ]
+        .into(),
+        ..Default::default()
+    };
+    let (execution, calls) = run(
+        &mut repository,
+        revision,
+        &plan(vec![regain, spend]),
+        script,
+    );
+    assert_eq!(
+        calls,
+        [
+            "insert_plug 3 on 1 socket 1 plug 1001",
+            "insert_plug 3 on 1 socket 0 plug 1002"
+        ]
+    );
+    assert_eq!(execution.status, ApplyStatus::Partial);
+    assert_eq!(execution.local_state, ApplyLocalState::RefreshPending);
 }

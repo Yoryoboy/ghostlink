@@ -1,12 +1,12 @@
-# Build apply: planner, dry-run, executor, MCP tool and sockets (BE-007a/b, incomplete)
+# Build apply: planner, dry-run, executor, MCP tool, sockets and armor mods (BE-007a/b, incomplete)
 
 `ghostlink build apply ... --dry-run` prints the plan from the pure equipment planner
 and dispatches nothing (profile reads only; no mutation transport is composed).
 Without `--dry-run` the same plan is executed (see "Executor" below). The MCP tool
 `apply_build` does the same with a `dry_run` argument (see "MCP tool"). Subclass and
-artifact socket overrides are applied as plug insertions (see "Sockets"); armor mods,
-fashion and `clearMods` are not applied yet (`not_applied`, BE-007b2). Existing move, equip, batch equip and in-game apply-loadout
-commands are unchanged.
+artifact socket overrides and armor mods are applied as plug insertions (see "Sockets" and
+"Armor mods"); fashion is not applied yet (`not_applied`, BE-007b3). Existing move, equip,
+batch equip and in-game apply-loadout commands are unchanged.
 
 ## Implemented boundary
 
@@ -24,10 +24,12 @@ commands are unchanged.
 - Ordered steps describe source replacement equips, Vault-mediated transfers,
   incidental space-making transfers and grouped arrival equips. Skips retain
   specification indices and typed reasons; already-satisfied items are separate.
-  Socket overrides become `InsertPlug` steps (see "Sockets"). What a plan does not
-  apply is listed in `not_applied` with a reason: `armor_mods_deferred_to_be_007b2`
-  (the build carries `mods`, `modsByBucket` or `clearMods`) and
-  `socket_overrides_evidence_unavailable` (overrides but no socket catalogs).
+  Socket overrides and armor mods become `InsertPlug` steps (see "Sockets" and "Armor
+  mods"). What a plan does not apply is listed in `not_applied` with a reason:
+  `fashion_deferred_to_be_007b3` (the build carries `modsByBucket`),
+  `socket_overrides_evidence_unavailable` (overrides but no socket catalogs) and the
+  assignment reason when armor mods cannot be evaluated (for example
+  `full_resolved_armor_set_required`).
 - Planning clones its inventory and performs no repository or provider mutation.
   Failed preparation attempts discard their speculative local changes and steps.
   This is planning-time partial progress, **not** remote partial-failure handling.
@@ -225,7 +227,7 @@ Ghostlink adaptations and limits:
   needed no request.
 - **Not checked locally.** The core settings lists of protected plugs and blocked
   socket types (`canInsertForFree`) are not fetched; Bungie rejects those. DIM's
-  irreversible-shader guard and transmog swap concern armor ornaments (BE-007b2).
+  irreversible-shader guard and transmog swap concern fashion (BE-007b3).
 - **Subclass equip.** The planner still skips the subclass and artifact buckets as
   `unsupported_bucket` (no move or equip), so the plugs go into the subclass on the
   target character whether or not it is equipped, as in DIM, and Bungie decides. A
@@ -235,7 +237,48 @@ Ghostlink adaptations and limits:
 - **Pacing.** The executor's 100 ms pacing also runs before each insertion; the gateway
   adds the 0.5 s spacing.
 
+## Armor mods (BE-007b2)
+
+`plan_armor_mods` (`destiny_core::build_mod_apply`) ports DIM's mod phase. It runs after
+the socket overrides and before clear-space, as `insert_plug` steps in phase `mods`.
+Mods go to the build's armor marked equip, else the piece equipped on the target, one
+per armor slot; like DIM (`loadout-apply.ts:1282-1296`) they are not limited to the
+build's own armor. Items are judged where the plan leaves them.
+
+| Decision | DIM evidence (`src/app/`) |
+|---|---|
+| The mod phase runs when the build has mods, fashion or `clearMods`; after socket overrides, before clear-space | `loadout-drawer/loadout-apply.ts:629-672` |
+| A mod that is missing or not unlocked on the target character is dropped before fitting (the resolved variant is checked) | `loadout-apply.ts:306-328` |
+| If every requested mod is already on the armor (each plugged copy consumed once) and `clearMods` is off, nothing is sent | `loadout-apply.ts:1302-1310,1410-1458` |
+| Mods are fitted with the existing assignment (`fitMostMods` with the in-game rules: no energy upgrades, capacity floor 1); mods that do not fit are reported and never sent | `loadout-apply.ts:1317-1330`, `loadout/mod-assignment-utils.ts:286` |
+| `pickPlugPositions`: keep a mod where it already is, else replace a plug of the same exclusion group, else the first fitting socket; mods that fit fewer sockets go first; sockets ordered by plug-set size; leftover sockets return to their empty plug, requested only with `clearMods`; artifice sockets count even when hidden | `loadout/mod-assignment-utils.ts:576-614,689-770` |
+| `createPluggingStrategy`: regains (free energy, no new exclusion group) first, spends next, optional empty-plug regains only when a spend lacks energy or an exclusion group; a swap that both needs and releases something is split through the empty plug | `loadout/mod-assignment-utils.ts:780-1000` |
+| Only required steps are sent, in order; a failed step never stops the next | `loadout-apply.ts:1383-1405,1461-1546` |
+| Only free insertions, as for socket overrides | `inventory/advanced-write-actions.ts:41-103` |
+
+Ghostlink adaptations and limits:
+
+- **Evidence.** The assignment needs the five armor pieces with socket state, energy and
+  rarity, the armor-mod socket types and plug sets, and plug definitions with material
+  requirement sets (the `build check` inputs). Otherwise the phase is not planned and the
+  assignment reason is listed in `not_applied`. DIM assigns mods to fewer than five
+  armor pieces; Ghostlink needs all five (`full_resolved_armor_set_required`).
+- **Skips** (`mod_skipped`, one entry per mod hash): `mod_not_unlocked`,
+  `invalid_for_armor`, `unassigned`, `not_on_target_character`,
+  `item_energy_unavailable`, `no_socket_for_mod`, `not_enough_energy`, the
+  assignment's own socket-state reasons, and the free-insertion reasons of the socket
+  phase (`not_free`, `plug_definition_unavailable`, `insertion_cost_unavailable`).
+  `mods_in_place` counts requested mods that needed no request.
+- **Items elsewhere.** DIM inserts into armor wherever it is; Ghostlink plans mods only
+  for armor on the target character after the plan (the step is sent with the target).
+- **Dependencies.** A mod step `needs` every earlier move, pull or equip of its item.
+  Steps of one item are not chained to each other (DIM continues after a failed mod).
+- **Not applied.** Fashion (`modsByBucket`: shaders and ornaments, the transmog swap and
+  the irreversible-shader guard of `advanced-write-actions.ts:105-135`) needs shader and
+  ornament classification Ghostlink does not store; it is `fashion_deferred_to_be_007b3`.
+
 ## Remaining work
 
-Armor mods, fashion and `clearMods` (BE-007b2); stack amounts; subclass/artifact
-equips; live validation (BE-010).
+Fashion (BE-007b3); planning subclass and artifact equips (today they skip as
+`unsupported_bucket` because the capacity policy covers only weapons and armor); stack
+amounts; live validation (BE-010).

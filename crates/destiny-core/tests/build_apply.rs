@@ -310,6 +310,7 @@ fn describe(p: &BuildApplyPlan) -> Vec<String> {
                 ApplyPhase::Move => "move",
                 ApplyPhase::Equip => "equip",
                 ApplyPhase::Sockets => "sockets",
+                ApplyPhase::Mods => "mods",
                 ApplyPhase::ClearSpace => "clear",
             };
             match &s.action {

@@ -685,7 +685,7 @@ pub fn assign_bucket_specific_mods(
     result
 }
 
-fn exclusion_group(hash: u32) -> Option<&'static str> {
+pub(crate) fn exclusion_group(hash: u32) -> Option<&'static str> {
     // DIM data/d2/mutually-exclusive-mods.json:2-13, including duplicates.
     match hash {
         84503918 | 1125986156 | 1170405455 | 1208761894 | 3064687909 | 4004774872 | 4004774873

@@ -22,7 +22,7 @@ set_lock_state    lock or unlock one explicitly selected owned item, return acce
 pull_item         pull one genuine Postmaster equipment instance to its owner
 pull_stack        pull an explicit amount of a non-instanced Postmaster stack
 apply_loadout     apply one saved in-game loadout on an explicit character
-apply_build       apply a stored build's moves, equips and subclass/artifact plugs (or plan them with dry_run)
+apply_build       apply a stored build's moves, equips, subclass/artifact plugs and armor mods (or plan them with dry_run)
 list_builds       list locally stored build definitions
 get_build         show one local build, including DIM JSON export
 save_build        import or capture equipped/in-game loadout as a local build

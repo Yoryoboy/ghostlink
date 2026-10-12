@@ -1,8 +1,8 @@
 //! Typed projection of an executed build apply: per-step outcomes, overall result and the
 //! existing action exit codes (no new ones).
 use crate::builds::{
-    category_exit, clean_text as clean, socket_already_json, socket_skipped_json, step_json,
-    step_text, summary_json,
+    category_exit, clean_text as clean, mod_skipped_json, socket_already_json, socket_skipped_json,
+    step_json, step_text, summary_json,
 };
 use destiny_app::build_apply_exec::{
     ApplyLocalState, ApplyStatus, BuildApplyExecution, ItemStatus, SkipCause, StepFailure,
@@ -135,6 +135,7 @@ pub fn execution(applied: &BuildApplyExecution) -> (Value, i32) {
         "already_there":plan.already_there,
         "socket_skipped":socket_skipped_json(plan),
         "socket_already_there":socket_already_json(plan),
+        "mod_skipped":mod_skipped_json(plan), "mods_in_place":plan.mods_in_place,
         "clear_skipped":plan.clear_skipped.iter().map(|(i, r)| json!({"item":i.as_str(), "reason":r.as_str()})).collect::<Vec<_>>(),
         "not_applied":plan.not_applied.iter().map(|r| json!({"outcome":"not_applied", "reason":r})).collect::<Vec<_>>(),
         "unknown":plan.unknown, "local_state":local_state, "reason":reason,
@@ -201,6 +202,9 @@ pub fn render(v: &Value) -> String {
             "Skipped socket {} of item {}: {}",
             skip["socket_index"], skip["spec_index"], skip["reason"]
         ));
+    }
+    for skip in v["mod_skipped"].as_array().into_iter().flatten() {
+        lines.push(format!("Skipped mod {}: {}", skip["mod"], skip["reason"]));
     }
     for skip in v["clear_skipped"].as_array().into_iter().flatten() {
         lines.push(format!("Not cleared {}: {}", skip["item"], skip["reason"]));

@@ -66,14 +66,61 @@ pub struct SocketPlan {
     pub already_there: Vec<(usize, u16)>,
 }
 
-struct Socket<'a> {
-    index: u8,
-    plugged: Option<u32>,
-    empty: Option<u32>,
+pub(crate) struct Socket<'a> {
+    pub(crate) index: u8,
+    pub(crate) plugged: Option<u32>,
+    pub(crate) empty: Option<u32>,
     /// Plug-set members; DIM `socket.plugSet.plugs`.
-    set_plugs: Vec<u32>,
-    entry: &'a DefinitionSocketEntry,
+    pub(crate) set_plugs: Vec<u32>,
+    pub(crate) entry: &'a DefinitionSocketEntry,
 }
+/// DIM `hasInsertionCost` (`advanced-write-actions.ts:50-59`).
+fn has_cost(
+    defs: &[ItemDefinition],
+    catalogs: &[ArmorCatalogRecord],
+    hash: u32,
+) -> Result<bool, SocketSkipReason> {
+    let plug = defs
+        .iter()
+        .find(|d| d.hash.value() == i64::from(hash))
+        .ok_or(SocketSkipReason::PlugDefinitionUnavailable)?;
+    let Some(set) = plug
+        .armor
+        .insertion_material_requirement_hash
+        .filter(|h| *h != 0)
+    else {
+        return Ok(false);
+    };
+    catalogs
+        .iter()
+        .find_map(|c| match c {
+            ArmorCatalogRecord::MaterialRequirementSet(s) if s.hash == set => Some(s),
+            _ => None,
+        })
+        .map(|s| s.materials.iter().any(|m| m.count != 0))
+        .ok_or(SocketSkipReason::InsertionCostUnavailable)
+}
+/// DIM `canInsertForFree` (`advanced-write-actions.ts:61-103`). The core-settings
+/// protected-plug and blocked-socket-type lists are not available here; Bungie
+/// remains the final validator for those.
+pub(crate) fn can_insert_free(
+    defs: &[ItemDefinition],
+    catalogs: &[ArmorCatalogRecord],
+    entry: &DefinitionSocketEntry,
+    plugged: Option<u32>,
+    plug: u32,
+) -> Result<(), SocketSkipReason> {
+    let reusable = !entry.reusable_plug_items.is_empty()
+        || entry.reusable_plug_set_hash.is_some_and(|h| h != 0)
+        || entry.randomized_plug_set_hash.is_some_and(|h| h != 0);
+    let current_cost = plugged.map(|p| has_cost(defs, catalogs, p)).transpose()?;
+    if reusable && !has_cost(defs, catalogs, plug)? && current_cost != Some(true) {
+        Ok(())
+    } else {
+        Err(SocketSkipReason::NotFree)
+    }
+}
+
 /// DIM `Assignment`: unrequested ones only clear a socket and are never reported.
 struct Assignment {
     socket: u8,
@@ -112,41 +159,9 @@ impl Item<'_> {
             reason,
         });
     }
-    /// DIM `hasInsertionCost` (`advanced-write-actions.ts:50-59`).
-    fn has_cost(&self, hash: u32) -> Result<bool, SocketSkipReason> {
-        let plug = self
-            .def(hash)
-            .ok_or(SocketSkipReason::PlugDefinitionUnavailable)?;
-        let Some(set) = plug
-            .armor
-            .insertion_material_requirement_hash
-            .filter(|h| *h != 0)
-        else {
-            return Ok(false);
-        };
-        self.catalogs
-            .iter()
-            .find_map(|c| match c {
-                ArmorCatalogRecord::MaterialRequirementSet(s) if s.hash == set => Some(s),
-                _ => None,
-            })
-            .map(|s| s.materials.iter().any(|m| m.count != 0))
-            .ok_or(SocketSkipReason::InsertionCostUnavailable)
-    }
-    /// DIM `canInsertForFree` (`advanced-write-actions.ts:61-103`). The core-settings
-    /// protected-plug and blocked-socket-type lists are not available here; Bungie
-    /// remains the final validator for those.
+    /// DIM `canInsertForFree` (`advanced-write-actions.ts:61-103`).
     fn free(&self, socket: &Socket<'_>, plug: u32) -> Result<(), SocketSkipReason> {
-        let entry = socket.entry;
-        let reusable = !entry.reusable_plug_items.is_empty()
-            || entry.reusable_plug_set_hash.is_some_and(|h| h != 0)
-            || entry.randomized_plug_set_hash.is_some_and(|h| h != 0);
-        let current_cost = socket.plugged.map(|p| self.has_cost(p)).transpose()?;
-        if reusable && !self.has_cost(plug)? && current_cost != Some(true) {
-            Ok(())
-        } else {
-            Err(SocketSkipReason::NotFree)
-        }
+        can_insert_free(self.defs, self.catalogs, socket.entry, socket.plugged, plug)
     }
     /// DIM `equipModsToItem` for one assignment (`loadout-apply.ts:1303-1366`).
     fn assign(&mut self, a: Assignment) {
@@ -409,7 +424,7 @@ fn class_matches(
                 | (Some(crate::domain::ClassType::Warlock), "warlock")
         )
 }
-fn sockets<'a>(
+pub(crate) fn sockets<'a>(
     item: &ItemInstance,
     definition: &'a ItemDefinition,
     catalogs: &[ArmorCatalogRecord],
