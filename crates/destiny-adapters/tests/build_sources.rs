@@ -265,6 +265,7 @@ fn equipped_and_in_game_capture_crafted_date_and_resolve_changed_identity() {
         }];
     }
     definitions[3].bucket_hash = Some(ARTIFACT_BUCKET_HASH);
+    definitions[2].armor.equipable_item_set_hash = Some(42);
     definitions[2].armor.socket_entries = vec![DefinitionSocketEntry::default(); 8];
     definitions[2].armor.socket_categories = vec![DefinitionSocketCategory {
         socket_category_hash: 590099826,
@@ -273,6 +274,19 @@ fn equipped_and_in_game_capture_crafted_date_and_resolve_changed_identity() {
     let world = WorldDefinitionsAcquisition {
         version: DefinitionVersion::new("v1"),
         armor_catalogs: vec![
+            armor_catalog::ArmorCatalogRecord::EquipableSet(
+                armor_catalog::EquipableSetDefinition {
+                    hash: 42,
+                    name: "Fixture set".into(),
+                    set_items: vec![],
+                    set_perks: vec![armor_catalog::SetPerk {
+                        name: Some("Active perk".into()),
+                        icon: None,
+                        required_set_count: 1,
+                        sandbox_perk_hash: 100,
+                    }],
+                },
+            ),
             destiny_core::armor_catalog::ArmorCatalogRecord::SocketType(
                 destiny_core::armor_catalog::SocketTypeDefinition {
                     hash: 123,
@@ -412,6 +426,21 @@ fn equipped_and_in_game_capture_crafted_date_and_resolve_changed_identity() {
             Timestamp::new(100),
         )
         .unwrap();
+    let bonuses = &checked.analysis.equipped_set_bonuses;
+    assert_eq!(bonuses.evaluation, "evaluated");
+    assert_eq!(bonuses.sets[0].hash, 42);
+    assert_eq!(bonuses.sets[0].equipped_count, 1);
+    assert_eq!(
+        bonuses.sets[0].perks.as_ref().unwrap()[0].active,
+        Some(true)
+    );
+    assert_eq!(
+        bonuses.sets[0].perks.as_ref().unwrap()[0]
+            .perk
+            .name
+            .as_deref(),
+        Some("Active perk")
+    );
     assert_eq!(
         checked.analysis.items[0]
             .inventory

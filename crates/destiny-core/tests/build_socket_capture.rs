@@ -89,6 +89,41 @@ fn equipped_defaults_membership_and_fragment_positions_follow_dim() {
 }
 
 #[test]
+fn missing_fragment_socket_is_filtered_before_capacity_like_dim() {
+    let armor = ArmorDefinition {
+        socket_entries: vec![
+            DefinitionSocketEntry {
+                socket_type_hash: 1,
+                single_initial_item_hash: 10,
+                plug_sources: Some(2),
+                ..Default::default()
+            };
+            3
+        ],
+        socket_categories: vec![DefinitionSocketCategory {
+            socket_category_hash: 271461480,
+            socket_indexes: vec![0, 1, 2],
+        }],
+        ..Default::default()
+    };
+    let types = vec![SocketTypeDefinition {
+        hash: 1,
+        socket_category_hash: 271461480,
+        always_randomize_sockets: false,
+        plug_whitelist: vec![],
+    }];
+    let result = equipped_socket_overrides(
+        &armor,
+        &[socket(1, 30), socket(2, 40)],
+        &types,
+        &[],
+        Some(1),
+    );
+    assert_eq!(result.overrides, vec![(1, ItemHash::new(30))]);
+    assert!(result.incomplete); // Missing projection is still reported.
+}
+
+#[test]
 fn default_empty_precedence_and_manifest_membership_ignore_unlock_flags() {
     let armor = ArmorDefinition {
         socket_entries: vec![DefinitionSocketEntry {

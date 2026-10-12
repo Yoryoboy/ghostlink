@@ -322,6 +322,22 @@ coverage (`domain.rs:123-126`).
 - [ ] **BE-006 — Analysis v2.** Stat constraints, mods fit, armor upgrades,
   equipped set-bonus activation (`SetBonus.tsx:23-64`, event selectors
   `socket-utils.ts:793-809`).
+  - [x] **BE-006a — Equipped set activation.** `build_sets.rs`: per-set
+    counts and threshold activation (`SetBonus.tsx:23-64`), native-set
+    precedence and first visible enabled event selector
+    (`socket-utils.ts:782-809`), 19 selector mappings
+    (`loadout/known-values.ts:51-71`); partial counts are lower bounds,
+    unknown stays null. Additive `equipped_set_bonuses` in `build check`
+    text/JSON and MCP. Review advisory R3-fragment-position: not a
+    deviation (`socket-utils.ts:77-85`, `loadout-utils.ts:136-174`),
+    regression test added. Workspace: 2149 all-features, 2117 default,
+    0 failed; clippy both modes, fmt, diff check.
+  - [ ] **BE-006b — Mods fit and armor upgrades.** DIM mod assignment
+    (`loadout/mod-assignment-utils.ts`, >1,000 lines with dependencies);
+    unassignable mods; upgrades needed for mods.
+  - [ ] **BE-006c — Stat constraints and fragment findings.** Stat
+    aggregation vs `statConstraints`; fragment capacity findings;
+    optimizer-based findings stay suppressed until BE-008.
 - [ ] **BE-007 — Apply build.** DIM apply phases; covers dim-parity U4b/U4c.
 - [ ] **BE-008 — Substitutes.** Optimizer-based armor sets.
 - [ ] **BE-009 — dim.gg import.** Blocked on owner decision D4.

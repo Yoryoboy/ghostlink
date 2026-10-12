@@ -65,11 +65,32 @@ impl BuildOutput {
                     "blocks_optimization":f.kind.blocks_optimization()})
                     })
                     .collect();
+                let bonuses = &analysis.equipped_set_bonuses;
+                let sets: Vec<_> = bonuses
+                    .sets
+                    .iter()
+                    .map(|set| {
+                        let perks = set.perks.as_ref().map(|perks| {
+                            perks
+                                .iter()
+                                .map(|p| {
+                                    json!({"sandbox_perk_hash":p.perk.sandbox_perk_hash,
+                            "required_set_count":p.perk.required_set_count, "name":p.perk.name,
+                            "icon":p.perk.icon, "active":p.active})
+                                })
+                                .collect::<Vec<_>>()
+                        });
+                        json!({"hash":set.hash, "name":set.name,
+                        "equipped_count":set.equipped_count, "perks":perks})
+                    })
+                    .collect();
                 Self::success(
                     json!({"kind":"build_analysis", "summary":summary(&result.summary),
                     "target_character":analysis.target_character.as_str(), "counts":{"specified":analysis.specified,
                         "resolved":analysis.resolved,"missing":analysis.missing}, "items":items,
                     "findings":findings, "not_evaluated":analysis.not_evaluated,
+                    "equipped_set_bonuses":{"evaluation":bonuses.evaluation,
+                        "reasons":bonuses.reasons, "sets":sets},
                     "metadata":{"checked_at":result.metadata.sync.checked_at.seconds(),
                         "revision":result.metadata.sync.revision.value(), "definition_version":result.metadata.sync.definition_version.as_str(),
                         "freshness":match result.metadata.freshness { destiny_app::FreshnessStatus::Fresh => "fresh", destiny_app::FreshnessStatus::Stale => "stale", destiny_app::FreshnessStatus::Missing => "missing", destiny_app::FreshnessStatus::InvalidSource => "invalid_source"}}}),
@@ -252,6 +273,39 @@ impl BuildOutput {
                             "{}: {} ({})",
                             finding["kind"], finding["evaluation"], finding["reason"]
                         ));
+                    }
+                }
+            }
+            let bonuses = &self.value["equipped_set_bonuses"];
+            lines.push(format!(
+                "Equipped set bonuses: {} (reasons: {})",
+                bonuses["evaluation"].as_str().unwrap_or("not_evaluated"),
+                bonuses["reasons"]
+            ));
+            if let Some(sets) = bonuses["sets"].as_array() {
+                for set in sets {
+                    lines.push(format!(
+                        "Set {} ({}): {} equipped pieces",
+                        set["hash"],
+                        clean(set["name"].as_str().unwrap_or("Unknown")),
+                        set["equipped_count"]
+                    ));
+                    if let Some(perks) = set["perks"].as_array() {
+                        for perk in perks {
+                            lines.push(format!(
+                                "  Perk {} ({}), requires {}: {}",
+                                perk["sandbox_perk_hash"],
+                                clean(perk["name"].as_str().unwrap_or("Unknown")),
+                                perk["required_set_count"],
+                                match perk["active"].as_bool() {
+                                    Some(true) => "active",
+                                    Some(false) => "inactive",
+                                    None => "unknown",
+                                }
+                            ));
+                        }
+                    } else {
+                        lines.push("  Perks: unknown (set catalog unavailable)".into());
                     }
                 }
             }

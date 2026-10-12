@@ -51,7 +51,14 @@ finding kind. `present: null` with `evaluation: not_evaluated` is not a clean bi
 of health. Search exclusion is `search_only`; optimizer-dependent suppression is
 not evaluated. Socket application, mods fit, fragment capacity, armor upgrades,
 stat constraints and optimization remain explicitly qualified/deferred. No gear is
-applied. See [CLI build checking](cli.md#check-a-build-against-inventory).
+applied. The additive `equipped_set_bonuses` object reports set hash/name,
+`equipped_count`, and nullable `perks` with `sandbox_perk_hash`,
+`required_set_count`, name/icon and nullable `active`. It uses build-equipped
+resolved armor and current inserted event selectors, not future mod assignment.
+`evaluation: partial` and `reasons` preserve unknown contributors/catalogs; counts
+are lower bounds, and null activation is not inactive. Native sets precede event
+selectors, which require visible sockets and enabled plugs. See
+[CLI build checking](cli.md#check-a-build-against-inventory).
 
 Source-inapplicable/unknown fields are rejected before service dispatch. MCP
 imports accept content, never server file paths or stdin. Input is bounded to

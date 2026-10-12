@@ -61,6 +61,154 @@ fn analyze(
 ) -> BuildAnalysis {
     analyze_build(build, &CharacterId::new("1"), items, defs, &[], &[], &[])
 }
+fn set_catalog(hash: u32) -> armor_catalog::EquipableSetDefinition {
+    armor_catalog::EquipableSetDefinition {
+        hash,
+        name: "Fixture set".into(),
+        set_items: vec![],
+        set_perks: [2, 4]
+            .into_iter()
+            .map(|required_set_count| armor_catalog::SetPerk {
+                required_set_count,
+                sandbox_perk_hash: required_set_count as u32,
+                name: None,
+                icon: None,
+            })
+            .collect(),
+    }
+}
+fn set_status(
+    build: &BuildDefinition,
+    inventory: &[ItemInstance],
+    definitions: &[ItemDefinition],
+    sets: &[armor_catalog::EquipableSetDefinition],
+) -> destiny_core::build_sets::EquippedSetBonuses {
+    let analysis = analyze(build, inventory, definitions);
+    destiny_core::build_sets::equipped_set_bonuses(&analysis.items, definitions, sets)
+}
+#[test]
+fn native_set_counts_build_equipped_not_inventory_equipped_and_activates_thresholds() {
+    let mut d = definition(10, 3448274439);
+    d.armor.equipable_item_set_hash = Some(42);
+    let mut inventory: Vec<_> = ["1", "2", "3", "4", "5"]
+        .into_iter()
+        .map(|id| item(id, 10, ItemLocation::Vault))
+        .collect();
+    inventory[0].equipped = false;
+    let mut build = BuildDefinition {
+        equipped: vec![spec(Some("1"), 10), spec(Some("2"), 10)],
+        unequipped: vec![spec(Some("5"), 10)],
+        ..Default::default()
+    };
+    let sets = [set_catalog(42)];
+    let first = set_status(&build, &inventory, &[d.clone()], &sets);
+    assert_eq!(first.evaluation, "evaluated");
+    assert_eq!(first.sets[0].equipped_count, 2);
+    let perks = first.sets[0].perks.as_ref().unwrap();
+    assert_eq!(perks[0].active, Some(true));
+    assert_eq!(perks[1].active, Some(false));
+    build
+        .equipped
+        .extend([spec(Some("3"), 10), spec(Some("4"), 10)]);
+    assert_eq!(
+        set_status(&build, &inventory, &[d], &sets).sets[0]
+            .perks
+            .as_ref()
+            .unwrap()[1]
+            .active,
+        Some(true)
+    );
+}
+#[test]
+fn set_unknowns_preserve_hash_counts_and_null_activation_without_substitution() {
+    let mut d = definition(10, 3448274439);
+    d.armor.equipable_item_set_hash = Some(42);
+    let inventory = vec![
+        item("1", 10, ItemLocation::Vault),
+        item("2", 10, ItemLocation::Vault),
+    ];
+    let mut build = BuildDefinition {
+        equipped: vec![spec(Some("1"), 10), spec(Some("2"), 10)],
+        ..Default::default()
+    };
+    let unknown = set_status(&build, &inventory, &[d.clone()], &[]);
+    assert_eq!(unknown.evaluation, "partial");
+    assert_eq!(unknown.sets[0].hash, 42);
+    assert_eq!(unknown.sets[0].name, None);
+    assert_eq!(unknown.sets[0].perks, None);
+    build.equipped.push(spec(Some("404"), 10));
+    let partial = set_status(&build, &inventory, &[d], &[set_catalog(42)]);
+    assert_eq!(partial.reasons, vec!["equipped_armor_unresolved"]);
+    let perks = partial.sets[0].perks.as_ref().unwrap();
+    assert_eq!(perks[0].active, Some(true));
+    assert_eq!(perks[1].active, None);
+}
+#[test]
+fn event_selector_visibility_enabled_native_precedence_and_first_socket_follow_dim() {
+    let mut d = definition(10, 3448274439);
+    let mut plug = definition(139044974, 0);
+    plug.armor.plug_category_hash = Some(1313063513);
+    let mut inventory = item("1", 10, ItemLocation::Vault);
+    inventory.sockets.push(IndexedSocket {
+        socket_index: 0,
+        plug_hash: Some(plug.hash),
+        enabled: true,
+        visible: true,
+        reusable_plugs: None,
+        plug_objectives: None,
+    });
+    let build = BuildDefinition {
+        equipped: vec![spec(Some("1"), 10)],
+        ..Default::default()
+    };
+    for (visible, enabled, contributes) in [
+        (true, true, true),
+        (true, false, false),
+        (false, true, false),
+        (false, false, false),
+    ] {
+        inventory.sockets[0].visible = visible;
+        inventory.sockets[0].enabled = enabled;
+        let status = set_status(
+            &build,
+            &[inventory.clone()],
+            &[d.clone(), plug.clone()],
+            &[set_catalog(2132906400)],
+        );
+        assert_eq!(status.evaluation, "evaluated");
+        assert_eq!(status.sets.len(), usize::from(contributes));
+        if contributes {
+            assert_eq!(status.sets[0].hash, 2132906400);
+        }
+    }
+    inventory.sockets[0].visible = true;
+    inventory.sockets[0].enabled = false;
+    let mut second = inventory.sockets[0].clone();
+    second.socket_index = 1;
+    second.enabled = true;
+    inventory.sockets.push(second);
+    assert!(
+        set_status(
+            &build,
+            &[inventory.clone()],
+            &[d.clone(), plug.clone()],
+            &[]
+        )
+        .sets
+        .is_empty()
+    );
+    d.armor.equipable_item_set_hash = Some(42);
+    assert_eq!(
+        set_status(&build, &[inventory.clone()], &[d], &[set_catalog(42)]).sets[0].hash,
+        42
+    );
+    let unknown = set_status(&build, &[inventory], &[definition(10, 3448274439)], &[]);
+    assert_eq!(
+        unknown.reasons,
+        vec!["set_selector_plug_definition_unavailable"]
+    );
+}
+
 fn finding(result: &BuildAnalysis, kind: FindingKind) -> &BuildFinding {
     result.findings.iter().find(|f| f.kind == kind).unwrap()
 }

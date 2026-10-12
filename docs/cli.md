@@ -77,6 +77,17 @@ owner, equipped state and nullable class compatibility. Resolution never silentl
 substitutes another instance. Hash-resolved buckets prefer the target's copy,
 otherwise use only the first candidate if transferable, as in DIM.
 
+The additive `equipped_set_bonuses` object counts the build's resolved equipped
+armor, not whatever is currently equipped on the target. It includes set hash,
+optional name, `equipped_count`, and nullable `perks` with thresholds, display
+fields and nullable `active`. Native sets take precedence; event selectors require
+visible sockets and enabled inserted plugs. `evaluation: partial` lists missing
+evidence in `reasons`: counts are lower bounds, reached thresholds are active,
+and unreached thresholds stay unknown when contributors are unresolved. Missing
+set catalogs keep perk lists null, never empty. This describes committed inserted
+selectors, not future mod assignments. Text output includes the same activation
+and unknown states; see [DIM evidence and split](armor-model.md#be-006-first-slice-equipped-set-activation).
+
 Every DIM finding kind has `evaluation`, nullable `present`, and a reason code.
 Missing items, incomplete resolved equipped armor, exotic constraints (including
 sentinels and definition-name matching), and invalid search are evaluated.

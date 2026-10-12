@@ -63,11 +63,9 @@ The approved narrowed scope adds read-only inspection fields using committed dat
   contributes zero as in DIM; missing socket projections or plug definitions
   stay unknown. Real socket indices are used, never filtered positions.
 
-All values are inspection only, not upgrade actions or build-analysis findings.
-Equipped-set activation is deferred: build analysis does not currently assemble
-this item/catalog model, and DIM also accounts for event selector sockets
-(`utils/socket-utils.ts:793-809`). A separate equipped-set analysis task should
-count resolved armor pieces and compare thresholds (`SetBonus.tsx:23-64`).
+These per-item values are inspection only, not upgrade actions. BE-006's first
+slice now assembles equipped-set activation separately in build analysis (below),
+including DIM event selectors (`utils/socket-utils.ts:793-809`).
 ## BE-005c3: raw reusable fidelity and set-perk display
 
 - DIM `inventory/store/sockets.ts:77-79,133-140,784` attaches the complete instance
@@ -170,3 +168,51 @@ without claiming apply-time socket validity. Stored DIM JSON preserves overrides
 but not source diagnostics: later show/get reports
 `source_capture_evidence_not_persisted`. Missing catalogs, plug definitions,
 raw membership or socket projections remain explicit capture omissions.
+
+## BE-006 first slice: equipped-set activation
+
+DIM evidence at commit `29c122e` (paths under `src/app/`):
+
+| Decision | Evidence |
+|---|---|
+| Count only resolved build-equipped armor; activate perks at `count >= requiredSetCount` | `item-popup/SetBonus.tsx:23-64`; `loadout-analyzer/analysis.ts:110-119` |
+| Native set identity precedes the first visible inserted event selector; selector plug must be enabled | `utils/socket-utils.ts:782-809,198-203` |
+| Use all 19 pinned selector-to-set mappings, never names or set membership guesses | `loadout/known-values.ts:51-71` |
+| R3-fragment-position is not a deviation: missing sockets are filtered before capacity consumption; existing empty sockets do consume capacity | `utils/socket-utils.ts:77-85`; `loadout-drawer/loadout-utils.ts:136-174` |
+
+`build_sets.rs` is pure; `BuildService::check` loads raw inserted plug definitions
+and only referenced set catalogs. CLI text/JSON and MCP share the additive
+`equipped_set_bonuses` projection. This is hypothetical equipment using current
+inserted selectors, not a promised post-apply socket configuration. No new DIM
+finding enum member is invented for set activation. Unknown contributors produce
+partial lower-bound counts; known reached thresholds remain active, but unknown
+contributors prevent false claims that unreached thresholds are inactive.
+Unresolved catalogs preserve set identity/count and null name/perks. Missing perk
+display fields do not erase known thresholds or hash-based activation.
+
+### Proposed split remainder (not completed)
+
+Faithful mod fitting and stats would exceed the approximately 700-production-line
+budget together with this slice: DIM's assignment engine alone is over 1,000 lines,
+with permutation, upgrade and stat helpers. Keep completed work and split into:
+
+1. **BE-006b: mods fit + upgrades for mods** — categorize/deprecated membership,
+   assignment permutations, energy/socket/category/exclusion limits, seasonal cost
+   resolution, unassignable mod output and assumed upgrade rules.
+   Evidence: `loadout-analyzer/analysis.ts:121-135,158-218,442-514`;
+   `loadout/mod-assignment-utils.ts`, `loadout/mod-permutations.ts`,
+   `loadout/armor-upgrade-utils.ts`.
+2. **BE-006c: loadout stats + upgrades for stats** — base/masterwork assumptions,
+   selected mods and subclass overrides, class/runtime stat benefits and DIM's
+   minimum-only analyzer constraints (not optimizer max constraints).
+   Evidence: `loadout-analyzer/analysis.ts:228-265,516-561`;
+   `loadout-drawer/loadout-utils.ts` (`getLoadoutStats`), `loadout/stats.ts`.
+   Fragment findings can use selected subclass override capacity in this slice.
+
+Current findings explicitly identify unimplemented DIM mod assignment, upgrade
+rules, loadout stat aggregation and fragment override evaluation rather than
+claiming that the newly projected armor data is missing. Seasonal cost resolution
+remains unavailable. Better-stats optimization and search suppression remain
+BE-008; socket application readiness remains BE-007. The ODD tracker is unchanged
+because it is outside the delegated edit surfaces; this split is a proposal for
+the parent, not a replacement checklist.

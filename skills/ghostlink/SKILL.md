@@ -47,6 +47,13 @@ retains explicit empty overrides and removes only unset zero hashes. Show/get
 exposes equipped_socket_overrides; check/analyze still does not validate socket
 application readiness. Capture diagnostics are not stored: later show/get reports
 source_capture_evidence_not_persisted, so never infer completeness from an export.
+Build check/analyze additionally reports equipped_set_bonuses for build-equipped
+resolved armor using current inserted event selectors (not future assignments).
+Report active perks only when active is true. Partial counts are lower bounds;
+null perks/activation means unknown, never inactive. Native sets take precedence;
+event selectors require visible sockets and enabled inserted plugs. Stat/mod fit
+and upgrade checks remain explicitly not_evaluated pending the DIM assignment
+and loadout-stat aggregation slice; do not infer them from set activation.
 
 ## Bungie action rejections
 

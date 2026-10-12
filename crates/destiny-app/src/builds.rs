@@ -223,7 +223,10 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
     ) -> Result<BuildCheckResult, BuildError>
     where
         G: ProfileGateway,
-        I: InventoryRepository + WorldDefinitionRepository + StatDefinitionRepository,
+        I: InventoryRepository
+            + WorldDefinitionRepository
+            + StatDefinitionRepository
+            + ArmorCatalogRepository,
     {
         if sync.repository().current_metadata()?.is_none() {
             return Err(AppError::new(ErrorCategory::DefinitionsUnavailable).into());
@@ -289,6 +292,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             hashes.insert(item.item_hash);
             hashes.extend(item.plugs.iter().map(|p| p.plug_hash));
             hashes.extend(item.available_plugs.iter().map(|p| p.plug_hash));
+            hashes.extend(item.sockets.iter().filter_map(|s| s.plug_hash));
         }
         let mut definitions = Vec::new();
         for hash in hashes {
@@ -313,17 +317,31 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             }
         }
         let objectives = crafting_definitions(sync.repository(), &snapshot.items)?;
+        let mut analysis = build_analysis::analyze_build(
+            &build.definition,
+            &target.id,
+            &snapshot.items,
+            &definitions,
+            &stats,
+            &snapshot.characters,
+            &objectives,
+        );
+        // Collect only referenced native/event sets, then evaluate thresholds.
+        let counted = build_sets::equipped_set_bonuses(&analysis.items, &definitions, &[]);
+        let mut sets = Vec::new();
+        for set in counted.sets {
+            if let Some(ArmorCatalogRecord::EquipableSet(definition)) = sync
+                .repository()
+                .lookup_armor_catalog(ArmorCatalogKind::EquipableSet, set.hash)?
+            {
+                sets.push(definition);
+            }
+        }
+        analysis.equipped_set_bonuses =
+            build_sets::equipped_set_bonuses(&analysis.items, &definitions, &sets);
         Ok(BuildCheckResult {
             summary: build.summary,
-            analysis: build_analysis::analyze_build(
-                &build.definition,
-                &target.id,
-                &snapshot.items,
-                &definitions,
-                &stats,
-                &snapshot.characters,
-                &objectives,
-            ),
+            analysis,
             metadata: crate::queries::query_metadata(&outcome, policy, now),
         })
     }

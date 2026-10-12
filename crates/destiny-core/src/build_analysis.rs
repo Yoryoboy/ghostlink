@@ -66,6 +66,7 @@ pub struct BuildAnalysis {
     pub resolved: usize,
     pub missing: usize,
     pub findings: Vec<BuildFinding>,
+    pub equipped_set_bonuses: crate::build_sets::EquippedSetBonuses,
     pub not_evaluated: Vec<&'static str>,
 }
 fn definition(defs: &[ItemDefinition], hash: ItemHash) -> Option<&ItemDefinition> {
@@ -395,18 +396,21 @@ pub fn analyze_build(
     }
     findings.extend([invalid, nonmatching]);
     for (kind, reason) in [
-        (FindingKind::InvalidMods, "mod_assignment_data_unavailable"),
+        (
+            FindingKind::InvalidMods,
+            "dim_mod_assignment_not_implemented",
+        ),
         (
             FindingKind::EmptyFragmentSlots,
-            "fragment_capacity_unavailable",
+            "loadout_fragment_overrides_not_evaluated",
         ),
         (
             FindingKind::TooManyFragments,
-            "fragment_capacity_unavailable",
+            "loadout_fragment_overrides_not_evaluated",
         ),
         (
             FindingKind::NeedsArmorUpgrades,
-            "armor_upgrade_data_unavailable",
+            "dim_mod_and_stat_upgrade_rules_not_implemented",
         ),
         (
             FindingKind::UsesSeasonalMods,
@@ -415,11 +419,11 @@ pub fn analyze_build(
         (FindingKind::BetterStatsAvailable, "optimizer_unavailable"),
         (
             FindingKind::ModsDontFit,
-            "armor_energy_and_socket_data_unavailable",
+            "dim_mod_assignment_not_implemented",
         ),
         (
             FindingKind::DoesNotSatisfyStatConstraints,
-            "armor_base_stats_unavailable",
+            "dim_loadout_stat_aggregation_not_implemented",
         ),
     ] {
         if kind == FindingKind::InvalidMods
@@ -439,6 +443,7 @@ pub fn analyze_build(
         missing,
         items,
         findings,
+        equipped_set_bonuses: Default::default(),
         not_evaluated: vec!["socket_overrides_not_evaluated"],
     }
 }

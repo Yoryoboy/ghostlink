@@ -74,7 +74,7 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
             freshness: FreshnessStatus::Fresh,
         },
     };
-    let output = BuildOutput::from_result(Ok(BuildReply::Analysis(Box::new(result))));
+    let output = BuildOutput::from_result(Ok(BuildReply::Analysis(Box::new(result.clone()))));
     assert_eq!(
         output.value["counts"],
         json!({"specified":1,"resolved":0,"missing":1})
@@ -82,6 +82,15 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
     assert_eq!(output.value["items"][0]["spec"]["id"], "404");
     assert_eq!(output.value["items"][0]["spec"]["crafted_date"], 123);
     assert_eq!(output.value["findings"].as_array().unwrap().len(), 13);
+    assert_eq!(
+        output.value["equipped_set_bonuses"],
+        json!({"evaluation":"not_evaluated", "reasons":["set_activation_not_assembled"], "sets":[]})
+    );
+    assert!(
+        output
+            .render_text()
+            .contains("Equipped set bonuses: not_evaluated")
+    );
     assert!(
         output
             .render_text()
@@ -89,6 +98,40 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
     );
     assert!(output.render_text().contains("not_evaluated"));
     assert_eq!(output.exit_code, 0); // findings are data, not failed transport
+    let mut result = result;
+    result.analysis.equipped_set_bonuses = build_sets::EquippedSetBonuses {
+        evaluation: "evaluated",
+        reasons: vec![],
+        sets: vec![build_sets::EquippedSetBonus {
+            hash: 42,
+            name: Some("Set\nname".into()),
+            equipped_count: 2,
+            perks: Some(vec![build_sets::EquippedSetPerk {
+                perk: armor_catalog::SetPerk {
+                    required_set_count: 2,
+                    sandbox_perk_hash: 100,
+                    name: Some("Perk\nname".into()),
+                    icon: None,
+                },
+                active: Some(true),
+            }]),
+        }],
+    };
+    let output = BuildOutput::from_result(Ok(BuildReply::Analysis(Box::new(result))));
+    assert_eq!(
+        output.value["equipped_set_bonuses"]["sets"][0]["perks"][0]["active"],
+        true
+    );
+    assert!(
+        output
+            .render_text()
+            .contains("Set 42 (Setname): 2 equipped pieces")
+    );
+    assert!(
+        output
+            .render_text()
+            .contains("Perk 100 (Perkname), requires 2: active")
+    );
 }
 
 #[test]
