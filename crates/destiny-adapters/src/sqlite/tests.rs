@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 53] = [
+const EXPECTED_TABLE_NAMES: [&str; 56] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -38,6 +38,7 @@ const EXPECTED_TABLE_NAMES: [&str; 53] = [
     "definition_socket_plugs",
     "definition_tags",
     "definitions",
+    "inventory_buckets",
     "inventory_coverage",
     "item_available_plugs",
     "item_descriptions",
@@ -64,6 +65,8 @@ const EXPECTED_TABLE_NAMES: [&str; 53] = [
     "stat_definitions",
     "subclass_plug_options",
     "sync_metadata",
+    "vault_accepted_items",
+    "vault_vendors",
 ];
 
 const EXPECTED_INDEX_NAMES: [&str; 5] = [
@@ -78,7 +81,16 @@ const EXPECTED_INDEX_NAMES: [&str; 5] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 258] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 267] = [
+    ("inventory_buckets", "hash", "INTEGER"),
+    ("inventory_buckets", "definition_version", "TEXT"),
+    ("inventory_buckets", "item_count", "INTEGER"),
+    ("vault_vendors", "hash", "INTEGER"),
+    ("vault_vendors", "definition_version", "TEXT"),
+    ("vault_accepted_items", "vendor_hash", "INTEGER"),
+    ("vault_accepted_items", "ordinal", "INTEGER"),
+    ("vault_accepted_items", "accepted_bucket", "INTEGER"),
+    ("vault_accepted_items", "destination_bucket", "INTEGER"),
     ("definition_equipping_labels", "definition_hash", "INTEGER"),
     ("definition_equipping_labels", "unique_label", "TEXT"),
     ("definition_material_inputs", "definition_hash", "INTEGER"),
@@ -1022,7 +1034,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 33);
+    assert_eq!(LATEST_SCHEMA_VERSION, 34);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION

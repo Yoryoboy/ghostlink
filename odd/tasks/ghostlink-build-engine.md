@@ -460,10 +460,22 @@ coverage (`domain.rs:123-126`).
       Tests written after code; mutation checks confirmed they fail when
       behavior is removed. Workspace: 2213 all-features, 2181 default,
       0 failed; clippy both modes, fmt.
-    - [ ] **BE-007a2b — Vault evidence.** Project Vault bucket
-      correspondence and capacity as DIM does (Vault vendor
-      `acceptedItems`, bucket `itemCount`, `d2-buckets.ts:60-66`),
-      migration 34; wire into `build apply`.
+    - [x] **BE-007a2b — Vault evidence.** Migration 34
+      (`inventory_buckets`, `vault_vendors`, `vault_accepted_items`; STRICT,
+      guarded downgrade, once-per-upgrade refresh). Vault vendor 1037843411
+      (`d2-known-values.ts:343`), `acceptedItems` correspondence with
+      later-wins and 0 = none (`d2-buckets.ts:59-66`), capacity from bucket
+      `itemCount` (`d2-buckets.ts:47`, `stores-helpers.ts:65-66,101-107`).
+      Vendor table is stream-decoded keeping only the Vault vendor. Live
+      244213.26.06.29.2000-1: buckets 19 KB / 60; vendors 38.9 MB / 2,170
+      (Vault vendor 2,576 B, 14 entries). Caps: buckets 10,000 / 4 MiB;
+      vendors 20,000 scanned / 128 MiB; 256 accepted entries. World
+      requests 13 -> 15; +38.9 MB per Manifest refresh (once per game
+      patch; DIM reads the same table). Users run `ghostlink sync-manifest`
+      once after schema 34. `VaultEvidence::from_catalogs` feeds
+      `BuildService::plan_apply`. Workspace: 2219 all-features, 2187
+      default, 0 failed; clippy both modes, fmt. Follow-up: conditional
+      vendor fetch if the download cost matters.
     - [ ] **BE-007a2c — Executor and MCP.** Executor with DIM partial
       failure adapted to optimistic semantics, fail-on-mutation fake,
       MCP mutation tool, `docs/mcp.md`.

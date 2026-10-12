@@ -101,6 +101,40 @@ impl VaultEvidence {
             capacity: vec![(vault, capacity)],
         }
     }
+    /// DIM `d2-buckets.ts:59-66`: later `acceptedItems` override earlier ones and a
+    /// falsy destination (0) leaves no Vault bucket; a destination without a bucket
+    /// definition resolves to nothing. Capacity is that bucket's `itemCount`
+    /// (`d2-buckets.ts:47`). No usable mapping is missing evidence, not an empty one.
+    pub fn from_catalogs(
+        vendor: &crate::armor_catalog::VaultVendorDefinition,
+        buckets: &[crate::armor_catalog::InventoryBucketDefinition],
+    ) -> Option<Self> {
+        let destinations: std::collections::BTreeMap<u32, u32> = vendor
+            .accepted_items
+            .iter()
+            .map(|e| (e.accepted_bucket, e.destination_bucket))
+            .collect();
+        let mut evidence = Self::default();
+        for (accepted, destination) in destinations {
+            let vault = BucketHash::new(destination.into());
+            let Some(definition) = buckets.iter().find(|b| b.hash == destination) else {
+                continue;
+            };
+            if destination == 0 {
+                continue;
+            }
+            evidence
+                .mapping
+                .push((BucketHash::new(accepted.into()), vault));
+            if !evidence.capacity.iter().any(|(b, _)| *b == vault) {
+                evidence.capacity.push((
+                    vault,
+                    usize::try_from(definition.item_count).unwrap_or(usize::MAX),
+                ));
+            }
+        }
+        (!evidence.mapping.is_empty()).then_some(evidence)
+    }
     fn vault_bucket(&self, bucket: BucketHash) -> Option<BucketHash> {
         self.mapping.iter().find(|(b, _)| *b == bucket).map(|m| m.1)
     }

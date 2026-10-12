@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 33;
+pub(crate) const LATEST_VERSION: u32 = 34;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 33] = [
+const MIGRATIONS: [Migration; 34] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -219,7 +219,40 @@ const MIGRATIONS: [Migration; 33] = [
         up: SCHEMA_V33_UP,
         down: SCHEMA_V33_DOWN,
     },
+    Migration {
+        version: 34,
+        up: SCHEMA_V34_UP,
+        down: SCHEMA_V34_DOWN,
+    },
 ];
+const SCHEMA_V34_UP: &str = r#"
+CREATE TABLE inventory_buckets (
+    hash INTEGER PRIMARY KEY CHECK (hash BETWEEN 0 AND 4294967295),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128),
+    item_count INTEGER NOT NULL CHECK (item_count BETWEEN 0 AND 4294967295)
+) STRICT;
+CREATE TABLE vault_vendors (
+    hash INTEGER PRIMARY KEY CHECK (hash BETWEEN 0 AND 4294967295),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128)
+) STRICT;
+CREATE TABLE vault_accepted_items (
+    vendor_hash INTEGER NOT NULL REFERENCES vault_vendors(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 255),
+    accepted_bucket INTEGER NOT NULL CHECK (accepted_bucket BETWEEN 0 AND 4294967295),
+    destination_bucket INTEGER NOT NULL CHECK (destination_bucket BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (vendor_hash, ordinal)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V34_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM inventory_buckets) OR EXISTS (SELECT 1 FROM vault_vendors) OR EXISTS (SELECT 1 FROM vault_accepted_items) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE vault_accepted_items;
+DROP TABLE vault_vendors;
+DROP TABLE inventory_buckets;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
 const SCHEMA_V33_UP: &str = r#"
 CREATE TABLE definition_equipping_labels (
     definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,

@@ -970,7 +970,7 @@ impl fmt::Debug for SandboxPerkCandidate {
 #[derive(Clone, Eq, PartialEq)]
 pub struct ManifestIndex {
     /// Armor and socket catalog content paths, in ArmorCatalogKind::ALL order.
-    pub armor_catalog_paths: [String; 6],
+    pub armor_catalog_paths: [String; 8],
     pub version: DefinitionVersion,
     pub component_path: String,
     pub milestone_path: String,

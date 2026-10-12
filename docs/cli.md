@@ -75,7 +75,9 @@ ordinary profile freshness and the same character selection as `build check`, re
 only, and reports `dispatched: 0`. Skipped items carry typed reasons; sockets, mods
 and subclass are listed under `not_applied` (BE-007b). Evidence that is not
 available (Vault capacity, saved-loadout membership) is listed under `unknown`;
-without Vault capacity, moves that stage through the Vault are skipped as
+Vault-staged moves use the Vault bucket mapping and capacity stored by
+`sync-manifest` (run it once after upgrading to schema 34; it now also downloads the
+~39 MB vendor table). Without stored evidence they are skipped as
 `vault_capacity_unavailable`. **Without `--dry-run` the command exits 40
 (`unsupported_operation`)**: the executor is not implemented yet. See
 [build-apply.md](build-apply.md).

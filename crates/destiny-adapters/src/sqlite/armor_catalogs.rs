@@ -13,6 +13,10 @@ pub(super) fn write(
         return Ok(());
     }
     for record in records {
+        if record.kind().id() >= 6 {
+            super::vault_catalogs::write(connection, record, version)?;
+            continue;
+        }
         if let ArmorCatalogRecord::MaterialRequirementSet(value) = record {
             super::material_catalogs::write(connection, value, version)?;
             continue;
@@ -74,6 +78,8 @@ pub(super) fn write(
                 }
             }
             ArmorCatalogRecord::MaterialRequirementSet(_)
+            | ArmorCatalogRecord::InventoryBucket(_)
+            | ArmorCatalogRecord::VaultVendor(_)
             | ArmorCatalogRecord::SocketType(_)
             | ArmorCatalogRecord::SocketCategory(_)
             | ArmorCatalogRecord::PlugSet(_) => unreachable!(),
@@ -127,6 +133,9 @@ fn read(
     kind: ArmorCatalogKind,
     hash: Option<u32>,
 ) -> Result<Vec<ArmorCatalogRecord>, AppError> {
+    if kind.id() >= 6 {
+        return super::vault_catalogs::read(connection, kind, hash);
+    }
     if kind == ArmorCatalogKind::MaterialRequirementSet {
         return super::material_catalogs::read(connection, hash);
     }

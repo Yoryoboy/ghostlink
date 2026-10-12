@@ -71,16 +71,38 @@ Ghostlink adaptations:
   is listed in `unknown` as `in_game_loadout_membership`, and every item ranks as
   outside any loadout.
 - Vault evidence (`VaultEvidence`: equipment bucket to Vault bucket plus capacity) is
-  a pure planner input. Production supplies none, so `unknown` lists
-  `vault_capacity` and Vault-staged moves are skipped as
-  `vault_capacity_unavailable`. DIM derives it from the Vault vendor `acceptedItems`
-  and `DestinyInventoryBucketDefinition.itemCount`, which Ghostlink does not
-  project or download. Projecting them (a migration 34 plus new sync components)
-  could not be audited offline, so no capacity is guessed.
+  projected by migration 34 and supplied to the planner by `build apply`; see
+  "Vault evidence" below. When it is not stored, `unknown` lists `vault_capacity` and
+  Vault-staged moves are skipped as `vault_capacity_unavailable`; nothing is guessed.
+
+## Vault evidence (BE-007a2b)
+
+Migration 34 adds three STRICT tables: `inventory_buckets` (bucket hash, `itemCount`),
+`vault_vendors` and `vault_accepted_items` (ordered `acceptedItems` of the Vault
+vendor, cascading from the vendor row). Integers are range-checked, downgrade is
+refused while any of them holds rows, and upgrade invalidates Manifest freshness once.
+Run `ghostlink sync-manifest` after upgrading; until then Vault-staged moves keep
+skipping as `vault_capacity_unavailable`.
+
+| Decision | DIM evidence (`src/app/`) |
+|---|---|
+| Vault bucket correspondence comes from vendor `1037843411` `acceptedItems` | `destiny2/d2-buckets.ts:59-61`, `search/d2-known-values.ts:343` |
+| Later entries override earlier ones; a destination of 0 means no Vault bucket; an unknown destination bucket resolves to none | `destiny2/d2-buckets.ts:59-66` |
+| Capacity is the Vault bucket's `itemCount` (1300 for the general bucket) | `destiny2/d2-buckets.ts:47`, `inventory/stores-helpers.ts:65-66` |
+| A bucket with no Vault bucket has no Vault space | `inventory/stores-helpers.ts:65-66,101-107` |
+
+Manifest cost: two more world requests (13 -> 15). Measured against Manifest
+`244213.26.06.29.2000-1-bnet.65864`: `DestinyInventoryBucketDefinition` is 19,171 bytes
+(60 records) and `DestinyVendorDefinition` is **38,887,425 bytes** (2,170 records) on
+every Manifest refresh. DIM reads the same vendor table, so no cheaper source exists.
+The vendor table is streamed and every vendor except the Vault vendor is skipped
+without being stored (the Vault record is 2,576 bytes, 14 entries). Ceilings:
+buckets 10,000 records / 4 MiB; vendors 20,000 records scanned / 128 MiB, 256 accepted
+entries kept. A table without the Vault vendor yields no evidence, not an error.
 
 ## Remaining work
 
-Vault bucket/capacity projection; stack amounts; the executor (reusing the move,
+Stack amounts; the executor (reusing the move,
 equip, batch equip and Postmaster pull adapters, throttle and error mapping, with
 DIM's per-item partial failure adapted to optimistic semantics: continue
 independent items, track dependency failures, never blindly retry, never claim

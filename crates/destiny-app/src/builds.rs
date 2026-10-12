@@ -290,9 +290,27 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
                 .collect()
         });
         let parameters = analyzed.definition.parameters.as_ref();
+        // Vault vendor `acceptedItems` plus bucket `itemCount`; absent stays unknown.
+        let vendor = sync
+            .repository()
+            .lookup_armor_catalog(ArmorCatalogKind::VaultVendor, VAULT_VENDOR_HASH)?;
+        let vault = match vendor {
+            Some(ArmorCatalogRecord::VaultVendor(vendor)) => {
+                let buckets: Vec<_> = sync
+                    .repository()
+                    .armor_catalog(ArmorCatalogKind::InventoryBucket, None)?
+                    .into_iter()
+                    .filter_map(|record| match record {
+                        ArmorCatalogRecord::InventoryBucket(bucket) => Some(bucket),
+                        _ => None,
+                    })
+                    .collect();
+                build_apply::VaultEvidence::from_catalogs(&vendor, &buckets)
+            }
+            _ => None,
+        };
         let context = build_apply::ApplyContext {
-            // No Vault bucket projection exists yet (BE-007a2 follow-up).
-            vault: None,
+            vault: vault.as_ref(),
             loadouts: membership.as_deref(),
             clear_weapons: parameters.and_then(|p| p.clear_weapons).unwrap_or(false),
             clear_armor: parameters.and_then(|p| p.clear_armor).unwrap_or(false),

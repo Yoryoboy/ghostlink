@@ -9,15 +9,21 @@ pub enum ArmorCatalogKind {
     SocketCategory,
     PlugSet,
     MaterialRequirementSet,
+    /// Bucket `itemCount` (DIM `d2-buckets.ts:47`).
+    InventoryBucket,
+    /// Only the Vault vendor's `acceptedItems` (DIM `d2-buckets.ts:59-66`).
+    VaultVendor,
 }
 impl ArmorCatalogKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
         Self::StatGroup,
         Self::EquipableSet,
         Self::SocketType,
         Self::SocketCategory,
         Self::PlugSet,
         Self::MaterialRequirementSet,
+        Self::InventoryBucket,
+        Self::VaultVendor,
     ];
     pub const fn component(self) -> &'static str {
         match self {
@@ -27,12 +33,16 @@ impl ArmorCatalogKind {
             Self::SocketCategory => "DestinySocketCategoryDefinition",
             Self::PlugSet => "DestinyPlugSetDefinition",
             Self::MaterialRequirementSet => "DestinyMaterialRequirementSetDefinition",
+            Self::InventoryBucket => "DestinyInventoryBucketDefinition",
+            Self::VaultVendor => "DestinyVendorDefinition",
         }
     }
     /// Safety ceilings with seasonal headroom, not DIM/gameplay restrictions.
     /// Live probe 2026-10-11: 5,422 plug sets, 1,874 socket types; other kinds <= 112.
+    /// Live probe 2026-10-12: 60 buckets, 2,170 vendors (scanned, one retained).
     pub const fn max_records(self) -> usize {
         match self {
+            Self::VaultVendor => 20_000,
             Self::PlugSet => 50_000,
             Self::SocketType => 20_000,
             _ => 10_000,
@@ -46,6 +56,8 @@ impl ArmorCatalogKind {
             Self::SocketCategory => 3,
             Self::PlugSet => 4,
             Self::MaterialRequirementSet => 5,
+            Self::InventoryBucket => 6,
+            Self::VaultVendor => 7,
         }
     }
 }
@@ -149,6 +161,29 @@ pub struct MaterialRequirementSetDefinition {
     pub hash: u32,
     pub materials: Vec<MaterialRequirement>,
 }
+/// DIM `VendorHashes.Vault` (`search/d2-known-values.ts:343`).
+pub const VAULT_VENDOR_HASH: u32 = 1037843411;
+/// Live Vault vendor: 14 entries. Safety headroom, not a gameplay limit.
+pub const MAX_VAULT_ACCEPTED_ITEMS: usize = 256;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InventoryBucketDefinition {
+    pub hash: u32,
+    /// DIM `capacity: def.itemCount`; the Vault general bucket is 1300 live.
+    pub item_count: u32,
+}
+/// One `acceptedItems` entry; a destination of 0 means no Vault bucket.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultAcceptedItem {
+    pub accepted_bucket: u32,
+    pub destination_bucket: u32,
+}
+/// The Vault vendor only; other vendors are never retained.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VaultVendorDefinition {
+    pub hash: u32,
+    /// Source order is significant: DIM lets later entries override earlier ones.
+    pub accepted_items: Vec<VaultAcceptedItem>,
+}
 fn bounded_text(value: &str, limit: usize) -> bool {
     value.chars().count() <= limit && !value.chars().any(|c| c.is_control() && !c.is_whitespace())
 }
@@ -160,6 +195,8 @@ pub enum ArmorCatalogRecord {
     SocketCategory(SocketCategoryDefinition),
     PlugSet(PlugSetDefinition),
     MaterialRequirementSet(MaterialRequirementSetDefinition),
+    InventoryBucket(InventoryBucketDefinition),
+    VaultVendor(VaultVendorDefinition),
 }
 impl ArmorCatalogRecord {
     pub const fn kind(&self) -> ArmorCatalogKind {
@@ -170,6 +207,8 @@ impl ArmorCatalogRecord {
             Self::SocketCategory(_) => ArmorCatalogKind::SocketCategory,
             Self::PlugSet(_) => ArmorCatalogKind::PlugSet,
             Self::MaterialRequirementSet(_) => ArmorCatalogKind::MaterialRequirementSet,
+            Self::InventoryBucket(_) => ArmorCatalogKind::InventoryBucket,
+            Self::VaultVendor(_) => ArmorCatalogKind::VaultVendor,
         }
     }
     pub const fn hash(&self) -> u32 {
@@ -180,6 +219,8 @@ impl ArmorCatalogRecord {
             Self::SocketCategory(value) => value.hash,
             Self::PlugSet(value) => value.hash,
             Self::MaterialRequirementSet(value) => value.hash,
+            Self::InventoryBucket(value) => value.hash,
+            Self::VaultVendor(value) => value.hash,
         }
     }
     pub fn validate(&self) -> Result<(), AppError> {
@@ -193,6 +234,11 @@ impl ArmorCatalogRecord {
             }
             Self::MaterialRequirementSet(value) => {
                 value.materials.len() <= MAX_MATERIAL_REQUIREMENTS
+            }
+            Self::InventoryBucket(_) => true,
+            Self::VaultVendor(value) => {
+                value.hash == VAULT_VENDOR_HASH
+                    && value.accepted_items.len() <= MAX_VAULT_ACCEPTED_ITEMS
             }
             Self::SocketCategory(value) => bounded_text(&value.name, 256),
             Self::PlugSet(value) => value.reusable_plug_items.len() <= MAX_PLUG_SET_ITEMS,
@@ -233,7 +279,7 @@ impl ArmorCatalogRecord {
 /// Validate complete batches before publication; empty catalogs are legitimate.
 pub fn validate_catalogs(records: &[ArmorCatalogRecord]) -> Result<(), AppError> {
     let mut seen = std::collections::HashSet::new();
-    let mut counts = [0; 6];
+    let mut counts = [0; 8];
     for record in records {
         record.validate()?;
         counts[record.kind().id() as usize] += 1;

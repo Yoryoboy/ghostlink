@@ -636,3 +636,45 @@ fn occupants_of_other_known_buckets_do_not_block_character_space() {
     );
     assert_eq!(p.skipped[0].reason, ApplySkipReason::OccupancyUnknown);
 }
+#[test]
+fn vault_evidence_follows_dim_accepted_items_and_bucket_capacity() {
+    use destiny_core::armor_catalog::{
+        InventoryBucketDefinition, VAULT_VENDOR_HASH, VaultAcceptedItem, VaultVendorDefinition,
+    };
+    let accepted = |a, d| VaultAcceptedItem {
+        accepted_bucket: a,
+        destination_bucket: d,
+    };
+    let bucket = |hash, item_count| InventoryBucketDefinition { hash, item_count };
+    let vendor = VaultVendorDefinition {
+        hash: VAULT_VENDOR_HASH,
+        accepted_items: vec![
+            accepted(1469714392, 138197802),
+            accepted(3313201758, 138197802),
+            // Later entries override earlier ones (`d2-buckets.ts:59-61`).
+            accepted(1498876634, 7),
+            accepted(1498876634, 138197802),
+            // Destination 0 is falsy in DIM: no Vault bucket (`d2-buckets.ts:62-64`).
+            accepted(138197802, 0),
+            accepted(2465295065, 138197802),
+            accepted(2465295065, 0),
+            // Destination without a bucket definition: no Vault bucket.
+            accepted(953998645, 999),
+        ],
+    };
+    let evidence =
+        VaultEvidence::from_catalogs(&vendor, &[bucket(138197802, 1300), bucket(1469714392, 10)])
+            .unwrap();
+    let general = BucketHash::new(138197802);
+    assert_eq!(
+        evidence.mapping,
+        [
+            (BucketHash::new(1469714392), general),
+            (BucketHash::new(1498876634), general),
+            (BucketHash::new(3313201758), general),
+        ]
+    );
+    assert_eq!(evidence.capacity, [(general, 1300)]);
+    // Nothing usable is missing evidence, never an empty mapping.
+    assert_eq!(VaultEvidence::from_catalogs(&vendor, &[bucket(1, 5)]), None);
+}

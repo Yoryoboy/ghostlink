@@ -737,3 +737,137 @@ fn build_apply_plan_reads_only_and_marks_missing_vault_evidence() {
         "fresh state needs no provider call"
     );
 }
+
+#[test]
+fn build_apply_plans_vault_staged_moves_only_with_projected_vault_evidence() {
+    use destiny_core::armor_catalog::*;
+    use destiny_core::build_apply::{ApplyPhase, ApplySkipReason, BuildAction};
+    let mut sync = fixture();
+    let mut service = BuildService::new(
+        destiny_app::test_support::InMemoryBuildRepository::default(),
+        DimBuildCodec,
+    );
+    let source = service
+        .from_equipped(
+            &mut sync,
+            &CharacterId::new("1"),
+            "Apply",
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let mut definitions = vec![
+        definition(1498876634, Some(BucketHash::new(1498876634)), None),
+        definition(3448274439, Some(SUBCLASS_BUCKET_HASH), None),
+        definition(3284755031, Some(BucketHash::new(3448274439)), None),
+        definition(999, Some(BucketHash::new(999)), None),
+    ];
+    for d in &mut definitions {
+        d.class_type = Some(destiny_core::domain::ClassType::Any);
+    }
+    let definitions = ManifestDefinitions {
+        version: DefinitionVersion::new("v1"),
+        definitions,
+    };
+    let mut input =
+        InventorySnapshotInput::with_metadata(&sync.repository().load_current().unwrap().unwrap());
+    // The kinetic item sits on another character: Vault staging is required.
+    input.characters.push(Character {
+        id: CharacterId::new("2"),
+        class: Some("Titan".into()),
+        name: None,
+        race: None,
+        gender: None,
+        light: None,
+        date_last_played: None,
+    });
+    input.items[0].location = ItemLocation::Character(CharacterId::new("2"));
+    input.items[0].equipped = false;
+    sync.repository_mut().replace_current(input).unwrap();
+    let request = destiny_app::builds::BuildCheckRequest {
+        selector: destiny_app::builds::BuildSelector::Id(source.build.definition.id),
+        character: None,
+    };
+    let policy = destiny_adapters::pinned_equipment_capacity_policy();
+    let plan = |sync: &mut ProfileSyncService<_, SqliteStore>| {
+        service
+            .plan_apply(
+                sync,
+                &request,
+                &policy,
+                FreshnessPolicy { ttl_seconds: 300 },
+                Timestamp::new(100),
+            )
+            .unwrap()
+    };
+    let mut world = destiny_app::test_support::synthetic_world(DefinitionVersion::new("v1"));
+    let publish = |sync: &mut ProfileSyncService<_, SqliteStore>, world| {
+        sync.repository_mut()
+            .publish_manifest(
+                DefinitionReplacementInput {
+                    definitions: definitions.clone(),
+                    checked_at: Timestamp::new(100),
+                    source: SourceMarker::Manifest,
+                },
+                world,
+            )
+            .unwrap();
+    };
+    // Without projected evidence the typed skip remains.
+    publish(&mut sync, world.clone());
+    let preview = plan(&mut sync);
+    assert_eq!(
+        preview.plan.skipped[0].reason,
+        ApplySkipReason::VaultCapacityUnavailable
+    );
+    assert!(preview.plan.unknown.contains(&"vault_capacity"));
+    // DIM mapping: accepted kinetic bucket -> general Vault bucket with its itemCount.
+    world.armor_catalogs = vec![
+        ArmorCatalogRecord::InventoryBucket(InventoryBucketDefinition {
+            hash: 138197802,
+            item_count: 1300,
+        }),
+        ArmorCatalogRecord::VaultVendor(VaultVendorDefinition {
+            hash: VAULT_VENDOR_HASH,
+            accepted_items: vec![VaultAcceptedItem {
+                accepted_bucket: 1498876634,
+                destination_bucket: 138197802,
+            }],
+        }),
+    ];
+    publish(&mut sync, world);
+    let preview = plan(&mut sync);
+    // Only the unrelated subclass bucket remains unsupported.
+    assert!(
+        preview
+            .plan
+            .skipped
+            .iter()
+            .all(|s| s.reason == ApplySkipReason::UnsupportedBucket),
+        "{:?}",
+        preview.plan.skipped
+    );
+    assert!(!preview.plan.unknown.contains(&"vault_capacity"));
+    let moves: Vec<_> = preview
+        .plan
+        .steps
+        .iter()
+        .filter(|s| s.phase == ApplyPhase::Move)
+        .map(|s| s.action.clone())
+        .collect();
+    assert_eq!(
+        moves[..2],
+        [
+            BuildAction::Move {
+                item: ItemInstanceId::new("1"),
+                from: ItemLocation::Character(CharacterId::new("2")),
+                to: ItemLocation::Vault,
+            },
+            BuildAction::Move {
+                item: ItemInstanceId::new("1"),
+                from: ItemLocation::Vault,
+                to: ItemLocation::Character(CharacterId::new("1")),
+            },
+        ]
+    );
+}
