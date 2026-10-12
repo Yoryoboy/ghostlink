@@ -229,7 +229,19 @@ coverage (`domain.rs:123-126`).
     `utils/socket-utils.ts:640-642`. Workspace: 2112 passed all-features,
     2080 default, 0 failed; clippy both modes, fmt, diff check.
   - [ ] **BE-005c — DIM armor model.** Base/masterwork/tuning/set-bonus
-    derivations with fixtures.
+    derivations with fixtures. Split: **BE-005c1** stats (investment +
+    intrinsic plugs, interpolation, conditional stats, total base),
+    Armor 3.0 masterwork tier and +5 rule, gear tier, energy, additive
+    `inspect-item` exposure; **BE-005c2** tuning stat, set bonuses, fragment
+    capacity.
+    PAUSED 2026-10-12 (owner): three worker runs and a minimal explore probe
+    failed with "assistant reported an error" (provider-side; the last two
+    with zero tool calls). Partial, UNVERIFIED, uncommitted BE-005c1 work is
+    in the worktree: new `crates/destiny-{core,app,output}/src/armor_model.rs`,
+    `crates/destiny-core/tests/armor_model.rs` (454 lines) and +220/-12 across
+    12 modified files. Resume: confirm subagents work, then a fresh worker
+    reviews that partial against DIM (keep/fix/discard) and finishes
+    BE-005c1 only.
   - [ ] **BE-005d — Build capture completion.** Equipped subclass/artifact
     socket overrides, unlocked plug evidence (102/206), component 309 crafted
     dates and resolution fallback.
