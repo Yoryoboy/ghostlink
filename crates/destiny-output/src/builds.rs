@@ -92,7 +92,10 @@ impl BuildOutput {
                     "mod_fit":{"evaluation":analysis.mod_fit.evaluation, "reason":analysis.mod_fit.reason,
                         "invalid_mods":analysis.mod_fit.invalid_mods,
                         "unassigned_mods":analysis.mod_fit.unassigned_mods,
-                        "needs_upgrades_for_mods":analysis.mod_fit.needs_upgrades_for_mods},
+                        "needs_upgrades_for_mods":analysis.mod_fit.needs_upgrades_for_mods,
+                        "uses_seasonal_mods":analysis.mod_fit.uses_seasonal_mods,
+                        "item_mod_assignments":analysis.mod_fit.item_mod_assignments.as_ref().map(|items| items.iter().map(|(id, mods)| json!({"instance_id":id.as_str(),"mods":mods})).collect::<Vec<_>>()),
+                        "upgrade_costs":analysis.mod_fit.upgrade_costs.map(|costs| destiny_app::mod_assignment::RANKED_MATERIALS.iter().zip(costs).filter(|(_, amount)| *amount > 0).map(|(hash, amount)| json!({"material_hash":hash,"amount":amount})).collect::<Vec<_>>())},
                     "equipped_set_bonuses":{"evaluation":bonuses.evaluation,
                         "reasons":bonuses.reasons, "sets":sets},
                     "metadata":{"checked_at":result.metadata.sync.checked_at.seconds(),
@@ -291,6 +294,15 @@ impl BuildOutput {
             lines.push(format!(
                 "Armor upgrades needed for mods: {}",
                 mods["needs_upgrades_for_mods"]
+            ));
+            lines.push(format!(
+                "Seasonal mods required: {}",
+                mods["uses_seasonal_mods"]
+            ));
+            lines.push(format!("Mod upgrade costs: {}", mods["upgrade_costs"]));
+            lines.push(format!(
+                "Item mod assignments: {}",
+                mods["item_mod_assignments"]
             ));
             let bonuses = &self.value["equipped_set_bonuses"];
             lines.push(format!(

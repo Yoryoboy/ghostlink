@@ -309,6 +309,12 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
                     &unlocked_mods,
                 )))
             }));
+            hashes.extend(mods.iter().map(|hash| {
+                ItemHash::new(i64::from(mod_assignment::resolve_mod_cost_variant(
+                    hash.value() as u32,
+                    &[],
+                )))
+            }));
             hashes.insert(ItemHash::new(i64::from(
                 mod_assignment::DEPRECATED_MOD_PLACEHOLDER,
             )));

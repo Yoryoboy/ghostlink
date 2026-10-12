@@ -52,15 +52,18 @@ resolved armor using current inserted event selectors (not future assignments).
 Report active perks only when active is true. Partial counts are lower bounds;
 null perks/activation means unknown, never inactive. Native sets take precedence;
 event selectors require visible sockets and enabled inserted plugs. The additive
-mod_fit object evaluates DIM bucket-specific, artifice and tuning mods with complete evidence
+mod_fit object evaluates all DIM armor-mod categories with complete evidence
 and a full resolved set. Report invalid_mods separately from unassigned_mods (after
 allowed energy upgrades; duplicates count). needs_upgrades_for_mods is not a material
 quote or a stat-masterwork upgrade claim. Artifice prefers existing placement then
 nonexotics; tuning follows armor-slot order with DIM's exotic request-count rule.
-Missing raw tuning membership stays unknown. General/activity ranking remains
-not_evaluated (dim_general_activity_ranking_not_implemented), never clean.
-Persisted insertion-material inputs
-are prerequisites only: do not infer a material quote or ranking from their presence.
+Missing raw tuning membership stays unknown. General/activity candidates rank by
+unassigned count, lexicographic energy-upgrade material cost, then assignment changes.
+Report item_mod_assignments as proposals, not socket positions or applied state.
+upgrade_costs lists positive energy/artifice material amounts; never infer inventory
+affordability, stat-upgrade cost or an execution plan. uses_seasonal_mods includes
+expensive-variant re-fitting. A null seasonal field/finding with a reason remains
+unknown even when the independently proven fit is evaluated.
 Legacy mod hashes and seasonal costs
 resolve like DIM using enabled account/target-character unlocks; missing plug sets
 mean no unlocks. Missing/non-pluggable mods become DIM's deprecated placeholder;

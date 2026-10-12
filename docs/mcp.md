@@ -50,13 +50,17 @@ location/owner/equipped/class compatibility, counts (no percentage), and every D
 finding kind. `present: null` with `evaluation: not_evaluated` is not a clean bill
 of health. Search exclusion is `search_only`; optimizer-dependent suppression is
 not evaluated. The additive `mod_fit` object shares the CLI's bounded DIM
-bucket-specific/artifice/tuning assignment: nullable `invalid_mods`, `unassigned_mods` (after
+armor-mod assignment across all categories: nullable `invalid_mods`, `unassigned_mods` (after
 allowed energy upgrades, duplicates retained), and `needs_upgrades_for_mods`.
 Artifice prefers current placement then nonexotics; tuning uses canonical slot
 order and DIM's exotic request-count rule. Missing raw tuning membership stays
-unknown. General/activity ranking remains `not_evaluated` with
-`dim_general_activity_ranking_not_implemented`. Migration 32 persists material-ranking
-inputs and refreshes Manifest data once; this is not a material quote.
+unknown. General/activity Heap candidates rank by unassigned count, cumulative
+lexicographic material cost, then assignment changes. `item_mod_assignments` gives
+`{instance_id, mods}` proposals; `upgrade_costs` contains positive `{material_hash,
+amount}` energy/artifice costs, not affordability or a provider execution plan.
+`uses_seasonal_mods` includes expensive-variant re-fitting; missing re-fit inputs
+leave that field/finding null with a reason without erasing independently proven fit.
+Migration 32 supplies these material inputs; no new acquisition is added.
 Legacy hashes and seasonal costs resolve
 like DIM using enabled account/target-character unlocks (missing plug sets mean
 no unlocks). Missing/non-pluggable definitions use the deprecated placeholder;

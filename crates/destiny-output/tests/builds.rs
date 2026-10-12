@@ -124,6 +124,9 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
         invalid_mods: Some(vec![40]),
         unassigned_mods: Some(vec![42, 42]),
         needs_upgrades_for_mods: Some(false),
+        uses_seasonal_mods: Some(true),
+        item_mod_assignments: Some(vec![]),
+        upgrade_costs: Some([0, 1, 0, 0, 100]),
     };
     result.analysis.equipped_set_bonuses = build_sets::EquippedSetBonuses {
         evaluation: "evaluated",
@@ -147,6 +150,21 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
     assert!(output.render_text().contains("empty_fragment_slots"));
     assert_eq!(output.value["mod_fit"]["unassigned_mods"], json!([42, 42]));
     assert_eq!(output.value["mod_fit"]["needs_upgrades_for_mods"], false);
+    assert_eq!(output.value["mod_fit"]["uses_seasonal_mods"], true);
+    assert_eq!(output.value["mod_fit"]["item_mod_assignments"], json!([]));
+    assert_eq!(
+        output.value["mod_fit"]["upgrade_costs"],
+        json!([
+            {"material_hash":4257549985_u32,"amount":1},
+            {"material_hash":3159615086_u32,"amount":100}
+        ])
+    );
+    assert!(
+        output
+            .render_text()
+            .contains("Seasonal mods required: true")
+    );
+    assert!(output.render_text().contains("Mod upgrade costs:"));
     assert!(output.render_text().contains("Unassigned mods: [42,42]"));
     assert_eq!(
         output.value["equipped_set_bonuses"]["sets"][0]["perks"][0]["active"],

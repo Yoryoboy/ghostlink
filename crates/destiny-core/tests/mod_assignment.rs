@@ -160,6 +160,39 @@ fn analyze_fixture(
 }
 
 #[test]
+fn missing_armor_mod_categories_remain_unknown() {
+    let (b, i, mut d, c) = fixture(3, 10);
+    for armor in &mut d[1..] {
+        armor.armor.socket_categories.clear();
+    }
+    let result = analyze_fixture(&b, &i, &d, &c);
+    assert_eq!(result.evaluation, "not_evaluated");
+    assert_eq!(
+        result.reason,
+        Some("armor_mod_socket_categories_unavailable")
+    );
+    assert_eq!(result.item_mod_assignments, None);
+    assert_eq!(result.upgrade_costs, None);
+}
+
+#[test]
+fn analyzer_general_activity_are_ranked() {
+    for (category, cost, current, unassigned, upgrades) in [
+        (2487827355, 3, 10, vec![], false),
+        (2487827355, 9, 7, vec![], true),
+        (2487827355, 12, 11, vec![42], false),
+        (13646368, 3, 10, vec![42], false),
+    ] {
+        let (b, i, mut d, c) = fixture(cost, current);
+        d[0].armor.plug_category_hash = Some(category);
+        let result = analyze_fixture(&b, &i, &d, &c);
+        assert_eq!(result.evaluation, "evaluated");
+        assert_eq!(result.unassigned_mods, Some(unassigned));
+        assert_eq!(result.needs_upgrades_for_mods, Some(upgrades));
+    }
+}
+
+#[test]
 fn analyzer_energy_upgrades_table() {
     for (cost, current, assumption, fits, upgrades) in [
         (7, 7, None, true, false),
@@ -270,6 +303,30 @@ fn artifice_exotic_assumption_requires_legacy_armor_and_raw_tuning_stays_unknown
     let result = analyze_fixture(&b, &i, &d, &c);
     assert_eq!(result.unassigned_mods, Some(vec![]));
     assert_eq!(result.needs_upgrades_for_mods, Some(true));
+    let mut enhancement = d[0].clone();
+    enhancement.hash = ItemHash::new(720825311);
+    enhancement.armor.insertion_material_requirement_hash = Some(301);
+    d.push(enhancement);
+    let mut costs = c.clone();
+    costs.push(ArmorCatalogRecord::MaterialRequirementSet(
+        MaterialRequirementSetDefinition {
+            hash: 301,
+            materials: vec![
+                MaterialRequirement {
+                    item_hash: RANKED_MATERIALS[0],
+                    count: 1,
+                },
+                MaterialRequirement {
+                    item_hash: RANKED_MATERIALS[0],
+                    count: 9,
+                },
+            ],
+        },
+    ));
+    assert_eq!(
+        analyze_fixture(&b, &i, &d, &costs).upgrade_costs,
+        Some([1, 0, 0, 0, 0])
+    );
 
     let mut masterwork = d[0].clone();
     masterwork.hash = ItemHash::new(99);
@@ -295,18 +352,10 @@ fn artifice_exotic_assumption_requires_legacy_armor_and_raw_tuning_stays_unknown
 }
 
 #[test]
-fn general_activity_ranking_remains_explicitly_unknown_and_other_categories_are_invalid() {
+fn ranked_categories_are_valid_and_other_categories_are_invalid() {
     for (category, expected_reason, expected_invalid) in [
-        (
-            2487827355,
-            Some("dim_general_activity_ranking_not_implemented"),
-            None,
-        ),
-        (
-            13646368,
-            Some("dim_general_activity_ranking_not_implemented"),
-            None,
-        ),
+        (2487827355, None, Some(vec![])),
+        (13646368, None, Some(vec![])),
         (123, None, Some(vec![42])),
     ] {
         let (b, i, mut d, c) = fixture(0, 10);
@@ -381,6 +430,190 @@ fn five_resolved_entries_match_dim_full_set_gate_even_with_repeated_bucket() {
     let (b, i, mut d, c) = fixture(3, 10);
     d[2].bucket_hash = d[1].bucket_hash;
     assert_eq!(analyze_fixture(&b, &i, &d, &c).evaluation, "evaluated");
+}
+
+#[test]
+fn expensive_variant_refit_seasonal_table() {
+    for (normal_cost, expected) in [(9, Some(false)), (12, Some(true))] {
+        let (mut b, mut i, mut d, c) = fixture(normal_cost, 10);
+        d[0].hash = ItemHash::new(14520248);
+        let mut reduced = d[0].clone();
+        reduced.hash = ItemHash::new(2318667184);
+        reduced.armor.energy_cost.as_mut().unwrap().energy_cost = 3;
+        d.push(reduced);
+        b.parameters.as_mut().unwrap().mods = Some(vec![ItemHash::new(14520248)]);
+        for item in &mut i {
+            item.sockets[0].plug_hash = Some(ItemHash::new(14520248));
+            item.sockets[0].reusable_plugs = Some(
+                vec![14520248, 2318667184]
+                    .into_iter()
+                    .map(|hash| domain::ReusablePlug {
+                        plug_hash: ItemHash::new(hash),
+                        enabled: false,
+                        can_insert: false,
+                    })
+                    .collect(),
+            );
+        }
+        let resolved = analyze_build(&b, &CharacterId::new("1"), &i, &d, &[], &[], &[]);
+        let result =
+            analyze_bucket_mods_with_unlocks(&b, &resolved.items, &i, &d, &c, &[2318667184]);
+        assert_eq!(result.uses_seasonal_mods, expected);
+        assert_eq!(
+            result.item_mod_assignments.as_ref().unwrap()[0].1,
+            vec![2318667184]
+        );
+        assert_eq!(result.unassigned_mods, Some(vec![]));
+        d.remove(0);
+        for item in &mut i {
+            item.sockets[0].plug_hash = Some(ItemHash::new(2318667184));
+        }
+        let resolved = analyze_build(&b, &CharacterId::new("1"), &i, &d, &[], &[], &[]);
+        let unknown =
+            analyze_bucket_mods_with_unlocks(&b, &resolved.items, &i, &d, &c, &[2318667184]);
+        assert_eq!(unknown.evaluation, "evaluated");
+        assert_eq!(unknown.uses_seasonal_mods, None);
+        assert_eq!(
+            unknown.reason,
+            Some("expensive_variant_fit_inputs_unavailable")
+        );
+    }
+}
+
+#[test]
+fn dim_energy_upgrade_selection_and_cumulative_materials() {
+    let (b, mut items, mut defs, mut catalogs) = fixture(5, 3);
+    defs[0].armor.plug_category_hash = Some(2487827355);
+    items[0].energy.as_mut().unwrap().energy_type = Some(3);
+    let tier_socket = items[0].sockets[0].clone();
+    items[0].sockets.push(IndexedSocket {
+        socket_index: 1,
+        ..tier_socket
+    });
+    defs[1]
+        .armor
+        .socket_categories
+        .push(DefinitionSocketCategory {
+            socket_category_hash: 760375309,
+            socket_indexes: vec![1],
+        });
+    defs[1].armor.socket_entries.push(DefinitionSocketEntry {
+        reusable_plug_set_hash: Some(201),
+        ..Default::default()
+    });
+    let mut plugs = vec![];
+    for (hash, capacity, category, kind, availability, count) in [
+        (2001, 3, 400813043, 3, 2, 10),
+        (2002, 5, 400813043, 3, 2, 20),
+        (2003, 5, 400813043, 3, 2, 999), // First matching tier, not sum.
+        (2004, 4, 400813043, 4, 2, 999), // Other energy type.
+        (2005, 4, 400813043, 3, 0, 999), // Other availability.
+        (2006, 4, 123, 3, 2, 999),       // Other category.
+    ] {
+        let mut plug = defs[0].clone();
+        plug.hash = ItemHash::new(hash);
+        plug.armor.plug_category_hash = Some(category);
+        plug.armor.aspect_capacity = Some(capacity);
+        plug.armor.energy_capacity_type = Some(kind);
+        plug.armor.plug_availability = Some(availability);
+        plug.armor.insertion_material_requirement_hash = Some(hash as u32);
+        defs.push(plug);
+        plugs.push(PlugSetItem {
+            plug_item_hash: hash as u32,
+            currently_can_roll: false,
+        });
+        catalogs.push(ArmorCatalogRecord::MaterialRequirementSet(
+            MaterialRequirementSetDefinition {
+                hash: hash as u32,
+                materials: vec![
+                    MaterialRequirement {
+                        item_hash: RANKED_MATERIALS[4],
+                        count,
+                    },
+                    MaterialRequirement {
+                        item_hash: RANKED_MATERIALS[4],
+                        count: 1,
+                    },
+                    MaterialRequirement {
+                        item_hash: 123,
+                        count: 999,
+                    },
+                ],
+            },
+        ));
+    }
+    catalogs.push(ArmorCatalogRecord::PlugSet(PlugSetDefinition {
+        hash: 201,
+        reusable_plug_items: plugs,
+    }));
+    let costs = cumulative_energy_costs(&items[0], &defs[1], &defs, &catalogs).unwrap();
+    assert_eq!(costs.len(), 12);
+    assert_eq!(costs[2], [0; 5]);
+    assert_eq!(costs[3], [0, 0, 0, 0, 11]);
+    assert_eq!(costs[4], costs[3]);
+    assert_eq!(costs[5], [0, 0, 0, 0, 32]);
+    assert_eq!(costs[11], costs[5]);
+    // The first item supplies DIM's model for every Legendary. Already-paid
+    // tiers make the second item cheapest, overriding current-placement ties.
+    items[1].energy.as_mut().unwrap().energy_capacity = 5;
+    let result = analyze_fixture(&b, &items, &defs, &catalogs);
+    assert_eq!(result.evaluation, "evaluated");
+    assert_eq!(result.item_mod_assignments.as_ref().unwrap()[1].1, vec![42]);
+    assert_eq!(result.upgrade_costs, Some([0; 5]));
+    assert_eq!(result.needs_upgrades_for_mods, Some(false));
+    // Missing inputs are unknown, not free upgrades. Explicitly absent tier
+    // sockets/plug sets, in contrast, have DIM's known empty plug list.
+    let without_set: Vec<_> = catalogs
+        .iter()
+        .filter(|r| !matches!(r, ArmorCatalogRecord::PlugSet(_)))
+        .cloned()
+        .collect();
+    assert_eq!(
+        cumulative_energy_costs(&items[0], &defs[1], &defs, &without_set),
+        Err("energy_plug_set_unavailable")
+    );
+    let without_materials: Vec<_> = catalogs
+        .iter()
+        .filter(|r| !matches!(r, ArmorCatalogRecord::MaterialRequirementSet(_)))
+        .cloned()
+        .collect();
+    assert_eq!(
+        analyze_fixture(&b, &items, &defs, &without_materials).reason,
+        Some("material_requirement_set_unavailable")
+    );
+    let mut no_set = defs[1].clone();
+    no_set.armor.socket_entries[1].reusable_plug_set_hash = None;
+    assert_eq!(
+        cumulative_energy_costs(&items[0], &no_set, &defs, &catalogs).unwrap(),
+        vec![[0; 5]; 12]
+    );
+    // GhostTier is a fallback, not a second cost source. Hidden/disabled tier
+    // sockets and cannot-roll plugs remain eligible (energy.ts:18-49).
+    let mut ghost = defs[1].clone();
+    ghost
+        .armor
+        .socket_categories
+        .last_mut()
+        .unwrap()
+        .socket_category_hash = 446880883;
+    items[0].sockets[1].visible = false;
+    assert_eq!(
+        cumulative_energy_costs(&items[0], &ghost, &defs, &catalogs).unwrap(),
+        costs
+    );
+    no_set
+        .armor
+        .socket_categories
+        .push(ghost.armor.socket_categories.last().unwrap().clone());
+    assert_eq!(
+        cumulative_energy_costs(&items[0], &no_set, &defs, &catalogs).unwrap(),
+        vec![[0; 5]; 12]
+    );
+    items[0].energy.as_mut().unwrap().energy_type = None;
+    assert_eq!(
+        cumulative_energy_costs(&items[0], &defs[1], &defs, &catalogs),
+        Err("armor_energy_type_unavailable")
+    );
 }
 
 #[test]

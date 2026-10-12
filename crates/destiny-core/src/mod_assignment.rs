@@ -1,11 +1,17 @@
 //! DIM bucket-specific and free mod assignment (commit 29c122e).
-//! General/activity ranking remains outside this bounded slice.
+//! General/activity candidates use DIM's material and assignment-change ranking.
 use crate::{armor_catalog::*, build::*, build_analysis::ResolvedBuildItem, *};
 
+mod costs;
 mod independent;
+mod ranking;
+pub use costs::cumulative_energy_costs;
 pub use independent::{
     ARTIFICE_CATEGORY, FreeModAssignment, FreeModItem, SPECIALTY_SOCKETS, TUNING_CATEGORY,
     assign_free_mods, generate_mod_permutations, specialty_category,
+};
+pub use ranking::{
+    MaterialCosts, RANKED_MATERIALS, RankedAssignment, RankingItem, rank_independent_mods,
 };
 
 pub const ARMOR_BUCKETS: [i64; 5] = [3448274439, 3551918588, 14239492, 20886954, 1585787867];
@@ -19,6 +25,9 @@ pub struct ModFitAnalysis {
     /// Unassigned after the analyzer's allowed energy upgrades, not as-is.
     pub unassigned_mods: Option<Vec<u32>>,
     pub needs_upgrades_for_mods: Option<bool>,
+    pub uses_seasonal_mods: Option<bool>,
+    pub item_mod_assignments: Option<Vec<(ItemInstanceId, Vec<u32>)>>,
+    pub upgrade_costs: Option<MaterialCosts>,
 }
 impl Default for ModFitAnalysis {
     fn default() -> Self {
@@ -33,6 +42,9 @@ impl ModFitAnalysis {
             invalid_mods: None,
             unassigned_mods: None,
             needs_upgrades_for_mods: None,
+            uses_seasonal_mods: None,
+            item_mod_assignments: None,
+            upgrade_costs: None,
         }
     }
 }
@@ -155,9 +167,9 @@ pub fn assignment_sockets(
     Ok(result)
 }
 
-/// Analyzer's bucket-specific/free subset: first categorize against all owned
-/// armor, then fit valid mods against the resolved set with as-is/upgraded rules.
-/// No material-cost ranking is needed here: bucket/free choices are DIM-greedy.
+/// Categorize against all owned armor, then fit valid mods against the resolved
+/// set with as-is/upgraded rules. Bucket/free choices are DIM-greedy; general and
+/// activity permutations rank by unassigned count, materials and insertion changes.
 pub fn analyze_bucket_mods(
     build: &BuildDefinition,
     resolved: &[ResolvedBuildItem],
@@ -232,10 +244,9 @@ pub fn analyze_bucket_mods_with_unlocks(
         }
         if found {
             let category = m.armor.plug_category_hash.expect("resolved pluggable");
-            if category == 2487827355 || SPECIALTY_SOCKETS.iter().any(|(_, c)| *c == category) {
-                return ModFitAnalysis::unknown("dim_general_activity_ranking_not_implemented");
-            }
-            if bucket_for_category(category).is_some()
+            if category == 2487827355
+                || SPECIALTY_SOCKETS.iter().any(|(_, c)| *c == category)
+                || bucket_for_category(category).is_some()
                 || [ARTIFICE_CATEGORY, TUNING_CATEGORY].contains(&category)
             {
                 valid.push(m);
@@ -274,6 +285,9 @@ pub fn analyze_bucket_mods_with_unlocks(
             invalid_mods: Some(invalid),
             unassigned_mods: None,
             needs_upgrades_for_mods: None,
+            uses_seasonal_mods: None,
+            item_mod_assignments: None,
+            upgrade_costs: None,
         };
     }
     if armor.iter().any(|(i, _)| i.energy.is_none()) {
@@ -303,8 +317,11 @@ pub fn analyze_bucket_mods_with_unlocks(
             AssumeArmorMasterwork::All
         };
     }
-    let fit = |upgraded: bool| -> Result<Vec<u32>, &'static str> {
+    let fit = |upgraded: bool, valid: &[&ItemDefinition]| {
         let mut unassigned = Vec::new();
+        let mut assigned = vec![vec![]; armor.len()];
+        let mut bucket_unassigned = vec![vec![]; armor.len()];
+        let mut enhancements = vec![false; armor.len()];
         // Re-categorization in fitMostMods marks valid-in-inventory mods that
         // cannot fit this set as invalid-for-set. Both prevent a successful fit.
         let eager: Vec<_> = armor
@@ -312,7 +329,7 @@ pub fn analyze_bucket_mods_with_unlocks(
             .map(|(i, d)| assignment_sockets(i, d, definitions, catalogs, false))
             .collect::<Result<_, _>>()?;
         let mut eligible = Vec::new();
-        for m in &valid {
+        for m in valid {
             if eager
                 .iter()
                 .flatten()
@@ -339,7 +356,15 @@ pub fn analyze_bucket_mods_with_unlocks(
                 upgraded && assumption == AssumeArmorMasterwork::ArtificeExotic,
                 !tuning.is_empty(),
             )?;
-            unassigned.extend(assign_free_mods(&items, &artifice, &tuning).unassigned);
+            let actual = independent::free_mod_items(&armor, definitions, false, false)?;
+            let free = assign_free_mods(&items, &artifice, &tuning);
+            for (i, mods) in free.assigned.into_iter().enumerate() {
+                enhancements[i] = items[i].exotic
+                    && !actual[i].artifice
+                    && mods.iter().any(|hash| artifice.contains(hash));
+                assigned[i].extend(mods);
+            }
+            unassigned.extend(free.unassigned);
         }
         // Object.entries numeric bucket keys are enumerated ascending in JS.
         let mut buckets = ARMOR_BUCKETS;
@@ -385,28 +410,93 @@ pub fn analyze_bucket_mods_with_unlocks(
             } else {
                 current.max(1)
             };
-            unassigned.extend(assign_bucket_specific_mods(&sockets, &mods, capacity).unassigned);
+            let bucket_fit = assign_bucket_specific_mods(&sockets, &mods, capacity);
+            let index = armor
+                .iter()
+                .position(|(i, _)| i.instance_id == item.instance_id)
+                .unwrap();
+            assigned[index].splice(0..0, bucket_fit.assigned);
+            bucket_unassigned[index] = bucket_fit.unassigned;
         }
-        Ok(unassigned)
+        let ranked = ranking::rank_armor(
+            &armor,
+            definitions,
+            catalogs,
+            &eligible,
+            &assigned,
+            &enhancements,
+            if upgraded { Some(assumption) } else { None },
+        )?;
+        for (independent, bucket) in ranked.unassigned_by_item.iter().zip(bucket_unassigned) {
+            unassigned.extend(independent);
+            unassigned.extend(bucket);
+        }
+        for (i, independent) in ranked.assigned.into_iter().enumerate() {
+            assigned[i].splice(0..0, independent);
+        }
+        Ok::<_, &'static str>((unassigned, assigned, ranked.upgrade_costs))
     };
-    let as_is = match fit(false) {
+    let as_is = match fit(false, &valid) {
         Ok(v) => v,
         Err(r) => return ModFitAnalysis::unknown(r),
     };
-    let upgraded = if as_is.is_empty() {
+    let upgraded = if as_is.0.is_empty() {
         as_is.clone()
     } else {
-        match fit(true) {
+        match fit(true, &valid) {
             Ok(v) => v,
             Err(r) => return ModFitAnalysis::unknown(r),
         }
     };
+    // DIM analysis.ts:456-500: direct seasonal list, then expensive variants
+    // with no unlocked plugs. Re-categorization uses this set, not all inventory.
+    let direct_seasonal = valid.iter().any(|m| {
+        [110793779, 2077016094, 2812559045, 2831374162, 3458160468]
+            .contains(&(m.hash.value() as u32))
+    });
+    let (seasonal, seasonal_reason) = if direct_seasonal || !upgraded.0.is_empty() {
+        (Some(direct_seasonal), None)
+    } else {
+        let expensive = valid
+            .iter()
+            .map(|m| {
+                let hash = resolve_mod_cost_variant(m.hash.value() as u32, &[]);
+                definitions
+                    .iter()
+                    .find(|d| {
+                        d.hash.value() == i64::from(hash) && d.armor.plug_category_hash.is_some()
+                    })
+                    .or_else(|| {
+                        definitions.iter().find(|d| {
+                            d.hash.value() == i64::from(DEPRECATED_MOD_PLACEHOLDER)
+                                && d.armor.plug_category_hash.is_some()
+                        })
+                    })
+            })
+            .collect::<Option<Vec<_>>>();
+        match expensive {
+            Some(mods) => match fit(true, &mods) {
+                Ok(v) => (Some(!v.0.is_empty()), None),
+                Err(reason) => (None, Some(reason)),
+            },
+            None => (None, Some("expensive_variant_fit_inputs_unavailable")),
+        }
+    };
     ModFitAnalysis {
         evaluation: "evaluated",
-        reason: None,
+        reason: seasonal_reason,
         invalid_mods: Some(invalid),
-        needs_upgrades_for_mods: Some(!as_is.is_empty() && upgraded.is_empty()),
-        unassigned_mods: Some(upgraded),
+        needs_upgrades_for_mods: Some(!as_is.0.is_empty() && upgraded.0.is_empty()),
+        unassigned_mods: Some(upgraded.0),
+        uses_seasonal_mods: seasonal,
+        item_mod_assignments: Some(
+            armor
+                .iter()
+                .zip(upgraded.1)
+                .map(|((item, _), mods)| (item.instance_id.clone(), mods))
+                .collect(),
+        ),
+        upgrade_costs: Some(upgraded.2),
     }
 }
 

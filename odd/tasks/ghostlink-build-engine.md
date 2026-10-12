@@ -384,12 +384,19 @@ coverage (`domain.rs:123-126`).
       rule (`mod-assignment-utils.ts:383-420`), shared 30-hash tuning map.
       Free mods now evaluated in build check/MCP. Workspace: 2179
       all-features, 2147 default, 0 failed; clippy both modes, fmt.
-    - [ ] **BE-006b2b3 — Ranking and re-fitting.** General/activity
+    - [x] **BE-006b2b3 — Ranking and re-fitting.** General/activity
       candidate evaluation, cumulative material costs, energy-upgrade
       plug input assembly in `build_mods.rs`, lexicographic ranking,
-      assignment-change tie-breaking, expensive-variant re-fitting
-      (`mod-assignment-utils.ts:162-265,481-528,964-989`). Unblocks
-      BE-006c2.
+      assignment-change tie-breaking, expensive-variant re-fitting.
+      Done (partial from the crashed worker audited and kept, tests
+      strengthened): `mod_assignment/costs.rs` upgrade-plug selection and
+      cumulative costs (`energy.ts:18-49`, `sockets.ts:683-687,792-825`,
+      `mod-assignment-utils.ts:162-249`); `mod_assignment/ranking.rs`
+      activity-first evaluation, fit/cost/change priority, exact-tie Heap
+      order (`mod-assignment-utils.ts:437-528,952-989,1007-1036`);
+      seasonal re-fitting and findings (`analysis.ts:449-501`). Mutation
+      checks confirmed the tests catch removals. Workspace: 2188
+      all-features, 2156 default, 0 failed; clippy both modes, fmt.
   - [ ] **BE-006c — Stat constraints and fragment findings.** Stat
     aggregation vs `statConstraints`; fragment capacity findings;
     optimizer-based findings stay suppressed until BE-008.
