@@ -8,7 +8,7 @@ mod ranking;
 pub use costs::cumulative_energy_costs;
 pub use independent::{
     ARTIFICE_CATEGORY, FreeModAssignment, FreeModItem, SPECIALTY_SOCKETS, TUNING_CATEGORY,
-    assign_free_mods, generate_mod_permutations, specialty_category,
+    assign_free_mods, generate_mod_permutations, generate_permutations_of_five, specialty_category,
 };
 pub use ranking::{
     MaterialCosts, RANKED_MATERIALS, RankedAssignment, RankingItem, rank_independent_mods,

@@ -9,16 +9,25 @@ pub const TUNING_CATEGORY: u32 = 3481777685;
 /// DIM mod-permutations.ts:3-64. Hash-key deduplication preserves Heap order.
 /// As in DIM, lists longer than five retain their trailing entries unchanged.
 pub fn generate_mod_permutations(mods: &[u32]) -> Vec<Vec<Option<u32>>> {
-    let mut items: Vec<_> = mods.iter().copied().map(Some).collect();
+    generate_permutations_of_five(mods, |permutation| permutation.to_vec())
+}
+
+/// DIM mod-permutations.ts:16-57 `generatePermutationsOfFive`: Heap's algorithm over
+/// the items padded with `None` to five, keeping the first permutation per key.
+pub fn generate_permutations_of_five<T: Clone, K: Eq + std::hash::Hash>(
+    items: &[T],
+    key: impl Fn(&[Option<T>]) -> K,
+) -> Vec<Vec<Option<T>>> {
+    let mut items: Vec<_> = items.iter().cloned().map(Some).collect();
     items.resize(items.len().max(5), None);
     let mut result = vec![items.clone()];
-    let mut seen = HashSet::from([items.clone()]);
+    let mut seen = HashSet::from([key(&items)]);
     let mut cursors = [0; 5];
     let mut i = 0;
     while i < 5 {
         if cursors[i] < i {
             items.swap(if i % 2 == 0 { 0 } else { cursors[i] }, i);
-            if seen.insert(items.clone()) {
+            if seen.insert(key(&items)) {
                 result.push(items.clone());
             }
             cursors[i] += 1;

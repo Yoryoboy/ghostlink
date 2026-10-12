@@ -3,9 +3,15 @@
 use crate::armor_model::ARMOR_STATS;
 use crate::build::{AssumeArmorMasterwork, StatConstraint};
 
+mod auto_mods;
 mod filter;
 mod items;
 mod stat_dupe;
+mod stat_mods;
+pub use auto_mods::{
+    AutoMod, AutoModData, AutoModsCache, CacheForStat, GeneralAutoMods, ModsPick, auto_mod_data,
+    build_auto_mods_map, choose_auto_mods,
+};
 pub use filter::{
     BucketFilterInfo, FilterError, FilterInfo, FilterParams, ItemsByBucket, filter_items,
 };
@@ -15,6 +21,12 @@ pub use items::{
     map_armor_to_process_items,
 };
 pub use stat_dupe::{StatsSet, compute_stat_dupe_lower};
+pub use stat_mods::{
+    ContextKey, FinalAssignmentStatistics, LoSessionInfo, MinMaxStat, ModAssignmentStatistics,
+    ProcessMod, RejectionRate, RemainingEnergies, SetEnergyCache, StatModPick,
+    generate_process_mod_permutations, greedy_pick_stat_mods,
+    pick_and_assign_slot_independent_mods, pick_optimal_stat_mods, process_mod, update_max_stats,
+};
 
 // DIM loadout-builder/types.ts:105-155 and loadout/known-values.ts:39.
 pub const MIN_LO_ITEM_ENERGY: i32 = 9;

@@ -616,9 +616,23 @@ coverage (`domain.rs:123-126`).
     dedupe columns (energy, activity-slot tags, set-bonus membership)
     through `get_stats`, as DIM's optimizer callback does. Workspace: 2350
     all-features, 2317 default, 0 failed; clippy both modes, fmt.
-  - [ ] **BE-008b — Auto mods and stat math.** Auto-mod map from
-    definitions and unlocked plugs, `chooseAutoMods`, greedy stat mods,
-    `updateMaxStats`, activity permutations. Internal.
+  - [x] **BE-008b — Auto mods and stat math.** `optimizer/{auto_mods,
+    stat_mods}.rs` (~890 production lines, over budget, kept as one unit:
+    two separate files tested together). Auto-mod map from plug sets
+    731468111 / 4285066582 with unlocked cheaper variants
+    (`process/mappers.ts:189-249`); picks cache and memoized
+    `chooseAutoMods` (`auto-stat-mod-utils.ts:55-366`); session and Heap
+    permutations (`process-utils.ts:50-134,612-623`,
+    `mod-permutations.ts:16-57`); `updateMaxStats`,
+    `pickAndAssignSlotIndependentMods`, `pickOptimalStatMods`,
+    `greedyPickStatMods` (`process-utils.ts:170-610`), DIM quirks kept.
+    DIM tier, exact-stat, `updateMaxStats` and memoization tests ported on
+    synthetic data. Missing plug sets/definitions are typed unknown;
+    Maverick and unknown-category activity tags not represented. Workspace:
+    2384 all-features, 2351 default, 0 failed; clippy both modes, fmt.
+    For BE-008c: project `ProcessItem.stats` into the session stat order,
+    one session per thread. For BE-008d: `unlocked` list, general/activity
+    `ProcessMod` split, decision on Maverick-style tags.
   - [ ] **BE-008c — Search core.** Five-loop DFS with pruning, constraints,
     tuning variants, heap with DIM ordering, strict upgrades, stop on first,
     time budget, parallel slicing. Golden tests from DIM `process.test.ts`.
