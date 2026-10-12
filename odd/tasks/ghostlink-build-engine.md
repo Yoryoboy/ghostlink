@@ -368,6 +368,18 @@ coverage (`domain.rs:123-126`).
   - [ ] **BE-006c — Stat constraints and fragment findings.** Stat
     aggregation vs `statConstraints`; fragment capacity findings;
     optimizer-based findings stay suppressed until BE-008.
+    - [x] **BE-006c1 — Fragment findings.** First resolved subclass
+      without equip gate (`analysis.ts:90-98`), fragment comparison with
+      truthy override count (`analysis.ts:420-438`), first aspect
+      category from saved overrides with no current fallback
+      (`loadout-utils.ts:745-770`), capacity sum default zero
+      (`loadout-utils.ts:946-954`). Workspace: 2164 all-features, 2132
+      default, 0 failed; clippy both modes, fmt.
+    - [ ] **BE-006c2 — Stats and stat upgrades.** Depends on BE-006b2b:
+      DIM assigns mods before item-conditional stat evaluation
+      (`loadout-utils.ts:326-349`). Stat aggregation (`loadout/stats.ts:
+      101-214`), non-ignored minima only (`analysis.ts:516-561`), stat
+      masterwork upgrades.
 - [ ] **BE-007 — Apply build.** DIM apply phases; covers dim-parity U4b/U4c.
 - [ ] **BE-008 — Substitutes.** Optimizer-based armor sets.
 - [x] **BE-009 — dim.gg import.** Dropped by owner decision D4 (won't do).

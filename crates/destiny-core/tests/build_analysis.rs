@@ -61,6 +61,100 @@ fn analyze(
 ) -> BuildAnalysis {
     analyze_build(build, &CharacterId::new("1"), items, defs, &[], &[], &[])
 }
+#[test]
+fn fragment_findings_use_selected_aspects_and_truthy_real_socket_overrides() {
+    let mut subclass = definition(10, 3284755031);
+    subclass.armor.socket_categories = vec![
+        DefinitionSocketCategory {
+            socket_category_hash: 2047681910,
+            socket_indexes: vec![2],
+        },
+        DefinitionSocketCategory {
+            socket_category_hash: 271461480,
+            socket_indexes: vec![4, 7],
+        },
+    ];
+    let mut aspect = definition(20, 0);
+    aspect.armor.aspect_capacity = Some(2);
+    let mut inventory = item("1", 10, ItemLocation::Vault);
+    inventory.sockets = [2, 4, 7]
+        .map(|socket_index| IndexedSocket {
+            socket_index,
+            plug_hash: Some(ItemHash::new(20)),
+            enabled: false,
+            visible: false,
+            reusable_plugs: None,
+            plug_objectives: None,
+        })
+        .to_vec();
+    for (overrides, empty, too_many) in [
+        (vec![], false, false), // no fallback to currently inserted aspects
+        (vec![(4, 99)], false, true),
+        (vec![(2, 20)], true, false),
+        (vec![(2, 20), (4, 99), (7, 99)], false, false),
+        (vec![(2, 20), (4, 0), (7, 99), (6, 99)], true, false),
+    ] {
+        let mut selected = spec(Some("1"), 10);
+        selected.socket_overrides = overrides
+            .into_iter()
+            .map(|(i, h)| (i, ItemHash::new(h)))
+            .collect();
+        // DIM selects the first resolved subclass, including unequipped ones.
+        let build = BuildDefinition {
+            unequipped: vec![selected],
+            ..Default::default()
+        };
+        let analysis = analyze(
+            &build,
+            &[inventory.clone()],
+            &[subclass.clone(), aspect.clone()],
+        );
+        for (kind, expected) in [
+            (FindingKind::EmptyFragmentSlots, empty),
+            (FindingKind::TooManyFragments, too_many),
+        ] {
+            let finding = analysis.findings.iter().find(|f| f.kind == kind).unwrap();
+            assert_eq!(finding.present, Some(expected));
+            assert_eq!(finding.evaluation, "evaluated");
+        }
+    }
+}
+
+#[test]
+fn fragment_findings_keep_missing_selected_aspect_definitions_unknown() {
+    let mut subclass = definition(10, 3284755031);
+    subclass.armor.socket_categories = vec![DefinitionSocketCategory {
+        socket_category_hash: 2047681910,
+        socket_indexes: vec![2],
+    }];
+    let mut inventory = item("1", 10, ItemLocation::Vault);
+    inventory.sockets = vec![IndexedSocket {
+        socket_index: 2,
+        plug_hash: None,
+        enabled: true,
+        visible: true,
+        reusable_plugs: None,
+        plug_objectives: None,
+    }];
+    let mut selected = spec(Some("1"), 10);
+    selected.socket_overrides = vec![(2, ItemHash::new(20))];
+    let build = BuildDefinition {
+        equipped: vec![selected],
+        ..Default::default()
+    };
+    let analysis = analyze(&build, &[inventory], &[subclass]);
+    let finding = analysis
+        .findings
+        .iter()
+        .find(|f| f.kind == FindingKind::EmptyFragmentSlots)
+        .unwrap();
+    assert_eq!(finding.present, None);
+    assert_eq!(
+        finding.reason,
+        Some("selected_aspect_definition_unavailable")
+    );
+}
+
 fn set_catalog(hash: u32) -> armor_catalog::EquipableSetDefinition {
     armor_catalog::EquipableSetDefinition {
         hash,
@@ -496,8 +590,6 @@ fn search_invalid_nonmatching_and_unsupported_are_distinct() {
     }
     for kind in [
         FindingKind::InvalidMods,
-        FindingKind::EmptyFragmentSlots,
-        FindingKind::TooManyFragments,
         FindingKind::NeedsArmorUpgrades,
         FindingKind::UsesSeasonalMods,
         FindingKind::BetterStatsAvailable,

@@ -103,8 +103,13 @@ use enabled account/target-character reduced variants, otherwise normal variants
 Missing/non-pluggable definitions use DIM's deprecated placeholder; if that is
 unavailable, fitting stays unknown. Missing plug-set responses default to no unlocks
 as in DIM. See [build mod fitting](build-mods.md). Positive stat constraints can keep the global
-armor-upgrades finding unknown even when mods need no upgrade. Fragment capacity,
-stat constraints and optimization remain deferred; socket overrides are unevaluated.
+armor-upgrades finding unknown even when mods need no upgrade. Fragment findings
+compare nonzero saved fragment overrides at real socket indices against saved
+aspect capacity (no fallback to currently inserted aspects). No selected aspects
+means zero capacity; nonzero explicit empty plugs count, matching DIM. Missing
+subclass socket projections or selected aspect definitions remain unknown with
+reasons. Stat constraints and optimization remain deferred; socket application
+readiness is unevaluated. See [fragment evidence and stat dependency](build-mods.md#be-006c-fragment-findings-and-stat-dependency).
 See [mod fitting scope and DIM evidence](build-mods.md).
 Instanced resolution tries the ID first, then a nonzero crafted date, as DIM does
 (last matching instance, without a hash or target-character gate). Class compatibility is item metadata, not an invented

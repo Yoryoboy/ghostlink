@@ -82,6 +82,15 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
     assert_eq!(output.value["items"][0]["spec"]["id"], "404");
     assert_eq!(output.value["items"][0]["spec"]["crafted_date"], 123);
     assert_eq!(output.value["findings"].as_array().unwrap().len(), 13);
+    let fragments = output.value["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["kind"] == "empty_fragment_slots")
+        .unwrap();
+    assert_eq!(fragments["evaluation"], "evaluated");
+    assert_eq!(fragments["present"], false);
+    assert!(!output.render_text().contains("empty_fragment_slots"));
     assert_eq!(
         output.value["equipped_set_bonuses"],
         json!({"evaluation":"not_evaluated", "reasons":["set_activation_not_assembled"], "sets":[]})
@@ -102,6 +111,13 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
     assert!(output.render_text().contains("Mods fit: not_evaluated"));
     assert_eq!(output.exit_code, 0); // findings are data, not failed transport
     let mut result = result;
+    result
+        .analysis
+        .findings
+        .iter_mut()
+        .find(|f| f.kind == build_analysis::FindingKind::EmptyFragmentSlots)
+        .unwrap()
+        .present = Some(true);
     result.analysis.mod_fit = destiny_app::mod_assignment::ModFitAnalysis {
         evaluation: "evaluated",
         reason: None,
@@ -128,6 +144,7 @@ fn build_analysis_preserves_specs_counts_coverage_and_human_text() {
         }],
     };
     let output = BuildOutput::from_result(Ok(BuildReply::Analysis(Box::new(result))));
+    assert!(output.render_text().contains("empty_fragment_slots"));
     assert_eq!(output.value["mod_fit"]["unassigned_mods"], json!([42, 42]));
     assert_eq!(output.value["mod_fit"]["needs_upgrades_for_mods"], false);
     assert!(output.render_text().contains("Unassigned mods: [42,42]"));

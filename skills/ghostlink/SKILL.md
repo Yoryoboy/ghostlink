@@ -62,6 +62,11 @@ mean no unlocks. Missing/non-pluggable mods become DIM's deprecated placeholder;
 missing placeholder data stays unknown. Report hashes in mod_fit as resolved hashes,
 not necessarily the original saved hashes. Saved/exported builds are unchanged. Positive stat constraints
 can leave the global upgrade finding unknown. Do not infer mod fit from set activation.
+Fragment findings compare saved fragment overrides against saved aspect capacity,
+not the current subclass configuration. Nonzero explicit empty plugs count like
+DIM; no selected aspects means zero capacity. Missing subclass socket projections
+or selected aspect definitions remain not_evaluated. Report findings from the
+output, never infer stat-constraint satisfaction or socket application readiness.
 
 ## Bungie action rejections
 

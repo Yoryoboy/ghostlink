@@ -279,6 +279,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
         {
             hashes.insert(item.hash);
             hashes.insert(build_analysis::migrated_hash(item.hash));
+            hashes.extend(item.socket_overrides.iter().map(|(_, hash)| *hash));
         }
         if let Some(ExoticArmor::Item(hash)) = build
             .definition

@@ -140,6 +140,77 @@ fn skipped(kind: FindingKind, reason: &'static str) -> BuildFinding {
         reason: Some(reason),
     }
 }
+/// DIM analysis.ts:420-438 and loadout-utils.ts:745-770. Unlike capture,
+/// analyzer capacity never falls back to the currently inserted aspects.
+fn fragment_findings(items: &[ResolvedBuildItem], defs: &[ItemDefinition]) -> [BuildFinding; 2] {
+    let kinds = [
+        FindingKind::EmptyFragmentSlots,
+        FindingKind::TooManyFragments,
+    ];
+    let Some((selected, inventory, subclass)) = items.iter().find_map(|selected| {
+        let inventory = selected.inventory.as_ref()?;
+        let subclass = definition(defs, inventory.item_hash)?;
+        (subclass.bucket_hash == Some(BucketHash::new(3284755031)))
+            .then_some((selected, inventory, subclass))
+    }) else {
+        return kinds.map(|kind| evaluated(kind, false));
+    };
+    // Legacy unprojected sockets cannot establish the subclass's categories.
+    if inventory.sockets.is_empty() || subclass.armor.socket_categories.is_empty() {
+        return kinds.map(|kind| skipped(kind, "subclass_socket_categories_unavailable"));
+    }
+    let selected_hash = |index: u32| {
+        selected
+            .spec
+            .socket_overrides
+            .iter()
+            .find(|(i, _)| u32::from(*i) == index)
+            .map(|(_, hash)| *hash)
+            .filter(|hash| hash.value() != 0)
+    };
+    let mut capacity = 0i32;
+    // DIM uses only the first aspect category, but every fragment category.
+    if let Some(category) = subclass.armor.socket_categories.iter().find(|category| {
+        [2047681910, 2140934067, 764703411, 3400923910].contains(&category.socket_category_hash)
+    }) {
+        for index in &category.socket_indexes {
+            if let Some(hash) = selected_hash(*index) {
+                let Some(aspect) = definition(defs, hash) else {
+                    return kinds
+                        .map(|kind| skipped(kind, "selected_aspect_definition_unavailable"));
+                };
+                let Some(sum) = capacity.checked_add(aspect.armor.aspect_capacity.unwrap_or(0))
+                else {
+                    return kinds.map(|kind| skipped(kind, "fragment_capacity_overflow"));
+                };
+                capacity = sum;
+            }
+        }
+    }
+    let fragments = subclass
+        .armor
+        .socket_categories
+        .iter()
+        .filter(|category| {
+            [271461480, 1313488945, 193371309, 2819965312].contains(&category.socket_category_hash)
+        })
+        .flat_map(|category| &category.socket_indexes)
+        // getSocketsByCategoryHashes filters missing real sockets, not flags.
+        .filter(|index| {
+            inventory
+                .sockets
+                .iter()
+                .any(|socket| u32::from(socket.socket_index) == **index)
+        })
+        // Truthiness, not empty-plug classification: DIM counts nonzero empties.
+        .filter(|index| selected_hash(**index).is_some())
+        .count() as i64;
+    [
+        evaluated(kinds[0], fragments < i64::from(capacity)),
+        evaluated(kinds[1], fragments > i64::from(capacity)),
+    ]
+}
+
 fn crafting_unavailable(
     inventory: &[ItemInstance],
     defs: &[ItemDefinition],
@@ -396,18 +467,11 @@ pub fn analyze_build(
         }
     }
     findings.extend([invalid, nonmatching]);
+    findings.extend(fragment_findings(&items, defs));
     for (kind, reason) in [
         (
             FindingKind::InvalidMods,
             "dim_mod_assignment_not_implemented",
-        ),
-        (
-            FindingKind::EmptyFragmentSlots,
-            "loadout_fragment_overrides_not_evaluated",
-        ),
-        (
-            FindingKind::TooManyFragments,
-            "loadout_fragment_overrides_not_evaluated",
         ),
         (
             FindingKind::NeedsArmorUpgrades,

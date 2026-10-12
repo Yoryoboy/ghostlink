@@ -89,4 +89,49 @@ work from permutation/specialty/artifice/tuning assignment avoids inventing pric
 The full port plus dependencies exceeds the roughly 700-production-line budget.
 The ODD tracker is outside the allowed edit surfaces and was not changed. This
 proposal does not mark BE-006b as fully complete; BE-006c remains responsible for
-loadout stat constraints, fragments and upgrades for stats.
+loadout stat constraints and upgrades for stats. Fragment findings are implemented
+in the bounded BE-006c slice below.
+
+## BE-006c: fragment findings and stat dependency
+
+The existing findings envelope now evaluates `empty_fragment_slots` and
+`too_many_fragments` for CLI text/JSON and MCP. No migrations or extra provider
+requests: build checking additionally loads saved socket-override definitions.
+
+| Decision | DIM evidence (commit `29c122e`, under `src/app/`) |
+|---|---|
+| Select the first resolved subclass, without an equip gate | `loadout-analyzer/analysis.ts:90-98` |
+| Compare truthy override count against capacity; smaller = empty, larger = too many | `loadout-analyzer/analysis.ts:420-438` |
+| Use only the first aspect category and saved aspect overrides; no current-aspect fallback | `loadout-drawer/loadout-utils.ts:745-770` |
+| Sum capacity, defaulting resolved definitions without capacity to zero | `loadout-drawer/loadout-utils.ts:946-954` |
+| Count existing real fragment sockets across every fragment category; no enabled/visible gate | `utils/socket-utils.ts:77-85,100-112,278-290` |
+
+No resolved subclass means neither finding, matching DIM. Unknown socket/category
+projections or selected aspect definitions remain `not_evaluated`, respectively
+`subclass_socket_categories_unavailable` / `selected_aspect_definition_unavailable`.
+A defensive checked sum reports `fragment_capacity_overflow`, never wraps.
+Nonzero empty-plug hashes count: the analyzer uses truthiness, not capture's
+empty-plug classification. This is not apply-time validity or unlocked evidence.
+
+### Split proposal: stat constraints and upgrades
+
+Stat aggregation cannot faithfully bypass the unfinished BE-006b2b assignment:
+`loadout-drawer/loadout-utils.ts:284-358` calls `fitMostMods`, then passes item
+assignments into `getTotalModStatChanges`. `loadout/stats.ts:101-214` evaluates
+conditional contributions using each assigned armor item (unassigned mods have
+no item), plus subclass overrides and optional runtime Font benefits. Artifact
+socket overrides are not a separate contribution in this analyzer path.
+Implementing the complete assignment engine (over 1,000 DIM lines, plus material
+catalog persistence) and stat rules together would exceed the roughly 700-new-
+production-line boundary. Preserve this fragment slice and complete BE-006b2b
+before a separate BE-006c stat slice; do not claim current totals as loadout totals.
+
+That slice must follow `analysis.ts:158-190,228-265,516-561`: compare as-is and
+inferred-masterwork totals, test only nonignored minima with negative totals
+clamped to zero, and set `NeedsArmorUpgrades` when upgrades alone meet the minima.
+**The non-optimizer analyzer ignores maxima**; maxima participate only in the
+optimizer path. `loadout-utils.ts:365-417` uses base stats and masterwork rules,
+not current component totals. Preserve item-conditional tuning fidelity through
+assignment. Better-stat findings stay unknown with the BE-008 optimizer reason.
+Current stat and stat-upgrade findings remain explicitly `not_evaluated`; this
+slice does not mark the full BE-006c task complete.

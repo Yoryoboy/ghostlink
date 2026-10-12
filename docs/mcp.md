@@ -57,8 +57,12 @@ Independent/general, activity, artifice and tuning assignment remain
 like DIM using enabled account/target-character unlocks (missing plug sets mean
 no unlocks). Missing/non-pluggable definitions use the deprecated placeholder;
 missing placeholder data stays unknown. See [build mod fitting](build-mods.md). Positive stat constraints can keep the global
-upgrade finding unknown. Socket application, fragment capacity, stat constraints
-and optimization remain deferred. No gear is applied. See [scope and DIM evidence](build-mods.md). The additive `equipped_set_bonuses` object reports set hash/name,
+upgrade finding unknown. `empty_fragment_slots` and `too_many_fragments` now
+compare saved fragment overrides with saved aspect capacity, never current aspects.
+Only nonzero overrides at existing fragment socket indices count (even explicit
+empty plugs). No selected aspects means zero capacity. Missing subclass sockets
+or selected aspect definitions keep findings unknown with explicit reasons.
+Socket application, stat constraints and optimization remain deferred. No gear is applied. See [scope and DIM evidence](build-mods.md). The additive `equipped_set_bonuses` object reports set hash/name,
 `equipped_count`, and nullable `perks` with `sandbox_perk_hash`,
 `required_set_count`, name/icon and nullable `active`. It uses build-equipped
 resolved armor and current inserted event selectors, not future mod assignment.
