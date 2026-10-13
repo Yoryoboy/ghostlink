@@ -140,10 +140,15 @@ pub fn assignment_sockets(
         let mut fits = Vec::new();
         if let Some(set) = set {
             for p in &set.reusable_plug_items {
-                let d = definitions
+                // DIM drops plug-set entries without a definition
+                // (sockets.ts:515-523,792-805). Blank-name Manifest records are
+                // skipped on import, so a missing entry is not an error.
+                let Some(d) = definitions
                     .iter()
                     .find(|d| d.hash.value() == i64::from(p.plug_item_hash))
-                    .ok_or("plug_set_item_definition_unavailable")?;
+                else {
+                    continue;
+                };
                 if d.armor.plug_category_hash.is_some() {
                     fits.push(p.plug_item_hash);
                 }

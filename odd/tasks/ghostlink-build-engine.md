@@ -753,5 +753,31 @@ coverage (`domain.rs:123-126`).
     `socket-utils.ts:88-97`). RED captured before production edits for
     the decode, mod-fit and nameless-plug cases. Workspace: 2461
     all-features, 2428 default, 0 failed; clippy both modes, fmt.
+  - [x] **BE-010b3 — Plug-set items without definitions.** Done: skip
+    at `mod_assignment.rs`, `mod_assignment/costs.rs` and
+    `optimizer/auto_mods.rs` (the auto-mod test now expects a skip, as DIM
+    `mappers.ts:209-214` `filterMap`s missing definitions); inserted plugs
+    without a definition still fail closed. RED
+    `build_check_skips_plug_set_items_without_definitions` before
+    production edits; verifier probes added (`stat_plug_decode_boundaries`,
+    `v35_with_data_migrates_to_36_without_loss`,
+    `unknown_nameless_plug_still_fails_closed_in_mod_checks`); DIM comment
+    in `independent.rs` corrected (`item-utils.ts:69-79,298-325`).
+    Workspace: 2465 all-features, 2432 default, 0 failed; clippy both
+    modes, fmt. Original finding: Live after
+    b54e44a (profile revision 12 -> 13, check 344 ms, substitutes 236 ms):
+    every mod finding and stats are `not_evaluated`
+    `plug_set_item_definition_unavailable` (`mod_assignment.rs:146`). The
+    armor mod plug sets 236342179 (712 items) and 541478408 (82 items)
+    each hold 19 hashes with no definition; Bungie shows them as blank-name,
+    non-redacted shaders (1746378837, 2926662833) and a blank-name leg mod
+    (2778559525, `enhancements.v2_legs`), skipped by `decode_record`. DIM
+    builds plug sets with `buildDefinedPlug` and drops entries whose
+    definition is missing or not pluggable (`sockets.ts:515-523,792-805`).
+    Fix: plug-set entries without a definition are skipped, not fatal
+    (definitions and plug sets come from one Manifest import, so a missing
+    entry is a deliberately skipped blank-name record). Deviation to
+    document: DIM still knows blank-name pluggable mods; Ghostlink cannot
+    offer them as fits.
   - [ ] **BE-010c — Live re-run.** check, substitutes timing, apply
     dry-run; then live apply and EquipLoadout U4b/U4c.

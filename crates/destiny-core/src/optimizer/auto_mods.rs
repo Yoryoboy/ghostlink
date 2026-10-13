@@ -45,10 +45,13 @@ pub fn auto_mod_data(
             .ok_or("auto_mod_plug_set_unavailable")?;
         let mut plugs = Vec::new();
         for entry in &set.reusable_plug_items {
-            let plug = definitions
+            // Entries without a definition are skipped like DIM (sockets.ts:515-523).
+            let Some(plug) = definitions
                 .iter()
                 .find(|d| d.hash.value() == i64::from(entry.plug_item_hash))
-                .ok_or("auto_mod_plug_definition_unavailable")?;
+            else {
+                continue;
+            };
             if plug.armor.plug_category_hash.is_some() && !plug.armor.investment_stats.is_empty() {
                 plugs.push(plug);
             }

@@ -2506,6 +2506,61 @@ mod tests {
     }
 
     #[test]
+    fn stat_plug_decode_boundaries() {
+        let record = |hash: u32, name: &str, plug: &str, stats: usize| {
+            let stats = (0..stats)
+                .map(|i| {
+                    format!(r#"{{"statTypeHash":{i},"value":1,"isConditionallyActive":false}}"#)
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                r#""{hash}":{{"hash":{hash},"displayProperties":{{"name":"{name}"}}{plug},"investmentStats":[{stats}]}}"#
+            )
+        };
+        let armor_stats = r#","plug":{"plugCategoryHash":748854354}"#;
+        let decode = |records: Vec<String>| {
+            decode_inventory_items(
+                DefinitionVersion::new("v1"),
+                format!("{{{}}}", records.join(",")).as_bytes(),
+            )
+        };
+        let counts = |records: Vec<String>| {
+            let batch = decode(records).unwrap();
+            (
+                batch.definitions.len(),
+                batch.stat_plugs.len(),
+                batch.skipped_count,
+            )
+        };
+        let named = record(10, "Named", "", 0);
+        assert_eq!(
+            counts(vec![
+                record(11, "Named Stat", armor_stats, 0),
+                named.clone()
+            ]),
+            (2, 0, 0)
+        );
+        assert_eq!(
+            counts(vec![
+                named.clone(),
+                record(20, "", "", 0),
+                record(21, "", r#","plug":{"plugCategoryHash":null}"#, 0),
+                record(22, "", r#","plug":{"plugCategoryHash":748854355}"#, 0),
+            ]),
+            (1, 0, 3)
+        );
+        let max = destiny_core::armor_catalog::MAX_STAT_PLUGS;
+        let at_limit = (0..max as u32)
+            .map(|i| record(1000 + i, "", armor_stats, 0))
+            .chain([named.clone()])
+            .collect();
+        assert_eq!(decode(at_limit).unwrap().stat_plugs.len(), max);
+        assert!(decode(vec![record(30, "", armor_stats, 64), named.clone()]).is_ok());
+        assert!(decode(vec![record(30, "", armor_stats, 65), named]).is_err());
+    }
+
+    #[test]
     fn sandbox_perks_and_inventory_references_are_decoded() {
         let batch = decode_inventory_items(DefinitionVersion::new("v1"), br#"{"1":{"hash":1,"displayProperties":{"name":"Facet"},"perks":[{"perkHash":7},{"perkHash":8}]}}"#).unwrap();
         assert_eq!(batch.definitions[0].perk_hashes, vec![7, 8]);

@@ -58,9 +58,10 @@ pub const SPECIALTY_SOCKETS: [(u32, u32); 10] = [
 ];
 
 /// Nameless Armor 3.0 stat-roll plugs are known only through the stat-plug store.
-/// They sit in stat sockets outside `SocketCategoryHashes.ArmorMods`, which is the
-/// only category DIM assigns mods to (mod-assignment-utils.ts:98,
-/// socket-utils.ts:88-97), so they are never mods and never block a mod check.
+/// DIM's `specialty_category`/free-mod equivalents look at all sockets
+/// (item-utils.ts:69-79,298-325), so skipping an `armor_stats` plug is only safe
+/// because such a plug matches no specialty socket type, artifice category or
+/// Armor 3.0 masterwork category: it can never change a mod check.
 pub fn is_known_stat_plug(catalogs: &[ArmorCatalogRecord], hash: ItemHash) -> bool {
     catalogs
         .iter()

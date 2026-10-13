@@ -212,10 +212,8 @@ fn auto_mod_map_reports_missing_inputs_instead_of_assuming_empty() {
         .filter(|d| d.hash.value() != 2003)
         .cloned()
         .collect();
-    assert_eq!(
-        auto_mod_data(&missing, &catalogs, &[]).unwrap_err(),
-        "auto_mod_plug_definition_unavailable"
-    );
+    // A plug-set entry without a definition is skipped like DIM (sockets.ts:515-523).
+    assert!(auto_mod_data(&missing, &catalogs, &[]).is_ok());
 }
 
 fn data(with_artifice: bool) -> AutoModData {

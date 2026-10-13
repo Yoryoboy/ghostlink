@@ -465,6 +465,70 @@ fn transfer_status_fake_sqlite_roundtrip_revision_and_search_parity() {
 }
 
 #[test]
+fn v35_with_data_migrates_to_36_without_loss() {
+    let dump = |store: &SqliteStore| {
+        let c = store.connection();
+        let tables: Vec<String> = c
+            .prepare(
+                "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' \
+                 AND name NOT IN ('sync_metadata','definition_stat_plugs','definition_stat_plug_stats') \
+                 ORDER BY name",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        tables
+            .into_iter()
+            .map(|table| {
+                let mut statement = c.prepare(&format!("SELECT * FROM \"{table}\"")).unwrap();
+                let columns = statement.column_count();
+                let mut rows: Vec<Vec<rusqlite::types::Value>> = statement
+                    .query_map([], |row| {
+                        (0..columns)
+                            .map(|column| row.get(column))
+                            .collect::<Result<_, _>>()
+                    })
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap();
+                rows.sort_by_key(|row| format!("{row:?}"));
+                (table, rows)
+            })
+            .collect::<Vec<_>>()
+    };
+    let metadata = |store: &SqliteStore| {
+        store
+            .connection()
+            .query_row(
+                "SELECT revision, COUNT(*) FROM sync_metadata WHERE dataset='profile_inventory'",
+                [],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap()
+    };
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(35).unwrap();
+    store.replace_definitions(manifest_replacement()).unwrap();
+    store.replace_current(full_input()).unwrap();
+    store
+        .connection()
+        .execute(
+            "INSERT INTO builds VALUES('99',3,'b1','My build',1,'import','1','2','{\"x\":1}',NULL)",
+            [],
+        )
+        .unwrap();
+    let before = dump(&store);
+    let (revision, _) = metadata(&store);
+    store.migrate_to(36).unwrap();
+    assert_eq!(dump(&store), before);
+    let (after_revision, rows) = metadata(&store);
+    assert_eq!(after_revision, revision);
+    assert_eq!(rows, 1);
+}
+
+#[test]
 fn transferability_v24_preserves_legacy_rows_and_guards_downgrade() {
     let mut store = SqliteStore::open_in_memory().unwrap();
     store.replace_current(full_input()).unwrap();

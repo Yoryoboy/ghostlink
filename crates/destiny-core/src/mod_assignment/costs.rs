@@ -81,10 +81,13 @@ pub fn cumulative_energy_costs(
         .ok_or("armor_energy_type_unavailable")?;
     let mut plugs = Vec::new();
     for p in &set.reusable_plug_items {
-        let plug = definitions
+        // Entries without a definition are skipped like DIM (sockets.ts:515-523).
+        let Some(plug) = definitions
             .iter()
             .find(|d| d.hash.value() == i64::from(p.plug_item_hash))
-            .ok_or("energy_plug_definition_unavailable")?;
+        else {
+            continue;
+        };
         if plug.armor.plug_category_hash.is_none() || plug.armor.aspect_capacity.is_none() {
             continue;
         }

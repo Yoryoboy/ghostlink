@@ -1427,6 +1427,7 @@ fn build_substitutes_validate_the_limit_and_never_change_check_or_the_apply_plan
 fn check_mod_fit_from_decoded_profile(
     stat_plug: Option<u32>,
     list_mod_sockets_in_310: bool,
+    undefined_set_item: Option<u32>,
 ) -> destiny_core::mod_assignment::ModFitAnalysis {
     use destiny_adapters::decode_profile;
     use destiny_core::armor_catalog::*;
@@ -1499,25 +1500,29 @@ fn check_mod_fit_from_decoded_profile(
         ArmorCatalogRecord::PlugSet(PlugSetDefinition {
             hash: 800,
             reusable_plug_items: [EMPTY as u32, 2001, 3001]
+                .into_iter()
+                .chain(undefined_set_item)
                 .map(|plug_item_hash| PlugSetItem {
                     plug_item_hash,
                     currently_can_roll: true,
                 })
-                .to_vec(),
+                .collect(),
         }),
     ];
     // The Armor 3.0 stat-roll plug is nameless: it lives only in the stat-plug store.
-    world.armor_catalogs.extend(stat_plug.map(|hash| {
-        ArmorCatalogRecord::StatPlug(StatPlugDefinition {
-            hash,
-            plug_category_hash: 748854354,
-            investment_stats: vec![InvestmentStat {
-                stat_type_hash: 2996146975,
-                value: 10,
-                is_conditionally_active: false,
-            }],
-        })
-    }));
+    world
+        .armor_catalogs
+        .extend(stat_plug.filter(|h| *h != 999).map(|hash| {
+            ArmorCatalogRecord::StatPlug(StatPlugDefinition {
+                hash,
+                plug_category_hash: 748854354,
+                investment_stats: vec![InvestmentStat {
+                    stat_type_hash: 2996146975,
+                    value: 10,
+                    is_conditionally_active: false,
+                }],
+            })
+        }));
     sync.repository_mut()
         .publish_manifest(
             DefinitionReplacementInput {
@@ -1591,7 +1596,7 @@ fn check_mod_fit_from_decoded_profile(
 /// no raw plugs (sockets.ts:77-79), so the check must evaluate mod fit.
 #[test]
 fn build_check_evaluates_mod_fit_when_mod_sockets_are_absent_from_fetched_310() {
-    let fit = check_mod_fit_from_decoded_profile(None, false);
+    let fit = check_mod_fit_from_decoded_profile(None, false, None);
     assert_eq!(fit.reason, None);
     assert_eq!(fit.evaluation, "evaluated");
     assert_eq!(fit.invalid_mods, Some(vec![]));
@@ -1601,7 +1606,27 @@ fn build_check_evaluates_mod_fit_when_mod_sockets_are_absent_from_fetched_310() 
 /// are not mods; DIM only assigns mods to ArmorMods sockets (mod-assignment-utils.ts).
 #[test]
 fn build_check_ignores_known_nameless_stat_plugs_in_mod_checks() {
-    let fit = check_mod_fit_from_decoded_profile(Some(481842213), true);
+    let fit = check_mod_fit_from_decoded_profile(Some(481842213), true, None);
     assert_eq!(fit.reason, None);
     assert_eq!(fit.evaluation, "evaluated");
+}
+
+/// BE-010b3: Bungie gives some pluggable items blank names, so the Manifest import
+/// skips them while plug sets still list them. DIM drops plug-set entries without a
+/// definition (sockets.ts:515-523,792-805); the valid mods must still fit.
+#[test]
+fn build_check_skips_plug_set_items_without_definitions() {
+    let fit = check_mod_fit_from_decoded_profile(None, true, Some(2778559525));
+    assert_eq!(fit.reason, None);
+    assert_eq!(fit.evaluation, "evaluated");
+    assert_eq!(fit.invalid_mods, Some(vec![]));
+}
+
+/// A plug inserted in a socket without any definition is a different rule: it
+/// stays fail-closed.
+#[test]
+fn unknown_nameless_plug_still_fails_closed_in_mod_checks() {
+    let fit = check_mod_fit_from_decoded_profile(Some(999), true, None);
+    assert_eq!(fit.evaluation, "not_evaluated");
+    assert_eq!(fit.reason, Some("inserted_plug_definition_unavailable"));
 }

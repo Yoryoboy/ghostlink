@@ -264,10 +264,23 @@ Design (no fabricated name, `definitions` untouched):
   resolution (`armor_model::resolve_stat_plugs`) so the masterwork lookup and the
   set-selector scan accept a known nameless plug instead of reporting
   `inserted_plug_definition_unavailable`; a plug found in neither store still does.
-- **Mod assignment (BE-010b2).** Stat-roll plugs are not mods: DIM assigns mods only to
-  `SocketCategoryHashes.ArmorMods` sockets (`loadout/mod-assignment-utils.ts:98`,
-  `utils/socket-utils.ts:88-97`). The app adds the known `StatPlug` records of the owned
+- **Mod assignment (BE-010b2).** DIM's specialty and free-mod checks look at all
+  sockets (`utils/item-utils.ts:69-79,298-325`); skipping an `armor_stats` plug gives the
+  same result because it matches no specialty socket type, artifice category or Armor 3.0
+  masterwork category. The app adds the known `StatPlug` records of the owned
   armor to the mod catalogs (`build_mods::catalogs`); core `assignment_sockets`,
   `specialty_category` and the free-mod scan skip any plug with such a record
   (`mod_assignment::is_known_stat_plug`) instead of failing with
   `inserted_plug_definition_unavailable`. Unknown nameless plugs still fail.
+
+### Plug-set items without definitions (BE-010b3)
+
+Bungie gives some pluggable items blank names (shaders, some armor mods such as leg mod
+2778559525), and the Manifest import skips blank names, while plug sets still list them.
+DIM builds plug sets with `buildDefinedPlug` and drops entries whose definition is missing
+or not pluggable (`inventory/store/sockets.ts:515-523,792-805`). Ghostlink does the same:
+mod fit (`assignment_sockets`), energy costs and auto-mod data skip set entries without a
+definition instead of reporting `plug_set_item_definition_unavailable`. Deviation: DIM
+still knows blank-name pluggable mods; Ghostlink cannot offer them as fits. A plug
+*inserted* in a socket without a definition still fails with
+`inserted_plug_definition_unavailable`.
