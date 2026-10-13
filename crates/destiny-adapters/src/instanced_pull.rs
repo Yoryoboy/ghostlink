@@ -10,7 +10,10 @@
 //!
 //! No action-specific numeric refusal guarantees are established. Only a valid
 //! standard success envelope on HTTP 200 acknowledges; 401/403 refuse auth.
-//! All other received HTTP/provider results (including 429 and 5xx) are uncertain.
+//! A recognized numeric refusal code in a complete JSON envelope is that
+//! refusal at any other status, because Bungie also sends game refusals with
+//! HTTP 500. All other received HTTP/provider results (including 429 and 5xx)
+//! are uncertain.
 
 use crate::transfer::{HttpTransferTransport, ensure_unexpired};
 use destiny_core::{
@@ -180,7 +183,20 @@ struct Envelope {
     detailed_error_trace: Option<String>,
 }
 
+fn pull_rejection(reason: destiny_core::ProviderRejection) -> InstancedPullOutcome {
+    InstancedPullOutcome::Rejected(
+        if reason == destiny_core::ProviderRejection::DestinationFull {
+            destiny_core::InstancedPullRejection::DestinationFull
+        } else {
+            destiny_core::InstancedPullRejection::Provider(reason)
+        },
+    )
+}
+
 fn classify_response(response: &mut InstancedPullHttpResponse) -> InstancedPullOutcome {
+    if let Some(reason) = response.status_error_rejection() {
+        return pull_rejection(reason);
+    }
     match response.status() {
         200 => {}
         401 | 403 => return InstancedPullOutcome::AuthenticationRefused,
@@ -204,13 +220,7 @@ fn classify_response(response: &mut InstancedPullHttpResponse) -> InstancedPullO
         .ok()
         .and_then(crate::bungie_errors::rejection)
     {
-        return InstancedPullOutcome::Rejected(
-            if reason == destiny_core::ProviderRejection::DestinationFull {
-                destiny_core::InstancedPullRejection::DestinationFull
-            } else {
-                destiny_core::InstancedPullRejection::Provider(reason)
-            },
-        );
+        return pull_rejection(reason);
     }
     if envelope.error_code == 1
         && envelope.throttle_seconds >= 0
@@ -241,25 +251,55 @@ mod tests {
 
     #[test]
     fn numeric_action_rejections() {
-        crate::bungie_errors::assert_action_codes(|value| {
-            let body = value.to_string().into_bytes();
-            let mut response = InstancedPullHttpResponse::new(
-                200,
-                Some(body.len() as u64),
-                Some("application/json".into()),
-                Box::new(Cursor::new(body)),
-            );
-            match classify_response(&mut response) {
-                InstancedPullOutcome::Rejected(destiny_core::InstancedPullRejection::Provider(
-                    reason,
-                )) => Some(reason),
-                InstancedPullOutcome::Rejected(
-                    destiny_core::InstancedPullRejection::DestinationFull,
-                ) => Some(destiny_core::ProviderRejection::DestinationFull),
-                InstancedPullOutcome::Uncertain => None,
-                other => panic!("unexpected {other:?}"),
-            }
-        });
+        // Bungie also reports game refusals with HTTP 500; the envelope decides.
+        for status in [200, 500, 503] {
+            crate::bungie_errors::assert_action_codes(|value| {
+                let body = value.to_string().into_bytes();
+                let mut response = InstancedPullHttpResponse::new(
+                    status,
+                    Some(body.len() as u64),
+                    Some("application/json".into()),
+                    Box::new(Cursor::new(body)),
+                );
+                match classify_response(&mut response) {
+                    InstancedPullOutcome::Rejected(
+                        destiny_core::InstancedPullRejection::Provider(reason),
+                    ) => Some(reason),
+                    InstancedPullOutcome::Rejected(
+                        destiny_core::InstancedPullRejection::DestinationFull,
+                    ) => Some(destiny_core::ProviderRejection::DestinationFull),
+                    InstancedPullOutcome::Uncertain => None,
+                    other => panic!("unexpected {other:?}"),
+                }
+            });
+        }
+    }
+    #[test]
+    fn status_keeps_its_meaning_without_a_recognized_refusal() {
+        use crate::bungie_errors::StatusProbe;
+        crate::bungie_errors::assert_status_precedence(
+            StatusProbe::Uncertain,
+            |status, media, value| {
+                let bytes = value.to_string().into_bytes();
+                let mut response = InstancedPullHttpResponse::new(
+                    status,
+                    Some(bytes.len() as u64),
+                    Some(media.into()),
+                    Box::new(std::io::Cursor::new(bytes)),
+                );
+                match classify_response(&mut response) {
+                    InstancedPullOutcome::Rejected(
+                        destiny_core::InstancedPullRejection::Provider(reason),
+                    ) => StatusProbe::Refused(reason),
+                    InstancedPullOutcome::AuthenticationRefused => {
+                        StatusProbe::AuthenticationRefused
+                    }
+                    InstancedPullOutcome::Transient => StatusProbe::Transient,
+                    InstancedPullOutcome::Uncertain => StatusProbe::Uncertain,
+                    other => panic!("unexpected {other:?}"),
+                }
+            },
+        );
     }
     const ACK: &str = r#"{"Response":0,"ErrorCode":1,"ThrottleSeconds":0,"ErrorStatus":"Success"}"#;
     fn request(hash: i64, kind: u32) -> InstancedPullRequest {

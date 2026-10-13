@@ -127,6 +127,9 @@ fn build_body(request: &EquipItemRequest) -> Result<String, AppError> {
 }
 
 fn classify_response(response: &mut EquipHttpResponse) -> Result<EquipOutcome, AppError> {
+    if let Some(reason) = response.status_error_rejection() {
+        return Ok(EquipOutcome::Rejected(EquipRejection::Provider(reason)));
+    }
     match response.status() {
         200 => {}
         401 | 403 => return Ok(EquipOutcome::AuthenticationRefused),
@@ -232,13 +235,41 @@ mod tests {
     }
     #[test]
     fn numeric_action_rejections() {
-        crate::bungie_errors::assert_action_codes(|value| {
-            match classify_response(&mut response(200, value)).unwrap() {
-                EquipOutcome::Rejected(EquipRejection::Provider(reason)) => Some(reason),
-                EquipOutcome::Uncertain => None,
-                other => panic!("unexpected {other:?}"),
-            }
-        });
+        // Bungie also reports game refusals with HTTP 500; the envelope decides.
+        for status in [200, 500, 503] {
+            crate::bungie_errors::assert_action_codes(|value| {
+                match classify_response(&mut response(status, value)).unwrap() {
+                    EquipOutcome::Rejected(EquipRejection::Provider(reason)) => Some(reason),
+                    EquipOutcome::Uncertain => None,
+                    other => panic!("unexpected {other:?}"),
+                }
+            });
+        }
+    }
+    #[test]
+    fn status_keeps_its_meaning_without_a_recognized_refusal() {
+        use crate::bungie_errors::StatusProbe;
+        crate::bungie_errors::assert_status_precedence(
+            StatusProbe::Transient,
+            |status, media, value| {
+                let bytes = value.to_string().into_bytes();
+                let mut response = EquipHttpResponse::new(
+                    status,
+                    Some(bytes.len() as u64),
+                    Some(media.into()),
+                    Box::new(std::io::Cursor::new(bytes)),
+                );
+                match classify_response(&mut response).unwrap() {
+                    EquipOutcome::Rejected(EquipRejection::Provider(reason)) => {
+                        StatusProbe::Refused(reason)
+                    }
+                    EquipOutcome::AuthenticationRefused => StatusProbe::AuthenticationRefused,
+                    EquipOutcome::Transient => StatusProbe::Transient,
+                    EquipOutcome::Uncertain => StatusProbe::Uncertain,
+                    other => panic!("unexpected {other:?}"),
+                }
+            },
+        );
     }
     #[test]
     fn exact_url_body_and_success_without_retry() {

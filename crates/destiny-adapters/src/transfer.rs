@@ -51,7 +51,11 @@
 //!   non-JSON media type, or an unreadable or oversized body →
 //!   [`TransferOutcome::Uncertain`].
 //!
-//! Non-`200` statuses are classified at the HTTP layer with the same honesty
+//! Bungie also reports legitimate game refusals with non-`200` statuses (DIM
+//! reads the envelope first for that reason), so for any status other than
+//! `200`, `401`/`403` or `429`, a complete JSON envelope with a recognized
+//! numeric rejection code is that [`TransferOutcome::Rejected`]. Otherwise
+//! non-`200` statuses are classified at the HTTP layer with the same honesty
 //! rule: `401`/`403` is an authentication rejection observed after the request
 //! was dispatched: [`TransferOutcome::AuthenticationRefused`] preserves the
 //! attempted call without claiming any mutation; `429` is a [`TransferOutcome::Transient`] failure because
@@ -360,6 +364,24 @@ impl TransferHttpResponse {
             throttle.observe_bytes(&bytes);
         }
         Some(bytes)
+    }
+
+    /// Bungie reports legitimate game refusals (item not found, equipped,
+    /// destination full) with HTTP 500 too; DIM's http-client reads the
+    /// envelope before the status for that reason. For any status other than
+    /// success, authentication or throttle, a complete JSON envelope carrying a
+    /// recognized numeric rejection code is that deterministic refusal. Any
+    /// other body leaves the caller's status classification in place.
+    pub(crate) fn status_error_rejection(&mut self) -> Option<destiny_core::ProviderRejection> {
+        if matches!(self.status, 200 | 401 | 403 | 429) {
+            return None;
+        }
+        let body = self.json_body(self.content_length)?;
+        let code = serde_json::from_slice::<Value>(&body)
+            .ok()?
+            .get("ErrorCode")?
+            .as_u64()?;
+        crate::bungie_errors::rejection(code)
     }
 }
 
@@ -720,10 +742,16 @@ pub(crate) fn is_canonical_identifier(value: &str) -> bool {
 /// A received authentication refusal records dispatch without claiming a
 /// mutation. Every post-dispatch condition a caller cannot resolve becomes
 /// [`TransferOutcome::Uncertain`]: a dispatched mutation that returns a server
-/// error does not prove the mutation did not apply, so `5xx` is uncertain, and
+/// error without a recognized refusal code does not prove the mutation did
+/// not apply, so such a `5xx` is uncertain, and
 /// only `429` — a deterministic throttle refusal to process the request — is
 /// [`TransferOutcome::Transient`].
 fn classify_response(response: &mut TransferHttpResponse) -> Result<TransferOutcome, AppError> {
+    if let Some(reason) = response.status_error_rejection() {
+        return Ok(TransferOutcome::Rejected(TransferRejection::Provider(
+            reason,
+        )));
+    }
     let status = response.status();
     let content_length = response.content_length();
     match status {
@@ -1771,6 +1799,58 @@ mod tests {
                 "status {status} cannot establish non-application"
             );
         }
+    }
+
+    /// Bungie reports legitimate game refusals (item not found, equipped, full)
+    /// with HTTP 500 too, as DIM's http-client handles: a recognized numeric code
+    /// in a complete envelope is that refusal at any status. Unknown codes,
+    /// success codes and unreadable bodies keep the status classification.
+    #[test]
+    fn recognized_rejection_codes_win_over_error_statuses() {
+        use destiny_core::ProviderRejection as R;
+        for status in [500u16, 503, 400, 404] {
+            for (code, reason) in [
+                (1623, R::ItemNotFound),
+                (1656, R::Equipped),
+                (1642, R::DestinationFull),
+            ] {
+                assert_eq!(
+                    transfer_with(json_response(
+                        status,
+                        &format!("{{\"ErrorCode\":{code},\"ErrorStatus\":\"x\",\"Response\":0}}")
+                    )),
+                    TransferOutcome::Rejected(TransferRejection::Provider(reason)),
+                    "status {status} code {code}"
+                );
+            }
+        }
+        for status in [500u16, 503] {
+            for body in ["{\"ErrorCode\":1}", "{\"ErrorCode\":999}", "boom"] {
+                assert_eq!(
+                    transfer_with(json_response(status, body)),
+                    TransferOutcome::Uncertain,
+                    "status {status} body {body}"
+                );
+            }
+        }
+        // A refusal body behind a non-JSON media type is not trusted.
+        assert_eq!(
+            transfer_with(response_with_content_type(
+                500,
+                Some("text/html"),
+                "{\"ErrorCode\":1623}"
+            )),
+            TransferOutcome::Uncertain
+        );
+        // Authentication and throttle statuses keep their own meaning.
+        assert_eq!(
+            transfer_with(json_response(401, "{\"ErrorCode\":1623}")),
+            TransferOutcome::AuthenticationRefused
+        );
+        assert_eq!(
+            transfer_with(json_response(429, "{\"ErrorCode\":1623}")),
+            TransferOutcome::Transient
+        );
     }
 
     #[test]

@@ -123,7 +123,18 @@ fn build_body(request: &SetLockStateRequest) -> Result<String, AppError> {
     Ok(json!({"state": request.locked(), "itemId": request.item().as_str(), "characterId": request.character().as_str(), "membershipType": membership}).to_string())
 }
 
+fn lock_rejection(reason: destiny_core::ProviderRejection) -> LockOutcome {
+    LockOutcome::Rejected(if reason == destiny_core::ProviderRejection::ItemNotFound {
+        LockRejection::ItemNotFound
+    } else {
+        LockRejection::Provider(reason)
+    })
+}
+
 fn classify_response(response: &mut LockHttpResponse) -> Result<LockOutcome, AppError> {
+    if let Some(reason) = response.status_error_rejection() {
+        return Ok(lock_rejection(reason));
+    }
     match response.status() {
         200 => {}
         401 | 403 => return Ok(LockOutcome::AuthenticationRefused),
@@ -140,16 +151,9 @@ fn classify_response(response: &mut LockHttpResponse) -> Result<LockOutcome, App
     };
     match value.get("ErrorCode").and_then(Value::as_u64) {
         Some(1) => Ok(LockOutcome::Applied),
-        Some(code) => Ok(crate::bungie_errors::rejection(code).map_or(
-            LockOutcome::Uncertain,
-            |reason| {
-                LockOutcome::Rejected(if reason == destiny_core::ProviderRejection::ItemNotFound {
-                    LockRejection::ItemNotFound
-                } else {
-                    LockRejection::Provider(reason)
-                })
-            },
-        )),
+        Some(code) => Ok(
+            crate::bungie_errors::rejection(code).map_or(LockOutcome::Uncertain, lock_rejection)
+        ),
         None => Ok(LockOutcome::Uncertain),
     }
 }
@@ -245,16 +249,47 @@ mod tests {
     }
     #[test]
     fn numeric_action_rejections() {
-        crate::bungie_errors::assert_action_codes(|value| {
-            match classify_response(&mut response(200, value)).unwrap() {
-                LockOutcome::Rejected(LockRejection::Provider(reason)) => Some(reason),
-                LockOutcome::Rejected(LockRejection::ItemNotFound) => {
-                    Some(destiny_core::ProviderRejection::ItemNotFound)
+        // Bungie also reports game refusals with HTTP 500; the envelope decides.
+        for status in [200, 500, 503] {
+            crate::bungie_errors::assert_action_codes(|value| {
+                match classify_response(&mut response(status, value)).unwrap() {
+                    LockOutcome::Rejected(LockRejection::Provider(reason)) => Some(reason),
+                    LockOutcome::Rejected(LockRejection::ItemNotFound) => {
+                        Some(destiny_core::ProviderRejection::ItemNotFound)
+                    }
+                    LockOutcome::Uncertain => None,
+                    other => panic!("unexpected {other:?}"),
                 }
-                LockOutcome::Uncertain => None,
-                other => panic!("unexpected {other:?}"),
-            }
-        });
+            });
+        }
+    }
+    #[test]
+    fn status_keeps_its_meaning_without_a_recognized_refusal() {
+        use crate::bungie_errors::StatusProbe;
+        crate::bungie_errors::assert_status_precedence(
+            StatusProbe::Transient,
+            |status, media, value| {
+                let bytes = value.to_string().into_bytes();
+                let mut response = LockHttpResponse::new(
+                    status,
+                    Some(bytes.len() as u64),
+                    Some(media.into()),
+                    Box::new(std::io::Cursor::new(bytes)),
+                );
+                match classify_response(&mut response).unwrap() {
+                    LockOutcome::Rejected(LockRejection::Provider(reason)) => {
+                        StatusProbe::Refused(reason)
+                    }
+                    LockOutcome::Rejected(LockRejection::ItemNotFound) => {
+                        StatusProbe::Refused(destiny_core::ProviderRejection::ItemNotFound)
+                    }
+                    LockOutcome::AuthenticationRefused => StatusProbe::AuthenticationRefused,
+                    LockOutcome::Transient => StatusProbe::Transient,
+                    LockOutcome::Uncertain => StatusProbe::Uncertain,
+                    other => panic!("unexpected {other:?}"),
+                }
+            },
+        );
     }
     fn response(status: u16, body: Value) -> LockHttpResponse {
         let bytes = body.to_string().into_bytes();

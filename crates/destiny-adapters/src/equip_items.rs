@@ -130,6 +130,9 @@ fn classify_response(
     request: &EquipItemsRequest,
 ) -> EquipItemsOutcome {
     use EquipItemsOutcome as O;
+    if let Some(reason) = response.status_error_rejection() {
+        return O::Rejected(reason);
+    }
     match response.status() {
         200 => {}
         401 | 403 => return O::AuthenticationRefused,
@@ -214,20 +217,43 @@ mod tests {
             vec![destiny_core::ItemInstanceId::new("7")],
         )
         .unwrap();
-        crate::bungie_errors::assert_action_codes(|value| {
-            let body = value.to_string().into_bytes();
-            let mut response = EquipItemsHttpResponse::new(
-                200,
-                Some(body.len() as u64),
-                Some("application/json".into()),
-                Box::new(std::io::Cursor::new(body)),
-            );
-            match classify_response(&mut response, &request) {
-                EquipItemsOutcome::Rejected(reason) => Some(reason),
-                EquipItemsOutcome::Uncertain => None,
-                other => panic!("unexpected {other:?}"),
-            }
-        });
+        // Bungie also reports game refusals with HTTP 500; the envelope decides.
+        for status in [200, 500, 503] {
+            crate::bungie_errors::assert_action_codes(|value| {
+                let body = value.to_string().into_bytes();
+                let mut response = EquipItemsHttpResponse::new(
+                    status,
+                    Some(body.len() as u64),
+                    Some("application/json".into()),
+                    Box::new(std::io::Cursor::new(body)),
+                );
+                match classify_response(&mut response, &request) {
+                    EquipItemsOutcome::Rejected(reason) => Some(reason),
+                    EquipItemsOutcome::Uncertain => None,
+                    other => panic!("unexpected {other:?}"),
+                }
+            });
+        }
+        use crate::bungie_errors::StatusProbe;
+        crate::bungie_errors::assert_status_precedence(
+            StatusProbe::Transient,
+            |status, media, value| {
+                let bytes = value.to_string().into_bytes();
+                let mut response = EquipItemsHttpResponse::new(
+                    status,
+                    Some(bytes.len() as u64),
+                    Some(media.into()),
+                    Box::new(std::io::Cursor::new(bytes)),
+                );
+                match classify_response(&mut response, &request) {
+                    EquipItemsOutcome::Rejected(reason) => StatusProbe::Refused(reason),
+                    EquipItemsOutcome::AuthenticationRefused => StatusProbe::AuthenticationRefused,
+                    EquipItemsOutcome::Transient => StatusProbe::Transient,
+                    EquipItemsOutcome::Uncertain => StatusProbe::Uncertain,
+                    other => panic!("unexpected {other:?}"),
+                }
+            },
+        );
     }
     #[test]
     fn allowlist_rejects_before_credentials() {

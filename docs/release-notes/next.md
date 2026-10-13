@@ -33,6 +33,13 @@ Draft for the next release candidate. Live checks remain on the
   reports `publication: "discarded_not_newer"` (exit 0). It also reports Bungie's
   `profile_minted_at`. Reads whose sync found nothing newer report
   `freshness: stale` instead of `fresh`.
+- Actions report Bungie's typed refusals (for example `item_not_found` when an
+  item moved behind Ghostlink's back, or `equipped`) even when Bungie sends them
+  with an error status such as HTTP 500 or 400, instead of an untyped
+  `uncertain` or `invalid_request`. Server errors without a recognized refusal
+  code stay `uncertain`.
+- Batch equip plans from the local projection like single-item equip, without a
+  forced profile read before every batch.
 
 ```sh
 ghostlink search-inventory 'is:weapon (is:solar or is:arc) -is:locked' --limit 5

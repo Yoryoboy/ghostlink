@@ -217,7 +217,8 @@ with 2–17 items. Character is an explicit unique class or owned ID; item ID/na
 resolution matches CLI `ghostlink equip <ITEM>... --character <class|id>`.
 The existing single-item `equip_item` tool is unchanged.
 
-Committed-projection validation checks the combined equipment state: unique items and
+Committed-projection validation (synced only when missing, stale or invalidated,
+like `equip_item`) checks the combined equipment state: unique items and
 slots, class compatibility, equippability, and at most one exotic weapon and
 one exotic armor including equipped slots not replaced. Invalid batches dispatch
 nothing. Required transfers use Vault-mediated routing, stop on first failure,
