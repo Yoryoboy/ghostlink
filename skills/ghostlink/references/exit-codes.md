@@ -99,15 +99,17 @@ outcome, receipt, reason and a `local_state` object:
 {"status":"updated","unresolved_items":[],"skipped":[],"persisted":true}
 ```
 
-`status`: `updated` (complete), `partial` (unresolved/skipped), `failed`
+`status`: `updated` (complete; may list the artifact skip), `partial` (unresolved,
+or skipped other than the seasonal artifact), `failed`
 (persistence/invalidation failed), `not_attempted` (no acknowledged receipt/local
 projection attempt). Each issue has `{item: {instance_id, item_hash, bucket, name},
 reason}`; hash/bucket/name may be null. Reasons: `not_owned`, `ambiguous`,
 `missing_definition`, `definition_unavailable`, `subclass_not_held`,
-`unsupported_bucket`, `invalid_projection`. `persisted` is false only for a
-failed projection write; true can also mean no effects.
+`unsupported_bucket`, `invalid_projection`, `on_other_character`, `in_postmaster`.
+`persisted` is false only for a failed projection write; true can also mean no effects.
 Item effects are **projected locally**, not per-item confirmed by Bungie;
-do not promise cross-character/Vault preparation.
+EquipLoadout pulls from the Vault but not from another character or the
+Postmaster: those items are unresolved and must be moved first.
 
 Exactly one MCP slot/name (runtime-enforced); names are normalized exact
 matches within that character. Unknown/ambiguous names list candidates; select
@@ -117,7 +119,7 @@ explicitly, never guess. Empty/unavailable slots refuse without an action.
 |---|---:|---|
 | `applied` | 0 | Acknowledged, not observed. Local equipment effects persisted; freshness retained. |
 | `refused` / `failed` | 41 | Report reason/receipt/candidates; no automatic retry. Location refusal: go to orbit or a social space and retry only with reassessed intent. |
-| `local_state_failed` | 42 | Applied receipt retained, but local effects are incomplete or persistence failed. Some effects may have been projected locally; sync/read, never blindly repeat. |
+| `local_state_failed` | 42 | Applied receipt retained, but local effects are incomplete (`partial`: "some loadout items were not applied; see local_state") or persistence failed. Name each unresolved item; sync/read, never blindly repeat. |
 
 Startup/argument errors use the usual error envelope and exits. Requires login,
 Manifest definitions and orbit/social space/offline. No post-action request,

@@ -769,12 +769,16 @@ Ordinary sync resolves the saved slot/name from the committed cache: a fresh
 cached projection needs zero profile or component-206 reads. Legacy projections
 without the cache use one 206 read. Exactly one official EquipLoadout call follows;
 no item-by-item provider emulation, post-action request, or automatic retry.
-Acknowledged saved items found locally are projected locally onto the character,
-as equipped, with same-bucket replacements unequipped. These are not per-item
-Bungie confirmations; no cross-character/Vault preparation is promised.
-Complete persistence retains freshness;
-missing items, subclasses not held on the target, or rejected local effects apply the rest
-and invalidate freshness so the next ordinary read syncs. Mods/plugs remain
+Acknowledged saved items found locally in the Vault or on the target are projected
+locally onto the character, as equipped, with same-bucket replacements unequipped.
+These are not per-item Bungie confirmations. EquipLoadout does not pull an item
+from another character or the Postmaster, and no cross-character preparation is
+done: such an item is reported as unresolved (`on_other_character`,
+`in_postmaster`) and never projected. Complete persistence retains freshness;
+missing or unreachable items, subclasses not held on the target, or rejected local
+effects apply the rest and invalidate freshness so the next ordinary read syncs.
+The seasonal artifact every saved loadout carries is listed in `skipped` as
+`unsupported_bucket` without making the projection partial. Mods/plugs remain
 unchanged, including subclass aspects/fragments, matching DIM's Bungie API
 limitation. Held subclasses switch locally and unequip the previous subclass;
 this loadout-only path does not change single-item equip validation.
@@ -785,20 +789,23 @@ JSON (`kind: "apply_loadout"`) shows `character`, one-based `slot`, `name`,
 {"status":"updated","unresolved_items":[],"skipped":[],"persisted":true}
 ```
 
-`status` is `updated` (complete projection), `partial` (unresolved/skipped items),
+`status` is `updated` (complete projection; may list the artifact skip), `partial`
+(unresolved items or skipped items other than the artifact),
 `failed` (projection persistence or invalidation failed), or `not_attempted`
 (no acknowledged receipt/local projection attempt). Each issue in
 `unresolved_items` or `skipped` has `{item: {instance_id, item_hash, bucket, name},
 reason}`; hash, bucket and name may be null. Reasons are `not_owned`, `ambiguous`,
 `missing_definition`, `definition_unavailable`, `subclass_not_held`,
-`unsupported_bucket`, `invalid_projection`. `persisted` is false only when
+`unsupported_bucket`, `invalid_projection`, `on_other_character`, `in_postmaster`.
+`persisted` is false only when
 writing projected effects failed; true can also mean there were no effects.
 
 `applied` is acknowledgement, not observed
 game state (exit 0). Refusal/auth/transient/uncertain attempts invalidate freshness
 and fail (41). An applied receipt with incomplete local effects or persistence
-failure is `local_state_failed` (42), preserving the receipt and reporting
-"local state could not be updated after the action". Persistence failure also
+failure is `local_state_failed` (42), preserving the receipt. A `partial`
+projection reports "some loadout items were not applied; see local_state"; a
+`failed` one reports "local state could not be updated after the action". Persistence failure also
 attempts invalidation and never retries. Nonzero action output is on stderr; startup/argument errors retain the
 ordinary error envelope. No provider-lag exit 43. Never blindly retry uncertainty.
 MCP `apply_loadout` uses the same service and output.

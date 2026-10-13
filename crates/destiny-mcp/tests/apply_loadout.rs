@@ -114,6 +114,119 @@ fn partial_output_has_shared_sanitized_diagnostics_and_advertised_schema() {
     );
 }
 
+fn applied_with(
+    status: destiny_app::LoadoutLocalStatus,
+    unresolved_items: Vec<destiny_app::LoadoutLocalIssue>,
+    skipped: Vec<destiny_app::LoadoutLocalIssue>,
+    persisted: bool,
+) -> ApplyLoadoutOutput {
+    ApplyLoadoutOutput::from_result(Ok(ApplyLoadoutResult {
+        character: CharacterId::new("1"),
+        slot: 3,
+        name: Some("PvP".into()),
+        receipt: LoadoutActionOutcome::Applied,
+        local_state_updated: status == destiny_app::LoadoutLocalStatus::Updated,
+        local_state: destiny_app::LoadoutLocalState {
+            status,
+            unresolved_items,
+            skipped,
+            persisted,
+        },
+    }))
+}
+
+fn issue(
+    id: &str,
+    name: &str,
+    bucket: &str,
+    reason: destiny_app::LoadoutLocalReason,
+) -> destiny_app::LoadoutLocalIssue {
+    destiny_app::LoadoutLocalIssue {
+        item: destiny_app::LoadoutLocalItem {
+            instance_id: destiny_app::ItemInstanceId::new(id),
+            item_hash: Some(destiny_app::ItemHash::new(7)),
+            bucket: Some(bucket.into()),
+            name: Some(name.into()),
+        },
+        reason,
+    }
+}
+
+#[test]
+fn unreachable_items_are_named_and_partial_is_not_a_persistence_failure() {
+    use destiny_app::{LoadoutLocalReason as Reason, LoadoutLocalStatus as Status};
+    for (reason, code) in [
+        (Reason::OnOtherCharacter, "on_other_character"),
+        (Reason::InPostmaster, "in_postmaster"),
+    ] {
+        let output = applied_with(
+            Status::Partial,
+            vec![issue("6917", "Mercurial Overreach", "energy", reason)],
+            vec![],
+            true,
+        );
+        assert_eq!(output.exit_code, 42);
+        assert_eq!(output.value["outcome"], "local_state_failed");
+        assert_eq!(output.value["receipt"], "applied");
+        assert_eq!(
+            output.value["reason"],
+            "some loadout items were not applied; see local_state"
+        );
+        assert_eq!(output.value["local_state"]["status"], "partial");
+        assert_eq!(output.value["local_state"]["persisted"], true);
+        assert_eq!(
+            output.value["local_state"]["unresolved_items"][0]["reason"],
+            code
+        );
+        assert_eq!(
+            output.value["local_state"]["unresolved_items"][0]["item"]["name"],
+            "Mercurial Overreach"
+        );
+        let text = output.render_text();
+        assert!(text.contains("some loadout items were not applied; see local_state"));
+        assert!(text.contains(&format!("unresolved: Mercurial Overreach [6917] — {code}")));
+        assert!(!text.contains("could not be updated"));
+    }
+    // A real persistence failure keeps its own message.
+    let output = applied_with(Status::Failed, vec![], vec![], false);
+    assert_eq!(output.exit_code, 42);
+    assert_eq!(
+        output.value["reason"],
+        "local state could not be updated after the action"
+    );
+    // An informational artifact skip on a complete projection is a success.
+    let output = applied_with(
+        Status::Updated,
+        vec![],
+        vec![issue(
+            "88",
+            "Tablet of Ruin",
+            "other",
+            Reason::UnsupportedBucket,
+        )],
+        true,
+    );
+    assert_eq!(output.exit_code, 0);
+    assert_eq!(output.value["outcome"], "applied");
+    assert!(output.value["reason"].is_null());
+    assert_eq!(output.value["local_state"]["status"], "updated");
+    assert_eq!(
+        output.value["local_state"]["skipped"][0]["reason"],
+        "unsupported_bucket"
+    );
+    let text = output.render_text();
+    assert!(text.starts_with("Apply loadout: applied"));
+    assert!(text.contains("skipped: Tablet of Ruin [88] — unsupported_bucket"));
+    let schema = serde_json::to_string(
+        &destiny_mcp::schema::apply_loadout_tool()
+            .output_schema
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(schema.contains("on_other_character"));
+    assert!(schema.contains("in_postmaster"));
+}
+
 #[test]
 fn shared_output_preserves_receipts_exits_and_sanitizes_human_and_json() {
     for receipt in [
@@ -171,7 +284,7 @@ fn shared_output_preserves_receipts_exits_and_sanitizes_human_and_json() {
             if receipt.applied() && !local_state_updated {
                 assert_eq!(
                     output.value["reason"],
-                    "local state could not be updated after the action"
+                    "some loadout items were not applied; see local_state"
                 );
             } else if receipt
                 == LoadoutActionOutcome::Rejected(LoadoutActionRejection::RestrictedLocation)

@@ -145,8 +145,9 @@ the receipt retained. No post-action request or retry; complete local persistenc
 retains freshness, while incomplete effects or failures require refresh.
 Its `local_state` is now an object: `status` (`updated`, `partial`, `failed`,
 `not_attempted`), `unresolved_items`, `skipped`, and `persisted`. Item effects are
-**projected locally**, not individually confirmed by Bungie. Cross-character/Vault
-preparation is not promised; see the [next release draft](docs/release-notes/next.md).
+**projected locally**, not individually confirmed by Bungie. EquipLoadout pulls from
+the Vault but not from another character or the Postmaster; such items are reported
+as unresolved, never projected. See the [next release draft](docs/release-notes/next.md).
 
 Fresh MCP projection reads use four concurrent slots; mutations and profile syncs
 remain exclusive, and read-triggered syncs are single-flight. Bungie throttling

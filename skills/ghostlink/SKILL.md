@@ -189,14 +189,17 @@ bucket and name may be null. Report these local issues, not invented per-item
 Bungie successes. `persisted: true` can mean no effects were written.
 `applied` (CLI 0 / MCP success) means acknowledged, not observed. Known saved
 items are **projected locally** as moved/equipped with same-bucket replacements;
-complete persistence retains freshness. Do not promise cross-character/Vault
-preparation before EquipLoadout. Missing items,
+complete persistence retains freshness. EquipLoadout pulls from the Vault but not
+from another character or the Postmaster; those items are unresolved
+(`on_other_character`, `in_postmaster`), never projected. Missing or unreachable items,
 subclasses not held on the target or rejected effects apply the rest and invalidate.
+The seasonal artifact skip (`unsupported_bucket`) alone is not partial.
 Held subclasses switch locally, unequipping the previous subclass without
 invalidation; single-item equip validation is unchanged. Mods/plugs, including
 subclass aspects/fragments, stay unchanged (DIM/Bungie limitation). Non-applied receipts invalidate
 and fail (41); an applied receipt with incomplete local effects or persistence
-failure is 42, retaining the receipt: "local state could not be updated after the action".
+failure is 42, retaining the receipt: partial reports "some loadout items were not
+applied; see local_state", persistence failure "local state could not be updated after the action".
 No post-action request, provider-lag exit 43 or automatic retry. After invalidation,
 read later and reassess intent, never blindly repeat `apply-loadout`, including
 after nonzero exit.

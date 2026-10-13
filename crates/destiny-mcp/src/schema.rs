@@ -123,6 +123,8 @@ pub enum ApplyLoadoutLocalReasonView {
     SubclassNotHeld,
     UnsupportedBucket,
     InvalidProjection,
+    OnOtherCharacter,
+    InPostmaster,
 }
 #[derive(JsonSchema)]
 pub struct ApplyLoadoutLocalItemView {

@@ -23,7 +23,11 @@ Draft for the next release candidate. Live checks remain on the
 - Loadout results distinguish remote acknowledgement from local projection
   problems, including unresolved/skipped items and persistence failure. Effects
   are **projected locally**, not individually confirmed by Bungie. This release
-  does not promise cross-character/Vault preparation before EquipLoadout.
+  does no cross-character preparation before EquipLoadout: an item on another
+  character or in the Postmaster is reported as unresolved (`on_other_character`,
+  `in_postmaster`) instead of being projected. The seasonal artifact skip alone no
+  longer makes an apply partial (exit 0), and a partial apply reports "some loadout
+  items were not applied; see local_state" instead of a persistence failure.
 
 ```sh
 ghostlink search-inventory 'is:weapon (is:solar or is:arc) -is:locked' --limit 5
