@@ -676,6 +676,46 @@ cargo-dist handling of the libdbus runtime dependency.
     list (Pi, on the same API, accepted it); post-expiry broker token refresh,
     which needs an expired token.
 
+  F3 step 1 + F4 fix (2026-10-13, branch `fix/apply-loadout-honest-local-state`,
+  commit `6dff3ab`). Decision: report an item EquipLoadout cannot reach instead of
+  projecting it; DIM-style cross-character preparation stays a separate step 2.
+  - Change: a saved non-subclass item on another character is unresolved
+    `on_other_character`, one in the Postmaster `in_postmaster`; neither is
+    projected, the apply is `partial` and freshness is invalidated. The seasonal
+    artifact skip (`unsupported_bucket`, bucket 1506418338) is listed but no
+    longer makes an apply partial. A partial apply keeps exit 42 with the reason
+    "some loadout items were not applied; see local_state"; "local state could
+    not be updated after the action" is reserved for `failed`. The old test
+    `acknowledged_cached_apply_updates_equipment_revision_and_preserves_plugs`
+    pinned F3 as intended; its fixture now uses an item on the target.
+  - Checks: fmt, clippy `-D warnings`, `cargo test --workspace --all-features`
+    green; independent verify passed S1-S4; native review approved twice
+    (workspace and committed range).
+  - Live run on the second PC (release build of the branch, DB backed up to
+    `~/.cache/ghostlink-f3f4-backup/`, outputs in `runs/`), owner checking DIM:
+    - T1 (F3): Mercurial Overreach equipped on the Warlock; apply PvP on the
+      Hunter -> exit 42, receipt `applied`, `partial`, unresolved Mercurial
+      `on_other_character`, artifact in `skipped`, `persisted: true`. The next
+      read synced; Mercurial stayed on the Warlock, MIDA Mini-Tool stayed
+      equipped, Ace of Spades and Corrective Measure (Timelost) were equipped.
+      Confirmed in DIM. PASS.
+    - T2 (F4): owner moved Mercurial to the Vault in DIM; after a forced sync,
+      apply PvP -> exit 0, `applied`, `updated`, only the artifact in `skipped`,
+      freshness retained; a later forced sync matched the projection. PASS.
+    - T3/T4 (full loadout): apply Stasis then PvP, both exit 0 `updated`. After
+      each, Bungie showed the saved subclass, super, abilities, both aspects, all
+      five fragments, the saved artifact and its seven perks; after PvP, all three
+      weapons and all five armor pieces equipped. Bungie's EquipLoadout switches
+      subclass configuration and artifact perks even though Ghostlink does not
+      project plugs. Armor and weapon mods were not compared.
+  - FINDING F10 (high, stale state): after the PvP apply, forced syncs returned
+    old (rev 21, Revenant), new (rev 22, Nightstalker), old again (rev 23, stable
+    for about a minute) and only then new (rev 24, stable over four syncs), with
+    no dispatch in between and DIM showing PvP. Bungie can serve stale profile
+    replicas for minutes after an action; a sync that returns them overwrites a
+    correct acknowledged projection and marks it `fresh` for the 900 s TTL.
+    Bungie also lagged 20-30 s behind a DIM move. Same family as F9 and #71.
+
 ## Follow-ups (out of scope)
 - Windows `ghostlink://` handler (next feature, developed on Windows).
 - winget / AUR / MSI / code signing.
