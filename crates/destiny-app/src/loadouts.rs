@@ -837,8 +837,9 @@ mod tests {
             plug_hash: ItemHash::new(99),
             enabled: true,
         }];
-        // One Vault item and one item on another character, plus equipped replacements.
-        input.items[1].location = ItemLocation::Character(CharacterId::new("2"));
+        // One Vault item and one unequipped item already on the target character,
+        // plus equipped replacements. Bungie's EquipLoadout handles both sources.
+        input.items[1].location = ItemLocation::Character(CharacterId::new("1"));
         for item in input.items.clone() {
             let mut previous = item;
             previous.instance_id =
@@ -1147,6 +1148,182 @@ mod tests {
                 }
                 None => assert!(subclass.is_none()),
             }
+            assert!(
+                snapshot
+                    .items
+                    .iter()
+                    .filter(|item| ["1", "2"].contains(&item.instance_id.as_str()))
+                    .all(|item| item.equipped)
+            );
+        }
+    }
+
+    /// Bungie's EquipLoadout neither pulls an item held by another character nor
+    /// one in the Postmaster, so such an item is reported, never projected.
+    #[test]
+    fn cached_apply_reports_items_outside_reach_without_projecting_them() {
+        for (location, equipped, reason) in [
+            (
+                ItemLocation::Character(CharacterId::new("2")),
+                true,
+                crate::LoadoutLocalReason::OnOtherCharacter,
+            ),
+            (
+                ItemLocation::Character(CharacterId::new("2")),
+                false,
+                crate::LoadoutLocalReason::OnOtherCharacter,
+            ),
+            (
+                ItemLocation::Postmaster(CharacterId::new("1")),
+                false,
+                crate::LoadoutLocalReason::InPostmaster,
+            ),
+        ] {
+            let (mut read, calls) = cached_apply_fixture();
+            let mut input = InventorySnapshotInput::with_metadata(
+                &read.sync.repository().load_current().unwrap().unwrap(),
+            );
+            let item = input
+                .items
+                .iter_mut()
+                .find(|item| item.instance_id.as_str() == "2")
+                .unwrap();
+            item.location = location.clone();
+            item.equipped = equipped;
+            let rows = read.sync.repository().saved_loadouts().unwrap().unwrap();
+            read.sync
+                .repository_mut()
+                .replace_current_profile(input, None, Some(rows))
+                .unwrap();
+            let mut service = crate::ApplyLoadoutService::new(read.sync);
+            let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+            action.queue(Ok(LoadoutActionOutcome::Applied));
+            let result = service
+                .apply(
+                    &mut action,
+                    &apply_request(crate::LoadoutSelector::Slot(3)),
+                    TTL,
+                    NOW,
+                )
+                .unwrap();
+            assert_eq!(result.receipt, LoadoutActionOutcome::Applied);
+            assert!(!result.local_state_updated);
+            assert_eq!(
+                result.local_state.status,
+                crate::LoadoutLocalStatus::Partial
+            );
+            assert!(result.local_state.persisted);
+            assert!(result.local_state.skipped.is_empty());
+            assert_eq!(result.local_state.unresolved_items.len(), 1);
+            let issue = &result.local_state.unresolved_items[0];
+            assert_eq!(issue.reason, reason);
+            assert_eq!(issue.item.instance_id.as_str(), "2");
+            assert_eq!(issue.item.name.as_deref(), Some("Armor"));
+            assert_eq!(issue.item.bucket.as_deref(), Some("helmet"));
+            assert_eq!(action.calls(), 1);
+            assert!(calls.borrow().is_empty());
+            let sync = service.into_sync();
+            assert!(sync.repository().freshness_invalidated().unwrap());
+            let snapshot = sync.repository().load_current().unwrap().unwrap();
+            let item = |id| {
+                snapshot
+                    .items
+                    .iter()
+                    .find(|item| item.instance_id.as_str() == id)
+                    .unwrap()
+            };
+            // The unreachable item keeps its place; the target keeps its helmet.
+            assert_eq!(item("2").location, location);
+            assert_eq!(item("2").equipped, equipped);
+            assert!(item("92").equipped);
+            // The reachable Vault item is still projected onto the target.
+            assert_eq!(
+                item("1").location,
+                ItemLocation::Character(CharacterId::new("1"))
+            );
+            assert!(item("1").equipped);
+            assert!(!item("91").equipped);
+        }
+    }
+
+    /// The seasonal artifact is carried by every saved loadout and has no
+    /// equipment projection, so its skip is reported without making the
+    /// projection partial. Any other unsupported bucket stays partial.
+    #[test]
+    fn cached_apply_artifact_skip_is_informational_but_other_buckets_stay_partial() {
+        for (bucket, complete) in [
+            (Some(destiny_core::ARTIFACT_BUCKET_HASH), true),
+            (Some(BucketHash::new(77)), false),
+        ] {
+            let (mut read, calls) = cached_apply_fixture();
+            let mut input = InventorySnapshotInput::with_metadata(
+                &read.sync.repository().load_current().unwrap().unwrap(),
+            );
+            let mut extra = input.items[0].clone();
+            extra.instance_id = ItemInstanceId::new("5");
+            extra.item_hash = ItemHash::new(5);
+            extra.location = ItemLocation::Character(CharacterId::new("1"));
+            extra.equipped = true;
+            input.items.push(extra);
+            let mut rows = read.sync.repository().saved_loadouts().unwrap().unwrap();
+            rows[0].loadouts[0].items.push(LoadoutItem {
+                instance_id: ItemInstanceId::new("5"),
+                plugs: vec![],
+            });
+            let mut extra = definition(5, "Tablet of Ruin", None, None);
+            extra.bucket_hash = bucket;
+            let mut definitions = vec![
+                definition(1, "Weapon", Some(ItemSlot::Kinetic), None),
+                definition(2, "Armor", Some(ItemSlot::Helmet), None),
+            ];
+            for definition in &mut definitions {
+                definition.tier = Some("Legendary".into());
+                definition.class_type = Some(domain::ClassType::Any);
+            }
+            definitions.push(extra);
+            read.sync.repository_mut().definitions =
+                InMemoryDefinitionRepository::new(DefinitionVersion::new("v1"), definitions);
+            read.sync
+                .repository_mut()
+                .replace_current_profile(input, None, Some(rows))
+                .unwrap();
+            let mut service = crate::ApplyLoadoutService::new(read.sync);
+            let mut action = crate::test_support::QueuedLoadoutActionGateway::new();
+            action.queue(Ok(LoadoutActionOutcome::Applied));
+            let result = service
+                .apply(
+                    &mut action,
+                    &apply_request(crate::LoadoutSelector::Slot(3)),
+                    TTL,
+                    NOW,
+                )
+                .unwrap();
+            assert_eq!(result.local_state_updated, complete);
+            assert_eq!(
+                result.local_state.status,
+                if complete {
+                    crate::LoadoutLocalStatus::Updated
+                } else {
+                    crate::LoadoutLocalStatus::Partial
+                }
+            );
+            assert!(result.local_state.unresolved_items.is_empty());
+            assert_eq!(result.local_state.skipped.len(), 1);
+            assert_eq!(
+                result.local_state.skipped[0].reason,
+                crate::LoadoutLocalReason::UnsupportedBucket
+            );
+            assert_eq!(
+                result.local_state.skipped[0].item.name.as_deref(),
+                Some("Tablet of Ruin")
+            );
+            assert!(calls.borrow().is_empty());
+            let sync = service.into_sync();
+            assert_eq!(
+                sync.repository().freshness_invalidated().unwrap(),
+                !complete
+            );
+            let snapshot = sync.repository().load_current().unwrap().unwrap();
             assert!(
                 snapshot
                     .items

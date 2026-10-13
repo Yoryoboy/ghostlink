@@ -124,9 +124,9 @@ Location refusal says "go to orbit or a social space and retry".
 One call uses ordinary sync and cached slot/name resolution, then exactly one
 EquipLoadout action. A fresh cached projection needs zero profile/206 reads;
 legacy projections without the cache use one 206 read. Acknowledged saved items
-found locally are **projected locally** onto the character, equipped, with
-same-bucket replacements unequipped. Bungie does not confirm per-item effects.
-Cross-character/Vault preparation before EquipLoadout is not promised.
+found locally in the Vault or on the target are **projected locally** onto the
+character, equipped, with same-bucket replacements unequipped. Bungie does not
+confirm per-item effects. No cross-character preparation runs before EquipLoadout.
 Complete local persistence retains freshness, including subclass switches:
 the saved subclass must already be held on the target character and replaces
 other equipped subclass-bucket items. Missing items, subclasses not held on the
@@ -142,20 +142,23 @@ JSON matches `ghostlink apply-loadout --json`: `kind: "apply_loadout"`,
 {"status":"updated","unresolved_items":[],"skipped":[],"persisted":true}
 ```
 
-`status` is `updated` for complete projection, `partial` for unresolved/skipped
-items, `failed` for projection persistence or invalidation failure, or
+`status` is `updated` for complete projection (the seasonal artifact skip may be
+listed), `partial` for unresolved items or other skipped items, `failed` for projection persistence or invalidation failure, or
 `not_attempted` without an acknowledged receipt/local projection attempt.
 Each issue in `unresolved_items` or `skipped` is
 `{item: {instance_id, item_hash, bucket, name}, reason}`; hash, bucket and name
 may be null. Reason codes: `not_owned`, `ambiguous`, `missing_definition`,
 `definition_unavailable`, `subclass_not_held`, `unsupported_bucket`,
-`invalid_projection`. `persisted` is false only when writing projected effects
+`invalid_projection`, `on_other_character`, `in_postmaster`. EquipLoadout does not
+pull from another character or the Postmaster, so such items are reported as
+unresolved and never projected. `persisted` is false only when writing projected effects
 failed; true can also mean no effects were written.
 
 `applied` is acknowledgement (`isError=false`, CLI 0), not observed state.
 Refusal/auth/transient/uncertain attempts are errors (CLI 41). Applied receipts
 with incomplete local effects or persistence failure fail closed (CLI 42),
-retaining the receipt: "local state could not be updated after the action". No post-action request
+retaining the receipt: `partial` reports "some loadout items were not applied; see
+local_state", `failed` reports "local state could not be updated after the action". No post-action request
 or retry; process-local loadout attempts are paced at one per second. No global
 cross-process throttle guarantee. Never blindly repeat an uncertain action.
 

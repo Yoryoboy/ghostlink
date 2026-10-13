@@ -55,18 +55,22 @@ impl ApplyLoadoutOutput {
                         }),
                     ),
                 };
-                let (outcome, exit_code, reason) =
-                    if result.receipt.applied() && !result.local_state_updated {
-                        (
-                            "local_state_failed",
-                            42,
-                            Some("local state could not be updated after the action"),
-                        )
-                    } else if result.receipt.applied() {
-                        ("applied", 0, reason)
-                    } else {
-                        ("failed", 41, reason)
-                    };
+                let (outcome, exit_code, reason) = if result.receipt.applied()
+                    && !result.local_state_updated
+                {
+                    // Partial means items were reported, not that storage failed.
+                    let reason =
+                        if result.local_state.status == destiny_app::LoadoutLocalStatus::Partial {
+                            "some loadout items were not applied; see local_state"
+                        } else {
+                            "local state could not be updated after the action"
+                        };
+                    ("local_state_failed", 42, Some(reason))
+                } else if result.receipt.applied() {
+                    ("applied", 0, reason)
+                } else {
+                    ("failed", 41, reason)
+                };
                 Self {
                     value: json!({"kind":"apply_loadout", "character":clean(result.character.as_str()),
                     "slot":result.slot, "name":result.name.as_deref().map(clean),

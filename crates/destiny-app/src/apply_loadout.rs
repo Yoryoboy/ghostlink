@@ -87,6 +87,8 @@ pub enum LoadoutLocalReason {
     SubclassNotHeld,
     UnsupportedBucket,
     InvalidProjection,
+    OnOtherCharacter,
+    InPostmaster,
 }
 impl LoadoutLocalReason {
     pub const fn code(self) -> &'static str {
@@ -98,6 +100,8 @@ impl LoadoutLocalReason {
             Self::SubclassNotHeld => "subclass_not_held",
             Self::UnsupportedBucket => "unsupported_bucket",
             Self::InvalidProjection => "invalid_projection",
+            Self::OnOtherCharacter => "on_other_character",
+            Self::InPostmaster => "in_postmaster",
         }
     }
 }
@@ -147,6 +151,17 @@ fn loadout_equip_effect<R: destiny_core::DefinitionRepository>(
         character: character.clone(),
         unequip,
     })
+}
+
+fn is_artifact<R: destiny_core::DefinitionRepository>(
+    repository: &R,
+    hash: destiny_core::ItemHash,
+) -> bool {
+    matches!(
+        repository.lookup_definition(hash),
+        Ok(destiny_core::Resolution::Unique(definition))
+            if definition.bucket_hash == Some(destiny_core::ARTIFACT_BUCKET_HASH)
+    )
 }
 
 pub struct ApplyLoadoutService<G, R> {
@@ -249,6 +264,7 @@ where
             persisted: true,
         };
         let mut effects = Vec::new();
+        let mut incomplete_skips = 0_usize;
         let mut projected = snapshot;
         if receipt.applied() {
             let saved = live
@@ -321,6 +337,24 @@ where
                         Err(_) => Some(LoadoutLocalReason::DefinitionUnavailable),
                     }
                 };
+                // EquipLoadout pulls from the Vault but not from another
+                // character or the Postmaster, so an acknowledgement does not
+                // place such an item. Report it instead of projecting it.
+                // Subclasses keep their own held-on-target check below.
+                let unresolved_reason = unresolved_reason.or_else(|| {
+                    if identity.bucket.as_deref() == Some("subclass") {
+                        return None;
+                    }
+                    match &item.location {
+                        destiny_core::ItemLocation::Character(owner) if *owner != character.id => {
+                            Some(LoadoutLocalReason::OnOtherCharacter)
+                        }
+                        destiny_core::ItemLocation::Postmaster(_) => {
+                            Some(LoadoutLocalReason::InPostmaster)
+                        }
+                        _ => None,
+                    }
+                });
                 if let Some(reason) = unresolved_reason {
                     local_state.unresolved_items.push(LoadoutLocalIssue {
                         item: identity,
@@ -354,6 +388,13 @@ where
                             }
                             _ => LoadoutLocalReason::InvalidProjection,
                         };
+                        // Every saved loadout carries the seasonal artifact, which
+                        // has no equipment projection: report it, never as partial.
+                        if reason != LoadoutLocalReason::UnsupportedBucket
+                            || !is_artifact(self.sync.repository(), item.item_hash)
+                        {
+                            incomplete_skips += 1;
+                        }
                         local_state.skipped.push(LoadoutLocalIssue {
                             item: identity,
                             reason,
@@ -362,9 +403,8 @@ where
                 }
             }
         }
-        let complete = receipt.applied()
-            && local_state.unresolved_items.is_empty()
-            && local_state.skipped.is_empty();
+        let complete =
+            receipt.applied() && local_state.unresolved_items.is_empty() && incomplete_skips == 0;
         // A failed fallback invalidation is not a failed projection write.
         let persistence = if effects.is_empty() {
             Ok(())

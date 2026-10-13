@@ -228,6 +228,8 @@ async fn apply_loadout_stdio_contract() {
             "local_state_failed",
         ),
         ("loadout-unsupported", "applied", "local_state_failed"),
+        // The seasonal artifact skip is informational, never partial.
+        ("loadout-artifact", "applied", "applied"),
     ] {
         for args in [
             json!({"character":"hunter","slot":3}),
@@ -248,7 +250,7 @@ async fn apply_loadout_stdio_contract() {
             assert_eq!(
                 local["status"],
                 match scenario {
-                    "loadout-success" => "updated",
+                    "loadout-success" | "loadout-artifact" => "updated",
                     "loadout-storage" => "failed",
                     "loadout-partial"
                     | "loadout-subclass"
@@ -269,7 +271,8 @@ async fn apply_loadout_stdio_contract() {
                 "loadout-missing-definition" => {
                     assert_eq!(local["unresolved_items"][0]["reason"], "missing_definition")
                 }
-                "loadout-unsupported" => {
+                "loadout-unsupported" | "loadout-artifact" => {
+                    assert_eq!(local["unresolved_items"], json!([]));
                     assert_eq!(local["skipped"][0]["reason"], "unsupported_bucket")
                 }
                 _ => {
@@ -280,11 +283,20 @@ async fn apply_loadout_stdio_contract() {
             if scenario == "loadout-location" {
                 assert_eq!(output["reason"], "go to orbit or a social space and retry");
             }
-            if scenario == "loadout-storage" {
-                assert_eq!(
+            match scenario {
+                "loadout-storage" => assert_eq!(
                     output["reason"],
                     "local state could not be updated after the action"
-                );
+                ),
+                "loadout-partial"
+                | "loadout-subclass"
+                | "loadout-missing-definition"
+                | "loadout-unsupported" => assert_eq!(
+                    output["reason"],
+                    "some loadout items were not applied; see local_state"
+                ),
+                "loadout-success" | "loadout-artifact" => assert!(output["reason"].is_null()),
+                _ => (),
             }
             session.shutdown().await;
         }

@@ -1039,6 +1039,14 @@ impl FixtureRepository {
                     .unwrap()
                     .slot = None;
             }
+            Some("loadout-artifact") => {
+                let definition = definitions
+                    .iter_mut()
+                    .find(|d| d.hash == ItemHash::new(1))
+                    .unwrap();
+                definition.bucket_hash = Some(destiny_app::BucketHash::new(1506418338));
+                definition.slot = None;
+            }
             _ => (),
         }
         let mut repository = Self {
