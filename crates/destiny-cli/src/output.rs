@@ -441,11 +441,25 @@ pub fn render_profile_sync(mode: OutputMode, report: &crate::runtime::ProfileSyn
     let revision = report.metadata.revision.value();
     let checked_at = report.metadata.checked_at.seconds();
     let previous = report.previous_revision.map(|value| value.value());
+    // Bungie's minted instant, in epoch seconds with millisecond precision.
+    let minted = report.profile_minted_at.map(|minted| {
+        format!(
+            "{}.{:03}",
+            minted.seconds(),
+            minted.nanoseconds() / 1_000_000
+        )
+    });
     match mode {
         OutputMode::Json => format!(
-            "{{\"kind\":\"profile_sync\",\"fetched\":true,\"publication\":\"committed\",\"revision\":{revision},\"previous_revision\":{},\"revision_unchanged\":{},\"checked_at\":{checked_at}}}",
+            "{{\"kind\":\"profile_sync\",\"fetched\":true,\"publication\":\"{}\",\"revision\":{revision},\"previous_revision\":{},\"revision_unchanged\":{},\"checked_at\":{checked_at},\"profile_minted_at\":{}}}",
+            if report.discarded {
+                "discarded_not_newer"
+            } else {
+                "committed"
+            },
             previous.map_or_else(|| "null".into(), |value| value.to_string()),
             previous.map_or_else(|| "null".into(), |value| (value == revision).to_string()),
+            minted.as_deref().unwrap_or("null"),
         ),
         OutputMode::Human => {
             let comparison = match previous {
@@ -453,9 +467,18 @@ pub fn render_profile_sync(mode: OutputMode, report: &crate::runtime::ProfileSyn
                 Some(value) if value == revision => "revision unchanged",
                 Some(_) => "revision differs",
             };
-            format!(
-                "Profile fetched; publication committed.\nRevision: {revision} ({comparison})\nChecked at: {checked_at}"
-            )
+            let headline = if report.discarded {
+                "Profile fetched; not published: Bungie returned data that is not newer than the local projection, which was kept."
+            } else {
+                "Profile fetched; publication committed."
+            };
+            let mut text = format!(
+                "{headline}\nRevision: {revision} ({comparison})\nChecked at: {checked_at}"
+            );
+            if let Some(minted) = minted {
+                text.push_str(&format!("\nBungie minted at: {minted}"));
+            }
+            text
         }
     }
 }
@@ -482,12 +505,14 @@ mod profile_sync_tests {
                     ),
                 },
                 previous_revision: previous.map(destiny_app::SyncRevision::new),
+                discarded: false,
+                profile_minted_at: None,
             };
             let json = render_profile_sync(OutputMode::Json, &report);
             assert_eq!(
                 json,
                 format!(
-                    "{{\"kind\":\"profile_sync\",\"fetched\":true,\"publication\":\"committed\",\"revision\":3,\"previous_revision\":{},\"revision_unchanged\":{comparison},\"checked_at\":100}}",
+                    "{{\"kind\":\"profile_sync\",\"fetched\":true,\"publication\":\"committed\",\"revision\":3,\"previous_revision\":{},\"revision_unchanged\":{comparison},\"checked_at\":100,\"profile_minted_at\":null}}",
                     previous.map_or_else(|| "null".into(), |value| value.to_string())
                 )
             );
@@ -499,6 +524,51 @@ mod profile_sync_tests {
                 assert!(rendered.len() < 256);
             }
         }
+    }
+
+    fn report(discarded: bool) -> crate::runtime::ProfileSyncReport {
+        crate::runtime::ProfileSyncReport {
+            metadata: destiny_app::SyncMetadata {
+                dataset: destiny_app::Dataset::ProfileInventory,
+                revision: destiny_app::SyncRevision::new(3),
+                checked_at: destiny_app::Timestamp::new(100),
+                source: destiny_app::SourceMarker::Profile,
+                definition_version: destiny_app::DefinitionVersion::new("v"),
+            },
+            previous_revision: Some(destiny_app::SyncRevision::new(3)),
+            discarded,
+            profile_minted_at: Some(
+                destiny_app::ProfileMintedAt::new(1_791_916_603, 123_456_789).unwrap(),
+            ),
+        }
+    }
+
+    #[test]
+    fn minted_instant_is_reported_with_millisecond_precision() {
+        let json = render_profile_sync(OutputMode::Json, &report(false));
+        assert_eq!(
+            json,
+            "{\"kind\":\"profile_sync\",\"fetched\":true,\"publication\":\"committed\",\"revision\":3,\"previous_revision\":3,\"revision_unchanged\":true,\"checked_at\":100,\"profile_minted_at\":1791916603.123}"
+        );
+        let human = render_profile_sync(OutputMode::Human, &report(false));
+        assert!(human.starts_with("Profile fetched; publication committed."));
+        assert!(human.contains("Bungie minted at: 1791916603.123"));
+    }
+
+    /// A response not newer than the stored projection is a successful fetch
+    /// that publishes nothing: the newer local projection is kept (exit 0).
+    #[test]
+    fn not_newer_response_reports_a_kept_projection() {
+        let json = render_profile_sync(OutputMode::Json, &report(true));
+        assert_eq!(
+            json,
+            "{\"kind\":\"profile_sync\",\"fetched\":true,\"publication\":\"discarded_not_newer\",\"revision\":3,\"previous_revision\":3,\"revision_unchanged\":true,\"checked_at\":100,\"profile_minted_at\":1791916603.123}"
+        );
+        let human = render_profile_sync(OutputMode::Human, &report(true));
+        assert_eq!(
+            human,
+            "Profile fetched; not published: Bungie returned data that is not newer than the local projection, which was kept.\nRevision: 3 (revision unchanged)\nChecked at: 100\nBungie minted at: 1791916603.123"
+        );
     }
 }
 

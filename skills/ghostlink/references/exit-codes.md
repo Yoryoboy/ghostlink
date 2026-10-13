@@ -84,7 +84,8 @@ Except apply-loadout (object below), action outputs use a string `local_state`:
 persisted with freshness retained, `unchanged` for no-op or refusal before
 dispatch, `refresh_pending` for invalidated state (incomplete, rejected, uncertain
 or persistence failure). The next ordinary read re-syncs only when stale or
-invalidated. Human output adds a short phrase only for refresh pending.
+invalidated. If Bungie has nothing newer yet, that read keeps the local state and reports
+`freshness: stale`, never `fresh`, until a newer profile is published. Human output adds a short phrase only for refresh pending.
 `verified_noop` means local state (including Ghostlink's acknowledged actions)
 already matches; nothing was sent to Bungie, not Bungie verification.
 Never retry an uncertain outcome.

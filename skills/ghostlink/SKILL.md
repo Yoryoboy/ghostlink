@@ -137,7 +137,8 @@ Except apply-loadout (typed object below), report the string `local_state` in
 CLI JSON and MCP structured output: `updated` means
 acknowledged effects persisted with freshness retained; `unchanged` means no-op
 or refused before dispatch; `refresh_pending` means invalidated state requiring
-the next ordinary read to re-sync. Human output adds a short phrase only for
+the next ordinary read to re-sync. If Bungie has nothing newer yet, that read keeps the local state and reports
+`freshness: stale`, never `fresh`, until a newer profile is published. Human output adds a short phrase only for
 refresh pending. Compatibility status `verified_noop` means local state
 (including Ghostlink's acknowledged actions) already matches; nothing was sent
 to Bungie. This is not Bungie verification. Invalidated projections re-sync before
