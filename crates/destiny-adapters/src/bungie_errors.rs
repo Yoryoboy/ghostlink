@@ -114,3 +114,55 @@ pub(crate) fn assert_action_codes(mut classify: impl FnMut(serde_json::Value) ->
         assert_eq!(classify(value), None);
     }
 }
+
+/// What an adapter made of an off-`200` response, for [`assert_status_precedence`].
+#[cfg(test)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum StatusProbe {
+    Refused(R),
+    AuthenticationRefused,
+    Transient,
+    Uncertain,
+}
+
+/// A recognized refusal code in a JSON envelope decides any status except
+/// success, authentication and throttle; without one, or behind a non-JSON
+/// media type, the status keeps its meaning. `classify` receives the status,
+/// the media type and the envelope; `throttle` is the adapter's `429` outcome.
+#[cfg(test)]
+pub(crate) fn assert_status_precedence(
+    throttle: StatusProbe,
+    mut classify: impl FnMut(u16, &str, serde_json::Value) -> StatusProbe,
+) {
+    use serde_json::json;
+    const JSON: &str = "application/json";
+    let envelope =
+        |code: u64| json!({"Response":0,"ErrorCode":code,"ThrottleSeconds":0,"ErrorStatus":"x"});
+    for status in [500, 503] {
+        assert_eq!(
+            classify(status, JSON, envelope(1)),
+            StatusProbe::Uncertain,
+            "status {status} with the success code"
+        );
+    }
+    for status in [400, 404] {
+        assert_eq!(
+            classify(status, JSON, envelope(1623)),
+            StatusProbe::Refused(R::ItemNotFound),
+            "status {status}"
+        );
+    }
+    for status in [401, 403] {
+        assert_eq!(
+            classify(status, JSON, envelope(1623)),
+            StatusProbe::AuthenticationRefused,
+            "status {status}"
+        );
+    }
+    assert_eq!(classify(429, JSON, envelope(1623)), throttle, "status 429");
+    assert_eq!(
+        classify(500, "text/html", envelope(1623)),
+        StatusProbe::Uncertain,
+        "non-JSON media type"
+    );
+}

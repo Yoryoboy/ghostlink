@@ -112,7 +112,20 @@ struct Envelope {
     #[serde(default, deserialize_with = "present")]
     detailed_error_trace: Option<String>,
 }
+fn pull_rejection(reason: destiny_core::ProviderRejection) -> StackPullOutcome {
+    StackPullOutcome::Rejected(
+        if reason == destiny_core::ProviderRejection::DestinationFull {
+            destiny_core::StackPullRejection::DestinationFull
+        } else {
+            destiny_core::StackPullRejection::Provider(reason)
+        },
+    )
+}
+
 fn classify_response(response: &mut StackPullHttpResponse) -> StackPullOutcome {
+    if let Some(reason) = response.status_error_rejection() {
+        return pull_rejection(reason);
+    }
     match response.status() {
         200 => {}
         401 | 403 => return StackPullOutcome::AuthenticationRefused,
@@ -136,13 +149,7 @@ fn classify_response(response: &mut StackPullHttpResponse) -> StackPullOutcome {
         .ok()
         .and_then(crate::bungie_errors::rejection)
     {
-        return StackPullOutcome::Rejected(
-            if reason == destiny_core::ProviderRejection::DestinationFull {
-                destiny_core::StackPullRejection::DestinationFull
-            } else {
-                destiny_core::StackPullRejection::Provider(reason)
-            },
-        );
+        return pull_rejection(reason);
     }
     if envelope.error_code == 1
         && envelope.throttle_seconds >= 0
@@ -164,25 +171,53 @@ mod tests {
     use destiny_core::{CharacterId, DestinyMembership, ItemHash, MembershipId, MembershipType};
     #[test]
     fn numeric_action_rejections() {
-        crate::bungie_errors::assert_action_codes(|value| {
-            let body = value.to_string().into_bytes();
-            let mut response = StackPullHttpResponse::new(
-                200,
-                Some(body.len() as u64),
-                Some("application/json".into()),
-                Box::new(std::io::Cursor::new(body)),
-            );
-            match classify_response(&mut response) {
-                StackPullOutcome::Rejected(destiny_core::StackPullRejection::Provider(reason)) => {
-                    Some(reason)
+        // Bungie also reports game refusals with HTTP 500; the envelope decides.
+        for status in [200, 500, 503] {
+            crate::bungie_errors::assert_action_codes(|value| {
+                let body = value.to_string().into_bytes();
+                let mut response = StackPullHttpResponse::new(
+                    status,
+                    Some(body.len() as u64),
+                    Some("application/json".into()),
+                    Box::new(std::io::Cursor::new(body)),
+                );
+                match classify_response(&mut response) {
+                    StackPullOutcome::Rejected(destiny_core::StackPullRejection::Provider(
+                        reason,
+                    )) => Some(reason),
+                    StackPullOutcome::Rejected(
+                        destiny_core::StackPullRejection::DestinationFull,
+                    ) => Some(destiny_core::ProviderRejection::DestinationFull),
+                    StackPullOutcome::Uncertain => None,
+                    other => panic!("unexpected {other:?}"),
                 }
-                StackPullOutcome::Rejected(destiny_core::StackPullRejection::DestinationFull) => {
-                    Some(destiny_core::ProviderRejection::DestinationFull)
+            });
+        }
+    }
+    #[test]
+    fn status_keeps_its_meaning_without_a_recognized_refusal() {
+        use crate::bungie_errors::StatusProbe;
+        crate::bungie_errors::assert_status_precedence(
+            StatusProbe::Uncertain,
+            |status, media, value| {
+                let bytes = value.to_string().into_bytes();
+                let mut response = StackPullHttpResponse::new(
+                    status,
+                    Some(bytes.len() as u64),
+                    Some(media.into()),
+                    Box::new(std::io::Cursor::new(bytes)),
+                );
+                match classify_response(&mut response) {
+                    StackPullOutcome::Rejected(destiny_core::StackPullRejection::Provider(
+                        reason,
+                    )) => StatusProbe::Refused(reason),
+                    StackPullOutcome::AuthenticationRefused => StatusProbe::AuthenticationRefused,
+                    StackPullOutcome::Transient => StatusProbe::Transient,
+                    StackPullOutcome::Uncertain => StatusProbe::Uncertain,
+                    other => panic!("unexpected {other:?}"),
                 }
-                StackPullOutcome::Uncertain => None,
-                other => panic!("unexpected {other:?}"),
-            }
-        });
+            },
+        );
     }
     #[test]
     fn numeric_no_room_refuses_and_unknown_codes_stay_uncertain() {

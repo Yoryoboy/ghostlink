@@ -28,6 +28,13 @@ Draft for the next release candidate. Live checks remain on the
   `in_postmaster`) instead of being projected. The seasonal artifact skip alone no
   longer makes an apply partial (exit 0), and a partial apply reports "some loadout
   items were not applied; see local_state" instead of a persistence failure.
+- Actions report Bungie's typed refusals (for example `item_not_found` when an
+  item moved behind Ghostlink's back, or `equipped`) even when Bungie sends them
+  with an error status such as HTTP 500 or 400, instead of an untyped
+  `uncertain` or `invalid_request`. Server errors without a recognized refusal
+  code stay `uncertain`.
+- Batch equip plans from the local projection like single-item equip, without a
+  forced profile read before every batch.
 
 ```sh
 ghostlink search-inventory 'is:weapon (is:solar or is:arc) -is:locked' --limit 5
