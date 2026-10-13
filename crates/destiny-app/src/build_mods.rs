@@ -25,6 +25,22 @@ pub(crate) fn unlocked_mods(entries: &[domain::PlugSetEntry], target: &Character
         .collect()
 }
 
+/// DIM selectors.ts:348-359: every plug of the tuning plug set counts as unlocked, because
+/// tuning mods never appear in profile plug sets. Without the stored catalog nothing is added.
+pub(crate) fn unlocked_with_tuning<R: ArmorCatalogRepository>(
+    repository: &R,
+    entries: &[domain::PlugSetEntry],
+    target: &CharacterId,
+) -> Result<Vec<u32>, AppError> {
+    let mut unlocked = unlocked_mods(entries, target);
+    if let Some(ArmorCatalogRecord::PlugSet(set)) = repository
+        .lookup_armor_catalog(ArmorCatalogKind::PlugSet, optimizer::TUNING_SOCKET_PLUG_SET)?
+    {
+        unlocked.extend(set.reusable_plug_items.iter().map(|i| i.plug_item_hash));
+    }
+    Ok(unlocked)
+}
+
 /// Plugs the plug-set entries of the target (or the profile) report as insertable.
 pub(crate) fn insertable_plugs(entries: &[domain::PlugSetEntry], target: &CharacterId) -> Vec<u32> {
     entries

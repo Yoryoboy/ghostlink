@@ -60,7 +60,11 @@ No new network requests, component acquisition or migration are introduced.
 Unlocks come from the projected plug-set entries: subclass options, armor mods
 (`enhancements.*`) and fashion; see "Projected unlocks" in `build-apply.md`.
 Seasonal costs first resolve using enabled account/target-character unlocks;
-missing plug-set responses mean no unlocks. All twelve legacy stat-mod hashes
+missing plug-set responses mean no unlocks. Tuning mods never appear in
+profile plug sets, so every plug of the tuning plug set 1155052024 in the stored
+PlugSet catalog is also unlocked (DIM `inventory/selectors.ts:348-359`); without
+that catalog nothing is added. `build check`, `build apply` and the optimizer
+share this list. All twelve legacy stat-mod hashes
 migrate. Missing/non-pluggable definitions use deprecated placeholder `444600262`;
 a missing/non-pluggable placeholder remains unknown. Saved/exported builds keep
 original hashes. Fashion `modsByBucket` is not mixed into `parameters.mods`.
@@ -86,7 +90,7 @@ Paths below are under `src/app/`, except the named data/API sources.
 | Cumulative per-rarity costs, already-paid subtraction, enhancement | `loadout/mod-assignment-utils.ts:162-249,964-989` |
 | Candidate evaluation, lexicographic costs, changes, exact-tie order | `loadout/mod-assignment-utils.ts:255-265,437-528,952-962,1007-1036` |
 | Expensive-variant re-fit and direct seasonal list | `loadout-analyzer/analysis.ts:449-501`; `src/data/d2/seasonal-armor-mods.json:1-7` |
-| Legacy migrations, deprecated fallback, cost resolution and scoped unlocks | `loadout-drawer/loadout-utils.ts:880-936`; `loadout/mod-utils.ts:120-132`; `inventory/selectors.ts:333-346`; `records/plugset-helpers.ts:20-40` |
+| Legacy migrations, deprecated fallback, cost resolution and scoped unlocks | `loadout-drawer/loadout-utils.ts:880-936`; `loadout/mod-utils.ts:120-132`; `inventory/selectors.ts:333-359`; `records/plugset-helpers.ts:20-40` |
 
 Migration 32 already projects `insertionMaterialRequirementHash`, capacity
 `energyType`, `plugAvailability` and ordered requirement-set materials.

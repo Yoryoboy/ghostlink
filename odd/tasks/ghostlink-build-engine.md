@@ -824,7 +824,12 @@ coverage (`domain.rs:123-126`).
     times as `mod_not_unlocked`; ghost/ship/sparrow/emblem specs
     `unsupported_bucket` (already equipped here; follow-up, DIM applies
     them).
-  - [ ] **BE-010b6 — Tuning mods unlocked.** DIM adds every plug of the
+  - [x] **BE-010b6 — Tuning mods unlocked.** Done: `build_mods::
+    unlocked_with_tuning` at the single assembly site (`builds.rs:570`),
+    shared by check, analyzer, substitutes and apply; missing catalog adds
+    nothing. RED through `sync_through_gateway` + `plan_apply` before the
+    edit. Workspace: 2468 all-features, 2435 default, 0 failed; clippy both
+    modes (exit 0), fmt. Original note: DIM adds every plug of the
     tuning plug set 1155052024 to the unlocked set, because tuning mods
     are never unlocked on the profile (`selectors.ts:348-359`,
     `loadout-builder/types.ts:136`; Ghostlink constant

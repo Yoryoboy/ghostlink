@@ -567,8 +567,11 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             hashes.extend(item.available_plugs.iter().map(|p| p.plug_hash));
             hashes.extend(item.sockets.iter().filter_map(|s| s.plug_hash));
         }
-        let unlocked_mods =
-            crate::build_mods::unlocked_mods(&snapshot.plug_set_entries, &target.id);
+        let unlocked_mods = crate::build_mods::unlocked_with_tuning(
+            sync.repository(),
+            &snapshot.plug_set_entries,
+            &target.id,
+        )?;
         let insertable_plugs =
             crate::build_mods::insertable_plugs(&snapshot.plug_set_entries, &target.id);
         if let Some(mods) = build
