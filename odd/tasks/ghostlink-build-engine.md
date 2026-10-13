@@ -818,5 +818,17 @@ coverage (`domain.rs:123-126`).
     plug set (`selectors.ts:327-345`). Fix: also keep the entries build
     apply and mod checks consult (armor mods, fashion), within existing
     decode bounds; measure the stored row count live.
+  - Live after 4ac4d83 (profile revision 13 -> 14): 1,395 plug-set rows
+    stored (1,351 enabled; was 304); dry-run 422 ms, 26 mods in place,
+    nothing dispatched. Left: Balanced Tuning 3122197216 skipped three
+    times as `mod_not_unlocked`; ghost/ship/sparrow/emblem specs
+    `unsupported_bucket` (already equipped here; follow-up, DIM applies
+    them).
+  - [ ] **BE-010b6 — Tuning mods unlocked.** DIM adds every plug of the
+    tuning plug set 1155052024 to the unlocked set, because tuning mods
+    are never unlocked on the profile (`selectors.ts:348-359`,
+    `loadout-builder/types.ts:136`; Ghostlink constant
+    `optimizer::TUNING_SOCKET_PLUG_SET`). Apply the same rule to the
+    unlocked list that build apply and mod checks use.
   - [ ] **BE-010c — Live re-run.** check, substitutes timing, apply
     dry-run; then live apply and EquipLoadout U4b/U4c.
