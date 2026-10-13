@@ -716,6 +716,32 @@ cargo-dist handling of the libdbus runtime dependency.
     correct acknowledged projection and marks it `fresh` for the 900 s TTL.
     Bungie also lagged 20-30 s behind a DIM move. Same family as F9 and #71.
 
+  F10 A + F9 B fix (2026-10-13, branch `fix/sync-never-backwards`, commit
+  `4b505a8`, native review approved). Decision: apply the minted-timestamp guard
+  to the explicit `ghostlink sync` too (A), and report a read whose sync was
+  discarded as `stale`, never `fresh` (B); the action watermark (C) waits for
+  evidence. A discarded explicit sync exits 0 with `publication:
+  "discarded_not_newer"`; the output adds `profile_minted_at`. Preflight and
+  post-action syncs still publish (their observation contract needs redesign).
+  - Live probe (release build of the branch; log in
+    `~/.cache/ghostlink-f3f4-backup/runs/c-probe-*.log`): baseline sync minted
+    `...538.5`, apply Stasis at `...539.6`, then 12 forced syncs every 15 s.
+    Sync 1 (+17 s) published the first post-action profile, minted `...555.6`
+    (16 s after the action): Revenant. Syncs 2-11 (+33 to +177 s) received ten
+    consecutive responses minted no later than `...555.6` and discarded them all;
+    the projection stayed Revenant. Sync 12 (+193 s) published a profile minted
+    `...636.6`, delivered 95 s after it was minted. A PASS. The pre-action window
+    that C would close (a replica minted after the last sync but before the
+    action) was 1 s here and was not observed. DIM did not show the change during
+    the probe (its own refresh cadence); the Revenant state was read from the
+    profiles Bungie returned, not from Ghostlink's projection.
+  - Observed: Bungie's minted instant ran 1-2 s ahead of the local acquisition
+    clock (`checked_at 1791918263`, minted `1791918265.350`), so C cannot compare
+    the local action time with Bungie's minted time without a margin or a common
+    clock source.
+  - The Stasis apply in the probe exited 42 with the old persistence message:
+    this branch is based on `main` without the F4 fix (PR #86).
+
 ## Follow-ups (out of scope)
 - Windows `ghostlink://` handler (next feature, developed on Windows).
 - winget / AUR / MSI / code signing.
