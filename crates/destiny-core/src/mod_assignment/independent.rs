@@ -1,6 +1,8 @@
 //! DIM 29c122e: mod-permutations.ts, specialty-modslots.ts and free mod assignment.
 //! General/activity candidate ranking is deliberately not implemented in this slice.
-use crate::{ItemDefinition, ItemInstance, armor_model};
+use crate::{
+    ItemDefinition, ItemHash, ItemInstance, armor_catalog::ArmorCatalogRecord, armor_model,
+};
 use std::collections::HashSet;
 
 pub const ARTIFICE_CATEGORY: u32 = 3773173029;
@@ -55,12 +57,23 @@ pub const SPECIALTY_SOCKETS: [(u32, u32); 10] = [
     (2701840022, 1081029832),
 ];
 
+/// Nameless Armor 3.0 stat-roll plugs are known only through the stat-plug store.
+/// They sit in stat sockets outside `SocketCategoryHashes.ArmorMods`, which is the
+/// only category DIM assigns mods to (mod-assignment-utils.ts:98,
+/// socket-utils.ts:88-97), so they are never mods and never block a mod check.
+pub fn is_known_stat_plug(catalogs: &[ArmorCatalogRecord], hash: ItemHash) -> bool {
+    catalogs
+        .iter()
+        .any(|c| matches!(c, ArmorCatalogRecord::StatPlug(p) if i64::from(p.hash) == hash.value()))
+}
+
 /// DIM item-utils.ts:69-100: first visible, plugged specialty socket, not enabled.
 /// Returns its compatible activity category (the exact DIM slot-tag equivalence).
 pub fn specialty_category(
     item: &ItemInstance,
     definition: &ItemDefinition,
     definitions: &[ItemDefinition],
+    catalogs: &[ArmorCatalogRecord],
 ) -> Result<Option<u32>, &'static str> {
     for socket in &item.sockets {
         if !socket.visible {
@@ -69,6 +82,9 @@ pub fn specialty_category(
         let Some(hash) = socket.plug_hash else {
             continue;
         };
+        if is_known_stat_plug(catalogs, hash) {
+            continue;
+        }
         let plug = definitions
             .iter()
             .find(|d| d.hash == hash)
@@ -107,6 +123,7 @@ pub struct FreeModItem {
 pub(super) fn free_mod_items(
     armor: &[(&ItemInstance, &ItemDefinition)],
     definitions: &[ItemDefinition],
+    catalogs: &[ArmorCatalogRecord],
     assume_artifice_exotic: bool,
     needs_tuning: bool,
 ) -> Result<Vec<FreeModItem>, &'static str> {
@@ -124,6 +141,9 @@ pub(super) fn free_mod_items(
                 let Some(hash) = socket.plug_hash else {
                     continue;
                 };
+                if is_known_stat_plug(catalogs, hash) {
+                    continue;
+                }
                 let plug = definitions
                     .iter()
                     .find(|d| d.hash == hash)

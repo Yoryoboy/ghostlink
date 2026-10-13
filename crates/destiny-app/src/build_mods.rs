@@ -92,6 +92,7 @@ pub(crate) fn findings(build: &BuildDefinition, analysis: &mut BuildAnalysis) {
 pub(crate) fn catalogs<R: WorldDefinitionRepository + ArmorCatalogRepository>(
     repository: &R,
     definitions: &mut Vec<ItemDefinition>,
+    items: &[ItemInstance],
 ) -> Result<Vec<ArmorCatalogRecord>, AppError> {
     let entries: Vec<_> = definitions
         .iter()
@@ -113,6 +114,22 @@ pub(crate) fn catalogs<R: WorldDefinitionRepository + ArmorCatalogRepository>(
         .cloned()
         .collect();
     let mut records = Vec::new();
+    // Nameless stat-roll plugs are not mods; core ignores the ones the store knows.
+    let mut stat_plug_keys = BTreeSet::new();
+    let armor = items.iter().filter(|item| {
+        definitions.iter().any(|d| {
+            d.hash == item.item_hash
+                && d.bucket_hash
+                    .is_some_and(|b| mod_assignment::ARMOR_BUCKETS.contains(&b.value()))
+        })
+    });
+    for item in armor {
+        for plug in crate::armor_model::resolve_stat_plugs(repository, item, definitions)? {
+            if stat_plug_keys.insert(plug.hash) {
+                records.push(ArmorCatalogRecord::StatPlug(plug));
+            }
+        }
+    }
     let mut keys = BTreeSet::new();
     for entry in entries {
         for (kind, hash) in [
@@ -277,7 +294,7 @@ mod tests {
             )
             .unwrap();
         let mut definitions = vec![armor];
-        let records = catalogs(&repository, &mut definitions).unwrap();
+        let records = catalogs(&repository, &mut definitions, &[]).unwrap();
         assert_eq!(
             definitions
                 .iter()

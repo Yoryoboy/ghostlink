@@ -646,7 +646,8 @@ raw `gear_tier`, `effective_gear_tier` (DIM's missing-tier fallback of 0), and
 `tuning` adds the visible socket index, current tuning plug hash and exact
 `tuned_stat_hash` from raw reusable membership (flags do not gate membership).
 `reusable_membership_known` is false for legacy/unobserved rows: the stat stays null
-with `raw_reusable_plugs_not_projected` until profile resync. Known membership with
+with `raw_reusable_plugs_not_projected` until profile resync (a resync with component 310
+returned marks sockets 310 does not list as observed-empty). Known membership with
 no unique directional tuner stays null with `no_unique_directional_tuner`;
 a resolved stat has a null reason. `armor_set` adds set hash/name and perk hashes
 with required-piece thresholds and optional `name`/`icon` from sandbox definitions;

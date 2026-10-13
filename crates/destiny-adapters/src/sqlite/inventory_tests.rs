@@ -3101,3 +3101,26 @@ fn currency_coverage_structural_rejection_and_balance_revision() {
         duplicate.metadata.revision
     );
 }
+
+#[test]
+fn known_empty_raw_reusable_list_is_distinct_from_unknown_and_advances_revision() {
+    let mut input = full_input();
+    let socket = |reusable_plugs| destiny_core::IndexedSocket {
+        plug_objectives: None,
+        socket_index: 0,
+        plug_hash: None,
+        enabled: true,
+        visible: false,
+        reusable_plugs,
+    };
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    input.items[0].sockets = vec![socket(None)];
+    let unknown = store.replace_current(input.clone()).unwrap();
+    assert_eq!(unknown.metadata.revision.value(), 1);
+    input.items[0].sockets = vec![socket(Some(vec![]))];
+    let known = store.replace_current(input.clone()).unwrap();
+    assert_eq!(known.metadata.revision.value(), 2);
+    let reloaded = store.load_current().unwrap().unwrap();
+    assert_eq!(reloaded.items[0].sockets[0].reusable_plugs, Some(vec![]));
+    assert_eq!(store.replace_current(input).unwrap(), known);
+}

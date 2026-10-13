@@ -740,9 +740,18 @@ coverage (`domain.rs:123-126`).
     (`mod_assignment/independent.rs:60,75,130`,
     `inserted_plug_definition_unavailable`); the legacy
     `acquire_and_publish` path does not publish stat plugs.
-  - [ ] **BE-010b2 — Absent 310 sockets.** When component 310 was
-    returned, every socket not listed for an instance projects
-    `reusable_plugs: Some(vec![])` (DIM `sockets.ts:77-79`); a missing
-    component (privacy/unavailable) keeps `None`.
+  - [x] **BE-010b2 — Absent 310 sockets.** With component 310 present,
+    an instance or socket it does not list projects `reusable_plugs:
+    Some(vec![])` (DIM `sockets.ts:77-79,133-140`). A response without 310
+    still fails validation as before (the parent's first "keeps None" line
+    was wrong: 310 is required; contract unchanged, regression test
+    added). `None` vs `Some([])` changes `content_eq`, so existing DBs
+    re-project on the next sync. Also closes the BE-010b1 open item: core
+    mod assignment (`specialty_category`, `free_mod_items`,
+    `assignment_sockets`) skips known `StatPlug` plugs (DIM counts only
+    ArmorMods sockets, `mod-assignment-utils.ts:98`,
+    `socket-utils.ts:88-97`). RED captured before production edits for
+    the decode, mod-fit and nameless-plug cases. Workspace: 2461
+    all-features, 2428 default, 0 failed; clippy both modes, fmt.
   - [ ] **BE-010c — Live re-run.** check, substitutes timing, apply
     dry-run; then live apply and EquipLoadout U4b/U4c.

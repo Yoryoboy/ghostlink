@@ -8,7 +8,8 @@ mod ranking;
 pub use costs::cumulative_energy_costs;
 pub use independent::{
     ARTIFICE_CATEGORY, FreeModAssignment, FreeModItem, SPECIALTY_SOCKETS, TUNING_CATEGORY,
-    assign_free_mods, generate_mod_permutations, generate_permutations_of_five, specialty_category,
+    assign_free_mods, generate_mod_permutations, generate_permutations_of_five, is_known_stat_plug,
+    specialty_category,
 };
 pub use ranking::{
     MaterialCosts, RANKED_MATERIALS, RankedAssignment, RankingItem, rank_independent_mods,
@@ -94,6 +95,9 @@ pub fn assignment_sockets(
         let Some(plug_hash) = socket.plug_hash else {
             continue;
         };
+        if is_known_stat_plug(catalogs, plug_hash) {
+            continue;
+        }
         let plug = definitions
             .iter()
             .find(|d| d.hash == plug_hash)
@@ -444,10 +448,11 @@ fn analyze_with_rules(
             let items = independent::free_mod_items(
                 &armor,
                 definitions,
+                catalogs,
                 upgraded && assumption == AssumeArmorMasterwork::ArtificeExotic,
                 !tuning.is_empty(),
             )?;
-            let actual = independent::free_mod_items(&armor, definitions, false, false)?;
+            let actual = independent::free_mod_items(&armor, definitions, catalogs, false, false)?;
             let free = assign_free_mods(&items, &artifice, &tuning);
             for (i, mods) in free.assigned.into_iter().enumerate() {
                 enhancements[i] = items[i].exotic

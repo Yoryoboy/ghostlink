@@ -681,7 +681,7 @@ fn candidate<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogRe
         energy_capacity: Some(energy.energy_capacity),
         power: item.power,
         base_stats,
-        activity_slot: specialty_category(item, definition, definitions)?,
+        activity_slot: specialty_category(item, definition, definitions, catalogs)?,
         set_bonus: model.armor_set.as_ref().map(|s| s.hash),
         has_set_bonus_mod_socket: selector,
         tuning: tuning_plugs,

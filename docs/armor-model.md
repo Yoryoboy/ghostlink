@@ -72,7 +72,14 @@ including DIM event selectors (`utils/socket-utils.ts:793-809`).
   reusable list to the corresponding real socket, with no size-based omission.
   Ghostlink now stores hash, `canInsert`, `enabled`, duplicates and provider order
   on `IndexedSocket.reusable_plugs`, independently of publication filtering.
-  Missing per-socket data remains `None`; observed empty data is `Some([])`.
+  Observed empty data is `Some([])`. Component 310 lists only sockets that have reusable
+  plugs (armor mod sockets are absent), and DIM reads an absent socket as no raw plugs
+  (`sockets.ts:77-79`, `reusablePlugData?.[socketIndex]`). So, whenever 310 was returned
+  (it stays required; a response without it still fails validation), every socket of an
+  instance projects `Some([])` unless 310 lists it, including instances 310 does not list.
+  `None` therefore only remains on legacy rows stored before this projection; the changed
+  projection changes content equality, so the next profile sync re-projects and bumps the
+  revision (BE-010b2). `Some([])` is stored as an `item_reusable_sockets` row without children.
   As in DIM, only corresponding real sockets acquire membership. The existing
   selectable view still filters flags, deduplicates and omits lists above 64.
 - Oversized raw lists are retained intact (500-entry regression fixture), never
@@ -257,3 +264,10 @@ Design (no fabricated name, `definitions` untouched):
   resolution (`armor_model::resolve_stat_plugs`) so the masterwork lookup and the
   set-selector scan accept a known nameless plug instead of reporting
   `inserted_plug_definition_unavailable`; a plug found in neither store still does.
+- **Mod assignment (BE-010b2).** Stat-roll plugs are not mods: DIM assigns mods only to
+  `SocketCategoryHashes.ArmorMods` sockets (`loadout/mod-assignment-utils.ts:98`,
+  `utils/socket-utils.ts:88-97`). The app adds the known `StatPlug` records of the owned
+  armor to the mod catalogs (`build_mods::catalogs`); core `assignment_sockets`,
+  `specialty_category` and the free-mod scan skip any plug with such a record
+  (`mod_assignment::is_known_stat_plug`) instead of failing with
+  `inserted_plug_definition_unavailable`. Unknown nameless plugs still fail.

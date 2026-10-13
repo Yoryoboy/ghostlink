@@ -124,7 +124,7 @@ pub(super) fn rank_armor(
             derived_capacity,
             used,
             specialty: if has_activity {
-                super::specialty_category(item, definition, definitions)?
+                super::specialty_category(item, definition, definitions, catalogs)?
             } else {
                 None
             },

@@ -615,7 +615,8 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
                 }
             }
         }
-        let mod_catalogs = crate::build_mods::catalogs(sync.repository(), &mut definitions)?;
+        let mod_catalogs =
+            crate::build_mods::catalogs(sync.repository(), &mut definitions, &snapshot.items)?;
         let objectives = crafting_definitions(sync.repository(), &snapshot.items)?;
         let mut analysis = build_analysis::analyze_build(
             &build.definition,

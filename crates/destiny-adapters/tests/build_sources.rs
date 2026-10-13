@@ -1420,3 +1420,188 @@ fn build_substitutes_validate_the_limit_and_never_change_check_or_the_apply_plan
     );
     assert_eq!(before, after);
 }
+
+/// BE-010b2: Bungie's component 310 lists only sockets with reusable plugs, so
+/// armor mod sockets are absent from a fetched 310. DIM reads an absent socket as
+/// no raw plugs (sockets.ts:77-79), so the check must evaluate mod fit.
+fn check_mod_fit_from_decoded_profile(
+    stat_plug: Option<u32>,
+    list_mod_sockets_in_310: bool,
+) -> destiny_core::mod_assignment::ModFitAnalysis {
+    use destiny_adapters::decode_profile;
+    use destiny_core::armor_catalog::*;
+    use destiny_core::domain::ClassType;
+    const BUCKETS: [i64; 5] = [3448274439, 3551918588, 14239492, 20886954, 1585787867];
+    const EMPTY: i64 = 235531041;
+    let mut sync = fixture();
+    let membership =
+        DestinyMembership::new(MembershipType::new(3), MembershipId::new("99")).unwrap();
+    let mut service = BuildService::new(
+        destiny_app::test_support::InMemoryBuildRepository::default(),
+        DimBuildCodec,
+    );
+    let equipped: Vec<_> = (0..5)
+        .map(|i| format!(r#"{{"id":"80000000000000000{}","hash":{}}}"#, i + 1, 20 + i))
+        .collect();
+    service
+        .execute_local(
+            &membership,
+            &destiny_app::builds::LocalBuildRequest::Import(format!(
+                r#"{{"id":"m1","name":"Mods","classType":1,"equipped":[{}],"unequipped":[],"parameters":{{"mods":[2001,3001]}}}}"#,
+                equipped.join(",")
+            )),
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let mut definitions = vec![
+        definition(EMPTY, None, Some("enhancements.v2_head")),
+        definition(2001, None, Some("enhancements.v2_head")),
+        definition(3001, None, Some("enhancements.artifice")),
+    ];
+    definitions[2].armor.plug_category_hash = Some(3773173029);
+    for def in &mut definitions {
+        def.armor.energy_cost = Some(PlugEnergyCost {
+            energy_cost: 3,
+            energy_type: 1,
+            energy_type_hash: 1,
+        });
+    }
+    for (index, bucket) in BUCKETS.into_iter().enumerate() {
+        let mut armor = definition(20 + index as i64, Some(BucketHash::new(bucket)), None);
+        armor.tier = Some("Legendary".into());
+        armor.class_type = Some(ClassType::Hunter);
+        armor.is_instance_item = Some(true);
+        armor.armor.socket_entries = vec![DefinitionSocketEntry {
+            socket_type_hash: 99,
+            reusable_plug_set_hash: Some(800),
+            plug_sources: Some(2),
+            ..Default::default()
+        }];
+        armor.armor.socket_categories = vec![DefinitionSocketCategory {
+            socket_category_hash: 590099826,
+            socket_indexes: vec![0],
+        }];
+        definitions.push(armor);
+    }
+    let mut world = destiny_app::test_support::synthetic_world(DefinitionVersion::new("v1"));
+    world.armor_catalogs = vec![
+        ArmorCatalogRecord::SocketType(SocketTypeDefinition {
+            hash: 99,
+            socket_category_hash: 100,
+            always_randomize_sockets: false,
+            plug_whitelist: vec![],
+        }),
+        ArmorCatalogRecord::SocketCategory(SocketCategoryDefinition {
+            hash: 100,
+            category_style: 0,
+            name: "Mods".into(),
+        }),
+        ArmorCatalogRecord::PlugSet(PlugSetDefinition {
+            hash: 800,
+            reusable_plug_items: [EMPTY as u32, 2001, 3001]
+                .map(|plug_item_hash| PlugSetItem {
+                    plug_item_hash,
+                    currently_can_roll: true,
+                })
+                .to_vec(),
+        }),
+    ];
+    // The Armor 3.0 stat-roll plug is nameless: it lives only in the stat-plug store.
+    world.armor_catalogs.extend(stat_plug.map(|hash| {
+        ArmorCatalogRecord::StatPlug(StatPlugDefinition {
+            hash,
+            plug_category_hash: 748854354,
+            investment_stats: vec![InvestmentStat {
+                stat_type_hash: 2996146975,
+                value: 10,
+                is_conditionally_active: false,
+            }],
+        })
+    }));
+    sync.repository_mut()
+        .publish_manifest(
+            DefinitionReplacementInput {
+                definitions: ManifestDefinitions {
+                    version: DefinitionVersion::new("v1"),
+                    definitions,
+                },
+                checked_at: Timestamp::new(100),
+                source: SourceMarker::Manifest,
+            },
+            world,
+        )
+        .unwrap();
+    // A real Bungie response: component 310 is present but, as live, lists no
+    // armor mod socket (only an unrelated socket of the first piece).
+    let mut profile: serde_json::Value =
+        serde_json::from_slice(include_bytes!("fixtures/profile-complete.json")).unwrap();
+    let components = &mut profile["Response"]["itemComponents"];
+    let mut gear = Vec::new();
+    for i in 0..5 {
+        let id = format!("80000000000000000{}", i + 1);
+        gear.push(serde_json::json!({"itemHash": 20 + i, "itemInstanceId": id, "quantity": 1, "location": 1, "state": 0}));
+        components["instances"]["data"][&id] = serde_json::json!({"isEquipped": true, "energy": {"energyCapacity": 10, "energyUsed": 0, "energyUnused": 10, "energyType": 1}});
+        let mut sockets =
+            vec![serde_json::json!({"plugHash": EMPTY, "isEnabled": true, "isVisible": true})];
+        if let (0, Some(hash)) = (i, stat_plug) {
+            sockets.extend(
+                (1..7).map(|_| serde_json::json!({"isEnabled": false, "isVisible": false})),
+            );
+            sockets
+                .push(serde_json::json!({"plugHash": hash, "isEnabled": true, "isVisible": false}));
+        }
+        components["sockets"]["data"][&id] = serde_json::json!({ "sockets": sockets });
+    }
+    components["reusablePlugs"]["data"] = serde_json::json!({"800000000000000001": {"plugs": {"5": [{"plugItemHash": 1, "canInsert": true, "enabled": true}]}}});
+    if list_mod_sockets_in_310 {
+        for i in 1..=5 {
+            components["reusablePlugs"]["data"][format!("80000000000000000{i}")] = serde_json::json!({"plugs": {"0": [{"plugItemHash": EMPTY, "canInsert": true, "enabled": true}]}});
+        }
+    }
+    profile["Response"]["characterEquipment"]["data"]["900000000000000002"]["items"] =
+        serde_json::Value::Array(gear);
+    let mut input = decode_profile(
+        &serde_json::to_vec(&profile).unwrap(),
+        &DestinyMembership::new(
+            MembershipType::new(3),
+            MembershipId::new("4611686018484639825"),
+        )
+        .unwrap(),
+        DefinitionVersion::new("v1"),
+        Timestamp::new(100),
+    )
+    .unwrap();
+    input.membership_id = MembershipId::new("99");
+    sync.repository_mut().replace_current(input).unwrap();
+    service
+        .check(
+            &mut sync,
+            &destiny_app::builds::BuildSelector::Name("Mods".into()),
+            Some(&CharacterId::new("900000000000000002")),
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap()
+        .analysis
+        .mod_fit
+}
+
+/// BE-010b2: Bungie's component 310 lists only sockets with reusable plugs, so
+/// armor mod sockets are absent from a fetched 310. DIM reads an absent socket as
+/// no raw plugs (sockets.ts:77-79), so the check must evaluate mod fit.
+#[test]
+fn build_check_evaluates_mod_fit_when_mod_sockets_are_absent_from_fetched_310() {
+    let fit = check_mod_fit_from_decoded_profile(None, false);
+    assert_eq!(fit.reason, None);
+    assert_eq!(fit.evaluation, "evaluated");
+    assert_eq!(fit.invalid_mods, Some(vec![]));
+}
+
+/// BE-010b1 open item: nameless `armor_stats` plugs live in invisible sockets and
+/// are not mods; DIM only assigns mods to ArmorMods sockets (mod-assignment-utils.ts).
+#[test]
+fn build_check_ignores_known_nameless_stat_plugs_in_mod_checks() {
+    let fit = check_mod_fit_from_decoded_profile(Some(481842213), true);
+    assert_eq!(fit.reason, None);
+    assert_eq!(fit.evaluation, "evaluated");
+}

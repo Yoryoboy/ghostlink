@@ -522,6 +522,12 @@ fn decode_available_plugs(
     instance_id: &str,
     indexed_sockets: &mut [destiny_core::IndexedSocket],
 ) -> Result<Vec<destiny_core::domain::AvailablePlug>, AppError> {
+    // Component 310 only lists sockets with reusable plugs. DIM reads an absent
+    // socket as no raw plugs (sockets.ts:77-79 `reusablePlugData?.[socketIndex]`),
+    // so with 310 returned every socket starts as a known-empty list.
+    for socket in indexed_sockets.iter_mut() {
+        socket.reusable_plugs = Some(Vec::new());
+    }
     let Some(entry) = data.get(instance_id) else {
         return Ok(Vec::new());
     };
@@ -2082,6 +2088,65 @@ mod tests {
         assert!(snapshot.items[0].available_plugs.is_empty());
     }
 
+    /// DIM sockets.ts:77-79 reads `reusablePlugData?.[socketIndex]`: once component 310
+    /// was returned, a socket (or instance) it does not list has no raw plugs.
+    #[test]
+    fn component_310_absent_sockets_and_instances_project_known_empty_raw_plugs() {
+        let twelve_sockets = || json!({"sockets": (0..12).map(|_| json!({"plugHash": 5, "isEnabled": true, "isVisible": true})).collect::<Vec<_>>()});
+        let listed = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000001"] =
+                twelve_sockets();
+            value["Response"]["itemComponents"]["reusablePlugs"]["data"] = json!({"700000000000000001": {"plugs": {"7": [{"plugItemHash": 77, "canInsert": true, "enabled": true}]}}});
+        })
+        .unwrap();
+        let sockets = &listed.items[0].sockets;
+        assert_eq!(sockets.len(), 12);
+        for socket in sockets {
+            if socket.socket_index == 7 {
+                assert_eq!(
+                    socket.reusable_plugs,
+                    Some(vec![destiny_core::domain::ReusablePlug {
+                        plug_hash: ItemHash::new(77),
+                        can_insert: true,
+                        enabled: true
+                    }])
+                );
+            } else {
+                assert_eq!(
+                    socket.reusable_plugs,
+                    Some(vec![]),
+                    "{}",
+                    socket.socket_index
+                );
+            }
+        }
+        let unlisted = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000001"] =
+                twelve_sockets();
+            value["Response"]["itemComponents"]["reusablePlugs"]["data"] = json!({});
+        })
+        .unwrap();
+        assert_eq!(unlisted.items[0].sockets.len(), 12);
+        assert!(
+            unlisted
+                .items
+                .iter()
+                .flat_map(|item| &item.sockets)
+                .all(|socket| socket.reusable_plugs == Some(vec![]))
+        );
+    }
+
+    /// The fail-closed guard for a missing component 310 stays as is.
+    #[test]
+    fn missing_component_310_still_fails_validation_and_never_projects_known_empty() {
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]
+                .as_object_mut()
+                .unwrap()
+                .remove("reusablePlugs");
+        }));
+    }
+
     #[test]
     fn reusable_plugs_component_is_required() {
         assert_validation(decode_mutated(|value| {
@@ -2334,7 +2399,7 @@ mod tests {
             vec![
                 destiny_core::IndexedSocket {
                     plug_objectives: None,
-                    reusable_plugs: None,
+                    reusable_plugs: Some(vec![]),
                     socket_index: 0,
                     plug_hash: None,
                     enabled: true,
@@ -2342,7 +2407,7 @@ mod tests {
                 },
                 destiny_core::IndexedSocket {
                     plug_objectives: None,
-                    reusable_plugs: None,
+                    reusable_plugs: Some(vec![]),
                     socket_index: 1,
                     plug_hash: Some(ItemHash::new(123)),
                     enabled: false,
@@ -2350,7 +2415,7 @@ mod tests {
                 },
                 destiny_core::IndexedSocket {
                     plug_objectives: None,
-                    reusable_plugs: None,
+                    reusable_plugs: Some(vec![]),
                     socket_index: 2,
                     plug_hash: Some(ItemHash::new(456)),
                     enabled: true,
@@ -2609,7 +2674,7 @@ mod tests {
                     .map(
                         |(index, (hash, enabled, visible))| destiny_core::IndexedSocket {
                             plug_objectives: None,
-                            reusable_plugs: None,
+                            reusable_plugs: Some(vec![]),
                             socket_index: index as u8,
                             plug_hash: hash.map(ItemHash::new),
                             enabled,

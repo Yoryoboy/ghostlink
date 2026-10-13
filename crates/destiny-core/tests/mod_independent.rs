@@ -152,18 +152,18 @@ fn dim_specialty_table_uses_visible_plugged_first_not_enabled() {
             plug_objectives: None,
         }];
         assert_eq!(
-            specialty_category(&item, &definition, &[plug.clone()]),
+            specialty_category(&item, &definition, &[plug.clone()], &[]),
             Ok(Some(category))
         );
         item.sockets[0].visible = false;
         assert_eq!(
-            specialty_category(&item, &definition, &[plug.clone()]),
+            specialty_category(&item, &definition, &[plug.clone()], &[]),
             Ok(None)
         );
         item.sockets[0].visible = true;
         item.sockets[0].plug_hash = None;
         assert_eq!(
-            specialty_category(&item, &definition, &[plug.clone()]),
+            specialty_category(&item, &definition, &[plug.clone()], &[]),
             Ok(None)
         );
     }
