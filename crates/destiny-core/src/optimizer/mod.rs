@@ -12,6 +12,7 @@ mod search;
 mod set_tracker;
 mod stat_dupe;
 mod stat_mods;
+mod substitutes;
 pub use analyzer::{
     AnalyzerBudget, AnalyzerInputs, AnalyzerOutcome, OptimizerAnalysis, ResolvedStatConstraint,
     merge_strict_upgrade_stat_constraints, resolve_stat_constraints, run_analyzer,
@@ -39,6 +40,10 @@ pub use stat_mods::{
     ProcessMod, RejectionRate, RemainingEnergies, SetEnergyCache, StatModPick,
     generate_process_mod_permutations, greedy_pick_stat_mods,
     pick_and_assign_slot_independent_mods, pick_optimal_stat_mods, process_mod, update_max_stats,
+};
+pub use substitutes::{
+    DEFAULT_SUBSTITUTES, MAX_SUBSTITUTES, SUBSTITUTES_TIME_LIMIT, SubstituteSet,
+    SubstitutesOutcome, run_substitutes,
 };
 
 // DIM loadout-builder/types.ts:105-155 and loadout/known-values.ts:39.

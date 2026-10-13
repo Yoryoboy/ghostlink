@@ -17,7 +17,7 @@ const ARTIFICE_PERK: i64 = 3727270518;
 type ArmorPair<'a> = (&'a ItemInstance, &'a ItemDefinition);
 
 /// Why the analyzer could not run: a typed unknown, or a real failure.
-enum Stop {
+pub(crate) enum Stop {
     Unknown(&'static str),
     App(AppError),
 }
@@ -116,6 +116,100 @@ fn run<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogReposito
     unlocked: &[u32],
     class: u8,
 ) -> Result<optimizer::AnalyzerOutcome, Stop> {
+    let prepared = prepare(
+        repository,
+        build,
+        analysis,
+        inventory,
+        definitions,
+        catalogs,
+        unlocked,
+        class,
+    )?;
+    let matches = prepared.matcher();
+    let mut outcome = optimizer::run_analyzer(
+        &prepared.inputs(
+            prepared
+                .has_query
+                .then_some(&matches as &dyn Fn(&ArmorCandidate) -> bool),
+            AnalyzerBudget::default(),
+        ),
+    )?;
+    outcome.info.font_note = outcome.better_stats == Some(true)
+        && font_note(prepared.runtime, &prepared.mod_hashes, &prepared.assumed);
+    Ok(outcome)
+}
+
+/// Everything the optimizer needs for one build, as DIM's loadout analyzer and Loadout
+/// Optimizer both read it from the loadout parameters and the inventory.
+pub(crate) struct Prepared {
+    pub candidates: Vec<ArmorCandidate>,
+    /// Ids of the loadout's five armor pieces.
+    pub loadout_ids: Vec<String>,
+    matching: BTreeSet<String>,
+    pub has_query: bool,
+    locked_exotic: Option<LockedExotic>,
+    energy_rules: optimizer::EnergyRules,
+    saved_set_bonuses: BTreeMap<u32, u32>,
+    loadout_set_bonuses: Vec<(u32, u32)>,
+    bucket_mods: BTreeMap<i64, Vec<AssignmentMod>>,
+    general_mods: Vec<optimizer::ProcessMod>,
+    activity_mods: Vec<optimizer::ProcessMod>,
+    mod_stat_totals: [i32; 6],
+    auto_mod_options: optimizer::AutoModData,
+    auto_stat_mods: bool,
+    constraints: Vec<optimizer::ResolvedStatConstraint>,
+    assumed: [i32; 6],
+    runtime: bool,
+    mod_hashes: Vec<u32>,
+    /// Auto stat mod and tuning definitions fetched beyond the check's own.
+    pub extra_definitions: Vec<ItemDefinition>,
+}
+impl Prepared {
+    pub(crate) fn inputs<'a>(
+        &'a self,
+        query_matches: Option<&'a dyn Fn(&ArmorCandidate) -> bool>,
+        budget: AnalyzerBudget,
+    ) -> AnalyzerInputs<'a> {
+        AnalyzerInputs {
+            candidates: &self.candidates,
+            loadout_ids: &self.loadout_ids,
+            query_matches,
+            locked_exotic: self.locked_exotic.clone(),
+            energy_rules: self.energy_rules,
+            saved_set_bonuses: self.saved_set_bonuses.clone(),
+            loadout_set_bonuses: self.loadout_set_bonuses.clone(),
+            bucket_mods: self.bucket_mods.clone(),
+            general_mods: self.general_mods.clone(),
+            activity_mods: self.activity_mods.clone(),
+            mod_stat_totals: self.mod_stat_totals,
+            auto_mod_options: self.auto_mod_options.clone(),
+            auto_stat_mods: self.auto_stat_mods,
+            constraints: &self.constraints,
+            assumed_stats: self.assumed,
+            budget,
+            threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
+        }
+    }
+    /// The saved query's verdict for a candidate.
+    pub(crate) fn matcher(&self) -> impl Fn(&ArmorCandidate) -> bool + '_ {
+        |c| self.matching.contains(&c.id)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare<
+    R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogRepository,
+>(
+    repository: &R,
+    build: &BuildDefinition,
+    analysis: &BuildAnalysis,
+    inventory: &[ItemInstance],
+    definitions: &[ItemDefinition],
+    catalogs: &[ArmorCatalogRecord],
+    unlocked: &[u32],
+    class: u8,
+) -> Result<Prepared, Stop> {
     // Blocking findings (types.ts:72-76) end the analysis; unknown ones cannot be waved through.
     let blockers = || {
         analysis
@@ -290,7 +384,7 @@ fn run<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogReposito
     let query = parameters
         .and_then(|p| p.query.as_deref())
         .filter(|q| !q.is_empty());
-    let matching: BTreeSet<&String> = match &analysis.item_filter {
+    let matching: BTreeSet<String> = match &analysis.item_filter {
         ItemFilter::Query(execution) => pairs
             .iter()
             .filter(|(_, (item, definition))| {
@@ -302,11 +396,10 @@ fn run<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogReposito
                 let available = plugs(&mut item.available_plugs.iter().map(|p| p.plug_hash));
                 execution.matches(item, Some(definition), &selected, &available, true)
             })
-            .map(|(id, _)| id)
+            .map(|(id, _)| id.clone())
             .collect(),
-        _ => pairs.keys().collect(),
+        _ => pairs.keys().cloned().collect(),
     };
-    let matches = |c: &ArmorCandidate| matching.contains(&c.id);
 
     let mut loadout_sets: BTreeMap<u32, u32> = BTreeMap::new();
     for (item, definition) in &loadout {
@@ -315,7 +408,7 @@ fn run<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogReposito
             *loadout_sets.entry(set.hash).or_default() += 1;
         }
     }
-    let ids: Vec<String> = loadout
+    let loadout_ids: Vec<String> = loadout
         .iter()
         .map(|(i, _)| i.instance_id.as_str().to_owned())
         .collect();
@@ -324,10 +417,11 @@ fn run<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogReposito
             .and_then(|p| p.stat_constraints.as_deref())
             .unwrap_or(&[]),
     );
-    let mut outcome = optimizer::run_analyzer(&AnalyzerInputs {
-        candidates: &candidates,
-        loadout_ids: &ids,
-        query_matches: query.map(|_| &matches as &dyn Fn(&ArmorCandidate) -> bool),
+    Ok(Prepared {
+        candidates,
+        loadout_ids,
+        matching,
+        has_query: query.is_some(),
         locked_exotic,
         energy_rules,
         saved_set_bonuses: parameters
@@ -340,15 +434,12 @@ fn run<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogReposito
         mod_stat_totals,
         auto_mod_options,
         auto_stat_mods,
-        constraints: &constraints,
-        assumed_stats: assumed,
-        budget: AnalyzerBudget::default(),
-        threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
-    })?;
-    let hashes: Vec<u32> = resolved.iter().map(|m| m.hash.value() as u32).collect();
-    outcome.info.font_note =
-        outcome.better_stats == Some(true) && font_note(runtime, &hashes, &assumed);
-    Ok(outcome)
+        constraints,
+        assumed,
+        runtime,
+        mod_hashes: resolved.iter().map(|m| m.hash.value() as u32).collect(),
+        extra_definitions: extra.defs,
+    })
 }
 
 const GENERAL_MOD_CATEGORY: u32 = 2487827355;
@@ -661,6 +752,21 @@ mod tests {
         repository: InMemoryDefinitionRepository,
     }
 
+    /// A repository holding exactly these definitions and armor catalogs.
+    #[rustfmt::skip]
+    fn publish(version: &DefinitionVersion, definitions: &[ItemDefinition], catalogs: &[ArmorCatalogRecord]) -> InMemoryDefinitionRepository {
+        let mut world = synthetic_world(version.clone());
+        world.stats.definitions = ARMOR_STATS.iter().map(|hash| StatDefinition::new(*hash, hash.to_string()).unwrap()).collect();
+        world.armor_catalogs = catalogs.to_vec();
+        let mut repository = InMemoryDefinitionRepository::default();
+        repository.publish_manifest(DefinitionReplacementInput {
+            definitions: ManifestDefinitions { version: version.clone(), definitions: definitions.to_vec() },
+            checked_at: Timestamp::new(0),
+            source: SourceMarker::Manifest,
+        }, world).unwrap();
+        repository
+    }
+
     /// A Hunter build with five equipped pieces (stats 10/10/10) constrained on three stats,
     /// plus, when set, a locked Vault helmet with that value in the first stat.
     #[rustfmt::skip] // Keep the synthetic armor/catalog fixture compact.
@@ -726,15 +832,7 @@ mod tests {
                 scaled_stats: ARMOR_STATS.iter().map(|hash| ScaledStat { stat_hash: *hash, maximum_value: 200, display_as_numeric: true, display_interpolation: vec![] }).collect(),
             }),
         ];
-        let mut world = synthetic_world(version.clone());
-        world.stats.definitions = ARMOR_STATS.iter().map(|hash| StatDefinition::new(*hash, hash.to_string()).unwrap()).collect();
-        world.armor_catalogs = catalogs.clone();
-        let mut repository = InMemoryDefinitionRepository::default();
-        repository.publish_manifest(DefinitionReplacementInput {
-            definitions: ManifestDefinitions { version, definitions: definitions.clone() },
-            checked_at: Timestamp::new(0),
-            source: SourceMarker::Manifest,
-        }, world).unwrap();
+        let repository = publish(&version, &definitions, &catalogs);
         World { build, inventory, definitions, catalogs, repository }
     }
 
@@ -1003,5 +1101,300 @@ mod tests {
         assert!(!font_note(true, &[font_of_focus], &[199, 0, 0, 0, 0, 0]));
         assert!(!font_note(true, &[], &[200; 6]));
         assert!(!font_note(false, &[font_of_focus], &[200; 6]));
+    }
+
+    // --- BE-008e: the substitutes path (build_substitutes.rs) over the same fixtures. ---
+
+    use crate::build_substitutes::{SubstitutesReport, evaluate as substitutes_for};
+
+    fn substitutes(w: &World, limit: usize) -> SubstitutesReport {
+        substitutes_for(
+            &w.repository,
+            &w.build,
+            &analyzed(w),
+            &w.inventory,
+            &w.definitions,
+            &w.catalogs,
+            &[],
+            1,
+            limit,
+            AnalyzerBudget::substitutes(),
+        )
+        .unwrap()
+    }
+    fn ids(set: &crate::build_substitutes::SubstituteArmorSet) -> Vec<&str> {
+        set.pieces.iter().map(|p| p.instance_id.as_str()).collect()
+    }
+
+    #[test]
+    fn substitutes_rank_a_better_vault_piece_and_flag_the_build_s_own_pieces() {
+        let w = world(Some(30));
+        let report = substitutes(&w, 10);
+        assert_eq!((report.evaluation, report.reason), ("evaluated", None));
+        // The vault helmet is better in every stat, so the equipped one is pre-filtered.
+        // Armor with 10 energy counts as masterworked: +2 per piece in every stat.
+        assert_eq!(report.sets.len(), 1);
+        let set = &report.sets[0];
+        assert_eq!(ids(set), ["11", "2", "3", "4", "5"]);
+        assert_eq!(
+            set.pieces.iter().map(|p| p.in_build).collect::<Vec<_>>(),
+            [false, true, true, true, true]
+        );
+        assert_eq!(set.pieces[0].bucket_hash, mod_assignment::ARMOR_BUCKETS[0]);
+        assert_eq!(set.stats[0].stat_hash, ARMOR_STATS[0]);
+        assert_eq!(
+            set.stats[0].name.as_deref(),
+            Some(ARMOR_STATS[0].to_string().as_str())
+        );
+        assert_eq!((set.stats[0].total, set.stats[0].armor_only), (80, 80));
+        assert!(set.stat_mods.is_empty() && set.tuning_mods.is_empty());
+        assert_eq!(report.optimizer.candidates, Some([1; 5]));
+        assert!(!report.optimizer.truncated);
+        assert_eq!(report.optimizer.combos_total, Some(1));
+    }
+
+    #[test]
+    fn substitutes_of_the_unchanged_inventory_are_the_build_itself() {
+        let report = substitutes(&world(None), 10);
+        assert_eq!(report.sets.len(), 1);
+        assert!(report.sets[0].pieces.iter().all(|p| p.in_build));
+        assert_eq!(report.limit, 10);
+    }
+
+    #[test]
+    fn substitutes_state_why_they_could_not_run() {
+        let w = world(Some(30));
+        let mut analysis = analyzed(&w);
+        analysis
+            .findings
+            .iter_mut()
+            .find(|f| f.kind == FindingKind::ModsDontFit)
+            .unwrap()
+            .present = Some(true);
+        let report = substitutes_for(
+            &w.repository,
+            &w.build,
+            &analysis,
+            &w.inventory,
+            &w.definitions,
+            &w.catalogs,
+            &[],
+            1,
+            10,
+            AnalyzerBudget::substitutes(),
+        )
+        .unwrap();
+        assert_eq!(report.evaluation, "not_evaluated");
+        assert_eq!(report.reason, Some("analysis_blocked_by_finding"));
+        assert!(report.sets.is_empty());
+        assert_eq!(report.optimizer.evaluation, "not_evaluated");
+    }
+
+    const MAJOR: i64 = 5001;
+    const MINOR: i64 = 5002;
+    const ARTIFICE_MOD: i64 = 5003;
+    const FONT: i64 = 4046357305;
+    const TUNE_UP: i64 = 309000506; // tunes ARMOR_STATS[?] up and the dump stat down
+    const TUNE_OTHER: i64 = 311164277;
+
+    fn stat_mod(hash: i64, category: u32, cost: i32, stat: usize, value: i32) -> ItemDefinition {
+        let mut definition = mod_definition(hash, category, cost);
+        definition.armor.investment_stats = vec![InvestmentStat {
+            stat_type_hash: ARMOR_STATS[stat],
+            value,
+            is_conditionally_active: false,
+        }];
+        definition
+    }
+    fn plug_set(hash: u32, plugs: &[i64]) -> ArmorCatalogRecord {
+        ArmorCatalogRecord::PlugSet(PlugSetDefinition {
+            hash,
+            reusable_plug_items: plugs
+                .iter()
+                .map(|p| PlugSetItem {
+                    plug_item_hash: *p as u32,
+                    currently_can_roll: true,
+                })
+                .collect(),
+        })
+    }
+    /// The world with the auto stat mod plug sets published in the repository only, so the
+    /// adapter has to load them (and their mods) itself, as it does for a real manifest.
+    fn auto_mod_world(saved_mods: &[i64], min_first_stat: u16) -> World {
+        let mut w = world(None);
+        let general = [
+            stat_mod(MAJOR, GENERAL_MOD_CATEGORY, 4, 0, 10),
+            stat_mod(MINOR, GENERAL_MOD_CATEGORY, 3, 0, 5),
+        ];
+        let artifice = stat_mod(ARTIFICE_MOD, ARTIFICE_CATEGORY, 0, 0, 3);
+        // The check itself only knows the saved mods.
+        for hash in saved_mods {
+            w.definitions.push(match *hash {
+                MAJOR => general[0].clone(),
+                _ => stat_mod(*hash, GENERAL_MOD_CATEGORY, 0, 1, 0),
+            });
+        }
+        let mut published = w.definitions.clone();
+        published.extend(
+            general
+                .iter()
+                .filter(|g| !saved_mods.contains(&g.hash.value()))
+                .cloned(),
+        );
+        published.push(artifice);
+        let mut catalogs = w.catalogs.clone();
+        catalogs.push(plug_set(
+            optimizer::GENERAL_SOCKET_PLUG_SET,
+            &[MAJOR, MINOR],
+        ));
+        catalogs.push(plug_set(
+            optimizer::ARTIFICE_SOCKET_PLUG_SET,
+            &[ARTIFICE_MOD],
+        ));
+        w.repository = publish(&DefinitionVersion::new("v1"), &published, &catalogs);
+        let parameters = w.build.parameters.as_mut().unwrap();
+        parameters.mods = Some(saved_mods.iter().map(|h| ItemHash::new(*h)).collect());
+        parameters.include_runtime_stat_benefits = Some(true);
+        parameters.stat_constraints.as_mut().unwrap()[0].min_stat = Some(min_first_stat);
+        w
+    }
+
+    #[test]
+    fn substitutes_load_the_real_auto_mod_plug_sets_and_pick_general_stat_mods() {
+        // Saved auto stat mods; the armor alone gives 60 in the first stat.
+        let mut w = auto_mod_world(&[], 70);
+        w.build.parameters.as_mut().unwrap().auto_stat_mods = Some(true);
+        let report = substitutes(&w, 10);
+        assert_eq!(
+            (report.evaluation, report.reason),
+            ("evaluated", None),
+            "{report:?}"
+        );
+        let set = &report.sets[0];
+        assert_eq!(set.stats[0].armor_only, 60);
+        // The search spends all five general slots on the +10 mod (4 energy each).
+        assert_eq!(set.stats[0].total, 110);
+        assert_eq!(
+            set.stat_mods.iter().map(|m| m.hash).collect::<Vec<_>>(),
+            vec![MAJOR as u32; 5]
+        );
+        assert!(
+            set.stat_mods
+                .iter()
+                .all(|m| m.name.as_deref() == Some("Armor"))
+        );
+        // A minimum the mods cannot reach leaves no set rather than a wrong one.
+        let mut w = auto_mod_world(&[], 150);
+        w.build.parameters.as_mut().unwrap().auto_stat_mods = Some(true);
+        assert!(substitutes(&w, 10).sets.is_empty());
+    }
+
+    #[test]
+    fn a_saved_general_stat_mod_and_a_font_turn_auto_stat_mods_on_and_leave_the_pool_free() {
+        // The saved +10 general stat mod and the Font are dropped from the locked mods
+        // (analysis.ts:250-270): the search still has all five general slots.
+        let w = auto_mod_world(&[MAJOR, FONT], 70);
+        let report = substitutes(&w, 10);
+        assert_eq!(
+            (report.evaluation, report.reason),
+            ("evaluated", None),
+            "{report:?}"
+        );
+        let set = &report.sets[0];
+        assert_eq!(set.stats[0].total, 110);
+        assert_eq!(set.stat_mods.len(), 5);
+    }
+
+    /// Every armor piece gets a visible tuning socket whose reusable plugs are two tuning
+    /// mods from the socket's plug set (mappers.ts:130-160).
+    fn tuning_world() -> World {
+        let mut w = auto_mod_world(&[], 0);
+        w.build.parameters.as_mut().unwrap().auto_stat_mods = Some(true);
+        w.build.parameters.as_mut().unwrap().mods = None;
+        let version = DefinitionVersion::new("v1");
+        let tuning = |hash: i64, up: usize, down: usize| {
+            let mut definition = mod_definition(hash, TUNING_CATEGORY, 0);
+            definition.armor.investment_stats = vec![
+                InvestmentStat {
+                    stat_type_hash: ARMOR_STATS[up],
+                    value: 5,
+                    is_conditionally_active: false,
+                },
+                InvestmentStat {
+                    stat_type_hash: ARMOR_STATS[down],
+                    value: -5,
+                    is_conditionally_active: false,
+                },
+            ];
+            definition
+        };
+        let tuners = [tuning(TUNE_UP, 0, 5), tuning(TUNE_OTHER, 1, 5)];
+        w.definitions.extend(tuners.iter().cloned());
+        for definition in w.definitions.iter_mut().filter(|d| d.bucket_hash.is_some()) {
+            definition.armor.socket_entries.push(DefinitionSocketEntry {
+                socket_type_hash: 99,
+                reusable_plug_set_hash: Some(7000),
+                plug_sources: Some(2),
+                ..Default::default()
+            });
+        }
+        for item in &mut w.inventory {
+            item.sockets.push(IndexedSocket {
+                socket_index: 1,
+                plug_hash: Some(ItemHash::new(TUNE_UP)),
+                enabled: true,
+                visible: true,
+                plug_objectives: None,
+                reusable_plugs: Some(
+                    tuners
+                        .iter()
+                        .map(|t| domain::ReusablePlug {
+                            plug_hash: t.hash,
+                            enabled: true,
+                            can_insert: true,
+                        })
+                        .collect(),
+                ),
+            });
+        }
+        let mut catalogs = w.catalogs.clone();
+        catalogs.push(plug_set(7000, &[TUNE_UP, TUNE_OTHER]));
+        let mut published = w.definitions.clone();
+        published.extend([
+            stat_mod(MAJOR, GENERAL_MOD_CATEGORY, 4, 0, 10),
+            stat_mod(MINOR, GENERAL_MOD_CATEGORY, 3, 0, 5),
+            stat_mod(ARTIFICE_MOD, ARTIFICE_CATEGORY, 0, 0, 3),
+        ]);
+        catalogs.push(plug_set(
+            optimizer::GENERAL_SOCKET_PLUG_SET,
+            &[MAJOR, MINOR],
+        ));
+        catalogs.push(plug_set(
+            optimizer::ARTIFICE_SOCKET_PLUG_SET,
+            &[ARTIFICE_MOD],
+        ));
+        w.repository = publish(&version, &published, &catalogs);
+        w.catalogs = catalogs;
+        w
+    }
+
+    #[test]
+    fn substitutes_pick_tuning_variants_end_to_end() {
+        let w = tuning_world();
+        let report = substitutes(&w, 10);
+        assert_eq!(
+            (report.evaluation, report.reason),
+            ("evaluated", None),
+            "{report:?}"
+        );
+        let set = &report.sets[0];
+        // Each piece is tuned toward the first priority stat: +5 on five pieces.
+        assert_eq!(
+            set.tuning_mods.iter().map(|m| m.hash).collect::<Vec<_>>(),
+            vec![TUNE_UP as u32; 5]
+        );
+        assert_eq!(set.stats[0].armor_only, 85);
+        // Tuning mods are reported apart from the auto stat mods.
+        assert!(set.stat_mods.iter().all(|m| m.hash == MAJOR as u32));
     }
 }

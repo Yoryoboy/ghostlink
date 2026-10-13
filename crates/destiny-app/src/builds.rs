@@ -82,6 +82,7 @@ pub enum BuildReply {
     Analysis(Box<BuildCheckResult>),
     ApplyPlan(Box<BuildApplyPreview>),
     Applied(Box<crate::build_apply_exec::BuildApplyExecution>),
+    Substitutes(Box<SubstitutesResult>),
     List(Vec<BuildSummary>),
     Build {
         result: Box<BuildSourceResult>,
@@ -105,7 +106,16 @@ pub struct BuildCheckResult {
     pub metadata: QueryMetadata,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SubstitutesResult {
+    pub summary: BuildSummary,
+    pub target_character: CharacterId,
+    pub report: crate::build_substitutes::SubstitutesReport,
+    pub metadata: QueryMetadata,
+}
+
 struct AnalyzedBuild {
+    class: u8,
     result: BuildCheckResult,
     definition: BuildDefinition,
     items: Vec<ItemInstance>,
@@ -256,6 +266,56 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
     {
         self.analyze(sync, selector, character, policy, now, true)
             .map(|analyzed| analyzed.result)
+    }
+
+    /// Ranked armor sets for a stored build (BE-008e). Read-only; the check's own
+    /// resolution runs without the analyzer search and nothing is planned or applied (D3).
+    #[allow(clippy::too_many_arguments)]
+    pub fn substitutes<G, I>(
+        &self,
+        sync: &mut ProfileSyncService<G, I>,
+        request: &BuildCheckRequest,
+        limit: usize,
+        budget: optimizer::AnalyzerBudget,
+        policy: FreshnessPolicy,
+        now: Timestamp,
+    ) -> Result<SubstitutesResult, BuildError>
+    where
+        G: ProfileGateway,
+        I: InventoryRepository
+            + WorldDefinitionRepository
+            + StatDefinitionRepository
+            + ArmorCatalogRepository,
+    {
+        if !(1..=optimizer::MAX_SUBSTITUTES).contains(&limit) {
+            return Err(AppError::new(ErrorCategory::ProviderValidation).into());
+        }
+        let analyzed = self.analyze(
+            sync,
+            &request.selector,
+            request.character.as_ref(),
+            policy,
+            now,
+            false,
+        )?;
+        let report = crate::build_substitutes::evaluate(
+            sync.repository(),
+            &analyzed.definition,
+            &analyzed.result.analysis,
+            &analyzed.items,
+            &analyzed.definitions,
+            &analyzed.mod_catalogs,
+            &analyzed.unlocked_mods,
+            analyzed.class,
+            limit,
+            budget,
+        )?;
+        Ok(SubstitutesResult {
+            summary: analyzed.result.summary,
+            target_character: analyzed.result.analysis.target_character,
+            report,
+            metadata: analyzed.result.metadata,
+        })
     }
 
     /// Fresh-state apply plan. Reads and plans only; it has no transport
@@ -610,6 +670,7 @@ impl<R: BuildRepository, C: BuildCodec> BuildService<R, C> {
             )?;
         }
         Ok(AnalyzedBuild {
+            class: character_class(&target)?,
             result: BuildCheckResult {
                 summary: build.summary,
                 analysis,

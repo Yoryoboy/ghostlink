@@ -16,6 +16,19 @@ fn build_commands_parse_all_sources_and_selectors() {
         ],
         vec!["ghostlink", "build", "check", "--name", "Raid"],
         vec!["ghostlink", "build", "apply", "id", "--dry-run"],
+        vec!["ghostlink", "build", "substitutes", "id"],
+        vec![
+            "ghostlink",
+            "build",
+            "substitutes",
+            "--name",
+            "Raid",
+            "--character",
+            "hunter",
+            "--limit",
+            "200",
+            "--json",
+        ],
         vec![
             "ghostlink",
             "build",
@@ -77,4 +90,38 @@ fn stdin_input_is_bounded_utf8() {
     assert!(destiny_cli::builds::read_input(&b"\xff"[..]).is_err());
     let oversized = vec![b' '; destiny_adapters::dim_loadout::MAX_DIM_INPUT_BYTES + 1];
     assert!(destiny_cli::builds::read_input(oversized.as_slice()).is_err());
+}
+
+#[test]
+fn build_substitutes_limit_defaults_to_ten_and_is_bounded_by_dims_cap() {
+    use destiny_cli::command::{BuildCommand, Command};
+    let request = |extra: &[&str]| {
+        let mut args = vec!["ghostlink", "build", "substitutes", "id"];
+        args.extend_from_slice(extra);
+        let Command::Build(build) = Cli::try_parse_from(args).unwrap().command else {
+            panic!("not a build command")
+        };
+        let BuildCommand::Substitutes(args) = build.command else {
+            panic!("not substitutes")
+        };
+        args.request()
+    };
+    assert_eq!(request(&[]).unwrap().1, 10);
+    assert_eq!(request(&["--limit", "1"]).unwrap().1, 1);
+    assert_eq!(request(&["--limit", "200"]).unwrap().1, 200);
+    for bad in ["0", "201"] {
+        assert!(request(&["--limit", bad]).is_err(), "{bad}");
+    }
+    let (check, _) = request(&["--character", "hunter"]).unwrap();
+    assert_eq!(
+        check.character,
+        Some(destiny_app::CharacterId::new("hunter"))
+    );
+    assert!(Cli::try_parse_from(["ghostlink", "build", "substitutes"]).is_err());
+    assert!(
+        Cli::try_parse_from(["ghostlink", "build", "substitutes", "id", "--name", "Raid"]).is_err()
+    );
+    assert!(
+        Cli::try_parse_from(["ghostlink", "build", "substitutes", "id", "--limit", "x"]).is_err()
+    );
 }

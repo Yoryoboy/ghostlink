@@ -134,6 +134,23 @@ async fn build_sources_stdio_report_omissions_and_unresolved_items() {
     assert_eq!(analysis["kind"], "build_analysis");
     assert_eq!(analysis["counts"]["missing"], 0);
     assert_eq!(analysis["findings"].as_array().unwrap().len(), 13);
+    // Substitutes: the fixture has no full armor set, so the answer is a typed unknown.
+    let substitutes = session
+        .call_tool(
+            "build_substitutes",
+            json!({"id":id,"character":"1","limit":5}),
+        )
+        .await;
+    assert_eq!(substitutes["result"]["isError"], false, "{substitutes}");
+    let ranked = &substitutes["result"]["structuredContent"];
+    assert_eq!(ranked["kind"], "build_substitutes");
+    assert_eq!(ranked["limit"], 5);
+    assert_eq!(ranked["evaluation"], "not_evaluated");
+    assert_eq!(ranked["sets"], json!([]));
+    let too_many = session
+        .call_tool("build_substitutes", json!({"id":id,"limit":201}))
+        .await;
+    assert_eq!(too_many["result"]["isError"], true);
     let invalid_analysis = session
         .call_tool("analyze_build", json!({"id":id,"name":"other"}))
         .await;
@@ -533,7 +550,7 @@ async fn stack_stdio_acknowledged_refused_uncertain_and_invalid() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 24);
+        assert_eq!(tools.len(), 25);
         let tool = tools.iter().find(|t| t["name"] == "pull_stack").unwrap();
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(tool["annotations"]["readOnlyHint"], false);
@@ -584,7 +601,7 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 24);
+        assert_eq!(tools.len(), 25);
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == "pull_item")
@@ -1410,6 +1427,7 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             "save_build",
             "delete_build",
             "analyze_build",
+            "build_substitutes",
             MOVE_ITEM_TOOL,
             "equip_item",
             "set_lock_state",

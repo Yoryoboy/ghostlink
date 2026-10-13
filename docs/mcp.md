@@ -28,6 +28,7 @@ get_build         show one local build, including DIM JSON export
 save_build        import or capture equipped/in-game loadout as a local build
 delete_build      delete one local build definition
 analyze_build     check a local build against synced inventory
+build_substitutes rank armor sets for a local build (read-only)
 ```
 
 ## Local build tools
@@ -40,9 +41,17 @@ composed in the production server with membership-scoped SQLite storage.
 | `list_builds` | `{}` |
 | `get_build` / `delete_build` | Exactly one `id` or normalized exact `name` |
 | `analyze_build` | Exactly one `id`/`name`; optional `character` ID or unique class |
+| `build_substitutes` | As `analyze_build`, plus optional `limit` (1..=200, default 10) |
 | `save_build` import | `source: "import"`, `input`: DIM JSON or full loadout URL |
 | `save_build` equipped | `source: "equipped"`, `character`, `name` |
 | `save_build` in-game | `source: "in_game_loadout"`, `character`, exactly one `slot` (1..12) or `loadout_name` |
+
+`build_substitutes` is read-only (`readOnlyHint`) and returns the JSON of
+`ghostlink build substitutes`: ranked armor sets with item ids and names, per-stat totals,
+armor-only stats, automatic stat mods and tuning mods, and the `optimizer` object. The
+search has a fixed 10 s budget; `optimizer.truncated: true` marks partial results and
+`evaluation: "not_evaluated"` with a `reason` is unknown, never an empty answer. See
+[CLI substitutes](cli.md#find-substitute-armor-sets) and [optimizer.md](optimizer.md).
 
 `analyze_build` shares `ghostlink build check` output and ordinary freshness.
 Without a character selector the build class must have one owned character;

@@ -17,6 +17,7 @@ mod build_mods;
 mod build_optimizer;
 mod build_socket_evidence;
 mod build_stats;
+pub mod build_substitutes;
 pub mod clarity;
 pub use clarity::{ClaritySyncReport, ManifestAndClarityReport};
 pub use destiny_core::{ClarityInsight, ClarityRepository};

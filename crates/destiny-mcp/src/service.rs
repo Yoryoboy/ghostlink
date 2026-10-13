@@ -860,6 +860,10 @@ pub struct MoveItemRequest {
 /// sanitized [`McpError`].
 pub enum BuildToolRequest {
     Analyze(destiny_app::builds::BuildCheckRequest),
+    Substitutes {
+        request: destiny_app::builds::BuildCheckRequest,
+        limit: usize,
+    },
     Local(destiny_app::builds::LocalBuildRequest),
     Save(crate::schema::SaveBuildArgs),
 }
@@ -905,6 +909,20 @@ where
                         now,
                     )
                     .map(|result| destiny_app::builds::BuildReply::Analysis(Box::new(result)));
+                return Ok(destiny_output::builds::BuildOutput::from_result(result));
+            }
+            BuildToolRequest::Substitutes { request, limit } => {
+                let result = self
+                    .builds
+                    .substitutes(
+                        &mut self.sync,
+                        &request,
+                        limit,
+                        destiny_app::optimizer::AnalyzerBudget::substitutes(),
+                        self.policy,
+                        now,
+                    )
+                    .map(|result| destiny_app::builds::BuildReply::Substitutes(Box::new(result)));
                 return Ok(destiny_output::builds::BuildOutput::from_result(result));
             }
             BuildToolRequest::Local(request) => request,

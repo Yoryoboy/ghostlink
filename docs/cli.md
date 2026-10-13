@@ -23,6 +23,8 @@ ghostlink build show --name Raid --json
 ghostlink build show <ID> --json
 ghostlink build check <ID> --character hunter --json
 ghostlink build check --name Raid --json
+ghostlink build substitutes <ID> --character hunter --limit 10 --json
+ghostlink build substitutes --name Raid --json
 ghostlink build apply <ID> --character hunter --dry-run --json
 ghostlink build export <ID> > raid.json
 ghostlink build delete <ID> --json
@@ -98,6 +100,35 @@ Exits reuse the action contract: 0 for `applied`/`no_op`; **41** for `partial`/`
 42 when local state could not be updated; and the category exit (for example 20 rate
 limit, 11 reauthorization, 30 stale state) when nothing reached Bungie. See
 [build-apply.md](build-apply.md). The MCP tool `apply_build` does the same.
+
+### Find substitute armor sets
+
+`ghostlink build substitutes <ID|--name N> [--character C] [--limit N] [--json]` ranks
+armor sets from the Vault and every character (not the Postmaster) the way DIM's Loadout
+Optimizer would when opened from that build: the saved stat minimums **and maximums**,
+exotic, search query, set bonuses, locked mods and automatic stat mods. Armor 3.0 tuning
+variants are searched too. Nothing is pinned, so any piece can be replaced; pieces that
+belong to the build carry `in_build: true`. Build and character selection and profile
+freshness work exactly as for `build check`.
+
+* `--limit` is 1..=200 (DIM's cap) and defaults to 10. Anything else is an invalid
+  request (exit 2).
+* The search has a fixed 10 s time budget (no `--time-limit` option: no other command has
+  one). When it runs out the sets found so far are returned with
+  `optimizer.truncated: true` and `combinations_visited` below `combinations_total`.
+* Ties break on item ids, so the same inventory always gives the same list.
+* `evaluation: "not_evaluated"` with a `reason` means the search could not run (for example
+  `analysis_blocked_by_finding`, `full_resolved_armor_set_required`, `armor_perk_requirements_unsupported`);
+  it never means "no substitutes". See [optimizer.md](optimizer.md).
+
+`--json` returns `kind: "build_substitutes"` with `summary`, `target_character`,
+`evaluation`, `reason`, `limit`, `sets` and the `optimizer` object
+(`candidates_per_bucket`, `combinations_total`, `combinations_visited`, `truncated`,
+`threads`). Each set has `rank`, `power`, five `pieces` (`instance_id`, `hash`, `name`,
+`bucket_hash`, `in_build`), `stats` in the build's priority order (`stat_hash`, `name`,
+`total` with mods and tuning, `armor_only`), `stat_mods` (automatic stat mods) and
+`tuning_mods`. The MCP tool `build_substitutes` returns the same JSON. It is read-only: it
+never changes `build check` results or the `build apply` plan.
 
 ### Check a build against inventory
 

@@ -118,6 +118,11 @@ pub(crate) fn step_text(step: &Value) -> String {
         ),
     }
 }
+pub(crate) fn metadata_json(metadata: &destiny_app::QueryMetadata) -> Value {
+    json!({"checked_at":metadata.sync.checked_at.seconds(),
+        "revision":metadata.sync.revision.value(), "definition_version":metadata.sync.definition_version.as_str(),
+        "freshness":match metadata.freshness { destiny_app::FreshnessStatus::Fresh => "fresh", destiny_app::FreshnessStatus::Stale => "stale", destiny_app::FreshnessStatus::Missing => "missing", destiny_app::FreshnessStatus::InvalidSource => "invalid_source"}})
+}
 pub(crate) fn clean_text(s: &str) -> String {
     clean(s)
 }
@@ -281,10 +286,11 @@ impl BuildOutput {
                         "threads":analysis.optimizer.threads, "font_note":analysis.optimizer.font_note},
                     "equipped_set_bonuses":{"evaluation":bonuses.evaluation,
                         "reasons":bonuses.reasons, "sets":sets},
-                    "metadata":{"checked_at":result.metadata.sync.checked_at.seconds(),
-                        "revision":result.metadata.sync.revision.value(), "definition_version":result.metadata.sync.definition_version.as_str(),
-                        "freshness":match result.metadata.freshness { destiny_app::FreshnessStatus::Fresh => "fresh", destiny_app::FreshnessStatus::Stale => "stale", destiny_app::FreshnessStatus::Missing => "missing", destiny_app::FreshnessStatus::InvalidSource => "invalid_source"}}}),
+                    "metadata":metadata_json(&result.metadata)}),
                 )
+            }
+            Ok(BuildReply::Substitutes(result)) => {
+                Self::success(crate::build_substitutes::json(&result))
             }
             Ok(BuildReply::ApplyPlan(preview)) => Self::success(apply_plan(&preview)),
             Ok(BuildReply::Applied(applied)) => {
@@ -421,6 +427,9 @@ impl BuildOutput {
                     .collect::<Vec<_>>()
                     .join("\n")
             };
+        }
+        if self.value["kind"] == "build_substitutes" {
+            return crate::build_substitutes::render(&self.value);
         }
         if self.value["kind"] == "build_apply" {
             return crate::build_apply_result::render(&self.value);

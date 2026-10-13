@@ -2,6 +2,7 @@
 pub mod apply_loadout;
 pub mod armor_model;
 pub mod build_apply_result;
+mod build_substitutes;
 pub mod builds;
 pub mod equip;
 pub mod equip_items;

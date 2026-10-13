@@ -55,3 +55,38 @@ Font note.
   make the run `not_evaluated` with that reason instead of dropping candidates.
 * Assumed loadout stats below zero count as zero in the merge.
 * `include_runtime_stat_benefits` and `auto_stat_mods` default to off when unsaved.
+
+# Substitutes (BE-008e)
+
+`ghostlink build substitutes` and MCP `build_substitutes` run the same search as DIM's
+Loadout Optimizer opened from the build (`loadout-builder-reducer.ts:148-232`) and list the
+best sets. They reuse the analyzer's adapter (same candidates, pre-filter, locked mods, auto
+stat mods and tuning variants) and read-only rules: `build check` and `build apply` never
+see them (D3).
+
+| | Analyzer (`build check`) | Substitutes |
+|---|---|---|
+| Stat ranges | loadout stats as minimums (`mergeStrictUpgradeStatConstraints`) | the saved minimums **and maximums** (`loadout-params.ts:14-34`) |
+| Search | stop on first set, strict upgrades | full, no strict-upgrade filter |
+| Budget | 2 s, `not_evaluated` when it runs out | 10 s, results flagged `truncated` |
+| Output | two findings | up to `--limit` sets (default 10, max 200 = DIM's tracker size) |
+
+* Order is DIM's `isWorse` (`set-tracker.ts:21-32`): enabled stat total, stat mix in priority
+  order, total, power; remaining ties break on the item ids (then the tuning mod), so the list
+  is the same for any thread count or candidate order.
+* Stats are in the build's priority order (constrained stats first). Unsaved constraints
+  mean every stat is ignored, as in the analyzer.
+* `stats[].total` includes locked mods, automatic stat mods and tuning; `armor_only` is the
+  armor (with the chosen exotic tuning). `tuning_mods` are the tuning mods the set uses, apart
+  from `stat_mods`.
+* The same typed unknowns as the analyzer apply (`not_evaluated` with a `reason`, empty
+  `sets`), and a blocking finding (`mods_dont_fit`, `not_a_full_armor_set`,
+  `does_not_respect_exotic`) stops it too. A budget stop is not an unknown: it returns the
+  partial list with `truncated: true`.
+
+Deliberate differences from DIM: DIM pins the loadout's equipped armor when it opens a loadout
+(`loadout-builder-reducer.ts:185-197`, with a TODO to leave the items free), which would only
+list the loadout itself; substitutes leave every piece free and mark the build's own pieces.
+DIM's saved per-class stat order and default constraints are not read. The deterministic id
+tie-break and the 10 s budget are Ghostlink additions (owner-confirmed 2026-10-12). The Font
+note is not repeated here.

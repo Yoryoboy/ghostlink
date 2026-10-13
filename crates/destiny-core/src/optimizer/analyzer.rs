@@ -175,8 +175,9 @@ pub struct AnalyzerOutcome {
     pub info: OptimizerAnalysis,
 }
 
-/// loadout-analyzer/analysis.ts:275-367 for a full, unblocked armor set.
-pub fn run_analyzer(inputs: &AnalyzerInputs) -> Result<AnalyzerOutcome, &'static str> {
+/// `filterItems` (item-filter.ts:67-292) over the candidates, with the loadout's own exotic,
+/// set bonuses and bucket mods and no pins or exclusions.
+pub(super) fn filter_candidates(inputs: &AnalyzerInputs) -> Result<ItemsByBucket, &'static str> {
     let params = FilterParams {
         items: inputs.candidates,
         bucket_mods: inputs.bucket_mods.clone(),
@@ -190,6 +191,62 @@ pub fn run_analyzer(inputs: &AnalyzerInputs) -> Result<AnalyzerOutcome, &'static
     let search_filter = inputs.query_matches.unwrap_or(&pass_all);
     let (filtered, _) = filter_items(&params, search_filter)
         .map_err(|FilterError::BucketSocketsUnavailable { .. }| "bucket_mod_sockets_unavailable")?;
+    Ok(filtered)
+}
+
+/// `mapArmorToProcessItems` for every kept candidate, per bucket.
+pub(super) fn process_buckets(
+    inputs: &AnalyzerInputs,
+    filtered: &ItemsByBucket,
+    ranges: &[DesiredStatRange],
+) -> [Vec<ProcessItem>; 5] {
+    std::array::from_fn(|b| {
+        let bucket = ARMOR_BUCKETS[b];
+        let mods = inputs
+            .bucket_mods
+            .get(&bucket)
+            .map_or(&[][..], Vec::as_slice);
+        filtered[&bucket]
+            .iter()
+            .flat_map(|item| {
+                map_armor_to_process_items(
+                    item,
+                    &inputs.energy_rules,
+                    mods,
+                    ranges,
+                    inputs.auto_stat_mods,
+                )
+            })
+            .collect()
+    })
+}
+
+pub(super) fn search_inputs(
+    inputs: &AnalyzerInputs,
+    buckets: [Vec<ProcessItem>; 5],
+    desired_stat_ranges: Vec<DesiredStatRange>,
+    strict_upgrades: bool,
+    stop_on_first_set: bool,
+) -> SearchInputs {
+    SearchInputs {
+        buckets,
+        mod_stat_totals: inputs.mod_stat_totals,
+        general_mods: inputs.general_mods.clone(),
+        activity_mods: inputs.activity_mods.clone(),
+        set_bonuses: inputs.loadout_set_bonuses.clone(),
+        required_perks: Vec::new(),
+        desired_stat_ranges,
+        any_exotic: inputs.locked_exotic == Some(LockedExotic::Any),
+        auto_mod_options: inputs.auto_mod_options.clone(),
+        auto_stat_mods: inputs.auto_stat_mods,
+        strict_upgrades,
+        stop_on_first_set,
+    }
+}
+
+/// loadout-analyzer/analysis.ts:275-367 for a full, unblocked armor set.
+pub fn run_analyzer(inputs: &AnalyzerInputs) -> Result<AnalyzerOutcome, &'static str> {
+    let filtered = filter_candidates(inputs)?;
     let kept = |id: &String| filtered.values().flatten().any(|c| &c.id == id);
     // analysis.ts:293-307: a loadout piece that exists but did not survive the filter.
     let excluded = inputs.query_matches.is_some()
@@ -212,39 +269,8 @@ pub fn run_analyzer(inputs: &AnalyzerInputs) -> Result<AnalyzerOutcome, &'static
         .collect();
     let (ranges, implies_strict) =
         merge_strict_upgrade_stat_constraints(Some(&existing), inputs.constraints);
-    let buckets: [Vec<ProcessItem>; 5] = std::array::from_fn(|b| {
-        let bucket = ARMOR_BUCKETS[b];
-        let mods = inputs
-            .bucket_mods
-            .get(&bucket)
-            .map_or(&[][..], Vec::as_slice);
-        filtered[&bucket]
-            .iter()
-            .flat_map(|item| {
-                map_armor_to_process_items(
-                    item,
-                    &inputs.energy_rules,
-                    mods,
-                    &ranges,
-                    inputs.auto_stat_mods,
-                )
-            })
-            .collect()
-    });
-    let search_inputs = SearchInputs {
-        buckets,
-        mod_stat_totals: inputs.mod_stat_totals,
-        general_mods: inputs.general_mods.clone(),
-        activity_mods: inputs.activity_mods.clone(),
-        set_bonuses: inputs.loadout_set_bonuses.clone(),
-        required_perks: Vec::new(),
-        desired_stat_ranges: ranges,
-        any_exotic: inputs.locked_exotic == Some(LockedExotic::Any),
-        auto_mod_options: inputs.auto_mod_options.clone(),
-        auto_stat_mods: inputs.auto_stat_mods,
-        strict_upgrades: !implies_strict,
-        stop_on_first_set: true,
-    };
+    let buckets = process_buckets(inputs, &filtered, &ranges);
+    let search_inputs = search_inputs(inputs, buckets, ranges, !implies_strict, true);
     let threads = inputs.threads.max(1);
     let result = search(
         &search_inputs,

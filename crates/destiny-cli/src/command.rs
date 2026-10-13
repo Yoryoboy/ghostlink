@@ -230,6 +230,9 @@ pub enum BuildCommand {
     Show(BuildSelection),
     /// Check inventory resolution and supported DIM findings; never applies gear.
     Check(BuildCheckArgs),
+    /// Rank armor sets from your Vault and characters for a build, as DIM's Loadout
+    /// Optimizer does with its saved stat ranges; never applies gear.
+    Substitutes(BuildSubstitutesArgs),
     /// Move and equip a build's items (sockets and mods are not applied yet).
     /// With --dry-run it prints the plan and dispatches nothing.
     Apply(BuildApplyArgs),
@@ -263,6 +266,35 @@ impl BuildCheckArgs {
             selector: self.selection.selector()?,
             character: self.character.as_ref().map(destiny_app::CharacterId::new),
         })
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct BuildSubstitutesArgs {
+    #[command(flatten)]
+    pub selection: BuildSelection,
+    #[arg(long)]
+    pub character: Option<String>,
+    /// Number of ranked sets to return (1..=200, DIM's cap).
+    #[arg(long, value_name = "N", default_value_t = destiny_app::optimizer::DEFAULT_SUBSTITUTES)]
+    pub limit: usize,
+}
+impl BuildSubstitutesArgs {
+    pub fn request(&self) -> Result<(destiny_app::builds::BuildCheckRequest, usize), CliError> {
+        if !(1..=destiny_app::optimizer::MAX_SUBSTITUTES).contains(&self.limit) {
+            return Err(CliError::invalid_argument(
+                "--limit",
+                format!("must be 1..={}", destiny_app::optimizer::MAX_SUBSTITUTES),
+            ));
+        }
+        let check = BuildCheckArgs {
+            selection: BuildSelection {
+                id: self.selection.id.clone(),
+                name: self.selection.name.clone(),
+            },
+            character: self.character.clone(),
+        };
+        Ok((check.request()?, self.limit))
     }
 }
 

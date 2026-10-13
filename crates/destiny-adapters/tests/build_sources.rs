@@ -1343,3 +1343,80 @@ fn build_apply_plans_fashion_from_projected_classification_and_exotic_unlocks() 
     assert_eq!(steps, [insert(0, SHADER), insert(1, EXOTIC_ORNAMENT)]);
     assert!(preview.plan.mod_skipped.is_empty() && preview.plan.not_applied.is_empty());
 }
+
+#[test]
+fn build_substitutes_validate_the_limit_and_never_change_check_or_the_apply_plan() {
+    use destiny_app::builds::{BuildCheckRequest, BuildSelector};
+    let mut sync = fixture();
+    let mut service = BuildService::new(
+        destiny_app::test_support::InMemoryBuildRepository::default(),
+        DimBuildCodec,
+    );
+    let source = service
+        .from_equipped(
+            &mut sync,
+            &CharacterId::new("1"),
+            "Substitutes",
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    let request = BuildCheckRequest {
+        selector: BuildSelector::Id(source.build.definition.id),
+        character: None,
+    };
+    let policy = FreshnessPolicy { ttl_seconds: 300 };
+    let capacity = destiny_adapters::pinned_equipment_capacity_policy();
+    let check = |service: &BuildService<_, _>, sync: &mut _| {
+        service
+            .check(sync, &request.selector, None, policy, Timestamp::new(100))
+            .unwrap()
+    };
+    let before = (
+        check(&service, &mut sync),
+        service
+            .plan_apply(&mut sync, &request, &capacity, policy, Timestamp::new(100))
+            .unwrap(),
+    );
+    // Limits outside 1..=200 are invalid requests, whatever the build is.
+    for limit in [0, 201] {
+        let error = service
+            .substitutes(
+                &mut sync,
+                &request,
+                limit,
+                destiny_core::optimizer::AnalyzerBudget::substitutes(),
+                policy,
+                Timestamp::new(100),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            destiny_app::builds::BuildError::App(AppError::new(ErrorCategory::ProviderValidation))
+        );
+    }
+    // The fixture has no full armor set: the answer is a typed unknown, never a guess.
+    let result = service
+        .substitutes(
+            &mut sync,
+            &request,
+            200,
+            destiny_core::optimizer::AnalyzerBudget::substitutes(),
+            policy,
+            Timestamp::new(100),
+        )
+        .unwrap();
+    assert_eq!(result.report.evaluation, "not_evaluated");
+    assert!(result.report.reason.is_some());
+    assert_eq!(result.report.limit, 200);
+    assert!(result.report.sets.is_empty());
+    assert_eq!(result.target_character, CharacterId::new("1"));
+    // D3: a substitutes run leaves the check and the apply plan exactly as they were.
+    let after = (
+        check(&service, &mut sync),
+        service
+            .plan_apply(&mut sync, &request, &capacity, policy, Timestamp::new(100))
+            .unwrap(),
+    );
+    assert_eq!(before, after);
+}

@@ -160,6 +160,37 @@ pub struct BuildOutputSchema {
     pub unresolved_items: Option<Vec<String>>,
     pub deleted: Option<bool>,
     pub error: Option<serde_json::Value>,
+    pub sets: Option<Vec<serde_json::Value>>,
+    pub optimizer: Option<serde_json::Value>,
+}
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SubstitutesArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub id: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub name: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub character: Option<String>,
+    /// Ranked sets to return; default 10.
+    #[schemars(range(min = 1, max = destiny_app::optimizer::MAX_SUBSTITUTES))]
+    pub limit: Option<usize>,
+}
+impl SubstitutesArgs {
+    pub fn request(&self) -> Result<(destiny_app::builds::BuildCheckRequest, usize), McpError> {
+        let limit = self
+            .limit
+            .unwrap_or(destiny_app::optimizer::DEFAULT_SUBSTITUTES);
+        if !(1..=destiny_app::optimizer::MAX_SUBSTITUTES).contains(&limit) {
+            return Err(McpError::new(ErrorCategory::ProviderValidation));
+        }
+        let check = AnalyzeBuildArgs {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            character: self.character.clone(),
+        };
+        Ok((check.request()?, limit))
+    }
 }
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -271,6 +302,7 @@ pub fn build_tool_specs() -> Vec<Tool> {
         Tool::new("save_build", "Save a local build. source=import: input is DIM JSON/loadouts?loadout= URL (dim.gg requires deferred online import). source=equipped: character and name. source=in_game_loadout: character and exactly one slot (1..12) or loadout_name. Inventory sources use ordinary freshness and report omissions/unresolved items. Never applies gear.", JsonObject::new()).with_input_schema::<SaveBuildArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(false).idempotent(false)),
         Tool::new("delete_build", "Delete a local build by id or exact normalized name (exactly one). ID deletion is idempotent; name ambiguity returns candidates. Does not delete any Bungie/DIM loadout.", JsonObject::new()).with_input_schema::<BuildSelectionArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true)),
         Tool::new("analyze_build", "Check a stored build against synced inventory; exactly one id/name. Optional character ID/class; required if build class has multiple characters. Ordinary freshness. Reports resolved/missing items, counts, DIM findings (including analyzer-search better_stats_available) and not_evaluated reasons, plus an optimizer object. Never applies gear.", JsonObject::new()).with_input_schema::<AnalyzeBuildArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
+        Tool::new("build_substitutes", "Rank armor sets from Vault and characters for a stored build, like DIM's Loadout Optimizer with the build's saved stat ranges and mods. Exactly one id/name; optional character; limit 1-200, default 10. Time-budgeted: truncated=true marks partial results. Reports stats, auto stat mods, tuning mods. Read-only; never applies gear.", JsonObject::new()).with_input_schema::<SubstitutesArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
     ]
 }
 

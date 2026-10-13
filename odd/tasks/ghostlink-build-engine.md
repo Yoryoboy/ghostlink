@@ -677,8 +677,21 @@ coverage (`domain.rs:123-126`).
     real-vault timing. Follow-up: apply DIM's All+artifice exotic ->
     ArtificeExotic (`analysis.ts:211-217`) to the existing stats and mod
     findings too.
-  - [ ] **BE-008e — Substitutes command.** `ghostlink build substitutes`
-    and MCP tool; D3: never alters check or apply resolution.
+  - [x] **BE-008e — Substitutes command.** `ghostlink build substitutes`
+    and MCP tool `build_substitutes`; D3: never alters check or apply
+    resolution (`check` runs the analyzer, `substitutes`/`plan_apply` do
+    not). `optimizer/substitutes.rs` reuses the analyzer's filter, process
+    buckets and search inputs with the saved min and max ranges as they are
+    (`loadout-params.ts:14-34`), no stop-on-first, no strict-upgrade merge;
+    limit 1..=200, default 10; fixed 10 s budget with `truncated`. Nothing
+    is pinned (DIM pins the loadout's armor when opened from it,
+    `loadout-builder-reducer.ts:185-197`, which would only list the build
+    itself); build pieces carry `in_build`. Also covers BE-008d test gaps
+    (real auto-mod plug sets with Font/general mods, tuning variants end
+    to end). The worker ended without a recoverable report; the parent
+    audited the partial and kept it. Docs: `cli.md`, `mcp.md`,
+    `optimizer.md`, skill. Workspace: 2450 all-features, 2417 default,
+    0 failed; clippy both modes, fmt.
 - [x] **BE-009 — dim.gg import.** Dropped by owner decision D4 (won't do).
   Remaining check: the `dim.gg` typed error guides users to the full DIM
   link/JSON (with follow-up `dim_loadout.rs:333`); verify in BE-010.

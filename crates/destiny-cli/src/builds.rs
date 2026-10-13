@@ -106,6 +106,10 @@ pub fn compose(arguments: &BuildArgs) -> Result<BuildOutput, CliError> {
             a.request()?;
             None
         }
+        BuildCommand::Substitutes(a) => {
+            a.request()?;
+            None
+        }
         BuildCommand::List => Some(LocalBuildRequest::List),
         BuildCommand::Show(s) => Some(LocalBuildRequest::Show(s.selector()?)),
         BuildCommand::Delete(s) => Some(LocalBuildRequest::Delete(s.selector()?)),
@@ -160,6 +164,21 @@ pub fn compose(arguments: &BuildArgs) -> Result<BuildOutput, CliError> {
                     now,
                 )
                 .map(|result| destiny_app::builds::BuildReply::Analysis(Box::new(result))),
+        ));
+    }
+    if let BuildCommand::Substitutes(a) = &arguments.command {
+        let (request, limit) = a.request()?;
+        return Ok(BuildOutput::from_result(
+            builds
+                .substitutes(
+                    &mut sync,
+                    &request,
+                    limit,
+                    destiny_app::optimizer::AnalyzerBudget::substitutes(),
+                    config.freshness_policy(),
+                    now,
+                )
+                .map(|result| BuildReply::Substitutes(Box::new(result))),
         ));
     }
     if let BuildCommand::Apply(a) = &arguments.command {
