@@ -469,6 +469,213 @@ cargo-dist handling of the libdbus runtime dependency.
     runtime, with no top-level oneOf/anyOf/allOf in advertised input schemas
     (the rc.3 apply_loadout schema bug is fixed).
 
+  Live log (2026-10-13, `main` a86584e, local release build, human-run pending):
+  Owner decision (2026-10-13): do not use the release path for this validation;
+  run the pending DIM-parity checklist directly from `main`. The unmerged PR #84
+  (`release/v0.1.0-rc.4`) differs from `main` only by the workspace version
+  string, the README prerelease installer URL and one `.engram/` memory chunk
+  (verified with `git diff main origin/release/v0.1.0-rc.4`) — no code. So `main`
+  reports `0.1.0-rc.3` while carrying post-rc.3 code, and the checklist item that
+  verifies the installed version says nothing in this run. Out of scope here
+  because they need a published release: versioned installer URLs, `update`
+  across two releases, `uninstall`/receipt evidence (#67) and native Windows.
+  Build: `cargo build --release -p ghostlink` in `/home/yoryo/Work/ghostlink`
+  (bins `ghostlink`, `destiny-mcp`); `destiny-mcp` installed to
+  `~/.cargo/bin/destiny-mcp`, which is what `~/.pi/agent/mcp.json` already
+  points at. Live checks therefore run the same binaries and the same default
+  database a normal install uses.
+  Database: the real projection at `~/.local/share/ghostlink/destiny.db`.
+  Connecting the rebuilt MCP server opens that database and migrates it in
+  place (schema 19 -> 22); `PRAGMA quick_check` returned `ok` and the rows were
+  intact (3 characters, 697 items, 36,680 definitions). A recoverable copy of
+  `destiny.db` plus its `-wal` was taken before any mutation
+  (`~/.cache/ghostlink-main/`). An isolated copy was dropped on purpose: the
+  CLI and MCP must share one projection for the CLI/MCP-alternation checks, and
+  pointing the user's MCP entry at a scratch database would outlive the test.
+  The other machine's memory chunk (`194fd5b8`, 36 observations, 177 sessions,
+  93 prompts) was imported into this machine's Engram store the same day.
+  Next-RC DIM-parity checklist, run 2026-10-13 from `main` a86584e (local
+  release build, real account, real projection). 22 CLI cases, 8 MCP cases.
+  - [x] CLI positional queries: empty query lists all owned; leading `-`
+    (`-is:locked`); parentheses with `or`; whitespace/`and`/`or` precedence;
+    AND with structured flags (`is:weapon --location vault`); quoted phrase
+    (`type:"Hand Cannon"`); numeric comparison (`power:>=1800` -> 0 hits);
+    plain NOT semantics (`-power:>2000` keeps low-power items, as decided).
+  - [x] Definition candidates are unchanged: they do not respond to the query
+    and stay bounded by `--limit`.
+  - [x] Invalid queries: `is:bogus` -> exit 2 `invalid_filter_value`;
+    `notes:godroll` -> exit 2 `unsupported_filter` (never relaxed);
+    `(is:weapon` -> exit 2 `unbalanced_parenthesis`. MCP: `is:bogus` ->
+    `invalid_query` + `kind` + `span` + `message`; `zzz:1` ->
+    `unknown_filter` plus `supported_filters` (46 entries).
+  - [x] Compact vs detail, pagination, inspect by name: compact tile by
+    default; `--detail`/MCP `detail: true` keep the nested shape; CLI
+    `--offset`/MCP `offset` return the same page and the same `next_offset`
+    (`is:weapon -is:locked`, page 2 -> `next_offset: 4`); a unique exact name
+    resolves case-insensitively and with surrounding whitespace (`sunshot`,
+    `  Sunshot  `); an ambiguous name returns `ambiguous_match` (CLI exit 31,
+    same code over MCP) with compact candidates; a partial name returns
+    `item_not_found` (exit 32), so there is no fuzzy selection. Normalization is
+    case/whitespace only, so `Sorrows Verse` correctly does not match
+    `Sorrow's Verse` (`docs/cli.md:807`). `--filters` lists the registry with
+    the syntax summary.
+  - [x] `get_loadouts` payload: compact output is 2,040 bytes for all three
+    characters (was ~110 KB for one character in rc.2) and arrived complete in
+    Pi in both text content and `structuredContent`. Pi accepted all 18 tools
+    and the server instructions, so the rc.3 top-level `oneOf` rejection does
+    not reproduce (a real Claude client session is still pending).
+  - FINDING (low, readability): malformed invalid-query diagnostics. Filed as #85. The CLI
+    builds a three-line diagnostic — `crates/destiny-cli/src/command.rs:620-630`
+    joins `error.message`, `\n` and `error.excerpt(input)`, and
+    `crates/destiny-core/src/search_query.rs:140` puts the caret row on its own
+    line — but the emitted message is flattened onto one line, so the span, the
+    excerpt and the caret run together: `invalid filter value at bytes
+    0..8is:bogus^^^^^^^^`, and `at bytes 0..13notes:godroll^^^^^^^^^^^^^`. Both
+    the human line and the JSON `message` show it. `CliError` documents "the
+    single sanitized line written for a human" (`command.rs:1397-1402`), so the
+    multi-line intent and the single-line contract disagree and the caret row
+    can never align under its excerpt. Not a correctness problem: exit 2,
+    `kind` and the byte span are correct and machine-readable.
+  - FINDING (low, contract consistency): the unknown `stat:` name is the one
+    invalid-query class without a span. Filed as #85. `stat:zzz:>1` exits 2 with
+    `{"code":"unknown_stat_name","message":"unknown stat name; use a name from
+    the loaded Manifest stat definitions"}` — no `kind`, byte span or excerpt,
+    unlike every parser/registry rejection. A client that renders invalid-query
+    spans uniformly has to special-case it.
+  - [x] Advertised MCP schemas, the deterministic half of the Claude item: the
+    live `tools/list` from `destiny-mcp` publishes 18 tools whose input schemas
+    have no top-level `oneOf`/`anyOf`/`allOf`. `apply_loadout` is `type: object`
+    with only `character` required and `character`/`name`/`slot` properties, so
+    slot-versus-name exclusivity stays runtime-enforced; `inspect_item` exposes
+    `instance_id`/`name`. `inspect_item` and `move_item` keep a `oneOf` in their
+    OUTPUT schema, each alongside the top-level `type: object` that #66 F1
+    required, so there is no regression. A real Claude client session is still
+    pending.
+  - OBSERVATION (pre-existing G1 residual, not a regression): `get_loadout`
+    detail for one loadout is 24,635 bytes (CLI) and Pi truncates the MCP result
+    at its 50 KB text budget; the payload is duplicated in text content and
+    `structuredContent` (~2x) and the bulk is the Clarity `plug_insights` prose,
+    repeated for every plug. G1 is fixed for the summary call, not for the
+    detail call.
+  Mutation run (2026-10-13, same build, owner in orbit). Setup created through
+  the MCP `equip_item`: Mercurial Overreach moved Hunter -> Vault -> Warlock and
+  was equipped there (`local_state: "updated"`, `status: "applied"`, three
+  completed steps, `observed: null`, reason "Bungie accepted the action; not
+  re-read"). A forced `ghostlink sync` then confirmed Bungie agreed (revision 46:
+  Ace of Spades in the Vault, Mercurial Overreach equipped on the Warlock).
+  `ghostlink apply-loadout --character hunter --name "PvP"` took 0.43 s and exited
+  42, and the game state changed as follows (read back from Bungie at revision
+  48 with the CLI):
+  - Applied: Ace of Spades moved out of the Vault and is equipped on the Hunter,
+    so Bungie's `EquipLoadout` DOES pull an item from the Vault.
+  - NOT applied: Mercurial Overreach, which was equipped on the Warlock, stayed
+    there; the Hunter still has its previous energy weapon (Basso Ostinato). So
+    `EquipLoadout` does NOT pull an item equipped on another character.
+  - FINDING F3 (high, correctness): the tool reported `receipt: "applied"` with an
+    empty `unresolved_items`, so the un-applied energy weapon is invisible in the
+    receipt. No reason code covers "not on the target character", so the local
+    projection cannot detect it either. U4b/U4c answered: implement DIM's
+    preparation (source dequips and ordered transfers) before `EquipLoadout`
+    for the cross-character case; the Vault case needs nothing.
+  - FINDING F4 (medium, contract/UX): the single `skipped` entry was the seasonal
+    artifact (`unsupported_bucket`), and that alone produced
+    `outcome: "local_state_failed"`, exit 42, reason "local state could not be
+    updated after the action", while `persisted: true` and the local effects were
+    written. Every saved loadout carries the artifact (NPA Repulsion Regulator,
+    Slayer Baron Apothecary Satchel and Tablet of Ruin on this account), so every
+    `apply-loadout` exits 42 with a persistence-failure message.
+    `docs/cli.md:788-801` defines `status: partial` (unresolved/skipped items)
+    separately from `failed` (persistence or invalidation failed) and then maps
+    both onto 42.
+  Concurrency, partially verified: the four MCP reads fired after the mutation
+  (the apply was too fast to overlap; they ran 9 s later) and all reported the
+  same `checked_at` (1791906308) and the same revision (48) once freshness had
+  been invalidated, which is consistent with one shared profile acquisition
+  serving concurrent stale reads (single-flight). "Reads run while a mutation is
+  in flight" is still unverified: the next attempt fires the mutation and the
+  reads in the same batch, so a read reporting the pre-mutation revision proves
+  it did not wait behind the mutation.
+  Chained-action run (R1) and batch equip (R10), same build, no forced sync
+  between actions: ten chained CLI actions left the account exactly where it
+  started — move `applied`; unlock correct `verified_noop`; lock `applied`;
+  equip `applied` with transfer+equip; equip of the already-equipped item
+  correct `verified_noop`; a move of a just-equipped item returned `uncertain`
+  (exit 41) and moved nothing, reproducing the known follow-up "move of an
+  equipped item reports uncertain instead of refused"; then three consecutive
+  real equips in the same slot, a move back to the Vault and an unlock, all
+  `applied`. All three documented string `local_state` values appeared live:
+  `updated` (applied), `unchanged` (verified_noop) and `refresh_pending`
+  (uncertain), and both no-ops were true (the item was already unlocked, the
+  other already equipped). MCP `equip_items` with two items returned
+  `outcome: "applied"`, `local_state: "updated"` and `status: "success"` per
+  item; an immediate CLI unlock/lock pair then resolved the locations that batch
+  had written.
+  FINDING F5 (low, output text): `ghostlink postmaster` prints "Stacks are
+  anonymous observations, not stable pull selectors. No pull feature is
+  exposed." although `ghostlink pull`, `ghostlink pull-stack` and the MCP
+  `pull_item`/`pull_stack` tools exist. The sentence is hardcoded in
+  `crates/destiny-cli/src/postmaster_output.rs:101` and pinned by
+  `crates/destiny-cli/tests/postmaster_pipeline.rs:153`, so it needs a wording
+  fix with its test.
+  Postmaster is empty for all three characters (`ghostlink postmaster`:
+  Instances none, Stacks none), so R3, R2 and R4 cannot run until the account has
+  Postmaster contents. The owner reports seeing engrams in the game, so this is
+  not settled: `ghostlink search-inventory 'type:"Engram"'` does return four
+  Exotic Engrams and places them at `location.kind = character` on the Hunter,
+  which is consistent with an empty Postmaster if those are the engrams the owner
+  saw. The human output itself warns `profile_currencies_coverage: available
+  (component 103 only, not Postmaster completeness)`, so an empty CLI Postmaster
+  is not proof that the game's Postmaster is empty. Awaiting one in-game look.
+  FINDING F6 (low/medium, surface): `ghostlink search-inventory 'is:weapon'
+  --location postmaster` fails with `error: invalid --location: expected one of
+  vault, character`, while the same command's query language accepts
+  `is:inpostmaster` and advertises it among the 46 `supported_filters`, and the
+  storage model already has `location_kind IN ('vault','character','postmaster',
+  'other')`. A user following `--help` cannot filter the Postmaster with the
+  structured flag even though the query form works.
+  In-game confirmation of F3 (owner, 2026-10-13): the Warlock has Mercurial
+  Overreach equipped and the Hunter does not, matching the tool reads.
+  Stale-preflight run, the R7 equivalent (2026-10-13). The external writer was a
+  second Ghostlink cache against a separate database
+  (`DESTINY_DATABASE_PATH=~/.cache/ghostlink-main/destiny.db`), used only to
+  change Bungie's state; every assertion was read from the real database and the
+  CLI was the only interface, so no human action was needed.
+  - The real cache believed MIDA Mini-Tool was equipped on the Hunter
+    (revision 63, fresh). The external writer equipped Basso Ostinato and moved
+    MIDA Mini-Tool to the Vault; both reported `applied`.
+  - The real cache then ran `ghostlink move <MIDA> --character warlock` with its
+    stale plan: exit 41, `status: incomplete`, `local_state: refresh_pending`,
+    step 1 (Hunter -> Vault) `uncertain` with reason "provider outcome is
+    uncertain; do not blindly retry", step 2 (Vault -> Warlock) `not_run`, 0 of 2
+    steps completed, `verification: not_verified`.
+  - FINDING F8 (medium, error typing): the checklist expects a typed
+    `item_not_found` with an actionable message (numeric 1623) when a stale
+    action reaches Bungie. What comes back is a generic `uncertain` with no code
+    and no statement of what happened, so the user cannot tell whether the item
+    moved. It has the same shape as the other known case (moving a genuinely
+    equipped item), so two different causes produce the same uninformative
+    outcome. Safe (no retry, freshness invalidated) but not diagnosable.
+  - FINDING F9 (observation): after an action returns `local_state:
+    refresh_pending` — documented at `docs/cli.md:1127` as "invalidated state
+    requiring the next ordinary read to sync" — the next ordinary read reported
+    `freshness: fresh` with an unchanged `checked_at` and served the locally
+    projected state. Reproduction: read MIDA Mini-Tool in the Vault
+    (`revision 64`, `checked_at 1791907627`); equip it on the Hunter (`applied`,
+    two completed steps); move it to the Vault while equipped (`incomplete`,
+    `refresh_pending`, one `uncertain` step, 0 of 1 completed); ordinary read
+    immediately after (`revision 65`, `checked_at 1791907627` UNCHANGED,
+    `freshness: fresh`). Contrast: the reads after the earlier `apply_loadout`
+    DID advance `checked_at` (1791906308), so the two invalidation paths behave
+    differently, or the invalidation the move path writes is not what the read
+    path checks. Mechanism undetermined; recorded for the follow-up session.
+  - State after these runs (owner said no restore needed): `ghostlink sync`
+    confirmed revision 66, MIDA Mini-Tool equipped on the Hunter and Basso
+    Ostinato in the Hunter's inventory.
+  - STILL BLOCKED on the owner: throttle fail-fast and recovery, not observable
+    without flooding Bungie; a real Claude client session accepting the full tool
+    list (Pi, on the same API, accepted it); post-expiry broker token refresh,
+    which needs an expired token.
+
 ## Follow-ups (out of scope)
 - Windows `ghostlink://` handler (next feature, developed on Windows).
 - winget / AUR / MSI / code signing.
