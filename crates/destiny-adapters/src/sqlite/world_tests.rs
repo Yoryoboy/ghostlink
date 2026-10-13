@@ -113,6 +113,7 @@ fn item_description_upgrade_forces_same_version_republish_then_skips() {
     let mut gateway = QueuedManifestGateway::new();
     let acquisition = ManifestAcquisition {
         sandbox_perks: Vec::new(),
+        stat_plugs: Vec::new(),
         version: DefinitionVersion::new("v1"),
         definitions: vec![ManifestDefinitionCandidate {
             perk_hashes: Vec::new(),
@@ -522,6 +523,7 @@ fn missing_stat_catalog_forces_same_version_download_then_skips() {
     for _ in 0..2 {
         gateway.queue(Ok(ManifestAcquisition {
             sandbox_perks: Vec::new(),
+            stat_plugs: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: vec![ManifestDefinitionCandidate {
                 perk_hashes: Vec::new(),
@@ -756,6 +758,7 @@ fn plug_category_upgrade_forces_same_version_republish_then_skips() {
     for _ in 0..2 {
         gateway.queue(Ok(ManifestAcquisition {
             sandbox_perks: Vec::new(),
+            stat_plugs: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: vec![ManifestDefinitionCandidate {
                 perk_hashes: Vec::new(),
@@ -830,6 +833,7 @@ fn search_filter_upgrade_forces_same_version_republish_then_skips() {
     for _ in 0..2 {
         gateway.queue(Ok(ManifestAcquisition {
             sandbox_perks: Vec::new(),
+            stat_plugs: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: vec![ManifestDefinitionCandidate {
                 perk_hashes: Vec::new(),
@@ -896,6 +900,7 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
         for _ in 0..2 {
             gateway.queue(Ok(ManifestAcquisition {
                 sandbox_perks: Vec::new(),
+                stat_plugs: Vec::new(),
                 version: DefinitionVersion::new("v1"),
                 definitions: vec![ManifestDefinitionCandidate {
                     hash: ItemHash::new(10),

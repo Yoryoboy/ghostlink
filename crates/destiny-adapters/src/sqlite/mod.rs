@@ -38,6 +38,7 @@ mod material_catalogs;
 mod migrations;
 mod search;
 mod socket_catalogs;
+mod stat_plug_catalogs;
 mod vault_catalogs;
 mod world;
 

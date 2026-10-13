@@ -161,6 +161,8 @@ impl<'de> Visitor<'de> for ArmorCatalogSeed {
             }
             let missing = || de::Error::custom("invalid catalog");
             let record = match self.0 {
+                // Stat plugs come from the inventory component, never a catalog of their own.
+                ArmorCatalogKind::StatPlug => return Err(missing()),
                 ArmorCatalogKind::SocketType
                 | ArmorCatalogKind::SocketCategory
                 | ArmorCatalogKind::PlugSet => {
@@ -835,6 +837,7 @@ impl<'de> Visitor<'de> for InventorySeed<'_> {
     }
     fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
         let mut definitions = Vec::new();
+        let mut stat_plugs = Vec::new();
         let mut skipped_count = 0;
         let mut count = 0;
         while let Some(key) = map.next_key::<String>()? {
@@ -846,8 +849,14 @@ impl<'de> Visitor<'de> for InventorySeed<'_> {
             match decode_record(&key, record, self.0)
                 .map_err(|_| de::Error::custom("invalid manifest"))?
             {
-                Some(candidate) => definitions.push(candidate),
-                None => skipped_count += 1,
+                DecodedRecord::Definition(candidate) => definitions.push(*candidate),
+                DecodedRecord::StatPlug(plug) => {
+                    if stat_plugs.len() >= destiny_core::armor_catalog::MAX_STAT_PLUGS {
+                        return Err(de::Error::custom("invalid manifest"));
+                    }
+                    stat_plugs.push(plug);
+                }
+                DecodedRecord::Skipped => skipped_count += 1,
             }
         }
         if definitions.is_empty() {
@@ -857,6 +866,7 @@ impl<'de> Visitor<'de> for InventorySeed<'_> {
             sandbox_perks: Vec::new(),
             version: self.0.clone(),
             definitions,
+            stat_plugs,
             skipped_count,
         })
     }
@@ -1338,11 +1348,19 @@ fn is_safe_component_path(path: &str) -> bool {
         && !path.split('/').any(|segment| segment == "..")
 }
 
+/// One decoded inventory record: a named definition, a nameless Armor 3.0 stat
+/// plug kept apart from `definitions`, or a skipped (redacted/blank) record.
+enum DecodedRecord {
+    Definition(Box<ManifestDefinitionCandidate>),
+    StatPlug(destiny_core::armor_catalog::StatPlugDefinition),
+    Skipped,
+}
+
 fn decode_record(
     key: &str,
     record: InventoryRecord,
     version: &DefinitionVersion,
-) -> Result<Option<ManifestDefinitionCandidate>, AppError> {
+) -> Result<DecodedRecord, AppError> {
     if record.perks.len() > 64 {
         return Err(provider_validation());
     }
@@ -1351,7 +1369,7 @@ fn decode_record(
         return Err(provider_validation());
     }
     if record.redacted.into_option() == Some(true) {
-        return Ok(None);
+        return Ok(DecodedRecord::Skipped);
     }
     let display = record
         .display_properties
@@ -1360,7 +1378,30 @@ fn decode_record(
     let name = display.name;
     let description = display.description.into_option();
     if name.trim().is_empty() {
-        return Ok(None);
+        // DIM reads Armor 3.0 stat rolls from these nameless plugs; never invent a name.
+        let is_stat_plug = record
+            .plug
+            .as_ref()
+            .and_then(|plug| plug.plug_category_hash)
+            == Some(destiny_core::armor_model::ARMOR_STATS_PLUG);
+        if !is_stat_plug {
+            return Ok(DecodedRecord::Skipped);
+        }
+        let stat_plug = destiny_core::armor_catalog::StatPlugDefinition {
+            hash: key_value,
+            plug_category_hash: destiny_core::armor_model::ARMOR_STATS_PLUG,
+            investment_stats: record
+                .investment_stats
+                .into_iter()
+                .map(|stat| destiny_core::InvestmentStat {
+                    stat_type_hash: stat.stat_type_hash,
+                    value: stat.value,
+                    is_conditionally_active: stat.is_conditionally_active,
+                })
+                .collect(),
+        };
+        destiny_core::armor_catalog::ArmorCatalogRecord::StatPlug(stat_plug.clone()).validate()?;
+        return Ok(DecodedRecord::StatPlug(stat_plug));
     }
     if name.chars().count() > 256 {
         return Err(provider_validation());
@@ -1486,46 +1527,48 @@ fn decode_record(
             inventory.tier_type_name.into_option(),
         )
     });
-    Ok(Some(ManifestDefinitionCandidate {
-        armor,
-        non_transferrable: record.non_transferrable,
-        does_postmaster_pull_have_side_effects: record.does_postmaster_pull_have_side_effects,
-        is_instance_item,
-        max_stack_size,
-        stack_unique_label,
-        perk_hashes: record
-            .perks
-            .into_iter()
-            .filter_map(|perk| perk.perk_hash.into_option())
-            .collect(),
-        description,
-        hash: ItemHash::new(i64::from(key_value)),
-        bucket_hash,
-        name,
-        plug_category,
-        item_type: record.item_type_display_name.into_option(),
-        tier,
-        element: None,
-        damage_type: match record.default_damage_type.into_option() {
-            Some(1) => Some(destiny_core::domain::DamageType::Kinetic),
-            Some(2) => Some(destiny_core::domain::DamageType::Arc),
-            Some(3) => Some(destiny_core::domain::DamageType::Solar),
-            Some(4) => Some(destiny_core::domain::DamageType::Void),
-            Some(6) => Some(destiny_core::domain::DamageType::Stasis),
-            Some(7) => Some(destiny_core::domain::DamageType::Strand),
-            _ => None,
+    Ok(DecodedRecord::Definition(Box::new(
+        ManifestDefinitionCandidate {
+            armor,
+            non_transferrable: record.non_transferrable,
+            does_postmaster_pull_have_side_effects: record.does_postmaster_pull_have_side_effects,
+            is_instance_item,
+            max_stack_size,
+            stack_unique_label,
+            perk_hashes: record
+                .perks
+                .into_iter()
+                .filter_map(|perk| perk.perk_hash.into_option())
+                .collect(),
+            description,
+            hash: ItemHash::new(i64::from(key_value)),
+            bucket_hash,
+            name,
+            plug_category,
+            item_type: record.item_type_display_name.into_option(),
+            tier,
+            element: None,
+            damage_type: match record.default_damage_type.into_option() {
+                Some(1) => Some(destiny_core::domain::DamageType::Kinetic),
+                Some(2) => Some(destiny_core::domain::DamageType::Arc),
+                Some(3) => Some(destiny_core::domain::DamageType::Solar),
+                Some(4) => Some(destiny_core::domain::DamageType::Void),
+                Some(6) => Some(destiny_core::domain::DamageType::Stasis),
+                Some(7) => Some(destiny_core::domain::DamageType::Strand),
+                _ => None,
+            },
+            slot: bucket_hash.and_then(destiny_core::domain::ItemSlot::from_equipment_bucket),
+            class_type: match record.class_type.into_option() {
+                Some(0) => Some(destiny_core::domain::ClassType::Titan),
+                Some(1) => Some(destiny_core::domain::ClassType::Hunter),
+                Some(2) => Some(destiny_core::domain::ClassType::Warlock),
+                Some(3) => Some(destiny_core::domain::ClassType::Any),
+                _ => None,
+            },
+            tags: Vec::new(),
+            version: version.clone(),
         },
-        slot: bucket_hash.and_then(destiny_core::domain::ItemSlot::from_equipment_bucket),
-        class_type: match record.class_type.into_option() {
-            Some(0) => Some(destiny_core::domain::ClassType::Titan),
-            Some(1) => Some(destiny_core::domain::ClassType::Hunter),
-            Some(2) => Some(destiny_core::domain::ClassType::Warlock),
-            Some(3) => Some(destiny_core::domain::ClassType::Any),
-            _ => None,
-        },
-        tags: Vec::new(),
-        version: version.clone(),
-    }))
+    )))
 }
 
 /// Requires a canonical unsigned decimal representation within `u32` range.
@@ -2387,6 +2430,79 @@ mod tests {
                 assert_validation(decode_inventory_items(version(), bytes.as_bytes()));
             }
         }
+    }
+
+    #[test]
+    fn blank_name_armor_stats_plugs_are_kept_apart_and_other_blank_names_skipped() {
+        use destiny_core::InvestmentStat;
+        let stat = |hash: u32, value: i32, conditional: bool| {
+            format!(
+                r#"{{"statTypeHash":{hash},"value":{value},"isConditionallyActive":{conditional}}}"#
+            )
+        };
+        let record = |hash: u32, name: &str, category: u32, redacted: bool, stats: &str| {
+            format!(
+                r#""{hash}":{{"hash":{hash},"redacted":{redacted},"displayProperties":{{"name":"{name}"}},"plug":{{"plugCategoryHash":{category}}},"investmentStats":[{stats}]}}"#
+            )
+        };
+        let body = format!(
+            "{{{}}}",
+            [
+                record(10, "Named Mod", 1, false, ""),
+                record(481842213, "", 748854354, false, &stat(392767087, 30, false)),
+                record(
+                    627959599,
+                    "  ",
+                    748854354,
+                    false,
+                    &format!(
+                        "{},{}",
+                        stat(1943323491, 25, false),
+                        stat(1735777505, 3, true)
+                    ),
+                ),
+                record(20, "", 1, false, &stat(392767087, 9, false)),
+                record(21, "", 748854354, true, &stat(392767087, 9, false)),
+            ]
+            .join(",")
+        );
+        let batch = decode_inventory_items(DefinitionVersion::new("v1"), body.as_bytes()).unwrap();
+        assert_eq!(batch.definitions.len(), 1);
+        assert_eq!(batch.definitions[0].hash.value(), 10);
+        // Only the blank-name non-armor_stats and the redacted record stay skipped.
+        assert_eq!(batch.skipped_count, 2);
+        assert_eq!(batch.stat_plugs.len(), 2);
+        assert_eq!(batch.stat_plugs[0].hash, 481842213);
+        assert_eq!(batch.stat_plugs[0].plug_category_hash, 748854354);
+        assert_eq!(
+            batch.stat_plugs[0].investment_stats,
+            vec![InvestmentStat {
+                stat_type_hash: 392767087,
+                value: 30,
+                is_conditionally_active: false
+            }]
+        );
+        assert_eq!(
+            batch.stat_plugs[1].investment_stats[1],
+            InvestmentStat {
+                stat_type_hash: 1735777505,
+                value: 3,
+                is_conditionally_active: true
+            }
+        );
+        // The stat-plug list is bounded.
+        let many = (0..=destiny_core::armor_catalog::MAX_STAT_PLUGS as u32)
+            .map(|hash| record(1000 + hash, "", 748854354, false, ""))
+            .chain([record(10, "Named Mod", 1, false, "")])
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(
+            decode_inventory_items(
+                DefinitionVersion::new("v1"),
+                format!("{{{many}}}").as_bytes()
+            )
+            .is_err()
+        );
     }
 
     #[test]

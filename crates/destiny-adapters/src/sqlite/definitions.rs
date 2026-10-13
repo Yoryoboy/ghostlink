@@ -178,6 +178,14 @@ impl SqliteStore {
                 return Err(storage_failure());
             }
             world.validate_for(&replacement.definitions.version)?;
+            if super::migrations::read_user_version(self.connection())? < 36
+                && world
+                    .armor_catalogs
+                    .iter()
+                    .any(|r| r.kind() == destiny_core::armor_catalog::ArmorCatalogKind::StatPlug)
+            {
+                return Err(storage_failure());
+            }
             if super::migrations::read_user_version(self.connection())? < 34
                 && world.armor_catalogs.iter().any(|r| r.kind().id() >= 6)
             {

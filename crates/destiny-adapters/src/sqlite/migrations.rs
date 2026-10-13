@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 35;
+pub(crate) const LATEST_VERSION: u32 = 36;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 35] = [
+const MIGRATIONS: [Migration; 36] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -229,7 +229,36 @@ const MIGRATIONS: [Migration; 35] = [
         up: SCHEMA_V35_UP,
         down: SCHEMA_V35_DOWN,
     },
+    Migration {
+        version: 36,
+        up: SCHEMA_V36_UP,
+        down: SCHEMA_V36_DOWN,
+    },
 ];
+const SCHEMA_V36_UP: &str = r#"
+CREATE TABLE definition_stat_plugs (
+    hash INTEGER PRIMARY KEY CHECK (hash BETWEEN 0 AND 4294967295),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128),
+    plug_category_hash INTEGER NOT NULL CHECK (plug_category_hash BETWEEN 0 AND 4294967295)
+) STRICT;
+CREATE TABLE definition_stat_plug_stats (
+    plug_hash INTEGER NOT NULL REFERENCES definition_stat_plugs(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 63),
+    stat_type_hash INTEGER NOT NULL CHECK (stat_type_hash BETWEEN 0 AND 4294967295),
+    value INTEGER NOT NULL CHECK (value BETWEEN -2147483648 AND 2147483647),
+    is_conditionally_active INTEGER NOT NULL CHECK (is_conditionally_active IN (0,1)),
+    PRIMARY KEY (plug_hash, ordinal)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V36_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definition_stat_plugs) OR EXISTS (SELECT 1 FROM definition_stat_plug_stats) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE definition_stat_plug_stats;
+DROP TABLE definition_stat_plugs;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
 const SCHEMA_V35_UP: &str = r#"
 CREATE TABLE definition_item_classes (
     definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,

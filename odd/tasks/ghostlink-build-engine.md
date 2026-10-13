@@ -695,4 +695,54 @@ coverage (`domain.rs:123-126`).
 - [x] **BE-009 — dim.gg import.** Dropped by owner decision D4 (won't do).
   Remaining check: the `dim.gg` typed error guides users to the full DIM
   link/JSON (with follow-up `dim_loadout.rs:333`); verify in BE-010.
-- [ ] **BE-010 — Live validation.**
+- [ ] **BE-010 — Live validation.** Isolated DB copy
+  (`~/.cache/ghostlink-be010/destiny.db`, `DESTINY_DATABASE_PATH`; the
+  real `~/.local/share/ghostlink/destiny.db` is schema 19 and must not be
+  migrated by branch binaries), release binary in
+  `~/.cache/ghostlink-be010/target`. DIM clone moved to
+  `~/.cache/dim-research/DIM` (8.146.0, 285604b).
+  - [x] **BE-010a — dim.gg message.** D4 wording (open in DIM, import the
+    full `loadouts?loadout=` link or JSON); reason code kept. `cea266c`.
+    RDD review of 73b5a1c..cea266c approved and acknowledged
+    (`review-c2af53a090474870`); advisories: piece fallback zeros
+    (`build_substitutes.rs:116-118`), unexplained combo cap
+    (`optimizer/substitutes.rs:21`), truncated-with-no-sets wording
+    (`destiny-output/src/build_substitutes.rs:102-103`).
+  - Live finding (2026-10-12): `build check` on the Hunter's equipped
+    snapshot (284 ms) leaves stats, analyzer and substitutes
+    `not_evaluated`: (1) `armor_base_stats_unavailable` because the Armor
+    3.0 stat-roll plugs (`plugCategoryHash` 748854354 `armor_stats`, e.g.
+    481842213/627959599/462856101, verified on Bungie's Manifest API) have
+    a blank name and `decode_record` skips blank names
+    (`manifest.rs:1362`), so `build_armor_stats` sees an enabled plug
+    without a definition; (2) `raw_reusable_plugs_not_projected` because
+    armor mod sockets are absent from component 310 and stay `None`
+    (`profile.rs:525-527`), while DIM reads an absent socket as no raw
+    plugs (`sockets.ts:77-79`, `reusablePlugData?.[index]`).
+  - [x] **BE-010b1 — Nameless stat plugs.** `definitions.name` is
+    `CHECK length 1..256` with FKs from `definition_armor` and
+    `definition_investment_stats`, so instead of a table rebuild or a
+    fabricated name: blank-name, non-redacted `armor_stats` records are
+    decoded apart (other blank names still skipped) and stored as
+    `ArmorCatalogKind::StatPlug` (id 8, not in `ALL`) in STRICT
+    `definition_stat_plugs` / `definition_stat_plug_stats`, published with
+    the world catalogs (accepted deviation: no new port method). Migration
+    36 clears the manifest sync metadata like v26-v35, with a downgrade
+    guard. `inspect_armor_model`, `masterwork_plug_stats` and the optimizer
+    set-selector resolve nameless plugs through it. Tests: decode keep/skip,
+    SQLite round trip, migration 36, sync publication, masterwork lookup,
+    app inspect with the real plugs 481842213/627959599/462856101 (total
+    base 75; live: Hunter chest total base 75 after re-import). Code landed before tests; each test was shown failing with
+    its production change reverted (lesson: handoffs put the public RED
+    test as step 1 with existing types). Workspace: 2456 all-features,
+    2423 default, 0 failed; clippy both modes, fmt. Open: core mod
+    assignment still rejects nameless inserted plugs
+    (`mod_assignment/independent.rs:60,75,130`,
+    `inserted_plug_definition_unavailable`); the legacy
+    `acquire_and_publish` path does not publish stat plugs.
+  - [ ] **BE-010b2 — Absent 310 sockets.** When component 310 was
+    returned, every socket not listed for an instance projects
+    `reusable_plugs: Some(vec![])` (DIM `sockets.ts:77-79`); a missing
+    component (privacy/unavailable) keeps `None`.
+  - [ ] **BE-010c — Live re-run.** check, substitutes timing, apply
+    dry-run; then live apply and EquipLoadout U4b/U4c.

@@ -107,7 +107,8 @@ fn assemble<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogRep
         let Some(stats) = model.stats.as_ref() else {
             return Ok(BuildStats::unknown("armor_base_stats_unavailable"));
         };
-        let mw = match masterwork_plug_stats(item, definitions, stats, class) {
+        let stat_plugs = crate::armor_model::resolve_stat_plugs(repository, item, definitions)?;
+        let mw = match masterwork_plug_stats(item, definitions, &stat_plugs, stats, class) {
             Ok(mw) => mw,
             Err(reason) => return Ok(BuildStats::unknown(reason)),
         };
@@ -195,6 +196,7 @@ fn assemble<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogRep
 pub(crate) fn masterwork_plug_stats(
     item: &ItemInstance,
     definitions: &[ItemDefinition],
+    stat_plugs: &[StatPlugDefinition],
     stats: &ArmorStats,
     class: u8,
 ) -> Result<Option<[i32; 6]>, &'static str> {
@@ -203,6 +205,13 @@ pub(crate) fn masterwork_plug_stats(
             continue;
         };
         let Some(plug) = definitions.iter().find(|d| d.hash == hash) else {
+            // A nameless stat-roll plug is known, and is never the masterwork.
+            if stat_plugs
+                .iter()
+                .any(|plug| i64::from(plug.hash) == hash.value())
+            {
+                continue;
+            }
             return Err("inserted_plug_definition_unavailable");
         };
         if plug.armor.plug_category_hash == Some(ARMOR3_MASTERWORK_PLUG) {
@@ -264,6 +273,68 @@ mod tests {
     use destiny_core::ports::{
         DefinitionReplacementInput, ManifestDefinitions, WorldDefinitionRepository,
     };
+
+    #[test]
+    fn masterwork_lookup_knows_nameless_stat_plugs_but_not_unknown_ones() {
+        let plug_socket = |index: u8, hash: i64| IndexedSocket {
+            socket_index: index,
+            plug_hash: Some(ItemHash::new(hash)),
+            enabled: true,
+            visible: false,
+            plug_objectives: None,
+            reusable_plugs: None,
+        };
+        let item = ItemInstance {
+            instance_id: ItemInstanceId::new("armor"),
+            item_hash: ItemHash::new(1),
+            location: ItemLocation::Vault,
+            quantity: 1,
+            equipped: false,
+            locked: false,
+            power: None,
+            perks: vec![],
+            plugs: vec![],
+            stats: vec![],
+            available_plugs: vec![],
+            energy: None,
+            gear_tier: None,
+            transfer_status: None,
+            sockets: vec![plug_socket(0, 481842213), plug_socket(1, 999)],
+        };
+        let stats = ArmorStats {
+            stats: ARMOR_STATS
+                .iter()
+                .map(|&stat_hash| destiny_core::armor_model::ArmorStat {
+                    stat_hash,
+                    base: 10,
+                    current: 10,
+                    base_masterworked: None,
+                    maximum_value: None,
+                })
+                .collect(),
+            total_base: 60,
+        };
+        let stat_plug = StatPlugDefinition {
+            hash: 481842213,
+            plug_category_hash: 748854354,
+            investment_stats: vec![],
+        };
+        // Unknown hash 999 still fails, so a nameless plug is not a blanket pass.
+        assert_eq!(
+            masterwork_plug_stats(&item, &[], std::slice::from_ref(&stat_plug), &stats, 0),
+            Err("inserted_plug_definition_unavailable")
+        );
+        let mut known = item.clone();
+        known.sockets.truncate(1);
+        assert_eq!(
+            masterwork_plug_stats(&known, &[], &[stat_plug], &stats, 0),
+            Ok(None)
+        );
+        assert_eq!(
+            masterwork_plug_stats(&known, &[], &[], &stats, 0),
+            Err("inserted_plug_definition_unavailable")
+        );
+    }
 
     #[test]
     #[rustfmt::skip] // Keep the synthetic armor/catalog fixture compact.

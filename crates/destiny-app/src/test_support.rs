@@ -3045,6 +3045,7 @@ mod tests {
         let mut manifest = QueuedManifestGateway::new();
         let acquisition = ManifestAcquisition {
             sandbox_perks: Vec::new(),
+            stat_plugs: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: Vec::new(),
             skipped_count: 0,

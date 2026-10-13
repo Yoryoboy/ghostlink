@@ -13,6 +13,10 @@ pub(super) fn write(
         return Ok(());
     }
     for record in records {
+        if let ArmorCatalogRecord::StatPlug(plug) = record {
+            super::stat_plug_catalogs::write(connection, plug, version)?;
+            continue;
+        }
         if record.kind().id() >= 6 {
             super::vault_catalogs::write(connection, record, version)?;
             continue;
@@ -78,6 +82,7 @@ pub(super) fn write(
                 }
             }
             ArmorCatalogRecord::MaterialRequirementSet(_)
+            | ArmorCatalogRecord::StatPlug(_)
             | ArmorCatalogRecord::InventoryBucket(_)
             | ArmorCatalogRecord::VaultVendor(_)
             | ArmorCatalogRecord::SocketType(_)
@@ -133,6 +138,9 @@ fn read(
     kind: ArmorCatalogKind,
     hash: Option<u32>,
 ) -> Result<Vec<ArmorCatalogRecord>, AppError> {
+    if kind == ArmorCatalogKind::StatPlug {
+        return super::stat_plug_catalogs::read(connection, hash);
+    }
     if kind.id() >= 6 {
         return super::vault_catalogs::read(connection, kind, hash);
     }
@@ -348,7 +356,10 @@ pub(super) fn contents_match(
     if read_user_version(connection)? < 28 {
         return Ok(records.is_empty());
     }
-    for kind in ArmorCatalogKind::ALL {
+    for kind in ArmorCatalogKind::ALL
+        .into_iter()
+        .chain([ArmorCatalogKind::StatPlug])
+    {
         let mut incoming: Vec<_> = records
             .iter()
             .filter(|record| record.kind() == kind)

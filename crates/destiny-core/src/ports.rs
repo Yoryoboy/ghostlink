@@ -940,6 +940,8 @@ pub struct ManifestAcquisition {
     pub sandbox_perks: Vec<SandboxPerkCandidate>,
     pub version: DefinitionVersion,
     pub definitions: Vec<ManifestDefinitionCandidate>,
+    /// Blank-name, non-redacted `armor_stats` plugs kept apart from `definitions`.
+    pub stat_plugs: Vec<crate::armor_catalog::StatPlugDefinition>,
     /// Blank-name or redacted records omitted by the gateway.
     pub skipped_count: usize,
 }

@@ -178,7 +178,7 @@ where
                 });
             }
         }
-        let acquisition = self.gateway.load_component(&index)?;
+        let mut acquisition = self.gateway.load_component(&index)?;
         if acquisition.version != version {
             return Err(invalid());
         }
@@ -195,9 +195,16 @@ where
                 .filter(|icon| !icon.is_empty());
             perk_display.insert(perk.hash, (name, icon));
         }
+        let stat_plugs = std::mem::take(&mut acquisition.stat_plugs);
         let (definitions, skipped, descriptions) = normalize_with_count(acquisition)?;
         let mut world = self.gateway.load_world_components(&index)?;
         world.item_descriptions = descriptions;
+        // Nameless Armor 3.0 stat plugs publish atomically with the catalogs.
+        world.armor_catalogs.extend(
+            stat_plugs
+                .into_iter()
+                .map(destiny_core::armor_catalog::ArmorCatalogRecord::StatPlug),
+        );
         destiny_core::armor_catalog::validate_catalogs(&world.armor_catalogs)?;
         for record in &mut world.armor_catalogs {
             use destiny_core::armor_catalog::ArmorCatalogRecord;
@@ -646,6 +653,7 @@ mod tests {
     ) -> ManifestAcquisition {
         ManifestAcquisition {
             sandbox_perks: Vec::new(),
+            stat_plugs: Vec::new(),
             version: DefinitionVersion::new(version),
             definitions,
             skipped_count: 0,
@@ -1227,6 +1235,41 @@ mod tests {
                     VERSION
                 );
             }
+        }
+
+        #[test]
+        fn sync_publishes_nameless_stat_plugs_with_the_catalogs_and_not_as_skipped() {
+            use destiny_core::armor_catalog::{
+                ArmorCatalogKind, ArmorCatalogRecord, ArmorCatalogRepository, StatPlugDefinition,
+            };
+            let plug = StatPlugDefinition {
+                hash: 481842213,
+                plug_category_hash: 748854354,
+                investment_stats: vec![destiny_core::InvestmentStat {
+                    stat_type_hash: 392767087,
+                    value: 30,
+                    is_conditionally_active: false,
+                }],
+            };
+            let mut batch = acquisition(VERSION, vec![candidate(42, "item")]);
+            batch.stat_plugs = vec![plug.clone()];
+            let mut service = queued_service([Ok(batch)], InMemoryDefinitionRepository::default());
+            let report = service.sync(CHECKED_AT).unwrap();
+            assert!(matches!(
+                report,
+                crate::manifest::ManifestSyncReport::Updated {
+                    record_count: 1,
+                    skipped: 0,
+                    ..
+                }
+            ));
+            assert_eq!(
+                service
+                    .repository()
+                    .armor_catalog(ArmorCatalogKind::StatPlug, None)
+                    .unwrap(),
+                vec![ArmorCatalogRecord::StatPlug(plug)]
+            );
         }
 
         #[test]

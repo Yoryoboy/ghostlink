@@ -95,7 +95,7 @@ reports per item `succeeded`, `failed` (a definitive Bungie `reason`, a batch `c
 `provider_stopped` after a rate-limit or authentication refusal). The result
 (`kind: build_apply`) has `result` of `applied`, `no_op`, `partial`, `failed` or
 `refused`, per-status `counts`, `local_state` (`updated`, `unchanged`,
-`refresh_pending`, `failed`; plug insertions always leave `refresh_pending`) and `not_applied` for what is not applied (for example armor mods whose assignment could not be evaluated, such as `armor_energy_unavailable`). Run `ghostlink sync-manifest` once after upgrading to schema 35, which projects the shader/ornament classification fashion needs.
+`refresh_pending`, `failed`; plug insertions always leave `refresh_pending`) and `not_applied` for what is not applied (for example armor mods whose assignment could not be evaluated, such as `armor_energy_unavailable`). Run `ghostlink sync-manifest` once after upgrading to schema 35, which projects the shader/ornament classification fashion needs, and again after schema 36, which stores the nameless Armor 3.0 stat-roll plugs that armor base stats need (see `docs/armor-model.md`).
 Exits reuse the action contract: 0 for `applied`/`no_op`; **41** for `partial`/`failed`
 (including build items that could not be planned; do not retry, run `ghostlink sync`);
 42 when local state could not be updated; and the category exit (for example 20 rate

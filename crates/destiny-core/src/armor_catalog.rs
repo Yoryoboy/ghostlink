@@ -13,6 +13,9 @@ pub enum ArmorCatalogKind {
     InventoryBucket,
     /// Only the Vault vendor's `acceptedItems` (DIM `d2-buckets.ts:59-66`).
     VaultVendor,
+    /// Nameless `armor_stats` plugs. Read from the inventory component, so it has
+    /// no content path of its own and is not part of [`ArmorCatalogKind::ALL`].
+    StatPlug,
 }
 impl ArmorCatalogKind {
     pub const ALL: [Self; 8] = [
@@ -35,6 +38,7 @@ impl ArmorCatalogKind {
             Self::MaterialRequirementSet => "DestinyMaterialRequirementSetDefinition",
             Self::InventoryBucket => "DestinyInventoryBucketDefinition",
             Self::VaultVendor => "DestinyVendorDefinition",
+            Self::StatPlug => "DestinyInventoryItemDefinition",
         }
     }
     /// Safety ceilings with seasonal headroom, not DIM/gameplay restrictions.
@@ -43,6 +47,7 @@ impl ArmorCatalogKind {
     pub const fn max_records(self) -> usize {
         match self {
             Self::VaultVendor => 20_000,
+            Self::StatPlug => MAX_STAT_PLUGS,
             Self::PlugSet => 50_000,
             Self::SocketType => 20_000,
             _ => 10_000,
@@ -58,6 +63,7 @@ impl ArmorCatalogKind {
             Self::MaterialRequirementSet => 5,
             Self::InventoryBucket => 6,
             Self::VaultVendor => 7,
+            Self::StatPlug => 8,
         }
     }
 }
@@ -184,6 +190,29 @@ pub struct VaultVendorDefinition {
     /// Source order is significant: DIM lets later entries override earlier ones.
     pub accepted_items: Vec<VaultAcceptedItem>,
 }
+/// Safety ceiling for nameless Armor 3.0 stat-roll plugs. Live Manifest: a few hundred.
+pub const MAX_STAT_PLUGS: usize = 8192;
+/// Safety ceiling for the investment stats of one stat plug (`ArmorDefinition` allows 64).
+pub const MAX_STAT_PLUG_INVESTMENT_STATS: usize = 64;
+/// A nameless `armor_stats` plug (`plugCategoryHash` 748854354). Its blank
+/// `displayProperties.name` keeps it out of `definitions`, so it is stored on
+/// its own and never given a fabricated name.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StatPlugDefinition {
+    pub hash: u32,
+    pub plug_category_hash: u32,
+    pub investment_stats: Vec<crate::InvestmentStat>,
+}
+impl StatPlugDefinition {
+    /// The shape the armor derivations already consume for named plugs.
+    pub fn to_armor_definition(&self) -> crate::ArmorDefinition {
+        crate::ArmorDefinition {
+            plug_category_hash: Some(self.plug_category_hash),
+            investment_stats: self.investment_stats.clone(),
+            ..crate::ArmorDefinition::default()
+        }
+    }
+}
 fn bounded_text(value: &str, limit: usize) -> bool {
     value.chars().count() <= limit && !value.chars().any(|c| c.is_control() && !c.is_whitespace())
 }
@@ -197,6 +226,7 @@ pub enum ArmorCatalogRecord {
     MaterialRequirementSet(MaterialRequirementSetDefinition),
     InventoryBucket(InventoryBucketDefinition),
     VaultVendor(VaultVendorDefinition),
+    StatPlug(StatPlugDefinition),
 }
 impl ArmorCatalogRecord {
     pub const fn kind(&self) -> ArmorCatalogKind {
@@ -209,6 +239,7 @@ impl ArmorCatalogRecord {
             Self::MaterialRequirementSet(_) => ArmorCatalogKind::MaterialRequirementSet,
             Self::InventoryBucket(_) => ArmorCatalogKind::InventoryBucket,
             Self::VaultVendor(_) => ArmorCatalogKind::VaultVendor,
+            Self::StatPlug(_) => ArmorCatalogKind::StatPlug,
         }
     }
     pub const fn hash(&self) -> u32 {
@@ -221,6 +252,7 @@ impl ArmorCatalogRecord {
             Self::MaterialRequirementSet(value) => value.hash,
             Self::InventoryBucket(value) => value.hash,
             Self::VaultVendor(value) => value.hash,
+            Self::StatPlug(value) => value.hash,
         }
     }
     pub fn validate(&self) -> Result<(), AppError> {
@@ -236,6 +268,7 @@ impl ArmorCatalogRecord {
                 value.materials.len() <= MAX_MATERIAL_REQUIREMENTS
             }
             Self::InventoryBucket(_) => true,
+            Self::StatPlug(value) => value.investment_stats.len() <= MAX_STAT_PLUG_INVESTMENT_STATS,
             Self::VaultVendor(value) => {
                 value.hash == VAULT_VENDOR_HASH
                     && value.accepted_items.len() <= MAX_VAULT_ACCEPTED_ITEMS
@@ -279,7 +312,7 @@ impl ArmorCatalogRecord {
 /// Validate complete batches before publication; empty catalogs are legitimate.
 pub fn validate_catalogs(records: &[ArmorCatalogRecord]) -> Result<(), AppError> {
     let mut seen = std::collections::HashSet::new();
-    let mut counts = [0; 8];
+    let mut counts = [0; 9];
     for record in records {
         record.validate()?;
         counts[record.kind().id() as usize] += 1;
@@ -305,6 +338,7 @@ pub trait ArmorCatalogRepository {
     ) -> Result<Option<ArmorCatalogRecord>, AppError> {
         Ok(self.armor_catalog(kind, Some(hash))?.into_iter().next())
     }
+
     fn armor_catalog_batch(
         &self,
         kind: ArmorCatalogKind,

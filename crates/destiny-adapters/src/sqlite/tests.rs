@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 58] = [
+const EXPECTED_TABLE_NAMES: [&str; 60] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -38,6 +38,8 @@ const EXPECTED_TABLE_NAMES: [&str; 58] = [
     "definition_socket_entries",
     "definition_socket_indexes",
     "definition_socket_plugs",
+    "definition_stat_plug_stats",
+    "definition_stat_plugs",
     "definition_tags",
     "definitions",
     "inventory_buckets",
@@ -83,7 +85,19 @@ const EXPECTED_INDEX_NAMES: [&str; 5] = [
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 273] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 281] = [
+    ("definition_stat_plugs", "hash", "INTEGER"),
+    ("definition_stat_plugs", "definition_version", "TEXT"),
+    ("definition_stat_plugs", "plug_category_hash", "INTEGER"),
+    ("definition_stat_plug_stats", "plug_hash", "INTEGER"),
+    ("definition_stat_plug_stats", "ordinal", "INTEGER"),
+    ("definition_stat_plug_stats", "stat_type_hash", "INTEGER"),
+    ("definition_stat_plug_stats", "value", "INTEGER"),
+    (
+        "definition_stat_plug_stats",
+        "is_conditionally_active",
+        "INTEGER",
+    ),
     ("definition_item_classes", "definition_hash", "INTEGER"),
     ("definition_item_classes", "item_type", "INTEGER"),
     ("definition_item_classes", "item_sub_type", "INTEGER"),
@@ -1042,7 +1056,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 35);
+    assert_eq!(LATEST_SCHEMA_VERSION, 36);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION

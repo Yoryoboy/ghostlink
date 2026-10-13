@@ -631,20 +631,29 @@ fn candidate<R: DefinitionRepository + StatDefinitionRepository + ArmorCatalogRe
             .ok_or("armor_base_stats_unavailable")?
             .base;
     }
-    let masterwork =
-        match crate::build_stats::masterwork_plug_stats(item, definitions, stats, class)? {
-            Some(plug_stats) => Masterwork::Armor3 { plug_stats },
-            None => Masterwork::Legacy,
-        };
+    let stat_plugs = crate::armor_model::resolve_stat_plugs(repository, item, definitions)?;
+    let masterwork = match crate::build_stats::masterwork_plug_stats(
+        item,
+        definitions,
+        &stat_plugs,
+        stats,
+        class,
+    )? {
+        Some(plug_stats) => Masterwork::Armor3 { plug_stats },
+        None => Masterwork::Legacy,
+    };
     let mut selector = false;
     for socket in item.sockets.iter().filter(|s| s.visible) {
         let Some(hash) = socket.plug_hash else {
             continue;
         };
-        let plug = definitions
-            .iter()
-            .find(|d| d.hash == hash)
-            .ok_or("inserted_plug_definition_unavailable")?;
+        let Some(plug) = definitions.iter().find(|d| d.hash == hash) else {
+            // Nameless stat-roll plugs are known and never the set selector.
+            if stat_plugs.iter().any(|p| i64::from(p.hash) == hash.value()) {
+                continue;
+            }
+            return Err("inserted_plug_definition_unavailable".into());
+        };
         selector |= plug.armor.plug_category_hash == Some(SET_BONUS_SELECTOR_CATEGORY);
     }
     let tuning_plugs = match (&model.tuning, tuning) {

@@ -30,6 +30,37 @@ pub fn inspect_fragment_capacity<R: DefinitionRepository>(
 use destiny_core::domain::ItemSlot;
 use destiny_core::{armor_catalog::*, armor_model::*, *};
 
+/// Nameless `armor_stats` plugs (absent from `definitions`: blank name) that the
+/// instance has inserted, resolved through the stat-plug store.
+pub(crate) fn resolve_stat_plugs<R: ArmorCatalogRepository>(
+    repository: &R,
+    instance: &ItemInstance,
+    definitions: &[ItemDefinition],
+) -> Result<Vec<StatPlugDefinition>, AppError> {
+    let missing: Vec<u32> = instance
+        .sockets
+        .iter()
+        .filter_map(|socket| socket.plug_hash)
+        .filter(|hash| {
+            !definitions
+                .iter()
+                .any(|definition| definition.hash == *hash)
+        })
+        .filter_map(|hash| u32::try_from(hash.value()).ok())
+        .collect();
+    if missing.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(repository
+        .armor_catalog_batch(ArmorCatalogKind::StatPlug, &missing)?
+        .into_iter()
+        .filter_map(|record| match record {
+            ArmorCatalogRecord::StatPlug(plug) => Some(plug),
+            _ => None,
+        })
+        .collect())
+}
+
 pub fn inspect_armor_model<R>(
     repository: &R,
     definition: &ItemDefinition,
@@ -56,6 +87,12 @@ where
         .filter_map(|socket| socket.plug_hash)
         .collect();
     let definitions = repository.lookup_definition_batch(&hashes)?;
+    // Blank-name Armor 3.0 stat-roll plugs are not in `definitions`; resolve them
+    // into the same `ArmorDefinition` shape without inventing a name.
+    let stat_plugs: Vec<_> = resolve_stat_plugs(repository, instance, &definitions)?
+        .into_iter()
+        .map(|plug| (plug.hash, plug.to_armor_definition()))
+        .collect();
     let groups = repository.armor_catalog_batch(
         ArmorCatalogKind::StatGroup,
         &definition
@@ -79,7 +116,13 @@ where
                 definition: definitions
                     .iter()
                     .find(|definition| definition.hash == hash)
-                    .map(|definition| &definition.armor),
+                    .map(|definition| &definition.armor)
+                    .or_else(|| {
+                        stat_plugs
+                            .iter()
+                            .find(|(plug_hash, _)| i64::from(*plug_hash) == hash.value())
+                            .map(|(_, armor)| armor)
+                    }),
             })
         })
         .collect();

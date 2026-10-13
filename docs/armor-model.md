@@ -221,3 +221,39 @@ BE-006b now implements a faithful bucket-specific assignment slice and its energ
 upgrade checks. General/activity/artifice/tuning permutations, seasonal variant
 resolution and material-cost ranking are still deferred. See
 [the current scope, evidence and BE-006b2 proposal](build-mods.md).
+
+## BE-010b1: nameless Armor 3.0 stat-roll plugs (migration 36)
+
+Live finding: Armor 3.0 base stats were `null` on every armor piece. The stat-roll
+plugs (`plugCategoryHash` 748854354, `armor_stats`; e.g. 481842213 = +30 on
+392767087, 627959599 = +25 on 1943323491, 462856101 = +20 on 4244567218) have an
+empty `displayProperties.name`. `definitions.name` is `CHECK length 1..256` and the
+Manifest decoder skips blank names, so `build_armor_stats` saw an enabled plug with
+no definition and returned unknown. DIM reads these plugs by plug category
+(`utils/socket-utils.ts:213-220`, `inventory/store/stats.ts:318-390`), never by name.
+
+Design (no fabricated name, `definitions` untouched):
+
+- **Decode.** A blank-name, non-redacted inventory record whose
+  `plug.plugCategoryHash` is 748854354 is kept as a `StatPlugDefinition` (hash,
+  plug category, investment stats including `isConditionallyActive`) in
+  `ManifestAcquisition.stat_plugs`, bounded at 8,192 plugs and 64 investment stats each.
+  Every other blank-name record stays skipped and counted as before; stat plugs are
+  not counted as skipped.
+- **Storage (migration 36).** STRICT tables `definition_stat_plugs` and
+  `definition_stat_plug_stats` (ordinal-keyed, ON DELETE CASCADE). They travel as
+  `ArmorCatalogRecord::StatPlug` (`ArmorCatalogKind::StatPlug`, id 8, not in
+  `ArmorCatalogKind::ALL` because it has no content path of its own) inside the
+  same atomic Manifest publication as the other catalogs, and are replaced on every
+  changed re-import. They never enter `armor_catalogs`, `definitions`, search, or
+  the counts reported by `sync-manifest`. The up step deletes the
+  `manifest_definitions` sync metadata like migrations 26-35, so the next
+  `ghostlink sync-manifest` re-imports; the down step refuses to drop stored plugs.
+  **Run `ghostlink sync-manifest` once after upgrading to schema 36.**
+- **Lookup.** `inspect_armor_model` resolves socket plugs missing from
+  `lookup_definition_batch` through `ArmorCatalogRepository::armor_catalog_batch(StatPlug, ..)`
+  and feeds the same `ArmorDefinition` shape (plug category + investment stats) to
+  `build_armor_stats`. Build stats and the optimizer candidate mapping use the same
+  resolution (`armor_model::resolve_stat_plugs`) so the masterwork lookup and the
+  set-selector scan accept a known nameless plug instead of reporting
+  `inserted_plug_definition_unavailable`; a plug found in neither store still does.
