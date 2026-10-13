@@ -213,11 +213,13 @@ where
     /// committed through the repository, which owns revision retention and
     /// advancement. The outcome carries repository metadata only.
     ///
-    /// An Ordinary same-membership candidate whose minted instant is not newer
-    /// is discarded before filtering/publication. The caller may use the retained
-    /// projection for this call, but its freshness and invalidation are unchanged;
-    /// subsequent stale Ordinary calls can acquire again. Explicit observation
-    /// and forced reasons still publish until their callers adopt local sync.
+    /// An Ordinary or Forced same-membership candidate whose minted instant is
+    /// not newer is discarded before filtering/publication: Bungie can serve a
+    /// stale replica for minutes after an action, and publishing it would move
+    /// the projection back in time. The caller may use the retained projection
+    /// for this call, but its freshness and invalidation are unchanged;
+    /// subsequent calls can acquire again. Preflight and post-action
+    /// observations still publish until their callers adopt local sync.
     ///
     /// This method never sets or overrides `checked_at`, `source`, or
     /// `definition_version`, and never computes a revision. It returns the
@@ -253,8 +255,8 @@ where
 
     /// Acquires ephemeral observations and releases them only after successful
     /// publication, associated with exactly the returned snapshot. An Ordinary
-    /// discard returns the skip shape with `discarded: true`, without observations.
-    /// Preflight/Forced/PostAction cannot return that discard marker. No reload,
+    /// or Forced discard returns the skip shape with `discarded: true`, without
+    /// observations. Preflight/PostAction cannot return that discard marker. No reload,
     /// retry, bucket persistence, or revision-based authority is introduced.
     /// A mismatched successful repository return is rejected, not rolled back.
     pub fn sync_with_observations(
@@ -356,13 +358,15 @@ where
         {
             return Err(AppError::new(ErrorCategory::ProviderValidation));
         }
-        // Ordinary reads keep locally acknowledged effects when Bungie's
-        // profile lags. Do not look up definitions, publish observations, clear
-        // invalidation or advance checked_at for a discarded acquisition.
-        // Forced/preflight/post-action routes intentionally retain publication
-        // until the remaining mutation pipelines adopt ordinary local sync.
-        if reason == ProfileSyncReason::Ordinary
-            && let Some(prior) = committed
+        // Ordinary reads and explicit syncs keep locally acknowledged effects
+        // when Bungie's profile lags. Do not look up definitions, publish
+        // observations, clear invalidation or advance checked_at for a discarded
+        // acquisition. Preflight/post-action routes intentionally retain
+        // publication until the remaining mutation pipelines adopt local sync.
+        if matches!(
+            reason,
+            ProfileSyncReason::Ordinary | ProfileSyncReason::Forced
+        ) && let Some(prior) = committed
             && prior.metadata.membership_id == candidate.membership_id
             && prior.metadata.membership_type == candidate.membership_type
             && let (Some(next), Some(previous)) = (minted, self.repository.profile_minted_at()?)
@@ -674,7 +678,7 @@ mod tests {
         }
 
         #[test]
-        fn minted_guard_preserves_effects_and_discards_observations_only_on_ordinary() {
+        fn minted_guard_preserves_effects_on_ordinary_and_forced_but_not_preflight() {
             use destiny_core::{InventoryEffect, ProfileMintedAt};
             for observed in [false, true] {
                 for invalidated in [false, true] {
@@ -723,13 +727,19 @@ mod tests {
                             ProfileSyncReason::Preflight,
                             false,
                         ),
+                        // An explicit sync never moves the projection back in time:
+                        // a replica minted no later than the stored one is discarded.
+                        (Some(200), Some(199), false, ProfileSyncReason::Forced, true),
+                        (Some(200), Some(200), false, ProfileSyncReason::Forced, true),
                         (
                             Some(200),
-                            Some(199),
+                            Some(201),
                             false,
                             ProfileSyncReason::Forced,
                             false,
                         ),
+                        (None, Some(199), false, ProfileSyncReason::Forced, false),
+                        (Some(200), Some(199), true, ProfileSyncReason::Forced, false),
                     ] {
                         let instant = |n| ProfileMintedAt::new(1_800_000_000, n).unwrap();
                         let mut repo = InMemoryInventoryRepository::new();

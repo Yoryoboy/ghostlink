@@ -1372,6 +1372,8 @@ mod tests {
             Ok(crate::runtime::ProfileSyncReport {
                 metadata: metadata(FreshnessStatus::Fresh).sync,
                 previous_revision: Some(SyncRevision::new(3)),
+                discarded: false,
+                profile_minted_at: None,
             })
         }
     }

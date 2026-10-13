@@ -52,10 +52,11 @@
 
 use destiny_core::{
     AppError, CharacterListResult, Dataset, DefinitionRepository, DefinitionSearchQuery,
-    ErrorCategory, FreshnessInput, FreshnessPolicy, InspectItemRequest, InstanceSearchQuery,
-    InventoryRepository, InventorySearchHit, InventorySearchResult, InventorySnapshot,
-    ItemDefinition, ItemHash, ItemInspection, ProfileGateway, ProfileSyncOutcome,
-    ProfileSyncReason, QueryMetadata, Resolution, SearchRepository, SyncMetadata, Timestamp,
+    ErrorCategory, FreshnessInput, FreshnessPolicy, FreshnessStatus, InspectItemRequest,
+    InstanceSearchQuery, InventoryRepository, InventorySearchHit, InventorySearchResult,
+    InventorySnapshot, ItemDefinition, ItemHash, ItemInspection, ProfileGateway,
+    ProfileSyncOutcome, ProfileSyncReason, QueryMetadata, Resolution, SearchRepository,
+    SyncMetadata, Timestamp,
 };
 
 use crate::sync::ProfileSyncService;
@@ -1207,7 +1208,8 @@ fn invalid_repository_state() -> AppError {
 /// from the repository-reported snapshot after synchronization; the freshness
 /// status is evaluated at the caller-supplied `now`, advanced to at least the
 /// refreshed `checked_at` only when acquisition occurred. A skipped read keeps
-/// the original time and the core's future-timestamp guard. The profile
+/// the original time and the core's future-timestamp guard; a discarded
+/// acquisition is never fresh. The profile
 /// projection and the Manifest definition projection stay distinct.
 fn query_metadata(
     outcome: &ProfileSyncOutcome,
@@ -1221,7 +1223,7 @@ fn query_metadata(
             now
         }
     };
-    let freshness = FreshnessInput {
+    let status = FreshnessInput {
         dataset: Dataset::ProfileInventory,
         checked_at: Some(metadata.checked_at),
         source: Some(metadata.source),
@@ -1229,6 +1231,17 @@ fn query_metadata(
         policy,
     }
     .status();
+    let freshness = match status {
+        // A discarded acquisition means the projection was due for a sync (or
+        // invalidated by an incomplete action) and Bungie had nothing newer, so
+        // it stays unconfirmed even while its last real sync is within the TTL.
+        FreshnessStatus::Fresh
+            if matches!(outcome, ProfileSyncOutcome::DiscardedNotNewer { .. }) =>
+        {
+            FreshnessStatus::Stale
+        }
+        status => status,
+    };
     QueryMetadata {
         sync: SyncMetadata {
             dataset: Dataset::ProfileInventory,
@@ -3000,6 +3013,24 @@ mod tests {
         assert_eq!(
             super::query_metadata(&discarded, TTL, NOW).freshness,
             FreshnessStatus::Stale
+        );
+        // A discarded acquisition left the projection unconfirmed (it was due
+        // for a sync, or invalidated by an incomplete action), so it is never
+        // reported fresh even while its last real sync is within the TTL.
+        let mut recent = metadata.clone();
+        recent.checked_at = Timestamp::new(NOW.seconds() - 1);
+        let recent_discarded = destiny_core::ProfileSyncOutcome::DiscardedNotNewer {
+            metadata: recent.clone(),
+        };
+        assert_eq!(
+            super::query_metadata(&recent_discarded, TTL, NOW).freshness,
+            FreshnessStatus::Stale,
+            "an unconfirmed projection must not be reported fresh",
+        );
+        let recent_skipped = destiny_core::ProfileSyncOutcome::SkippedFresh { metadata: recent };
+        assert_eq!(
+            super::query_metadata(&recent_skipped, TTL, NOW).freshness,
+            FreshnessStatus::Fresh,
         );
         let future_discarded = destiny_core::ProfileSyncOutcome::DiscardedNotNewer {
             metadata: metadata.clone(),
