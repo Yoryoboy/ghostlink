@@ -212,8 +212,8 @@ impl ProfileSyncReason {
 /// The result of one profile synchronization decision.
 ///
 /// `SkippedFresh` means the projection was fresh and no acquisition happened.
-/// `DiscardedNotNewer` means an Ordinary acquisition was not newer than the
-/// retained profile; it is not a publication or new freshness evidence.
+/// `DiscardedNotNewer` means an Ordinary or Forced acquisition was not newer
+/// than the retained profile; it is not a publication or new freshness evidence.
 /// `Refreshed` means a complete candidate was acquired and committed. All carry the
 /// [`SnapshotMetadata`] the repository reports, so revision, freshness, and
 /// provenance stay repository-owned and this type invents no parallel metadata.

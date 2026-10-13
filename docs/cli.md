@@ -336,9 +336,20 @@ acquisition even when the local projection is fresh. It takes no arguments and
 publishes the local projection before reporting success; it makes no game mutation.
 Failures use the existing sanitized errors and nonzero exits.
 
-JSON reports `kind: "profile_sync"`, `fetched: true`, `publication: "committed"`,
-`revision`, `previous_revision`, `revision_unchanged`, and `checked_at` (acquisition
-Unix seconds). The first publication has null previous revision and comparison.
+A sync never moves the projection back in time. Bungie can serve an older cached
+profile for minutes after an action; when the response's `responseMintedTimestamp`
+is not newer than the stored one, nothing is published, the local projection
+(including acknowledged action effects) is kept, and the command still exits 0
+with `publication: "discarded_not_newer"` and "not published: Bungie returned data
+that is not newer than the local projection, which was kept". Retry later for
+newer data.
+
+JSON reports `kind: "profile_sync"`, `fetched: true`, `publication`
+(`"committed"` or `"discarded_not_newer"`), `revision`, `previous_revision`,
+`revision_unchanged`, `checked_at` (acquisition Unix seconds), and
+`profile_minted_at` (Bungie's minted instant of the stored projection, Unix
+seconds with millisecond precision, or null when Bungie sent none). Human output
+adds "Bungie minted at". The first publication has null previous revision and comparison.
 An unchanged revision means repository deduplication, not unchanged game state.
 `fetched` means acquisition completed through the production HTTP gateway; it
 promises neither origin freshness, no-cache behavior, a request count, nor mutation
@@ -1132,7 +1143,8 @@ Except apply-loadout (the typed object described above), CLI JSON and MCP
 structured output report a string `local_state`: `updated` means
 acknowledged effects persisted with freshness retained; `unchanged` means no-op or
 refusal before dispatch; `refresh_pending` means invalidated state requiring the
-next ordinary read to re-sync. This replaces `profile_refresh` and
+next ordinary read to re-sync. If Bungie has nothing newer yet, that read keeps the local state and reports
+`freshness: stale`, never `fresh`, until a newer profile is published. This replaces `profile_refresh` and
 `local_state_updated`. Human output adds “local state refresh pending” only for
 that last value. Compatibility status `verified_noop` means local state (including
 Ghostlink's acknowledged actions) already matches; nothing was sent to Bungie.

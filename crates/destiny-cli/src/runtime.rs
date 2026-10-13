@@ -243,6 +243,11 @@ impl<S> fmt::Debug for ReadRuntime<S> {
 pub struct ProfileSyncReport {
     pub metadata: destiny_app::SyncMetadata,
     pub previous_revision: Option<destiny_app::SyncRevision>,
+    /// True when Bungie's response was not newer than the stored projection,
+    /// so nothing was published and the local projection was kept.
+    pub discarded: bool,
+    /// Bungie's `responseMintedTimestamp` of the projection now stored.
+    pub profile_minted_at: Option<destiny_app::ProfileMintedAt>,
 }
 
 /// Explicit profile acquisition without expanding the shared read API.
@@ -274,22 +279,27 @@ where
         let outcome = self
             .sync_mut()
             .sync(destiny_app::ProfileSyncReason::Forced, policy, now)?;
-        match outcome {
-            destiny_app::ProfileSyncOutcome::Refreshed { metadata } => Ok(ProfileSyncReport {
-                metadata: destiny_app::SyncMetadata {
-                    dataset: destiny_app::Dataset::ProfileInventory,
-                    revision: metadata.revision,
-                    checked_at: metadata.checked_at,
-                    source: metadata.source,
-                    definition_version: metadata.definition_version,
-                },
-                previous_revision,
-            }),
-            destiny_app::ProfileSyncOutcome::SkippedFresh { .. }
-            | destiny_app::ProfileSyncOutcome::DiscardedNotNewer { .. } => {
-                Err(AppError::new(ErrorCategory::StaleState))
+        // A not-newer response is a successful fetch that keeps the newer
+        // local projection; it is reported, not treated as a failure.
+        let (metadata, discarded) = match outcome {
+            destiny_app::ProfileSyncOutcome::Refreshed { metadata } => (metadata, false),
+            destiny_app::ProfileSyncOutcome::DiscardedNotNewer { metadata } => (metadata, true),
+            destiny_app::ProfileSyncOutcome::SkippedFresh { .. } => {
+                return Err(AppError::new(ErrorCategory::StaleState));
             }
-        }
+        };
+        Ok(ProfileSyncReport {
+            metadata: destiny_app::SyncMetadata {
+                dataset: destiny_app::Dataset::ProfileInventory,
+                revision: metadata.revision,
+                checked_at: metadata.checked_at,
+                source: metadata.source,
+                definition_version: metadata.definition_version,
+            },
+            previous_revision,
+            discarded,
+            profile_minted_at: self.repository().profile_minted_at()?,
+        })
     }
 }
 
