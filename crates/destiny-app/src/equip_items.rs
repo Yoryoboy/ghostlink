@@ -1,4 +1,4 @@
-//! Combined-state batch equip: one fresh preflight and one EquipItems attempt.
+//! Combined-state batch equip: one ordinary local sync and one EquipItems attempt.
 use crate::MutationService;
 use crate::{ItemSlot, MutationError};
 pub use destiny_core::ProviderRejection;
@@ -95,8 +95,10 @@ where
         for item in &request.items {
             SearchTerm::new(item).map_err(MutationError::from)?;
         }
+        // Plan from the local projection like single-item equip: sync only when
+        // it is stale or invalidated, never publishing an older Bungie replica.
         self.sync_mut()
-            .sync(ProfileSyncReason::Preflight, policy, now)
+            .sync(ProfileSyncReason::Ordinary, policy, now)
             .map_err(MutationError::from)?;
         let snapshot = self
             .repository()

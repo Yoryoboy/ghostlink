@@ -1178,7 +1178,8 @@ ghostlink equip 123456789 234567890 --character hunter --json
 
 `equip <ITEM>... --character <class|id>` accepts 1–17 selectors. Exactly one
 item retains the existing single-item behavior and output below. Two or more
-use combined-state validation of the committed local projection and one batch equip call after necessary
+use combined-state validation of the committed local projection (synced only when
+missing, stale or invalidated, like single-item equip) and one batch equip call after necessary
 Vault-mediated transfers, paced at least 0.1s apart. Each selector uses the same
 ID/name and ambiguity rules as single-item equip.
 

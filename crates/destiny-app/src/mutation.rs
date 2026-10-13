@@ -2239,8 +2239,16 @@ mod tests {
         }
     }
 
+    /// Like single-item equip, a batch plans from the local projection: a fresh
+    /// projection needs no profile read, an invalidated one syncs once first.
     #[test]
     fn batch_equip_acknowledges_once_and_updates_projection() {
+        for invalidated in [false, true] {
+            batch_equip_acknowledges_once(invalidated);
+        }
+    }
+
+    fn batch_equip_acknowledges_once(invalidated: bool) {
         use destiny_core::{EquipItemResult, EquipItemStatus, EquipItemsOutcome};
         let shared = gateway();
         let mut first = equip_definition(1, destiny_core::domain::ItemSlot::Kinetic);
@@ -2259,6 +2267,9 @@ mod tests {
         repo.commit(input.clone());
         queue_refresh(&shared, input);
         let mut service = service(&shared, repo);
+        if invalidated {
+            service.repository_mut().invalidate_freshness().unwrap();
+        }
         let mut transfer = QueuedTransferGateway::new();
         let mut equip = crate::test_support::QueuedEquipItemsGateway::new();
         equip.queue(Ok(EquipItemsOutcome::Acknowledged(vec![
@@ -2296,7 +2307,11 @@ mod tests {
                 .iter()
                 .all(|item| item.equipped)
         );
-        assert_eq!(shared.borrow().inventory_calls(), 1);
+        assert_eq!(
+            shared.borrow().inventory_calls(),
+            usize::from(invalidated),
+            "invalidated: {invalidated}"
+        );
     }
 
     fn batch_fixture(
