@@ -390,9 +390,9 @@ where
                         };
                         // Every saved loadout carries the seasonal artifact, which
                         // has no equipment projection: report it, never as partial.
-                        if reason != LoadoutLocalReason::UnsupportedBucket
-                            || !is_artifact(self.sync.repository(), item.item_hash)
-                        {
+                        let informational = reason == LoadoutLocalReason::UnsupportedBucket
+                            && is_artifact(self.sync.repository(), item.item_hash);
+                        if !informational {
                             incomplete_skips += 1;
                         }
                         local_state.skipped.push(LoadoutLocalIssue {

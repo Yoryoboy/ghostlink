@@ -1044,6 +1044,7 @@ impl FixtureRepository {
                     .iter_mut()
                     .find(|d| d.hash == ItemHash::new(1))
                     .unwrap();
+                // Seasonal artifact bucket (`destiny_core::ARTIFACT_BUCKET_HASH`).
                 definition.bucket_hash = Some(destiny_app::BucketHash::new(1506418338));
                 definition.slot = None;
             }
