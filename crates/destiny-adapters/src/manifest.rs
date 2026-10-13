@@ -1378,18 +1378,24 @@ fn decode_record(
     let name = display.name;
     let description = display.description.into_option();
     if name.trim().is_empty() {
-        // DIM reads Armor 3.0 stat rolls from these nameless plugs; never invent a name.
-        let is_stat_plug = record
+        // DIM reads Armor 2.0/3.0 stat rolls from these nameless plugs; never invent a name.
+        let plug_category_hash = record
             .plug
             .as_ref()
             .and_then(|plug| plug.plug_category_hash)
-            == Some(destiny_core::armor_model::ARMOR_STATS_PLUG);
-        if !is_stat_plug {
+            .filter(|&category| {
+                matches!(
+                    category,
+                    destiny_core::armor_model::ARMOR_STATS_PLUG
+                        | destiny_core::armor_model::INTRINSIC_PLUG
+                )
+            });
+        let Some(plug_category_hash) = plug_category_hash else {
             return Ok(DecodedRecord::Skipped);
-        }
+        };
         let stat_plug = destiny_core::armor_catalog::StatPlugDefinition {
             hash: key_value,
-            plug_category_hash: destiny_core::armor_model::ARMOR_STATS_PLUG,
+            plug_category_hash,
             investment_stats: record
                 .investment_stats
                 .into_iter()
@@ -2503,6 +2509,43 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn blank_name_intrinsic_stat_plugs_are_kept_and_named_intrinsics_stay_definitions() {
+        use destiny_core::InvestmentStat;
+        let record = |hash: u32, name: &str, category: u32, redacted: bool| {
+            format!(
+                r#""{hash}":{{"hash":{hash},"redacted":{redacted},"displayProperties":{{"name":"{name}"}},"plug":{{"plugCategoryHash":{category}}},"investmentStats":[{{"statTypeHash":1735777505,"value":7,"isConditionallyActive":false}}]}}"#
+            )
+        };
+        let body = format!(
+            "{{{}}}",
+            [
+                record(3508916185, "", 1744546145, false),
+                record(481842213, "", 748854354, false),
+                record(30, "Named Intrinsic", 1744546145, false),
+                record(31, "", 1744546145, true),
+                record(32, "", 748854355, false),
+            ]
+            .join(",")
+        );
+        let batch = decode_inventory_items(DefinitionVersion::new("v1"), body.as_bytes()).unwrap();
+        assert_eq!(batch.definitions.len(), 1);
+        assert_eq!(batch.definitions[0].hash.value(), 30);
+        assert_eq!(batch.skipped_count, 2);
+        assert_eq!(batch.stat_plugs.len(), 2);
+        assert_eq!(batch.stat_plugs[0].hash, 3508916185);
+        assert_eq!(batch.stat_plugs[0].plug_category_hash, 1744546145);
+        assert_eq!(
+            batch.stat_plugs[0].investment_stats,
+            vec![InvestmentStat {
+                stat_type_hash: 1735777505,
+                value: 7,
+                is_conditionally_active: false
+            }]
+        );
+        assert_eq!(batch.stat_plugs[1].plug_category_hash, 748854354);
     }
 
     #[test]

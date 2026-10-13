@@ -779,5 +779,21 @@ coverage (`domain.rs:123-126`).
     entry is a deliberately skipped blank-name record). Deviation to
     document: DIM still knows blank-name pluggable mods; Ghostlink cannot
     offer them as fits.
+  - [x] **BE-010b4 — Nameless intrinsic stat rolls.** Done: keep rule
+    matches `ARMOR_STATS_PLUG | INTRINSIC_PLUG` (core constants), records
+    keep their own category; RED decode test before the edit; app inspect
+    test with 3508916185 (7/6/7). Workspace: 2467 all-features, 2434
+    default, 0 failed; clippy both modes, fmt. Original finding: Live after
+    6661167: every build finding is evaluated (stats satisfy constraints,
+    mod fit evaluated; check 3.9 s), but the optimizer and substitutes stop
+    on `armor_base_stats_unavailable` for candidates: 100 of 310 owned
+    armor pieces (mostly older exotics) have no base stats. Their enabled
+    stat-roll plugs (3508916185, 584267664, 951340179, 3008110069; verified
+    on Bungie's Manifest API) are blank-name, non-redacted
+    `plugCategoryHash` 1744546145 `intrinsics` (Armor 2.0 random rolls),
+    the other category `build_armor_stats` sums as base
+    (`INTRINSIC_PLUG`). Fix: the BE-010b1 keep rule covers both
+    `ARMOR_STATS_PLUG` and `INTRINSIC_PLUG` blank-name records. Follow-up:
+    check runtime 3.9 s exceeds the ~2 s analyzer budget intent.
   - [ ] **BE-010c — Live re-run.** check, substitutes timing, apply
     dry-run; then live apply and EquipLoadout U4b/U4c.

@@ -242,9 +242,13 @@ no definition and returned unknown. DIM reads these plugs by plug category
 Design (no fabricated name, `definitions` untouched):
 
 - **Decode.** A blank-name, non-redacted inventory record whose
-  `plug.plugCategoryHash` is 748854354 is kept as a `StatPlugDefinition` (hash,
-  plug category, investment stats including `isConditionallyActive`) in
-  `ManifestAcquisition.stat_plugs`, bounded at 8,192 plugs and 64 investment stats each.
+  `plug.plugCategoryHash` is 748854354 (`armor_stats`) or, since BE-010b4, 1744546145
+  (`intrinsics`, Armor 2.0 random rolls such as 3508916185) is kept as a
+  `StatPlugDefinition` (hash, plug category, investment stats including
+  `isConditionallyActive`) in `ManifestAcquisition.stat_plugs`, bounded at 8,192 plugs
+  and 64 investment stats each. The live Manifest skipped only 2,034 blank-name
+  records in total, so both categories together stay far below the 8,192 bound
+  (margin of at least 6,000). A named `intrinsics` record remains a normal definition.
   Every other blank-name record stays skipped and counted as before; stat plugs are
   not counted as skipped.
 - **Storage (migration 36).** STRICT tables `definition_stat_plugs` and
