@@ -151,6 +151,10 @@ async fn build_sources_stdio_report_omissions_and_unresolved_items() {
         .call_tool("build_substitutes", json!({"id":id,"limit":201}))
         .await;
     assert_eq!(too_many["result"]["isError"], true);
+    let too_few = session
+        .call_tool("build_substitutes", json!({"id":id,"limit":0}))
+        .await;
+    assert_eq!(too_few["result"]["isError"], true);
     let invalid_analysis = session
         .call_tool("analyze_build", json!({"id":id,"name":"other"}))
         .await;
