@@ -835,5 +835,18 @@ coverage (`domain.rs:123-126`).
     `loadout-builder/types.ts:136`; Ghostlink constant
     `optimizer::TUNING_SOCKET_PLUG_SET`). Apply the same rule to the
     unlocked list that build apply and mod checks use.
+  - Live 2026-10-13 after 7a9401b: dry-run 624 ms, 29 mods in place, 0
+    skipped; substitutes 10 sets 332 ms. Real apply of the Hunter snapshot:
+    dispatched 0, local_state unchanged, but exit 41 `partial` only
+    because ghost/ship/sparrow/emblem are `unsupported_bucket` (every
+    equipped snapshot will be partial; follow-up priority up).
+  - U4b/U4c setup INCONSISTENT (stopped, owner check pending): `move` of
+    the equipped Ace of Spades to the Vault first returned `incomplete` /
+    `uncertain`; a two-item `equip --character hunter` swap printed no
+    status; then `move Ace --vault` and `equip --character warlock
+    Sorrow's Verse` both returned `applied` with every step `completed`,
+    yet three syncs over ~80 s still show both weapons equipped on the
+    Hunter (profile revision 18 stable). No further mutation until the
+    owner confirms the in-game state.
   - [ ] **BE-010c — Live re-run.** check, substitutes timing, apply
     dry-run; then live apply and EquipLoadout U4b/U4c.
