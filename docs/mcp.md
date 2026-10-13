@@ -99,7 +99,8 @@ selectors, which require visible sockets and enabled plugs. See
 Source-inapplicable/unknown fields are rejected before service dispatch. MCP
 imports accept content, never server file paths or stdin. Input is bounded to
 1 MiB; `dim.gg` fails with `unsupported_operation` and typed reason
-`share_link_requires_online_import` (BE-009), without fetching a share.
+`share_link_requires_online_import`, without fetching a share: `dim.gg` is not
+supported; open the link in DIM and import the full link or JSON instead.
 
 Local operations use the committed profile membership without synchronization;
 run profile sync first if unavailable. Inventory captures require stored

@@ -380,7 +380,7 @@ impl BuildOutput {
             BuildError::App(e) => (e.category(), None, destiny_app::AppError::new(e.category()).to_string(), vec![]),
             BuildError::NotFound => (E::ProviderValidation, None, "Build not found.".into(), vec![]),
             BuildError::AmbiguousName(v) => (E::AmbiguousMatch, None, "Build name is ambiguous; select an ID.".into(), v.iter().map(summary).collect()),
-            BuildError::Codec(DimLoadoutError::ShareLinkRequiresOnlineImport) => (E::UnsupportedOperation, Some("share_link_requires_online_import"), "dim.gg share links require online import, deferred to BE-009. Use DIM JSON or a loadouts?loadout= URL.".into(), vec![]),
+            BuildError::Codec(DimLoadoutError::ShareLinkRequiresOnlineImport) => (E::UnsupportedOperation, Some("share_link_requires_online_import"), "dim.gg share links are not supported. Open the link in DIM, then import the full loadouts?loadout= link or the loadout JSON.".into(), vec![]),
             BuildError::Codec(e) => (E::ProviderValidation, None, e.to_string(), vec![]),
             BuildError::Loadout(destiny_app::ApplyLoadoutError::App(e)) => (e.category(), None, destiny_app::AppError::new(e.category()).to_string(), vec![]),
             BuildError::Loadout(destiny_app::ApplyLoadoutError::AmbiguousName(v)) => (E::AmbiguousMatch, None, "In-game loadout name is ambiguous; select a slot.".into(), v.iter().map(|c| json!({"slot":c.slot, "name":c.name})).collect()),

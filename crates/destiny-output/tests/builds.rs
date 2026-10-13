@@ -261,7 +261,13 @@ fn export_and_typed_offline_error() {
         share.value["error"]["reason"],
         "share_link_requires_online_import"
     );
-    assert!(share.render_text().contains("BE-009"));
+    // D4: dim.gg is not supported; the message guides the user to a full DIM link or JSON.
+    assert_eq!(
+        share.value["error"]["message"],
+        "dim.gg share links are not supported. Open the link in DIM, then import the full \
+         loadouts?loadout= link or the loadout JSON."
+    );
+    assert!(!share.render_text().contains("BE-009"));
     let missing = BuildOutput::from_result(Err(BuildError::NotFound));
     assert_eq!(missing.exit_code, 32);
     assert_eq!(missing.value["error"]["code"], "item_not_found");

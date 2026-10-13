@@ -41,7 +41,8 @@ and use ordinary freshness. Character and saved-loadout selectors match
 Import accepts a UTF-8 file, `-` for stdin, or a complete DIM loadout URL, with a
 1 MiB input limit. Imports receive fresh local IDs. A `dim.gg` URL/share ID is a
 typed `share_link_requires_online_import` reason under `unsupported_operation`
-(exit 40); online import is deferred to BE-009. No network fallback occurs.
+(exit 40); `dim.gg` is not supported, so open the link in DIM and import the full
+`loadouts?loadout=` link or the loadout JSON instead. No network fallback occurs.
 
 JSON list output is `kind: builds`; show/source output is `kind: build` with
 `summary`, `dim_json`, `omissions`, and `unresolved_items`. Human output shows
