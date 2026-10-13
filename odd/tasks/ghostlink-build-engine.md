@@ -795,5 +795,28 @@ coverage (`domain.rs:123-126`).
     (`INTRINSIC_PLUG`). Fix: the BE-010b1 keep rule covers both
     `ARMOR_STATS_PLUG` and `INTRINSIC_PLUG` blank-name records. Follow-up:
     check runtime 3.9 s exceeds the ~2 s analyzer budget intent.
+  - Live after a9d3909: `build check` 328 ms with every finding
+    evaluated; `build substitutes` 10 sets in 330 ms (560,000 combos, not
+    truncated, 24 threads, candidates 28/20/25/2/20). RDD review of
+    ad9d017..a9d3909 approved and acknowledged (`review-f0430c7978630f12`);
+    advisory R3-001: `optimizer_auto_mods.rs:216` only asserts `is_ok()`.
+  - [x] **BE-010b5 — Unlocked mods and fashion.** Done: sync keeps
+    plug-set entries that are subclass options, fashion (`is_fashion_plug`,
+    DIM `loadout-utils.ts:857-864`) or armor mods (plug category
+    `enhancements.*` without `masterworks`); unknown definitions still
+    dropped; table keeps its `subclass_plug_options` name (documented). RED:
+    the public `plan_apply` mod and fashion tests now sync through the
+    gateway and failed before the fix. Workspace: 2467 all-features, 2434
+    default, 0 failed; clippy both modes, fmt. Original finding: Live `build apply
+    --dry-run` (406 ms, nothing dispatched) skips every requested mod as
+    `mod_not_unlocked` and fashion as `fashion_not_unlocked`, even mods
+    already socketed (4204488676). Cause: `sync.rs:416-420` keeps only
+    plug-set entries that are subclass options (a pre-BE-007 size filter:
+    ~924 live sets, mostly cosmetics), so `build_mods::unlocked_mods`
+    never sees armor mods or fashion; BE-007b2/b3 fakes carried them.
+    DIM `gatherUnlockedPlugSetItems` reads every profile and character
+    plug set (`selectors.ts:327-345`). Fix: also keep the entries build
+    apply and mod checks consult (armor mods, fashion), within existing
+    decode bounds; measure the stored row count live.
   - [ ] **BE-010c — Live re-run.** check, substitutes timing, apply
     dry-run; then live apply and EquipLoadout U4b/U4c.

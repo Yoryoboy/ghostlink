@@ -260,6 +260,13 @@ Ghostlink adaptations and limits:
   assignment reason is listed in `not_applied`. DIM assigns mods to fewer than five
   armor pieces and so does the apply (see "Armor set"); `build check` still needs all
   five, as DIM's analysis does.
+- **Projected unlocks.** Profile sync stores profile and character plug-set entries only
+  for plugs with a known definition that is a subclass option, an armor mod (plug category
+  `enhancements.*`, masterwork plugs excluded) or fashion (item sub type shader 20 or
+  ornament 21, DIM `isFashionPlug`). DIM reads every plug set
+  (`inventory/selectors.ts:327-345`); other cosmetics and unknown definitions are dropped.
+  Storage stays bounded by decode (4096 sets x 512 plugs) and one row per scope and plug.
+  The table is still named `subclass_plug_options`; it is not renamed.
 - **Skips** (`mod_skipped`, one entry per mod hash): `mod_not_unlocked`,
   `invalid_for_armor`, `unassigned`, `not_on_target_character`,
   `item_energy_unavailable`, `no_socket_for_mod`, `not_enough_energy`, the

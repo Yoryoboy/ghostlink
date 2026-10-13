@@ -997,6 +997,23 @@ fn build_apply_plans_subclass_socket_overrides_from_projected_catalogs() {
     );
 }
 
+/// Publishes `input` the way a real refresh does: through the gateway and the
+/// sync service's projection filters, not by writing the repository directly.
+fn sync_through_gateway(
+    sync: ProfileSyncService<Gateway, SqliteStore>,
+    input: InventorySnapshotInput,
+) -> ProfileSyncService<Gateway, SqliteStore> {
+    let (_, repository) = sync.into_parts();
+    let saved = repository.saved_loadouts().unwrap().unwrap_or_default();
+    let mut sync = ProfileSyncService::new_with_definitions(Gateway(input, saved, 0), repository);
+    sync.sync(
+        ProfileSyncReason::Forced,
+        FreshnessPolicy { ttl_seconds: 300 },
+        Timestamp::new(100),
+    )
+    .unwrap();
+    sync
+}
 #[test]
 fn build_apply_plans_armor_mods_from_projected_catalogs_and_unlocks() {
     use destiny_core::armor_catalog::*;
@@ -1129,7 +1146,7 @@ fn build_apply_plans_armor_mods_from_projected_catalogs_and_unlocks() {
         can_insert: true,
         enabled: true,
     }];
-    sync.repository_mut().replace_current(input).unwrap();
+    let mut sync = sync_through_gateway(sync, input);
     let preview = service
         .plan_apply(
             &mut sync,
@@ -1310,7 +1327,7 @@ fn build_apply_plans_fashion_from_projected_classification_and_exotic_unlocks() 
         can_insert: true,
         enabled: true,
     }];
-    sync.repository_mut().replace_current(input).unwrap();
+    let mut sync = sync_through_gateway(sync, input);
     let preview = service
         .plan_apply(
             &mut sync,

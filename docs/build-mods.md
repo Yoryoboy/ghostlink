@@ -57,6 +57,8 @@ Request-local assembly loads these sets, their plug definitions and requirement
 sets, plus the exotic enhancement definition and normal-cost mod variants.
 No new network requests, component acquisition or migration are introduced.
 
+Unlocks come from the projected plug-set entries: subclass options, armor mods
+(`enhancements.*`) and fashion; see "Projected unlocks" in `build-apply.md`.
 Seasonal costs first resolve using enabled account/target-character unlocks;
 missing plug-set responses mean no unlocks. All twelve legacy stat-mod hashes
 migrate. Missing/non-pluggable definitions use deprecated placeholder `444600262`;

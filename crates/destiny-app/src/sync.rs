@@ -379,6 +379,7 @@ where
         // and retained. A known definition without a category is not a perk.
         let mut categories = std::collections::HashMap::new();
         let mut subclass_options = std::collections::HashSet::new();
+        let mut build_apply_plugs = std::collections::HashSet::new();
         for hash in candidate
             .items
             .iter()
@@ -403,6 +404,9 @@ where
                         {
                             subclass_options.insert(hash);
                         }
+                        if is_build_apply_plug(&definition) {
+                            build_apply_plugs.insert(hash);
+                        }
                         Some(definition.plug_category.unwrap_or_default())
                     }
                     _ => None,
@@ -418,10 +422,14 @@ where
             });
         }
         // Unlike item plugs, unknown plug-set definitions are dropped: live
-        // profiles contain ~924 sets, mostly cosmetics, not subclass options.
-        candidate
-            .plug_set_entries
-            .retain(|entry| subclass_options.contains(&entry.plug_hash));
+        // profiles contain ~924 sets, mostly other cosmetics. Keep subclass
+        // options plus the armor mods and fashion that build apply consults
+        // (DIM `gatherUnlockedPlugSetItems`, selectors.ts:327-345). Decode
+        // bounds the input (4096 sets x 512 plugs, one entry per scope+plug).
+        candidate.plug_set_entries.retain(|entry| {
+            subclass_options.contains(&entry.plug_hash)
+                || build_apply_plugs.contains(&entry.plug_hash)
+        });
         // Preserve only the observed route's POST-FILTER candidate. Ordinary
         // success still moves its input without cloning a projection.
         let expected = with_observations.then(|| candidate.clone());
@@ -438,6 +446,15 @@ where
         };
         Ok(SyncDecision::Refreshed(publication))
     }
+}
+
+/// Armor mods (`enhancements.*`, masterwork stat plugs excluded) and fashion
+/// (shader/ornament, DIM `isFashionPlug`, loadout-utils.ts:857-864).
+fn is_build_apply_plug(definition: &destiny_core::ItemDefinition) -> bool {
+    destiny_core::build_fashion_apply::is_fashion_plug(definition)
+        || definition.plug_category.as_deref().is_some_and(|category| {
+            category.starts_with("enhancements.") && !category.contains("masterworks")
+        })
 }
 
 #[cfg(all(test, feature = "test-support"))]

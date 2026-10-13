@@ -24,7 +24,7 @@ const SUB_TYPE_SHADER: u8 = 20;
 const SUB_TYPE_ORNAMENT: u8 = 21;
 
 /// DIM `isFashionPlug` (`loadout-utils.ts:857-864`).
-fn is_fashion_plug(definition: &ItemDefinition) -> bool {
+pub fn is_fashion_plug(definition: &ItemDefinition) -> bool {
     matches!(
         definition.armor.item_sub_type_code,
         Some(SUB_TYPE_SHADER | SUB_TYPE_ORNAMENT)
