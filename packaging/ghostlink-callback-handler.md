@@ -14,7 +14,11 @@ Unix-domain socket inside a private directory under the user's runtime directory
 (`$XDG_RUNTIME_DIR/ghostlink`). When the provider redirects the browser to
 `ghostlink://oauth/callback`, the desktop entry runs
 `ghostlink callback <uri>`, which validates the URI shape, resolves the
-per-attempt socket, and forwards the URI once to the waiting login. The shared
+per-attempt socket, and forwards the URI once to the waiting login. With the
+official HTTPS callback, the provider first lands on the broker callback page;
+its "Open in Ghostlink on this computer" link opens
+`ghostlink://oauth/callback` with the same query, which reaches the handler the
+same way. The page never redirects automatically, so this takes one click. The shared
 `AuthorizationService` still compares the callback state, rejects replay and
 expiry, and exchanges the code.
 

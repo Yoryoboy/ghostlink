@@ -62,8 +62,14 @@ values (API key, public client ID, callback URI, broker URL) are safe to commit
 and are extractable from release binaries. Their single owner-maintained block
 is `crates/destiny-app/src/defaults.rs`; every value remains overridable.
 
-Callbacks default to `ghostlink://oauth/callback` and freshness TTL to `900`
-seconds. API key, public client ID, and broker URL currently have `None` defaults
+Callbacks default to the broker callback page
+`https://ghostlink-token-broker.93jads.workers.dev/callback` and freshness TTL to
+`900` seconds. `BUNGIE_CALLBACK_URI` and `BUNGIE_REGISTERED_CALLBACK_URI` accept
+exactly `ghostlink://oauth/callback` or a plain `https://` URL with a host and no
+userinfo, query or fragment; HTTP is refused. Set both to the redirect URL
+registered in your Bungie application. With an HTTPS callback, a pasted callback
+is accepted on that URL or on `ghostlink://oauth/callback`, which the callback
+page offers to the desktop handler. API key, public client ID, and broker URL currently have `None` defaults
 pending owner provisioning; absent required values still produce the same
 sanitized configuration error. Thus this checkout is not yet fully zero-config.
 The database path defaults to the OS location below. The definition version is

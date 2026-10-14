@@ -246,9 +246,9 @@ SSH, split the login into two commands that need no interactive terminal:
 
 ```sh
 ghostlink login start                  # prints the authorization URL and its expiry
-# open the URL on any device, approve, copy the address the browser ends on
+# open the URL on any device, approve, copy the address the callback page shows
 ghostlink login complete               # paste that address on stdin (or pipe it)
-ghostlink login complete 'ghostlink://oauth/callback?code=...&state=...'
+ghostlink login complete 'https://ghostlink-token-broker.93jads.workers.dev/callback?code=...&state=...'
 ghostlink login cancel                 # discard a pending login
 ```
 
@@ -257,9 +257,15 @@ ghostlink login cancel                 # discard a pending login
   [credential file](configuration.md#credential-file) (`0600`, replacing any
   earlier one) and prints the URL. It expires after 5 minutes. With `--json` it
   prints `{"authorization_url":…,"expires_at":…,"kind":"login","status":"pending"}`.
-- After approving, the browser is redirected to `ghostlink://oauth/callback?…`.
-  On a device without Ghostlink this address does not open anything; copy it
-  from the address bar (or the browser's error page) exactly as shown.
+- After approving, the browser lands on the Ghostlink callback page
+  (`https://ghostlink-token-broker.93jads.workers.dev/callback?…`). It shows the
+  full address with a **Copy** button; copy it exactly as shown. The page never
+  sends the code anywhere. Its "Open in Ghostlink" link
+  (`ghostlink://oauth/callback?…`, same query) is for a desktop with the
+  handler; `complete` accepts either form of the address.
+- With a configured `ghostlink://oauth/callback` callback (an older
+  `config.env`), the browser is redirected straight to that address; on a device
+  without Ghostlink it opens nothing, so copy it from the address bar.
 - `complete` takes that address as its argument, or reads one line from standard
   input when the argument is absent or `-`. Prefer standard input: an argument
   is visible in shell history and the process list. A terminal gets a prompt
