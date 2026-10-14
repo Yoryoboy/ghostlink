@@ -158,6 +158,11 @@ The file is separate from `config.env` and from the inventory database.
   whose token another process already rotated adopts the new one.
 - **Never rendered.** Tokens never appear in logs, errors, MCP output or agent
   prompts.
+- **Pending headless login.** `ghostlink login start` saves the login it began
+  as `pending-login.json` in the same directory (`0600`, same refusal rules). It
+  holds only the authorization state and its expiry, never a token, and is
+  removed by `login complete` or `login cancel`. See the
+  [headless two-step login](cli.md#headless-two-step-login).
 
 Earlier releases kept tokens in the OS keyring. Those entries are not read or
 migrated: run `ghostlink login` once after upgrading. Deleting

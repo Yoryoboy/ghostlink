@@ -12,6 +12,14 @@ Draft for the next release candidate. Live checks remain on the
   [credential file](../configuration.md#credential-file) notes. Keyring tokens
   from earlier releases are not migrated: run `ghostlink login` once. CLI and MCP
   now renew one at a time and adopt a token the other already rotated.
+- **Headless two-step login.** `ghostlink login start` prints the authorization
+  URL without a browser or terminal prompt; approve on any device, then finish
+  on the server with `ghostlink login complete` (callback address on stdin or as
+  the argument), or discard it with `ghostlink login cancel`. The pending login
+  expires after 5 minutes and is single use. The callback address carries a
+  one-use code, so move it over a private channel; see the
+  [headless login](../cli.md#headless-two-step-login) notes. Plain
+  `ghostlink login` is unchanged.
 - Search owned inventory with DIM-style queries in CLI and MCP, ANDed with
   structured filters. Unsupported filters fail explicitly instead of being
   silently ignored. `ghostlink search-inventory --filters` lists the registry's
