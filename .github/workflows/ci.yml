@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ['*.md', 'docs/**', 'odd/**', '.engram/**']
   pull_request:
+    paths-ignore: ['*.md', 'docs/**', 'odd/**', '.engram/**']
   workflow_dispatch:
 
 permissions:
@@ -15,6 +17,12 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # CI never reads debuggers' symbols; skipping debuginfo (PDBs on Windows)
+  # shrinks compile and link time. Panic locations still report file:line.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  # The MSVC linker dominates Windows test builds; LLD links far faster.
+  # Only affects the Windows MSVC target.
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld.exe
 
 jobs:
   broker:
@@ -55,7 +63,9 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
 
+      # Formatting is platform independent; check it once.
       - name: Format
+        if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
 
       - name: Clippy
