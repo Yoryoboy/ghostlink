@@ -169,7 +169,12 @@ where
         };
         let metadata = credential.metadata;
         let refresh_expires_at = credential.refresh_grant().map(|grant| grant.expires_at);
-        if self.store.save(credential).is_err() {
+        // Hold the refresh lock so a login save cannot race a concurrent renewal.
+        let saved = self
+            .store
+            .lock_for_refresh()
+            .and_then(|_guard| self.store.save(credential));
+        if saved.is_err() {
             self.state = AuthState::ReauthorizationRequired;
             return Err(AppError::new(ErrorCategory::CredentialStoreUnavailable));
         }
@@ -264,6 +269,52 @@ mod tests {
             }
         }
 
+        /// Records whether `save` ran while the refresh lock was held.
+        #[derive(Clone, Default)]
+        struct LockingStore {
+            credential: Arc<Mutex<Option<AccessCredential>>>,
+            held: Arc<std::sync::atomic::AtomicBool>,
+            saved_while_held: Arc<std::sync::atomic::AtomicBool>,
+            lock_fails: bool,
+        }
+
+        struct HeldFlag(Arc<std::sync::atomic::AtomicBool>);
+
+        impl Drop for HeldFlag {
+            fn drop(&mut self) {
+                self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        impl CredentialStore for LockingStore {
+            fn save(&mut self, credential: AccessCredential) -> Result<(), AppError> {
+                use std::sync::atomic::Ordering;
+                self.saved_while_held
+                    .store(self.held.load(Ordering::SeqCst), Ordering::SeqCst);
+                *self.credential.lock().expect("store lock") = Some(credential);
+                Ok(())
+            }
+
+            fn load(&self) -> Result<Option<AccessCredential>, AppError> {
+                Ok(self.credential.lock().expect("store lock").clone())
+            }
+
+            fn delete(&mut self) -> Result<(), AppError> {
+                *self.credential.lock().expect("store lock") = None;
+                Ok(())
+            }
+
+            fn lock_for_refresh(&self) -> Result<destiny_core::CredentialRefreshGuard, AppError> {
+                if self.lock_fails {
+                    return Err(AppError::new(ErrorCategory::CredentialStoreUnavailable));
+                }
+                self.held.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(destiny_core::CredentialRefreshGuard::new(HeldFlag(
+                    self.held.clone(),
+                )))
+            }
+        }
+
         fn credential(expires_at: u64) -> AccessCredential {
             AccessCredential {
                 metadata: AccessCredentialMetadata {
@@ -344,6 +395,51 @@ mod tests {
             );
             assert_eq!(service.access_status().unwrap(), outcome);
             assert!(!format!("{outcome:?}").contains("sentinel"));
+        }
+
+        #[test]
+        fn login_save_runs_inside_the_refresh_lock() {
+            use std::sync::atomic::Ordering;
+            let store = LockingStore::default();
+            let mut service = started_service(store.clone());
+            let state = match service.state() {
+                AuthState::Authorizing { state, .. } => state.clone(),
+                other => panic!("unexpected state: {other:?}"),
+            };
+            service
+                .handle_callback(callback(
+                    &state,
+                    CallbackResult::Code(AuthorizationCode::from_bytes(b"code")),
+                ))
+                .unwrap();
+            assert!(store.saved_while_held.load(Ordering::SeqCst));
+            assert!(!store.held.load(Ordering::SeqCst));
+            assert!(store.load().unwrap().is_some());
+        }
+
+        #[test]
+        fn login_lock_failure_saves_nothing_and_requires_reauthorization() {
+            let store = LockingStore {
+                lock_fails: true,
+                ..LockingStore::default()
+            };
+            let mut service = started_service(store.clone());
+            let state = match service.state() {
+                AuthState::Authorizing { state, .. } => state.clone(),
+                other => panic!("unexpected state: {other:?}"),
+            };
+            let error = service
+                .handle_callback(callback(
+                    &state,
+                    CallbackResult::Code(AuthorizationCode::from_bytes(b"code")),
+                ))
+                .unwrap_err();
+            assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
+            assert!(matches!(
+                service.state(),
+                AuthState::ReauthorizationRequired
+            ));
+            assert_eq!(store.load().unwrap(), None);
         }
 
         #[test]
