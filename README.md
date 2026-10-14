@@ -251,7 +251,7 @@ out to the CLI.
 
 ## Privacy and security
 
-Tokens stay in `~/.config/ghostlink/credentials.json` (mode `0600`), never in an
+Tokens stay in `~/.config/ghostlink/credentials.json` (or `$XDG_CONFIG_HOME/ghostlink/credentials.json`, mode `0600`), never in an
 agent prompt. The file is **not encrypted**: any process running as your user can
 read it, so keep it out of dotfile repositories and backups you share. The official
 [token broker](broker/README.md) only exchanges and refreshes OAuth tokens; it

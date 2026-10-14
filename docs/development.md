@@ -34,7 +34,7 @@ The `destiny-mcp` library holds the bounded MCP schemas, the injectable
 `InventoryReadService` and `MutationToolService` seams, the RMCP tools-only
 server, and the stdio runtime. These presentation modules never name a concrete
 adapter. The private process module (`src/main.rs`, retained at its original
-path) loads the native credential store, HTTP transports, SQLite projection
+path) loads the credential file store, HTTP transports, SQLite projection
 store, and transfer gateway. Its public `destiny_mcp::run()` entry point is
 called by the tiny binary wrapper in the `ghostlink` package.
 

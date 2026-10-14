@@ -52,7 +52,7 @@ unused placeholder lines: they override compiled defaults. Fill any private
 values locally, never in a shared session:
 
 ```sh
-mkdir -p ~/.config/ghostlink
+mkdir -m 700 -p ~/.config/ghostlink
 install -m 600 config.example.env ~/.config/ghostlink/config.env
 $EDITOR ~/.config/ghostlink/config.env
 ```
@@ -143,7 +143,9 @@ The file is separate from `config.env` and from the inventory database.
 - **Not encrypted.** Any process running as the same user can read it. Do not
   commit it to a dotfiles repository or copy it into shared backups.
 - **Private permissions.** On Unix a missing directory is created `0700` and the
-  file is always written `0600`. A file that group or others can access is
+  file is always written `0600`. An already existing directory keeps its
+  permissions; the `0600` file is what protects the tokens. Tighten the
+  directory too with `chmod 700 ~/.config/ghostlink`. A file that group or others can access is
   refused with `credential storage is unavailable`; fix it with
   `chmod 600 ~/.config/ghostlink/credentials.json`. On Windows the per-user
   profile's access control applies.
@@ -158,7 +160,8 @@ The file is separate from `config.env` and from the inventory database.
 
 Earlier releases kept tokens in the OS keyring. Those entries are not read or
 migrated: run `ghostlink login` once after upgrading. Deleting
-`credentials.json` signs you out.
+`credentials.json` signs out new processes; a running MCP server keeps its
+cached token until it next needs to renew, so restart the MCP host.
 
 
 ## Runtime configuration and authorization
@@ -183,9 +186,7 @@ client ID:
 | `DESTINY_FRESHNESS_TTL_SECONDS` | Positive freshness TTL in seconds (maximum `2592000`) |
 
 A read also requires an already-authorized account. `destiny-cli` loads a
-complete access credential from the operating system's native credential store
-(service `dev.ghostlink.destiny`, account `destiny-access-credential`) and never
-degrades to a plaintext or filesystem fallback. When no credential is stored,
+complete access credential from the [credential file](#credential-file). When no credential is stored,
 the read exits with the typed `authorization_required` outcome (exit 10); a
 missing or invalid read configuration exits with `configuration_error` (exit
 52). The interactive browser authorization flow that writes that credential
