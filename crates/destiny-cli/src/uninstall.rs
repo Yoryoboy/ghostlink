@@ -249,7 +249,7 @@ mod linux {
             "manual_followups":agent_plan.manual_followups.iter().map(|f| format!("{:?}: {}",f.agent,f.instruction)).collect::<Vec<_>>(),
             "handler_skips":handler_plan.skips.iter().map(|s| json!({"path":s.path,"reason":s.guidance})).collect::<Vec<_>>(),
             "preserved": [home.join(".config/ghostlink"),home.join(".local/share/ghostlink"),install.root.clone(),install.bin_dir.join(".ghostlink-lifecycle.lock")],
-            "preserved_state":"All config, SQLite databases, credentials/keyring, runtime sockets, Cargo directories, PATH/shell configuration, unknown files and backups. External/custom config/data/runtime paths are untouched (not resolved; configuration is not loaded). XDG overrides remain preserved except the exact previewed integration files.",
+            "preserved_state":"All config, SQLite databases, the credential file, runtime sockets, Cargo directories, PATH/shell configuration, unknown files and backups. External/custom config/data/runtime paths are untouched (not resolved; configuration is not loaded). XDG overrides remain preserved except the exact previewed integration files.",
             "limitations":"Stop MCP hosts and finish active login first; no process inactivity guarantee, elevation, termination, purge, recursive installation removal or rollback. Lock metadata is retained to avoid splitting live locks. Exact skill identity is not installation provenance. Manual registrations can remain after binary removal."
         });
         if !handler_plan.skips.is_empty() {

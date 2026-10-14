@@ -12,5 +12,4 @@ install-updater = true
 precise-builds = true
 
 [dist.dependencies.apt]
-libdbus-1-dev = "*"
 pkg-config = "*"

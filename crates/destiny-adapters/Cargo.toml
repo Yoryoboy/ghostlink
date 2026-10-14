@@ -9,7 +9,6 @@ base64 = "0.22.1"
 chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 destiny-core.workspace = true
 getrandom = "0.4"
-keyring-core.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
@@ -25,12 +24,3 @@ destiny-cli = { package = "ghostlink", path = "../destiny-cli" }
 # MCP read projections. Production edges stay `destiny-mcp -> destiny-adapters`;
 # this dev-dependency edge introduces no production dependency inversion.
 destiny-mcp = { path = "../destiny-mcp" }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-apple-native-keyring-store = { workspace = true, features = ["keychain", "protected"] }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows-native-keyring-store.workspace = true
-
-[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
-dbus-secret-service-keyring-store = { workspace = true, features = ["crypto-rust"] }

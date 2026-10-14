@@ -69,6 +69,7 @@ pub use destiny_core::{ProfileInventoryRead, ProfileMintedAt};
 pub mod test_support;
 
 pub use auth::{AuthState, AuthorizationOutcome, AuthorizationService};
+pub use config::paths::credentials_file;
 pub use config::{
     ClientAuthMode, LoginCallbackUri, LoginRuntimeConfig, MAX_READ_FRESHNESS_TTL_SECONDS,
     ReadApiKey, ReadRuntimeConfig, RefreshClientConfig,

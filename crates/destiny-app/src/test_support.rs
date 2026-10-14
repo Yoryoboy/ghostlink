@@ -59,7 +59,7 @@ impl destiny_core::StackPullGateway for QueuedStackPullGateway {
 /// draw their canaries from this single definition, so a value proven absent at
 /// one boundary is the exact value probed at the others. Every constant is
 /// inert test data: none is a real credential, identifier, or provider value,
-/// and none requires a network, a keyring, or a live account.
+/// and none requires a network, a credential file, or a live account.
 pub mod leak_sentinels {
     /// An API key supplied to a provider read gateway.
     pub const API_KEY: &str = "sentinel-hardening-api-key-2f9c41d7";

@@ -36,6 +36,36 @@ where
     }
 }
 
+/// The plaintext credential file shared by the CLI and the MCP server: an
+/// explicit `GHOSTLINK_CREDENTIALS_FILE`, else `ghostlink/credentials.json`
+/// under the per-user configuration directory, next to `config.env`.
+pub(crate) fn credentials_path<F>(platform: Platform, mut lookup: F) -> Option<PathBuf>
+where
+    F: FnMut(&str) -> Option<OsString>,
+{
+    if let Some(path) = lookup("GHOSTLINK_CREDENTIALS_FILE").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
+    match platform {
+        Platform::Unix => {
+            if let Some(base) = lookup("XDG_CONFIG_HOME").filter(unix_absolute) {
+                return Some(PathBuf::from(base).join("ghostlink/credentials.json"));
+            }
+            lookup("HOME")
+                .filter(unix_absolute)
+                .map(|base| PathBuf::from(base).join(".config/ghostlink/credentials.json"))
+        }
+        Platform::Windows => windows_path(lookup("APPDATA"), r"ghostlink\credentials.json"),
+    }
+}
+
+/// [`credentials_path`] over the process environment; no usable location is a
+/// sanitized configuration error that never renders a path.
+pub fn credentials_file() -> Result<PathBuf, destiny_core::AppError> {
+    credentials_path(Platform::current(), |name| std::env::var_os(name))
+        .ok_or_else(destiny_core::AppError::configuration)
+}
+
 pub(super) fn unix_absolute(value: &OsString) -> bool {
     value.to_string_lossy().starts_with('/')
 }
@@ -72,6 +102,47 @@ pub(super) fn windows_path(base: Option<OsString>, suffix: &str) -> Option<PathB
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credentials_default_to_the_config_directory_with_an_override() {
+        let resolve = |platform, file: &str, xdg: &str, home: &str, appdata: &str| {
+            credentials_path(platform, |name| match name {
+                "GHOSTLINK_CREDENTIALS_FILE" => Some(file.into()),
+                "XDG_CONFIG_HOME" => Some(xdg.into()),
+                "HOME" => Some(home.into()),
+                "APPDATA" => Some(appdata.into()),
+                _ => panic!("unexpected lookup: {name}"),
+            })
+        };
+        assert_eq!(
+            resolve(Platform::Unix, "", "/config", "/home", ""),
+            Some(PathBuf::from("/config").join("ghostlink/credentials.json"))
+        );
+        for xdg in ["relative", ""] {
+            assert_eq!(
+                resolve(Platform::Unix, "", xdg, "/home", ""),
+                Some(PathBuf::from("/home").join(".config/ghostlink/credentials.json"))
+            );
+        }
+        assert!(resolve(Platform::Unix, "", "", "relative", "").is_none());
+        assert_eq!(
+            resolve(Platform::Unix, "/srv/creds.json", "/config", "/home", ""),
+            Some(PathBuf::from("/srv/creds.json"))
+        );
+        assert_eq!(
+            resolve(
+                Platform::Windows,
+                "",
+                "/ignored",
+                "/ignored",
+                r"C:\Users\test\AppData\Roaming"
+            ),
+            Some(PathBuf::from(
+                r"C:\Users\test\AppData\Roaming\ghostlink\credentials.json"
+            ))
+        );
+        assert!(resolve(Platform::Windows, "", "", "", "relative").is_none());
+    }
 
     #[test]
     fn database_defaults_follow_each_platform() {

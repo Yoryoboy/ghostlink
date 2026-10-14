@@ -1752,7 +1752,7 @@ fn cli_provider_failure_is_typed_and_sanitized_on_stderr_only() {
 ///
 /// The CLI read is read-only; the MCP mutation surface stays the separate
 /// one-call authorization journey proven elsewhere. Nothing here touches the
-/// network, a live account, the OS keyring, or a persisted secret.
+/// network, a live account, a credential file, or a persisted secret.
 #[test]
 fn cli_and_mcp_reads_share_semantics_with_pinned_key_output() {
     let journey = Journey::new();

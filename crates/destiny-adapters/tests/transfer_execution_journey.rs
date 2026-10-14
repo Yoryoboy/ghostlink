@@ -614,7 +614,7 @@ impl Journey {
 
     /// True when every recorded request carried the injected fixture
     /// authorization, proving the read path never reached a provider without a
-    /// credential and never needed a live or OS-keyring one.
+    /// credential and never needed a live or stored one.
     fn all_profile_requests_authorized(&self) -> bool {
         self.profile_authorized
             .borrow()

@@ -409,7 +409,7 @@ where
 /// login command is never validated as a read; a login command is passed to the
 /// login factory before the read factory is touched. A parse, validation, or
 /// factory failure is reported before anything else is built, so a rejected
-/// request can never trigger a configuration read, a loopback bind, a keyring
+/// request can never trigger a configuration read, a loopback bind, a credential
 /// access, a database open, a clock read, or a network call.
 ///
 /// The `present` sink receives any operator instruction the selected login mode
@@ -2902,7 +2902,7 @@ mod tests {
     fn the_production_boundary_rejects_invalid_arguments_without_reading_the_environment() {
         // `run_binary` builds only the infallible production factory. Because a
         // rejected request never reaches the factory, this touches no
-        // environment variable, keyring, database, clock, or transport.
+        // environment variable, credential file, database, clock, or transport.
         let output: ProcessOutput = run_binary(argv(&["inspect-item", "--unknown"]));
         assert_eq!(output.exit_code, 2);
         assert_eq!(

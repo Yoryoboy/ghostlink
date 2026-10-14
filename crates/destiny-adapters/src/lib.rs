@@ -6,7 +6,6 @@ pub mod bungie_throttle;
 pub mod calendar;
 pub mod clarity;
 pub mod clock;
-pub mod credential_store;
 pub mod equip;
 pub mod equip_items;
 pub mod file_credential_store;
@@ -52,7 +51,6 @@ pub mod uri_handler;
 pub mod weekly_profile;
 
 pub use clock::SystemClock;
-pub use credential_store::{CREDENTIAL_SERVICE, CREDENTIAL_USER, NativeCredentialStore};
 pub use equip::{
     BungieEquipGateway, EQUIP_ENDPOINT, EQUIP_RESPONSE_LIMIT, EquipApiKey, EquipBearerToken,
     EquipHttpRequest, EquipHttpResponse, EquipTransport, EquipTransportError, HttpEquipTransport,
@@ -63,6 +61,7 @@ pub use equipment_capacity_policy::{
     PINNED_EQUIPMENT_CAPACITY_VERSION, decode_equipment_capacity_evidence,
     pinned_equipment_capacity_policy, qualify_pinned_equipment_capacity,
 };
+pub use file_credential_store::FileCredentialStore;
 pub use instanced_pull::{
     BungieInstancedPullGateway, HttpInstancedPullTransport, INSTANCED_PULL_ENDPOINT,
     INSTANCED_PULL_RESPONSE_LIMIT, InstancedPullApiKey, InstancedPullBearerToken,

@@ -32,7 +32,7 @@
 //! # CLI process boundary
 //!
 //! The `ghostlink` process cannot be driven to the SQLite success path
-//! offline: its production composition loads the OS-keyring credential before it
+//! offline: its production composition loads the stored credential file before it
 //! opens the store, so without a live credential it exits before any read. The
 //! success-path streams are therefore proven through the CLI runner that produces
 //! those exact bytes, and the real child process is exercised for the sanitized
@@ -498,8 +498,8 @@ fn cli_binary() -> Option<PathBuf> {
 
 /// Runs the real `ghostlink` child process with a cleared environment.
 ///
-/// The environment is cleared so no ambient `DBUS_SESSION_BUS_ADDRESS` or
-/// inherited credential reaches the keyring seam; only `PATH` and `HOME` are
+/// The environment is cleared so no ambient credential path override or
+/// inherited credential reaches the credential store; only `PATH` and `HOME` are
 /// restored, plus the exact configuration the caller supplies.
 fn cli_process(
     binary: &Path,
@@ -671,8 +671,8 @@ fn serialized_error_shapes_never_carry_a_shared_sentinel() {
 /// The real `ghostlink` child process sanitizes both streams, including the
 /// JSON failure shape, and never echoes secret-bearing configuration.
 ///
-/// The success path is out of reach offline (the production composition loads an
-/// OS-keyring credential before it opens the store), so this runs the real
+/// The success path is out of reach offline (the production composition loads the
+/// stored credential file before it opens the store), so this runs the real
 /// process only for the sanitized failure and rejected-request paths. An
 /// unopenable database path guarantees the process fails before any read, so the
 /// check can never reach the network even on a machine holding a credential.
