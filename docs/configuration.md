@@ -5,8 +5,8 @@ account: install, run `ghostlink` for the setup wizard, and sign in. See
 [the README](../README.md) for the quick path. The current source checkout still
 awaits owner provisioning of public application defaults, as noted below.
 
-The CLI and MCP server resolve configuration themselves and share the OS
-keyring. Overrides are mainly for development or self-hosting. OAuth uses
+The CLI and MCP server resolve configuration themselves and share one
+[credential file](#credential-file). Overrides are mainly for development or self-hosting. OAuth uses
 `BUNGIE_PUBLIC_CLIENT_ID`, `BUNGIE_CALLBACK_URI` and
 `BUNGIE_REGISTERED_CALLBACK_URI`; the two callback values must match exactly,
 including case. Optional `BUNGIE_CLIENT_SECRET` and
@@ -120,10 +120,45 @@ validation, including an invalid broker URL when a secret is present.
 
 Both renewable modes require `BUNGIE_PUBLIC_CLIENT_ID` for reads as well as
 login. Login stores refresh tokens (approximately 90 days) alongside the access
-credential in the OS keyring. CLI and MCP automatically refresh expiring access
-credentials and persist rotated refresh tokens. Login reports renewable status
+credential in the [credential file](#credential-file). CLI and MCP automatically
+refresh expiring access credentials and persist rotated refresh tokens. Login reports renewable status
 when the exchange returns a refresh grant. Public mode remains unchanged and
 requires browser reauthorization when its access token expires.
+
+## Credential file
+
+Sign-in stores the access token, its expiry and, in renewable modes, the refresh
+token in one plain-text JSON file. No keyring, Secret Service or D-Bus session is
+used, so authentication and renewal work the same on desktops and headless
+servers.
+
+| Platform | Default location |
+| --- | --- |
+| Linux and other Unix | `$XDG_CONFIG_HOME/ghostlink/credentials.json`, else `~/.config/ghostlink/credentials.json` |
+| Windows | `%APPDATA%\ghostlink\credentials.json` |
+
+`GHOSTLINK_CREDENTIALS_FILE` overrides the location (process environment only).
+The file is separate from `config.env` and from the inventory database.
+
+- **Not encrypted.** Any process running as the same user can read it. Do not
+  commit it to a dotfiles repository or copy it into shared backups.
+- **Private permissions.** On Unix a missing directory is created `0700` and the
+  file is always written `0600`. A file that group or others can access is
+  refused with `credential storage is unavailable`; fix it with
+  `chmod 600 ~/.config/ghostlink/credentials.json`. On Windows the per-user
+  profile's access control applies.
+- **Atomic writes.** Saves replace the file through a temporary sibling and a
+  rename, so readers never see a partial file.
+- **One refresh at a time.** CLI and MCP share the file. Bungie rotates the
+  refresh token on every renewal, so a renewal holds an exclusive lock on the
+  empty sibling `credentials.json.lock` and rereads the file first; a process
+  whose token another process already rotated adopts the new one.
+- **Never rendered.** Tokens never appear in logs, errors, MCP output or agent
+  prompts.
+
+Earlier releases kept tokens in the OS keyring. Those entries are not read or
+migrated: run `ghostlink login` once after upgrading. Deleting
+`credentials.json` signs you out.
 
 
 ## Runtime configuration and authorization

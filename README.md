@@ -51,8 +51,8 @@ Windows self-uninstall safely refuses and provides manual guidance.
 See [uninstall safety and outcomes](docs/cli.md#uninstall).
 
 No Bungie developer account or config file is needed for the official release.
-Linux needs a running Secret Service keyring (GNOME Keyring or KWallet with
-Secret Service enabled) and `libdbus-1`, normally present on desktop distros.
+No keyring or D-Bus session is needed either, so headless servers work: sign-in
+stores tokens in a private plain-text file (see [credential file](docs/configuration.md#credential-file)).
 
 > Release preparation is still in progress: this checkout's official application
 > defaults await owner provisioning, and release installation/live sign-in await
@@ -167,8 +167,8 @@ ghostlink agents uninstall --agent pi --mcp
 
 Use `--skill` or `--mcp` on install/uninstall to select just one integration.
 Either way, sign in once with `ghostlink login` if you skipped wizard sign-in.
-The CLI and `destiny-mcp` share the OS keyring; MCP needs no separate login and
-no tokens pass through the agent.
+The CLI and `destiny-mcp` share one credential file; MCP needs no separate login
+and no tokens pass through the agent.
 
 ### Option A: MCP server
 
@@ -251,7 +251,9 @@ out to the CLI.
 
 ## Privacy and security
 
-Tokens stay in the OS keyring, not in a config file or agent prompt. The official
+Tokens stay in `~/.config/ghostlink/credentials.json` (mode `0600`), never in an
+agent prompt. The file is **not encrypted**: any process running as your user can
+read it, so keep it out of dotfile repositories and backups you share. The official
 [token broker](broker/README.md) only exchanges and refreshes OAuth tokens; it
 stores nothing and never sees game API traffic. Game requests go directly to
 Bungie.
