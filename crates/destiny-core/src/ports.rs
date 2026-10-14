@@ -2041,6 +2041,44 @@ pub trait CredentialStore {
     fn save(&mut self, credential: AccessCredential) -> Result<(), AppError>;
     fn load(&self) -> Result<Option<AccessCredential>, AppError>;
     fn delete(&mut self) -> Result<(), AppError>;
+
+    /// Enters the exclusive section in which a session reloads, refreshes and
+    /// saves the stored credential.
+    ///
+    /// Bungie rotates the refresh token on every refresh, so processes that
+    /// share one store (the CLI and the MCP server) must refresh one at a time
+    /// and must reload before refreshing. A store that only one process can
+    /// reach keeps this default, which excludes nothing.
+    fn lock_for_refresh(&self) -> Result<CredentialRefreshGuard, AppError> {
+        Ok(CredentialRefreshGuard::unguarded())
+    }
+}
+
+/// Holds a [`CredentialStore::lock_for_refresh`] section until dropped.
+pub struct CredentialRefreshGuard {
+    _held: Option<Box<dyn Send>>,
+}
+
+impl CredentialRefreshGuard {
+    /// A guard that excludes nothing.
+    pub fn unguarded() -> Self {
+        Self { _held: None }
+    }
+
+    /// Keeps `held` alive, and so the section it represents, until dropped.
+    pub fn new(held: impl Send + 'static) -> Self {
+        Self {
+            _held: Some(Box::new(held)),
+        }
+    }
+}
+
+impl fmt::Debug for CredentialRefreshGuard {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialRefreshGuard")
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(test)]

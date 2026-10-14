@@ -19,7 +19,9 @@
 //! - every failure maps to [`ErrorCategory::CredentialStoreUnavailable`] and
 //!   never renders the path, the file contents or any token byte;
 //! - parsing is strict and bounded: unknown versions or fields, missing or
-//!   unpaired fields, and empty or oversized tokens fail closed.
+//!   unpaired fields, and empty or oversized tokens fail closed;
+//! - token refresh is serialized across processes with an exclusive lock on a
+//!   private, empty sibling `credentials.json.lock`.
 //!
 //! File format, version 1 (expiries are Unix seconds; the two refresh fields
 //! are present together or not at all):
@@ -35,8 +37,8 @@
 //! ```
 
 use destiny_core::{
-    AccessCredential, AccessCredentialMetadata, AppError, CredentialMaterial, CredentialStore,
-    ErrorCategory, RefreshGrant, RefreshToken, Timestamp,
+    AccessCredential, AccessCredentialMetadata, AppError, CredentialMaterial,
+    CredentialRefreshGuard, CredentialStore, ErrorCategory, RefreshGrant, RefreshToken, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -232,6 +234,36 @@ impl CredentialStore for FileCredentialStore {
             .read_to_end(&mut bytes)
             .map_err(|_| credential_store_unavailable())?;
         decode(&bytes).map(Some)
+    }
+
+    /// Locks a private, empty sibling `<file>.lock`, never the credential file
+    /// itself, which atomic saves replace. The lock is the operating system's
+    /// exclusive advisory file lock and is released when the guard is dropped,
+    /// including when the process exits.
+    fn lock_for_refresh(&self) -> Result<CredentialRefreshGuard, AppError> {
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(credential_store_unavailable)?;
+        let mut name = self
+            .path
+            .file_name()
+            .ok_or_else(credential_store_unavailable)?
+            .to_os_string();
+        name.push(".lock");
+        create_private_dir(parent).map_err(|_| credential_store_unavailable())?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options
+            .open(parent.join(name))
+            .map_err(|_| credential_store_unavailable())?;
+        file.lock().map_err(|_| credential_store_unavailable())?;
+        Ok(CredentialRefreshGuard::new(file))
     }
 
     fn delete(&mut self) -> Result<(), AppError> {
@@ -510,6 +542,43 @@ mod tests {
         std::fs::write(fixture.0.join("ghostlink"), b"not a directory").unwrap();
         let error = fixture.store().save(with_grant()).unwrap_err();
         assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
+    }
+
+    #[test]
+    fn refresh_lock_excludes_a_second_holder_until_released() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let fixture = Fixture::new();
+        let first = fixture.store().lock_for_refresh().unwrap();
+        let acquired = Arc::new(AtomicBool::new(false));
+        let waiter = {
+            // A separately opened lock file, as another process would open it.
+            let store = fixture.store();
+            let acquired = acquired.clone();
+            std::thread::spawn(move || {
+                let _second = store.lock_for_refresh().unwrap();
+                acquired.store(true, Ordering::SeqCst);
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(!acquired.load(Ordering::SeqCst));
+        drop(first);
+        waiter.join().unwrap();
+        assert!(acquired.load(Ordering::SeqCst));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refresh_lock_file_is_private_and_holds_no_credential() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new();
+        drop(fixture.store().lock_for_refresh().unwrap());
+        let lock = fixture.path().with_file_name("credentials.json.lock");
+        let metadata = std::fs::metadata(&lock).unwrap();
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(metadata.len(), 0);
+        let dir = std::fs::metadata(fixture.path().parent().unwrap()).unwrap();
+        assert_eq!(dir.permissions().mode() & 0o777, 0o700);
     }
 
     #[test]

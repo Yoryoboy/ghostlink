@@ -60,10 +60,20 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> CredentialSource
 /// Refresh at or inside this many seconds before access expiry.
 pub const ACCESS_REFRESH_MARGIN_SECONDS: u64 = 60;
 
-/// Loads the store once at construction, avoiding repeated keyring reads on every
+fn outside_margin(now: u64, credential: &AccessCredential) -> bool {
+    // Saturation preserves the strict margin comparison even near u64::MAX.
+    now.saturating_add(ACCESS_REFRESH_MARGIN_SECONDS) < credential.metadata.expires_at.seconds()
+}
+
+/// Loads the store once at construction, avoiding a store read on every
 /// provider request. The lock covers refresh, persistence, and cache replacement
 /// so concurrent callers see the same newly refreshed credential. Clones share
 /// that state, allowing profile and transfer gateways to use one session.
+///
+/// Across processes, a refresh runs inside the store's
+/// [`CredentialStore::lock_for_refresh`] section and first reloads the stored
+/// credential, so a session whose cache another process made stale adopts the
+/// rotated credential instead of spending an already-rotated refresh token.
 ///
 /// Persistence is best-effort after refresh: a failed save must not discard a
 /// usable (possibly rotated) token. This process retains it; the next process
@@ -115,10 +125,24 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> CredentialSource
             .clone()
             .ok_or_else(|| AppError::new(ErrorCategory::AuthorizationRequired))?;
         let now = self.clock.now()?.seconds();
-        // Saturation preserves the strict margin comparison even near u64::MAX.
-        if now.saturating_add(ACCESS_REFRESH_MARGIN_SECONDS)
-            < credential.metadata.expires_at.seconds()
-        {
+        if outside_margin(now, &credential) {
+            return Ok(credential);
+        }
+        // Another process sharing the store may already have rotated the
+        // refresh token this cache holds; reload inside the exclusive section
+        // and refresh only if the stored credential still needs it.
+        let _section = state.store.lock_for_refresh()?;
+        let credential = match state.store.load() {
+            Ok(Some(stored)) => stored,
+            Ok(None) => {
+                state.credential = None;
+                return Err(AppError::new(ErrorCategory::AuthorizationRequired));
+            }
+            // An unreadable store keeps this process on its cached credential.
+            Err(_) => credential,
+        };
+        state.credential = Some(credential.clone());
+        if outside_margin(now, &credential) {
             return Ok(credential);
         }
         let Some(grant) = credential
@@ -378,6 +402,122 @@ mod tests {
             );
         }
         assert_eq!(source.state.lock().unwrap().refresh.calls, 1);
+    }
+    /// One store shared by several sessions, as the CLI and the MCP server
+    /// share one credential file. The guard marks the refresh section held.
+    #[derive(Clone, Default)]
+    struct SharedStore {
+        credential: Arc<std::sync::Mutex<Option<AccessCredential>>>,
+        held: Arc<std::sync::atomic::AtomicBool>,
+        locks: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    struct HeldFlag(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for HeldFlag {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl CredentialStore for SharedStore {
+        fn save(&mut self, credential: AccessCredential) -> Result<(), AppError> {
+            *self.credential.lock().unwrap() = Some(credential);
+            Ok(())
+        }
+        fn load(&self) -> Result<Option<AccessCredential>, AppError> {
+            Ok(self.credential.lock().unwrap().clone())
+        }
+        fn delete(&mut self) -> Result<(), AppError> {
+            *self.credential.lock().unwrap() = None;
+            Ok(())
+        }
+        fn lock_for_refresh(&self) -> Result<destiny_core::CredentialRefreshGuard, AppError> {
+            use std::sync::atomic::Ordering;
+            assert!(!self.held.swap(true, Ordering::SeqCst), "lock is exclusive");
+            self.locks.fetch_add(1, Ordering::SeqCst);
+            Ok(destiny_core::CredentialRefreshGuard::new(HeldFlag(
+                self.held.clone(),
+            )))
+        }
+    }
+    fn shared_source(
+        store: &SharedStore,
+        result: Result<AccessCredential, AppError>,
+    ) -> RefreshingCredentialSource<SharedStore, ScriptedRefresh, FakeClock> {
+        RefreshingCredentialSource::new(
+            store.clone(),
+            ScriptedRefresh { result, calls: 0 },
+            FakeClock::fixed(Timestamp::new(100)),
+        )
+        .unwrap()
+    }
+    #[test]
+    fn stale_session_adopts_a_credential_rotated_by_another_process() {
+        let mut store = SharedStore::default();
+        store
+            .save(credential(160, Some(("old-refresh", 1000))))
+            .unwrap();
+        let rotated = credential(1000, Some(("new-refresh", 2000)));
+        let first = shared_source(&store, Ok(rotated.clone()));
+        // Loaded before the first session rotated the shared refresh token.
+        let second = shared_source(
+            &store,
+            Err(AppError::new(ErrorCategory::ProviderUnavailable)),
+        );
+        assert_eq!(first.current().unwrap(), rotated);
+        assert_eq!(second.current().unwrap(), rotated);
+        assert_eq!(second.state.lock().unwrap().refresh.calls, 0);
+        assert_eq!(store.load().unwrap(), Some(rotated));
+    }
+    #[test]
+    fn refresh_and_save_run_inside_the_store_refresh_lock() {
+        use std::sync::atomic::Ordering;
+        struct CheckingRefresh(Arc<std::sync::atomic::AtomicBool>);
+        impl TokenRefresh for CheckingRefresh {
+            fn refresh(&mut self, _: &RefreshToken) -> Result<AccessCredential, AppError> {
+                assert!(self.0.load(Ordering::SeqCst), "refresh outside the lock");
+                Ok(credential(1000, Some(("new-refresh", 2000))))
+            }
+        }
+        let mut store = SharedStore::default();
+        store
+            .save(credential(160, Some(("old-refresh", 1000))))
+            .unwrap();
+        let source = RefreshingCredentialSource::new(
+            store.clone(),
+            CheckingRefresh(store.held.clone()),
+            FakeClock::fixed(Timestamp::new(100)),
+        )
+        .unwrap();
+        source.current().unwrap();
+        source.current().unwrap();
+        assert_eq!(store.locks.load(Ordering::SeqCst), 1);
+        assert!(!store.held.load(Ordering::SeqCst));
+        assert_eq!(
+            store.load().unwrap().unwrap().metadata.expires_at,
+            Timestamp::new(1000)
+        );
+    }
+    #[test]
+    fn fresh_credential_never_takes_the_refresh_lock() {
+        let mut store = SharedStore::default();
+        store.save(credential(161, None)).unwrap();
+        let source = shared_source(&store, Ok(credential(1000, None)));
+        source.current().unwrap();
+        assert_eq!(store.locks.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn credential_removed_by_another_process_requires_authorization() {
+        let mut store = SharedStore::default();
+        store
+            .save(credential(160, Some(("old-refresh", 1000))))
+            .unwrap();
+        let source = shared_source(&store, Ok(credential(1000, None)));
+        store.delete().unwrap();
+        assert_eq!(
+            source.current().unwrap_err().category(),
+            ErrorCategory::AuthorizationRequired
+        );
+        assert_eq!(source.state.lock().unwrap().refresh.calls, 0);
+        assert_eq!(store.load().unwrap(), None);
     }
     struct SaveFailureStore(InMemoryCredentialStore);
     impl CredentialStore for SaveFailureStore {
