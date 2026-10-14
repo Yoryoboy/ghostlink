@@ -357,3 +357,102 @@ fn concurrent_complete_claims_only_once() {
     }
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[test]
+fn callback_boundaries_keep_pending_until_the_base_is_accepted() {
+    let home = home("https-boundaries");
+    start_defaults(&home);
+    let before = std::fs::read(pending_file(&home)).unwrap();
+    for base in [
+        "https://evil.example/callback",
+        "https://ghostlink-token-broker.93jads.workers.dev/foreign",
+        "https://user@ghostlink-token-broker.93jads.workers.dev/callback",
+        "https://@ghostlink-token-broker.93jads.workers.dev/callback",
+        "https:////@ghostlink-token-broker.93jads.workers.dev/callback",
+        "HTTPS://ghostlink-token-broker.93jads.workers.dev/callback",
+        "https://ghostlink-token-broker.93jads.workers.dev/callback/",
+        "https://ghostlink-token-broker.93jads.workers.dev/%63allback",
+        "https://ghostlink-token-broker.93jads.workers.dev:0/callback",
+    ] {
+        let uri = format!("{base}?state=foreign&code=CANARY");
+        let out = ghostlink_defaults(&home, &["login", "complete", &uri], None);
+        assert_eq!(out.status.code(), Some(10), "{base}");
+        assert!(out.stdout.is_empty());
+        assert_eq!(out.stderr, b"error: authorization state was rejected\n");
+        assert_eq!(std::fs::read(pending_file(&home)).unwrap(), before);
+    }
+    for base in [
+        HTTPS_CALLBACK,
+        CALLBACK,
+        "https://GHOSTLINK-TOKEN-BROKER.93jads.workers.dev/callback",
+        "https://ghostlink-token-broker.93jads.workers.dev:443/callback",
+    ] {
+        start_defaults(&home);
+        let uri = format!("{base}?state=foreign&code=CANARY");
+        let out = ghostlink_defaults(&home, &["login", "complete", &uri], None);
+        assert_eq!(out.status.code(), Some(10), "{base}");
+        assert!(out.stdout.is_empty());
+        assert_eq!(
+            out.stderr,
+            b"error: authorization state was rejected\n\
+the pending login was used; start again with: ghostlink login start\n"
+        );
+        assert!(!pending_file(&home).exists());
+    }
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn https_config_validation_preserves_pending_on_rejection() {
+    let home = home("https-config-boundaries");
+    let dir = home.join("config/ghostlink");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.env");
+    let write_config = |base: &str| {
+        std::fs::write(
+            &path,
+            format!("BUNGIE_CALLBACK_URI={base}\nBUNGIE_REGISTERED_CALLBACK_URI={base}\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    for base in [
+        CALLBACK,
+        HTTPS_CALLBACK,
+        "https://GHOSTLINK-TOKEN-BROKER.93jads.workers.dev/callback",
+        "https://ghostlink-token-broker.93jads.workers.dev:443/callback",
+        "https://ghostlink-token-broker.93jads.workers.dev/callback/",
+        "https://ghostlink-token-broker.93jads.workers.dev/%63allback",
+    ] {
+        write_config(base);
+        start_defaults(&home);
+        let uri = format!("{base}?state=foreign&code=CANARY");
+        let out = ghostlink_defaults(&home, &["login", "complete", &uri], None);
+        assert_eq!(out.status.code(), Some(10), "{base}");
+        assert!(!pending_file(&home).exists());
+    }
+    write_config(HTTPS_CALLBACK);
+    start_defaults(&home);
+    let before = std::fs::read(pending_file(&home)).unwrap();
+    for base in [
+        "http://example.test/callback",
+        "https://user@example.test/callback",
+        "https://@example.test/callback",
+        "https://example.test/callback?",
+        "https://example.test/callback#",
+        "https://example.test:0/callback",
+        "https:////@example.test/callback",
+        "HTTPS://example.test/callback",
+    ] {
+        write_config(base);
+        let out = ghostlink_defaults(&home, &["login", "start"], None);
+        assert_eq!(out.status.code(), Some(52), "{base}");
+        assert!(out.stdout.is_empty());
+        assert_eq!(
+            out.stderr,
+            b"error: required runtime configuration is missing or invalid\n"
+        );
+        assert_eq!(std::fs::read(pending_file(&home)).unwrap(), before);
+    }
+    std::fs::remove_dir_all(home).unwrap();
+}
