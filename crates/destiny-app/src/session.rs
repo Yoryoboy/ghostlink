@@ -39,7 +39,7 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> ConfiguredCredentialSource<S
                     store,
                     refresh: build()?,
                     credential: Some(credential),
-                    unsaved: false,
+                    unsaved: None,
                 })),
                 clock: Arc::new(clock),
             })),
@@ -88,9 +88,9 @@ struct SessionState<S, R> {
     store: S,
     refresh: R,
     credential: Option<AccessCredential>,
-    /// The cached credential is a rotation the store failed to persist, so the
-    /// stored record holds an already spent refresh grant.
-    unsaved: bool,
+    /// The refresh grant this process spent on a rotation the store failed to
+    /// persist; a stored record still holding it is a stale predecessor.
+    unsaved: Option<destiny_core::RefreshToken>,
 }
 
 impl<S: CredentialStore, R: TokenRefresh, C: Clock> Clone for RefreshingCredentialSource<S, R, C> {
@@ -110,7 +110,7 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> RefreshingCredentialSource<S
                 store,
                 refresh,
                 credential,
-                unsaved: false,
+                unsaved: None,
             })),
             clock: Arc::new(clock),
         })
@@ -138,9 +138,16 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> CredentialSource
         // and refresh only if the stored credential still needs it.
         let _section = state.store.lock_for_refresh()?;
         let credential = match state.store.load() {
-            // Keep this process's newer rotation and retry persisting it.
-            Ok(_) if state.unsaved => {
-                state.unsaved = state.store.save(credential.clone()).is_err();
+            // Keep this process's newer rotation over its stale predecessor and
+            // retry persisting it; a deletion or another login still wins.
+            Ok(Some(stored))
+                if state.unsaved.is_some()
+                    && stored.refresh_grant().map(|grant| &grant.token)
+                        == state.unsaved.as_ref() =>
+            {
+                if state.store.save(credential.clone()).is_ok() {
+                    state.unsaved = None;
+                }
                 credential
             }
             Ok(Some(stored)) => stored,
@@ -170,7 +177,10 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> CredentialSource
         if refreshed.refresh_grant().is_none() {
             refreshed = refreshed.with_refresh_grant(grant.clone());
         }
-        state.unsaved = state.store.save(refreshed.clone()).is_err();
+        state.unsaved = match state.store.save(refreshed.clone()) {
+            Ok(()) => None,
+            Err(_) => Some(grant.token.clone()),
+        };
         state.credential = Some(refreshed.clone());
         Ok(refreshed)
     }
@@ -616,5 +626,39 @@ mod tests {
             stored.refresh_grant().unwrap().token.as_bytes(),
             b"new-refresh"
         );
+    }
+    #[test]
+    fn an_unsaved_rotation_honors_a_concurrent_logout_or_newer_login() {
+        for concurrent in [None, Some(credential(900, Some(("relogin-refresh", 1000))))] {
+            let mut inner = InMemoryCredentialStore::default();
+            inner
+                .save(credential(150, Some(("old-refresh", 1000))))
+                .unwrap();
+            let source = RefreshingCredentialSource::new(
+                FlakySaveStore { inner, failures: 1 },
+                RecordingRefresh(Vec::new()),
+                FakeClock::fixed(Timestamp::new(100)),
+            )
+            .unwrap();
+            source.current().unwrap();
+            // Another process logs out or logs in again before the next renewal.
+            let mut state = source.state.lock().unwrap();
+            state.store.inner = InMemoryCredentialStore::default();
+            if let Some(newer) = concurrent.clone() {
+                state.store.inner.save(newer).unwrap();
+            }
+            drop(state);
+            let result = source.current();
+            let state = source.state.lock().unwrap();
+            assert_eq!(state.store.load().unwrap(), concurrent);
+            match concurrent {
+                None => assert_eq!(
+                    result.unwrap_err().category(),
+                    ErrorCategory::AuthorizationRequired
+                ),
+                Some(newer) => assert_eq!(result.unwrap(), newer),
+            }
+            assert_eq!(state.refresh.0, [b"old-refresh".to_vec()]);
+        }
     }
 }
