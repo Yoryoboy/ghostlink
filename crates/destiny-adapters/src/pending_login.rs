@@ -103,13 +103,19 @@ fn decode(bytes: &[u8]) -> Result<PendingLogin, AppError> {
     })
 }
 
+/// Creates a missing directory `0700`, and refuses an existing one that group or
+/// others may write, like the credential file's directory.
 #[cfg(unix)]
 fn create_private_dir(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(path)
+        .create(path)?;
+    if fs::metadata(path)?.permissions().mode() & 0o022 != 0 {
+        return Err(std::io::Error::from(ErrorKind::PermissionDenied));
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -468,6 +474,19 @@ mod tests {
             0o644,
         );
         assert_sanitized(&fixture.store().load().unwrap_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_group_or_other_writable_directory_is_refused() {
+        let fixture = Fixture::new();
+        let dir = fixture.path().parent().unwrap().to_path_buf();
+        fs::create_dir_all(&dir).unwrap();
+        set_mode(&dir, 0o770);
+        assert_sanitized(&fixture.store().save(&pending(STATE, 1)).unwrap_err());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        set_mode(&dir, 0o755);
+        fixture.store().save(&pending(STATE, 1)).unwrap();
     }
 
     #[test]
