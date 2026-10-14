@@ -143,9 +143,10 @@ The file is separate from `config.env` and from the inventory database.
 - **Not encrypted.** Any process running as the same user can read it. Do not
   commit it to a dotfiles repository or copy it into shared backups.
 - **Private permissions.** On Unix a missing directory is created `0700` and the
-  file is always written `0600`. An already existing directory keeps its
-  permissions; the `0600` file is what protects the tokens. Tighten the
-  directory too with `chmod 700 ~/.config/ghostlink`. A file that group or others can access is
+  file is always written `0600`. An already existing directory is not changed,
+  but one that group or others can write is refused with `credential storage is
+  unavailable`, because they could delete the file or its refresh lock; fix it
+  with `chmod 700 ~/.config/ghostlink`. A file that group or others can access is
   refused with `credential storage is unavailable`; fix it with
   `chmod 600 ~/.config/ghostlink/credentials.json`. On Windows the per-user
   profile's access control applies.

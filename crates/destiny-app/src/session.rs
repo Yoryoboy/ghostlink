@@ -39,6 +39,7 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> ConfiguredCredentialSource<S
                     store,
                     refresh: build()?,
                     credential: Some(credential),
+                    unsaved: false,
                 })),
                 clock: Arc::new(clock),
             })),
@@ -87,6 +88,9 @@ struct SessionState<S, R> {
     store: S,
     refresh: R,
     credential: Option<AccessCredential>,
+    /// The cached credential is a rotation the store failed to persist, so the
+    /// stored record holds an already spent refresh grant.
+    unsaved: bool,
 }
 
 impl<S: CredentialStore, R: TokenRefresh, C: Clock> Clone for RefreshingCredentialSource<S, R, C> {
@@ -106,6 +110,7 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> RefreshingCredentialSource<S
                 store,
                 refresh,
                 credential,
+                unsaved: false,
             })),
             clock: Arc::new(clock),
         })
@@ -133,6 +138,11 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> CredentialSource
         // and refresh only if the stored credential still needs it.
         let _section = state.store.lock_for_refresh()?;
         let credential = match state.store.load() {
+            // Keep this process's newer rotation and retry persisting it.
+            Ok(_) if state.unsaved => {
+                state.unsaved = state.store.save(credential.clone()).is_err();
+                credential
+            }
             Ok(Some(stored)) => stored,
             Ok(None) => {
                 state.credential = None;
@@ -160,7 +170,7 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> CredentialSource
         if refreshed.refresh_grant().is_none() {
             refreshed = refreshed.with_refresh_grant(grant.clone());
         }
-        let _ = state.store.save(refreshed.clone());
+        state.unsaved = state.store.save(refreshed.clone()).is_err();
         state.credential = Some(refreshed.clone());
         Ok(refreshed)
     }
@@ -551,5 +561,60 @@ mod tests {
         let state = source.state.lock().unwrap();
         assert_eq!(state.refresh.calls, 1);
         assert_eq!(state.store.load().unwrap(), Some(old));
+    }
+    /// A store whose first save fails, as on a briefly full filesystem.
+    struct FlakySaveStore {
+        inner: InMemoryCredentialStore,
+        failures: usize,
+    }
+    impl CredentialStore for FlakySaveStore {
+        fn load(&self) -> Result<Option<AccessCredential>, AppError> {
+            self.inner.load()
+        }
+        fn save(&mut self, credential: AccessCredential) -> Result<(), AppError> {
+            if self.failures > 0 {
+                self.failures -= 1;
+                return Err(AppError::new(ErrorCategory::LocalStorage));
+            }
+            self.inner.save(credential)
+        }
+        fn delete(&mut self) -> Result<(), AppError> {
+            panic!("refresh never deletes")
+        }
+    }
+    /// Records the refresh token each renewal spends.
+    struct RecordingRefresh(Vec<Vec<u8>>);
+    impl TokenRefresh for RecordingRefresh {
+        fn refresh(&mut self, token: &RefreshToken) -> Result<AccessCredential, AppError> {
+            self.0.push(token.as_bytes().to_vec());
+            Ok(credential(150, Some(("new-refresh", 1000))))
+        }
+    }
+    #[test]
+    fn an_unsaved_rotation_is_kept_instead_of_the_spent_stored_grant() {
+        let mut inner = InMemoryCredentialStore::default();
+        inner
+            .save(credential(150, Some(("old-refresh", 1000))))
+            .unwrap();
+        // Both credentials sit inside the refresh margin at t=100, so every
+        // call renews; the first save fails as on a briefly full filesystem.
+        let source = RefreshingCredentialSource::new(
+            FlakySaveStore { inner, failures: 1 },
+            RecordingRefresh(Vec::new()),
+            FakeClock::fixed(Timestamp::new(100)),
+        )
+        .unwrap();
+        source.current().unwrap();
+        source.current().unwrap();
+        let state = source.state.lock().unwrap();
+        assert_eq!(
+            state.refresh.0,
+            [b"old-refresh".to_vec(), b"new-refresh".to_vec()]
+        );
+        let stored = state.store.load().unwrap().unwrap();
+        assert_eq!(
+            stored.refresh_grant().unwrap().token.as_bytes(),
+            b"new-refresh"
+        );
     }
 }

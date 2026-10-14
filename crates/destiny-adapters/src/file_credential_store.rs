@@ -130,13 +130,19 @@ fn decode(bytes: &[u8]) -> Result<AccessCredential, AppError> {
     })
 }
 
+/// Creates a missing directory `0700`, and refuses an existing one that group or
+/// others may write: they could unlink the credential or its refresh lock.
 #[cfg(unix)]
 fn create_private_dir(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(path)
+        .create(path)?;
+    if fs::metadata(path)?.permissions().mode() & 0o022 != 0 {
+        return Err(std::io::Error::from(ErrorKind::PermissionDenied));
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -317,6 +323,29 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_group_or_other_writable_directory_is_refused_for_saves_and_locks() {
+        use std::os::unix::fs::PermissionsExt;
+        for mode in [0o770, 0o707, 0o777] {
+            let fixture = Fixture::new();
+            let dir = fixture.path().parent().unwrap().to_path_buf();
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+            let error = fixture.store().save(with_grant()).unwrap_err();
+            assert_eq!(error.category(), ErrorCategory::CredentialStoreUnavailable);
+            assert!(fixture.store().lock_for_refresh().is_err(), "{mode:o}");
+            assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "{mode:o}");
+        }
+        // A common existing 0755 directory stays usable.
+        let fixture = Fixture::new();
+        let dir = fixture.path().parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        fixture.store().save(with_grant()).unwrap();
+        assert!(fixture.store().lock_for_refresh().is_ok());
     }
 
     #[cfg(unix)]
