@@ -4,7 +4,7 @@ compatibility_date = "2026-10-01"
 
 [vars]
 BUNGIE_CLIENT_ID = "55099"
-ALLOWED_REDIRECT_URI = "ghostlink://oauth/callback"
+ALLOWED_REDIRECT_URIS = "https://ghostlink-token-broker.93jads.workers.dev/callback,ghostlink://oauth/callback"
 BUNGIE_TOKEN_ENDPOINT = "https://www.bungie.net/platform/app/oauth/token/"
 
 # Store BUNGIE_CLIENT_SECRET with `wrangler secret put`, never in this file.
