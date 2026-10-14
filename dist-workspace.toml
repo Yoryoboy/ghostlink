@@ -10,6 +10,8 @@ install-path = "CARGO_HOME"
 install-updater = true
 # Build only the release package, not standalone MCP or its offline fixture.
 precise-builds = true
+# Pull requests do not publish anything; skip the release workflow on them.
+pr-run-mode = "skip"
 
 [dist.dependencies.apt]
 libdbus-1-dev = "*"
