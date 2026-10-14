@@ -33,6 +33,7 @@ pub use loadout_action::{
 pub mod lock;
 pub mod manifest;
 pub mod oauth;
+pub mod pending_login;
 pub mod profile;
 pub mod profile_gateway;
 mod public_milestones;
@@ -78,6 +79,7 @@ pub use oauth::{
     HeadlessBrowserAuthorization, LoopbackCallbackReceiver, SshTarget, SystemCommandLauncher,
     authorization_url, browser_command,
 };
+pub use pending_login::{PendingLogin, PendingLoginStore};
 pub use profile::{decode_profile, decode_profile_with_observations};
 pub use profile_gateway::{
     BungieProfileGateway, HttpProfileTransport, MEMBERSHIP_ENDPOINT, MEMBERSHIP_RESPONSE_LIMIT,

@@ -121,6 +121,30 @@ where
         Ok(AuthorizationOutcome::Started)
     }
 
+    /// Resumes an authorization that an earlier process began and persisted.
+    ///
+    /// The service re-enters `Authorizing` with the persisted state and expiry,
+    /// so [`Self::handle_callback`] applies the same expiry, state, replay and
+    /// exchange rules as a login that began in this process. Like `begin`, it
+    /// never replaces a pending or authorized session.
+    pub fn resume(
+        &mut self,
+        state: AuthorizationState,
+        expires_at: Timestamp,
+    ) -> Result<(), AppError> {
+        match self.state {
+            AuthState::SignedOut | AuthState::ReauthorizationRequired => {}
+            AuthState::Authorizing { .. } => {
+                return Err(AppError::new(ErrorCategory::AlreadyAuthorizing));
+            }
+            AuthState::Authorized { .. } => {
+                return Err(AppError::new(ErrorCategory::AlreadyAuthorized));
+            }
+        }
+        self.state = AuthState::Authorizing { state, expires_at };
+        Ok(())
+    }
+
     pub fn receive_callback(&mut self) -> Result<AuthorizationOutcome, AppError> {
         let callback = self.callback.receive()?;
         self.handle_callback(callback)
@@ -361,6 +385,152 @@ mod tests {
             );
             assert_eq!(service.begin(), Ok(AuthorizationOutcome::Started));
             service
+        }
+
+        /// A service for a process that never called `begin`: it only resumes.
+        fn resuming_service(
+            now: u64,
+        ) -> AuthorizationService<
+            DeterministicRandom,
+            RecordingBrowser,
+            QueuedCallbackReceiver,
+            QueuedTokenExchange,
+            InMemoryCredentialStore,
+            FakeClock,
+        > {
+            let mut exchange = QueuedTokenExchange::default();
+            exchange.outcomes.push_back(Ok(credential(100)));
+            AuthorizationService::new(
+                DeterministicRandom::new([]),
+                RecordingBrowser::default(),
+                QueuedCallbackReceiver::default(),
+                exchange,
+                InMemoryCredentialStore::default(),
+                FakeClock::fixed(Timestamp::new(now)),
+                20,
+            )
+        }
+
+        fn code_callback(state: &[u8]) -> AuthorizationCallback {
+            callback(
+                &AuthorizationState::from_bytes(state),
+                CallbackResult::Code(AuthorizationCode::from_bytes(b"code-sentinel")),
+            )
+        }
+
+        #[test]
+        fn a_resumed_authorization_completes_through_the_unchanged_callback_rules() {
+            let mut service = resuming_service(10);
+            service
+                .resume(
+                    AuthorizationState::from_bytes(b"persisted-state"),
+                    Timestamp::new(30),
+                )
+                .unwrap();
+            assert!(matches!(service.state(), AuthState::Authorizing { .. }));
+            assert_eq!(
+                service.handle_callback(code_callback(b"persisted-state")),
+                Ok(AuthorizationOutcome::Authorized(AccessCredentialMetadata {
+                    expires_at: Timestamp::new(100)
+                }))
+            );
+            assert!(matches!(service.state(), AuthState::Authorized { .. }));
+        }
+
+        #[test]
+        fn a_resumed_authorization_past_its_expiry_is_expired_without_an_exchange() {
+            let mut service = resuming_service(30);
+            service
+                .resume(
+                    AuthorizationState::from_bytes(b"persisted-state"),
+                    Timestamp::new(30),
+                )
+                .unwrap();
+            assert_eq!(
+                service.handle_callback(code_callback(b"persisted-state")),
+                Ok(AuthorizationOutcome::Expired)
+            );
+            assert_eq!(service.exchange.outcomes.len(), 1);
+            assert!(matches!(service.state(), AuthState::SignedOut));
+        }
+
+        #[test]
+        fn a_resumed_authorization_rejects_a_foreign_state_without_an_exchange() {
+            let mut service = resuming_service(10);
+            service
+                .resume(
+                    AuthorizationState::from_bytes(b"persisted-state"),
+                    Timestamp::new(30),
+                )
+                .unwrap();
+            assert_eq!(
+                service.handle_callback(code_callback(b"other-state")),
+                Ok(AuthorizationOutcome::StateMismatch)
+            );
+            assert_eq!(service.exchange.outcomes.len(), 1);
+        }
+
+        #[test]
+        fn a_resumed_authorization_reports_denied_and_cancelled_callbacks() {
+            for (result, expected) in [
+                (CallbackResult::Denied, AuthorizationOutcome::Denied),
+                (CallbackResult::Cancelled, AuthorizationOutcome::Cancelled),
+            ] {
+                let mut service = resuming_service(10);
+                service
+                    .resume(
+                        AuthorizationState::from_bytes(b"persisted-state"),
+                        Timestamp::new(30),
+                    )
+                    .unwrap();
+                let state = AuthorizationState::from_bytes(b"persisted-state");
+                assert_eq!(
+                    service.handle_callback(callback(&state, result)),
+                    Ok(expected)
+                );
+            }
+        }
+
+        #[test]
+        fn a_resumed_authorization_is_single_use() {
+            let mut service = resuming_service(10);
+            service
+                .resume(
+                    AuthorizationState::from_bytes(b"persisted-state"),
+                    Timestamp::new(30),
+                )
+                .unwrap();
+            service
+                .handle_callback(code_callback(b"persisted-state"))
+                .unwrap();
+            assert_eq!(
+                service.handle_callback(code_callback(b"persisted-state")),
+                Ok(AuthorizationOutcome::Replay)
+            );
+        }
+
+        #[test]
+        fn resume_refuses_to_replace_a_pending_or_authorized_session() {
+            let mut pending = started_service(InMemoryCredentialStore::default());
+            assert_eq!(
+                pending
+                    .resume(AuthorizationState::from_bytes(b"x"), Timestamp::new(30))
+                    .unwrap_err()
+                    .category(),
+                ErrorCategory::AlreadyAuthorizing
+            );
+            let mut authorized = resuming_service(10);
+            authorized
+                .resume(AuthorizationState::from_bytes(b"s"), Timestamp::new(30))
+                .unwrap();
+            authorized.handle_callback(code_callback(b"s")).unwrap();
+            assert_eq!(
+                authorized
+                    .resume(AuthorizationState::from_bytes(b"s"), Timestamp::new(30))
+                    .unwrap_err()
+                    .category(),
+                ErrorCategory::AlreadyAuthorized
+            );
         }
 
         #[test]
