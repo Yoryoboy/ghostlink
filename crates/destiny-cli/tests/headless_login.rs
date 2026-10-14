@@ -162,3 +162,80 @@ fn cancel_discards_the_pending_login_and_is_idempotent() {
     );
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+#[test]
+fn rejected_input_preserves_private_pending_bytes() {
+    let home = home("verifier-rejections");
+    start(&home);
+    let path = pending_file(&home);
+    let before = std::fs::read(&path).unwrap();
+    for input in [
+        "".to_owned(),
+        "ghostlink://oauth/callback?state=x&state=y&code=CANARY-CODE\n".to_owned(),
+        "ghostlink://oauth/callback?state=x&code=CANARY-CODE&error=access_denied\n".to_owned(),
+        "x".repeat(8193),
+    ] {
+        let out = ghostlink(&home, &["login", "complete", "-"], Some(&input));
+        assert_eq!(out.status.code(), Some(10));
+        assert!(out.stdout.is_empty());
+        assert_eq!(out.stderr, b"error: authorization state was rejected\n");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    for mode in [0o640, 0o604, 0o644] {
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        let out = ghostlink(
+            &home,
+            &["login", "complete", "-"],
+            Some("ghostlink://oauth/callback?state=foreign&code=CANARY-CODE\n"),
+        );
+        assert_eq!(out.status.code(), Some(51));
+        assert!(out.stdout.is_empty());
+        assert_eq!(out.stderr, b"error: local storage failed\n");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    assert!(!home.join("ghostlink/credentials.json").exists());
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
+fn concurrent_complete_claims_only_once() {
+    let home = home("verifier-concurrency");
+    for _ in 0..25 {
+        start(&home);
+        let barrier = std::sync::Barrier::new(2);
+        let mut outputs = std::thread::scope(|scope| {
+            let invoke = || {
+                barrier.wait();
+                ghostlink(
+                    &home,
+                    &["login", "complete", "-"],
+                    Some("ghostlink://oauth/callback?state=foreign&code=CANARY-CODE\n"),
+                )
+            };
+            let first = scope.spawn(invoke);
+            let second = scope.spawn(invoke);
+            [first.join().unwrap(), second.join().unwrap()]
+        });
+        assert!(
+            outputs
+                .iter()
+                .all(|out| out.status.code() == Some(10) && out.stdout.is_empty())
+        );
+        outputs.sort_by(|a, b| a.stderr.cmp(&b.stderr));
+        assert_eq!(
+            outputs[0].stderr,
+            b"error: authorization state was rejected\nthe pending login was used; start again with: ghostlink login start\n"
+        );
+        assert_eq!(
+            outputs[1].stderr,
+            b"error: no pending headless login; run ghostlink login start first\n"
+        );
+        assert!(!pending_file(&home).exists());
+        assert!(!home.join("ghostlink/credentials.json").exists());
+        assert_eq!(
+            std::fs::read_dir(home.join("ghostlink")).unwrap().count(),
+            0
+        );
+    }
+    std::fs::remove_dir_all(home).unwrap();
+}
