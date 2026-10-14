@@ -178,20 +178,34 @@ pub struct LoginCallbackUri {
 
 impl LoginCallbackUri {
     /// Parses and validates one product callback URI.
+    ///
+    /// Two bases are accepted: the exact product custom scheme
+    /// (`ghostlink://oauth/callback`), and a plain HTTPS URL. The HTTPS base is
+    /// the broker callback page the provider now redirects to: it needs a host,
+    /// rejects any userinfo, query, or fragment, and allows only an explicit
+    /// nonzero port. An HTTP loopback redirect is still refused, because the
+    /// provider rejects it for this registered public client.
     pub fn parse(value: &str) -> Result<Self, AppError> {
         if value.is_empty() || value.trim() != value {
             return Err(AppError::configuration());
         }
         let url = Url::parse(value).map_err(|_| AppError::configuration())?;
-        if url.scheme() != PRODUCT_CALLBACK_SCHEME
-            || url.username() != ""
-            || url.password().is_some()
-            || url.host_str() != Some(PRODUCT_CALLBACK_HOST)
-            || url.port().is_some()
-            || url.path() != PRODUCT_CALLBACK_PATH
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err(AppError::configuration());
+        }
+        let is_product = url.scheme() == PRODUCT_CALLBACK_SCHEME
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.host_str() == Some(PRODUCT_CALLBACK_HOST)
+            && url.port().is_none()
+            && url.path() == PRODUCT_CALLBACK_PATH;
+        let is_https = url.scheme() == "https"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.host_str().is_some()
+            && url.port() != Some(0)
+            && has_plain_https_authority(value);
+        if !is_product && !is_https {
             return Err(AppError::configuration());
         }
         Ok(Self {
@@ -1037,13 +1051,19 @@ mod tests {
         );
         assert!(LoginRuntimeConfig::from_values(&unregistered).is_err());
 
-        // Only the exact registered custom scheme, authority, and path are
-        // accepted; an HTTP loopback redirect the provider rejects, a different
-        // scheme or host, a port, a query, or a fragment is refused, so login
-        // cannot be pointed off the registered callback.
+        // Two callback bases are accepted: the exact product custom scheme, and
+        // a plain HTTPS URL with a host and no userinfo, query, or fragment. An
+        // HTTP loopback redirect the provider rejects, a different scheme or
+        // host, a port on the custom scheme, a query, a fragment, or any
+        // userinfo is refused, so login cannot be pointed off the registered
+        // callback.
         for value in [
             "http://127.0.0.1:43127/oauth/callback",
-            "https://oauth/callback",
+            "https://user@example.test/callback",
+            "https://@example.test/callback",
+            "https://example.test/callback?code=secret",
+            "https://example.test/callback#fragment",
+            "https:///callback",
             "ghostlink://evil.test/callback",
             "ghostlink://oauth:1337/callback",
             "ghostlink://oauth/callback?code=secret",
@@ -1057,6 +1077,57 @@ mod tests {
                 "{value} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn login_callback_accepts_the_product_and_plain_https_shapes() {
+        use super::LoginCallbackUri;
+        for value in [
+            "ghostlink://oauth/callback",
+            "https://ghostlink-token-broker.93jads.workers.dev/callback",
+            "https://example.test/callback",
+            "https://example.test:8443/callback",
+        ] {
+            assert_eq!(LoginCallbackUri::parse(value).unwrap().exact(), value);
+        }
+        for value in [
+            "http://example.test/callback",
+            "https://user@example.test/callback",
+            "https://user:pass@example.test/callback",
+            "https://@example.test/callback",
+            "https://example.test/callback?code=secret",
+            "https://example.test/callback#fragment",
+            "https:///callback",
+            "https://example.test:0/callback",
+            "evil://oauth/callback",
+        ] {
+            assert!(
+                LoginCallbackUri::parse(value).is_err(),
+                "{value} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn compiled_official_defaults_use_the_https_broker_callback() {
+        let expected = "https://ghostlink-token-broker.93jads.workers.dev/callback";
+        assert_eq!(crate::defaults::BUNGIE_CALLBACK_URI, Some(expected));
+        assert_eq!(
+            crate::defaults::BUNGIE_REGISTERED_CALLBACK_URI,
+            Some(expected)
+        );
+        let values = super::exact_source_values_with_defaults(
+            &[
+                super::CLIENT_ID,
+                super::CALLBACK_URI,
+                super::REGISTERED_CALLBACK_URI,
+            ],
+            &super::OFFICIAL,
+            |_| None,
+        )
+        .unwrap();
+        let config = LoginRuntimeConfig::from_values(&values).unwrap();
+        assert_eq!(config.callback_uri().exact(), expected);
     }
 
     #[test]

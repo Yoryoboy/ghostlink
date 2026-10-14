@@ -712,6 +712,7 @@ mod tests {
 
     const CLIENT_SENTINEL: &str = "sentinel-client-id";
     const REDIRECT_SENTINEL: &str = "http://127.0.0.1:43127/sentinel-callback";
+    const HTTPS_REDIRECT: &str = "https://ghostlink-token-broker.93jads.workers.dev/callback";
     const CODE_SENTINEL: &str = "sentinel-authorization-code";
     const TOKEN_SENTINEL: &str = "sentinel-access-token";
 
@@ -884,6 +885,28 @@ mod tests {
                 .headers()
                 .iter()
                 .any(|(name, _)| *name == "authorization" || name.eq_ignore_ascii_case("x-api-key"))
+        );
+    }
+
+    #[test]
+    fn authorization_code_exchange_sends_the_configured_https_redirect_uri() {
+        let body = success_body("3600");
+        let mut exchange = BungieTokenExchange::new(
+            CLIENT_SENTINEL,
+            HTTPS_REDIRECT,
+            FakeTransport::with(Ok(json_response(200, &body))),
+            FakeClock(1000),
+        )
+        .expect("the https redirect is a safe public value");
+        exchange
+            .exchange(AuthorizationCode::from_bytes(CODE_SENTINEL))
+            .expect("the exchange succeeds");
+        let encoded = exchange.transport().last_request().encoded_body();
+        assert!(
+            encoded.contains(
+                "redirect_uri=https%3A%2F%2Fghostlink-token-broker.93jads.workers.dev%2Fcallback"
+            ),
+            "{encoded}"
         );
     }
 

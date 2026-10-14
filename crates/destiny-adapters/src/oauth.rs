@@ -26,6 +26,8 @@ const AUTHORIZE_ENDPOINT: &str = "https://www.bungie.net/en/oauth/authorize";
 const PRODUCT_CALLBACK_SCHEME: &str = "ghostlink";
 const PRODUCT_CALLBACK_HOST: &str = "oauth";
 const PRODUCT_CALLBACK_PATH: &str = "/callback";
+/// The exact custom-scheme callback the desktop handler still delivers.
+const PRODUCT_CALLBACK_CANONICAL: &str = "ghostlink://oauth/callback";
 
 /// The largest pasted callback line this receiver accepts, in bytes.
 ///
@@ -454,15 +456,10 @@ impl ProductCallback {
             return Err(AppError::configuration());
         }
         let url = Url::parse(value).map_err(|_| AppError::configuration())?;
-        if url.scheme() != PRODUCT_CALLBACK_SCHEME
-            || url.username() != ""
-            || url.password().is_some()
-            || url.host_str() != Some(PRODUCT_CALLBACK_HOST)
-            || url.port().is_some()
-            || url.path() != PRODUCT_CALLBACK_PATH
-            || url.query().is_some()
-            || url.fragment().is_some()
-        {
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err(AppError::configuration());
+        }
+        if !is_product_callback_base(&url) && !is_https_callback_base(value, &url) {
             return Err(AppError::configuration());
         }
         Ok(Self {
@@ -473,6 +470,37 @@ impl ProductCallback {
     fn canonical(&self) -> &str {
         &self.canonical
     }
+}
+
+/// True when `url` is exactly the custom-scheme product callback base.
+fn is_product_callback_base(url: &Url) -> bool {
+    url.scheme() == PRODUCT_CALLBACK_SCHEME
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host_str() == Some(PRODUCT_CALLBACK_HOST)
+        && url.port().is_none()
+        && url.path() == PRODUCT_CALLBACK_PATH
+}
+
+/// True when `url` is a plain HTTPS callback base: host present, no userinfo,
+/// and only an explicit nonzero port. Query and fragment are the caller's
+/// concern, because a pasted callback carries its query.
+fn is_https_callback_base(value: &str, url: &Url) -> bool {
+    url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host_str().is_some()
+        && url.port() != Some(0)
+        && has_plain_https_authority(value)
+}
+
+/// Checks the raw text, because the URL parser silently drops empty userinfo
+/// and extra authority slashes (`https:////@host`).
+fn has_plain_https_authority(value: &str) -> bool {
+    value.strip_prefix("https://").is_some_and(|rest| {
+        let authority = rest.split('/').next().unwrap_or_default();
+        !authority.is_empty() && !authority.contains('@')
+    })
 }
 
 /// The authorization URL one manual-paste attempt recorded for the operator.
@@ -736,24 +764,26 @@ fn read_bounded_callback_line<R: BufRead>(
     Ok(line)
 }
 
-/// Parses one pasted callback against the exact registered callback.
+/// Parses one pasted callback against the accepted callback bases.
+///
+/// A pasted value is accepted when its scheme, host, and path base equals the
+/// configured callback or the custom-scheme link the broker page offers
+/// (`ghostlink://oauth/callback`), so an HTTPS-configured login can complete
+/// from either the copyable page URL or the desktop handler link. The query
+/// parsing rules are shared with every other callback path.
 fn parse_pasted_callback(raw: &[u8], expected: &str) -> Result<AuthorizationCallback, AppError> {
     let text = std::str::from_utf8(raw).map_err(|_| callback_rejected())?;
     let url = Url::parse(text).map_err(|_| callback_rejected())?;
-    if url.scheme() != PRODUCT_CALLBACK_SCHEME
-        || url.username() != ""
-        || url.password().is_some()
-        || url.host_str() != Some(PRODUCT_CALLBACK_HOST)
-        || url.port().is_some()
-        || url.path() != PRODUCT_CALLBACK_PATH
-        || url.fragment().is_some()
+    if url.fragment().is_some()
+        || (!is_product_callback_base(&url) && !is_https_callback_base(text, &url))
     {
         return Err(callback_rejected());
     }
-    // The scheme, authority, and path must be exactly the registered callback.
+    // The scheme, authority, path, and port must be exactly one of the accepted
+    // callback bases.
     let mut base = url.clone();
     base.set_query(None);
-    if base.as_str() != expected {
+    if base.as_str() != expected && base.as_str() != PRODUCT_CALLBACK_CANONICAL {
         return Err(callback_rejected());
     }
     let mut state = None;
@@ -1502,6 +1532,81 @@ mod tests {
     }
 
     const PRODUCT_CALLBACK: &str = "ghostlink://oauth/callback";
+    const HTTPS_CALLBACK: &str = "https://ghostlink-token-broker.93jads.workers.dev/callback";
+
+    #[test]
+    fn product_callback_accepts_the_custom_scheme_and_plain_https_shapes() {
+        for value in [
+            PRODUCT_CALLBACK,
+            HTTPS_CALLBACK,
+            "https://example.test/callback",
+            "https://example.test:8443/callback",
+        ] {
+            assert!(
+                ProductCallback::parse(value).is_ok(),
+                "{value} should be accepted"
+            );
+        }
+        for value in [
+            "http://example.test/callback",
+            "https://user@example.test/callback",
+            "https://user:pass@example.test/callback",
+            "https://@example.test/callback",
+            "https://example.test/callback?code=x",
+            "https://example.test/callback#fragment",
+            "https:///callback",
+            "https://example.test:0/callback",
+        ] {
+            assert!(
+                ProductCallback::parse(value).is_err(),
+                "{value} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn authorization_url_uses_the_configured_https_redirect() {
+        let url = authorization_url(
+            "client",
+            HTTPS_CALLBACK,
+            &AuthorizationState::from_bytes(b"state-abc"),
+        )
+        .expect("an https registered callback is accepted");
+        let query = url.query().unwrap();
+        assert!(query.contains(
+            "redirect_uri=https%3A%2F%2Fghostlink-token-broker.93jads.workers.dev%2Fcallback"
+        ));
+        assert!(query.contains("state=state-abc"));
+    }
+
+    #[test]
+    fn manual_paste_receiver_accepts_either_callback_base_for_an_https_configuration() {
+        for pasted in [HTTPS_CALLBACK, PRODUCT_CALLBACK] {
+            let mut receiver = ManualPasteCallbackReceiver::new(
+                HTTPS_CALLBACK,
+                std::io::Cursor::new(format!("{pasted}?state=s&code=c\n").into_bytes()),
+            )
+            .unwrap();
+            let callback = receiver.receive().expect("an accepted callback base");
+            assert_eq!(callback.state.as_bytes(), b"s");
+            assert!(matches!(callback.result, CallbackResult::Code(_)));
+        }
+        for foreign in [
+            "https://evil.example/callback?state=s&code=c",
+            "https://ghostlink-token-broker.93jads.workers.dev/other?state=s&code=c",
+            "ghostlink://oauth/other?state=s&code=c",
+        ] {
+            let mut receiver = ManualPasteCallbackReceiver::new(
+                HTTPS_CALLBACK,
+                std::io::Cursor::new(format!("{foreign}\n").into_bytes()),
+            )
+            .unwrap();
+            assert_eq!(
+                receiver.receive().unwrap_err().category(),
+                ErrorCategory::CsrfStateMismatch
+            );
+        }
+    }
 
     #[test]
     fn authorize_url_accepts_the_product_custom_scheme() {
@@ -2276,6 +2381,28 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn handler_rendezvous_accepts_a_ghostlink_callback_with_an_https_configuration() {
+        let directory = HandlerDir::new("https-config");
+        let mut rendezvous =
+            CallbackRendezvous::bind_in(directory.path().to_path_buf(), HTTPS_CALLBACK)
+                .expect("an https configured callback binds a rendezvous");
+        let forward_directory = directory.path().to_path_buf();
+        let forwarder = thread::spawn(move || {
+            forward_callback_in(
+                &forward_directory,
+                "ghostlink://oauth/callback?state=safe-state&code=secret-code",
+            )
+        });
+        let callback = rendezvous
+            .receive()
+            .expect("the forwarded ghostlink callback arrives");
+        assert!(forwarder.join().expect("the forwarder thread").is_ok());
+        assert_eq!(callback.state.as_bytes(), b"safe-state");
+        assert!(matches!(callback.result, CallbackResult::Code(_)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn handler_rendezvous_times_out_without_a_callback_and_cleans_up() {
         let directory = HandlerDir::new("timeout");
         let mut rendezvous =
@@ -2298,6 +2425,7 @@ mod tests {
         let directory = HandlerDir::new("reject");
         for value in [
             "http://127.0.0.1:43127/oauth/callback?state=s&code=c",
+            "https://ghostlink-token-broker.93jads.workers.dev/callback?state=s&code=c",
             "ghostlink://evil.test/callback?state=s&code=c",
             "ghostlink://oauth/other?state=s&code=c",
             "ghostlink://oauth/callback?state=s&code=c#fragment",

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 const CALLBACK: &str = "ghostlink://oauth/callback";
+const HTTPS_CALLBACK: &str = "https://ghostlink-token-broker.93jads.workers.dev/callback";
 
 fn home(name: &str) -> PathBuf {
     let home =
@@ -53,6 +54,43 @@ fn json(bytes: &[u8]) -> serde_json::Value {
     serde_json::from_slice(bytes).expect("one JSON object")
 }
 
+/// Runs the binary with no callback environment, so the compiled defaults apply.
+fn ghostlink_defaults(home: &Path, args: &[&str], stdin: Option<&str>) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ghostlink"))
+        .args(args)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("DESTINY_DATABASE_PATH", home.join("db"))
+        .env(
+            "GHOSTLINK_CREDENTIALS_FILE",
+            home.join("ghostlink/credentials.json"),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut pipe = child.stdin.take().unwrap();
+    if let Some(text) = stdin {
+        pipe.write_all(text.as_bytes()).unwrap();
+    }
+    drop(pipe);
+    child.wait_with_output().unwrap()
+}
+
+fn start_defaults(home: &Path) -> serde_json::Value {
+    let out = ghostlink_defaults(home, &["--json", "login", "start"], None);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    json(&out.stdout)
+}
+
 fn start(home: &Path) -> serde_json::Value {
     let out = ghostlink(home, &["--json", "login", "start"], None);
     assert_eq!(
@@ -79,6 +117,86 @@ fn start_prints_the_pending_login_and_saves_a_private_file() {
         .permissions()
         .mode();
     assert_eq!(mode & 0o777, 0o600);
+    assert!(!home.join("ghostlink/credentials.json").exists());
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+#[test]
+fn compiled_https_defaults_accept_both_callback_bases_and_reject_a_foreign_host() {
+    let home = home("compiled-https");
+    let value = start_defaults(&home);
+    let url = value["authorization_url"].as_str().unwrap();
+    assert!(
+        url.contains(
+            "redirect_uri=https%3A%2F%2Fghostlink-token-broker.93jads.workers.dev%2Fcallback"
+        ),
+        "{url}"
+    );
+
+    // The configured HTTPS callback with a foreign state reaches state
+    // validation, so the shape was accepted and the pending login is consumed.
+    let configured = format!("{HTTPS_CALLBACK}?state=foreign-state&code=CANARY-CODE");
+    let out = ghostlink_defaults(&home, &["login", "complete", &configured], None);
+    assert_eq!(out.status.code(), Some(10));
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("CANARY-CODE"));
+    assert!(
+        !pending_file(&home).exists(),
+        "the configured HTTPS callback was accepted"
+    );
+
+    // The custom-scheme link the broker page offers is accepted too.
+    start_defaults(&home);
+    let custom = format!("{CALLBACK}?state=foreign-state&code=CANARY-CODE");
+    let out = ghostlink_defaults(&home, &["login", "complete", &custom], None);
+    assert_eq!(out.status.code(), Some(10));
+    assert!(
+        !pending_file(&home).exists(),
+        "the ghostlink callback was accepted"
+    );
+
+    // A foreign host is rejected as a malformed callback, so the pending login
+    // is kept and can be corrected, with no network exchange.
+    start_defaults(&home);
+    let foreign = "https://evil.example/callback?state=foreign-state&code=CANARY-CODE";
+    let out = ghostlink_defaults(&home, &["login", "complete", foreign], None);
+    assert_eq!(out.status.code(), Some(10));
+    assert!(out.stdout.is_empty());
+    assert_eq!(out.stderr, b"error: authorization state was rejected\n");
+    assert!(pending_file(&home).exists(), "a bad paste can be corrected");
+    assert!(!home.join("ghostlink/credentials.json").exists());
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+#[test]
+fn config_env_ghostlink_callback_still_completes_offline() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let home = home("config-env-ghostlink");
+    let dir = home.join("config/ghostlink");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(dir.join("config.env"))
+        .unwrap();
+    file.write_all(
+        b"BUNGIE_PUBLIC_CLIENT_ID=12345\nBUNGIE_CALLBACK_URI=ghostlink://oauth/callback\nBUNGIE_REGISTERED_CALLBACK_URI=ghostlink://oauth/callback\n",
+    )
+    .unwrap();
+    drop(file);
+
+    let value = start_defaults(&home);
+    let url = value["authorization_url"].as_str().unwrap();
+    assert!(
+        url.contains("redirect_uri=ghostlink%3A%2F%2Foauth%2Fcallback"),
+        "{url}"
+    );
+
+    let configured = format!("{CALLBACK}?state=foreign-state&code=CANARY-CODE");
+    let out = ghostlink_defaults(&home, &["login", "complete", &configured], None);
+    assert_eq!(out.status.code(), Some(10));
+    assert!(!pending_file(&home).exists());
     assert!(!home.join("ghostlink/credentials.json").exists());
     std::fs::remove_dir_all(&home).unwrap();
 }

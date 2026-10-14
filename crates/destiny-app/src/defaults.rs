@@ -8,9 +8,10 @@ pub(crate) const BUNGIE_API_KEY: Option<&'static str> = Some("8a6b807cfaf342f58b
 pub(crate) const BUNGIE_PUBLIC_CLIENT_ID: Option<&'static str> = Some("55099");
 pub(crate) const GHOSTLINK_TOKEN_BROKER_URL: Option<&'static str> =
     Some("https://ghostlink-token-broker.93jads.workers.dev");
-pub(crate) const BUNGIE_CALLBACK_URI: Option<&'static str> = Some("ghostlink://oauth/callback");
+pub(crate) const BUNGIE_CALLBACK_URI: Option<&'static str> =
+    Some("https://ghostlink-token-broker.93jads.workers.dev/callback");
 pub(crate) const BUNGIE_REGISTERED_CALLBACK_URI: Option<&'static str> =
-    Some("ghostlink://oauth/callback");
+    Some("https://ghostlink-token-broker.93jads.workers.dev/callback");
 /// Freshness TTL in seconds, parsed through the same validator as overrides.
 pub(crate) const DESTINY_FRESHNESS_TTL_SECONDS: Option<&'static str> = Some("900");
 
