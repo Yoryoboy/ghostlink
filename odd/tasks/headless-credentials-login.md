@@ -28,10 +28,10 @@ Delivery: #89 on `feat/file-credential-store` (from `main` `923eb15`); #90 on `f
 
 ## Tasks
 
-- [ ] T1 — S1, S4: file credential store adapter (JSON, 0700 dir / 0600 file, atomic temp+rename, no token in Debug/errors). Inline, test-first. Commit: —
-- [ ] T2 — S4: cross-process coordination: lock around refresh, reload from the file before refreshing, surface save failures. Inline, test-first. Commit: —
-- [ ] T3 — S1-S3: wire CLI and MCP to the file store; delete the keyring adapter, dependencies, `libdbus` packaging/CI requirement. Inline. Commit: —
-- [ ] T4 — S4: docs (README, docs/*, uninstall messaging, release notes). Inline. Commit: —
+- [x] T1 — S1, S4: file credential store adapter (JSON, 0700 dir / 0600 file, atomic temp+rename, no token in Debug/errors). Inline, test-first: RED (missing `FileCredentialStore`), GREEN 13 tests. Assess: medium, deferred to slice. Commit: `dba71e8`
+- [x] T2 — S4: cross-process coordination: `CredentialStore::lock_for_refresh` (default no-op), exclusive lock on `credentials.json.lock`, reload inside the lock and adopt a rotated credential; a removed file requires authorization. Save failure keeps the existing best-effort semantics (not surfaced; keeps a usable rotated token in-process). Test-first: RED 5 failures, GREEN session 16 + store 15. Assess: medium. Commit: `ab9572f`
+- [x] T3 — S1-S3: `destiny_app::credentials_file()` (`GHOSTLINK_CREDENTIALS_FILE`, `$XDG_CONFIG_HOME`, `~/.config`, `%APPDATA%`; path test); CLI read/login and MCP use `FileCredentialStore`; keyring adapter and 4 deps removed (Cargo.lock -352); `libdbus-1-dev` dropped from CI and dist, `pkg-config` kept (aws-lc-sys build dep). Public-binary check: no file exit 10, 0644 exit 50, expired exit 11, lock 0600. Workspace: 2049 passed, fmt/clippy clean. Assess: high (CI shell) → independent verify + native review offered. Commit: `97c66b2`
+- [x] T4 — S4: README, configuration (new `## Credential file`), development, cli, mcp, integration-assumptions (superseded note), release notes. Commit: `a047525`
 - [ ] T5 — S5, S6: pending login session + `login start` / `login complete`. Branch `feat/headless-login`. Inline, test-first. Commit: —
 - [ ] T6 — S6: headless login docs and release notes. Commit: —
 - [ ] T7 — S6: independent verification (security + delivery risk) and owner-run live validation on the home server. —
@@ -41,3 +41,4 @@ Delivery: #89 on `feat/file-credential-store` (from `main` `923eb15`); #90 on `f
 - **L1 (2026-10-14, owner, verbatim):** "quiero hacer las 89 y 90. me importan mas ahorita ya que donde estoy hacienod olas pruebas son en en mi home server. me gustaria. por ejemplo, con respecto a las credenciales quiero que por default sea guardar las credenicales en un archivo local en texto plano, tipo en un .ghostlink? dime tu. y la 90 es importante impleemnterlo por l oque te digo"
 - **L2 (owner decisions):** path `~/.config/ghostlink/credentials.json`; keyring "Eliminarlo"; migration "Re-login una vez (Recomendado)"; #90 "Paste no interactivo".
 - **L3 (exploration):** keyring adapter `crates/destiny-adapters/src/credential_store.rs` (binary `GLCR` v2, no file fallback by design); refresh write-back `crates/destiny-app/src/session.rs:136-139` ignores save errors and there is no cross-process lock while Bungie rotates refresh tokens; interactive paste login already exists (`login.rs`, `oauth.rs` `ManualPaste*`); Bungie has no device grant (`odd/tasks/destiny-oauth-foundations.md:36`); broker is a stateless `POST /token` Worker.
+- **L4 (design):** override `GHOSTLINK_CREDENTIALS_FILE` added for isolation/self-hosting, mirroring `GHOSTLINK_CONFIG_FILE`. Group/other-accessible file fails closed like `config.env`.
