@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 fn inspection() -> ItemInspection {
     ItemInspection {
+        wishlist: None,
         fragment_capacity: None,
         armor_model: None,
         perk_names: vec!["Frame".into()],

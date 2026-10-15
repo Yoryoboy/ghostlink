@@ -155,3 +155,25 @@ Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
   sections are shared `Arc<str>` (RED: `Arc::ptr_eq`); measured 204 MB of
   per-roll copies for 4.8 MB of distinct text, and a differential run of the
   real voltron sync went from 322 MB to 102 MB peak RSS (2f8cc0a vs new).
+- L13 (T3 split, parent): T3 became two units: T3a the inspect `wishlist`
+  field (core view, app builder, CLI human/JSON, MCP view) and T3b the
+  `is:wishlist`/`is:trashlist` filters. T3b needs new plumbing: no existing
+  filter reads the repository inside eval, and `evaluate_wishlist` needs a
+  perk-hash-to-name map for enhanced variants. The explorer also found
+  `is:wishlist` currently `Unsupported` in
+  `crates/destiny-core/src/search_query/registry.rs:158`, `is:trashlist` must
+  be inserted after `is:titan` (registry.rs:153) for the ascending-key test,
+  `ItemView` literal sites in core/adapters/MCP tests need updating, and
+  `crates/destiny-mcp/tests/stdio.rs:224-234` pins bare `wishlist:` as
+  unsupported, so the bare key must stay unsupported.
+- L14 (T3a decisions): the field is `Option<WishlistInspection>` on
+  `ItemInspection` (absent for non-weapons and with no list loaded). Access
+  follows the Clarity precedent: a defaulted `WorldDefinitionRepository::
+  lookup_wishlist_rolls` that returns `None` when no source is stored, so no
+  new bound and no fixture churn; the SQLite override uses a cheap
+  `SELECT EXISTS` presence check. Enhanced perks match by name because the
+  app resolves the wish-list perk hashes through the plug definitions. Views
+  are shared by CLI and MCP through `destiny-output/src/wishlist.rs`.
+  Evidence: core 18/18 (`--test wishlist`, includes `Arc::ptr_eq`,
+  inspection matching and the weapon-only rule), inspect integration 3/3
+  (`wishlist_inspect`, incl. CLI/MCP JSON parity and field absence).

@@ -376,3 +376,76 @@ pub trait WishlistRepository {
     /// The item's rolls plus wildcard rolls, in source order, then file order.
     fn wishlist_rolls(&self, item_hash: u32) -> Result<Vec<SourcedWishlistRoll>, AppError>;
 }
+
+/// One distinct matching section/notes group, cited for an agent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WishlistMatch {
+    pub source: String,
+    pub section: Option<String>,
+    /// Definition names of the roll's perks; an unknown hash stays numeric.
+    pub perks: Vec<String>,
+    /// Notes without the tag list.
+    pub notes: Option<String>,
+    pub tags: Vec<String>,
+}
+
+/// The wish-list opinion on one weapon instance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WishlistInspection {
+    /// `None` means no list has an opinion, never that the roll is bad.
+    pub verdict: WishlistVerdict,
+    pub matches: Vec<WishlistMatch>,
+    pub matches_total: usize,
+}
+
+/// Evaluates loaded rolls (in source, then file order) for a weapon instance.
+/// Wish lists cover weapons only, so any other slot yields `None`.
+pub fn inspect_wishlist(
+    slot: Option<crate::domain::ItemSlot>,
+    item_hash: u32,
+    rolls: &[SourcedWishlistRoll],
+    options: &[PlugOption],
+    perk_name: impl Fn(u32) -> Option<String>,
+) -> Option<WishlistInspection> {
+    if !crate::query::is_weapon_slot(slot) {
+        return None;
+    }
+    let evaluation = evaluate_wishlist(
+        item_hash,
+        rolls.iter().map(|sourced| &sourced.roll),
+        options,
+        &perk_name,
+    );
+    let matches = evaluation
+        .matches
+        .iter()
+        .map(|roll| {
+            // `evaluate_wishlist` returns references into `rolls`.
+            let source = rolls
+                .iter()
+                .find(|sourced| std::ptr::eq(&sourced.roll, *roll))
+                .map_or_else(String::new, |sourced| sourced.source.clone());
+            WishlistMatch {
+                source,
+                section: roll.section.as_deref().map(str::to_owned),
+                perks: roll
+                    .perks
+                    .iter()
+                    .map(|perk| perk_name(*perk).unwrap_or_else(|| perk.to_string()))
+                    .collect(),
+                notes: roll
+                    .notes
+                    .as_deref()
+                    .map(notes_text)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned),
+                tags: roll.notes.as_deref().map(notes_tags).unwrap_or_default(),
+            }
+        })
+        .collect();
+    Some(WishlistInspection {
+        verdict: evaluation.verdict,
+        matches,
+        matches_total: evaluation.total,
+    })
+}

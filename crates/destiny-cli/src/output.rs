@@ -1196,6 +1196,9 @@ fn inspection_human(inspection: &ItemInspection) -> String {
     if let Some(model) = &inspection.fragment_capacity {
         lines.push(destiny_output::armor_model::fragment_capacity_text(model));
     }
+    if let Some(wishlist) = &inspection.wishlist {
+        lines.extend(destiny_output::wishlist::wishlist_text(wishlist));
+    }
     lines.push(metadata_text(&inspection.metadata));
     lines.join("\n")
 }
@@ -1287,6 +1290,9 @@ fn inspection_json(inspection: &ItemInspection) -> String {
     }
     if let Some(model) = &inspection.fragment_capacity {
         value["fragment_capacity"] = destiny_output::armor_model::fragment_capacity_json(model);
+    }
+    if let Some(wishlist) = &inspection.wishlist {
+        value["wishlist"] = destiny_output::wishlist::wishlist_json(wishlist);
     }
     if !inspection.plug_details.is_empty() {
         value["plug_details"] = json!(inspection.plug_details.iter().map(|plug| with_insights(
@@ -2037,6 +2043,7 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            wishlist: None,
             fragment_capacity: None,
             armor_model: None,
             plug_details: Vec::new(),

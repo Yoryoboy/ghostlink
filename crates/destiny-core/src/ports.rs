@@ -421,6 +421,14 @@ pub trait WorldDefinitionRepository: DefinitionRepository {
     fn lookup_clarity_by_name(&self, _name: &str) -> Result<Vec<crate::ClarityInsight>, AppError> {
         Ok(Vec::new())
     }
+    /// Optional wish-list read: the item's rolls plus wildcard rolls in list
+    /// order, or `None` when no wish list is loaded at all.
+    fn lookup_wishlist_rolls(
+        &self,
+        _item_hash: u32,
+    ) -> Result<Option<Vec<crate::wishlist::SourcedWishlistRoll>>, AppError> {
+        Ok(None)
+    }
     /// Reads the official inventory tooltip without changing item identity.
     fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError>;
     fn lookup_milestone(&self, hash: u32) -> Result<Option<crate::MilestoneDefinition>, AppError>;
