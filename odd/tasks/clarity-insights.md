@@ -1,4 +1,4 @@
-# Clarity Community Insights — IN PROGRESS
+# Clarity Community Insights — COMPLETE
 
 ## Objective
 
@@ -52,15 +52,20 @@ Source: <https://github.com/Database-Clarity/Live-Clarity-Database>
 - [x] 2. PR B — exposure: `clarity` field on five surfaces with matching rule
       and variant marking; CLI JSON/human, MCP, parity tests.
 - [x] 3. PR C — agents: docs and skill rule to cite Clarity.
-- [ ] 4. Deliver chained PRs after checks: A/B copied-DB live checks passed;
-      C structural docs checks passed (runtime N/A). Publishing/CI pending.
+- [x] 4. Deliver chained PRs after checks: A/B copied-DB live checks passed;
+      C structural docs checks passed (runtime N/A). All PR CI passed and
+      A/B/C merged. No public release or installed-binary update.
 
 ## Current state
 
 PR A committed `8b18b98`; PR B committed `a5b30ab` after corrected live
-acceptance; PR C committed `fe438a7` after documentation checks. All remain
-local, not pushed. Delivery preparation in progress on
-`feature/clarity-agent-guidance`, stacked on PR B. Native RDD remains off.
+acceptance; PR C committed `fe438a7` after documentation checks, with tracking
+commit `83f2967`. Feature tracker #52 closed. All PRs merged into main:
+A #53 merge `6ec3117`, B #54 merge `dc41105`, C #55 merge `c353045`.
+B/C were retargeted to main only after their predecessor merged; each new
+base differed from the tested parent solely in public-release task documentation.
+All checks completed: broker/Linux/Windows/release-plan SUCCESS per PR;
+four release publication jobs SKIPPED, not executed. Native RDD remains off.
 All live checks used a copied DB; installed binaries and real DB unchanged.
 
 Delivery chain: A data -> B five-surface exposure -> C agent guidance.
@@ -68,9 +73,9 @@ Changed-line budgets: A 959, B 1,240, C 76 (including task evidence).
 Single slicing pass completed: A could split into three infrastructure units;
 B could split into four units but the matching foundation alone remains about
 550-650 lines. Preserve A/B/C is recommended, but the owner explicitly accepted the size exception for A/B via the
-`keep_three_size_exception` selection. Publish the existing three-slice chain. Alternative
+`keep_three_size_exception` selection. Delivered the existing three-slice chain. Alternative
 chain would grow to eight PRs; intermediate rewritten bases are not verified.
-Repository has no issues or PR template. Native workflows do not validate
+No PR template exists; feature discussion/approval is recorded in issue #52. Native workflows do not validate
 approved issue/type labels/branch regex; README requests issue discussion for
 large changes. Gentle AI skill-specific policy is not native Ghostlink CI. Only pre-existing
 inspection raw perk-hash parity difference remains a separate followup.
