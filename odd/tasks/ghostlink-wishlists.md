@@ -55,7 +55,8 @@ agents can answer "should I keep this drop?" with cited community opinion.
 ## Tasks
 
 - [x] T1 (S5) core: parser + matcher, pure, fixtures. Route: inline. Commit: 38b9b2a
-      (RDD assess: medium, not due; deferred to slice A close).
+      Native review review-b47ca34247689872 (base 2efa39b): approved,
+      acknowledged; 4 readability SUGGESTIONs, no blockers.
 - [ ] T2 (S1-S4) storage, voltron/local acquisition, sync seam, config key,
       sync output. Route: inline. Commit: —
 - [ ] T3 (S5) inspect `wishlist` field (core/app/CLI/MCP) and
@@ -100,3 +101,13 @@ Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
   composition `crates/destiny-cli/src/runtime.rs:456-525`, sync output
   `crates/destiny-cli/src/output.rs:576` (`render_manifest_with_clarity`),
   config keys and defaults `crates/destiny-app/src/config.rs:16-33,433-466`.
+- L6 (review, 2026-10-15): lineage review-efb27d9573371a93 (base 59a651e)
+  stuck on a gentle-ai admission defect (proof path with spaces truncated);
+  user chose "Abandonar y revisar solo el slice A". Abandoned
+  (operator_disposition, no captured work), restarted with base 2efa39b as
+  review-b47ca34247689872: readability + reliability approved, authority
+  burned. Advisory, non-blocking (wishlist.rs:57, 74, 101-102, 124): struct
+  instead of anonymous ParsedRoll tuple, clarify title:/@title: branch,
+  simplify sign parsing, name the 10-digit cap. Fix in T2: `notes_text`
+  cuts at the last `|tags:` while `notes_tags` reads from the last bare
+  `tags:`, so `foo tags:pve` disagrees between them.
