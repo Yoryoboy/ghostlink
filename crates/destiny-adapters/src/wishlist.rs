@@ -31,6 +31,15 @@ impl<T: VoltronTransport + ?Sized> VoltronTransport for Box<T> {
     }
 }
 
+/// Stands in when no HTTP client could be built: voltron is unavailable, while
+/// local lists, which need no network, still sync.
+pub struct UnavailableVoltron;
+impl VoltronTransport for UnavailableVoltron {
+    fn get(&mut self, _: Option<&str>) -> Result<WishlistFetch, AppError> {
+        Err(unavailable())
+    }
+}
+
 pub struct HttpVoltronTransport {
     client: reqwest::blocking::Client,
 }
