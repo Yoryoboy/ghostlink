@@ -545,9 +545,10 @@ impl<F: ManifestFoundations> ManifestFactory for ComposingManifestFactory<F> {
         report.wishlists = destiny_app::wishlist::sync_wishlists_after(
             config.wishlist_sources(),
             || {
-                foundations
+                let voltron = foundations
                     .voltron_transport()
-                    .map(destiny_adapters::wishlist::WishlistAdapter)
+                    .unwrap_or_else(|_| Box::new(destiny_adapters::wishlist::UnavailableVoltron));
+                Ok(destiny_adapters::wishlist::WishlistAdapter(voltron))
             },
             service.repository_mut(),
             checked_at,
@@ -2311,6 +2312,83 @@ mod tests {
                     rolls: 0,
                     skipped: 0,
                 }],
+            }
+        );
+    }
+
+    #[test]
+    fn local_wishlists_sync_without_a_voltron_transport() {
+        use super::ManifestFactory;
+        use destiny_app::wishlist::{WishlistSourceReport, WishlistSyncReport};
+
+        /// Fake foundations whose configuration also lists a local wish list.
+        struct WithLocalList {
+            inner: FakeManifestFoundations,
+            wishlists: String,
+        }
+        impl super::ManifestFoundations for WithLocalList {
+            type Transport = ManifestTransport;
+            type Clock = ScriptedClock;
+            type Repository = SqliteStore;
+            fn config(&mut self) -> Result<ReadRuntimeConfig, AppError> {
+                let mut values = HashMap::from([
+                    ("BUNGIE_API_KEY".to_string(), API_KEY_SENTINEL.to_string()),
+                    (
+                        "DESTINY_DATABASE_PATH".to_string(),
+                        DATABASE_SENTINEL.to_string(),
+                    ),
+                    (
+                        "DESTINY_FRESHNESS_TTL_SECONDS".to_string(),
+                        TTL_SECONDS.to_string(),
+                    ),
+                ]);
+                values.insert("GHOSTLINK_WISHLISTS".into(), self.wishlists.clone());
+                ReadRuntimeConfig::from_values(&values)
+            }
+            fn clock(&mut self) -> Result<Self::Clock, AppError> {
+                self.inner.clock()
+            }
+            fn transport(&mut self) -> Result<Self::Transport, AppError> {
+                self.inner.transport()
+            }
+            fn store(&mut self, config: &ReadRuntimeConfig) -> Result<Self::Repository, AppError> {
+                self.inner.store(config)
+            }
+        }
+
+        let list = std::env::temp_dir().join(format!(
+            "ghostlink-runtime-wishlist-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&list, "dimwishlist:item=-7\n").unwrap();
+        let key = list.to_string_lossy().into_owned();
+        let mut factory = super::ComposingManifestFactory::new(WithLocalList {
+            inner: FakeManifestFoundations {
+                log: log(),
+                store: Some(SqliteStore::open_in_memory().unwrap()),
+            },
+            wishlists: format!("voltron,{key}"),
+        });
+        let report = factory.sync_with_clarity();
+        std::fs::remove_file(&list).unwrap();
+        assert_eq!(
+            report.unwrap().wishlists,
+            WishlistSyncReport {
+                status: "partial",
+                sources: vec![
+                    WishlistSourceReport {
+                        source: "voltron".into(),
+                        status: "unavailable",
+                        rolls: 0,
+                        skipped: 0,
+                    },
+                    WishlistSourceReport {
+                        source: key,
+                        status: "updated",
+                        rolls: 1,
+                        skipped: 0,
+                    },
+                ],
             }
         );
     }
