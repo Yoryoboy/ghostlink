@@ -5,6 +5,13 @@ Draft for the next release candidate. Live checks remain on the
 
 ## Highlights
 
+- **Headless-friendly sign-in storage.** Tokens now live in a private plain-text
+  file, `~/.config/ghostlink/credentials.json` (`0600`), shared by CLI and MCP.
+  No keyring, Secret Service, D-Bus session or `libdbus` is required, so servers
+  over SSH work. The file is not encrypted; see the
+  [credential file](../configuration.md#credential-file) notes. Keyring tokens
+  from earlier releases are not migrated: run `ghostlink login` once. CLI and MCP
+  now renew one at a time and adopt a token the other already rotated.
 - Search owned inventory with DIM-style queries in CLI and MCP, ANDed with
   structured filters. Unsupported filters fail explicitly instead of being
   silently ignored. `ghostlink search-inventory --filters` lists the registry's

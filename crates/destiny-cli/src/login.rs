@@ -65,7 +65,7 @@ use destiny_adapters::oauth::{
     ManualPasteBrowserAuthorization, ManualPasteCallbackReceiver, NoEchoReader, TerminalEcho,
 };
 use destiny_adapters::{
-    BungieTokenExchange, HttpTokenTransport, NativeCredentialStore, SystemClock,
+    BungieTokenExchange, FileCredentialStore, HttpTokenTransport, SystemClock,
     SystemCommandLauncher, SystemSecureRandom,
 };
 use destiny_app::auth_ux::{AuthorizationMode, EnvironmentGuiDetector, select_mode};
@@ -240,7 +240,7 @@ pub trait LoginFactory {
 /// built, and adapters are assembled only inside [`LoginFactory::build`], which
 /// the process boundary calls only after a login command line parsed. A rejected
 /// command line therefore never reads configuration, locks standard input, touches
-/// the keyring, or launches a browser.
+/// the credential file, or launches a browser.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProductionLoginFactory;
 
@@ -1187,7 +1187,7 @@ impl TerminalEcho for SystemTerminalEcho {
 /// here, before the token transport or the credential store is constructed.
 struct LoginAdapters {
     exchange: BungieTokenExchange<HttpTokenTransport, SystemClock>,
-    store: NativeCredentialStore,
+    store: FileCredentialStore,
     clock: SystemClock,
 }
 
@@ -1230,7 +1230,7 @@ fn login_adapters(config: &LoginRuntimeConfig) -> Result<LoginAdapters, CliError
     .map_err(CliError::from)?;
     let exchange =
         configured_exchange(config, transport, SystemClock::new()).map_err(CliError::from)?;
-    let store = NativeCredentialStore::new().map_err(CliError::from)?;
+    let store = FileCredentialStore::new(destiny_app::credentials_file().map_err(CliError::from)?);
     Ok(LoginAdapters {
         exchange,
         store,
@@ -1283,7 +1283,7 @@ type ComposedLogin = LoginSession<
     SharedManualBrowser,
     ManualPasteCallbackReceiver<NoEchoReader<std::io::StdinLock<'static>, SystemTerminalEcho>>,
     BungieTokenExchange<HttpTokenTransport, SystemClock>,
-    NativeCredentialStore,
+    FileCredentialStore,
     SystemClock,
     SharedInstructionSource,
 >;
@@ -1334,7 +1334,7 @@ type ComposedHandlerLogin = LoginSession<
     SharedManualBrowser,
     destiny_adapters::oauth::CallbackRendezvous,
     BungieTokenExchange<HttpTokenTransport, SystemClock>,
-    NativeCredentialStore,
+    FileCredentialStore,
     SystemClock,
     SharedInstructionSource,
 >;

@@ -30,12 +30,12 @@
 //!
 //! The fallible acquisitions live behind the [`ReadFoundations`] seam so the
 //! ordering and the sanitized mapping are testable without an environment, a
-//! keyring, or a network, and the whole runtime lives behind [`RuntimeFactory`]
+//! credential file, or a network, and the whole runtime lives behind [`RuntimeFactory`]
 //! so the boundary can be driven with a supplied service.
 
 use std::fmt;
 
-use destiny_adapters::NativeCredentialStore;
+use destiny_adapters::FileCredentialStore;
 use destiny_adapters::SystemClock;
 use destiny_adapters::profile_gateway::{
     BungieProfileGateway, HttpProfileTransport, ProfileApiKey, ProfileTransport,
@@ -111,7 +111,7 @@ pub struct ProductionFoundations;
 
 impl ReadFoundations for ProductionFoundations {
     type Source = destiny_app::ConfiguredCredentialSource<
-        NativeCredentialStore,
+        FileCredentialStore,
         destiny_adapters::BungieTokenExchange<destiny_adapters::HttpTokenTransport, SystemClock>,
         SystemClock,
     >;
@@ -124,7 +124,7 @@ impl ReadFoundations for ProductionFoundations {
     }
 
     fn credential_source(&mut self, config: &ReadRuntimeConfig) -> Result<Self::Source, AppError> {
-        let store = NativeCredentialStore::new()?;
+        let store = FileCredentialStore::new(destiny_app::credentials_file()?);
         compose_credentials(config, store, configured_refresher, SystemClock::new())
     }
 
@@ -2571,7 +2571,7 @@ mod tests {
     #[test]
     fn the_production_factory_composes_the_real_adapters() {
         // Type-level proof that the production factory yields a runtime the
-        // runner can dispatch, without reading the environment or a keyring.
+        // runner can dispatch, without reading the environment or the credential file.
         fn assert_runtime_factory<F: RuntimeFactory>() {}
         assert_runtime_factory::<ComposingRuntimeFactory<ProductionFoundations>>();
     }

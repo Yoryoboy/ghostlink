@@ -46,8 +46,8 @@ use crate::{ComposedMutationService, QueryReadService, ReadToolServer};
 use clap::Parser;
 use destiny_adapters::sqlite::SqliteStore;
 use destiny_adapters::{
-    BungieProfileGateway, BungieTransferGateway, HttpProfileTransport, HttpTransferTransport,
-    NativeCredentialStore, ProfileApiKey, SystemClock, TransferApiKey,
+    BungieProfileGateway, BungieTransferGateway, FileCredentialStore, HttpProfileTransport,
+    HttpTransferTransport, ProfileApiKey, SystemClock, TransferApiKey,
 };
 use destiny_app::{
     AppError, Clock, CredentialStore, DefinitionReplacementInput, DefinitionRepository,
@@ -83,7 +83,7 @@ pub async fn run() {
 /// serves them over stdio.
 async fn serve_runtime() -> Result<(), AppError> {
     let config = ReadRuntimeConfig::from_env()?;
-    let store = NativeCredentialStore::new()?;
+    let store = FileCredentialStore::new(destiny_app::credentials_file()?);
     let server = compose_server(&config, store)?;
     serve_stdio(server).await
 }
@@ -93,7 +93,7 @@ async fn serve_runtime() -> Result<(), AppError> {
 /// The credential is loaded first, so a missing or unusable credential fails as
 /// a sanitized authorization error before any transport, database, or network
 /// work is attempted. This makes the composition root's failure paths testable
-/// with an injected store and no live keyring, provider, or database.
+/// with an injected store and no live credential file, provider, or database.
 ///
 /// One profile transport is shared; four independent read compositions and the
 /// mutation composition open the same SQLite database. Read schemas and tool
@@ -1426,7 +1426,7 @@ mod tests {
     fn composition_fails_before_any_adapter_work_when_the_credential_is_missing() {
         // The database path does not exist and the transport is never built,
         // because the missing credential fails first. This proves the ordering
-        // of the composition root without a live keyring, network, or database.
+        // of the composition root without a live credential file, network, or database.
         let error = compose_server(&config(), InMemoryCredentialStore::default())
             .expect_err("missing credential stops composition");
         assert_eq!(error.category(), ErrorCategory::AuthorizationRequired);

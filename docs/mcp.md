@@ -167,7 +167,7 @@ Install both binaries from a release and run `ghostlink` for setup (or
 `ghostlink login` for sign-in only). Register `destiny-mcp` in your agent using
 the wizard or the [manual instructions](../README.md#use-it-from-an-ai-agent).
 No config file or environment exports are needed with official release defaults;
-CLI and MCP share one keyring credential and automatically renew access tokens
+CLI and MCP share one [credential file](configuration.md#credential-file) and automatically renew access tokens
 in broker or confidential mode. See [configuration](configuration.md) for overrides.
 
 To launch the stdio server directly:
@@ -562,7 +562,7 @@ cargo test -p destiny-mcp --all-features --test stdio
 ```
 
 The fixture binary is never reachable from the product `destiny-mcp` binary and
-requires no credential, network, durable database, or native keyring.
+requires no credential, network, durable database, or credential file.
 Equip child-process sessions additionally compare complete CLI/MCP JSON for
 applied, no-op, refusal, partial progress and uncertainty, including profiles that
 would lag or fail on a subsequent read, with equipped non-equipment neighbors. These

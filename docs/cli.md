@@ -15,8 +15,8 @@ ghostlink update --json
 
 **Linux x86_64 GNU only.** This command validates the official installation and
 runs its sibling `ghostlink-update` directly, never an updater found on PATH.
-It needs no Bungie configuration, login, database initialization or keyring
-access, and does not elevate privileges. Configuration, data, credentials and
+It needs no Bungie configuration, login, database initialization or credential
+file access, and does not elevate privileges. Configuration, data, credentials and
 agent registrations are not removed. Restart MCP hosts afterward so they load
 the new `destiny-mcp` executable.
 
@@ -83,7 +83,7 @@ ghostlink uninstall --yes --json     # explicit authorization; never prompts
 
 **Linux x86_64 GNU only; no purge.** Stop MCP hosts and finish active login
 first. The command does not prove processes are inactive, terminate them, elevate,
-load Bungie configuration/dotenv, initialize SQLite or access the keyring.
+load Bungie configuration/dotenv, initialize SQLite or read the credential file.
 Windows refuses before lookup or launch: close Ghostlink, stop MCP hosts and active
 login, then use the original package manager or inspect the official receipt and
 remove only owned binaries/receipt from a separate PowerShell session. Remove
@@ -592,7 +592,7 @@ ghostlink sync-manifest          # or: ghostlink --json sync-manifest
 ```
 
 - The Manifest is public: the command needs only `BUNGIE_API_KEY` and
-  `DESTINY_DATABASE_PATH`, never an OAuth login, the keyring, or a client
+  `DESTINY_DATABASE_PATH`, never an OAuth login, the credential file, or a client
   secret.
 - It downloads the English `DestinyInventoryItemDefinition` table (about 10 MB
   gzip, about 200 MB uncompressed, decoded as a stream) plus the

@@ -121,7 +121,7 @@ pub fn render(reports: &[AgentReport], mode: OutputMode) -> ProcessOutput {
         exit_code,
     }
 }
-/// No dotenv, keyring, database, or provider composition on this path.
+/// No dotenv, credential file, database, or provider composition on this path.
 pub fn production(command: &AgentsCommand, mode: OutputMode) -> ProcessOutput {
     let home =
         std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);

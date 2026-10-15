@@ -58,10 +58,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # The Linux native credential store links libdbus through pkg-config.
+      # Native build scripts in the TLS stack may probe pkg-config.
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config
 
       # Formatting is platform independent; check it once.
       - name: Format

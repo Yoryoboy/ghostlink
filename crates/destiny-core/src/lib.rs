@@ -95,13 +95,14 @@ pub use mutation::{
 };
 pub use ports::{
     AuthorizationRequest, BrowserAuthorization, CallbackReceiver, Clock, CredentialMaterial,
-    CredentialSource, CredentialStore, DefinitionReplacementInput, DefinitionRepository,
-    DestinyMembership, EquipGateway, EquipItemRequest, EquipOutcome, EquipRejection,
-    InstancedPullGateway, InventoryRepository, InventorySnapshotInput, LockGateway, LockOutcome,
-    LockRejection, ManifestAcquisition, ManifestDefinitionCandidate, ManifestDefinitions,
-    ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange, SearchRepository,
-    SecureRandom, SetLockStateRequest, StatDefinitionRepository, StaticCredentialSource,
-    TokenRefresh, TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
+    CredentialRefreshGuard, CredentialSource, CredentialStore, DefinitionReplacementInput,
+    DefinitionRepository, DestinyMembership, EquipGateway, EquipItemRequest, EquipOutcome,
+    EquipRejection, InstancedPullGateway, InventoryRepository, InventorySnapshotInput, LockGateway,
+    LockOutcome, LockRejection, ManifestAcquisition, ManifestDefinitionCandidate,
+    ManifestDefinitions, ManifestGateway, PlanIdGenerator, ProfileGateway, PublicTokenExchange,
+    SearchRepository, SecureRandom, SetLockStateRequest, StatDefinitionRepository,
+    StaticCredentialSource, TokenRefresh, TransferGateway, TransferOutcome, TransferRejection,
+    TransferRequest,
 };
 pub use query::{
     ARTIFACT_BUCKET_HASH, CharacterListResult, CharacterSubclass, CharacterSubclassOptions,

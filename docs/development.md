@@ -2,7 +2,7 @@
 
 End users should use the [release installers](../README.md#install). Building
 from source requires a recent stable Rust toolchain; on Linux, also install
-`libdbus-1-dev` and `pkg-config` (Debian/Ubuntu names).
+`pkg-config` (Debian/Ubuntu name).
 
 ```sh
 cargo build -p ghostlink --release
@@ -34,7 +34,7 @@ The `destiny-mcp` library holds the bounded MCP schemas, the injectable
 `InventoryReadService` and `MutationToolService` seams, the RMCP tools-only
 server, and the stdio runtime. These presentation modules never name a concrete
 adapter. The private process module (`src/main.rs`, retained at its original
-path) loads the native credential store, HTTP transports, SQLite projection
+path) loads the credential file store, HTTP transports, SQLite projection
 store, and transfer gateway. Its public `destiny_mcp::run()` entry point is
 called by the tiny binary wrapper in the `ghostlink` package.
 
@@ -83,7 +83,7 @@ installation. Fixture directories are retained in the OS temporary directory.
 
 ## Lifecycle uninstall tests
 
-`uninstall.rs` dispatches before runtime/API/dotenv/SQLite/keyring factories.
+`uninstall.rs` dispatches before runtime/API/dotenv/SQLite/credential factories.
 `Installation::validate_uninstall` shares receipt/product validation but does not
 require an updater. `run_at` injects fixture paths, confirmation and a
 `LinuxUriHandlerRegistrar` with a fake command runner; production uses only
@@ -130,8 +130,8 @@ cargo run -p ghostlink --bin destiny-mcp -- --help
 ```
 
 Application tests require no credentials and do not call live services. Cargo
-may fetch crates when they are not cached. Linux builds require `libdbus-1-dev`
-and `pkg-config` (Debian/Ubuntu package names).
+may fetch crates when they are not cached. Linux builds require `pkg-config`
+(Debian/Ubuntu package name).
 
 The `destiny-mcp` package is a library (plus a test-only `offline-fixture`
 binary); the `destiny-mcp` executable is built by the `ghostlink` package, next
@@ -149,7 +149,7 @@ configuration, regenerate `.github/workflows/release.yml` with `dist generate`;
 The generated workflow plans on pull requests and publishes on version-tag
 pushes, such as `v0.1.0`, matching the workspace version. Only an authorized
 maintainer should create/push release tags. Its Linux build matrix installs
-`libdbus-1-dev` and `pkg-config` from `[dist.dependencies.apt]`; Windows uses MSVC.
+`pkg-config` from `[dist.dependencies.apt]`; Windows uses MSVC.
 No macOS builds or package-manager installers are configured.
 
 One archive per platform contains **both** `ghostlink` and `destiny-mcp`:
@@ -182,15 +182,9 @@ asset, not an executable inside the product archive.
 
 ### Linux runtime
 
-The executables dynamically link `libdbus-1.so.3`, normally already present on
-virtually all desktop Linux distributions. Minimal systems need the `libdbus-1-3`
-Debian/Ubuntu runtime package (or their distribution's equivalent). Authentication
-also requires a running D-Bus session and Secret Service keyring provider.
-
-The keyring store supports `vendored`, forwarded through `dbus-secret-service`
-and `dbus` to `libdbus-sys`, which statically builds bundled libdbus. We retain
-system linkage: desktop systems already provide it, system security updates
-remain effective, and bundling does not remove the session/keyring requirement.
+The executables need no D-Bus, Secret Service or keyring: credentials live in a
+private [credential file](configuration.md#credential-file), so minimal and
+headless systems work without extra runtime packages.
 
 ### Local verification (no publication)
 

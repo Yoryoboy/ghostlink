@@ -171,6 +171,11 @@ questions recorded below are unchanged.
 This section resolves unresolved gap 7 above and records the MVP credential policy
 decided on 2026-09-24. It adds no claim about Bungie or the MCP SDK.
 
+> **Superseded (2026-10-14, #89):** the OS keyring was removed. Credentials now
+> live in a private plain-text file; see
+> [credential file](configuration.md#credential-file). The policy below is kept as
+> history.
+
 - **Fail closed only, with no fallback.** The access credential is held in the
   operating system's native secure store through the `keyring-core` client layer.
   The MVP offers no plaintext, filesystem, or environment-variable fallback, and no
@@ -200,7 +205,7 @@ decided on 2026-09-24. It adds no claim about Bungie or the MCP SDK.
 - **Leak-harness limitation (reported, non-blocking).** The cross-boundary leak
   harness drives a real `destiny-cli` child process only through the sanitized
   failure and rejected-request paths. It cannot drive the CLI to the SQLite success
-  path offline because the production composition loads the OS-keyring credential
+  path offline because the production composition loads the stored credential
   before it opens the store, so a live credential plus network would be required.
   The success-path process streams are instead proven through `destiny_cli::run`,
   which emits the exact bytes the process writes. See WU-013 in

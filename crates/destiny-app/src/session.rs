@@ -39,6 +39,7 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> ConfiguredCredentialSource<S
                     store,
                     refresh: build()?,
                     credential: Some(credential),
+                    unsaved: None,
                 })),
                 clock: Arc::new(clock),
             })),
@@ -60,10 +61,20 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> CredentialSource
 /// Refresh at or inside this many seconds before access expiry.
 pub const ACCESS_REFRESH_MARGIN_SECONDS: u64 = 60;
 
-/// Loads the store once at construction, avoiding repeated keyring reads on every
+fn outside_margin(now: u64, credential: &AccessCredential) -> bool {
+    // Saturation preserves the strict margin comparison even near u64::MAX.
+    now.saturating_add(ACCESS_REFRESH_MARGIN_SECONDS) < credential.metadata.expires_at.seconds()
+}
+
+/// Loads the store once at construction, avoiding a store read on every
 /// provider request. The lock covers refresh, persistence, and cache replacement
 /// so concurrent callers see the same newly refreshed credential. Clones share
 /// that state, allowing profile and transfer gateways to use one session.
+///
+/// Across processes, a refresh runs inside the store's
+/// [`CredentialStore::lock_for_refresh`] section and first reloads the stored
+/// credential, so a session whose cache another process made stale adopts the
+/// rotated credential instead of spending an already-rotated refresh token.
 ///
 /// Persistence is best-effort after refresh: a failed save must not discard a
 /// usable (possibly rotated) token. This process retains it; the next process
@@ -77,6 +88,9 @@ struct SessionState<S, R> {
     store: S,
     refresh: R,
     credential: Option<AccessCredential>,
+    /// The refresh grant this process spent on a rotation the store failed to
+    /// persist; a stored record still holding it is a stale predecessor.
+    unsaved: Option<destiny_core::RefreshToken>,
 }
 
 impl<S: CredentialStore, R: TokenRefresh, C: Clock> Clone for RefreshingCredentialSource<S, R, C> {
@@ -96,6 +110,7 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> RefreshingCredentialSource<S
                 store,
                 refresh,
                 credential,
+                unsaved: None,
             })),
             clock: Arc::new(clock),
         })
@@ -115,10 +130,36 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> CredentialSource
             .clone()
             .ok_or_else(|| AppError::new(ErrorCategory::AuthorizationRequired))?;
         let now = self.clock.now()?.seconds();
-        // Saturation preserves the strict margin comparison even near u64::MAX.
-        if now.saturating_add(ACCESS_REFRESH_MARGIN_SECONDS)
-            < credential.metadata.expires_at.seconds()
-        {
+        if outside_margin(now, &credential) {
+            return Ok(credential);
+        }
+        // Another process sharing the store may already have rotated the
+        // refresh token this cache holds; reload inside the exclusive section
+        // and refresh only if the stored credential still needs it.
+        let _section = state.store.lock_for_refresh()?;
+        let credential = match state.store.load() {
+            // Keep this process's newer rotation over its stale predecessor and
+            // retry persisting it; a deletion or another login still wins.
+            Ok(Some(stored))
+                if state.unsaved.is_some()
+                    && stored.refresh_grant().map(|grant| &grant.token)
+                        == state.unsaved.as_ref() =>
+            {
+                if state.store.save(credential.clone()).is_ok() {
+                    state.unsaved = None;
+                }
+                credential
+            }
+            Ok(Some(stored)) => stored,
+            Ok(None) => {
+                state.credential = None;
+                return Err(AppError::new(ErrorCategory::AuthorizationRequired));
+            }
+            // An unreadable store keeps this process on its cached credential.
+            Err(_) => credential,
+        };
+        state.credential = Some(credential.clone());
+        if outside_margin(now, &credential) {
             return Ok(credential);
         }
         let Some(grant) = credential
@@ -136,7 +177,10 @@ impl<S: CredentialStore, R: TokenRefresh, C: Clock> CredentialSource
         if refreshed.refresh_grant().is_none() {
             refreshed = refreshed.with_refresh_grant(grant.clone());
         }
-        let _ = state.store.save(refreshed.clone());
+        state.unsaved = match state.store.save(refreshed.clone()) {
+            Ok(()) => None,
+            Err(_) => Some(grant.token.clone()),
+        };
         state.credential = Some(refreshed.clone());
         Ok(refreshed)
     }
@@ -379,6 +423,122 @@ mod tests {
         }
         assert_eq!(source.state.lock().unwrap().refresh.calls, 1);
     }
+    /// One store shared by several sessions, as the CLI and the MCP server
+    /// share one credential file. The guard marks the refresh section held.
+    #[derive(Clone, Default)]
+    struct SharedStore {
+        credential: Arc<std::sync::Mutex<Option<AccessCredential>>>,
+        held: Arc<std::sync::atomic::AtomicBool>,
+        locks: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    struct HeldFlag(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for HeldFlag {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl CredentialStore for SharedStore {
+        fn save(&mut self, credential: AccessCredential) -> Result<(), AppError> {
+            *self.credential.lock().unwrap() = Some(credential);
+            Ok(())
+        }
+        fn load(&self) -> Result<Option<AccessCredential>, AppError> {
+            Ok(self.credential.lock().unwrap().clone())
+        }
+        fn delete(&mut self) -> Result<(), AppError> {
+            *self.credential.lock().unwrap() = None;
+            Ok(())
+        }
+        fn lock_for_refresh(&self) -> Result<destiny_core::CredentialRefreshGuard, AppError> {
+            use std::sync::atomic::Ordering;
+            assert!(!self.held.swap(true, Ordering::SeqCst), "lock is exclusive");
+            self.locks.fetch_add(1, Ordering::SeqCst);
+            Ok(destiny_core::CredentialRefreshGuard::new(HeldFlag(
+                self.held.clone(),
+            )))
+        }
+    }
+    fn shared_source(
+        store: &SharedStore,
+        result: Result<AccessCredential, AppError>,
+    ) -> RefreshingCredentialSource<SharedStore, ScriptedRefresh, FakeClock> {
+        RefreshingCredentialSource::new(
+            store.clone(),
+            ScriptedRefresh { result, calls: 0 },
+            FakeClock::fixed(Timestamp::new(100)),
+        )
+        .unwrap()
+    }
+    #[test]
+    fn stale_session_adopts_a_credential_rotated_by_another_process() {
+        let mut store = SharedStore::default();
+        store
+            .save(credential(160, Some(("old-refresh", 1000))))
+            .unwrap();
+        let rotated = credential(1000, Some(("new-refresh", 2000)));
+        let first = shared_source(&store, Ok(rotated.clone()));
+        // Loaded before the first session rotated the shared refresh token.
+        let second = shared_source(
+            &store,
+            Err(AppError::new(ErrorCategory::ProviderUnavailable)),
+        );
+        assert_eq!(first.current().unwrap(), rotated);
+        assert_eq!(second.current().unwrap(), rotated);
+        assert_eq!(second.state.lock().unwrap().refresh.calls, 0);
+        assert_eq!(store.load().unwrap(), Some(rotated));
+    }
+    #[test]
+    fn refresh_and_save_run_inside_the_store_refresh_lock() {
+        use std::sync::atomic::Ordering;
+        struct CheckingRefresh(Arc<std::sync::atomic::AtomicBool>);
+        impl TokenRefresh for CheckingRefresh {
+            fn refresh(&mut self, _: &RefreshToken) -> Result<AccessCredential, AppError> {
+                assert!(self.0.load(Ordering::SeqCst), "refresh outside the lock");
+                Ok(credential(1000, Some(("new-refresh", 2000))))
+            }
+        }
+        let mut store = SharedStore::default();
+        store
+            .save(credential(160, Some(("old-refresh", 1000))))
+            .unwrap();
+        let source = RefreshingCredentialSource::new(
+            store.clone(),
+            CheckingRefresh(store.held.clone()),
+            FakeClock::fixed(Timestamp::new(100)),
+        )
+        .unwrap();
+        source.current().unwrap();
+        source.current().unwrap();
+        assert_eq!(store.locks.load(Ordering::SeqCst), 1);
+        assert!(!store.held.load(Ordering::SeqCst));
+        assert_eq!(
+            store.load().unwrap().unwrap().metadata.expires_at,
+            Timestamp::new(1000)
+        );
+    }
+    #[test]
+    fn fresh_credential_never_takes_the_refresh_lock() {
+        let mut store = SharedStore::default();
+        store.save(credential(161, None)).unwrap();
+        let source = shared_source(&store, Ok(credential(1000, None)));
+        source.current().unwrap();
+        assert_eq!(store.locks.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn credential_removed_by_another_process_requires_authorization() {
+        let mut store = SharedStore::default();
+        store
+            .save(credential(160, Some(("old-refresh", 1000))))
+            .unwrap();
+        let source = shared_source(&store, Ok(credential(1000, None)));
+        store.delete().unwrap();
+        assert_eq!(
+            source.current().unwrap_err().category(),
+            ErrorCategory::AuthorizationRequired
+        );
+        assert_eq!(source.state.lock().unwrap().refresh.calls, 0);
+        assert_eq!(store.load().unwrap(), None);
+    }
     struct SaveFailureStore(InMemoryCredentialStore);
     impl CredentialStore for SaveFailureStore {
         fn load(&self) -> Result<Option<AccessCredential>, AppError> {
@@ -411,5 +571,94 @@ mod tests {
         let state = source.state.lock().unwrap();
         assert_eq!(state.refresh.calls, 1);
         assert_eq!(state.store.load().unwrap(), Some(old));
+    }
+    /// A store whose first save fails, as on a briefly full filesystem.
+    struct FlakySaveStore {
+        inner: InMemoryCredentialStore,
+        failures: usize,
+    }
+    impl CredentialStore for FlakySaveStore {
+        fn load(&self) -> Result<Option<AccessCredential>, AppError> {
+            self.inner.load()
+        }
+        fn save(&mut self, credential: AccessCredential) -> Result<(), AppError> {
+            if self.failures > 0 {
+                self.failures -= 1;
+                return Err(AppError::new(ErrorCategory::LocalStorage));
+            }
+            self.inner.save(credential)
+        }
+        fn delete(&mut self) -> Result<(), AppError> {
+            panic!("refresh never deletes")
+        }
+    }
+    /// Records the refresh token each renewal spends.
+    struct RecordingRefresh(Vec<Vec<u8>>);
+    impl TokenRefresh for RecordingRefresh {
+        fn refresh(&mut self, token: &RefreshToken) -> Result<AccessCredential, AppError> {
+            self.0.push(token.as_bytes().to_vec());
+            Ok(credential(150, Some(("new-refresh", 1000))))
+        }
+    }
+    #[test]
+    fn an_unsaved_rotation_is_kept_instead_of_the_spent_stored_grant() {
+        let mut inner = InMemoryCredentialStore::default();
+        inner
+            .save(credential(150, Some(("old-refresh", 1000))))
+            .unwrap();
+        // Both credentials sit inside the refresh margin at t=100, so every
+        // call renews; the first save fails as on a briefly full filesystem.
+        let source = RefreshingCredentialSource::new(
+            FlakySaveStore { inner, failures: 1 },
+            RecordingRefresh(Vec::new()),
+            FakeClock::fixed(Timestamp::new(100)),
+        )
+        .unwrap();
+        source.current().unwrap();
+        source.current().unwrap();
+        let state = source.state.lock().unwrap();
+        assert_eq!(
+            state.refresh.0,
+            [b"old-refresh".to_vec(), b"new-refresh".to_vec()]
+        );
+        let stored = state.store.load().unwrap().unwrap();
+        assert_eq!(
+            stored.refresh_grant().unwrap().token.as_bytes(),
+            b"new-refresh"
+        );
+    }
+    #[test]
+    fn an_unsaved_rotation_honors_a_concurrent_logout_or_newer_login() {
+        for concurrent in [None, Some(credential(900, Some(("relogin-refresh", 1000))))] {
+            let mut inner = InMemoryCredentialStore::default();
+            inner
+                .save(credential(150, Some(("old-refresh", 1000))))
+                .unwrap();
+            let source = RefreshingCredentialSource::new(
+                FlakySaveStore { inner, failures: 1 },
+                RecordingRefresh(Vec::new()),
+                FakeClock::fixed(Timestamp::new(100)),
+            )
+            .unwrap();
+            source.current().unwrap();
+            // Another process logs out or logs in again before the next renewal.
+            let mut state = source.state.lock().unwrap();
+            state.store.inner = InMemoryCredentialStore::default();
+            if let Some(newer) = concurrent.clone() {
+                state.store.inner.save(newer).unwrap();
+            }
+            drop(state);
+            let result = source.current();
+            let state = source.state.lock().unwrap();
+            assert_eq!(state.store.load().unwrap(), concurrent);
+            match concurrent {
+                None => assert_eq!(
+                    result.unwrap_err().category(),
+                    ErrorCategory::AuthorizationRequired
+                ),
+                Some(newer) => assert_eq!(result.unwrap(), newer),
+            }
+            assert_eq!(state.refresh.0, [b"old-refresh".to_vec()]);
+        }
     }
 }

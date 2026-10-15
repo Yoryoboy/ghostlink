@@ -14,5 +14,4 @@ precise-builds = true
 pr-run-mode = "skip"
 
 [dist.dependencies.apt]
-libdbus-1-dev = "*"
 pkg-config = "*"
