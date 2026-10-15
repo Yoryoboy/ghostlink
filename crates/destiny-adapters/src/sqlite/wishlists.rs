@@ -5,6 +5,7 @@ use destiny_core::wishlist::{
 use destiny_core::{AppError, Timestamp};
 use rusqlite::{Transaction, params};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 fn timestamp(text: String) -> Result<Timestamp, AppError> {
     text.parse()
@@ -282,8 +283,8 @@ impl WishlistRepository for SqliteStore {
                             item_hash,
                             trash,
                             perks: parse_perks(&perks)?,
-                            notes,
-                            section,
+                            notes: notes.map(Arc::from),
+                            section: section.map(Arc::from),
                         },
                     })
                 },
