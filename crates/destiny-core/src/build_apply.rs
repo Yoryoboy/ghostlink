@@ -116,12 +116,17 @@ pub struct BuildApplyPlan {
 pub struct VaultEvidence {
     pub mapping: Vec<(BucketHash, BucketHash)>,
     pub capacity: Vec<(BucketHash, usize)>,
+    /// Character capacity of the General buckets Ghostlink moves (Ghost, Emblems,
+    /// Ships, Vehicle): their `itemCount` (DIM `capacity: def.itemCount`,
+    /// `d2-buckets.ts:47`). The audited policy covers only weapons and armor.
+    pub general: Vec<(BucketHash, usize)>,
 }
 impl VaultEvidence {
     pub fn single(accepted: &[BucketHash], vault: BucketHash, capacity: usize) -> Self {
         Self {
             mapping: accepted.iter().map(|b| (*b, vault)).collect(),
             capacity: vec![(vault, capacity)],
+            general: vec![],
         }
     }
     /// DIM `d2-buckets.ts:59-66`: later `acceptedItems` override earlier ones and a
@@ -156,6 +161,14 @@ impl VaultEvidence {
                 ));
             }
         }
+        evidence.general = BUCKETS[10..]
+            .iter()
+            .filter_map(|hash| {
+                let definition = buckets.iter().find(|b| i64::from(b.hash) == *hash)?;
+                let capacity = usize::try_from(definition.item_count).unwrap_or(usize::MAX);
+                (capacity > 0).then_some((BucketHash::new(*hash), capacity))
+            })
+            .collect();
         (!evidence.mapping.is_empty()).then_some(evidence)
     }
     fn vault_bucket(&self, bucket: BucketHash) -> Option<BucketHash> {
@@ -233,6 +246,15 @@ impl Planner<'_> {
             .find(|i| &i.instance_id == id)
             .expect("planner-owned identity")
             .clone()
+    }
+    /// Character capacity: the audited policy, else a General bucket's `itemCount`.
+    fn capacity(&self, bucket: BucketHash) -> Option<usize> {
+        self.policy.capacity(bucket).or_else(|| {
+            self.vault?
+                .general
+                .iter()
+                .find_map(|(b, n)| (*b == bucket).then_some(*n))
+        })
     }
     fn bucket(&self, item: &ItemInstance) -> Result<BucketHash, ApplySkipReason> {
         self.definition(item)?
@@ -401,9 +423,9 @@ impl Planner<'_> {
         self.equip(vec![replacement], owner)
     }
     fn free(&self, target: &ItemLocation, bucket: BucketHash) -> Result<usize, ApplySkipReason> {
-        // Equip-only bucket capacity is not audited, so nothing is moved into or
-        // out of those buckets; they are only equipped where they already are.
-        if self.policy.capacity(bucket).is_none() {
+        // Without capacity evidence (Subclass, Artifacts, or a General bucket with
+        // no `itemCount`) nothing moves; such items only equip where they are.
+        if self.capacity(bucket).is_none() {
             return Err(ApplySkipReason::UnsupportedBucket);
         }
         let unavailable = ApplySkipReason::VaultCapacityUnavailable;
@@ -415,8 +437,7 @@ impl Planner<'_> {
                 (capacity.ok_or(unavailable)?.1, Some((vault, vault_bucket)))
             }
             (ItemLocation::Character(_), _) => (
-                self.policy
-                    .capacity(bucket)
+                self.capacity(bucket)
                     .ok_or(ApplySkipReason::UnsupportedBucket)?,
                 None,
             ),
@@ -658,8 +679,9 @@ const BUCKETS: [i64; 14] = [
     SHIP_BUCKET,
     SPARROW_BUCKET,
 ];
-/// Equippable buckets outside the audited capacity policy (DIM treats them as
-/// ordinary items; Ghostlink only equips them in place, never moves them).
+/// Equippable buckets outside the audited capacity policy. Subclass and
+/// Artifacts only equip in place; Ghost, Emblems, Ships and Vehicle move with
+/// their `itemCount` from [`VaultEvidence::general`], as DIM moves them.
 pub fn is_equip_only_bucket(bucket: BucketHash) -> bool {
     BUCKETS[8..].contains(&bucket.value())
 }

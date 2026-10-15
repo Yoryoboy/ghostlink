@@ -873,6 +873,132 @@ fn build_apply_plans_vault_staged_moves_only_with_projected_vault_evidence() {
 }
 
 #[test]
+fn build_apply_moves_a_vault_ghost_with_its_projected_bucket_item_count() {
+    use destiny_core::armor_catalog::*;
+    use destiny_core::build_apply::{ApplySkipReason, BuildAction};
+    const GHOST: i64 = 4023194814;
+    let mut sync = fixture();
+    let mut service = BuildService::new(
+        destiny_app::test_support::InMemoryBuildRepository::default(),
+        DimBuildCodec,
+    );
+    let mut definitions = vec![
+        definition(1498876634, Some(BucketHash::new(1498876634)), None),
+        definition(3448274439, Some(SUBCLASS_BUCKET_HASH), None),
+        definition(3284755031, Some(BucketHash::new(3448274439)), None),
+        definition(999, Some(BucketHash::new(GHOST)), None),
+    ];
+    for d in &mut definitions {
+        d.class_type = Some(destiny_core::domain::ClassType::Any);
+    }
+    let definitions = ManifestDefinitions {
+        version: DefinitionVersion::new("v1"),
+        definitions,
+    };
+    let publish = |sync: &mut ProfileSyncService<_, SqliteStore>, ghost_bucket: bool| {
+        let mut world = destiny_app::test_support::synthetic_world(DefinitionVersion::new("v1"));
+        world.armor_catalogs = vec![
+            ArmorCatalogRecord::InventoryBucket(InventoryBucketDefinition {
+                hash: 138197802,
+                item_count: 1300,
+            }),
+            ArmorCatalogRecord::VaultVendor(VaultVendorDefinition {
+                hash: VAULT_VENDOR_HASH,
+                accepted_items: vec![VaultAcceptedItem {
+                    accepted_bucket: u32::try_from(GHOST).unwrap(),
+                    destination_bucket: 138197802,
+                }],
+            }),
+        ];
+        if ghost_bucket {
+            world
+                .armor_catalogs
+                .push(ArmorCatalogRecord::InventoryBucket(
+                    InventoryBucketDefinition {
+                        hash: u32::try_from(GHOST).unwrap(),
+                        item_count: 10,
+                    },
+                ));
+        }
+        sync.repository_mut()
+            .publish_manifest(
+                DefinitionReplacementInput {
+                    definitions: definitions.clone(),
+                    checked_at: Timestamp::new(100),
+                    source: SourceMarker::Manifest,
+                },
+                world,
+            )
+            .unwrap();
+    };
+    // Capture the build while the ghost is equipped and its bucket is known.
+    publish(&mut sync, false);
+    let source = service
+        .from_equipped(
+            &mut sync,
+            &CharacterId::new("1"),
+            "Ghost",
+            FreshnessPolicy { ttl_seconds: 300 },
+            Timestamp::new(100),
+        )
+        .unwrap();
+    // The saved ghost now sits in the Vault.
+    let mut input =
+        InventorySnapshotInput::with_metadata(&sync.repository().load_current().unwrap().unwrap());
+    input.items[3].location = ItemLocation::Vault;
+    input.items[3].equipped = false;
+    sync.repository_mut().replace_current(input).unwrap();
+    let request = destiny_app::builds::BuildCheckRequest {
+        selector: destiny_app::builds::BuildSelector::Id(source.build.definition.id),
+        character: None,
+    };
+    let policy = destiny_adapters::pinned_equipment_capacity_policy();
+    let plan = |sync: &mut ProfileSyncService<_, SqliteStore>| {
+        service
+            .plan_apply(
+                sync,
+                &request,
+                &policy,
+                FreshnessPolicy { ttl_seconds: 300 },
+                Timestamp::new(100),
+            )
+            .unwrap()
+    };
+    let ghost = ItemInstanceId::new("4");
+    // The ghost is the only build item outside the audited policy and Subclass.
+    let skips_ghost = |preview: &destiny_app::builds::BuildApplyPreview| {
+        preview
+            .plan
+            .skipped
+            .iter()
+            .any(|s| s.reason == ApplySkipReason::UnsupportedBucket)
+    };
+    // Without the Ghost bucket's itemCount its character capacity is unknown.
+    let preview = plan(&mut sync);
+    assert!(skips_ghost(&preview), "{:?}", preview.plan.skipped);
+    // DIM `capacity: def.itemCount` (`d2-buckets.ts:47`): the ghost moves and equips.
+    publish(&mut sync, true);
+    let preview = plan(&mut sync);
+    assert!(!skips_ghost(&preview), "{:?}", preview.plan.skipped);
+    let actions: Vec<_> = preview
+        .plan
+        .steps
+        .iter()
+        .map(|s| s.action.clone())
+        .collect();
+    assert!(actions.contains(&BuildAction::Move {
+        item: ghost.clone(),
+        from: ItemLocation::Vault,
+        to: ItemLocation::Character(CharacterId::new("1")),
+    }));
+    assert!(actions.iter().any(|a| matches!(
+        a,
+        BuildAction::Equip { items, character }
+            if items.contains(&ghost) && character == &CharacterId::new("1")
+    )));
+}
+
+#[test]
 fn build_apply_plans_subclass_socket_overrides_from_projected_catalogs() {
     use destiny_core::armor_catalog::*;
     use destiny_core::build_apply::{ApplyPhase, BuildAction};
