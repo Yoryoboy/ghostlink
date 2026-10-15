@@ -53,6 +53,10 @@ fn snapshot(location: ItemLocation, equipped: bool) -> InventorySnapshotInput {
             stats: vec![],
             plugs: vec![],
             perks: vec![],
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
+            transfer_status: None,
             available_plugs: vec![],
         }],
         plug_set_entries: vec![],
@@ -79,6 +83,8 @@ fn mutations_with_preflight(
             definitions: ManifestDefinitions {
                 version: DefinitionVersion::new("v1"),
                 definitions: vec![ItemDefinition {
+                    armor: Default::default(),
+                    non_transferrable: None,
                     does_postmaster_pull_have_side_effects: None,
                     is_instance_item: None,
                     max_stack_size: None,

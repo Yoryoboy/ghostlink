@@ -104,6 +104,8 @@ fn storage_error() -> AppError {
 
 fn definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
     ItemDefinition {
+        armor: Default::default(),
+        non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
         max_stack_size: None,
@@ -163,6 +165,10 @@ fn profile(
             date_last_played: None,
         }],
         items: vec![ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
+            transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(instance_id),
             item_hash: ItemHash::new(-42),

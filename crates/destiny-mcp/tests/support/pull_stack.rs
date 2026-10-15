@@ -129,6 +129,8 @@ impl Fixture {
         let definition = ItemDefinition {
             hash: ItemHash::new(7),
             bucket_hash: Some(BucketHash::new(1469714392)),
+            armor: Default::default(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: Some(false),
             is_instance_item: Some(false),
             max_stack_size: Some(100),

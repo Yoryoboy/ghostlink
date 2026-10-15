@@ -1153,6 +1153,12 @@ fn inspection_human(inspection: &ItemInspection) -> String {
                 .join(", ")
         ));
     }
+    if let Some(model) = &inspection.armor_model {
+        lines.extend(destiny_output::armor_model::armor_model_text(model));
+    }
+    if let Some(model) = &inspection.fragment_capacity {
+        lines.push(destiny_output::armor_model::fragment_capacity_text(model));
+    }
     lines.push(metadata_text(&inspection.metadata));
     lines.join("\n")
 }
@@ -1239,6 +1245,12 @@ fn inspection_json(inspection: &ItemInspection) -> String {
         "kind": "item_inspection",
         "metadata": metadata_json(&inspection.metadata),
     });
+    if let Some(model) = &inspection.armor_model {
+        value["armor_model"] = destiny_output::armor_model::armor_model_json(model);
+    }
+    if let Some(model) = &inspection.fragment_capacity {
+        value["fragment_capacity"] = destiny_output::armor_model::fragment_capacity_json(model);
+    }
     if !inspection.plug_details.is_empty() {
         value["plug_details"] = json!(inspection.plug_details.iter().map(|plug| with_insights(
             json!({"hash": plug.hash.value(), "name": plug.name, "role": plug.role.as_str()}),
@@ -1904,6 +1916,8 @@ mod tests {
 
     fn definition(hash: i64, name: &str) -> ItemDefinition {
         ItemDefinition {
+            armor: Default::default(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -1924,6 +1938,10 @@ mod tests {
 
     fn instance(identifier: &str, hash: i64, location: ItemLocation) -> ItemInstance {
         ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
+            transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(identifier),
             item_hash: ItemHash::new(hash),
@@ -1982,6 +2000,8 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            fragment_capacity: None,
+            armor_model: None,
             plug_details: Vec::new(),
             perk_names: Vec::new(),
             mod_names: Vec::new(),

@@ -627,7 +627,7 @@ fn profile_currency_coverage_balances_and_atomic_rejection_survive_reopen() {
     assert_eq!(legacy.profile_currencies_coverage, Coverage::Unavailable);
     assert!(
         journey.recorded_urls()[1]
-            .ends_with("?components=102,103,200,201,205,206,300,302,304,305,310")
+            .ends_with("?components=102,103,200,201,205,206,300,302,304,305,309,310")
     );
     drop(service);
     let mut service = journey.service();

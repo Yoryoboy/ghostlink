@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 22;
+pub(crate) const LATEST_VERSION: u32 = 36;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 22] = [
+const MIGRATIONS: [Migration; 36] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -164,7 +164,503 @@ const MIGRATIONS: [Migration; 22] = [
         up: SCHEMA_V22_UP,
         down: "DROP TABLE definition_search;",
     },
+    Migration {
+        version: 23,
+        up: SCHEMA_V23_UP,
+        down: "CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1)); INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM builds) THEN 0 ELSE 1 END; DROP TABLE downgrade_guard; DROP TABLE builds;",
+    },
+    Migration {
+        version: 24,
+        up: SCHEMA_V24_UP,
+        down: SCHEMA_V24_DOWN,
+    },
+    Migration {
+        version: 25,
+        up: SCHEMA_V25_UP,
+        down: SCHEMA_V25_DOWN,
+    },
+    Migration {
+        version: 26,
+        up: SCHEMA_V26_UP,
+        down: SCHEMA_V26_DOWN,
+    },
+    Migration {
+        version: 27,
+        up: SCHEMA_V27_UP,
+        down: SCHEMA_V27_DOWN,
+    },
+    Migration {
+        version: 28,
+        up: SCHEMA_V28_UP,
+        down: SCHEMA_V28_DOWN,
+    },
+    Migration {
+        version: 29,
+        up: SCHEMA_V29_UP,
+        down: SCHEMA_V29_DOWN,
+    },
+    Migration {
+        version: 30,
+        up: SCHEMA_V30_UP,
+        down: SCHEMA_V30_DOWN,
+    },
+    Migration {
+        version: 31,
+        up: SCHEMA_V31_UP,
+        down: SCHEMA_V31_DOWN,
+    },
+    Migration {
+        version: 32,
+        up: SCHEMA_V32_UP,
+        down: SCHEMA_V32_DOWN,
+    },
+    Migration {
+        version: 33,
+        up: SCHEMA_V33_UP,
+        down: SCHEMA_V33_DOWN,
+    },
+    Migration {
+        version: 34,
+        up: SCHEMA_V34_UP,
+        down: SCHEMA_V34_DOWN,
+    },
+    Migration {
+        version: 35,
+        up: SCHEMA_V35_UP,
+        down: SCHEMA_V35_DOWN,
+    },
+    Migration {
+        version: 36,
+        up: SCHEMA_V36_UP,
+        down: SCHEMA_V36_DOWN,
+    },
 ];
+const SCHEMA_V36_UP: &str = r#"
+CREATE TABLE definition_stat_plugs (
+    hash INTEGER PRIMARY KEY CHECK (hash BETWEEN 0 AND 4294967295),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128),
+    plug_category_hash INTEGER NOT NULL CHECK (plug_category_hash BETWEEN 0 AND 4294967295)
+) STRICT;
+CREATE TABLE definition_stat_plug_stats (
+    plug_hash INTEGER NOT NULL REFERENCES definition_stat_plugs(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 63),
+    stat_type_hash INTEGER NOT NULL CHECK (stat_type_hash BETWEEN 0 AND 4294967295),
+    value INTEGER NOT NULL CHECK (value BETWEEN -2147483648 AND 2147483647),
+    is_conditionally_active INTEGER NOT NULL CHECK (is_conditionally_active IN (0,1)),
+    PRIMARY KEY (plug_hash, ordinal)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V36_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definition_stat_plugs) OR EXISTS (SELECT 1 FROM definition_stat_plug_stats) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE definition_stat_plug_stats;
+DROP TABLE definition_stat_plugs;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V35_UP: &str = r#"
+CREATE TABLE definition_item_classes (
+    definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,
+    item_type INTEGER CHECK (item_type BETWEEN 0 AND 255),
+    item_sub_type INTEGER CHECK (item_sub_type BETWEEN 0 AND 255),
+    CHECK (item_type IS NOT NULL OR item_sub_type IS NOT NULL)
+) STRICT;
+CREATE TABLE definition_item_categories (
+    definition_hash INTEGER NOT NULL REFERENCES definitions(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 63),
+    category_hash INTEGER NOT NULL CHECK (category_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (definition_hash, ordinal)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V35_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definition_item_classes) OR EXISTS (SELECT 1 FROM definition_item_categories) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE definition_item_categories;
+DROP TABLE definition_item_classes;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V34_UP: &str = r#"
+CREATE TABLE inventory_buckets (
+    hash INTEGER PRIMARY KEY CHECK (hash BETWEEN 0 AND 4294967295),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128),
+    item_count INTEGER NOT NULL CHECK (item_count BETWEEN 0 AND 4294967295)
+) STRICT;
+CREATE TABLE vault_vendors (
+    hash INTEGER PRIMARY KEY CHECK (hash BETWEEN 0 AND 4294967295),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128)
+) STRICT;
+CREATE TABLE vault_accepted_items (
+    vendor_hash INTEGER NOT NULL REFERENCES vault_vendors(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 255),
+    accepted_bucket INTEGER NOT NULL CHECK (accepted_bucket BETWEEN 0 AND 4294967295),
+    destination_bucket INTEGER NOT NULL CHECK (destination_bucket BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (vendor_hash, ordinal)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V34_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM inventory_buckets) OR EXISTS (SELECT 1 FROM vault_vendors) OR EXISTS (SELECT 1 FROM vault_accepted_items) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE vault_accepted_items;
+DROP TABLE vault_vendors;
+DROP TABLE inventory_buckets;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V33_UP: &str = r#"
+CREATE TABLE definition_equipping_labels (
+    definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,
+    unique_label TEXT NOT NULL CHECK (length(unique_label) <= 256)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V33_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definition_equipping_labels) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE definition_equipping_labels;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V32_UP: &str = r#"
+CREATE TABLE definition_material_inputs (
+    definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,
+    requirement_hash INTEGER CHECK (requirement_hash BETWEEN 0 AND 4294967295),
+    capacity_type INTEGER CHECK (capacity_type BETWEEN 0 AND 4294967295),
+    availability INTEGER CHECK (availability BETWEEN 0 AND 4294967295),
+    CHECK (requirement_hash IS NOT NULL OR capacity_type IS NOT NULL OR availability IS NOT NULL)
+) STRICT;
+CREATE TABLE material_requirement_sets (
+    hash INTEGER PRIMARY KEY CHECK (hash BETWEEN 0 AND 4294967295),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128)
+) STRICT;
+CREATE TABLE material_requirements (
+    hash INTEGER NOT NULL REFERENCES material_requirement_sets(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 255),
+    item_hash INTEGER NOT NULL CHECK (item_hash BETWEEN 0 AND 4294967295),
+    count INTEGER NOT NULL CHECK (count BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (hash, ordinal)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V32_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definition_material_inputs) OR EXISTS (SELECT 1 FROM material_requirement_sets) OR EXISTS (SELECT 1 FROM material_requirements) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE material_requirements;
+DROP TABLE material_requirement_sets;
+DROP TABLE definition_material_inputs;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V31_UP: &str = r#"
+CREATE TABLE objective_styles (
+    hash INTEGER PRIMARY KEY REFERENCES objective_definitions(hash) ON DELETE CASCADE,
+    ui_style INTEGER NOT NULL CHECK (ui_style BETWEEN 0 AND 4294967295)
+) STRICT;
+CREATE TABLE item_objective_sockets (
+    instance_id TEXT NOT NULL, socket_index INTEGER NOT NULL,
+    PRIMARY KEY (instance_id, socket_index),
+    FOREIGN KEY (instance_id, socket_index) REFERENCES item_sockets(instance_id, socket_index) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE item_plug_objectives (
+    instance_id TEXT NOT NULL, socket_index INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 127),
+    objective_hash INTEGER NOT NULL CHECK (objective_hash BETWEEN 0 AND 4294967295),
+    progress INTEGER CHECK (progress BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (instance_id, socket_index, ordinal),
+    FOREIGN KEY (instance_id, socket_index) REFERENCES item_objective_sockets(instance_id, socket_index) ON DELETE CASCADE
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V31_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM objective_styles) OR EXISTS (SELECT 1 FROM item_objective_sockets) OR EXISTS (SELECT 1 FROM item_plug_objectives) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE item_plug_objectives;
+DROP TABLE item_objective_sockets;
+DROP TABLE objective_styles;
+"#;
+const SCHEMA_V30_UP: &str = r#"
+CREATE TABLE item_reusable_sockets (
+    instance_id TEXT NOT NULL, socket_index INTEGER NOT NULL,
+    PRIMARY KEY (instance_id, socket_index),
+    FOREIGN KEY (instance_id, socket_index) REFERENCES item_sockets(instance_id, socket_index) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE item_reusable_plugs (
+    instance_id TEXT NOT NULL, socket_index INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 65535),
+    plug_hash INTEGER NOT NULL CHECK (plug_hash BETWEEN 0 AND 4294967295),
+    can_insert INTEGER NOT NULL CHECK (can_insert IN (0,1)),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0,1)),
+    PRIMARY KEY (instance_id, socket_index, ordinal),
+    FOREIGN KEY (instance_id, socket_index) REFERENCES item_reusable_sockets(instance_id, socket_index) ON DELETE CASCADE
+) STRICT;
+ALTER TABLE catalog_set_perks ADD COLUMN name TEXT CHECK (length(name) <= 256);
+ALTER TABLE catalog_set_perks ADD COLUMN icon TEXT CHECK (length(icon) <= 1024);
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V30_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM item_reusable_sockets) OR EXISTS (SELECT 1 FROM item_reusable_plugs) OR EXISTS (SELECT 1 FROM catalog_set_perks WHERE name IS NOT NULL OR icon IS NOT NULL) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE item_reusable_plugs;
+DROP TABLE item_reusable_sockets;
+ALTER TABLE catalog_set_perks DROP COLUMN icon;
+ALTER TABLE catalog_set_perks DROP COLUMN name;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V29_UP: &str = r#"
+CREATE TABLE socket_catalogs (
+    kind INTEGER NOT NULL CHECK (kind IN (2,3,4)),
+    hash INTEGER NOT NULL CHECK (hash BETWEEN 0 AND 4294967295),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128),
+    category_hash INTEGER CHECK (category_hash BETWEEN 0 AND 4294967295),
+    randomize INTEGER CHECK (randomize IN (0,1)),
+    style INTEGER CHECK (style BETWEEN 0 AND 4294967295),
+    name TEXT CHECK (length(name) <= 256),
+    CHECK ((kind = 2 AND category_hash IS NOT NULL AND randomize IS NOT NULL AND style IS NULL AND name IS NULL)
+        OR (kind = 3 AND category_hash IS NULL AND randomize IS NULL AND style IS NOT NULL AND name IS NOT NULL)
+        OR (kind = 4 AND category_hash IS NULL AND randomize IS NULL AND style IS NULL AND name IS NULL)),
+    PRIMARY KEY (kind, hash)
+) STRICT;
+CREATE TABLE catalog_plug_whitelist (
+    kind INTEGER NOT NULL CHECK (kind = 2), hash INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 1023),
+    category_hash INTEGER NOT NULL CHECK (category_hash BETWEEN 0 AND 4294967295),
+    identifier TEXT NOT NULL CHECK (length(identifier) <= 256),
+    PRIMARY KEY (hash, ordinal),
+    FOREIGN KEY (kind, hash) REFERENCES socket_catalogs(kind, hash) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE catalog_plug_items (
+    kind INTEGER NOT NULL CHECK (kind = 4), hash INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 65535),
+    item_hash INTEGER NOT NULL CHECK (item_hash BETWEEN 0 AND 4294967295),
+    can_roll INTEGER NOT NULL CHECK (can_roll IN (0,1)),
+    PRIMARY KEY (hash, ordinal),
+    FOREIGN KEY (kind, hash) REFERENCES socket_catalogs(kind, hash) ON DELETE CASCADE
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V29_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM socket_catalogs) OR EXISTS (SELECT 1 FROM catalog_plug_whitelist) OR EXISTS (SELECT 1 FROM catalog_plug_items) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE catalog_plug_whitelist;
+DROP TABLE catalog_plug_items;
+DROP TABLE socket_catalogs;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+
+const SCHEMA_V28_UP: &str = r#"
+CREATE TABLE armor_catalogs (
+    kind INTEGER NOT NULL CHECK (kind IN (0,1)),
+    hash INTEGER NOT NULL CHECK (hash BETWEEN 0 AND 4294967295),
+    definition_version TEXT NOT NULL CHECK (length(definition_version) BETWEEN 1 AND 128),
+    name TEXT CHECK ((kind = 0 AND name IS NULL) OR (kind = 1 AND name IS NOT NULL AND length(name) BETWEEN 1 AND 256)),
+    maximum_value INTEGER CHECK ((kind = 0 AND (maximum_value IS NULL OR maximum_value BETWEEN -2147483648 AND 2147483647)) OR (kind = 1 AND maximum_value IS NULL)),
+    PRIMARY KEY (kind, hash)
+) STRICT;
+CREATE TABLE catalog_scaled_stats (
+    kind INTEGER NOT NULL CHECK (kind = 0), hash INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 63),
+    stat_hash INTEGER NOT NULL CHECK (stat_hash BETWEEN 0 AND 4294967295),
+    maximum_value INTEGER NOT NULL CHECK (maximum_value BETWEEN -2147483648 AND 2147483647),
+    numeric INTEGER NOT NULL CHECK (numeric IN (0,1)),
+    PRIMARY KEY (hash, ordinal),
+    FOREIGN KEY (kind, hash) REFERENCES armor_catalogs(kind, hash) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE catalog_interpolation (
+    kind INTEGER NOT NULL CHECK (kind = 0), hash INTEGER NOT NULL, stat_ordinal INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 255),
+    value INTEGER NOT NULL CHECK (value BETWEEN -2147483648 AND 2147483647),
+    weight INTEGER NOT NULL CHECK (weight BETWEEN -2147483648 AND 2147483647),
+    PRIMARY KEY (hash, stat_ordinal, ordinal),
+    FOREIGN KEY (kind, hash) REFERENCES armor_catalogs(kind, hash) ON DELETE CASCADE,
+    FOREIGN KEY (hash, stat_ordinal) REFERENCES catalog_scaled_stats(hash, ordinal) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE catalog_set_items (
+    kind INTEGER NOT NULL CHECK (kind = 1), hash INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 1023),
+    item_hash INTEGER NOT NULL CHECK (item_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (hash, ordinal),
+    FOREIGN KEY (kind, hash) REFERENCES armor_catalogs(kind, hash) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE catalog_set_perks (
+    kind INTEGER NOT NULL CHECK (kind = 1), hash INTEGER NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 63),
+    required_count INTEGER NOT NULL CHECK (required_count BETWEEN -2147483648 AND 2147483647),
+    perk_hash INTEGER NOT NULL CHECK (perk_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (hash, ordinal),
+    FOREIGN KEY (kind, hash) REFERENCES armor_catalogs(kind, hash) ON DELETE CASCADE
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V28_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM armor_catalogs) OR EXISTS (SELECT 1 FROM catalog_scaled_stats) OR EXISTS (SELECT 1 FROM catalog_interpolation) OR EXISTS (SELECT 1 FROM catalog_set_items) OR EXISTS (SELECT 1 FROM catalog_set_perks) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE catalog_interpolation;
+DROP TABLE catalog_scaled_stats;
+DROP TABLE catalog_set_items;
+DROP TABLE catalog_set_perks;
+DROP TABLE armor_catalogs;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+
+const SCHEMA_V27_UP: &str = r#"
+CREATE TABLE definition_socket_entries (
+    definition_hash INTEGER NOT NULL REFERENCES definitions(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 31),
+    socket_type_hash INTEGER NOT NULL CHECK (socket_type_hash BETWEEN 0 AND 4294967295),
+    initial_hash INTEGER NOT NULL CHECK (initial_hash BETWEEN 0 AND 4294967295),
+    reusable_set_hash INTEGER CHECK (reusable_set_hash BETWEEN 0 AND 4294967295),
+    randomized_set_hash INTEGER CHECK (randomized_set_hash BETWEEN 0 AND 4294967295),
+    plug_sources INTEGER CHECK (plug_sources BETWEEN 0 AND 4294967295),
+    default_visible INTEGER CHECK (default_visible IN (0, 1)),
+    PRIMARY KEY (definition_hash, ordinal)
+) STRICT;
+CREATE TABLE definition_socket_plugs (
+    definition_hash INTEGER NOT NULL,
+    socket_index INTEGER NOT NULL CHECK (socket_index BETWEEN 0 AND 31),
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 1023),
+    plug_hash INTEGER NOT NULL CHECK (plug_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (definition_hash, socket_index, ordinal),
+    FOREIGN KEY (definition_hash, socket_index) REFERENCES definition_socket_entries(definition_hash, ordinal) ON DELETE CASCADE
+) STRICT;
+CREATE TABLE definition_socket_categories (
+    definition_hash INTEGER NOT NULL REFERENCES definitions(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 31),
+    category_hash INTEGER NOT NULL CHECK (category_hash BETWEEN 0 AND 4294967295),
+    PRIMARY KEY (definition_hash, ordinal)
+) STRICT;
+CREATE TABLE definition_socket_indexes (
+    definition_hash INTEGER NOT NULL,
+    category_ordinal INTEGER NOT NULL CHECK (category_ordinal BETWEEN 0 AND 31),
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 31),
+    socket_index INTEGER NOT NULL CHECK (socket_index BETWEEN 0 AND 31),
+    PRIMARY KEY (definition_hash, category_ordinal, ordinal),
+    FOREIGN KEY (definition_hash, category_ordinal) REFERENCES definition_socket_categories(definition_hash, ordinal) ON DELETE CASCADE,
+    FOREIGN KEY (definition_hash, socket_index) REFERENCES definition_socket_entries(definition_hash, ordinal) ON DELETE CASCADE
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V27_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definition_socket_entries) OR EXISTS (SELECT 1 FROM definition_socket_plugs) OR EXISTS (SELECT 1 FROM definition_socket_categories) OR EXISTS (SELECT 1 FROM definition_socket_indexes) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE definition_socket_indexes;
+DROP TABLE definition_socket_categories;
+DROP TABLE definition_socket_plugs;
+DROP TABLE definition_socket_entries;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+
+const SCHEMA_V26_UP: &str = r#"
+CREATE TABLE definition_armor (
+    definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,
+    stat_group_hash INTEGER CHECK (stat_group_hash BETWEEN 0 AND 4294967295),
+    plug_category_hash INTEGER CHECK (plug_category_hash BETWEEN 0 AND 4294967295),
+    aspect_capacity INTEGER CHECK (aspect_capacity BETWEEN -2147483648 AND 2147483647),
+    equipable_item_set_hash INTEGER CHECK (equipable_item_set_hash BETWEEN 0 AND 4294967295)
+) STRICT;
+CREATE TABLE definition_investment_stats (
+    definition_hash INTEGER NOT NULL REFERENCES definitions(hash) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 63),
+    stat_type_hash INTEGER NOT NULL CHECK (stat_type_hash BETWEEN 0 AND 4294967295),
+    value INTEGER NOT NULL CHECK (value BETWEEN -2147483648 AND 2147483647),
+    conditionally_active INTEGER NOT NULL CHECK (conditionally_active IN (0, 1)),
+    PRIMARY KEY (definition_hash, ordinal)
+) STRICT;
+CREATE TABLE definition_energy_costs (
+    definition_hash INTEGER PRIMARY KEY REFERENCES definitions(hash) ON DELETE CASCADE,
+    energy_cost INTEGER NOT NULL CHECK (energy_cost BETWEEN -2147483648 AND 2147483647),
+    energy_type INTEGER NOT NULL CHECK (energy_type BETWEEN 0 AND 4294967295),
+    energy_type_hash INTEGER NOT NULL CHECK (energy_type_hash BETWEEN 0 AND 4294967295)
+) STRICT;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+const SCHEMA_V26_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definition_armor) OR EXISTS (SELECT 1 FROM definition_investment_stats) OR EXISTS (SELECT 1 FROM definition_energy_costs) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE definition_energy_costs;
+DROP TABLE definition_investment_stats;
+DROP TABLE definition_armor;
+DELETE FROM sync_metadata WHERE dataset = 'manifest_definitions';
+"#;
+
+const SCHEMA_V25_UP: &str = r#"
+CREATE TABLE item_energy (
+    instance_id TEXT PRIMARY KEY REFERENCES items(instance_id) ON DELETE CASCADE,
+    energy_capacity INTEGER NOT NULL CHECK (energy_capacity BETWEEN 0 AND 4294967295),
+    energy_used INTEGER NOT NULL CHECK (energy_used BETWEEN 0 AND 4294967295),
+    energy_unused INTEGER NOT NULL CHECK (energy_unused BETWEEN 0 AND 4294967295),
+    energy_type INTEGER CHECK (energy_type BETWEEN 0 AND 4294967295),
+    energy_type_hash INTEGER CHECK (energy_type_hash BETWEEN 0 AND 4294967295)
+) STRICT;
+CREATE TABLE item_gear_tiers (
+    instance_id TEXT PRIMARY KEY REFERENCES items(instance_id) ON DELETE CASCADE,
+    gear_tier INTEGER NOT NULL CHECK (gear_tier BETWEEN 0 AND 4294967295)
+) STRICT;
+CREATE TABLE item_sockets (
+    instance_id TEXT NOT NULL REFERENCES items(instance_id) ON DELETE CASCADE,
+    socket_index INTEGER NOT NULL CHECK (socket_index BETWEEN 0 AND 31),
+    plug_hash INTEGER CHECK (plug_hash BETWEEN 0 AND 4294967295),
+    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+    visible INTEGER NOT NULL CHECK (visible IN (0, 1)),
+    PRIMARY KEY(instance_id, socket_index)
+) STRICT;
+"#;
+const SCHEMA_V25_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM item_energy) OR EXISTS (SELECT 1 FROM item_gear_tiers) OR EXISTS (SELECT 1 FROM item_sockets) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+DROP TABLE item_sockets;
+DROP TABLE item_gear_tiers;
+DROP TABLE item_energy;
+"#;
+
+const SCHEMA_V24_UP: &str = r#"
+ALTER TABLE definitions ADD COLUMN non_transferrable INTEGER CHECK (non_transferrable IS NULL OR non_transferrable IN (0, 1));
+ALTER TABLE items ADD COLUMN transfer_status INTEGER CHECK (transfer_status IS NULL OR transfer_status BETWEEN 0 AND 4294967295);
+"#;
+const SCHEMA_V24_DOWN: &str = r#"
+CREATE TEMP TABLE downgrade_guard (safe INTEGER CHECK (safe = 1));
+INSERT INTO downgrade_guard SELECT CASE WHEN EXISTS (SELECT 1 FROM definitions WHERE non_transferrable IS NOT NULL) OR EXISTS (SELECT 1 FROM items WHERE transfer_status IS NOT NULL) THEN 0 ELSE 1 END;
+DROP TABLE downgrade_guard;
+ALTER TABLE definitions DROP COLUMN non_transferrable;
+ALTER TABLE items DROP COLUMN transfer_status;
+"#;
+
+// Local user-authored definitions survive replacing the active synced profile.
+// Membership is explicit, like active_profile, but not a cascading foreign key.
+const SCHEMA_V23_UP: &str = r#"
+CREATE TABLE builds (
+    membership_id TEXT NOT NULL CHECK (length(membership_id) BETWEEN 1 AND 128 AND membership_id NOT GLOB '*[^0-9]*'),
+    membership_type INTEGER NOT NULL CHECK (membership_type BETWEEN 0 AND 4294967295),
+    id TEXT NOT NULL CHECK (length(hex(id)) BETWEEN 2 AND 256),
+    name TEXT NOT NULL,
+    class_type INTEGER NOT NULL CHECK (class_type BETWEEN 0 AND 3),
+    source TEXT NOT NULL CHECK (source IN ('import','equipped','ingame')),
+    created_at TEXT NOT NULL CHECK (
+        length(created_at) BETWEEN 1 AND 20 AND created_at NOT GLOB '*[^0-9]*'
+        AND (created_at = '0' OR created_at GLOB '[1-9]*')
+        AND (length(created_at) < 20 OR created_at <= '18446744073709551615')
+    ),
+    updated_at TEXT NOT NULL CHECK (
+        length(updated_at) BETWEEN 1 AND 20 AND updated_at NOT GLOB '*[^0-9]*'
+        AND (updated_at = '0' OR updated_at GLOB '[1-9]*')
+        AND (length(updated_at) < 20 OR updated_at <= '18446744073709551615')
+    ),
+    normalized_build TEXT NOT NULL,
+    parameter_extra TEXT,
+    PRIMARY KEY (membership_type, membership_id, id)
+) STRICT;
+CREATE INDEX builds_name ON builds(membership_type, membership_id, name);
+CREATE INDEX builds_class ON builds(membership_type, membership_id, class_type);
+"#;
 
 const SCHEMA_V22_UP: &str = r#"
 CREATE TABLE definition_search (

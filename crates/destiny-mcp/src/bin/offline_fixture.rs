@@ -268,7 +268,9 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         world: Arc::clone(&world),
     })
     .with_equip_items(batch)
-    .with_lock(WorldLockGateway { world })
+    .with_lock(WorldLockGateway {
+        world: Arc::clone(&world),
+    })
     .with_pull(pull)
     .with_stack(stack);
 
@@ -311,11 +313,30 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         FakeClock::fixed(NOW),
         TTL,
     );
+    let builds = destiny_mcp::service::ComposedBuildService {
+        builds: destiny_app::builds::BuildService::new(
+            destiny_app::test_support::InMemoryBuildRepository::default(),
+            destiny_adapters::dim_loadout::DimBuildCodec,
+        ),
+        sync: ProfileSyncService::new_with_definitions(
+            WorldGateway {
+                membership: membership(),
+                world,
+            },
+            FixtureRepository::seeded(&characters(), &base_items()),
+        ),
+        clock: FakeClock::fixed(NOW),
+        policy: TTL,
+    };
     if !std::env::var(SCENARIO_ENV)
         .unwrap_or_default()
         .starts_with("loadout-")
     {
-        return ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service));
+        return ReadToolServer::with_mutation(
+            Box::new(read_service),
+            Box::new(apply_build(mutation_service)),
+        )
+        .with_builds(Box::new(builds));
     }
     let mut loadout_character = character("1");
     loadout_character.id = CharacterId::new("1");
@@ -360,7 +381,59 @@ fn build_server(scenario: Scenario) -> ReadToolServer {
         policy: TTL,
         last_attempt: None,
     };
-    ReadToolServer::with_mutation(Box::new(read_service), Box::new(mutation_service))
+    ReadToolServer::with_mutation(
+        Box::new(read_service),
+        Box::new(apply_build(mutation_service)),
+    )
+    .with_builds(Box::new(builds))
+}
+
+/// `apply_build` over an empty build store and gateways that were never scripted: the
+/// fixture proves composition and the typed error, not a Bungie apply.
+fn apply_build<I>(
+    inner: I,
+) -> destiny_mcp::apply_build::ApplyBuildMutationService<
+    I,
+    WorldGateway,
+    FixtureRepository,
+    destiny_app::test_support::InMemoryBuildRepository,
+    destiny_adapters::dim_loadout::DimBuildCodec,
+    FakeClock,
+    destiny_app::test_support::QueuedTransferGateway,
+    destiny_app::test_support::QueuedEquipGateway,
+    destiny_app::test_support::QueuedEquipItemsGateway,
+    destiny_app::test_support::QueuedInstancedPullGateway,
+    destiny_app::test_support::QueuedInsertPlugGateway,
+> {
+    destiny_mcp::apply_build::ApplyBuildMutationService {
+        inner,
+        builds: destiny_app::builds::BuildService::new(
+            destiny_app::test_support::InMemoryBuildRepository::default(),
+            destiny_adapters::dim_loadout::DimBuildCodec,
+        ),
+        sync: ProfileSyncService::new_with_definitions(
+            WorldGateway {
+                membership: membership(),
+                world: Arc::new(Mutex::new(FixtureWorld {
+                    characters: characters(),
+                    items: base_items(),
+                    refresh_failed: false,
+                    stack_arrived: false,
+                })),
+            },
+            FixtureRepository::seeded(&characters(), &base_items()),
+        ),
+        gateways: destiny_app::build_apply_exec::BuildGateways {
+            transfer: destiny_app::test_support::QueuedTransferGateway::new(),
+            equip: destiny_app::test_support::QueuedEquipGateway::new(),
+            equip_items: destiny_app::test_support::QueuedEquipItemsGateway::new(),
+            pull: destiny_app::test_support::QueuedInstancedPullGateway::new(),
+            socket: destiny_app::test_support::QueuedInsertPlugGateway::new(),
+        },
+        clock: FakeClock::fixed(NOW),
+        policy: TTL,
+        last_attempt: None,
+    }
 }
 
 impl destiny_app::LoadoutGateway for WorldGateway {
@@ -562,6 +635,7 @@ fn weekly_repository() -> InMemoryDefinitionRepository {
                 source: SourceMarker::Manifest,
             },
             WorldDefinitionsAcquisition {
+                armor_catalogs: Vec::new(),
                 item_descriptions: Vec::new(),
                 loadout_names: WorldDefinitionTable {
                     definitions: vec![],
@@ -1018,6 +1092,16 @@ impl destiny_app::Clock for LocalPublicationClock {
     }
 }
 
+impl destiny_app::ArmorCatalogRepository for FixtureRepository {
+    fn armor_catalog(
+        &self,
+        kind: destiny_app::armor_catalog::ArmorCatalogKind,
+        hash: Option<u32>,
+    ) -> Result<Vec<destiny_app::armor_catalog::ArmorCatalogRecord>, AppError> {
+        self.definitions.armor_catalog(kind, hash)
+    }
+}
+
 impl FixtureRepository {
     /// Seeds one committed projection for the supplied characters and items.
     fn seeded(characters: &[Character], items: &[ItemInstance]) -> Self {
@@ -1090,6 +1174,28 @@ impl FixtureRepository {
 }
 
 impl InventoryRepository for FixtureRepository {
+    fn saved_loadouts(&self) -> Result<Option<Vec<destiny_app::CharacterLoadouts>>, AppError> {
+        if std::env::var(SCENARIO_ENV).ok().as_deref() != Some("build-sources") {
+            return Ok(None);
+        }
+        Ok(Some(vec![destiny_app::CharacterLoadouts {
+            character_id: CharacterId::new("1"),
+            loadouts: vec![destiny_app::Loadout {
+                slot_index: 0,
+                name_hash: 1,
+                color_hash: 2,
+                icon_hash: 3,
+                items: ["404"]
+                    .into_iter()
+                    .map(|id| destiny_app::LoadoutItem {
+                        instance_id: ItemInstanceId::new(id),
+                        plugs: vec![],
+                    })
+                    .collect(),
+            }],
+        }]))
+    }
+
     fn apply_acknowledged_effects(
         &mut self,
         membership: &DestinyMembership,
@@ -1342,6 +1448,9 @@ fn characters() -> Vec<Character> {
         return vec![];
     }
     let mut characters = vec![character("warlock"), character("zavala")];
+    if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("build-sources") {
+        characters.push(character("1"));
+    }
     if std::env::var(SCENARIO_ENV).ok().as_deref() == Some("ambiguous-character") {
         characters[0].class = Some("Titan".into());
     }
@@ -1555,6 +1664,8 @@ fn character(id: &str) -> Character {
 
 fn definition(hash: i64, name: &str) -> ItemDefinition {
     ItemDefinition {
+        armor: Default::default(),
+        non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
         max_stack_size: None,
@@ -1588,6 +1699,10 @@ fn instance(
     perks: Vec<PerkSummary>,
 ) -> ItemInstance {
     ItemInstance {
+        energy: None,
+        gear_tier: None,
+        sockets: Vec::new(),
+        transfer_status: None,
         available_plugs: Vec::new(),
         instance_id: ItemInstanceId::new(instance_id),
         item_hash: ItemHash::new(item_hash),

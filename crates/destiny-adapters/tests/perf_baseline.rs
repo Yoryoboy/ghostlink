@@ -73,6 +73,8 @@ fn catalog() -> DefinitionReplacementInput {
                 plug_category: category,
                 tags: vec!["baseline".into(), format!("family-{}", hash % 12)],
                 version: DefinitionVersion::new(VERSION),
+                armor: Default::default(),
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: Some(hash <= 14_000),
                 max_stack_size: Some(if hash > 19_700 { 999 } else { 1 }),
@@ -99,6 +101,7 @@ fn table<T>(definitions: Vec<T>) -> WorldDefinitionTable<T> {
 
 fn world() -> WorldDefinitionsAcquisition {
     WorldDefinitionsAcquisition {
+        armor_catalogs: Vec::new(),
         version: DefinitionVersion::new(VERSION),
         item_descriptions: vec![],
         stats: table(
@@ -163,6 +166,10 @@ fn profile() -> InventorySnapshotInput {
                     enabled: true,
                 })
                 .collect(),
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
+            transfer_status: None,
             available_plugs: (0..5)
                 .flat_map(|socket_index| {
                     (0..3).map(move |p| AvailablePlug {

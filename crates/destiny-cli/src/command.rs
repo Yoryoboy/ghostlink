@@ -187,7 +187,8 @@ impl Cli {
             // A `login` command line carries no read, and the hidden `callback`
             // handler is not a read either, so both report the stable
             // unsupported-operation outcome instead of guessing at a read.
-            Command::ApplyLoadout(_)
+            Command::Build(_)
+            | Command::ApplyLoadout(_)
             | Command::PullStack(_)
             | Command::Pull(_)
             | Command::Equip(_)
@@ -209,6 +210,136 @@ impl Cli {
             | Command::Callback(_) => {
                 Err(CliError::from_category(ErrorCategory::UnsupportedOperation))
             }
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct BuildArgs {
+    #[command(subcommand)]
+    pub command: BuildCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BuildCommand {
+    /// Import DIM JSON from a file, stdin (-), or a loadouts?loadout= URL.
+    Import { input: String },
+    /// List locally stored builds without synchronization.
+    List,
+    /// Show a build by ID or exact normalized name.
+    Show(BuildSelection),
+    /// Check inventory resolution and supported DIM findings; never applies gear.
+    Check(BuildCheckArgs),
+    /// Rank armor sets from your Vault and characters for a build, as DIM's Loadout
+    /// Optimizer does with its saved stat ranges; never applies gear.
+    Substitutes(BuildSubstitutesArgs),
+    /// Move and equip a build's items, then insert its subclass, artifact, mod and fashion plugs.
+    /// With --dry-run it prints the plan and dispatches nothing.
+    Apply(BuildApplyArgs),
+    /// Delete a local build; ID deletion is idempotent.
+    Delete(BuildSelection),
+    /// Write raw DIM JSON to stdout (also with --json).
+    Export(BuildSelection),
+    /// Save equipped gear; unavailable source data is reported.
+    FromEquipped {
+        name: String,
+        #[arg(long)]
+        character: String,
+    },
+    /// Convert an in-game loadout using the apply-loadout selectors.
+    FromLoadout(ApplyLoadoutArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct BuildCheckArgs {
+    #[command(flatten)]
+    pub selection: BuildSelection,
+    #[arg(long)]
+    pub character: Option<String>,
+}
+impl BuildCheckArgs {
+    pub fn request(&self) -> Result<destiny_app::builds::BuildCheckRequest, CliError> {
+        if let Some(character) = &self.character {
+            SearchTerm::new(character).map_err(|_| CliError::invalid_request())?;
+        }
+        Ok(destiny_app::builds::BuildCheckRequest {
+            selector: self.selection.selector()?,
+            character: self.character.as_ref().map(destiny_app::CharacterId::new),
+        })
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct BuildSubstitutesArgs {
+    #[command(flatten)]
+    pub selection: BuildSelection,
+    #[arg(long)]
+    pub character: Option<String>,
+    /// Number of ranked sets to return (1..=200, DIM's cap).
+    #[arg(long, value_name = "N", default_value_t = destiny_app::optimizer::DEFAULT_SUBSTITUTES)]
+    pub limit: usize,
+}
+impl BuildSubstitutesArgs {
+    pub fn request(&self) -> Result<(destiny_app::builds::BuildCheckRequest, usize), CliError> {
+        if !(1..=destiny_app::optimizer::MAX_SUBSTITUTES).contains(&self.limit) {
+            return Err(CliError::invalid_argument(
+                "--limit",
+                format!("must be 1..={}", destiny_app::optimizer::MAX_SUBSTITUTES),
+            ));
+        }
+        let check = BuildCheckArgs {
+            selection: BuildSelection {
+                id: self.selection.id.clone(),
+                name: self.selection.name.clone(),
+            },
+            character: self.character.clone(),
+        };
+        Ok((check.request()?, self.limit))
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct BuildApplyArgs {
+    #[command(flatten)]
+    pub selection: BuildSelection,
+    #[arg(long)]
+    pub character: Option<String>,
+    /// Print the plan without dispatching any action.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+impl BuildApplyArgs {
+    pub fn request(&self) -> Result<destiny_app::builds::BuildCheckRequest, CliError> {
+        BuildCheckArgs {
+            selection: BuildSelection {
+                id: self.selection.id.clone(),
+                name: self.selection.name.clone(),
+            },
+            character: self.character.clone(),
+        }
+        .request()
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct BuildSelection {
+    #[arg(required_unless_present = "name", conflicts_with = "name")]
+    pub id: Option<String>,
+    #[arg(long)]
+    pub name: Option<String>,
+}
+impl BuildSelection {
+    pub fn selector(&self) -> Result<destiny_app::builds::BuildSelector, CliError> {
+        match (&self.id, &self.name) {
+            (Some(id), None) => {
+                validate_identity(id, "ID")?;
+                Ok(destiny_app::builds::BuildSelector::Id(id.clone()))
+            }
+            (None, Some(name)) => {
+                SearchTerm::new(name).map_err(|_| CliError::invalid_request())?;
+                Ok(destiny_app::builds::BuildSelector::Name(name.clone()))
+            }
+            _ => Err(CliError::invalid_request()),
         }
     }
 }
@@ -249,6 +380,8 @@ pub struct AgentSelection {
 pub enum Command {
     #[command(skip)]
     Help,
+    /// Store, inspect and export local DIM-shaped build definitions.
+    Build(BuildArgs),
     /// Interactively connect agents and optionally sign in to Bungie.
     Setup,
     /// Run the official installation's sibling updater (Linux only).
@@ -2427,6 +2560,8 @@ mod tests {
     #[test]
     fn unique_inspection_is_returned_unchanged() {
         let inspection = ItemInspection {
+            fragment_capacity: None,
+            armor_model: None,
             plug_details: Vec::new(),
             perk_names: Vec::new(),
             mod_names: Vec::new(),
@@ -2435,6 +2570,8 @@ mod tests {
             available_mods: Vec::new(),
             stats: Vec::new(),
             definition: destiny_app::ItemDefinition {
+                armor: Default::default(),
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -2452,6 +2589,10 @@ mod tests {
                 version: destiny_app::DefinitionVersion::new("manifest-v1"),
             },
             instance: destiny_app::ItemInstance {
+                energy: None,
+                gear_tier: None,
+                sockets: Vec::new(),
+                transfer_status: None,
                 available_plugs: Vec::new(),
                 instance_id: ItemInstanceId::new("inst-1"),
                 item_hash: destiny_app::ItemHash::new(1),

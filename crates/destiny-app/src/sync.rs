@@ -379,6 +379,7 @@ where
         // and retained. A known definition without a category is not a perk.
         let mut categories = std::collections::HashMap::new();
         let mut subclass_options = std::collections::HashSet::new();
+        let mut build_apply_plugs = std::collections::HashSet::new();
         for hash in candidate
             .items
             .iter()
@@ -403,6 +404,9 @@ where
                         {
                             subclass_options.insert(hash);
                         }
+                        if is_build_apply_plug(&definition) {
+                            build_apply_plugs.insert(hash);
+                        }
                         Some(definition.plug_category.unwrap_or_default())
                     }
                     _ => None,
@@ -418,10 +422,14 @@ where
             });
         }
         // Unlike item plugs, unknown plug-set definitions are dropped: live
-        // profiles contain ~924 sets, mostly cosmetics, not subclass options.
-        candidate
-            .plug_set_entries
-            .retain(|entry| subclass_options.contains(&entry.plug_hash));
+        // profiles contain ~924 sets, mostly other cosmetics. Keep subclass
+        // options plus the armor mods and fashion that build apply consults
+        // (DIM `gatherUnlockedPlugSetItems`, selectors.ts:327-345). Decode
+        // bounds the input (4096 sets x 512 plugs, one entry per scope+plug).
+        candidate.plug_set_entries.retain(|entry| {
+            subclass_options.contains(&entry.plug_hash)
+                || build_apply_plugs.contains(&entry.plug_hash)
+        });
         // Preserve only the observed route's POST-FILTER candidate. Ordinary
         // success still moves its input without cloning a projection.
         let expected = with_observations.then(|| candidate.clone());
@@ -438,6 +446,15 @@ where
         };
         Ok(SyncDecision::Refreshed(publication))
     }
+}
+
+/// Armor mods (`enhancements.*`, masterwork stat plugs excluded) and fashion
+/// (shader/ornament, DIM `isFashionPlug`, loadout-utils.ts:857-864).
+fn is_build_apply_plug(definition: &destiny_core::ItemDefinition) -> bool {
+    destiny_core::build_fashion_apply::is_fashion_plug(definition)
+        || definition.plug_category.as_deref().is_some_and(|category| {
+            category.starts_with("enhancements.") && !category.contains("masterworks")
+        })
 }
 
 #[cfg(all(test, feature = "test-support"))]
@@ -628,6 +645,10 @@ mod tests {
                 source: SourceMarker::Profile,
                 characters: Vec::new(),
                 items: vec![ItemInstance {
+                    energy: None,
+                    gear_tier: None,
+                    sockets: Vec::new(),
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: "instance-1".into(),
                     item_hash: ItemHash::new(7),
@@ -1363,6 +1384,8 @@ mod tests {
             ]
             .into_iter()
             .map(|(hash, category)| ItemDefinition {
+                armor: Default::default(),
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -1392,6 +1415,18 @@ mod tests {
             let mut observed_inputs = Vec::new();
             for cosmetic in [61, 64] {
                 let mut candidate = inventory(&resolved, NOW, 1);
+                candidate.items[0].sockets = vec![destiny_core::IndexedSocket {
+                    plug_objectives: None,
+                    socket_index: 0,
+                    plug_hash: None,
+                    enabled: false,
+                    visible: false,
+                    reusable_plugs: Some(vec![destiny_core::domain::ReusablePlug {
+                        plug_hash: ItemHash::new(61),
+                        can_insert: false,
+                        enabled: false,
+                    }]),
+                }];
                 candidate.items[0].available_plugs = [60, cosmetic, 65, 66, 62, 63]
                     .into_iter()
                     .map(|hash| destiny_core::AvailablePlug {
@@ -1421,6 +1456,14 @@ mod tests {
                     .iter()
                     .map(|plug| plug.plug_hash.value())
                     .collect();
+                assert_eq!(
+                    snapshot.items[0].sockets[0]
+                        .reusable_plugs
+                        .as_ref()
+                        .unwrap()[0]
+                        .plug_hash,
+                    ItemHash::new(61)
+                );
                 // Known non-plugs (category None) are dropped, missing definitions kept.
                 assert_eq!(hashes, [60, 65, 66, 62, 60]);
                 assert_eq!(

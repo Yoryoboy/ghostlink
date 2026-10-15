@@ -1,8 +1,23 @@
 //! Provider- and transport-free domain contracts.
 
+pub mod armor_catalog;
+pub mod armor_definition;
+pub mod armor_model;
+pub use armor_definition::*;
 pub use clarity::*;
+pub mod build;
+pub mod build_analysis;
+pub mod build_apply;
+pub mod build_capture;
+pub mod build_fashion_apply;
+pub mod build_mod_apply;
+pub mod build_sets;
+pub mod build_sockets;
+pub mod build_stats;
 pub mod calendar;
 pub mod clarity;
+pub mod mod_assignment;
+pub mod optimizer;
 pub use calendar::*;
 pub mod loadout;
 pub use loadout::*;
@@ -23,6 +38,10 @@ pub use equipment_capacity::{
     QualifiedEquipmentCapacityPolicy,
 };
 pub mod ids;
+pub mod insert_plug;
+pub use insert_plug::{
+    InsertPlugGateway, InsertPlugOutcome, InsertPlugRejection, InsertPlugRequest,
+};
 pub mod instanced_pull;
 pub use instanced_pull::{InstancedPullOutcome, InstancedPullRejection, InstancedPullRequest};
 pub mod inventory_effects;
@@ -74,10 +93,10 @@ pub use auth::{
     AuthorizationState, CallbackResult, ClientSecret, RefreshGrant, RefreshToken,
 };
 pub use domain::{
-    AvailablePlug, Character, InventorySnapshot, ItemDefinition, ItemInstance, ItemLocation,
-    PerkSummary, PlugSetEntry, PlugSetScope, PlugSummary, SnapshotMetadata, StatSummary,
-    SubclassElement, SubclassPlugKind, SyncMetadata, classify_subclass_plug,
-    parse_subclass_category,
+    AvailablePlug, Character, IndexedSocket, InventorySnapshot, ItemDefinition, ItemEnergy,
+    ItemInstance, ItemLocation, MAX_ITEM_SOCKETS, PerkSummary, PlugSetEntry, PlugSetScope,
+    PlugSummary, SnapshotMetadata, StatSummary, SubclassElement, SubclassPlugKind, SyncMetadata,
+    classify_subclass_plug, parse_subclass_category,
 };
 pub use error::{AppError, ErrorCategory};
 pub use ids::{

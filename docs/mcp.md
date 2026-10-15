@@ -1,6 +1,6 @@
 # Ghostlink MCP server (`destiny-mcp`)
 
-`destiny-mcp` serves bounded read tools plus seven default-enabled semantic
+`destiny-mcp` serves bounded read tools plus eight default-enabled semantic
 mutations over the Model Context Protocol stdio transport:
 
 ```text
@@ -22,7 +22,111 @@ set_lock_state    lock or unlock one explicitly selected owned item, return acce
 pull_item         pull one genuine Postmaster equipment instance to its owner
 pull_stack        pull an explicit amount of a non-instanced Postmaster stack
 apply_loadout     apply one saved in-game loadout on an explicit character
+apply_build       apply a stored build's moves, equips, subclass/artifact plugs and armor mods (or plan them with dry_run)
+list_builds       list locally stored build definitions
+get_build         show one local build, including DIM JSON export
+save_build        import or capture equipped/in-game loadout as a local build
+delete_build      delete one local build definition
+analyze_build     check a local build against synced inventory
+build_substitutes rank armor sets for a local build (read-only)
 ```
+
+## Local build tools
+
+Build tools other than `apply_build` never apply equipment or modify DIM/Bungie loadouts. They are
+composed in the production server with membership-scoped SQLite storage.
+
+| Tool | Arguments |
+|---|---|
+| `list_builds` | `{}` |
+| `get_build` / `delete_build` | Exactly one `id` or normalized exact `name` |
+| `analyze_build` | Exactly one `id`/`name`; optional `character` ID or unique class |
+| `build_substitutes` | As `analyze_build`, plus optional `limit` (1..=200, default 10) |
+| `save_build` import | `source: "import"`, `input`: DIM JSON or full loadout URL |
+| `save_build` equipped | `source: "equipped"`, `character`, `name` |
+| `save_build` in-game | `source: "in_game_loadout"`, `character`, exactly one `slot` (1..12) or `loadout_name` |
+
+`build_substitutes` is read-only (`readOnlyHint`) and returns the JSON of
+`ghostlink build substitutes`: ranked armor sets with item ids and names, per-stat totals,
+armor-only stats, automatic stat mods and tuning mods, and the `optimizer` object. The
+search has a fixed 10 s budget; `optimizer.truncated: true` marks partial results and
+`evaluation: "not_evaluated"` with a `reason` is unknown, never an empty answer. See
+[CLI substitutes](cli.md#find-substitute-armor-sets) and [optimizer.md](optimizer.md).
+
+`analyze_build` shares `ghostlink build check` output and ordinary freshness.
+Without a character selector the build class must have one owned character;
+otherwise resolve ambiguity with an explicit ID. Results contain item resolution,
+location/owner/equipped/class compatibility, counts (no percentage), and every DIM
+finding kind. `present: null` with `evaluation: not_evaluated` is not a clean bill
+of health. `items_do_not_match_search_query` and `better_stats_available` come from DIM's analyzer
+search for a full, unblocked armor set (budget 2 s per build; exhaustion is
+`not_evaluated` with `optimizer_budget_exhausted`); the additive `optimizer` object
+reports its counts and `font_note`. See [optimizer findings](optimizer.md). The additive `mod_fit` object shares the CLI's bounded DIM
+armor-mod assignment across all categories: nullable `invalid_mods`, `unassigned_mods` (after
+allowed energy upgrades, duplicates retained), and `needs_upgrades_for_mods`.
+Artifice prefers current placement then nonexotics; tuning uses canonical slot
+order and DIM's exotic request-count rule. Missing raw tuning membership stays
+unknown. General/activity Heap candidates rank by unassigned count, cumulative
+lexicographic material cost, then assignment changes. `item_mod_assignments` gives
+`{instance_id, mods}` proposals; `upgrade_costs` contains positive `{material_hash,
+amount}` energy/artifice costs, not affordability or a provider execution plan.
+`uses_seasonal_mods` includes expensive-variant re-fitting; missing re-fit inputs
+leave that field/finding null with a reason without erasing independently proven fit.
+Migration 32 supplies these material inputs; no new acquisition is added.
+Legacy hashes and seasonal costs resolve
+like DIM using enabled account/target-character unlocks (missing plug sets mean
+no unlocks). Missing/non-pluggable definitions use the deprecated placeholder;
+missing placeholder data stays unknown. See [build mod fitting](build-mods.md).
+The additive `stats` object matches CLI JSON: six `{stat_hash, as_is, assumed}`
+values, `satisfies_constraints`, `needs_upgrades_for_stats`, evaluation and reason.
+DIM minima-only checks include assigned/unassigned mods, subclass overrides and
+optional runtime Font effects. Maxima are not evaluated; better stats come from the `optimizer` analysis.
+The global upgrade finding combines mod and stat requirements; missing evidence
+remains null, never a successful constraint check. `empty_fragment_slots` and `too_many_fragments` now
+compare saved fragment overrides with saved aspect capacity, never current aspects.
+Only nonzero overrides at existing fragment socket indices count (even explicit
+empty plugs). No selected aspects means zero capacity. Missing subclass sockets
+or selected aspect definitions keep findings unknown with explicit reasons.
+Socket application and optimization remain deferred. No gear is applied. See [scope and DIM evidence](build-mods.md). The additive `equipped_set_bonuses` object reports set hash/name,
+`equipped_count`, and nullable `perks` with `sandbox_perk_hash`,
+`required_set_count`, name/icon and nullable `active`. It uses build-equipped
+resolved armor and current inserted event selectors, not future mod assignment.
+`evaluation: partial` and `reasons` preserve unknown contributors/catalogs; counts
+are lower bounds, and null activation is not inactive. Native sets precede event
+selectors, which require visible sockets and enabled plugs. See
+[CLI build checking](cli.md#check-a-build-against-inventory).
+
+Source-inapplicable/unknown fields are rejected before service dispatch. MCP
+imports accept content, never server file paths or stdin. Input is bounded to
+1 MiB; `dim.gg` fails with `unsupported_operation` and typed reason
+`share_link_requires_online_import`, without fetching a share: `dim.gg` is not
+supported; open the link in DIM and import the full link or JSON instead.
+
+Local operations use the committed profile membership without synchronization;
+run profile sync first if unavailable. Inventory captures require stored
+Manifest, exact character ID or unique class, and ordinary profile freshness.
+Server exclusion covers conversion and storage; build sync does not reenter
+the same guard. List returns `kind: builds`; get/save return `kind: build`,
+`summary`, `dim_json` (DIM export string), `omissions`, `unresolved_items`.
+Equipped/in-game capture includes `craftedDate` in DIM JSON when component-309
+objectives and Manifest styles establish complete crafting information.
+`analyze_build` resolves by instance ID first, then nonzero crafted date (DIM's
+last match, without hash/owner restrictions). Missing evidence stays unknown;
+report capture omissions rather than promising complete socket/artifact data.
+Equipped saves capture subclass/artifact `socketOverrides` (not legacy
+`artifactUnlocks`) with DIM empty/default rules, positional fragment gating and
+membership validation, without unlock/enabled filtering. In-game saves classify
+armor mods/fashion by socket category and retain empty overrides, removing only
+unset zero hashes. Get/save add `equipped_socket_overrides`; analysis retains
+`spec.socket_overrides` but still reports socket application checks as
+`not_evaluated`. Capture diagnostics are not stored: later get reports
+`source_capture_evidence_not_persisted`. Unknown inputs are not substituted.
+Per-capture missing crafting evidence is not separately retained on later get.
+Unresolved instances are reported during conversion; stored DIM does not retain
+those discarded entries (`unresolved_items: null` on later get). Ambiguity is an
+error with candidates; ask for an ID
+or slot rather than guessing. ID deletion is idempotent (`deleted: false` when
+absent). These shapes match [CLI builds](cli.md#local-builds).
 
 Mutation is composed by default in the product binary: its profile gateway and
 durable projection are shared with the read path, and one explicit `move_item`
@@ -183,6 +287,38 @@ runtime failure is a sanitized message written to stderr; nothing else is writte
 to stdout. A missing stored credential fails closed with `authorization is
 required`, a legacy raw-material credential with `reauthorization is required`,
 and neither path guesses an expiry or falls back to an environment value.
+
+## Apply a stored build
+
+`apply_build` takes `{"id":"..."}` or `{"name":"Raid"}` (exactly one), an optional
+`character` (owned ID or unique class, as for `analyze_build`) and an optional
+`dry_run` boolean. Unknown fields and invalid selectors are rejected before service
+I/O; the input schema has no top-level `oneOf`/`anyOf`/`allOf`, and id/name
+exclusivity is enforced at runtime. The description is within the 500-byte budget.
+
+It runs the same planner and executor as `ghostlink build apply` and returns the same
+JSON (`kind: "build_apply"`, or `build_apply_plan` with `dispatched: 0` for
+`dry_run: true`; see [build apply](build-apply.md)). `isError` is true for every
+non-zero CLI exit: partial or failed results (41), a failed local write (42) and
+refusals (category exits). `result` is `applied`, `no_op`, `partial`, `failed` or
+`refused`; each step carries per-item `succeeded`, `failed` or `skipped` outcomes with
+typed reasons, and `local_state` is one of `unchanged`, `updated`, `refresh_pending`
+or `failed` (with `reason`). Bungie acknowledgements are not re-read and nothing is
+retried: never repeat a partial, failed or uncertain apply blindly. Subclass and
+artifact socket overrides are applied as `sockets` steps (`insert_plug`; free plugs
+only, so `socket_skipped` can list `not_free`), after which `local_state` is
+`refresh_pending`. Subclass and artifact items are equipped like any other build item.
+Armor mods and fashion (`modsByBucket` shaders and ornaments) are `mods` steps too, after
+the socket overrides; their skips are listed in `mod_skipped` (for example
+`fashion_not_unlocked` or `irreversible_shader`) and `not_applied` names what could not
+be evaluated.
+
+When Bungie acknowledged actions but the projection write failed, the result keeps
+its per-step outcomes, reports `local_state: "failed"` and the reason "local state
+could not be updated after the action" (CLI 42), and freshness is invalidated so the
+next read re-syncs. The tool runs under the same mutation lock as the other
+mutations, so concurrent mutations are serialized; projection reads keep using their
+own connections and are not blocked, and requests are paced 100 ms apart.
 
 ## Bungie read errors and pacing
 
@@ -499,6 +635,27 @@ timeouts). With no stored catalog, definition-dependent tools return the typed
 Run that CLI command, or `ghostlink login` (which syncs an absent catalog after
 successful authorization). The server can observe a subsequent local sync
 without restarting.
+
+Armor `inspect_item` results also include the same `armor_model` object as CLI
+JSON: investment-derived `base_stats`, `total_base`, plug-derived `masterwork_tier`,
+raw `gear_tier`, `effective_gear_tier` (DIM's missing-tier fallback of 0), and
+`energy` (capacity, used, unused, type and type hash). Stat entries include `base`,
+`current`, assumed `base_masterworked`, and `maximum_value`. Missing data is
+`null`, never an invented roll; non-armor results omit the object. Existing
+`stats` are unchanged. No extra Manifest acquisition is performed for this model.
+`tuning` adds the visible socket index, current tuning plug hash and exact
+`tuned_stat_hash` from raw reusable membership (flags do not gate membership).
+`reusable_membership_known` is false for legacy/unobserved rows: the stat stays null
+with `raw_reusable_plugs_not_projected` until profile resync (a resync with component 310
+returned marks sockets 310 does not list as observed-empty). Known membership with
+no unique directional tuner stays null with `no_unique_directional_tuner`;
+a resolved stat has a null reason. `armor_set` adds set hash/name and perk hashes
+with required-piece thresholds and optional `name`/`icon` from sandbox definitions;
+no active-bonus claims. Migration 30 forces one same-version Manifest refresh.
+Missing catalogs retain the set hash
+with null name/perks. Subclass results add `fragment_capacity: {"capacity":
+number|null}`, derived from inserted aspects; non-subclasses omit it.
+See [DIM evidence and deliberate unknowns](armor-model.md).
 
 `inspect_item` returns the same enriched names as CLI inspection:
 `perk_names`, `mod_names`, `mods`, `archetype`, `available_perks`,

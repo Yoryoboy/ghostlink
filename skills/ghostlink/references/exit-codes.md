@@ -74,8 +74,8 @@ sanitized actionable text. This is distinct from pre-action category exits
 | 1672 | `throttled` | Bungie is throttling; wait and retry only after reassessing intent. |
 
 Unknown, malformed or absent codes remain uncertain even with recognized status
-text. These rules apply to move, equip, batch equip, lock/unlock, apply-loadout
-and both Postmaster pulls. Acknowledgement remains distinct from observed state.
+text. These rules apply to move, equip, batch equip, lock/unlock, apply-loadout,
+build apply and both Postmaster pulls. Acknowledgement remains distinct from observed state.
 
 ## Shared action `local_state`
 

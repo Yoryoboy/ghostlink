@@ -474,7 +474,8 @@ where
         + DefinitionRepository
         + SearchRepository
         + destiny_app::StatDefinitionRepository
-        + destiny_app::WorldDefinitionRepository,
+        + destiny_app::WorldDefinitionRepository
+        + destiny_app::ArmorCatalogRepository,
     C: Clock,
 {
     fn get_postmaster(
@@ -751,7 +752,8 @@ where
         + SearchRepository
         + DefinitionRepository
         + destiny_app::StatDefinitionRepository
-        + destiny_app::WorldDefinitionRepository,
+        + destiny_app::WorldDefinitionRepository
+        + destiny_app::ArmorCatalogRepository,
     C: Clock,
 {
     fn get_postmaster(
@@ -856,11 +858,142 @@ pub struct MoveItemRequest {
 /// projection after the action, and verify the destination. Outputs are the
 /// bounded MCP projections defined in [`crate::schema`]; a failure is a stable
 /// sanitized [`McpError`].
+pub enum BuildToolRequest {
+    Analyze(destiny_app::builds::BuildCheckRequest),
+    Substitutes {
+        request: destiny_app::builds::BuildCheckRequest,
+        limit: usize,
+    },
+    Local(destiny_app::builds::LocalBuildRequest),
+    Save(crate::schema::SaveBuildArgs),
+}
+pub trait BuildToolService {
+    fn execute(
+        &mut self,
+        request: BuildToolRequest,
+    ) -> Result<destiny_output::builds::BuildOutput, McpError>;
+}
+/// A separate local connection and profile-sync seam; the server owns exclusion.
+pub struct ComposedBuildService<G, I, R, C, K> {
+    pub builds: destiny_app::builds::BuildService<R, C>,
+    pub sync: destiny_app::ProfileSyncService<G, I>,
+    pub clock: K,
+    pub policy: destiny_app::FreshnessPolicy,
+}
+impl<G, I, R, C, K> BuildToolService for ComposedBuildService<G, I, R, C, K>
+where
+    G: destiny_app::ProfileGateway,
+    I: destiny_app::InventoryRepository
+        + destiny_app::WorldDefinitionRepository
+        + destiny_app::StatDefinitionRepository
+        + destiny_app::ArmorCatalogRepository,
+    R: destiny_app::BuildRepository,
+    C: destiny_app::BuildCodec,
+    K: destiny_app::Clock,
+{
+    fn execute(
+        &mut self,
+        request: BuildToolRequest,
+    ) -> Result<destiny_output::builds::BuildOutput, McpError> {
+        use destiny_app::builds::LocalBuildRequest;
+        let now = self.clock.now().map_err(McpError::from)?;
+        let local = match request {
+            BuildToolRequest::Analyze(request) => {
+                let result = self
+                    .builds
+                    .check(
+                        &mut self.sync,
+                        &request.selector,
+                        request.character.as_ref(),
+                        self.policy,
+                        now,
+                    )
+                    .map(|result| destiny_app::builds::BuildReply::Analysis(Box::new(result)));
+                return Ok(destiny_output::builds::BuildOutput::from_result(result));
+            }
+            BuildToolRequest::Substitutes { request, limit } => {
+                let result = self
+                    .builds
+                    .substitutes(
+                        &mut self.sync,
+                        &request,
+                        limit,
+                        destiny_app::optimizer::AnalyzerBudget::substitutes(),
+                        self.policy,
+                        now,
+                    )
+                    .map(|result| destiny_app::builds::BuildReply::Substitutes(Box::new(result)));
+                return Ok(destiny_output::builds::BuildOutput::from_result(result));
+            }
+            BuildToolRequest::Local(request) => request,
+            BuildToolRequest::Save(args) => {
+                args.validate()?;
+                match args.source {
+                    crate::schema::BuildSourceArg::Import => {
+                        LocalBuildRequest::Import(args.input.unwrap())
+                    }
+                    crate::schema::BuildSourceArg::Equipped => {
+                        let result = self
+                            .builds
+                            .from_equipped(
+                                &mut self.sync,
+                                &destiny_app::CharacterId::new(args.character.unwrap()),
+                                &args.name.unwrap(),
+                                self.policy,
+                                now,
+                            )
+                            .and_then(|r| self.builds.reply(r));
+                        return Ok(destiny_output::builds::BuildOutput::from_result(result));
+                    }
+                    crate::schema::BuildSourceArg::InGameLoadout => {
+                        let request = crate::schema::ApplyLoadoutArgs {
+                            character: args.character.unwrap(),
+                            slot: args.slot,
+                            name: args.loadout_name,
+                        }
+                        .request()?;
+                        let result = self
+                            .builds
+                            .from_loadout(
+                                &mut self.sync,
+                                &request.character,
+                                &request.loadout,
+                                self.policy,
+                                now,
+                            )
+                            .and_then(|r| self.builds.reply(r));
+                        return Ok(destiny_output::builds::BuildOutput::from_result(result));
+                    }
+                }
+            }
+        };
+        let result = (|| {
+            let snapshot = self
+                .sync
+                .repository()
+                .load_current()?
+                .ok_or_else(|| destiny_app::AppError::new(ErrorCategory::StaleState))?;
+            let membership = destiny_app::DestinyMembership::new(
+                snapshot.metadata.membership_type,
+                snapshot.metadata.membership_id,
+            )?;
+            self.builds.execute_local(&membership, &local, now)
+        })();
+        Ok(destiny_output::builds::BuildOutput::from_result(result))
+    }
+}
+
 pub trait MutationToolService {
     fn equip_items(
         &mut self,
         _request: &crate::schema::EquipItemsArgs,
     ) -> Result<destiny_output::equip_items::EquipItemsOutput, McpError> {
+        Err(McpError::new(ErrorCategory::ConfigurationError))
+    }
+    fn apply_build(
+        &mut self,
+        _request: &crate::schema::ApplyBuildArgs,
+    ) -> Result<destiny_output::builds::BuildOutput, McpError> {
         Err(McpError::new(ErrorCategory::ConfigurationError))
     }
     fn apply_loadout(
@@ -2265,6 +2398,14 @@ pub fn inspect_item_output(
     match resolution {
         Resolution::Missing => Ok(InspectItemOutput::Missing),
         Resolution::Unique(inspection) => Ok(InspectItemOutput::Found(Box::new(FoundInspection {
+            fragment_capacity: inspection
+                .fragment_capacity
+                .as_ref()
+                .map(destiny_output::armor_model::fragment_capacity_json),
+            armor_model: inspection
+                .armor_model
+                .as_ref()
+                .map(destiny_output::armor_model::armor_model_json),
             plug_details: inspection
                 .plug_details
                 .iter()
@@ -2739,6 +2880,16 @@ mod tests {
         calls: Rc<RefCell<Vec<&'static str>>>,
     }
 
+    impl destiny_app::ArmorCatalogRepository for CompositeRepository {
+        fn armor_catalog(
+            &self,
+            kind: destiny_app::armor_catalog::ArmorCatalogKind,
+            hash: Option<u32>,
+        ) -> Result<Vec<destiny_app::armor_catalog::ArmorCatalogRecord>, AppError> {
+            self.definitions.armor_catalog(kind, hash)
+        }
+    }
+
     impl CompositeRepository {
         fn with_definitions(definitions: Vec<ItemDefinition>) -> Self {
             let version = DefinitionVersion::new(DEFINITION_VERSION);
@@ -2998,6 +3149,8 @@ mod tests {
         tags: Vec<&str>,
     ) -> ItemDefinition {
         ItemDefinition {
+            armor: Default::default(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -3054,6 +3207,10 @@ mod tests {
         perks: Vec<PerkSummary>,
     ) -> ItemInstance {
         ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
+            transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(instance_id),
             item_hash: ItemHash::new(item_hash),

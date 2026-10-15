@@ -140,7 +140,7 @@ const PRIVACY_PRIVATE: u64 = 2;
 const MAX_IDENTIFIER_DIGITS: usize = 128;
 
 /// Bound all sockets, including empty and disabled entries, before allocation.
-const MAX_SOCKETS_PER_ITEM: usize = 32;
+const MAX_SOCKETS_PER_ITEM: usize = destiny_core::MAX_ITEM_SOCKETS;
 
 /// Official provider profile locations (`Destiny.DestinyItemLocation`).
 ///
@@ -300,7 +300,24 @@ pub fn decode_profile_with_observations(
         }
         let power = decode_power(instance)?;
         let item_perks = decode_perks(perks, &raw.instance_id)?;
-        let plugs = decode_plugs(sockets, &raw.instance_id)?;
+        let mut indexed_sockets = decode_sockets(sockets, &raw.instance_id)?;
+        let available_plugs =
+            decode_available_plugs(reusable, &raw.instance_id, &mut indexed_sockets)?;
+        if let Some(data) = optional_plug_set_data(item_components, "plugObjectives")? {
+            decode_plug_objectives(data, &raw.instance_id, &mut indexed_sockets)?;
+        }
+        let plugs = indexed_sockets
+            .iter()
+            .filter_map(|socket| {
+                socket
+                    .plug_hash
+                    .filter(|_| socket.enabled)
+                    .map(|plug_hash| PlugSummary {
+                        plug_hash,
+                        enabled: socket.enabled,
+                    })
+            })
+            .collect();
         let stats = decode_stats(stats, &raw.instance_id)?;
 
         match (raw.runtime_bucket, &mut observations) {
@@ -313,7 +330,11 @@ pub fn decode_profile_with_observations(
             _ => {}
         }
         items.push(ItemInstance {
-            available_plugs: decode_available_plugs(reusable, &raw.instance_id)?,
+            energy: decode_energy(instance)?,
+            gear_tier: optional_u32(instance, "gearTier")?,
+            sockets: indexed_sockets,
+            transfer_status: raw.transfer_status,
+            available_plugs,
             instance_id: ItemInstanceId::new(raw.instance_id),
             item_hash: raw.item_hash,
             location: raw.location,
@@ -457,11 +478,56 @@ fn decode_plug_sets(
     Ok(entries.into_values().collect())
 }
 
+/// Component 309 is joined by inserted plug hash, not by objective or socket ordinal.
+fn decode_plug_objectives(
+    data: &Map<String, Value>,
+    instance_id: &str,
+    sockets: &mut [destiny_core::IndexedSocket],
+) -> Result<(), AppError> {
+    let Some(entry) = data.get(instance_id) else {
+        return Ok(());
+    };
+    let objectives = entry
+        .get("objectivesPerPlug")
+        .and_then(Value::as_object)
+        .ok_or_else(provider_validation)?;
+    for socket in sockets {
+        let Some(hash) = socket.plug_hash else {
+            continue;
+        };
+        let Some(values) = objectives.get(&hash.value().to_string()) else {
+            continue;
+        };
+        let values = values.as_array().ok_or_else(provider_validation)?;
+        if values.len() > 128 {
+            return Err(provider_validation());
+        }
+        let mut raw = Vec::with_capacity(values.len());
+        for value in values {
+            let hash = decode_required_u32(value.get("objectiveHash"))?;
+            let progress = match value.get("progress") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(decode_required_u32(Some(value))?),
+            };
+            raw.push((hash, progress));
+        }
+        socket.plug_objectives = Some(raw);
+    }
+    Ok(())
+}
+
 /// Selectable plugs are bounded before filtering and sorted by numeric socket index.
 fn decode_available_plugs(
     data: &Map<String, Value>,
     instance_id: &str,
+    indexed_sockets: &mut [destiny_core::IndexedSocket],
 ) -> Result<Vec<destiny_core::domain::AvailablePlug>, AppError> {
+    // Component 310 only lists sockets with reusable plugs. DIM reads an absent
+    // socket as no raw plugs (sockets.ts:77-79 `reusablePlugData?.[socketIndex]`),
+    // so with 310 returned every socket starts as a known-empty list.
+    for socket in indexed_sockets.iter_mut() {
+        socket.reusable_plugs = Some(Vec::new());
+    }
     let Some(entry) = data.get(instance_id) else {
         return Ok(Vec::new());
     };
@@ -484,11 +550,18 @@ fn decode_available_plugs(
     ordered.sort_by_key(|(index, _)| *index);
     let mut plugs = Vec::new();
     for (socket_index, entries) in ordered {
+        if entries.len() > destiny_core::domain::MAX_REUSABLE_PLUGS {
+            return Err(provider_validation());
+        }
         // Cosmetic sockets can expose hundreds of alternatives. Validate every
         // entry, but omit oversized sockets rather than rejecting the profile or
         // presenting an arbitrary partial selection. The response byte limit
         // still bounds input; retained alternatives remain capped at 64/socket.
         let retain_socket = entries.len() <= 64;
+        // DIM sockets.ts:133-140,784 retains the entire raw list, including
+        // duplicates and disabled/non-insertable entries. The profile response
+        // byte cap bounds acquisition; the selectable view keeps its old cap.
+        let mut raw = Vec::with_capacity(entries.len());
         let mut seen = HashSet::new();
         for entry in entries {
             let hash = decode_required_u32(entry.get("plugItemHash"))?;
@@ -500,12 +573,23 @@ fn decode_available_plugs(
                 .get("enabled")
                 .and_then(Value::as_bool)
                 .ok_or_else(provider_validation)?;
+            raw.push(destiny_core::domain::ReusablePlug {
+                plug_hash: ItemHash::new(i64::from(hash)),
+                can_insert,
+                enabled,
+            });
             if retain_socket && can_insert && enabled && seen.insert(hash) {
                 plugs.push(destiny_core::domain::AvailablePlug {
                     socket_index,
                     plug_hash: ItemHash::new(i64::from(hash)),
                 });
             }
+        }
+        if let Some(socket) = indexed_sockets
+            .iter_mut()
+            .find(|s| s.socket_index == socket_index)
+        {
+            socket.reusable_plugs = Some(raw);
         }
     }
     Ok(plugs)
@@ -557,6 +641,7 @@ enum RawItem {
 
 /// One retained item before its instance and perk components are resolved.
 struct RawInstance {
+    transfer_status: Option<u32>,
     instance_id: String,
     item_hash: ItemHash,
     quantity: u32,
@@ -891,6 +976,11 @@ fn decode_item(value: &Value, origin: ItemOrigin<'_>) -> Result<RawItem, AppErro
     let state = decode_state(object.get("state"))?;
     let locked = state & 1 != 0;
     Ok(RawItem::Instanced(RawInstance {
+        transfer_status: object
+            .get("transferStatus")
+            .filter(|v| !v.is_null())
+            .map(|v| decode_required_u32(Some(v)))
+            .transpose()?,
         instance_id,
         item_hash,
         quantity,
@@ -965,12 +1055,36 @@ fn decode_power(instance: &Map<String, Value>) -> Result<Option<u16>, AppError> 
     }
 }
 
-/// Classification-neutral acquisition: the application publication layer
-/// resolves definitions and calls `ItemInstance::retain_weapon_perk_plugs`.
-fn decode_plugs(
+fn optional_u32(object: &Map<String, Value>, key: &str) -> Result<Option<u32>, AppError> {
+    match object.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => u32::try_from(value.as_u64().ok_or_else(provider_validation)?)
+            .map(Some)
+            .map_err(|_| provider_validation()),
+    }
+}
+
+fn decode_energy(
+    instance: &Map<String, Value>,
+) -> Result<Option<destiny_core::ItemEnergy>, AppError> {
+    let energy = match instance.get("energy") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(value) => value.as_object().ok_or_else(provider_validation)?,
+    };
+    Ok(Some(destiny_core::ItemEnergy {
+        energy_capacity: optional_u32(energy, "energyCapacity")?.ok_or_else(provider_validation)?,
+        energy_used: optional_u32(energy, "energyUsed")?.ok_or_else(provider_validation)?,
+        energy_unused: optional_u32(energy, "energyUnused")?.ok_or_else(provider_validation)?,
+        energy_type: optional_u32(energy, "energyType")?,
+        energy_type_hash: optional_u32(energy, "energyTypeHash")?,
+    }))
+}
+
+/// Retain raw array positions and flags independently of publication's plug filters.
+fn decode_sockets(
     sockets: &Map<String, Value>,
     instance_id: &str,
-) -> Result<Vec<PlugSummary>, AppError> {
+) -> Result<Vec<destiny_core::IndexedSocket>, AppError> {
     let Some(entry) = sockets.get(instance_id) else {
         return Ok(Vec::new());
     };
@@ -983,15 +1097,15 @@ fn decode_plugs(
     if entries.len() > MAX_SOCKETS_PER_ITEM {
         return Err(provider_validation());
     }
-    let mut plugs = Vec::with_capacity(entries.len());
-    for entry in entries {
+    let mut indexed = Vec::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
         let socket = entry.as_object().ok_or_else(provider_validation)?;
         let enabled = socket
             .get("isEnabled")
             .and_then(Value::as_bool)
             .ok_or_else(provider_validation)?;
         // Visibility is validated but never controls whether a selected plug is retained.
-        socket
+        let visible = socket
             .get("isVisible")
             .and_then(Value::as_bool)
             .ok_or_else(provider_validation)?;
@@ -1002,14 +1116,16 @@ fn decode_plugs(
                     .map_err(|_| provider_validation())?,
             ),
         };
-        if let Some(hash) = hash.filter(|_| enabled) {
-            plugs.push(PlugSummary {
-                plug_hash: ItemHash::new(i64::from(hash)),
-                enabled,
-            });
-        }
+        indexed.push(destiny_core::IndexedSocket {
+            plug_objectives: None,
+            reusable_plugs: None,
+            socket_index: u8::try_from(index).map_err(|_| provider_validation())?,
+            plug_hash: hash.map(|hash| ItemHash::new(i64::from(hash))),
+            enabled,
+            visible,
+        });
     }
-    Ok(plugs)
+    Ok(indexed)
 }
 
 fn decode_perks(
@@ -1785,8 +1901,65 @@ mod tests {
         assert_eq!(snapshot.stacks.len(), 2);
     }
 
+    #[test]
+    fn transfer_status_is_retained_and_absence_is_unknown() {
+        let absent = decode_mutated(|_| {}).unwrap();
+        assert_eq!(absent.items[0].transfer_status, None);
+        for status in [0_u32, 1, 2, 3, 4, u32::MAX] {
+            let input = decode_mutated(|value| {
+                value["Response"]["profileInventory"]["data"]["items"][0]["transferStatus"] =
+                    json!(status);
+            })
+            .unwrap();
+            assert_eq!(
+                input
+                    .items
+                    .iter()
+                    .find(|i| i.instance_id.as_str() == "700000000000000001")
+                    .unwrap()
+                    .transfer_status,
+                Some(status)
+            );
+        }
+        for invalid in [json!(-1), json!(4294967296_u64), json!(true), json!("1")] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["profileInventory"]["data"]["items"][0]["transferStatus"] =
+                    invalid;
+            }));
+        }
+    }
+
     fn fixture_value() -> Value {
         serde_json::from_slice(FIXTURE).expect("fixture is JSON")
+    }
+
+    #[test]
+    fn component_309_objectives_join_inserted_plug_without_enabled_gate() {
+        let decoded = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000001"] = json!({"sockets": [{"plugHash": 123, "isEnabled": false, "isVisible": false}]});
+            value["Response"]["itemComponents"]["plugObjectives"] = json!({"privacy": 1, "data": {"700000000000000001": {"objectivesPerPlug": {"123": [{"objectiveHash": 7, "progress": 1700000000}, {"objectiveHash": 8}], "456": [{"objectiveHash": 9, "progress": 99}]}}}});
+        }).unwrap();
+        assert_eq!(
+            decoded.items[0].sockets[0].plug_objectives,
+            Some(vec![(7, Some(1700000000)), (8, None)])
+        );
+        assert!(!decoded.items[0].sockets[0].enabled);
+        assert!(decode_mutated(|value| {
+            value["Response"]["itemComponents"]["plugObjectives"] = json!({"privacy": 1, "data": {"700000000000000001": {"objectivesPerPlug": {"111": [{"objectiveHash": 7, "progress": -1}]}}}});
+            value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000001"] = json!({"sockets": [{"plugHash": 111, "isEnabled": true, "isVisible": true}]});
+        }).is_err());
+        let private = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["plugObjectives"] =
+                json!({"privacy": 2, "data": null});
+        })
+        .unwrap();
+        assert!(
+            private
+                .items
+                .iter()
+                .flat_map(|i| &i.sockets)
+                .all(|s| s.plug_objectives.is_none())
+        );
     }
 
     fn decode_mutated(mutate: impl FnOnce(&mut Value)) -> Result<InventorySnapshotInput, AppError> {
@@ -1896,6 +2069,81 @@ mod tests {
             plugs[499]["enabled"] = json!("invalid");
             value["Response"]["itemComponents"]["reusablePlugs"]["data"] =
                 json!({"700000000000000001": {"plugs": {"1": plugs}}});
+        }));
+    }
+
+    #[test]
+    fn raw_reusable_membership_keeps_oversized_disabled_duplicates() {
+        let snapshot = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000001"] = json!({"sockets": [{"isEnabled": true, "isVisible": true, "plugHash": 3122197216_u32}]});
+            value["Response"]["itemComponents"]["reusablePlugs"]["data"] = json!({"700000000000000001": {"plugs": {"0": vec![json!({"plugItemHash": 309000506, "canInsert": false, "enabled": false}); 500]}}});
+        }).unwrap();
+        let raw = snapshot.items[0].sockets[0]
+            .reusable_plugs
+            .as_ref()
+            .unwrap();
+        assert_eq!(raw.len(), 500);
+        assert_eq!(raw[0].plug_hash, ItemHash::new(309000506));
+        assert!(!raw[0].can_insert && !raw[0].enabled);
+        assert!(snapshot.items[0].available_plugs.is_empty());
+    }
+
+    /// DIM sockets.ts:77-79 reads `reusablePlugData?.[socketIndex]`: once component 310
+    /// was returned, a socket (or instance) it does not list has no raw plugs.
+    #[test]
+    fn component_310_absent_sockets_and_instances_project_known_empty_raw_plugs() {
+        let twelve_sockets = || json!({"sockets": (0..12).map(|_| json!({"plugHash": 5, "isEnabled": true, "isVisible": true})).collect::<Vec<_>>()});
+        let listed = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000001"] =
+                twelve_sockets();
+            value["Response"]["itemComponents"]["reusablePlugs"]["data"] = json!({"700000000000000001": {"plugs": {"7": [{"plugItemHash": 77, "canInsert": true, "enabled": true}]}}});
+        })
+        .unwrap();
+        let sockets = &listed.items[0].sockets;
+        assert_eq!(sockets.len(), 12);
+        for socket in sockets {
+            if socket.socket_index == 7 {
+                assert_eq!(
+                    socket.reusable_plugs,
+                    Some(vec![destiny_core::domain::ReusablePlug {
+                        plug_hash: ItemHash::new(77),
+                        can_insert: true,
+                        enabled: true
+                    }])
+                );
+            } else {
+                assert_eq!(
+                    socket.reusable_plugs,
+                    Some(vec![]),
+                    "{}",
+                    socket.socket_index
+                );
+            }
+        }
+        let unlisted = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000001"] =
+                twelve_sockets();
+            value["Response"]["itemComponents"]["reusablePlugs"]["data"] = json!({});
+        })
+        .unwrap();
+        assert_eq!(unlisted.items[0].sockets.len(), 12);
+        assert!(
+            unlisted
+                .items
+                .iter()
+                .flat_map(|item| &item.sockets)
+                .all(|socket| socket.reusable_plugs == Some(vec![]))
+        );
+    }
+
+    /// The fail-closed guard for a missing component 310 stays as is.
+    #[test]
+    fn missing_component_310_still_fails_validation_and_never_projects_known_empty() {
+        assert_validation(decode_mutated(|value| {
+            value["Response"]["itemComponents"]
+                .as_object_mut()
+                .unwrap()
+                .remove("reusablePlugs");
         }));
     }
 
@@ -2120,6 +2368,162 @@ mod tests {
     }
 
     #[test]
+    fn instance_energy_and_socket_state_are_content() {
+        let baseline = decode(FIXTURE).unwrap();
+        let changed = decode_mutated(|value| {
+            let instance = &mut value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"];
+            instance["energy"] = json!({"energyCapacity": 10, "energyUsed": 3, "energyUnused": 7, "energyType": 0, "energyTypeHash": 591714140});
+            instance["gearTier"] = json!(0);
+            value["Response"]["itemComponents"]["sockets"]["data"]["700000000000000001"] = json!({"sockets": [
+                {"isEnabled": true, "isVisible": true},
+                {"plugHash": 123, "isEnabled": false, "isVisible": true},
+                {"plugHash": 456, "isEnabled": true, "isVisible": false}
+            ]});
+        }).unwrap();
+        assert_ne!(baseline.items[0], changed.items[0]);
+        let decoded = &changed.items[0];
+        assert_eq!(
+            decoded.energy,
+            Some(destiny_core::ItemEnergy {
+                energy_capacity: 10,
+                energy_used: 3,
+                energy_unused: 7,
+                energy_type: Some(0),
+                energy_type_hash: Some(591714140),
+            })
+        );
+        assert_eq!(decoded.gear_tier, Some(0));
+        assert_eq!(baseline.items[0].gear_tier, None);
+        assert_eq!(
+            decoded.sockets,
+            vec![
+                destiny_core::IndexedSocket {
+                    plug_objectives: None,
+                    reusable_plugs: Some(vec![]),
+                    socket_index: 0,
+                    plug_hash: None,
+                    enabled: true,
+                    visible: true
+                },
+                destiny_core::IndexedSocket {
+                    plug_objectives: None,
+                    reusable_plugs: Some(vec![]),
+                    socket_index: 1,
+                    plug_hash: Some(ItemHash::new(123)),
+                    enabled: false,
+                    visible: true
+                },
+                destiny_core::IndexedSocket {
+                    plug_objectives: None,
+                    reusable_plugs: Some(vec![]),
+                    socket_index: 2,
+                    plug_hash: Some(ItemHash::new(456)),
+                    enabled: true,
+                    visible: false
+                },
+            ]
+        );
+        assert_eq!(
+            decoded.plugs,
+            vec![PlugSummary {
+                plug_hash: ItemHash::new(456),
+                enabled: true
+            }]
+        );
+        // Energy alone must change content, even if selected plugs are identical.
+        let energy_only = decode_mutated(|value| {
+            value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"]["energy"] = json!({"energyCapacity": 10, "energyUsed": 3, "energyUnused": 7});
+        }).unwrap();
+        assert_ne!(baseline.items[0], energy_only.items[0]);
+
+        // Real decoder output traverses the application sync seam unchanged.
+        use destiny_app::{ProfileSyncService, test_support::QueuedProfileGateway};
+        use destiny_core::{FreshnessPolicy, InventoryRepository, ProfileSyncReason};
+        let mut gateway = QueuedProfileGateway::new();
+        gateway.queue_membership(Ok(DestinyMembership::new(
+            changed.membership_type,
+            changed.membership_id.clone(),
+        )
+        .unwrap()));
+        gateway.queue_inventory(Ok(changed.clone()));
+        let mut service = ProfileSyncService::new(
+            gateway,
+            crate::sqlite::SqliteStore::open_in_memory().unwrap(),
+        );
+        service
+            .sync(
+                ProfileSyncReason::Forced,
+                FreshnessPolicy { ttl_seconds: 300 },
+                changed.checked_at,
+            )
+            .unwrap();
+        let stored = service.repository().load_current().unwrap().unwrap();
+        let mut fake = destiny_app::test_support::InMemoryInventoryRepository::new();
+        assert_eq!(stored, fake.replace_current(changed).unwrap());
+    }
+
+    #[test]
+    fn energy_and_gear_tier_validate_without_inventing_defaults() {
+        for bad in [
+            json!(-1),
+            json!(4294967296_u64),
+            json!(1.5),
+            json!("1"),
+            json!(true),
+        ] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"]["gearTier"] =
+                    bad.clone();
+            }));
+            for field in [
+                "energyCapacity",
+                "energyUsed",
+                "energyUnused",
+                "energyType",
+                "energyTypeHash",
+            ] {
+                assert_validation(decode_mutated(|value| {
+                    let mut energy =
+                        json!({"energyCapacity": 10, "energyUsed": 3, "energyUnused": 7});
+                    energy[field] = bad.clone();
+                    value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"]
+                        ["energy"] = energy;
+                }));
+            }
+        }
+        for energy in [
+            json!({}),
+            json!({"energyCapacity": 10, "energyUsed": 3}),
+            json!([]),
+            json!(1),
+        ] {
+            assert_validation(decode_mutated(|value| {
+                value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"]["energy"] =
+                    energy;
+            }));
+        }
+        let max = decode_mutated(|value| {
+            let instance =
+                &mut value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"];
+            instance["gearTier"] = json!(u32::MAX);
+            instance["energy"] =
+                json!({"energyCapacity": u32::MAX, "energyUsed": 0, "energyUnused": u32::MAX});
+        })
+        .unwrap();
+        assert_eq!(max.items[0].gear_tier, Some(u32::MAX));
+        assert_eq!(max.items[0].energy.as_ref().unwrap().energy_type_hash, None);
+        let null = decode_mutated(|value| {
+            let instance =
+                &mut value["Response"]["itemComponents"]["instances"]["data"]["700000000000000001"];
+            instance["gearTier"] = Value::Null;
+            instance["energy"] = Value::Null;
+        })
+        .unwrap();
+        assert_eq!(null.items[0].energy, None);
+        assert_eq!(null.items[0].gear_tier, None);
+    }
+
+    #[test]
     fn complete_fixture_normalizes_the_full_snapshot() {
         let snapshot = decode(FIXTURE).expect("complete fixture");
 
@@ -2178,6 +2582,10 @@ mod tests {
             ],
             items: vec![
                 ItemInstance {
+                    energy: None,
+                    gear_tier: None,
+                    sockets: Vec::new(),
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000001"),
                     item_hash: ItemHash::new(1001),
@@ -2200,6 +2608,10 @@ mod tests {
                     perks: Vec::new(),
                 },
                 ItemInstance {
+                    energy: None,
+                    gear_tier: None,
+                    sockets: Vec::new(),
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000003"),
                     item_hash: ItemHash::new(1003),
@@ -2213,6 +2625,10 @@ mod tests {
                     perks: Vec::new(),
                 },
                 ItemInstance {
+                    energy: None,
+                    gear_tier: None,
+                    sockets: Vec::new(),
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000004"),
                     item_hash: ItemHash::new(2001),
@@ -2226,6 +2642,10 @@ mod tests {
                     perks: Vec::new(),
                 },
                 ItemInstance {
+                    energy: None,
+                    gear_tier: None,
+                    sockets: Vec::new(),
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000005"),
                     item_hash: ItemHash::new(2003),
@@ -2239,6 +2659,30 @@ mod tests {
                     perks: Vec::new(),
                 },
                 ItemInstance {
+                    energy: None,
+                    gear_tier: None,
+                    sockets: [
+                        (Some(6001), true, true),
+                        (Some(6002), false, true),
+                        (None, true, false),
+                        (None, true, false),
+                        (Some(6003), true, false),
+                        (Some(6001), true, true),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(
+                        |(index, (hash, enabled, visible))| destiny_core::IndexedSocket {
+                            plug_objectives: None,
+                            reusable_plugs: Some(vec![]),
+                            socket_index: index as u8,
+                            plug_hash: hash.map(ItemHash::new),
+                            enabled,
+                            visible,
+                        },
+                    )
+                    .collect(),
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000006"),
                     item_hash: ItemHash::new(3001),
@@ -2281,6 +2725,10 @@ mod tests {
                     ],
                 },
                 ItemInstance {
+                    energy: None,
+                    gear_tier: None,
+                    sockets: Vec::new(),
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: instance_id("700000000000000007"),
                     item_hash: ItemHash::new(3002),

@@ -17,6 +17,11 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 
 ## Hard Rules
 
+- Local build definitions: prefer MCP `list_builds`, `get_build` (includes `dim_json` export), `save_build` (`source`: `import` / `equipped` / `in_game_loadout`), and `delete_build`; fallback `ghostlink build import|list|show|export|delete|from-equipped|from-loadout`. These never apply gear. Report omissions/unresolved source items; resolve name ambiguity with IDs. `dim.gg` share links are not supported: ask the user to open the link in DIM and provide the full `loadouts?loadout=` link or JSON. Export writes raw DIM JSON even with `--json`.
+- Inventory build checks: use MCP `analyze_build` or `ghostlink build check` with a build ID, `--character hunter`, and `--json` (names use `--name`). Omit the character only when the build class has one candidate. Report missing items, locations and counts; `not_evaluated` is not success, `better_stats_available` and `items_do_not_match_search_query` come from the analyzer search (`optimizer` object; `not_evaluated` with `optimizer_budget_exhausted` or another reason is unknown, never clean; a true `optimizer.font_note` means Font mods cap a stat). Never claim application readiness from this report.
+- Substitute armor sets: MCP `build_substitutes` or `ghostlink build substitutes` with a build ID (or `--name`), `--character hunter`, optional `--limit` (1-200, default 10) and `--json` ranks sets from the Vault and characters with the build's saved stat minimums and maximums, mods and exotic, like DIM's Loadout Optimizer; pieces with `in_build: false` are the substitutes. It is read-only and fixed to a 10 s budget: `optimizer.truncated: true` means the list is partial, and `evaluation: "not_evaluated"` with a `reason` means it could not run (never "no substitutes"). Never claim a set is applied or applicable from this report; use `build apply` only when the user asks.
+- Build apply preview: `ghostlink build apply` with a build ID, `--character hunter`, `--dry-run` and `--json` shows the planned moves and equips without dispatching anything (`dispatched: 0`). Vault-staged moves need Vault evidence from `ghostlink sync-manifest` (schema 34 refresh, which also downloads the ~39 MB vendor table; schema 35 needs one more `sync-manifest` for fashion); without it they are skipped as `vault_capacity_unavailable` and `unknown` lists `vault_capacity`. Report `skipped` reasons and `unknown`/`not_applied` evidence.
+- Build apply: without `--dry-run`, `ghostlink build apply` executes the plan (moves, equips, Postmaster pulls and subclass/artifact socket plugs as `insert_plug` steps, free plugs only; armor mods, `clearMods` and fashion (shaders/ornaments from `modsByBucket`) are `mods` steps too, with skipped plugs in `mod_skipped` (an `irreversible_shader` skip means DIM's guard kept a shader the player could not get back); subclass and artifact items are equipped like other items; after plug insertions `local_state` is `refresh_pending`, so run `ghostlink sync` before trusting inspected perks). Only run it when the user explicitly asked to apply that build, and preview first. It has no prompt; Bungie acknowledgement is success and nothing is re-read. Read `result` (`applied`, `no_op`, `partial`, `failed`, `refused`) and each step's per-item `status`: `failed` carries a Bungie `reason`/`code`, `skipped` means a dependency failed. Exit 41 means partial or failed: report what completed and what did not, never retry blindly, and ask before any new mutation. Exit 20 or 11 with `refused` means nothing was sent. Exit 42 means Bungie acknowledged the actions but Ghostlink could not update its local state (`local_state: "failed"`): do not repeat the apply, run `ghostlink sync` and report. MCP `apply_build` (`id` or `name`, optional `character`, `dry_run`) returns the same JSON and `isError` for every non-zero exit; call it with `dry_run: true` first and only apply when the user explicitly asked.
 - For CLI operations, always add `--json`; never scrape human text. Exit 0 prints one JSON object on stdout; a non-zero exit prints one JSON object on stderr. Exceptions: `ghostlink login` first prints an `authorizing` instruction object, and `--help` / search `--filters` are plain text even with `--json`.
 - Before using a CLI command for the first time in a session, run `ghostlink <cmd> --help`. For DIM query syntax/filter support, use `ghostlink search-inventory --filters` (registry-generated help, no inventory read).
 - Never guess an item or character. Resolve ambiguity with a read command or ask the user.
@@ -32,6 +37,53 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - `ghostlink handler install` and `ghostlink handler uninstall` change the user's desktop configuration; run them only when the user asks. `ghostlink handler status` is read-only.
 - Explain perk, mod, aspect, fragment and ability effects only from output `description` (official Bungie tooltip) and optional `clarity` (community research). Attribute community numbers to Clarity; never invent numbers, percentages or durations absent from both fields. If neither gives an exact value, say it is unavailable.
 - Missing `clarity` is not evidence of no effect. For `clarity_match: "variant"`, explicitly qualify the text as an enhanced/base fallback, not exact values for the inspected variant; never infer improved numbers.
+
+Build capture stores `craftedDate` only from complete crafting objectives.
+Build checks try instance ID first, then a nonzero crafted date; this is DIM
+identity recovery, not an arbitrary same-hash substitute. Missing crafting
+evidence stays unknown. Equipped armor-mod capture retains disabled inserted
+mods as DIM does; it does not promise those mods are currently usable.
+Equipped subclass/artifact capture now records DIM socket overrides, not legacy
+artifactUnlocks. Membership does not imply unlocked/usable; inactive fragment
+positions and default/empty plugs are omitted under DIM rules. In-game conversion
+retains explicit empty overrides and removes only unset zero hashes. Show/get
+exposes equipped_socket_overrides; check/analyze still does not validate socket
+application readiness. Capture diagnostics are not stored: later show/get reports
+source_capture_evidence_not_persisted, so never infer completeness from an export.
+Build check/analyze additionally reports equipped_set_bonuses for build-equipped
+resolved armor using current inserted event selectors (not future assignments).
+Report active perks only when active is true. Partial counts are lower bounds;
+null perks/activation means unknown, never inactive. Native sets take precedence;
+event selectors require visible sockets and enabled inserted plugs. The additive
+mod_fit object evaluates all DIM armor-mod categories with complete evidence
+and a full resolved set. Report invalid_mods separately from unassigned_mods (after
+allowed energy upgrades; duplicates count). needs_upgrades_for_mods is not a material
+quote or a stat-masterwork upgrade claim. Artifice prefers existing placement then
+nonexotics; tuning follows armor-slot order with DIM's exotic request-count rule.
+Missing raw tuning membership stays unknown. General/activity candidates rank by
+unassigned count, lexicographic energy-upgrade material cost, then assignment changes.
+Report item_mod_assignments as proposals, not socket positions or applied state.
+upgrade_costs lists positive energy/artifice material amounts; never infer inventory
+affordability, stat-upgrade cost or an execution plan. uses_seasonal_mods includes
+expensive-variant re-fitting. A null seasonal field/finding with a reason remains
+unknown even when the independently proven fit is evaluated.
+Legacy mod hashes and seasonal costs
+resolve like DIM using enabled account/target-character unlocks; missing plug sets
+mean no unlocks. Missing/non-pluggable mods become DIM's deprecated placeholder;
+missing placeholder data stays unknown. Report hashes in mod_fit as resolved hashes,
+not necessarily the original saved hashes. Saved/exported builds are unchanged.
+The stats object reports as-is and assumed totals, minima-only satisfaction and
+needs_upgrades_for_stats. Maxima are optimizer-only. Totals include planned mods
+(even unassigned ones), saved subclass overrides and optional runtime Font effects;
+they are hypothetical, not observed game stats. The global upgrade finding combines
+mod and stat requirements. Missing evidence stays null with a reason; never infer
+satisfaction from null totals or mod fit from set activation.
+Fragment findings compare saved fragment overrides against saved aspect capacity,
+not the current subclass configuration. Nonzero explicit empty plugs count like
+DIM; no selected aspects means zero capacity. Missing subclass socket projections
+or selected aspect definitions remain not_evaluated. Report findings from the
+output; use stats.satisfies_constraints for minima and never infer socket
+application readiness.
 
 ## Bungie action rejections
 
@@ -58,6 +110,8 @@ codes remain uncertain. Received refusals retain CLI 41 / MCP error.
 | Saved in-game loadouts (compact discovery) | MCP `get_loadouts`; fallback `ghostlink loadouts` |
 | Full detail of one saved loadout | MCP `get_loadout`; fallback `ghostlink loadouts <slot-or-name>` |
 | Apply one saved loadout on an explicit character | MCP `apply_loadout`; fallback `ghostlink apply-loadout` |
+| Rank substitute armor sets for a stored build | MCP `build_substitutes`; fallback `ghostlink build substitutes` |
+| Apply a stored build's moves and equips (preview first) | MCP `apply_build`; fallback `ghostlink build apply` |
 | Weekly rotation predictions (login required) | `ghostlink weekly-reset` |
 | Weekly progress for one character | `ghostlink weekly` |
 | Data looks outdated or after an in-game change | `ghostlink sync` |
@@ -127,7 +181,7 @@ and reassess intent after failures; never blindly repeat a batch.
 
 ## Shared action state contract
 
-For move, equip, equip_items, set_lock_state, pull_item, pull_stack and apply_loadout:
+For move, equip, equip_items, set_lock_state, pull_item, pull_stack, apply_loadout and apply_build:
 Plans from Ghostlink's local projection (synced only when missing, stale or invalidated).
 Bungie is the final validator. Acknowledged actions update local state immediately;
 rejections and uncertain outcomes mark it for refresh. Never retry an uncertain outcome.

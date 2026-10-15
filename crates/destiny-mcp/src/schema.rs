@@ -52,6 +52,260 @@ impl ObjectOutputSchema for Tool {
     }
 }
 
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildSelectionArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub id: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub name: Option<String>,
+}
+impl BuildSelectionArgs {
+    pub fn selector(&self) -> Result<destiny_app::builds::BuildSelector, McpError> {
+        match (&self.id, &self.name) {
+            (Some(id), None)
+                if !id.is_empty()
+                    && id.len() <= MAX_IDENTIFIER_LENGTH
+                    && !id.chars().any(char::is_control) =>
+            {
+                Ok(destiny_app::builds::BuildSelector::Id(id.clone()))
+            }
+            (None, Some(name)) => {
+                destiny_app::SearchTerm::new(name).map_err(McpError::from)?;
+                Ok(destiny_app::builds::BuildSelector::Name(name.clone()))
+            }
+            _ => Err(McpError::new(ErrorCategory::ProviderValidation)),
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildSourceArg {
+    Import,
+    Equipped,
+    InGameLoadout,
+}
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SaveBuildArgs {
+    pub source: BuildSourceArg,
+    /// DIM JSON or full loadouts?loadout= URL; never a server file path.
+    #[schemars(length(min = 1, max = 1048576))]
+    pub input: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub character: Option<String>,
+    /// Required for equipped source; in-game source retains its original name.
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub name: Option<String>,
+    #[schemars(range(min = 1, max = 12))]
+    pub slot: Option<u8>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub loadout_name: Option<String>,
+}
+impl SaveBuildArgs {
+    pub fn validate(&self) -> Result<(), McpError> {
+        let invalid = || McpError::new(ErrorCategory::ProviderValidation);
+        for text in [&self.character, &self.name, &self.loadout_name]
+            .into_iter()
+            .flatten()
+        {
+            destiny_app::SearchTerm::new(text).map_err(McpError::from)?;
+        }
+        match self.source {
+            BuildSourceArg::Import
+                if self.character.is_none()
+                    && self.name.is_none()
+                    && self.slot.is_none()
+                    && self.loadout_name.is_none() =>
+            {
+                let input = self.input.as_ref().ok_or_else(invalid)?;
+                if input.is_empty() || input.len() > 1048576 {
+                    return Err(invalid());
+                }
+            }
+            BuildSourceArg::Equipped
+                if self.input.is_none()
+                    && self.character.is_some()
+                    && self.name.is_some()
+                    && self.slot.is_none()
+                    && self.loadout_name.is_none() => {}
+            BuildSourceArg::InGameLoadout
+                if self.input.is_none() && self.character.is_some() && self.name.is_none() =>
+            {
+                ApplyLoadoutArgs {
+                    character: self.character.clone().unwrap(),
+                    slot: self.slot,
+                    name: self.loadout_name.clone(),
+                }
+                .request()?;
+            }
+            _ => return Err(invalid()),
+        }
+        Ok(())
+    }
+}
+#[derive(JsonSchema)]
+pub struct BuildOutputSchema {
+    pub target_character: Option<String>,
+    pub counts: Option<serde_json::Value>,
+    pub items: Option<Vec<serde_json::Value>>,
+    pub findings: Option<Vec<serde_json::Value>>,
+    pub not_evaluated: Option<Vec<String>>,
+    pub metadata: Option<serde_json::Value>,
+    pub kind: String,
+    pub summary: Option<serde_json::Value>,
+    pub builds: Option<Vec<serde_json::Value>>,
+    pub dim_json: Option<String>,
+    pub omissions: Option<Vec<String>>,
+    pub unresolved_items: Option<Vec<String>>,
+    pub deleted: Option<bool>,
+    pub error: Option<serde_json::Value>,
+    pub sets: Option<Vec<serde_json::Value>>,
+    pub optimizer: Option<serde_json::Value>,
+}
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SubstitutesArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub id: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub name: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub character: Option<String>,
+    /// Ranked sets to return; default 10.
+    #[schemars(range(min = 1, max = destiny_app::optimizer::MAX_SUBSTITUTES))]
+    pub limit: Option<usize>,
+}
+impl SubstitutesArgs {
+    pub fn request(&self) -> Result<(destiny_app::builds::BuildCheckRequest, usize), McpError> {
+        let limit = self
+            .limit
+            .unwrap_or(destiny_app::optimizer::DEFAULT_SUBSTITUTES);
+        if !(1..=destiny_app::optimizer::MAX_SUBSTITUTES).contains(&limit) {
+            return Err(McpError::new(ErrorCategory::ProviderValidation));
+        }
+        let check = AnalyzeBuildArgs {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            character: self.character.clone(),
+        };
+        Ok((check.request()?, limit))
+    }
+}
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AnalyzeBuildArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub id: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub name: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub character: Option<String>,
+}
+impl AnalyzeBuildArgs {
+    pub fn request(&self) -> Result<destiny_app::builds::BuildCheckRequest, McpError> {
+        let selector = BuildSelectionArgs {
+            id: self.id.clone(),
+            name: self.name.clone(),
+        }
+        .selector()?;
+        if let Some(character) = &self.character {
+            destiny_app::SearchTerm::new(character).map_err(McpError::from)?;
+        }
+        Ok(destiny_app::builds::BuildCheckRequest {
+            selector,
+            character: self.character.as_ref().map(destiny_app::CharacterId::new),
+        })
+    }
+}
+
+pub const APPLY_BUILD_TOOL: &str = "apply_build";
+
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApplyBuildArgs {
+    #[schemars(length(min = 1, max = MAX_IDENTIFIER_LENGTH))]
+    pub id: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub name: Option<String>,
+    #[schemars(length(min = 1, max = MAX_SEARCH_TEXT_LENGTH))]
+    pub character: Option<String>,
+    /// Plan only: report the steps and dispatch nothing.
+    pub dry_run: Option<bool>,
+}
+impl ApplyBuildArgs {
+    pub fn request(&self) -> Result<destiny_app::builds::BuildCheckRequest, McpError> {
+        AnalyzeBuildArgs {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            character: self.character.clone(),
+        }
+        .request()
+    }
+    pub fn dry_run(&self) -> bool {
+        self.dry_run.unwrap_or(false)
+    }
+}
+#[derive(JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyBuildResultView {
+    Applied,
+    NoOp,
+    Partial,
+    Failed,
+    Refused,
+}
+#[derive(JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ApplyBuildLocalStateView {
+    Unchanged,
+    Updated,
+    RefreshPending,
+    Failed,
+}
+#[derive(JsonSchema)]
+pub struct ApplyBuildOutputView {
+    /// `build_apply`, `build_apply_plan` (dry run) or absent on an error.
+    pub kind: Option<String>,
+    pub dry_run: Option<bool>,
+    pub result: Option<ApplyBuildResultView>,
+    pub local_state: Option<ApplyBuildLocalStateView>,
+    pub reason: Option<String>,
+    pub target_character: Option<String>,
+    pub dispatched: Option<u32>,
+    pub counts: Option<serde_json::Value>,
+    pub steps: Option<Vec<serde_json::Value>>,
+    pub skipped: Option<Vec<serde_json::Value>>,
+    pub socket_skipped: Option<Vec<serde_json::Value>>,
+    pub socket_already_there: Option<Vec<serde_json::Value>>,
+    pub mod_skipped: Option<Vec<serde_json::Value>>,
+    pub mods_in_place: Option<u32>,
+    pub not_applied: Option<Vec<serde_json::Value>>,
+    pub error: Option<serde_json::Value>,
+}
+pub fn apply_build_tool() -> Tool {
+    // No top-level oneOf: exactly one of id/name is enforced at runtime.
+    Tool::new(
+        APPLY_BUILD_TOOL,
+        "Apply a stored build's moves, equips, subclass/artifact plugs and armor mods (not fashion): exactly one id/name, optional character ID/class. dry_run=true plans only. Failed steps never stop independent ones; see result, steps and local_state. Bungie acknowledgements are not re-read; never retry uncertain or partial results blindly.",
+        JsonObject::new(),
+    )
+    .with_input_schema::<ApplyBuildArgs>()
+    .with_object_output_schema::<ApplyBuildOutputView>()
+    .with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(false))
+}
+
+pub fn build_tool_specs() -> Vec<Tool> {
+    vec![
+        Tool::new("list_builds", "List local builds for the committed profile membership; no synchronization.", JsonObject::new()).with_input_schema::<ListCharactersArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
+        Tool::new("get_build", "Show one local build by id or exact normalized name (exactly one). Includes DIM JSON export and known source omissions. Ambiguity returns candidates; never guess.", JsonObject::new()).with_input_schema::<BuildSelectionArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
+        Tool::new("save_build", "Save a local build. source=import: input is DIM JSON/loadouts?loadout= URL (dim.gg share links are not supported). source=equipped: character and name. source=in_game_loadout: character and exactly one slot (1..12) or loadout_name. Inventory sources use ordinary freshness and report omissions/unresolved items. Never applies gear.", JsonObject::new()).with_input_schema::<SaveBuildArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(false).idempotent(false)),
+        Tool::new("delete_build", "Delete a local build by id or exact normalized name (exactly one). ID deletion is idempotent; name ambiguity returns candidates. Does not delete any Bungie/DIM loadout.", JsonObject::new()).with_input_schema::<BuildSelectionArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(false).destructive(true)),
+        Tool::new("analyze_build", "Check a stored build against synced inventory; exactly one id/name. Optional character ID/class; required if build class has multiple characters. Ordinary freshness. Reports resolved/missing items, counts, DIM findings (including analyzer-search better_stats_available) and not_evaluated reasons, plus an optimizer object. Never applies gear.", JsonObject::new()).with_input_schema::<AnalyzeBuildArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
+        Tool::new("build_substitutes", "Rank armor sets from Vault and characters for a stored build, like DIM's Loadout Optimizer with the build's saved stat ranges and mods. Exactly one id/name; optional character; limit 1-200, default 10. Time-budgeted: truncated=true marks partial results. Reports stats, auto stat mods, tuning mods. Read-only; never applies gear.", JsonObject::new()).with_input_schema::<SubstitutesArgs>().with_object_output_schema::<BuildOutputSchema>().with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
+    ]
+}
+
 /// Stable tool name for the character listing read.
 pub const LIST_CHARACTERS_TOOL: &str = "list_characters";
 
@@ -1495,6 +1749,10 @@ pub struct InspectionPlugView {
 /// A found inspection: one exact definition beside one concrete instance.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 pub struct FoundInspection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fragment_capacity: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub armor_model: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub plug_details: Vec<InspectionPlugView>,
     pub perk_names: Vec<String>,
@@ -1887,6 +2145,7 @@ mod tests {
     #[test]
     fn every_tool_description_stays_within_byte_budget() {
         let mut tools = tool_specs();
+        tools.extend(super::build_tool_specs());
         tools.extend([
             move_item_tool(),
             super::equip_item_tool(),
@@ -1895,6 +2154,7 @@ mod tests {
             super::pull_item_tool(),
             super::pull_stack_tool(),
             super::apply_loadout_tool(),
+            super::apply_build_tool(),
         ]);
         let total: usize = tools
             .iter()
@@ -1922,6 +2182,7 @@ mod tests {
     #[test]
     fn every_tool_output_schema_declares_an_object_root() {
         let mut tools = tool_specs();
+        tools.extend(super::build_tool_specs());
         tools.extend([
             move_item_tool(),
             super::equip_item_tool(),
@@ -1930,6 +2191,7 @@ mod tests {
             super::pull_stack_tool(),
             super::apply_loadout_tool(),
             super::equip_items_tool(),
+            super::apply_build_tool(),
         ]);
         let invalid: Vec<_> = tools
             .iter()

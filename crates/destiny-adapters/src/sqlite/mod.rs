@@ -26,12 +26,20 @@
 //! single-active profile inventory repository, and the durable definition/instance
 //! search repository are the three of them.
 
+mod armor_catalogs;
+mod armor_definitions;
+mod builds;
 mod clarity;
+mod definition_sockets;
 mod definitions;
 mod inventory;
 mod loadouts;
+mod material_catalogs;
 mod migrations;
 mod search;
+mod socket_catalogs;
+mod stat_plug_catalogs;
+mod vault_catalogs;
 mod world;
 
 #[cfg(test)]

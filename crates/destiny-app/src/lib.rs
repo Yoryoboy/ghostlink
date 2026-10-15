@@ -1,5 +1,23 @@
 //! Application-facing configuration, services, and sanitized diagnostics.
 
+pub use destiny_core::armor_catalog::ArmorCatalogRepository;
+pub use destiny_core::armor_model::{
+    ARMOR_STATS, ArmorModel, ArmorSet, ArmorStat, ArmorStats, ArmorTuning, FragmentCapacity,
+};
+pub mod armor_model;
+pub mod build_apply_exec;
+pub mod builds;
+pub use destiny_core::ports::{BuildCodec, BuildRepository};
+pub use destiny_core::{
+    armor_catalog, build, build_analysis, build_apply, build_mod_apply, build_sets, build_sockets,
+    mod_assignment, optimizer,
+};
+mod build_fashion_evidence;
+mod build_mods;
+mod build_optimizer;
+mod build_socket_evidence;
+mod build_stats;
+pub mod build_substitutes;
 pub mod clarity;
 pub use clarity::{ClaritySyncReport, ManifestAndClarityReport};
 pub use destiny_core::{ClarityInsight, ClarityRepository};
@@ -44,6 +62,9 @@ pub use stack_pull::*;
 pub mod lock;
 pub mod manifest;
 pub mod mutation;
+pub use destiny_core::{
+    InsertPlugGateway, InsertPlugOutcome, InsertPlugRejection, InsertPlugRequest,
+};
 pub use destiny_core::{LockGateway, LockOutcome, LockRejection, LockRequest, SetLockStateRequest};
 pub use lock::{
     LockExecutionEvidence, LockExecutionFailure, LockExecutionOutcome, LockPlan,
@@ -85,6 +106,9 @@ pub use config::{
 // through this crate. This block is the smallest additive surface that lets the
 // presentation layer implement that translation and lets its binary composition
 // root load a credential; it adds no behavior and no new abstraction.
+pub use destiny_core::ArmorDefinition;
+pub use destiny_core::InstancedPullRequest;
+pub use destiny_core::domain;
 pub use destiny_core::domain::ItemSlot;
 pub use destiny_core::name_matching;
 pub use destiny_core::ports::{
@@ -101,14 +125,15 @@ pub use destiny_core::{
     DestinationSelector, DestinyMembership, ErrorCategory, ExecutionEvidence, FreshnessPolicy,
     FreshnessStatus, InspectItemRequest, InstanceSearchQuery, InventoryEffect, InventoryRepository,
     InventorySearchHit, InventorySearchResult, InventorySnapshot, InventorySnapshotInput,
-    ItemDefinition, ItemHash, ItemHashFilter, ItemInspection, ItemInstance, ItemInstanceId,
-    ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET,
-    MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS, MembershipId, MembershipType, MoveEffects,
-    MoveIntentAuthorization, MovePlan, MoveRequest, PerkHash, PerkSummary, PlanId, PlanIdGenerator,
-    PlanLifetime, ProfileAcquisition, ProfileGateway, ProfileSyncOutcome, ProfileSyncReason,
-    QueryMetadata, RefreshGrant, RefreshToken, Resolution, SearchRepository, SearchTerm,
-    SourceMarker, StaticCredentialSource, StepAction, StepOutcome, SyncMetadata, SyncRevision,
-    Timestamp, TokenRefresh, TransferGateway, TransferOutcome, TransferRejection, TransferRequest,
+    ItemDefinition, ItemEnergy, ItemHash, ItemHashFilter, ItemInspection, ItemInstance,
+    ItemInstanceId, ItemLocation, ItemSelector, MAX_HASH_FILTERS, MAX_SEARCH_LIMIT,
+    MAX_SEARCH_OFFSET, MAX_SEARCH_TEXT_LENGTH, MAX_TAG_FILTERS, MembershipId, MembershipType,
+    MoveEffects, MoveIntentAuthorization, MovePlan, MoveRequest, PerkHash, PerkSummary, PlanId,
+    PlanIdGenerator, PlanLifetime, ProfileAcquisition, ProfileGateway, ProfileSyncOutcome,
+    ProfileSyncReason, QueryMetadata, RefreshGrant, RefreshToken, Resolution, SearchRepository,
+    SearchTerm, SourceMarker, StaticCredentialSource, StepAction, StepOutcome, SyncMetadata,
+    SyncRevision, Timestamp, TokenRefresh, TransferGateway, TransferOutcome, TransferRejection,
+    TransferRequest,
 };
 pub use destiny_core::{
     ActivityDefinition, ActivityModifierDefinition, ActivityTypeDefinition, MilestoneDefinition,

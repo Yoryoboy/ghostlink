@@ -545,6 +545,30 @@ where
             Err(error) => ProcessOutput::failure(mode, error),
         };
     }
+    if let Command::Build(arguments) = &cli.command {
+        return match crate::builds::compose(arguments) {
+            Ok(output) => {
+                // Export is always raw DIM JSON, including --json (docs/cli.md).
+                let body = if let Some(export) = output.export {
+                    export
+                } else if mode == OutputMode::Json {
+                    output.value.to_string()
+                } else {
+                    output.render_text()
+                };
+                if output.exit_code == 0 {
+                    ProcessOutput::success(body)
+                } else {
+                    ProcessOutput {
+                        stdout: String::new(),
+                        stderr: format!("{body}\n"),
+                        exit_code: output.exit_code,
+                    }
+                }
+            }
+            Err(error) => ProcessOutput::failure(mode, error),
+        };
+    }
     if let Command::ApplyLoadout(arguments) = &cli.command {
         return match crate::runtime::compose_apply_loadout(arguments) {
             Ok(output) => {
@@ -1779,6 +1803,8 @@ mod tests {
 
     fn definition(hash: i64, name: &str) -> ItemDefinition {
         ItemDefinition {
+            armor: Default::default(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -1799,6 +1825,10 @@ mod tests {
 
     fn instance(identifier: &str, hash: i64) -> ItemInstance {
         ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
+            transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: ItemInstanceId::new(identifier),
             item_hash: ItemHash::new(hash),
@@ -1849,6 +1879,8 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            fragment_capacity: None,
+            armor_model: None,
             plug_details: Vec::new(),
             perk_names: Vec::new(),
             mod_names: Vec::new(),

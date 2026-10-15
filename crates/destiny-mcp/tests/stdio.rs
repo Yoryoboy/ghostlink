@@ -28,6 +28,145 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 
 #[tokio::test]
+async fn builds_stdio_import_list_show_export_delete_and_ambiguity() {
+    let mut session = FixtureSession::spawn(Some("success")).await;
+    let dim =
+        json!({"id":"original", "name":"Raid", "classType":1, "equipped":[], "unequipped":[]})
+            .to_string();
+    let saved = session
+        .call_tool("save_build", json!({"source":"import", "input":dim}))
+        .await;
+    assert_eq!(saved["result"]["isError"], false, "{saved}");
+    let id = saved["result"]["structuredContent"]["summary"]["id"].clone();
+    let shown = session.call_tool("get_build", json!({"id":id})).await;
+    assert_eq!(
+        saved["result"]["structuredContent"],
+        shown["result"]["structuredContent"]
+    );
+    let export: Value = serde_json::from_str(
+        shown["result"]["structuredContent"]["dim_json"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(export["name"], "Raid");
+    assert_ne!(export["id"], "original");
+    session
+        .call_tool("save_build", json!({"source":"import", "input":dim}))
+        .await;
+    let ambiguous = session.call_tool("get_build", json!({"name":"raid"})).await;
+    assert_eq!(ambiguous["result"]["isError"], true);
+    assert_eq!(
+        ambiguous["result"]["structuredContent"]["error"]["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let list = session.call_tool("list_builds", json!({})).await;
+    assert_eq!(
+        list["result"]["structuredContent"]["builds"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    for _ in 0..2 {
+        let deleted = session.call_tool("delete_build", json!({"id":id})).await;
+        assert_eq!(deleted["result"]["isError"], false);
+    }
+    let share = session
+        .call_tool(
+            "save_build",
+            json!({"source":"import", "input":"https://dim.gg/abcdefg"}),
+        )
+        .await;
+    assert_eq!(
+        share["result"]["structuredContent"]["error"]["reason"],
+        "share_link_requires_online_import"
+    );
+    session.shutdown().await;
+}
+
+#[tokio::test]
+async fn build_sources_stdio_report_omissions_and_unresolved_items() {
+    let mut session = FixtureSession::spawn(Some("build-sources")).await;
+    let equipped = session
+        .call_tool(
+            "save_build",
+            json!({"source":"equipped", "character":"1", "name":"Equipped"}),
+        )
+        .await;
+    assert_eq!(equipped["result"]["isError"], false, "{equipped}");
+    // This character has no equipped fixture items: no missing socket data
+    // should be fabricated merely because the source is equipped.
+    assert_eq!(
+        equipped["result"]["structuredContent"]["omissions"],
+        json!([])
+    );
+    assert_eq!(
+        equipped["result"]["structuredContent"]["equipped_socket_overrides"],
+        json!([])
+    );
+    let saved = session
+        .call_tool(
+            "save_build",
+            json!({"source":"in_game_loadout", "character":"1", "slot":1}),
+        )
+        .await;
+    assert_eq!(saved["result"]["isError"], false, "{saved}");
+    assert_eq!(
+        saved["result"]["structuredContent"]["unresolved_items"],
+        json!(["404"])
+    );
+    let id = saved["result"]["structuredContent"]["summary"]["id"].clone();
+    let shown = session.call_tool("get_build", json!({"id":id})).await;
+    assert!(shown["result"]["structuredContent"]["unresolved_items"].is_null());
+    assert_eq!(
+        shown["result"]["structuredContent"]["omissions"],
+        json!(["source_capture_evidence_not_persisted"])
+    );
+    let analyzed = session
+        .call_tool("analyze_build", json!({"id":id,"character":"1"}))
+        .await;
+    assert_eq!(analyzed["result"]["isError"], false, "{analyzed}");
+    let analysis = &analyzed["result"]["structuredContent"];
+    assert_eq!(analysis["kind"], "build_analysis");
+    assert_eq!(analysis["counts"]["missing"], 0);
+    assert_eq!(analysis["findings"].as_array().unwrap().len(), 13);
+    // Substitutes: the fixture has no full armor set, so the answer is a typed unknown.
+    let substitutes = session
+        .call_tool(
+            "build_substitutes",
+            json!({"id":id,"character":"1","limit":5}),
+        )
+        .await;
+    assert_eq!(substitutes["result"]["isError"], false, "{substitutes}");
+    let ranked = &substitutes["result"]["structuredContent"];
+    assert_eq!(ranked["kind"], "build_substitutes");
+    assert_eq!(ranked["limit"], 5);
+    assert_eq!(ranked["evaluation"], "not_evaluated");
+    assert_eq!(ranked["sets"], json!([]));
+    let too_many = session
+        .call_tool("build_substitutes", json!({"id":id,"limit":201}))
+        .await;
+    assert_eq!(too_many["result"]["isError"], true);
+    let too_few = session
+        .call_tool("build_substitutes", json!({"id":id,"limit":0}))
+        .await;
+    assert_eq!(too_few["result"]["isError"], true);
+    let invalid_analysis = session
+        .call_tool("analyze_build", json!({"id":id,"name":"other"}))
+        .await;
+    assert_eq!(invalid_analysis["result"]["isError"], true);
+    let invalid = session
+        .call_tool("save_build", json!({"source":"equipped", "input":"bad"}))
+        .await;
+    assert_eq!(invalid["result"]["isError"], true);
+    session.shutdown().await;
+}
+
+#[tokio::test]
 async fn dim_query_stdio_and_invalid_query_contract() {
     let mut session = FixtureSession::spawn(Some("success")).await;
     let all = session
@@ -154,6 +293,33 @@ const GET_LOADOUTS_TOOL: &str = "get_loadouts";
 const MOVE_ITEM_TOOL: &str = "move_item";
 #[path = "support/equip.rs"]
 mod equip_support;
+
+#[tokio::test]
+async fn apply_build_stdio_is_composed_and_reports_typed_errors_without_dispatch() {
+    let mut session = FixtureSession::spawn(None).await;
+    let response = session
+        .call_tool("apply_build", json!({"id":"missing", "dry_run":true}))
+        .await;
+    assert_eq!(response["result"]["isError"], true);
+    assert_eq!(structured(&response)["error"]["code"], "item_not_found");
+    for invalid in [json!({}), json!({"id":"a", "name":"b"})] {
+        let response = session.call_tool("apply_build", invalid).await;
+        assert_eq!(response["result"]["isError"], true);
+        assert_eq!(structured(&response)["code"], "provider_validation");
+    }
+    let id = session.next_id();
+    let tools = session.request(id, "tools/list", None).await;
+    let tool = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "apply_build")
+        .unwrap()
+        .clone();
+    assert!(tool["description"].as_str().unwrap().len() <= 500);
+    assert!(tool["inputSchema"].get("oneOf").is_none());
+    session.shutdown().await;
+}
 
 #[tokio::test]
 async fn batch_equip_stdio_reports_per_item_outcomes_and_storage_failure() {
@@ -388,7 +554,7 @@ async fn stack_stdio_acknowledged_refused_uncertain_and_invalid() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 25);
         let tool = tools.iter().find(|t| t["name"] == "pull_stack").unwrap();
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(tool["annotations"]["readOnlyHint"], false);
@@ -439,7 +605,7 @@ async fn pull_stdio_arrival_receipt_refusal_and_invalid_inputs() {
         let id = session.next_id();
         let discovery = session.request(id, "tools/list", None).await;
         let tools = discovery["result"]["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 18);
+        assert_eq!(tools.len(), 25);
         let tool = tools
             .iter()
             .find(|tool| tool["name"] == "pull_item")
@@ -1260,15 +1426,22 @@ async fn child_process_stdio_completes_the_one_call_move_journey() {
             WEEKLY_RESET_TOOL,
             "weekly",
             "get_subclass_options",
+            "list_builds",
+            "get_build",
+            "save_build",
+            "delete_build",
+            "analyze_build",
+            "build_substitutes",
             MOVE_ITEM_TOOL,
             "equip_item",
             "set_lock_state",
             "pull_item",
             "pull_stack",
             "apply_loadout",
-            "equip_items"
+            "equip_items",
+            "apply_build"
         ],
-        "the product-equivalent server discovers all reads plus move_item and equip_item"
+        "the product-equivalent server discovers reads, local builds and game mutations"
     );
 
     // --- the reads still work ----------------------------------------------------

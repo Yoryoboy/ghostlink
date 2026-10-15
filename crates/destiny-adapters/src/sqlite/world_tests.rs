@@ -4,6 +4,48 @@ use destiny_core::ports::{DefinitionCatalogRepository, WorldDefinitionRepository
 use destiny_core::*;
 
 #[test]
+fn objective_styles_decode_publish_revision_and_guard() {
+    let decoded = crate::manifest::decode_objectives(
+        br#"{"7":{"hash":7,"uiStyle":4,"progressDescription":"","completionValue":0}}"#,
+    )
+    .unwrap();
+    assert_eq!(decoded.definitions[0].ui_style(), Some(4));
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    store.migrate_to(30).unwrap();
+    store
+        .publish_manifest(items("v1", "prior"), world("v1", "World"))
+        .unwrap();
+    store.migrate_to(31).unwrap();
+    assert!(store.current_metadata().unwrap().is_none());
+    let mut data = world("v1", "World");
+    data.objectives = decoded;
+    let first = store
+        .publish_manifest(items("v1", "prior"), data.clone())
+        .unwrap();
+    assert_eq!(
+        store.lookup_objective(7).unwrap().unwrap().ui_style(),
+        Some(4)
+    );
+    assert_eq!(
+        store
+            .publish_manifest(items("v1", "prior"), data.clone())
+            .unwrap(),
+        first
+    );
+    assert!(store.migrate_to(30).is_err());
+    data.objectives.definitions[0] = data.objectives.definitions[0]
+        .clone()
+        .with_ui_style(Some(2));
+    let next = store
+        .publish_manifest(items("v1", "prior"), data.clone())
+        .unwrap();
+    assert!(next.revision > first.revision);
+    data.objectives.definitions[0] = data.objectives.definitions[0].clone().with_ui_style(None);
+    store.publish_manifest(items("v1", "prior"), data).unwrap();
+    store.migrate_to(30).unwrap();
+}
+
+#[test]
 fn item_description_v14_migration_invalidates_metadata_and_is_reversible() {
     let mut connection = rusqlite::Connection::open_in_memory().unwrap();
     migrations::migrate_to(&mut connection, 13).unwrap();
@@ -71,9 +113,12 @@ fn item_description_upgrade_forces_same_version_republish_then_skips() {
     let mut gateway = QueuedManifestGateway::new();
     let acquisition = ManifestAcquisition {
         sandbox_perks: Vec::new(),
+        stat_plugs: Vec::new(),
         version: DefinitionVersion::new("v1"),
         definitions: vec![ManifestDefinitionCandidate {
             perk_hashes: Vec::new(),
+            armor: Default::default(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -402,6 +447,7 @@ fn loadout_name_v11_upgrade_preserves_data_and_invalidates_manifest_freshness() 
 
 fn world(version: &str, name: &str) -> WorldDefinitionsAcquisition {
     WorldDefinitionsAcquisition {
+        armor_catalogs: Vec::new(),
         item_descriptions: Vec::new(),
         version: DefinitionVersion::new(version),
         loadout_names: WorldDefinitionTable {
@@ -477,11 +523,14 @@ fn missing_stat_catalog_forces_same_version_download_then_skips() {
     for _ in 0..2 {
         gateway.queue(Ok(ManifestAcquisition {
             sandbox_perks: Vec::new(),
+            stat_plugs: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: vec![ManifestDefinitionCandidate {
                 perk_hashes: Vec::new(),
                 hash: ItemHash::new(10),
                 bucket_hash: None,
+                armor: Default::default(),
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -666,16 +715,19 @@ fn stat_migration_invalidates_only_manifest_metadata_and_is_reversible() {
 }
 
 fn items(version: &str, name: &str) -> DefinitionReplacementInput {
+    let armor = Default::default();
     DefinitionReplacementInput {
         definitions: ManifestDefinitions {
             version: DefinitionVersion::new(version),
             definitions: vec![ItemDefinition {
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
                 stack_unique_label: None,
                 hash: ItemHash::new(10),
                 bucket_hash: None,
+                armor,
                 name: name.into(),
                 item_type: None,
                 tier: None,
@@ -706,6 +758,7 @@ fn plug_category_upgrade_forces_same_version_republish_then_skips() {
     for _ in 0..2 {
         gateway.queue(Ok(ManifestAcquisition {
             sandbox_perks: Vec::new(),
+            stat_plugs: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: vec![ManifestDefinitionCandidate {
                 perk_hashes: Vec::new(),
@@ -715,6 +768,8 @@ fn plug_category_upgrade_forces_same_version_republish_then_skips() {
                 item_type: None,
                 tier: None,
                 element: None,
+                armor: Default::default(),
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -778,6 +833,7 @@ fn search_filter_upgrade_forces_same_version_republish_then_skips() {
     for _ in 0..2 {
         gateway.queue(Ok(ManifestAcquisition {
             sandbox_perks: Vec::new(),
+            stat_plugs: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: vec![ManifestDefinitionCandidate {
                 perk_hashes: Vec::new(),
@@ -788,6 +844,8 @@ fn search_filter_upgrade_forces_same_version_republish_then_skips() {
                 tier: None,
                 element: None,
                 description: None,
+                armor: Default::default(),
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -842,12 +900,15 @@ fn same_version_without_world_catalog_downloads_then_skips_with_fake_sqlite_pari
         for _ in 0..2 {
             gateway.queue(Ok(ManifestAcquisition {
                 sandbox_perks: Vec::new(),
+                stat_plugs: Vec::new(),
                 version: DefinitionVersion::new("v1"),
                 definitions: vec![ManifestDefinitionCandidate {
                     hash: ItemHash::new(10),
                     bucket_hash: None,
                     description: None,
                     perk_hashes: Vec::new(),
+                    armor: Default::default(),
+                    non_transferrable: None,
                     does_postmaster_pull_have_side_effects: None,
                     is_instance_item: None,
                     max_stack_size: None,
@@ -1003,7 +1064,7 @@ fn populated_v2_round_trip_restores_exact_schema_and_data() {
         .execute_batch(
             "INSERT INTO active_profile VALUES (1, 'membership', '3');
          INSERT INTO characters VALUES ('character', NULL, NULL, NULL, NULL, 2000);
-         INSERT INTO items VALUES ('instance', 10, 'character', 'character', NULL, 1, 1, 0, 2000);
+         INSERT INTO items(instance_id,item_hash,location_kind,location_character_id,location_other,quantity,equipped,locked,power) VALUES ('instance', 10, 'character', 'character', NULL, 1, 1, 0, 2000);
          INSERT INTO item_perks VALUES ('instance', 0, 4294967295, 1, 0);
          INSERT INTO sync_metadata VALUES ('profile_inventory', '100', 'profile', '1', 'v2');",
         )

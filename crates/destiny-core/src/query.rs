@@ -1011,6 +1011,10 @@ pub struct InventorySearchResult {
 /// [`InventorySearchResult`] instead and never reaches this type directly.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemInspection {
+    /// Subclass aspect-derived capacity, including an explicit unknown capacity.
+    pub fragment_capacity: Option<crate::armor_model::FragmentCapacity>,
+    /// DIM investment-derived armor model; absent for non-armor.
+    pub armor_model: Option<crate::armor_model::ArmorModel>,
     /// Same resolved, socket-ordered enrichment as inventory search hits.
     pub perk_names: Vec<String>,
     pub mod_names: Vec<String>,
@@ -1179,6 +1183,8 @@ mod tests {
 
     fn definition(hash: i64, name: &str) -> ItemDefinition {
         ItemDefinition {
+            armor: Default::default(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -1199,6 +1205,10 @@ mod tests {
 
     fn instance(instance_id: &str, item_hash: i64) -> ItemInstance {
         ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
+            transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),

@@ -3,6 +3,65 @@
 //! These types are test support only. They model normalized behavior and never
 //! perform network, filesystem, serialization, or credential-provider work.
 
+/// Exact membership-keyed build fake; order and upsert semantics match SQLite.
+#[derive(Default)]
+pub struct InMemoryBuildRepository {
+    builds: std::collections::BTreeMap<
+        (destiny_core::DestinyMembership, String),
+        destiny_core::build::StoredBuild,
+    >,
+}
+impl destiny_core::ports::BuildRepository for InMemoryBuildRepository {
+    fn save_build(
+        &mut self,
+        membership: &DestinyMembership,
+        build: &destiny_core::build::BuildDefinition,
+        source: destiny_core::build::BuildSource,
+        now: Timestamp,
+    ) -> Result<destiny_core::build::StoredBuild, AppError> {
+        build.validate()?;
+        let key = (membership.clone(), build.id.clone());
+        let created_at = self.builds.get(&key).map_or(now, |b| b.summary.created_at);
+        let stored = destiny_core::build::StoredBuild {
+            summary: destiny_core::build::BuildSummary {
+                id: build.id.clone(),
+                name: build.name.clone(),
+                class_type: build.class_type,
+                source,
+                created_at,
+                updated_at: now,
+            },
+            definition: build.clone(),
+        };
+        self.builds.insert(key, stored.clone());
+        Ok(stored)
+    }
+    fn list_builds(
+        &self,
+        membership: &DestinyMembership,
+    ) -> Result<Vec<destiny_core::build::BuildSummary>, AppError> {
+        Ok(self
+            .builds
+            .iter()
+            .filter(|((m, _), _)| m == membership)
+            .map(|(_, b)| b.summary.clone())
+            .collect())
+    }
+    fn get_build(
+        &self,
+        membership: &DestinyMembership,
+        id: &str,
+    ) -> Result<Option<destiny_core::build::StoredBuild>, AppError> {
+        Ok(self.builds.get(&(membership.clone(), id.into())).cloned())
+    }
+    fn delete_build(&mut self, membership: &DestinyMembership, id: &str) -> Result<bool, AppError> {
+        Ok(self
+            .builds
+            .remove(&(membership.clone(), id.into()))
+            .is_some())
+    }
+}
+
 use destiny_core::{
     AccessCredential, AppError, AuthorizationCallback, AuthorizationState, BrowserAuthorization,
     CallbackReceiver, Clock, CredentialStore, Dataset, DefinitionReplacementInput,
@@ -303,6 +362,7 @@ impl InMemoryDefinitionRepository {
         }
         let mut seen = HashSet::with_capacity(definitions.definitions.len());
         for definition in &definitions.definitions {
+            definition.armor.validate()?;
             if definition.version != definitions.version || !seen.insert(definition.hash) {
                 return Err(AppError::new(ErrorCategory::ProviderValidation));
             }
@@ -532,6 +592,22 @@ impl destiny_core::ports::WorldDefinitionRepository for InMemoryDefinitionReposi
         candidate.world = Some(world);
         *self = candidate;
         Ok(metadata)
+    }
+}
+
+impl destiny_core::armor_catalog::ArmorCatalogRepository for InMemoryDefinitionRepository {
+    fn armor_catalog(
+        &self,
+        kind: destiny_core::armor_catalog::ArmorCatalogKind,
+        hash: Option<u32>,
+    ) -> Result<Vec<destiny_core::armor_catalog::ArmorCatalogRecord>, AppError> {
+        Ok(self
+            .world
+            .iter()
+            .flat_map(|world| &world.armor_catalogs)
+            .filter(|record| record.kind() == kind && hash.is_none_or(|hash| hash == record.hash()))
+            .cloned()
+            .collect())
     }
 }
 
@@ -1211,6 +1287,39 @@ impl destiny_core::InstancedPullGateway for QueuedInstancedPullGateway {
     }
 }
 
+/// Queues plug insertion outcomes; exhaustion fails closed, never succeeds.
+#[derive(Debug, Default)]
+pub struct QueuedInsertPlugGateway {
+    outcomes: VecDeque<Result<destiny_core::InsertPlugOutcome, AppError>>,
+    requests: Vec<destiny_core::InsertPlugRequest>,
+}
+
+impl QueuedInsertPlugGateway {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn queue(&mut self, outcome: Result<destiny_core::InsertPlugOutcome, AppError>) {
+        self.outcomes.push_back(outcome);
+    }
+
+    pub fn requests(&self) -> &[destiny_core::InsertPlugRequest] {
+        &self.requests
+    }
+}
+
+impl destiny_core::InsertPlugGateway for QueuedInsertPlugGateway {
+    fn insert_plug(
+        &mut self,
+        request: &destiny_core::InsertPlugRequest,
+    ) -> Result<destiny_core::InsertPlugOutcome, AppError> {
+        self.requests.push(request.clone());
+        self.outcomes
+            .pop_front()
+            .unwrap_or_else(|| Err(AppError::new(ErrorCategory::ProviderUnavailable)))
+    }
+}
+
 /// Queues equip outcomes in call order; exhaustion fails closed, never succeeds.
 #[derive(Debug, Default)]
 pub struct QueuedEquipGateway {
@@ -1501,6 +1610,7 @@ mod equip_gateway_tests {
 pub fn synthetic_world(version: DefinitionVersion) -> destiny_core::WorldDefinitionsAcquisition {
     use destiny_core::*;
     WorldDefinitionsAcquisition {
+        armor_catalogs: Vec::new(),
         item_descriptions: Vec::new(),
         version,
         loadout_names: WorldDefinitionTable {
@@ -1562,6 +1672,9 @@ impl QueuedManifestGateway {
         match outcome {
             Ok(batch) => {
                 self.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                    armor_catalog_paths: std::array::from_fn(|_| {
+                        "/common/destiny2_content/armor.json".into()
+                    }),
                     version: batch.version.clone(),
                     component_path: "/common/destiny2_content/test.json".into(),
                     milestone_path: "/common/destiny2_content/milestones.json".into(),
@@ -2201,6 +2314,10 @@ mod tests {
             source: SourceMarker::Profile,
             characters: Vec::<Character>::new(),
             items: vec![ItemInstance {
+                energy: None,
+                gear_tier: None,
+                sockets: Vec::new(),
+                transfer_status: None,
                 available_plugs: Vec::new(),
                 instance_id: "instance".into(),
                 item_hash: ItemHash::new(7),
@@ -2248,6 +2365,10 @@ mod tests {
             ],
             items: vec![
                 ItemInstance {
+                    energy: None,
+                    gear_tier: None,
+                    sockets: Vec::new(),
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: "instance-1".into(),
                     item_hash: ItemHash::new(7),
@@ -2272,6 +2393,10 @@ mod tests {
                     ],
                 },
                 ItemInstance {
+                    energy: None,
+                    gear_tier: None,
+                    sockets: Vec::new(),
+                    transfer_status: None,
                     available_plugs: Vec::new(),
                     instance_id: "instance-2".into(),
                     item_hash: ItemHash::new(8),
@@ -2301,6 +2426,8 @@ mod tests {
 
     fn item_definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
         ItemDefinition {
+            armor: Default::default(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -2338,6 +2465,10 @@ mod tests {
         perk_hashes: Vec<u32>,
     ) -> ItemInstance {
         ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
+            transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
@@ -2868,6 +2999,8 @@ mod tests {
     fn repositories_and_gateways_cover_contract_outcomes() {
         let hash = ItemHash::new(7);
         let definition = ItemDefinition {
+            armor: Default::default(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -2912,6 +3045,7 @@ mod tests {
         let mut manifest = QueuedManifestGateway::new();
         let acquisition = ManifestAcquisition {
             sandbox_perks: Vec::new(),
+            stat_plugs: Vec::new(),
             version: DefinitionVersion::new("v1"),
             definitions: Vec::new(),
             skipped_count: 0,

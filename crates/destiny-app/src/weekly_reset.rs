@@ -498,6 +498,8 @@ mod tests {
         ManifestDefinitions {
             version: version.clone(),
             definitions: vec![destiny_core::ItemDefinition {
+                armor: Default::default(),
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -528,6 +530,7 @@ mod tests {
                     source: SourceMarker::Manifest,
                 },
                 WorldDefinitionsAcquisition {
+                    armor_catalogs: Vec::new(),
                     item_descriptions: Vec::new(),
                     loadout_names: WorldDefinitionTable {
                         definitions: vec![],

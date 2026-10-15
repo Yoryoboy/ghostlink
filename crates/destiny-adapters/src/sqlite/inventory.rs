@@ -733,12 +733,16 @@ fn read_characters(connection: &Connection) -> Result<Vec<Character>, AppError> 
 /// otherwise unexpected ordinal, an unknown item instance, or an unparseable perk
 /// value is corrupt local state and fails closed.
 fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
+    let transfer = if super::migrations::read_user_version(connection)? >= 24 {
+        "transfer_status"
+    } else {
+        "NULL"
+    };
+    let sql = format!(
+        "SELECT instance_id, item_hash, location_kind, location_character_id, location_other, quantity, equipped, locked, power, {transfer} FROM items ORDER BY instance_id"
+    );
     let mut statement = connection
-        .prepare_cached(
-            "SELECT instance_id, item_hash, location_kind, location_character_id, \
-             location_other, quantity, equipped, locked, power \
-             FROM items ORDER BY instance_id",
-        )
+        .prepare_cached(&sql)
         .map_err(|_| storage_failure())?;
     let rows = statement
         .query_map([], |row| {
@@ -752,6 +756,7 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
                 row.get::<_, i64>(6)?,
                 row.get::<_, i64>(7)?,
                 row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<i64>>(9)?,
             ))
         })
         .map_err(|_| storage_failure())?;
@@ -768,6 +773,7 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
             equipped,
             locked,
             power,
+            transfer_status,
         ) = row.map_err(|_| storage_failure())?;
 
         let location = match (
@@ -785,6 +791,13 @@ fn read_items(connection: &Connection) -> Result<Vec<ItemInstance>, AppError> {
         };
 
         items.push(ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
+            transfer_status: transfer_status
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| storage_failure())?,
             available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),
@@ -1008,6 +1021,7 @@ pub(super) fn attach_components(
     items: &mut [ItemInstance],
     full: bool,
 ) -> Result<(), AppError> {
+    attach_instance_fidelity(connection, items, full)?;
     attach_component(
         connection,
         items,
@@ -1053,6 +1067,228 @@ pub(super) fn attach_components(
         |row| Ok((row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         |item, rows| {
             item.perks = decode_perks(rows)?;
+            Ok(())
+        },
+    )
+}
+
+fn checked_u32(value: i64) -> Result<u32, AppError> {
+    u32::try_from(value).map_err(|_| storage_failure())
+}
+
+pub(super) fn attach_instance_fidelity(
+    connection: &Connection,
+    items: &mut [ItemInstance],
+    full: bool,
+) -> Result<(), AppError> {
+    if super::migrations::read_user_version(connection)? < 25 {
+        return Ok(());
+    }
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, energy_capacity, energy_used, energy_unused, energy_type, energy_type_hash FROM item_energy",
+        "instance_id",
+        |row| {
+            Ok((
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        },
+        |item, rows| {
+            if rows.len() > 1 {
+                return Err(storage_failure());
+            }
+            item.energy = rows
+                .into_iter()
+                .next()
+                .map(|(capacity, used, unused, kind, hash)| {
+                    Ok::<_, AppError>(destiny_core::ItemEnergy {
+                        energy_capacity: checked_u32(capacity)?,
+                        energy_used: checked_u32(used)?,
+                        energy_unused: checked_u32(unused)?,
+                        energy_type: kind.map(checked_u32).transpose()?,
+                        energy_type_hash: hash.map(checked_u32).transpose()?,
+                    })
+                })
+                .transpose()?;
+            Ok(())
+        },
+    )?;
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, gear_tier FROM item_gear_tiers",
+        "instance_id",
+        |row| row.get::<_, i64>(1),
+        |item, rows| {
+            if rows.len() > 1 {
+                return Err(storage_failure());
+            }
+            item.gear_tier = rows.into_iter().next().map(checked_u32).transpose()?;
+            Ok(())
+        },
+    )?;
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, socket_index, plug_hash, enabled, visible FROM item_sockets",
+        "socket_index",
+        |row| {
+            Ok((
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        },
+        |item, rows| {
+            item.sockets = rows
+                .into_iter()
+                .enumerate()
+                .map(|(index, (stored, hash, enabled, visible))| {
+                    if index >= destiny_core::MAX_ITEM_SOCKETS
+                        || usize::try_from(stored).ok() != Some(index)
+                    {
+                        return Err(storage_failure());
+                    }
+                    Ok(destiny_core::IndexedSocket {
+                        plug_objectives: None,
+                        reusable_plugs: None,
+                        socket_index: u8::try_from(stored).map_err(|_| storage_failure())?,
+                        plug_hash: hash
+                            .map(|hash| {
+                                checked_u32(hash).map(|hash| ItemHash::new(i64::from(hash)))
+                            })
+                            .transpose()?,
+                        enabled: decode_boolean(enabled)?,
+                        visible: decode_boolean(visible)?,
+                    })
+                })
+                .collect::<Result<_, AppError>>()?;
+            Ok(())
+        },
+    )?;
+    if super::migrations::read_user_version(connection)? < 30 {
+        return Ok(());
+    }
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, socket_index FROM item_reusable_sockets",
+        "socket_index",
+        |row| row.get::<_, u8>(1),
+        |item, rows| {
+            for index in rows {
+                let socket = item
+                    .sockets
+                    .iter_mut()
+                    .find(|s| s.socket_index == index)
+                    .ok_or_else(storage_failure)?;
+                if socket.reusable_plugs.is_some() {
+                    return Err(storage_failure());
+                }
+                socket.reusable_plugs = Some(Vec::new());
+            }
+            Ok(())
+        },
+    )?;
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, socket_index, ordinal, plug_hash, can_insert, enabled FROM item_reusable_plugs",
+        "socket_index, ordinal",
+        |row| {
+            Ok((
+                row.get::<_, u8>(1)?,
+                row.get::<_, u32>(2)?,
+                row.get::<_, u32>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        },
+        |item, rows| {
+            for (index, ordinal, hash, can_insert, enabled) in rows {
+                let raw = item
+                    .sockets
+                    .iter_mut()
+                    .find(|s| s.socket_index == index)
+                    .and_then(|s| s.reusable_plugs.as_mut())
+                    .ok_or_else(storage_failure)?;
+                if ordinal as usize != raw.len()
+                    || ordinal as usize >= destiny_core::domain::MAX_REUSABLE_PLUGS
+                {
+                    return Err(storage_failure());
+                }
+                raw.push(destiny_core::domain::ReusablePlug {
+                    plug_hash: ItemHash::new(i64::from(hash)),
+                    can_insert: decode_boolean(can_insert)?,
+                    enabled: decode_boolean(enabled)?,
+                });
+            }
+            Ok(())
+        },
+    )?;
+    if super::migrations::read_user_version(connection)? < 31 {
+        return Ok(());
+    }
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, socket_index FROM item_objective_sockets",
+        "socket_index",
+        |row| row.get::<_, u8>(1),
+        |item, rows| {
+            for index in rows {
+                let socket = item
+                    .sockets
+                    .iter_mut()
+                    .find(|s| s.socket_index == index)
+                    .ok_or_else(storage_failure)?;
+                if socket.plug_objectives.is_some() {
+                    return Err(storage_failure());
+                }
+                socket.plug_objectives = Some(Vec::new());
+            }
+            Ok(())
+        },
+    )?;
+    attach_component(
+        connection,
+        items,
+        full,
+        "SELECT instance_id, socket_index, ordinal, objective_hash, progress FROM item_plug_objectives",
+        "socket_index, ordinal",
+        |row| {
+            Ok((
+                row.get::<_, u8>(1)?,
+                row.get::<_, u32>(2)?,
+                row.get::<_, u32>(3)?,
+                row.get::<_, Option<u32>>(4)?,
+            ))
+        },
+        |item, rows| {
+            for (index, ordinal, hash, progress) in rows {
+                let raw = item
+                    .sockets
+                    .iter_mut()
+                    .find(|s| s.socket_index == index)
+                    .and_then(|s| s.plug_objectives.as_mut())
+                    .ok_or_else(storage_failure)?;
+                if ordinal as usize != raw.len() || ordinal >= 128 {
+                    return Err(storage_failure());
+                }
+                raw.push((hash, progress));
+            }
             Ok(())
         },
     )
@@ -1271,31 +1507,122 @@ fn replace_projection(
         )?;
     }
 
+    let version = super::migrations::read_user_version(connection)?;
+    let has_transfer = version >= 24;
+    let has_fidelity = version >= 25;
     for item in &input.items {
         if old_items.get(&item.instance_id).copied() == Some(item) {
             continue;
         }
         let (location_kind, location_character_id, location_other) =
             encode_location(&item.location);
-        execute_cached(
-            connection,
-            "INSERT INTO items \
-                 (instance_id, item_hash, location_kind, location_character_id, location_other, \
-                  quantity, equipped, locked, power) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                item.instance_id.as_str(),
-                item.item_hash.value(),
-                location_kind,
-                location_character_id,
-                location_other,
-                i64::from(item.quantity),
-                encode_boolean(item.equipped),
-                encode_boolean(item.locked),
-                item.power.map(i64::from),
-            ],
-        )?;
+        let mut values: Vec<rusqlite::types::Value> = vec![
+            item.instance_id.as_str().to_owned().into(),
+            item.item_hash.value().into(),
+            location_kind.to_owned().into(),
+            location_character_id.map(str::to_owned).into(),
+            location_other.map(str::to_owned).into(),
+            i64::from(item.quantity).into(),
+            encode_boolean(item.equipped).into(),
+            encode_boolean(item.locked).into(),
+            item.power.map(i64::from).into(),
+        ];
+        let sql = if has_transfer {
+            values.push(item.transfer_status.map(i64::from).into());
+            "INSERT INTO items(instance_id,item_hash,location_kind,location_character_id,location_other,quantity,equipped,locked,power,transfer_status) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
+        } else {
+            if item.transfer_status.is_some() {
+                return Err(storage_failure());
+            }
+            "INSERT INTO items(instance_id,item_hash,location_kind,location_character_id,location_other,quantity,equipped,locked,power) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"
+        };
+        execute_cached(connection, sql, rusqlite::params_from_iter(values))?;
 
+        if has_fidelity {
+            if let Some(energy) = &item.energy {
+                execute_cached(
+                    connection,
+                    "INSERT INTO item_energy(instance_id,energy_capacity,energy_used,energy_unused,energy_type,energy_type_hash) VALUES(?1,?2,?3,?4,?5,?6)",
+                    params![
+                        item.instance_id.as_str(),
+                        i64::from(energy.energy_capacity),
+                        i64::from(energy.energy_used),
+                        i64::from(energy.energy_unused),
+                        energy.energy_type.map(i64::from),
+                        energy.energy_type_hash.map(i64::from)
+                    ],
+                )?;
+            }
+            if let Some(tier) = item.gear_tier {
+                execute_cached(
+                    connection,
+                    "INSERT INTO item_gear_tiers(instance_id,gear_tier) VALUES(?1,?2)",
+                    params![item.instance_id.as_str(), i64::from(tier)],
+                )?;
+            }
+            for socket in &item.sockets {
+                execute_cached(
+                    connection,
+                    "INSERT INTO item_sockets(instance_id,socket_index,plug_hash,enabled,visible) VALUES(?1,?2,?3,?4,?5)",
+                    params![
+                        item.instance_id.as_str(),
+                        i64::from(socket.socket_index),
+                        socket.plug_hash.map(ItemHash::value),
+                        encode_boolean(socket.enabled),
+                        encode_boolean(socket.visible)
+                    ],
+                )?;
+                if let Some(raw) = &socket.plug_objectives {
+                    if super::migrations::read_user_version(connection)? < 31 {
+                        return Err(storage_failure());
+                    }
+                    execute_cached(
+                        connection,
+                        "INSERT INTO item_objective_sockets VALUES (?1, ?2)",
+                        params![item.instance_id.as_str(), socket.socket_index],
+                    )?;
+                    for (ordinal, (hash, progress)) in raw.iter().enumerate() {
+                        execute_cached(
+                            connection,
+                            "INSERT INTO item_plug_objectives VALUES (?1, ?2, ?3, ?4, ?5)",
+                            params![
+                                item.instance_id.as_str(),
+                                socket.socket_index,
+                                ordinal as i64,
+                                hash,
+                                progress
+                            ],
+                        )?;
+                    }
+                }
+                if let Some(raw) = &socket.reusable_plugs {
+                    if super::migrations::read_user_version(connection)? < 30 {
+                        return Err(storage_failure());
+                    }
+                    execute_cached(
+                        connection,
+                        "INSERT INTO item_reusable_sockets VALUES (?1,?2)",
+                        params![item.instance_id.as_str(), socket.socket_index],
+                    )?;
+                    for (ordinal, plug) in raw.iter().enumerate() {
+                        execute_cached(
+                            connection,
+                            "INSERT INTO item_reusable_plugs VALUES (?1,?2,?3,?4,?5,?6)",
+                            params![
+                                item.instance_id.as_str(),
+                                socket.socket_index,
+                                ordinal as i64,
+                                plug.plug_hash.value(),
+                                encode_boolean(plug.can_insert),
+                                encode_boolean(plug.enabled)
+                            ],
+                        )?;
+                    }
+                }
+            }
+        } else if item.energy.is_some() || item.gear_tier.is_some() || !item.sockets.is_empty() {
+            return Err(storage_failure());
+        }
         let mut ordinals = std::collections::HashMap::new();
         for plug in &item.available_plugs {
             let ordinal = ordinals.entry(plug.socket_index).or_insert(0_i64);

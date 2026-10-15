@@ -84,6 +84,7 @@ type RawInstance = (
     i64,
     i64,
     Option<i64>,
+    Option<i64>,
 );
 
 impl SearchRepository for SqliteStore {
@@ -202,7 +203,7 @@ impl SearchRepository for SqliteStore {
 
         let mut sql = String::from(
             "SELECT instance_id, item_hash, location_kind, location_character_id, \
-             location_other, quantity, equipped, locked, power \
+             location_other, quantity, equipped, locked, power, transfer_status \
              FROM items WHERE 1 = 1",
         );
         let mut parameters: Vec<Value> = Vec::new();
@@ -417,7 +418,7 @@ impl SearchRepository for SqliteStore {
             .connection()
             .prepare_cached(
                 "SELECT instance_id, item_hash, location_kind, location_character_id, \
-                 location_other, quantity, equipped, locked, power \
+                 location_other, quantity, equipped, locked, power, transfer_status \
                  FROM items WHERE instance_id = ?1",
             )
             .map_err(|_| storage_failure())?
@@ -443,6 +444,7 @@ fn decode_instance_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawInstance>
         row.get(6)?,
         row.get(7)?,
         row.get(8)?,
+        row.get(9)?,
     ))
 }
 
@@ -461,6 +463,11 @@ fn read_instance(connection: &Connection, raw: RawInstance) -> Result<ItemInstan
     instance.plugs = super::inventory::read_plugs(connection, id)?;
     instance.stats = super::inventory::read_stats(connection, id)?;
     instance.available_plugs = super::inventory::read_available_plugs(connection, id)?;
+    super::inventory::attach_instance_fidelity(
+        connection,
+        std::slice::from_mut(&mut instance),
+        false,
+    )?;
     Ok(instance)
 }
 
@@ -475,6 +482,7 @@ fn read_instance_base(raw: RawInstance) -> Result<ItemInstance, AppError> {
         equipped,
         locked,
         power,
+        transfer_status,
     ) = raw;
 
     let location = match (
@@ -491,6 +499,13 @@ fn read_instance_base(raw: RawInstance) -> Result<ItemInstance, AppError> {
         _ => return Err(storage_failure()),
     };
     Ok(ItemInstance {
+        energy: None,
+        gear_tier: None,
+        sockets: Vec::new(),
+        transfer_status: transfer_status
+            .map(u32::try_from)
+            .transpose()
+            .map_err(|_| storage_failure())?,
         available_plugs: Vec::new(),
         instance_id: instance_id.into(),
         item_hash: ItemHash::new(item_hash),
@@ -597,6 +612,8 @@ mod tests {
 
     fn definition(hash: i64, name: &str, item_type: Option<&str>, tags: &[&str]) -> ItemDefinition {
         ItemDefinition {
+            armor: Default::default(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -633,6 +650,10 @@ mod tests {
         perk_hashes: &[u32],
     ) -> ItemInstance {
         ItemInstance {
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
+            transfer_status: None,
             available_plugs: Vec::new(),
             instance_id: instance_id.into(),
             item_hash: ItemHash::new(item_hash),

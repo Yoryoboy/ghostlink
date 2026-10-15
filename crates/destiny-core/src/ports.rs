@@ -298,6 +298,26 @@ impl InventorySnapshotInput {
                     return false;
                 }
             }
+            if item.sockets.len() > crate::MAX_ITEM_SOCKETS
+                || item.sockets.iter().enumerate().any(|(index, socket)| {
+                    usize::from(socket.socket_index) != index
+                        || socket
+                            .plug_objectives
+                            .as_ref()
+                            .is_some_and(|raw| raw.len() > 128 || socket.plug_hash.is_none())
+                        || socket.reusable_plugs.as_ref().is_some_and(|plugs| {
+                            plugs.len() > crate::domain::MAX_REUSABLE_PLUGS
+                                || plugs
+                                    .iter()
+                                    .any(|plug| u32::try_from(plug.plug_hash.value()).is_err())
+                        })
+                        || socket
+                            .plug_hash
+                            .is_some_and(|hash| u32::try_from(hash.value()).is_err())
+                })
+            {
+                return false;
+            }
             if item.plugs.len() > 32
                 || item
                     .plugs
@@ -335,6 +355,28 @@ impl InventorySnapshotInput {
 pub trait DefinitionRepository {
     fn current_definition_version(&self) -> Result<DefinitionVersion, AppError>;
     fn lookup_definition(&self, hash: ItemHash) -> Result<Resolution<ItemDefinition>, AppError>;
+    /// Bounded, deduplicated definition batch for request-local derivations.
+    fn lookup_definition_batch(
+        &self,
+        hashes: &[ItemHash],
+    ) -> Result<Vec<ItemDefinition>, AppError> {
+        if hashes.len() > 1024 {
+            return Err(AppError::new(ErrorCategory::ProviderValidation));
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut definitions = Vec::new();
+        for hash in hashes {
+            if !seen.insert(*hash) {
+                continue;
+            }
+            match self.lookup_definition(*hash)? {
+                Resolution::Unique(definition) => definitions.push(definition),
+                Resolution::Missing => {}
+                Resolution::Ambiguous(_) => return Err(AppError::new(ErrorCategory::LocalStorage)),
+            }
+        }
+        Ok(definitions)
+    }
     /// Reads the committed metadata of the current definition projection, if any.
     fn current_metadata(&self) -> Result<Option<SyncMetadata>, AppError>;
     /// Atomically publishes one complete normalized set and returns its committed metadata.
@@ -409,6 +451,50 @@ pub trait StatDefinitionRepository {
     fn lookup_stat(&self, hash: u32) -> Result<Option<crate::StatDefinition>, AppError>;
     fn stat_hashes_by_name(&self, name: &str) -> Result<Vec<u32>, AppError>;
     fn stat_definition_count(&self) -> Result<usize, AppError>;
+}
+
+/// Membership-keyed local builds, independent of active-profile replacement.
+/// Upsert retains local creation time and updates source/time; payload is exact.
+/// Lists and ambiguity candidates are ordered by ID. Invalid writes leave state
+/// unchanged; deletion reports whether a row existed. Names use SearchTerm.
+pub trait BuildRepository {
+    fn save_build(
+        &mut self,
+        membership: &DestinyMembership,
+        build: &crate::build::BuildDefinition,
+        source: crate::build::BuildSource,
+        now: Timestamp,
+    ) -> Result<crate::build::StoredBuild, AppError>;
+    fn list_builds(
+        &self,
+        membership: &DestinyMembership,
+    ) -> Result<Vec<crate::build::BuildSummary>, AppError>;
+    fn get_build(
+        &self,
+        membership: &DestinyMembership,
+        id: &str,
+    ) -> Result<Option<crate::build::StoredBuild>, AppError>;
+    fn delete_build(&mut self, membership: &DestinyMembership, id: &str) -> Result<bool, AppError>;
+    fn find_build_by_name(
+        &self,
+        membership: &DestinyMembership,
+        name: &str,
+    ) -> Result<Resolution<crate::build::BuildSummary>, AppError> {
+        crate::build::resolve_build_name(self.list_builds(membership)?, name)
+    }
+}
+
+/// Adapter-owned DIM parsing, export, and unpredictable identity generation.
+pub trait BuildCodec {
+    fn import(
+        &self,
+        input: &str,
+    ) -> Result<crate::build::BuildDefinition, crate::build::DimLoadoutError>;
+    fn export(
+        &self,
+        build: &crate::build::BuildDefinition,
+    ) -> Result<String, crate::build::DimLoadoutError>;
+    fn fresh_id(&self) -> Result<String, crate::build::DimLoadoutError>;
 }
 
 /// Reads and atomically replaces the current normalized inventory projection.
@@ -803,6 +889,8 @@ impl DefinitionReplacementInput {
 /// record and needs no provider metadata to rule out.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ManifestDefinitionCandidate {
+    pub armor: crate::ArmorDefinition,
+    pub non_transferrable: Option<bool>,
     /// Optional untrusted tooltip text; application validation may omit it.
     pub description: Option<String>,
     /// Ordered, bounded references into the same-version effect catalog.
@@ -852,6 +940,8 @@ pub struct ManifestAcquisition {
     pub sandbox_perks: Vec<SandboxPerkCandidate>,
     pub version: DefinitionVersion,
     pub definitions: Vec<ManifestDefinitionCandidate>,
+    /// Blank-name, non-redacted `armor_stats` plugs kept apart from `definitions`.
+    pub stat_plugs: Vec<crate::armor_catalog::StatPlugDefinition>,
     /// Blank-name or redacted records omitted by the gateway.
     pub skipped_count: usize,
 }
@@ -859,6 +949,8 @@ pub struct ManifestAcquisition {
 /// Untrusted provider-neutral effect text acquired with inventory definitions.
 #[derive(Clone, Eq, PartialEq)]
 pub struct SandboxPerkCandidate {
+    pub name: Option<String>,
+    pub icon: Option<String>,
     pub hash: u32,
     pub is_displayable: bool,
     pub description: String,
@@ -879,6 +971,8 @@ impl fmt::Debug for SandboxPerkCandidate {
 /// must validate it again on use because callers can construct this value.
 #[derive(Clone, Eq, PartialEq)]
 pub struct ManifestIndex {
+    /// Armor and socket catalog content paths, in ArmorCatalogKind::ALL order.
+    pub armor_catalog_paths: [String; 8],
     pub version: DefinitionVersion,
     pub component_path: String,
     pub milestone_path: String,

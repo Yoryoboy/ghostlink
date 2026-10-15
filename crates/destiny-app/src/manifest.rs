@@ -178,13 +178,56 @@ where
                 });
             }
         }
-        let acquisition = self.gateway.load_component(&index)?;
+        let mut acquisition = self.gateway.load_component(&index)?;
         if acquisition.version != version {
             return Err(invalid());
         }
+        // The sandbox table is already fetched with inventory definitions. Retain
+        // only display fields referenced by set perks in the atomic catalog projection.
+        let mut perk_display = std::collections::HashMap::new();
+        for perk in &acquisition.sandbox_perks {
+            let name = normalize_optional_presentation(perk.name.as_deref())?;
+            let icon = perk
+                .icon
+                .as_deref()
+                .map(|icon| normalize_presentation(icon, 1024))
+                .transpose()?
+                .filter(|icon| !icon.is_empty());
+            perk_display.insert(perk.hash, (name, icon));
+        }
+        let stat_plugs = std::mem::take(&mut acquisition.stat_plugs);
         let (definitions, skipped, descriptions) = normalize_with_count(acquisition)?;
         let mut world = self.gateway.load_world_components(&index)?;
         world.item_descriptions = descriptions;
+        // Nameless Armor 3.0 stat plugs publish atomically with the catalogs.
+        world.armor_catalogs.extend(
+            stat_plugs
+                .into_iter()
+                .map(destiny_core::armor_catalog::ArmorCatalogRecord::StatPlug),
+        );
+        destiny_core::armor_catalog::validate_catalogs(&world.armor_catalogs)?;
+        for record in &mut world.armor_catalogs {
+            use destiny_core::armor_catalog::ArmorCatalogRecord;
+            match record {
+                ArmorCatalogRecord::EquipableSet(set) => {
+                    set.name = normalize_presentation(&set.name, MAX_TEXT_LENGTH)?;
+                    // DIM SetBonus.tsx:55-57,108-109,184: no isDisplayable gate.
+                    for perk in &mut set.set_perks {
+                        if let Some((name, icon)) = perk_display.get(&perk.sandbox_perk_hash) {
+                            perk.name = name.clone();
+                            perk.icon = icon.clone();
+                        }
+                    }
+                }
+                ArmorCatalogRecord::SocketCategory(category) => {
+                    category.name = normalize_presentation(&category.name, MAX_TEXT_LENGTH)?;
+                }
+                _ => {}
+            }
+        }
+        world
+            .armor_catalogs
+            .sort_by_key(|record| (record.kind().id(), record.hash()));
         world.validate_for(&version)?;
         let world_counts = world.counts();
         let world_skipped = world.skipped_counts();
@@ -315,7 +358,10 @@ fn normalize_with_count(acquisition: ManifestAcquisition) -> Result<NormalizedMa
         if let Some(description) = compose_description(&candidate, &perks) {
             descriptions.push(description);
         }
+        candidate.armor.validate()?;
         definitions.push(ItemDefinition {
+            armor: candidate.armor,
+            non_transferrable: candidate.non_transferrable,
             does_postmaster_pull_have_side_effects: candidate
                 .does_postmaster_pull_have_side_effects,
             is_instance_item: candidate.is_instance_item,
@@ -529,6 +575,8 @@ mod tests {
     fn sandbox_description_composition_preserves_order_and_policy() {
         use destiny_core::ports::SandboxPerkCandidate;
         let perk = |hash, is_displayable, description: &str| SandboxPerkCandidate {
+            name: None,
+            icon: None,
             hash,
             is_displayable,
             description: description.into(),
@@ -569,6 +617,8 @@ mod tests {
 
     fn candidate(hash: i64, name: &str) -> ManifestDefinitionCandidate {
         ManifestDefinitionCandidate {
+            armor: Default::default(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -603,6 +653,7 @@ mod tests {
     ) -> ManifestAcquisition {
         ManifestAcquisition {
             sandbox_perks: Vec::new(),
+            stat_plugs: Vec::new(),
             version: DefinitionVersion::new(version),
             definitions,
             skipped_count: 0,
@@ -619,10 +670,12 @@ mod tests {
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(11)),
                     perk_hashes: Vec::new(),
+                    non_transferrable: None,
                     does_postmaster_pull_have_side_effects: None,
                     is_instance_item: None,
                     max_stack_size: None,
                     stack_unique_label: None,
+                    armor: Default::default(),
                     name: "  Ri   FLE  ".into(),
                     item_type: Some("  WEAPON ".into()),
                     tier: Some(" Legendary ".into()),
@@ -646,10 +699,12 @@ mod tests {
                     hash: ItemHash::new(2),
                     bucket_hash: Some(BucketHash::new(11)),
                     perk_hashes: Vec::new(),
+                    non_transferrable: None,
                     does_postmaster_pull_have_side_effects: None,
                     is_instance_item: None,
                     max_stack_size: None,
                     stack_unique_label: None,
+                    armor: Default::default(),
                     name: "Ri FLE".into(),
                     item_type: Some("WEAPON".into()),
                     tier: Some("Legendary".into()),
@@ -857,6 +912,8 @@ mod tests {
         // the candidate or to the normalized
         // record, this test would stop compiling.
         let ManifestDefinitionCandidate {
+            armor: _,
+            non_transferrable: _,
             does_postmaster_pull_have_side_effects: _,
             is_instance_item: _,
             max_stack_size: _,
@@ -889,6 +946,8 @@ mod tests {
         let published =
             normalize_manifest(acquisition(VERSION, vec![candidate(1, "Alpha")])).unwrap();
         let ItemDefinition {
+            armor: _,
+            non_transferrable: _,
             does_postmaster_pull_have_side_effects: _,
             is_instance_item: _,
             max_stack_size: _,
@@ -1021,6 +1080,8 @@ mod tests {
 
         fn item_definition(hash: i64, name: &str, version: &str) -> ItemDefinition {
             ItemDefinition {
+                armor: Default::default(),
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,
@@ -1094,6 +1155,7 @@ mod tests {
             let metadata = repository.current_metadata().unwrap();
             let mut gateway = QueuedManifestGateway::new();
             gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                armor_catalog_paths: Default::default(),
                 version: DefinitionVersion::new("manifest-prior"),
                 component_path: "unused".into(),
                 milestone_path: "unused".into(),
@@ -1176,6 +1238,41 @@ mod tests {
         }
 
         #[test]
+        fn sync_publishes_nameless_stat_plugs_with_the_catalogs_and_not_as_skipped() {
+            use destiny_core::armor_catalog::{
+                ArmorCatalogKind, ArmorCatalogRecord, ArmorCatalogRepository, StatPlugDefinition,
+            };
+            let plug = StatPlugDefinition {
+                hash: 481842213,
+                plug_category_hash: 748854354,
+                investment_stats: vec![destiny_core::InvestmentStat {
+                    stat_type_hash: 392767087,
+                    value: 30,
+                    is_conditionally_active: false,
+                }],
+            };
+            let mut batch = acquisition(VERSION, vec![candidate(42, "item")]);
+            batch.stat_plugs = vec![plug.clone()];
+            let mut service = queued_service([Ok(batch)], InMemoryDefinitionRepository::default());
+            let report = service.sync(CHECKED_AT).unwrap();
+            assert!(matches!(
+                report,
+                crate::manifest::ManifestSyncReport::Updated {
+                    record_count: 1,
+                    skipped: 0,
+                    ..
+                }
+            ));
+            assert_eq!(
+                service
+                    .repository()
+                    .armor_catalog(ArmorCatalogKind::StatPlug, None)
+                    .unwrap(),
+                vec![ArmorCatalogRecord::StatPlug(plug)]
+            );
+        }
+
+        #[test]
         fn sync_index_and_component_failures_leave_catalog_and_metadata_intact() {
             for component_failure in [false, true] {
                 let repository = committed_repository();
@@ -1184,6 +1281,7 @@ mod tests {
                 let error = AppError::new(ErrorCategory::ProviderUnavailable);
                 if component_failure {
                     gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                        armor_catalog_paths: Default::default(),
                         version: DefinitionVersion::new(VERSION),
                         component_path: "unused".into(),
                         milestone_path: "unused".into(),
@@ -1234,6 +1332,7 @@ mod tests {
                 let metadata = repository.current_metadata().unwrap();
                 let mut gateway = QueuedManifestGateway::new();
                 gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                    armor_catalog_paths: Default::default(),
                     version: DefinitionVersion::new(VERSION),
                     component_path: "unused".into(),
                     milestone_path: "unused".into(),
@@ -1319,6 +1418,7 @@ mod tests {
         fn sync_rejects_component_version_that_disagrees_with_index() {
             let mut gateway = QueuedManifestGateway::new();
             gateway.queue_index(Ok(destiny_core::ports::ManifestIndex {
+                armor_catalog_paths: Default::default(),
                 version: DefinitionVersion::new("other-version"),
                 component_path: "unused".into(),
                 milestone_path: "unused".into(),

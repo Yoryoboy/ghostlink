@@ -11,6 +11,14 @@
         "DestinyObjectiveDefinition": "/common/destiny2_content/json/en/objectives-fixture.json",
         "DestinyActivityTypeDefinition": "/common/destiny2_content/json/en/types-fixture.json",
         "DestinyStatDefinition": "/common/destiny2_content/json/en/stats-fixture.json",
+        "DestinyStatGroupDefinition": "/common/destiny2_content/json/en/stat-groups-fixture.json",
+        "DestinySocketTypeDefinition": "/common/destiny2_content/json/en/socket-types-fixture.json",
+        "DestinySocketCategoryDefinition": "/common/destiny2_content/json/en/socket-categories-fixture.json",
+        "DestinyMaterialRequirementSetDefinition": "/common/destiny2_content/json/en/materials-fixture.json",
+        "DestinyInventoryBucketDefinition": "/common/destiny2_content/json/en/buckets-fixture.json",
+        "DestinyVendorDefinition": "/common/destiny2_content/json/en/vendors-fixture.json",
+        "DestinyPlugSetDefinition": "/common/destiny2_content/json/en/plug-sets-fixture.json",
+        "DestinyEquipableItemSetDefinition": "/common/destiny2_content/json/en/equipable-sets-fixture.json",
         "DestinySandboxPerkDefinition": "/common/destiny2_content/json/en/sandbox-perks-fixture.json",
         "DestinyLoadoutNameDefinition": "/common/destiny2_content/json/en/loadout-names-fixture.json"
       }

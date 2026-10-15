@@ -68,7 +68,8 @@ pub trait ReadFoundations {
         + SearchRepository
         + DefinitionRepository
         + destiny_app::StatDefinitionRepository
-        + destiny_app::WorldDefinitionRepository;
+        + destiny_app::WorldDefinitionRepository
+        + destiny_app::ArmorCatalogRepository;
 
     /// Reads and validates the shared read runtime configuration.
     fn config(&mut self) -> Result<ReadRuntimeConfig, AppError>;
@@ -600,6 +601,8 @@ mod pull_store_tests {
         let definition = ItemDefinition {
             hash: ItemHash::new(7),
             bucket_hash: Some(BucketHash::new(1498876634)),
+            armor: Default::default(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: Some(false),
             is_instance_item: Some(true),
             max_stack_size: None,
@@ -1312,6 +1315,8 @@ mod tests {
                         plug_category: None,
                         tags: vec![],
                         version,
+                        armor: Default::default(),
+                        non_transferrable: None,
                         does_postmaster_pull_have_side_effects: None,
                         is_instance_item: None,
                         max_stack_size: None,
@@ -1396,8 +1401,11 @@ mod tests {
             destiny_adapters::manifest::ManifestTransportError,
         > {
             let body = if request.url().contains("/Platform/") {
-                r#"{"ErrorCode":1,"Response":{"version":"v1","jsonWorldComponentContentPaths":{"en":{"DestinyInventoryItemDefinition":"/common/destiny2_content/items.json","DestinyMilestoneDefinition":"/common/destiny2_content/m.json","DestinyActivityDefinition":"/common/destiny2_content/a.json","DestinyActivityModifierDefinition":"/common/destiny2_content/mod.json","DestinyObjectiveDefinition":"/common/destiny2_content/obj.json","DestinyActivityTypeDefinition":"/common/destiny2_content/type.json","DestinyStatDefinition":"/common/destiny2_content/stat.json","DestinyLoadoutNameDefinition":"/common/destiny2_content/loadout-names.json","DestinySandboxPerkDefinition":"/common/destiny2_content/sandbox-perks.json"}}}}"#
-            } else if request.url().ends_with("/sandbox-perks.json") {
+                r#"{"ErrorCode":1,"Response":{"version":"v1","jsonWorldComponentContentPaths":{"en":{"DestinyInventoryItemDefinition":"/common/destiny2_content/items.json","DestinyMilestoneDefinition":"/common/destiny2_content/m.json","DestinyActivityDefinition":"/common/destiny2_content/a.json","DestinyActivityModifierDefinition":"/common/destiny2_content/mod.json","DestinyObjectiveDefinition":"/common/destiny2_content/obj.json","DestinyActivityTypeDefinition":"/common/destiny2_content/type.json","DestinyStatDefinition":"/common/destiny2_content/stat.json","DestinyLoadoutNameDefinition":"/common/destiny2_content/loadout-names.json","DestinyStatGroupDefinition":"/common/destiny2_content/groups.json","DestinySocketTypeDefinition":"/common/destiny2_content/sets.json","DestinySocketCategoryDefinition":"/common/destiny2_content/sets.json","DestinyPlugSetDefinition":"/common/destiny2_content/sets.json","DestinyMaterialRequirementSetDefinition":"/common/destiny2_content/sets.json","DestinyInventoryBucketDefinition":"/common/destiny2_content/sets.json","DestinyVendorDefinition":"/common/destiny2_content/sets.json","DestinyEquipableItemSetDefinition":"/common/destiny2_content/sets.json","DestinySandboxPerkDefinition":"/common/destiny2_content/sandbox-perks.json"}}}}"#
+            } else if request.url().ends_with("/groups.json")
+                || request.url().ends_with("/sets.json")
+                || request.url().ends_with("/sandbox-perks.json")
+            {
                 "{}"
             } else if request.url().ends_with("/loadout-names.json") {
                 r#"{"1":{"hash":1,"name":"PvE"}}"#
@@ -1943,10 +1951,12 @@ mod tests {
                                     class_type: None,
                                     plug_category: None,
                                     tags: Vec::new(),
+                                    non_transferrable: None,
                                     does_postmaster_pull_have_side_effects: None,
                                     is_instance_item: None,
                                     max_stack_size: None,
                                     stack_unique_label: None,
+                                    armor: Default::default(),
                                     version: destiny_app::DefinitionVersion::new("v1"),
                                 }],
                             },
@@ -2040,10 +2050,12 @@ mod tests {
                                     class_type: None,
                                     plug_category: None,
                                     tags: Vec::new(),
+                                    non_transferrable: None,
                                     does_postmaster_pull_have_side_effects: None,
                                     is_instance_item: None,
                                     max_stack_size: None,
                                     stack_unique_label: None,
+                                    armor: Default::default(),
                                     version: destiny_app::DefinitionVersion::new("v1"),
                                 }],
                             },
@@ -2166,6 +2178,8 @@ mod tests {
                                 definitions: destiny_app::ManifestDefinitions {
                                     version: destiny_app::DefinitionVersion::new("v1"),
                                     definitions: vec![destiny_app::ItemDefinition {
+                                        armor: Default::default(),
+                                        non_transferrable: None,
                                         does_postmaster_pull_have_side_effects: None,
                                         is_instance_item: None,
                                         max_stack_size: None,

@@ -5,6 +5,8 @@ use serde_json::{Value, json};
 
 fn inspection() -> ItemInspection {
     ItemInspection {
+        fragment_capacity: None,
+        armor_model: None,
         perk_names: vec!["Frame".into()],
         mod_names: vec!["Mod".into()],
         archetype: Some("Specialist".into()),
@@ -30,6 +32,8 @@ fn inspection() -> ItemInspection {
         })
         .collect(),
         definition: ItemDefinition {
+            armor: Default::default(),
+            non_transferrable: None,
             does_postmaster_pull_have_side_effects: None,
             is_instance_item: None,
             max_stack_size: None,
@@ -57,6 +61,10 @@ fn inspection() -> ItemInspection {
             stats: vec![],
             plugs: vec![],
             perks: vec![],
+            energy: None,
+            gear_tier: None,
+            sockets: Vec::new(),
+            transfer_status: None,
             available_plugs: vec![],
         },
         metadata: QueryMetadata {
@@ -219,6 +227,143 @@ fn inspection_clarity_cli_mcp_parity_and_human_all_roles() {
             }
         }
     }
+}
+
+#[test]
+fn armor_model_cli_mcp_parity_and_unknowns() {
+    let mut inspected = inspection();
+    inspected.armor_model = Some(destiny_app::ArmorModel {
+        tuning: Some(destiny_app::ArmorTuning {
+            reusable_membership_known: true,
+            socket_index: 7,
+            plug_hash: 3122197216,
+            tuned_stat_hash: Some(1735777505),
+        }),
+        armor_set: Some(destiny_app::ArmorSet {
+            hash: 88,
+            name: Some("Test Set".into()),
+            perks: Some(vec![destiny_app::armor_catalog::SetPerk {
+                sandbox_perk_hash: 99,
+                required_set_count: 2,
+                name: Some("Renewal".into()),
+                icon: Some("/common/perk.png".into()),
+            }]),
+        }),
+        stats: Some(destiny_app::ArmorStats {
+            total_base: 30,
+            stats: vec![destiny_app::ArmorStat {
+                stat_hash: 2996146975,
+                base: 30,
+                current: 40,
+                base_masterworked: Some(30),
+                maximum_value: Some(100),
+            }],
+        }),
+        masterwork_tier: Some(5),
+        gear_tier: Some(3),
+        effective_gear_tier: 3,
+        energy: Some(destiny_app::ItemEnergy {
+            energy_capacity: 10,
+            energy_used: 7,
+            energy_unused: 3,
+            ..Default::default()
+        }),
+    });
+    for unknown in [false, true] {
+        if unknown {
+            let model = inspected.armor_model.as_mut().unwrap();
+            model.stats = None;
+            model.masterwork_tier = None;
+            model.gear_tier = None;
+            model.effective_gear_tier = 0;
+            model.energy = None;
+            model.tuning.as_mut().unwrap().tuned_stat_hash = None;
+            model.tuning.as_mut().unwrap().reusable_membership_known = false;
+        }
+        let cli: Value =
+            serde_json::from_str(&render_inspection(OutputMode::Json, &inspected)).unwrap();
+        let mcp = serde_json::to_value(
+            inspect_item_output(&Resolution::Unique(inspected.clone())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cli["armor_model"], mcp["armor_model"]);
+        if unknown {
+            assert!(cli["armor_model"]["tuning"]["tuned_stat_hash"].is_null());
+        } else {
+            assert_eq!(cli["armor_model"]["tuning"]["tuned_stat_hash"], 1735777505);
+            assert!(cli["armor_model"]["tuning"]["tuned_stat_not_evaluated_reason"].is_null());
+        }
+        assert_eq!(
+            cli["armor_model"]["armor_set"]["perks"][0]["name"],
+            "Renewal"
+        );
+        assert_eq!(
+            cli["armor_model"]["armor_set"]["perks"][0]["icon"],
+            "/common/perk.png"
+        );
+        assert_eq!(cli["armor_model"]["tuning"]["socket_index"], 7);
+        assert_eq!(cli["armor_model"]["armor_set"]["hash"], 88);
+        assert!(
+            render_inspection(OutputMode::Human, &inspected).contains(if unknown {
+                "tuned stat: unknown"
+            } else {
+                "tuned stat: 1735777505"
+            })
+        );
+        let human = render_inspection(OutputMode::Human, &inspected);
+        assert!(human.contains("armor model:"));
+        if unknown {
+            assert!(human.contains("total base: unknown"));
+            assert!(human.contains("masterwork tier: unknown"));
+        } else {
+            assert!(human.contains("total base: 30"));
+            assert!(human.contains("masterwork tier: 5"));
+            assert!(human.contains("energy: capacity 10, used 7"));
+        }
+        if unknown {
+            assert!(cli["armor_model"]["base_stats"].is_null());
+            assert!(cli["armor_model"]["total_base"].is_null());
+            assert!(cli["armor_model"]["gear_tier"].is_null());
+            assert_eq!(cli["armor_model"]["effective_gear_tier"], 0);
+        } else {
+            assert_eq!(cli["armor_model"]["total_base"], 30);
+            assert_eq!(cli["armor_model"]["masterwork_tier"], 5);
+            assert_eq!(cli["armor_model"]["energy"]["capacity"], 10);
+            assert_eq!(cli["armor_model"]["base_stats"][0]["current"], 40);
+        }
+    }
+}
+
+#[test]
+fn fragment_capacity_cli_mcp_parity_and_unknowns() {
+    let mut inspected = inspection();
+    for capacity in [Some(4), Some(0), None] {
+        inspected.fragment_capacity = Some(destiny_app::FragmentCapacity { capacity });
+        let cli: Value =
+            serde_json::from_str(&render_inspection(OutputMode::Json, &inspected)).unwrap();
+        let mcp = serde_json::to_value(
+            inspect_item_output(&Resolution::Unique(inspected.clone())).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cli["fragment_capacity"], mcp["fragment_capacity"]);
+        assert_eq!(
+            cli["fragment_capacity"]["capacity"],
+            serde_json::to_value(capacity).unwrap()
+        );
+        let expected = capacity.map_or_else(|| "unknown".into(), |c| c.to_string());
+        assert!(
+            render_inspection(OutputMode::Human, &inspected)
+                .contains(&format!("fragment capacity: {expected}"))
+        );
+        assert!(cli.get("armor_model").is_none());
+    }
+    inspected.fragment_capacity = None;
+    let cli: Value =
+        serde_json::from_str(&render_inspection(OutputMode::Json, &inspected)).unwrap();
+    assert!(cli.get("fragment_capacity").is_none());
+    let mcp =
+        serde_json::to_value(inspect_item_output(&Resolution::Unique(inspected)).unwrap()).unwrap();
+    assert!(mcp.get("fragment_capacity").is_none());
 }
 
 #[test]

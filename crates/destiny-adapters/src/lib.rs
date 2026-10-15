@@ -6,6 +6,7 @@ pub mod bungie_throttle;
 pub mod calendar;
 pub mod clarity;
 pub mod clock;
+pub mod dim_loadout;
 pub mod equip;
 pub mod equip_items;
 pub mod file_credential_store;
@@ -15,6 +16,13 @@ pub use equip_items::{
     EquipItemsTransportError, HttpEquipItemsTransport, is_allowed_equip_items_url,
 };
 pub mod equipment_capacity_policy;
+pub mod insert_plug;
+pub use insert_plug::{
+    BungieInsertPlugGateway, HttpInsertPlugTransport, INSERT_PLUG_ENDPOINT,
+    INSERT_PLUG_MIN_INTERVAL, INSERT_PLUG_RESPONSE_LIMIT, InsertPlugApiKey, InsertPlugBearerToken,
+    InsertPlugHttpRequest, InsertPlugHttpResponse, InsertPlugTransport, InsertPlugTransportError,
+    is_allowed_insert_plug_url,
+};
 pub mod instanced_pull;
 pub mod stack_pull;
 pub use stack_pull::{

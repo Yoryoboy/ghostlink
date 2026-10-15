@@ -34,6 +34,10 @@ fn snapshot(equipped: bool, on_target: bool, ambiguous: bool) -> InventorySnapsh
         stats: vec![],
         plugs: vec![],
         perks: vec![],
+        energy: None,
+        gear_tier: None,
+        sockets: Vec::new(),
+        transfer_status: None,
         available_plugs: vec![],
     };
     let mut items = vec![
@@ -68,6 +72,8 @@ fn snapshot(equipped: bool, on_target: bool, ambiguous: bool) -> InventorySnapsh
 }
 fn definitions() -> Vec<ItemDefinition> {
     let definition = |hash, name: &str, bucket| ItemDefinition {
+        armor: Default::default(),
+        non_transferrable: None,
         does_postmaster_pull_have_side_effects: None,
         is_instance_item: None,
         max_stack_size: None,
@@ -248,6 +254,15 @@ fn publication_order(read_first: bool) {
     }
     #[derive(Clone)]
     struct SharedStore(Arc<Mutex<SqliteStore>>, Option<Publication>);
+    impl destiny_app::ArmorCatalogRepository for SharedStore {
+        fn armor_catalog(
+            &self,
+            kind: destiny_app::armor_catalog::ArmorCatalogKind,
+            hash: Option<u32>,
+        ) -> Result<Vec<destiny_app::armor_catalog::ArmorCatalogRecord>, AppError> {
+            self.0.lock().unwrap().armor_catalog(kind, hash)
+        }
+    }
     impl InventoryRepository for SharedStore {
         fn apply_acknowledged_effects(
             &mut self,

@@ -125,8 +125,82 @@ impl SqliteStore {
         {
             return Err(storage_failure());
         }
+        if super::migrations::read_user_version(self.connection())? < 26
+            && replacement
+                .definitions
+                .definitions
+                .iter()
+                .any(|item| item.armor != destiny_core::ArmorDefinition::default())
+        {
+            return Err(storage_failure());
+        }
+        if super::migrations::read_user_version(self.connection())? < 27
+            && replacement.definitions.definitions.iter().any(|item| {
+                !item.armor.socket_entries.is_empty() || !item.armor.socket_categories.is_empty()
+            })
+        {
+            return Err(storage_failure());
+        }
+        if super::migrations::read_user_version(self.connection())? < 32
+            && replacement.definitions.definitions.iter().any(|item| {
+                item.armor.insertion_material_requirement_hash.is_some()
+                    || item.armor.energy_capacity_type.is_some()
+                    || item.armor.plug_availability.is_some()
+            })
+        {
+            return Err(storage_failure());
+        }
+        if super::migrations::read_user_version(self.connection())? < 33
+            && replacement
+                .definitions
+                .definitions
+                .iter()
+                .any(|item| item.armor.unique_label.is_some())
+        {
+            return Err(storage_failure());
+        }
+        if super::migrations::read_user_version(self.connection())? < 35
+            && replacement.definitions.definitions.iter().any(|item| {
+                !item.armor.item_category_hashes.is_empty()
+                    || item.armor.item_type_code.is_some()
+                    || item.armor.item_sub_type_code.is_some()
+            })
+        {
+            return Err(storage_failure());
+        }
         if let Some(world) = &world {
+            if super::migrations::read_user_version(self.connection())? < 32
+                && world.armor_catalogs.iter().any(|r| {
+                    r.kind()
+                        == destiny_core::armor_catalog::ArmorCatalogKind::MaterialRequirementSet
+                })
+            {
+                return Err(storage_failure());
+            }
             world.validate_for(&replacement.definitions.version)?;
+            if super::migrations::read_user_version(self.connection())? < 36
+                && world
+                    .armor_catalogs
+                    .iter()
+                    .any(|r| r.kind() == destiny_core::armor_catalog::ArmorCatalogKind::StatPlug)
+            {
+                return Err(storage_failure());
+            }
+            if super::migrations::read_user_version(self.connection())? < 34
+                && world.armor_catalogs.iter().any(|r| r.kind().id() >= 6)
+            {
+                return Err(storage_failure());
+            }
+            if super::migrations::read_user_version(self.connection())? < 29
+                && world.armor_catalogs.iter().any(|r| r.kind().id() >= 2)
+            {
+                return Err(storage_failure());
+            }
+            if super::migrations::read_user_version(self.connection())? < 28
+                && !world.armor_catalogs.is_empty()
+            {
+                return Err(storage_failure());
+            }
         }
         destiny_core::world_definitions::validate_item_descriptions(
             &replacement.definitions,
@@ -240,6 +314,7 @@ fn validate_publication(definitions: &ManifestDefinitions) -> Result<(), AppErro
     }
     let mut seen = HashSet::with_capacity(definitions.definitions.len());
     for definition in &definitions.definitions {
+        definition.armor.validate()?;
         if definition.version != definitions.version || !seen.insert(definition.hash) {
             return Err(provider_validation());
         }
@@ -285,7 +360,9 @@ fn replace_catalog(
     let has_plug_category = schema >= 6;
     let has_qualified_metadata = schema >= 18;
     let mut insert_definition = connection
-        .prepare_cached(if has_qualified_metadata {
+        .prepare_cached(if schema >= 24 {
+            "INSERT INTO definitions (hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, plug_category, does_postmaster_pull_have_side_effects, is_instance_item, max_stack_size, stack_unique_label, non_transferrable) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
+        } else if has_qualified_metadata {
             "INSERT INTO definitions \
              (hash, bucket_hash, name, item_type, tier, element, definition_version, damage_type, slot, class_type, plug_category, does_postmaster_pull_have_side_effects, is_instance_item, max_stack_size, stack_unique_label) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)"
@@ -355,6 +432,11 @@ fn replace_catalog(
                 definition.stack_unique_label.clone().into(),
             ]);
         }
+        if schema >= 24 {
+            values.push(definition.non_transferrable.map(i64::from).into());
+        } else if definition.non_transferrable.is_some() {
+            return Err(storage_failure());
+        }
         insert_definition
             .execute(rusqlite::params_from_iter(values))
             .map_err(|_| storage_failure())?;
@@ -365,6 +447,7 @@ fn replace_catalog(
                 .map_err(|_| storage_failure())?;
         }
     }
+    super::armor_definitions::write(connection, definitions)?;
     if schema >= 22 {
         write_search_rows(connection, definitions)?;
     }
@@ -518,6 +601,7 @@ fn read_definition(
                 read_bool(row, 11)?,
                 row.get::<_, Option<i32>>(12)?,
                 row.get::<_, Option<String>>(13)?,
+                read_bool(row, 14)?,
             ))
         },
     );
@@ -538,7 +622,12 @@ fn read_definition(
             is_instance_item,
             max_stack_size,
             stack_unique_label,
+            non_transferrable,
         )) => Ok(Some(ItemDefinition {
+            armor: super::armor_definitions::read(connection, Some(hash.value()))?
+                .remove(&hash.value())
+                .unwrap_or_default(),
+            non_transferrable,
             does_postmaster_pull_have_side_effects,
             is_instance_item,
             max_stack_size,
@@ -575,6 +664,11 @@ fn definition_select(connection: &Connection, catalog: bool) -> Result<String, A
     } else {
         "NULL, NULL, NULL, NULL"
     };
+    let transfer = if schema >= 24 {
+        "non_transferrable"
+    } else {
+        "NULL"
+    };
     let hash = if catalog { "hash, " } else { "" };
     let suffix = if catalog {
         "ORDER BY hash"
@@ -582,7 +676,7 @@ fn definition_select(connection: &Connection, catalog: bool) -> Result<String, A
         "WHERE hash = ?1"
     };
     Ok(format!(
-        "SELECT {hash}bucket_hash, name, item_type, tier, element, definition_version, {attributes}, {plug}, {qualified} FROM definitions {suffix}"
+        "SELECT {hash}bucket_hash, name, item_type, tier, element, definition_version, {attributes}, {plug}, {qualified}, {transfer} FROM definitions {suffix}"
     ))
 }
 
@@ -657,6 +751,7 @@ fn read_tags(connection: &Connection, hash: i64) -> Result<Vec<String>, AppError
 fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>, AppError> {
     let mut definitions = Vec::new();
     let mut positions = HashMap::new();
+    let mut armor = super::armor_definitions::read(connection, None)?;
 
     {
         let mut statement = connection
@@ -680,6 +775,7 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
                     read_bool(row, 12)?,
                     row.get::<_, Option<i32>>(13)?,
                     row.get::<_, Option<String>>(14)?,
+                    read_bool(row, 15)?,
                 ))
             })
             .map_err(|_| storage_failure())?;
@@ -701,9 +797,12 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
                 is_instance_item,
                 max_stack_size,
                 stack_unique_label,
+                non_transferrable,
             ) = row.map_err(|_| storage_failure())?;
             positions.insert(hash, definitions.len());
             definitions.push(ItemDefinition {
+                armor: armor.remove(&hash).unwrap_or_default(),
+                non_transferrable,
                 does_postmaster_pull_have_side_effects,
                 is_instance_item,
                 max_stack_size,
@@ -743,6 +842,9 @@ fn read_committed_content(connection: &Connection) -> Result<Vec<ItemDefinition>
         }
     }
 
+    if !armor.is_empty() {
+        return Err(storage_failure());
+    }
     Ok(definitions)
 }
 
@@ -807,6 +909,8 @@ mod live_publish_tests {
         let version = DefinitionVersion::new("large-synthetic-v1");
         let definitions = (0..40_000)
             .map(|hash| ItemDefinition {
+                armor: Default::default(),
+                non_transferrable: None,
                 does_postmaster_pull_have_side_effects: None,
                 is_instance_item: None,
                 max_stack_size: None,

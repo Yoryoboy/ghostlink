@@ -53,6 +53,10 @@ fn postmaster_requires_owner_and_refuses_transfer_endpoints() {
         perks: vec![],
         plugs: vec![],
         stats: vec![],
+        energy: None,
+        gear_tier: None,
+        sockets: Vec::new(),
+        transfer_status: None,
         available_plugs: vec![],
     });
     assert!(candidate.is_structurally_valid());
