@@ -583,7 +583,7 @@ coverage (`domain.rs:123-126`).
       (validated to eight weapon/armor buckets) reworked; until then builds
       with a subclass report `partial`. Also: plug mods on fewer than five
       armor pieces like DIM.
-- [ ] **BE-008 — Substitutes.** Optimizer-based armor sets.
+- [x] **BE-008 — Substitutes.** Optimizer-based armor sets.
   DIM map (2026-10-12, DIM 29c122e): inputs `process-worker/process.ts:
   40-65`, item mapping `process/mappers.ts:61-190` (assumed masterwork
   stats `loadout-utils.ts:356-405`, capacity `armor-upgrade-utils.ts:12-50`,
@@ -850,3 +850,34 @@ coverage (`domain.rs:123-126`).
     owner confirms the in-game state.
   - [ ] **BE-010c — Live re-run.** check, substitutes timing, apply
     dry-run; then live apply and EquipLoadout U4b/U4c.
+  - 2026-10-15 resume:
+    - The U4b/U4c inconsistency was Bungie lag, not a Ghostlink bug. A fresh
+      sync (revision 19) and the owner's DIM tab showed the same state: Ace on
+      the Hunter, not equipped; Sorrow's Verse equipped on the Warlock.
+    - The parent reads DIM through a persistent CDP bridge, after one owner
+      approval. See Engram `ghostlink/dim-chrome-cdp-bridge`.
+    - U4b setup: `move Ace --vault` returned applied. DIM and Ghostlink
+      showed the Ace in the Vault after ~32 s.
+    - Live `build apply` (revision 20, 3.5 s, exit 41 partial, 13 succeeded /
+      1 failed):
+      - U4b passed: the Ace moved from the Vault to the Hunter.
+      - U4c passed: Stars in Shadow was equipped on the Warlock, then Sorrow's
+        Verse went to the Vault, then to the Hunter, and was equipped.
+      - The Ace equip failed with Bungie 1641 ExoticLimit. The Hunter wore
+        Wavesplitter (exotic), and the grouped equip listed the Ace before
+        Sorrow's Verse, which replaces it.
+      - DIM uses the same bucket order (`loadout-apply.ts:261-267`,
+        `item-move-service.ts:276-306`).
+    - Premise check (live):
+      - `equip Wavesplitter`, then `equip Sorrow's Verse Ace`: both succeeded.
+      - Conclusion: EquipItems applies its list in order.
+    - BE-010d: grouped equips put labeled (exotic) items last. Owner chose
+      this over a 1641 retry or keeping DIM's order.
+    - BE-010d live check:
+      - Setup: `equip "Spare Rations" Wavesplitter` reproduced the conflict.
+      - The dry-run ordered the equip as `Sorrow's Verse, Ace of Spades`.
+      - The real apply: 2 succeeded, 0 failed. It still exits 41 only because
+        of `unsupported_bucket`.
+      - DIM after F5 shows Ace + Sorrow's Verse + Corrective Measure on the
+        Hunter.
+      - Workspace 2469 passed / 0 failed; clippy all-features and fmt clean.
