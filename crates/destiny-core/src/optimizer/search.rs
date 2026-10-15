@@ -410,8 +410,9 @@ impl<'a> Searcher<'a> {
 
     pub(super) fn run(mut self) -> SliceOutput {
         self.descend(0, 0, 0, 0);
-        // Report the unflushed remainder so a finished search visited every combination.
-        self.progress.add(std::mem::take(&mut self.combo_count));
+        // Report the unflushed remainder so a finished search visited every combination
+        // and the budget still sees it (it may stop the other slices).
+        self.progress.report(std::mem::take(&mut self.combo_count));
         let ctx = self.ctx;
         let mut sets = Vec::new();
         for entry in self.tracker.into_sorted() {
@@ -454,7 +455,7 @@ impl<'a> Searcher<'a> {
     /// Adds visited combinations; false once the budget or another thread says stop.
     fn tick(&mut self, n: u64) -> bool {
         self.combo_count += n;
-        if self.combo_count >= super::driver::PROGRESS_CADENCE {
+        if self.combo_count >= self.progress.cadence {
             return self.progress.report(std::mem::take(&mut self.combo_count));
         }
         true

@@ -18,10 +18,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// process.ts's `comboCount >= 100000` flush: how often progress and the budget are
-/// checked, counted in combinations (skipped subtrees count their whole size).
+/// checked, counted in combinations (skipped subtrees count their whole size) across
+/// all threads; each of N slices reports every `PROGRESS_CADENCE / N`.
 pub const PROGRESS_CADENCE: u64 = 100_000;
 
-/// Stops a search early. Both limits are checked on the `PROGRESS_CADENCE`.
+/// Stops a search early. Both limits are checked on the aggregate `PROGRESS_CADENCE`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SearchBudget {
     /// Combinations visited (evaluated or pruned) across all threads.
@@ -69,9 +70,11 @@ pub(super) struct Progress {
     total: u64,
     budget: SearchBudget,
     deadline: Option<Instant>,
+    /// Combinations one slice visits between reports.
+    pub(super) cadence: u64,
 }
 impl Progress {
-    fn new(total: u64, budget: SearchBudget) -> Self {
+    fn new(total: u64, budget: SearchBudget, slices: usize) -> Self {
         Self {
             visited: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
@@ -79,10 +82,8 @@ impl Progress {
             total,
             budget,
             deadline: budget.time_limit.map(|limit| Instant::now() + limit),
+            cadence: PROGRESS_CADENCE.div_ceil(slices.max(1) as u64),
         }
-    }
-    pub(super) fn add(&self, combos: u64) {
-        self.visited.fetch_add(combos, Ordering::Relaxed);
     }
     /// Records progress and says whether the search may continue.
     pub(super) fn report(&self, combos: u64) -> bool {
@@ -231,7 +232,7 @@ pub fn search(inputs: &SearchInputs, options: &SearchOptions) -> Result<SearchRe
             .map(|i| e.item.stats[positions[i]])
             .sum()
     });
-    let progress = Progress::new(combos_total, options.budget);
+    let progress = Progress::new(combos_total, options.budget, slices.len());
     let run = |buckets: [Vec<Entry>; 5]| -> SliceOutput {
         let session = LoSessionInfo::new(
             &inputs.auto_mod_options,

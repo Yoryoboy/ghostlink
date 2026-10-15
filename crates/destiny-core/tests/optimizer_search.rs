@@ -799,6 +799,36 @@ fn an_expired_time_limit_truncates_on_the_first_cadence_check() {
 }
 
 #[test]
+fn budgets_hold_when_every_parallel_slice_is_smaller_than_the_cadence() {
+    // 12 threads deal the 12-item bucket one per slice: 20,736 combinations each,
+    // under the cadence, yet 248,832 in aggregate.
+    let input = inputs(corpus(12, 32));
+    let run = |budget| {
+        search(
+            &input,
+            &SearchOptions {
+                threads: 12,
+                budget,
+            },
+        )
+        .unwrap()
+    };
+    let limited = run(SearchBudget {
+        max_combos: Some(100_000),
+        time_limit: None,
+    });
+    assert!(limited.truncated);
+    assert!(limited.combos_visited >= 100_000);
+    assert!(limited.combos_visited < limited.combos_total);
+    let expired = run(SearchBudget {
+        max_combos: None,
+        time_limit: Some(std::time::Duration::ZERO),
+    });
+    assert!(expired.truncated);
+    assert!(expired.combos_visited < expired.combos_total);
+}
+
+#[test]
 fn a_realistic_inventory_is_pruned_to_a_small_fraction_of_its_combinations() {
     // 18 candidates per bucket after the pre-filter is a heavy but realistic
     // hoard: 18^5 = 1,889,568 combinations. Counting evaluated sets is stable where
