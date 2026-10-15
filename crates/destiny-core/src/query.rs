@@ -702,7 +702,7 @@ pub fn instance_matches_perk_name(query: &InstanceSearchQuery, plugs: &[ItemDefi
     })
 }
 
-pub(crate) fn is_weapon_slot(slot: Option<ItemSlot>) -> bool {
+pub fn is_weapon_slot(slot: Option<ItemSlot>) -> bool {
     matches!(
         slot,
         Some(ItemSlot::Kinetic | ItemSlot::Energy | ItemSlot::Power)
@@ -1027,6 +1027,8 @@ pub struct ItemInspection {
     pub metadata: QueryMetadata,
     /// Unique resolved plugs by hash and role; socketed intrinsics come first.
     pub plug_details: Vec<InspectionPlug>,
+    /// Community wish-list opinion; absent for non-weapons or with no list loaded.
+    pub wishlist: Option<crate::wishlist::WishlistInspection>,
 }
 
 /// A resolved socketed intrinsic or plug exposed by an inspection name field.

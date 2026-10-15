@@ -2398,6 +2398,10 @@ pub fn inspect_item_output(
     match resolution {
         Resolution::Missing => Ok(InspectItemOutput::Missing),
         Resolution::Unique(inspection) => Ok(InspectItemOutput::Found(Box::new(FoundInspection {
+            wishlist: inspection
+                .wishlist
+                .as_ref()
+                .map(destiny_output::wishlist::wishlist_json),
             fragment_capacity: inspection
                 .fragment_capacity
                 .as_ref()

@@ -337,3 +337,99 @@ fn rolls_share_one_allocation_per_block_note_and_section() {
         second.section.as_ref().unwrap()
     ));
 }
+
+mod inspection {
+    use destiny_core::domain::ItemSlot;
+    use destiny_core::wishlist::{
+        PlugOption, SourcedWishlistRoll, WishlistInspection, WishlistMatch, WishlistVerdict,
+        inspect_wishlist, parse_wishlist,
+    };
+
+    fn sourced(source: &str, text: &str) -> Vec<SourcedWishlistRoll> {
+        parse_wishlist(text)
+            .rolls
+            .into_iter()
+            .map(|roll| SourcedWishlistRoll {
+                source: source.into(),
+                roll,
+            })
+            .collect()
+    }
+
+    fn perk_name(hash: u32) -> Option<String> {
+        match hash {
+            1 => Some("Outlaw".into()),
+            2 => Some("Rampage".into()),
+            3 => Some("Kill Clip".into()),
+            _ => None,
+        }
+    }
+
+    fn rolls() -> Vec<SourcedWishlistRoll> {
+        let mut rolls = sourced(
+            "/mine.txt",
+            "dimwishlist:item=10&perks=1,9#notes:mine|tags:pvp\n",
+        );
+        rolls.extend(sourced(
+            "voltron",
+            "title:Guns\n//notes:Great. tags:god-pve, M+KB\n\
+             dimwishlist:item=10&perks=1,2\ndimwishlist:item=10&perks=1,3\n\
+             dimwishlist:item=10&perks=4\n",
+        ));
+        rolls
+    }
+
+    #[test]
+    fn weapons_cite_source_section_perk_names_notes_and_tags() {
+        let options = [
+            PlugOption::new(1, "Outlaw"),
+            PlugOption::new(2, "Rampage"),
+            PlugOption::new(3, "Kill Clip"),
+            PlugOption::new(9, "Unnamed"),
+        ];
+        let inspection =
+            inspect_wishlist(Some(ItemSlot::Kinetic), 10, &rolls(), &options, perk_name);
+        assert_eq!(
+            inspection,
+            Some(WishlistInspection {
+                verdict: WishlistVerdict::Wishlist,
+                matches: vec![
+                    WishlistMatch {
+                        source: "/mine.txt".into(),
+                        section: None,
+                        perks: vec!["Outlaw".into(), "9".into()],
+                        notes: Some("mine".into()),
+                        tags: vec!["pvp".into()],
+                    },
+                    WishlistMatch {
+                        source: "voltron".into(),
+                        section: Some("Guns".into()),
+                        perks: vec!["Outlaw".into(), "Rampage".into()],
+                        notes: Some("Great.".into()),
+                        tags: vec!["pve-god".into(), "mkb".into()],
+                    },
+                ],
+                matches_total: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn unmatched_weapons_report_no_opinion_and_non_weapons_nothing() {
+        assert_eq!(
+            inspect_wishlist(Some(ItemSlot::Energy), 10, &rolls(), &[], perk_name),
+            Some(WishlistInspection {
+                verdict: WishlistVerdict::None,
+                matches: vec![],
+                matches_total: 0,
+            })
+        );
+        for slot in [Some(ItemSlot::Chest), None] {
+            assert_eq!(
+                inspect_wishlist(slot, 10, &rolls(), &[], perk_name),
+                None,
+                "{slot:?}"
+            );
+        }
+    }
+}

@@ -293,6 +293,16 @@ impl WishlistRepository for SqliteStore {
     }
 }
 
+/// A cheap presence check; [`WishlistRepository::wishlist_sources`] counts rolls.
+pub(super) fn wishlists_loaded(store: &SqliteStore) -> Result<bool, AppError> {
+    store
+        .connection()
+        .query_row("SELECT EXISTS(SELECT 1 FROM wishlist_sources)", [], |row| {
+            row.get(0)
+        })
+        .map_err(|_| storage_failure())
+}
+
 #[cfg(test)]
 mod tests {
     use super::SqliteStore;
