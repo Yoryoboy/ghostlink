@@ -572,6 +572,43 @@ mod profile_sync_tests {
     }
 }
 
+/// Renders a full sync: Manifest and Clarity, then each wish-list source.
+pub fn render_manifest_sync(
+    mode: OutputMode,
+    report: &destiny_app::ManifestAndClarityReport,
+) -> String {
+    let text = render_manifest_with_clarity(mode, &report.manifest, &report.clarity);
+    let wishlists = &report.wishlists;
+    match mode {
+        OutputMode::Human => {
+            let mut text = format!("{text}\nwishlists: {}", wishlists.status);
+            for source in &wishlists.sources {
+                text.push_str(&format!(
+                    "\nwishlist {}: {}, {} rolls, {} skipped",
+                    sanitize(&source.source),
+                    source.status,
+                    source.rolls,
+                    source.skipped
+                ));
+            }
+            text
+        }
+        OutputMode::Json => {
+            let mut value: serde_json::Value =
+                serde_json::from_str(&text).expect("Manifest renderer emits JSON");
+            let sources: Vec<_> = wishlists
+                .sources
+                .iter()
+                .map(|source| {
+                    json!({"source": source.source, "status": source.status, "rolls": source.rolls, "skipped": source.skipped})
+                })
+                .collect();
+            value["wishlists"] = json!({"status": wishlists.status, "sources": sources});
+            value.to_string()
+        }
+    }
+}
+
 /// Renders the public version label and counts, never definition payloads.
 pub fn render_manifest_with_clarity(
     mode: OutputMode,

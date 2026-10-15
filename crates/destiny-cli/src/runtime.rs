@@ -402,7 +402,17 @@ pub trait ManifestFoundations {
     type Repository: destiny_app::DefinitionCatalogRepository
         + destiny_app::WorldDefinitionRepository
         + destiny_app::StatDefinitionRepository
-        + destiny_app::ClarityRepository;
+        + destiny_app::ClarityRepository
+        + destiny_app::wishlist::WishlistRepository;
+
+    /// Injectable, credential-free voltron acquisition; legacy fixtures stay offline.
+    fn voltron_transport(
+        &mut self,
+    ) -> Result<Box<dyn destiny_adapters::wishlist::VoltronTransport>, AppError> {
+        Err(AppError::new(
+            destiny_app::ErrorCategory::ProviderUnavailable,
+        ))
+    }
 
     /// Injectable, credential-free acquisition; legacy fixtures remain offline.
     fn clarity_transport(
@@ -428,6 +438,13 @@ impl ManifestFoundations for ProductionFoundations {
     ) -> Result<Box<dyn destiny_adapters::clarity::ClarityTransport>, AppError> {
         Ok(Box::new(
             destiny_adapters::clarity::HttpClarityTransport::new()?,
+        ))
+    }
+    fn voltron_transport(
+        &mut self,
+    ) -> Result<Box<dyn destiny_adapters::wishlist::VoltronTransport>, AppError> {
+        Ok(Box::new(
+            destiny_adapters::wishlist::HttpVoltronTransport::new()?,
         ))
     }
 
@@ -457,6 +474,7 @@ pub trait ManifestFactory {
         Ok(destiny_app::ManifestAndClarityReport {
             manifest: self.sync()?,
             clarity: destiny_app::ClaritySyncReport::unavailable(),
+            wishlists: destiny_app::wishlist::WishlistSyncReport::unavailable(),
         })
     }
 
@@ -499,6 +517,7 @@ impl<F: ManifestFoundations> ManifestFactory for ComposingManifestFactory<F> {
     fn sync(&mut self) -> Result<destiny_app::ManifestSyncReport, CliError> {
         let report = self.sync_with_clarity()?;
         eprintln!("clarity: {}", report.clarity.status);
+        eprintln!("wishlists: {}", report.wishlists.status);
         Ok(report.manifest)
     }
 
@@ -513,16 +532,27 @@ impl<F: ManifestFoundations> ManifestFactory for ComposingManifestFactory<F> {
         let gateway =
             destiny_adapters::manifest::BungieManifestGateway::new(api_key, transport, clock);
         let repository = foundations.store(&config)?;
-        destiny_app::clarity::sync_manifest_and_clarity(
-            &mut destiny_app::ManifestService::new(gateway, repository),
+        let mut service = destiny_app::ManifestService::new(gateway, repository);
+        let mut report = destiny_app::clarity::sync_manifest_and_clarity(
+            &mut service,
             || {
                 foundations
                     .clarity_transport()
                     .map(destiny_adapters::clarity::ClarityAdapter)
             },
             checked_at,
-        )
-        .map_err(CliError::from)
+        )?;
+        report.wishlists = destiny_app::wishlist::sync_wishlists_after(
+            config.wishlist_sources(),
+            || {
+                foundations
+                    .voltron_transport()
+                    .map(destiny_adapters::wishlist::WishlistAdapter)
+            },
+            service.repository_mut(),
+            checked_at,
+        );
+        Ok(report)
     }
 }
 
@@ -2237,6 +2267,11 @@ mod tests {
                     );
                     actual.as_object_mut().unwrap().remove("clarity");
                     assert_eq!(
+                        actual["wishlists"],
+                        serde_json::json!({"status":"unavailable","sources":[{"source":"voltron","status":"unavailable","rolls":0,"skipped":0}]})
+                    );
+                    actual.as_object_mut().unwrap().remove("wishlists");
+                    assert_eq!(
                         actual,
                         serde_json::from_str::<serde_json::Value>(expected).unwrap()
                     );
@@ -2244,7 +2279,7 @@ mod tests {
                     assert_eq!(
                         output.stdout,
                         format!(
-                            "{expected}clarity: unavailable\nclarity_version: unavailable\nclarity_entries_stored: 0\nclarity_entries_skipped: 0\n"
+                            "{expected}clarity: unavailable\nclarity_version: unavailable\nclarity_entries_stored: 0\nclarity_entries_skipped: 0\nwishlists: unavailable\nwishlist voltron: unavailable, 0 rolls, 0 skipped\n"
                         )
                     );
                 }
@@ -2254,6 +2289,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn composed_sync_reports_default_voltron_unavailable_without_a_transport() {
+        use super::ManifestFactory;
+        use destiny_app::wishlist::{WishlistSourceReport, WishlistSyncReport};
+        let mut factory = super::ComposingManifestFactory::new(FakeManifestFoundations {
+            log: log(),
+            store: Some(SqliteStore::open_in_memory().unwrap()),
+        });
+        let report = factory.sync_with_clarity().unwrap();
+        assert_eq!(report.clarity.status, "unavailable");
+        assert_eq!(
+            report.wishlists,
+            WishlistSyncReport {
+                status: "unavailable",
+                sources: vec![WishlistSourceReport {
+                    source: "voltron".into(),
+                    status: "unavailable",
+                    rolls: 0,
+                    skipped: 0,
+                }],
+            }
+        );
     }
 
     #[test]

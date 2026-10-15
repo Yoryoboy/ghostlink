@@ -20,6 +20,7 @@ mod build_stats;
 pub mod build_substitutes;
 pub mod clarity;
 pub use clarity::{ClaritySyncReport, ManifestAndClarityReport};
+pub mod wishlist;
 pub use destiny_core::{ClarityInsight, ClarityRepository};
 pub mod equip_items;
 pub use destiny_core::{
