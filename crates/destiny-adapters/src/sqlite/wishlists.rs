@@ -44,10 +44,25 @@ impl TextIds<'_> {
         if let Some(id) = self.ids.get(text) {
             return Ok(Some(*id));
         }
-        self.transaction
-            .execute("INSERT INTO wishlist_texts(text) VALUES (?1)", [text])
+        // A first-build v37 `UNIQUE` text ignores the insert: reuse that row.
+        let inserted = self
+            .transaction
+            .execute(
+                "INSERT OR IGNORE INTO wishlist_texts(text) VALUES (?1)",
+                [text],
+            )
             .map_err(|_| storage_failure())?;
-        let id = self.transaction.last_insert_rowid();
+        let id = if inserted == 1 {
+            self.transaction.last_insert_rowid()
+        } else {
+            self.transaction
+                .query_row(
+                    "SELECT id FROM wishlist_texts WHERE text=?1",
+                    [text],
+                    |row| row.get(0),
+                )
+                .map_err(|_| storage_failure())?
+        };
         self.ids.insert(text.to_owned(), id);
         Ok(Some(id))
     }
@@ -274,5 +289,34 @@ impl WishlistRepository for SqliteStore {
                 },
             )
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SqliteStore;
+    use destiny_core::Timestamp;
+    use destiny_core::wishlist::{WishlistRepository, parse_wishlist};
+
+    /// Two lists sharing a note still publish on a first-build v37 database.
+    #[test]
+    fn shared_texts_publish_on_a_unique_text_schema() {
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        store
+            .connection()
+            .execute_batch("CREATE UNIQUE INDEX legacy_text ON wishlist_texts(text)")
+            .unwrap();
+        let text = "title:Guns\ndimwishlist:item=10&perks=1#notes:Shared.\n";
+        for key in ["voltron", "/mine.txt"] {
+            store
+                .publish_wishlist(key, &parse_wishlist(text), None, "fp", Timestamp::new(1))
+                .unwrap();
+        }
+        let rolls = store.wishlist_rolls(10).unwrap();
+        assert_eq!(rolls.len(), 2);
+        for sourced in &rolls {
+            assert_eq!(sourced.roll.notes.as_deref(), Some("Shared."));
+            assert_eq!(sourced.roll.section.as_deref(), Some("Guns"));
+        }
     }
 }
