@@ -202,6 +202,7 @@ lists unchanged. Lists larger than 64 MiB are refused.
 Voltron uses a conditional request, so an unchanged list costs one small
 request. List data is never embedded in the binary.
 
+## Runtime configuration and authorization
 
 A read composes the production runtime in one fail-fast order: the command line
 is parsed and validated first, and only then does `destiny-cli` read the shared
