@@ -29,7 +29,8 @@ fn parse_perks(text: &str) -> Result<Vec<u32>, AppError> {
         .collect()
 }
 
-/// Interns notes and section titles, which repeat across thousands of rolls.
+/// Interns notes and section titles, which repeat across thousands of rolls,
+/// within one publication.
 struct TextIds<'a> {
     transaction: &'a Transaction<'a>,
     ids: HashMap<String, i64>,
@@ -44,19 +45,9 @@ impl TextIds<'_> {
             return Ok(Some(*id));
         }
         self.transaction
-            .execute(
-                "INSERT INTO wishlist_texts(text) VALUES (?1) ON CONFLICT(text) DO NOTHING",
-                [text],
-            )
+            .execute("INSERT INTO wishlist_texts(text) VALUES (?1)", [text])
             .map_err(|_| storage_failure())?;
-        let id: i64 = self
-            .transaction
-            .query_row(
-                "SELECT id FROM wishlist_texts WHERE text=?1",
-                [text],
-                |row| row.get(0),
-            )
-            .map_err(|_| storage_failure())?;
+        let id = self.transaction.last_insert_rowid();
         self.ids.insert(text.to_owned(), id);
         Ok(Some(id))
     }

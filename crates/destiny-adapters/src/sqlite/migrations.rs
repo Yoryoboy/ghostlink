@@ -241,6 +241,8 @@ const MIGRATIONS: [Migration; 37] = [
     },
 ];
 /// Wish lists are re-downloadable community data, so a downgrade drops them.
+/// Texts are de-duplicated per publication in Rust, so they carry no UNIQUE
+/// index; that index alone cost voltron about 11 MB.
 const SCHEMA_V37_UP: &str = r#"
 CREATE TABLE wishlist_sources (
     key TEXT PRIMARY KEY CHECK (length(key) BETWEEN 1 AND 4096),
@@ -255,7 +257,7 @@ CREATE TABLE wishlist_sources (
 ) STRICT;
 CREATE TABLE wishlist_texts (
     id INTEGER PRIMARY KEY,
-    text TEXT NOT NULL UNIQUE
+    text TEXT NOT NULL
 ) STRICT;
 CREATE TABLE wishlist_rolls (
     source TEXT NOT NULL,
