@@ -479,3 +479,44 @@ fn human_start_points_at_the_callback_page_not_the_custom_scheme() {
     assert!(!text.contains("ghostlink://"));
     std::fs::remove_dir_all(&home).unwrap();
 }
+
+#[test]
+fn callback_page_help_and_json_contract() {
+    let home = home("callback-page-contract");
+    for (args, expected) in [
+        (
+            &["login", "start", "--help"][..],
+            "copy the full callback address the Ghostlink callback page shows",
+        ),
+        (
+            &["login", "complete", "--help"][..],
+            "https://...callback?...",
+        ),
+        (
+            &["login", "--help"][..],
+            "the callback address the Ghostlink callback page shows",
+        ),
+    ] {
+        let out = ghostlink_defaults(&home, args, None);
+        assert_eq!(out.status.code(), Some(0));
+        assert!(out.stderr.is_empty());
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(text.contains(expected), "{args:?}: {text}");
+        assert!(!text.contains("custom-scheme callback"), "{args:?}: {text}");
+    }
+
+    let value = start_defaults(&home);
+    let mut keys: Vec<_> = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["authorization_url", "expires_at", "kind", "status"]);
+    assert!(value["authorization_url"].is_string());
+    assert!(value["expires_at"].is_u64());
+    assert_eq!(value["kind"], "login");
+    assert_eq!(value["status"], "pending");
+    std::fs::remove_dir_all(home).unwrap();
+}

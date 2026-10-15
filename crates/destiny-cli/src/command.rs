@@ -333,8 +333,9 @@ pub enum Command {
     ///
     /// The human owns the Bungie application registration and the browser
     /// authorization. This command prints the authorization URL, opens the
-    /// browser when the mode allows it, and then reads the custom-scheme callback
-    /// URI through the desktop handler or terminal paste. Auto offers handler
+    /// browser when the mode allows it, and then reads the callback address the
+    /// Ghostlink callback page shows: pasted in the terminal, or delivered by the
+    /// desktop handler when you follow the page's "Open in Ghostlink" link. Auto offers handler
     /// installation only with terminal consent. It never asks for, reads, or
     /// prints a password, a client secret, or a token value.
     ///
@@ -420,7 +421,7 @@ pub struct LoginArgs {
     #[arg(long, value_enum, default_value = "auto", value_name = "MODE")]
     pub mode: LoginMode,
 
-    /// How the custom-scheme callback reaches this process.
+    /// How the callback reaches this process: terminal paste or desktop handler.
     #[arg(long, value_enum, default_value = "auto", value_name = "CALLBACK")]
     pub callback: CallbackMode,
 }
@@ -497,7 +498,7 @@ pub struct CallbackArgs {
     pub callback_uri: String,
 }
 
-/// How the custom-scheme callback reaches the waiting login process.
+/// How the callback reaches the waiting login process.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum CallbackMode {
     /// Detect the handler and offer installation when interactive (default).
