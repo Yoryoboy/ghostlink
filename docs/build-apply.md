@@ -348,9 +348,9 @@ Ghostlink adaptations and limits:
   `definition_item_classes` and `definition_item_categories`, guarded downgrade, one
   freshness invalidation, same conventions as migrations 23-34). No new Manifest
   download: they come from the item table already fetched. Run `ghostlink sync-manifest`
-  after upgrading; without it fashion plugs have no classification and stay unclassified
-  (the irreversible-shader guard cannot recognize shaders, so a stale projection must be
-  refreshed before applying fashion).
+  after upgrading; without it fashion plugs have no classification. The
+  irreversible-shader guard then fails closed: an unclassified plugged plug that cannot
+  be plugged back is kept (`irreversible_shader`) until the refresh classifies it.
 - **Evidence.** The cosmetic sockets' types and plug sets and the fashion plugs' insertion
   cost sets are loaded per request; plug-set members are not loaded as definitions.
 - **Plug-set identity.** Plug-set entries are projected without their plug-set hash.
@@ -360,7 +360,8 @@ Ghostlink adaptations and limits:
   (which DIM reads through `canInsert`, `plugset-helpers.ts:26-36`) are approximated for
   requested ornaments only: an ornament reported insertable counts as unlocked.
 - **Skips** (`mod_skipped`): `fashion_not_unlocked`, `fashion_unassigned`,
-  `fashion_no_armor` (no armor piece for that bucket), `irreversible_shader`,
+  `fashion_no_armor` (no armor piece for that bucket; every request for it, locked or
+  unknown ones included), `irreversible_shader`,
   `not_on_target_character`, `socket_state_unavailable` and the free-insertion reasons.
   Plugs already in place count in `mods_in_place`.
 - **Core-settings lists.** Protected plug and blocked socket-type lists are not checked

@@ -194,11 +194,8 @@ pub fn plan_fashion(
     }
     for (bucket, hashes) in by_bucket {
         if !covered.contains(bucket) {
-            for hash in hashes
-                .iter()
-                .map(|h| h.value() as u32)
-                .filter(|h| unlocked(*h))
-            {
+            // Every request is reported, locked or unknown ones included.
+            for hash in hashes.iter().map(|h| h.value() as u32) {
                 skip(&mut plan, hash, "fashion_no_armor");
             }
         }
@@ -255,8 +252,14 @@ fn protected<'a>(
     let Some(plugged) = current else {
         return false;
     };
-    let is_shader = definition_of(plugged)
-        .is_some_and(|d| d.armor.item_category_hashes.contains(&SHADERS_CATEGORY));
+    // An unclassified definition (before the first Manifest refresh after migration
+    // 35) may be a shader, so it fails closed.
+    let is_shader = definition_of(plugged).is_some_and(|d| {
+        d.armor.item_category_hashes.contains(&SHADERS_CATEGORY)
+            || (d.armor.item_category_hashes.is_empty()
+                && d.armor.item_type_code.is_none()
+                && d.armor.item_sub_type_code.is_none())
+    });
     if !is_shader || plugged == DEFAULT_SHADER || DEFAULT_ORNAMENTS.contains(&plugged) {
         return false;
     }

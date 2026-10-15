@@ -532,3 +532,53 @@ fn fashion_steps_follow_the_mod_steps_in_the_mods_phase_and_replace_the_deferred
         }
     );
 }
+
+#[test]
+fn a_plugged_plug_without_classification_is_protected_until_it_can_be_plugged_back() {
+    // After migration 35 and before a Manifest refresh, definitions carry no item class
+    // or categories: an unclassified plugged plug may be a shader, so it fails closed.
+    const UNCLASSIFIED: u32 = 4100;
+    let mut unclassified = plug(UNCLASSIFIED, 0, &[], None);
+    unclassified.armor.item_sub_type_code = None;
+    let w = world().clone_defs_with(unclassified);
+    let mut items = w.items.clone();
+    items[0].sockets[1] = socket(1, UNCLASSIFIED, &[]);
+    items[0].sockets[1].reusable_plugs = Some(vec![]);
+    let wanted = fashion(&[(0, &[SHADER_B])]);
+    let plan = w.plan_with(&wanted, &[SHADER_B], &[], &items);
+    assert!(plan.inserts.is_empty());
+    assert_eq!(skipped(&plan), [(SHADER_B.into(), "irreversible_shader")]);
+    // A plugged hash with no definition at all is never replaced either.
+    items[0].sockets[1] = socket(1, 4101, &[]);
+    items[0].sockets[1].reusable_plugs = Some(vec![]);
+    let plan = world().plan_with(&wanted, &[SHADER_B], &[], &items);
+    assert!(plan.inserts.is_empty());
+    assert_eq!(
+        skipped(&plan),
+        [(SHADER_B.into(), "plug_definition_unavailable")]
+    );
+    // Unlocked in the plug sets, it can be plugged back, so it is replaced.
+    items[0].sockets[1] = socket(1, UNCLASSIFIED, &[]);
+    items[0].sockets[1].reusable_plugs = Some(vec![]);
+    let plan = w.plan_with(&wanted, &[UNCLASSIFIED, SHADER_B], &[], &items);
+    assert_eq!(inserts(&plan), [("1", 1, SHADER_B.into())]);
+}
+
+#[test]
+fn every_request_for_a_bucket_without_armor_is_reported_even_locked_or_unknown() {
+    let w = world();
+    let mut missing = w.clone_defs_with(plug(3999, SUBTYPE_ORNAMENT, &[], None));
+    missing.items.truncate(2);
+    // Bucket 4 has no piece: SHADER_B is locked and 4242 has no definition.
+    let wanted = fashion(&[(4, &[SHADER_A, SHADER_B, 4242])]);
+    let plan = missing.plan(&wanted, &[SHADER_A], &[]);
+    assert!(plan.inserts.is_empty());
+    assert_eq!(
+        skipped(&plan),
+        [
+            (SHADER_A.into(), "fashion_no_armor"),
+            (SHADER_B.into(), "fashion_no_armor"),
+            (4242, "fashion_no_armor")
+        ]
+    );
+}
