@@ -73,6 +73,8 @@ impl ClaritySyncReport {
 pub struct ManifestAndClarityReport {
     pub manifest: crate::ManifestSyncReport,
     pub clarity: ClaritySyncReport,
+    /// `unavailable` until a caller runs the wish-list step.
+    pub wishlists: crate::wishlist::WishlistSyncReport,
 }
 
 /// Errors are converted into a report, never returned to the Manifest caller.
@@ -129,5 +131,9 @@ where
         Ok(mut gateway) => sync_clarity(&mut gateway, service.repository_mut(), checked_at),
         Err(_) => ClaritySyncReport::unavailable(),
     };
-    Ok(ManifestAndClarityReport { manifest, clarity })
+    Ok(ManifestAndClarityReport {
+        manifest,
+        clarity,
+        wishlists: crate::wishlist::WishlistSyncReport::unavailable(),
+    })
 }

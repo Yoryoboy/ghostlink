@@ -31,6 +31,7 @@ const PRODUCT_CALLBACK_HOST: &str = "oauth";
 const PRODUCT_CALLBACK_PATH: &str = "/callback";
 const READ_DATABASE_PATH: &str = "DESTINY_DATABASE_PATH";
 const READ_FRESHNESS_TTL_SECONDS: &str = "DESTINY_FRESHNESS_TTL_SECONDS";
+const WISHLISTS: &str = "GHOSTLINK_WISHLISTS";
 
 /// The largest freshness TTL the shared read runtime configuration accepts (30 days).
 ///
@@ -395,6 +396,7 @@ where
         READ_FRESHNESS_TTL_SECONDS,
         CLIENT_SECRET,
         TOKEN_BROKER_URL,
+        WISHLISTS,
     ])?;
     if values.contains_key(CLIENT_SECRET) || values.contains_key(TOKEN_BROKER_URL) {
         values.extend(load(&[CLIENT_ID])?);
@@ -561,6 +563,8 @@ pub struct ReadRuntimeConfig {
     database_path: PathBuf,
     freshness_ttl_seconds: u64,
     refresh_client: Option<RefreshClientConfig>,
+    /// Raw `GHOSTLINK_WISHLISTS`, validated only by the sync that uses it.
+    wishlists: Option<String>,
 }
 
 impl ReadRuntimeConfig {
@@ -596,7 +600,16 @@ impl ReadRuntimeConfig {
             database_path,
             freshness_ttl_seconds,
             refresh_client,
+            wishlists: values.get(WISHLISTS).cloned(),
         })
+    }
+
+    /// The configured wish lists. An invalid value fails only this accessor, so
+    /// a mistyped list never blocks inventory reads.
+    pub fn wishlist_sources(
+        &self,
+    ) -> Result<Vec<destiny_core::wishlist::WishlistSource>, AppError> {
+        destiny_core::wishlist::WishlistSource::parse_list(self.wishlists.as_deref())
     }
 
     /// The renewable refresh client, or `None` for public reads.
@@ -648,6 +661,7 @@ impl fmt::Debug for ReadRuntimeConfig {
             .field("database_path", &destiny_core::redact::REDACTED)
             .field("freshness_ttl_seconds", &destiny_core::redact::REDACTED)
             .field("refresh_client", &destiny_core::redact::REDACTED)
+            .field("wishlists", &destiny_core::redact::REDACTED)
             .finish()
     }
 }
@@ -1374,6 +1388,7 @@ mod tests {
                             | "DESTINY_FRESHNESS_TTL_SECONDS"
                             | "BUNGIE_CLIENT_SECRET"
                             | "GHOSTLINK_TOKEN_BROKER_URL"
+                            | "GHOSTLINK_WISHLISTS"
                             | "BUNGIE_PUBLIC_CLIENT_ID"
                     ));
                     source.get(name).map(OsString::from)
@@ -1479,6 +1494,42 @@ mod tests {
         assert_eq!(config.database_path().to_string_lossy(), "/tmp/destiny.db");
         assert_eq!(config.freshness_ttl_seconds(), 900);
         assert_eq!(config.freshness_policy().ttl_seconds, 900);
+    }
+
+    #[test]
+    fn read_runtime_config_validates_wishlist_sources_only_on_demand() {
+        use destiny_core::wishlist::WishlistSource;
+        let mut values = read_runtime_values();
+        let loaded = super::read_env_values(|names| {
+            assert!(names.contains(&"GHOSTLINK_WISHLISTS") || names == ["BUNGIE_PUBLIC_CLIENT_ID"]);
+            exact_key_values(names, |name| {
+                (name == "GHOSTLINK_WISHLISTS")
+                    .then(|| OsString::from("none"))
+                    .or_else(|| values.get(name).map(OsString::from))
+            })
+        })
+        .unwrap();
+        assert_eq!(
+            ReadRuntimeConfig::from_values(&loaded)
+                .unwrap()
+                .wishlist_sources()
+                .unwrap(),
+            vec![]
+        );
+        assert_eq!(
+            ReadRuntimeConfig::from_values(&values)
+                .unwrap()
+                .wishlist_sources()
+                .unwrap(),
+            vec![WishlistSource::Voltron]
+        );
+        values.insert("GHOSTLINK_WISHLISTS".into(), "relative/list.txt".into());
+        let config = ReadRuntimeConfig::from_values(&values).unwrap();
+        assert_eq!(
+            config.wishlist_sources().unwrap_err().category(),
+            destiny_core::ErrorCategory::ConfigurationError
+        );
+        assert!(!format!("{config:?}").contains("relative"));
     }
 
     #[test]
