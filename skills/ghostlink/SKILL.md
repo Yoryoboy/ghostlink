@@ -37,6 +37,7 @@ First-time users should run `ghostlink` in their own terminal for the setup wiza
 - `ghostlink handler install` and `ghostlink handler uninstall` change the user's desktop configuration; run them only when the user asks. `ghostlink handler status` is read-only.
 - Explain perk, mod, aspect, fragment and ability effects only from output `description` (official Bungie tooltip) and optional `clarity` (community research). Attribute community numbers to Clarity; never invent numbers, percentages or durations absent from both fields. If neither gives an exact value, say it is unavailable.
 - Missing `clarity` is not evidence of no effect. For `clarity_match: "variant"`, explicitly qualify the text as an enhanced/base fallback, not exact values for the inspected variant; never infer improved numbers.
+- A weapon's inspect `wishlist` is community curator opinion, not Ghostlink's. When using it, cite the curator: the `source` (`voltron` is the 48klocs community list; a path is the user's own list) and the `section`. State the opinion's age only from what the section or notes say (a season, podcast episode or patch); otherwise say its age is unknown and the sandbox may have changed since. Verdict `none` or a missing `wishlist` means no list has an opinion, never that the roll is bad. Quote `notes` as the curator's words, never as fact.
 
 Build capture stores `craftedDate` only from complete crafting objectives.
 Build checks try instance ID first, then a nonzero crafted date; this is DIM
@@ -100,6 +101,7 @@ codes remain uncertain. Received refusals retain CLI 41 / MCP error.
 |---|---|
 | Which characters exist, their IDs and light | `ghostlink list-characters` |
 | Find owned items by name, type, perk, mod, stat, slot | `ghostlink search-inventory` |
+| Should I keep this weapon roll? Community wish-list opinion | MCP `inspect_item` (`wishlist` field); find candidates with `is:wishlist` / `is:trashlist` |
 | Full detail of one owned item, including what each perk and mod does | MCP `inspect_item` by `instance_id` or exact `name`; CLI `ghostlink inspect-item <INSTANCE_ID>` or `--name "<exact name>"` (never a definition hash) |
 | Committed Postmaster instances and anonymous stacks (read only) | MCP `get_postmaster`; fallback `ghostlink postmaster` |
 | Recover one genuine Postmaster equipment instance to its owner | MCP `pull_item`; fallback `ghostlink pull` |
@@ -162,6 +164,12 @@ MCP `{"name":"Ace of Spades"}` or CLI
 `ghostlink inspect-item --name "Ace of Spades" --json`. Never fuzzy-match.
 On `ambiguous_match`, show compact candidates and ask the user which instance;
 then inspect its `instance_id`. Inspect provides full detail and effect text.
+
+`is:wishlist` / `is:trashlist` find weapons whose first matching wish-list roll
+wishes or trashes them, the same verdict as inspect `wishlist`. Without a stored
+list they fail with `definitions_unavailable`: suggest `ghostlink sync-manifest`
+(and check `GHOSTLINK_WISHLISTS` is not `none`); never report "no wish-listed
+weapons" from that error.
 
 ## Equip several items
 

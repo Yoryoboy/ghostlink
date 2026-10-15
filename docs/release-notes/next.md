@@ -31,6 +31,14 @@ Draft for the next release candidate. Live checks remain on the
   structured filters. Unsupported filters fail explicitly instead of being
   silently ignored. `ghostlink search-inventory --filters` lists the registry's
   syntax and examples; see the [query reference](../cli.md#dim-style-query).
+- **Weapon wish lists.** `sync-manifest` now also loads DIM-format wish lists:
+  the community `voltron.txt` from 48klocs/dim-wish-list-sources by default,
+  plus your own local files, selected with
+  [`GHOSTLINK_WISHLISTS`](../configuration.md#wish-lists) (`none` turns them
+  off). Weapon inspection adds a `wishlist` opinion with the matching rolls'
+  source, section, perks, curator notes and tags, and `is:wishlist` /
+  `is:trashlist` filter search results by the same verdict. A verdict of `none`
+  means no list has an opinion, not that the roll is bad.
 - Compact search tiles by default; request `--detail` / MCP `detail: true` for
   full hits. Continue owned results using `--offset` / MCP `offset` and returned
   `next_offset` (0–10000). Definition candidates are unchanged.
