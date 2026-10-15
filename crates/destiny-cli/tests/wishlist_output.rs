@@ -1,4 +1,6 @@
-use destiny_app::wishlist::{WishlistSourceReport, WishlistSyncReport};
+use destiny_app::wishlist::{
+    WishlistSourceReport, WishlistSourceStatus, WishlistSyncReport, WishlistSyncStatus,
+};
 use destiny_app::{
     ClaritySyncReport, DefinitionVersion, ManifestAndClarityReport, ManifestSyncReport,
 };
@@ -23,17 +25,17 @@ impl ManifestFactory for Synced {
             manifest: manifest(),
             clarity: ClaritySyncReport::unavailable(),
             wishlists: WishlistSyncReport {
-                status: "partial",
+                status: WishlistSyncStatus::Partial,
                 sources: vec![
                     WishlistSourceReport {
                         source: "voltron".into(),
-                        status: "updated",
+                        status: WishlistSourceStatus::Updated,
                         rolls: 274_677,
                         skipped: 0,
                     },
                     WishlistSourceReport {
                         source: "/lists/mine\u{1b}[31m.txt".into(),
-                        status: "unavailable",
+                        status: WishlistSourceStatus::Unavailable,
                         rolls: 0,
                         skipped: 0,
                     },

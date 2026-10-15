@@ -253,3 +253,13 @@ Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
   has no data field: the skill tells agents to state the age only from what
   the section or notes say (season, podcast episode, patch) and otherwise to
   say it is unknown.
+- L24 (user, 2026-10-15): "arregla los hallazgos y empezamos con las prs. las
+  partimos en chcias y vamos revisnaodlas". Deferred findings fixed as one
+  unit: R2-001 `tags:` opens the tag list only at the start or after `|` or
+  whitespace (RED `tags_inside_a_word_are_note_text` cut "hashtags:"); a scan
+  of the real voltron file found zero notes whose split changes. R2-002 the
+  sync statuses are `WishlistSyncStatus` / `WishlistSourceStatus` enums with
+  unchanged output strings. R2-003 simpler sign parsing. T4 review findings
+  (`docs/configuration.md:180`, `:188`; the review kept no finding text):
+  removed a double blank line before the heading and shortened the voltron
+  table row, moving the repository link below the table.

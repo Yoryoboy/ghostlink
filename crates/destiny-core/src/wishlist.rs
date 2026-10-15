@@ -108,8 +108,11 @@ fn parse_roll(text: &str) -> Option<ParsedRoll> {
         Some((item, perks)) => (item, Some(perks)),
         None => (body.strip_suffix('&').unwrap_or(body), None),
     };
-    let item: i64 = parse_number(item.strip_prefix('-').unwrap_or(item))
-        .map(|hash| if item.starts_with('-') { -hash } else { hash })?;
+    // A leading `-` marks trash (or the `-69420` wildcard).
+    let item: i64 = match item.strip_prefix('-') {
+        Some(digits) => -parse_number(digits)?,
+        None => parse_number(item)?,
+    };
     let perks = match perks {
         Some(perks) => perks
             .split(',')
@@ -139,9 +142,15 @@ fn parse_number(text: &str) -> Option<i64> {
     text.parse().ok()
 }
 
-/// Start of the tag list: the last `tags:`, which may lack DIM's `|` prefix.
+/// Start of the tag list: the last `tags:` that begins the notes or follows
+/// `|` or whitespace (DIM's `|` is often missing); `hashtags:` is note text.
 fn tags_start(notes: &str) -> Option<usize> {
-    notes.rfind("tags:")
+    notes.rmatch_indices("tags:").map(|(at, _)| at).find(|&at| {
+        notes[..at]
+            .chars()
+            .next_back()
+            .is_none_or(|before| before == '|' || before.is_whitespace())
+    })
 }
 
 /// Notes without the trailing tag list and its optional `|` separator.

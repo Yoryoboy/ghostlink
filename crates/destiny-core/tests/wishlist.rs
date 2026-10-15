@@ -256,6 +256,18 @@ fn matches_are_grouped_by_section_and_notes_and_bounded_to_three() {
     );
 }
 
+/// `tags:` only opens the tag list at the start, after `|` or after
+/// whitespace; inside a word (`hashtags:`) it is ordinary note text.
+#[test]
+fn tags_inside_a_word_are_note_text() {
+    let notes = "Ignore the hashtags: they are jokes";
+    assert_eq!(notes_text(notes), notes);
+    assert!(notes_tags(notes).is_empty());
+    let mixed = "See hashtags: below|tags:pve";
+    assert_eq!(notes_text(mixed), "See hashtags: below");
+    assert_eq!(notes_tags(mixed), vec!["pve"]);
+}
+
 #[test]
 fn notes_text_and_tags_split_at_the_same_bare_tags_marker() {
     // Voltron has 442 lines whose tag list has no `|` before `tags:`.

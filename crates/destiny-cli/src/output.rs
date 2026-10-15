@@ -599,10 +599,10 @@ pub fn render_manifest_sync(
                 .sources
                 .iter()
                 .map(|source| {
-                    json!({"source": source.source, "status": source.status, "rolls": source.rolls, "skipped": source.skipped})
+                    json!({"source": source.source, "status": source.status.as_str(), "rolls": source.rolls, "skipped": source.skipped})
                 })
                 .collect();
-            value["wishlists"] = json!({"status": wishlists.status, "sources": sources});
+            value["wishlists"] = json!({"status": wishlists.status.as_str(), "sources": sources});
             value.to_string()
         }
     }
