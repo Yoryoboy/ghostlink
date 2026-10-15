@@ -263,3 +263,16 @@ Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
   (`docs/configuration.md:180`, `:188`; the review kept no finding text):
   removed a double blank line before the heading and shortened the voltron
   table row, moving the repository link below the table.
+- L25 (delivery, 2026-10-15): the feature ships as a 9-PR feature-branch chain
+  on Yoryoboy/ghostlink (tracker branch `feat/wishlists` from main 59a651e),
+  sliced by work unit: 01 core, 02 storage, 03 acquisition, 04 sync,
+  05 sync fixes, 06 inspect, 07 inspect fixes, 08 search, 09 docs. Each slice
+  was reviewed natively against its parent branch and approved (the chain is
+  too large for a single review: the whole branch exceeds the reviewer lens
+  context budget). PR #99 (03) needed one bounded correction: 9dce82b had
+  removed the v37 `UNIQUE` text index by editing the migration, which leaves
+  databases already created by that build with the constraint and makes a
+  shared note fail to publish; 7dfb85d inserts with OR IGNORE and reuses the
+  existing row, verified by `shared_texts_publish_on_a_unique_text_schema`
+  and by the provider's targeted validator. Slices 04-09 were rebased onto the
+  correction.
