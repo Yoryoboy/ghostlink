@@ -283,6 +283,15 @@ algorithm and lists, verified against historical weekly data from
 Ghostlink corrects one dungeon slot: Sundered Doctrine pairs with Spire of the
 Watcher instead of Grasp of Avarice, following Kyber's historical data.
 
+Weapon wish lists default to `voltron.txt` from
+**[48klocs/dim-wish-list-sources](https://github.com/48klocs/dim-wish-list-sources)**
+(MIT License, Copyright (c) 2019 Dave Solomon), which compiles roll
+recommendations written by many community curators. Thanks to 48klocs and every
+curator for that work! Ghostlink downloads the list at sync time and never
+bundles it; the opinions in it belong to their curators, not to Ghostlink. See
+[wish-list configuration](docs/configuration.md#wish-lists) to add your own lists
+or turn them off.
+
 Official item data comes from Bungie's Destiny 2 API.
 
 ## License

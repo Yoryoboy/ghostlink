@@ -62,9 +62,9 @@ agents can answer "should I keep this drop?" with cited community opinion.
       1cd892a (+ style fixup).
 - [x] T3a (S5) inspect `wishlist` field (core/app/CLI/MCP). Route: inline.
       Commit: f311348; review follow-ups 98c3494 and the R3 fix below.
-- [x] T3b (S5) `is:wishlist`/`is:trashlist`. Route: inline. Commit: see L20.
-- [ ] T4 (S4-S5) docs (cli, mcp, configuration), skill rule, README Credits.
-      Route: inline. Commit: —
+- [x] T3b (S5) `is:wishlist`/`is:trashlist`. Route: inline. Commit: 7f4650e.
+- [x] T4 (S4-S5) docs (cli, mcp, configuration), skill rule, README Credits.
+      Route: inline. Commit: this docs commit (see L23).
 
 Forecast: ~1,800 authored changed lines (T1 ~500, T2 ~700, T3 ~450, T4 ~150).
 Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
@@ -237,3 +237,19 @@ Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
   `shared_repository_forwards_wish_list_reads` reported no lists over a store
   that had one. GREEN: `wishlist_inspect` 6/6, `search_eval` 5/5,
   `search_registry` 7/7, the MCP forwarding test.
+- L22 (review, 2026-10-15): the hook-required review of the whole branch
+  (base 59a651e, HEAD 7f4650e) could not start: `lens_context_budget_exceeded`.
+  Per the contract the scope was reduced to the slice since the last approval:
+  review-0006d5707013ef03 (base 98c3494, readability + reliability) approved
+  and acknowledged; its only finding (CRITICAL readability,
+  `crates/destiny-app/src/build_optimizer.rs:397`) was refuted. Later reviews
+  of this branch go by slices from the last approved HEAD.
+- L23 (T4, user: "arranca T4"): documented `GHOSTLINK_WISHLISTS`
+  (`docs/configuration.md#wish-lists`, `config.example.env`), the sync report,
+  the inspect `wishlist` field and both filters (`docs/cli.md`, `docs/mcp.md`),
+  the skill rules and intent row (`skills/ghostlink/SKILL.md`), README Credits
+  (48klocs, the voltron curators, MIT (c) 2019 Dave Solomon, downloaded at
+  sync time and never bundled) and the release draft. S5's "the opinion's age"
+  has no data field: the skill tells agents to state the age only from what
+  the section or notes say (season, podcast episode, patch) and otherwise to
+  say it is unknown.
