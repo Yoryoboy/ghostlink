@@ -75,7 +75,7 @@ impl ClarityTransport for HttpClarityTransport {
         )
     }
 }
-fn read_response(
+pub(crate) fn read_response(
     status: u16,
     content_type: Option<&str>,
     content_length: Option<u64>,
