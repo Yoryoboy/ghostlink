@@ -212,6 +212,15 @@ impl<R: InventoryRepository + DefinitionRepository> Run<'_, R> {
             _ => self.persist_failed = true,
         }
     }
+    /// A typed authentication refusal concerns the session, like `refuse`.
+    fn stop_on_authentication(&mut self, sent: &Sent) {
+        if sent
+            .iter()
+            .any(|(_, r)| matches!(r, Err(StepFailure::AuthenticationRefused)))
+        {
+            self.stopped = true;
+        }
+    }
     fn refuse(&mut self, category: ErrorCategory) -> StepFailure {
         if stops_everything(category) {
             self.stopped = true;
@@ -408,7 +417,9 @@ impl<R: InventoryRepository + DefinitionRepository> Run<'_, R> {
             if self.stopped {
                 break;
             }
-            sent.extend(self.equip_chunk(character, chunk, gateways));
+            let chunk = self.equip_chunk(character, chunk, gateways);
+            self.stop_on_authentication(&chunk);
+            sent.extend(chunk);
         }
         sent
     }
@@ -649,6 +660,7 @@ where
             } else {
                 run.dispatch(step, &ready, items.len(), &mut gateways)
             };
+            run.stop_on_authentication(&sent);
             items
                 .iter()
                 .zip(&blocked)

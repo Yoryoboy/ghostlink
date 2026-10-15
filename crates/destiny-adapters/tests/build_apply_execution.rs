@@ -911,3 +911,56 @@ fn ghost_equip_is_acknowledged_and_projected_like_any_equip() {
         "other buckets stay equipped"
     );
 }
+
+#[test]
+fn authentication_refusal_outcome_stops_the_plan_without_further_dispatch() {
+    // A typed authentication refusal concerns the whole session, like a refused
+    // gateway call: no independent step may be sent after it.
+    let (mut repository, revision) = store();
+    let script = Script {
+        transfer: [Ok(TransferOutcome::AuthenticationRefused)].into(),
+        ..Default::default()
+    };
+    let (execution, calls) = run(&mut repository, revision, &standard_plan(), script);
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(
+        statuses(&execution)[0],
+        [ItemStatus::Failed(StepFailure::AuthenticationRefused)]
+    );
+    assert!(
+        statuses(&execution)[1..]
+            .iter()
+            .flatten()
+            .all(|s| *s == ItemStatus::Skipped(SkipCause::ProviderStopped)),
+        "{:?}",
+        statuses(&execution)
+    );
+    assert_eq!(find(&repository, "2").location, on("2"));
+}
+
+#[test]
+fn an_authentication_refusal_outcome_on_a_chunk_leaves_later_chunks_unsent() {
+    let (mut repository, revision) = store();
+    let ids: Vec<String> = (500..519).map(|n| n.to_string()).collect();
+    let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let script = Script {
+        batch: [Ok(EquipItemsOutcome::AuthenticationRefused)].into(),
+        ..Default::default()
+    };
+    let (execution, calls) = run(
+        &mut repository,
+        revision,
+        &plan(vec![equip(&refs, "1")]),
+        script,
+    );
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    let outcomes = &statuses(&execution)[0];
+    assert_eq!(
+        outcomes[0],
+        ItemStatus::Failed(StepFailure::AuthenticationRefused)
+    );
+    assert_eq!(
+        outcomes[18],
+        ItemStatus::Skipped(SkipCause::ProviderStopped)
+    );
+}
