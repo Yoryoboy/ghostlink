@@ -630,6 +630,7 @@ fn vault_capacity_is_per_corresponding_vault_bucket() {
             (BucketHash::new(2465295065), BucketHash::new(2)),
         ],
         capacity: vec![(BucketHash::new(1), 1), (BucketHash::new(2), 1)],
+        ..Default::default()
     };
     let context = ApplyContext {
         vault: Some(&separate),
@@ -647,6 +648,7 @@ fn vault_capacity_is_per_corresponding_vault_bucket() {
     let unmapped = VaultEvidence {
         mapping: vec![(BucketHash::new(2465295065), BucketHash::new(2))],
         capacity: vec![(BucketHash::new(2), 1)],
+        ..Default::default()
     };
     let context = ApplyContext {
         vault: Some(&unmapped),
@@ -961,7 +963,7 @@ fn equipped_ghost_on_the_target_is_already_there_and_one_elsewhere_stays_unsuppo
     assert!(p.skipped.is_empty(), "{:?}", p.skipped);
     assert_eq!(p.already_there, [0]);
     assert!(p.steps.is_empty());
-    // Moving one would need character capacity the audited policy lacks.
+    // Without the bucket's itemCount evidence its character capacity is unknown.
     let p = plan(
         &[selected(Some(&items[1]), true)],
         &items,
@@ -971,4 +973,142 @@ fn equipped_ghost_on_the_target_is_already_there_and_one_elsewhere_stays_unsuppo
     );
     assert_eq!(p.skipped[0].reason, ApplySkipReason::UnsupportedBucket);
     assert!(p.steps.is_empty());
+}
+/// Vault evidence where Ghost, Ships and Vehicle go to the General Vault bucket
+/// and Emblems have none, as live (`vault_accepted_items`, 2026-10-15), with the
+/// General buckets' character `itemCount`.
+fn general_vault(vault: usize, slots: usize) -> VaultEvidence {
+    let mut evidence = vault_of(vault);
+    for b in [GHOST_BUCKET, SHIP_BUCKET, SPARROW_BUCKET] {
+        evidence
+            .mapping
+            .push((BucketHash::new(b), BucketHash::new(138197802)));
+    }
+    evidence.general = [GHOST_BUCKET, EMBLEM_BUCKET, SHIP_BUCKET, SPARROW_BUCKET]
+        .map(|b| (BucketHash::new(b), slots))
+        .to_vec();
+    evidence
+}
+fn plan_general(
+    selected: &[ResolvedBuildItem],
+    items: &[ItemInstance],
+    defs: &[ItemDefinition],
+    vault: &VaultEvidence,
+) -> BuildApplyPlan {
+    let context = ApplyContext {
+        vault: Some(vault),
+        ..Default::default()
+    };
+    plan_with(selected, items, defs, &context, 10)
+}
+#[test]
+fn ghost_and_sparrow_move_from_the_vault_and_other_characters_then_equip() {
+    // DIM moves them like any item, with `capacity: def.itemCount`
+    // (`d2-buckets.ts:47`, `stores-helpers.ts:63-69`).
+    let defs = [
+        def(73, GHOST_BUCKET, ""),
+        def(74, GHOST_BUCKET, ""),
+        def(70, SPARROW_BUCKET, ""),
+    ];
+    let items = [
+        item("73", 73, at("1"), true),
+        item("74", 74, ItemLocation::Vault, false),
+        item("70", 70, at("2"), false),
+    ];
+    let p = plan_general(
+        &[
+            selected(Some(&items[1]), true),
+            selected(Some(&items[2]), true),
+        ],
+        &items,
+        &defs,
+        &general_vault(5, 10),
+    );
+    assert!(p.skipped.is_empty(), "{:?}", p.skipped);
+    assert_eq!(
+        describe(&p),
+        [
+            "move: 74 V>1",
+            "move: 70 2>V",
+            "move: 70 V>1",
+            "equip: equip 74,70 on 1"
+        ]
+    );
+}
+#[test]
+fn a_full_ghost_bucket_makes_space_with_its_item_count() {
+    let defs = [
+        def(73, GHOST_BUCKET, ""),
+        def(74, GHOST_BUCKET, ""),
+        def(75, GHOST_BUCKET, ""),
+    ];
+    let items = [
+        item("73", 73, at("1"), true),
+        item("75", 75, at("1"), false),
+        item("74", 74, ItemLocation::Vault, false),
+    ];
+    let p = plan_general(
+        &[selected(Some(&items[2]), true)],
+        &items,
+        &defs,
+        &general_vault(5, 2),
+    );
+    assert!(p.skipped.is_empty(), "{:?}", p.skipped);
+    assert_eq!(
+        describe(&p),
+        ["move: 75 1>V", "move: 74 V>1", "move: equip 74 on 1"]
+    );
+}
+#[test]
+fn an_emblem_elsewhere_has_no_vault_bucket_and_stays_put() {
+    // Live Vault `acceptedItems` has no Emblems entry, so DIM's capacity there is 0.
+    let defs = [def(72, EMBLEM_BUCKET, ""), def(76, EMBLEM_BUCKET, "")];
+    let items = [
+        item("76", 76, at("1"), true),
+        item("72", 72, at("2"), false),
+    ];
+    let p = plan_general(
+        &[selected(Some(&items[1]), true)],
+        &items,
+        &defs,
+        &general_vault(5, 10),
+    );
+    assert_eq!(
+        p.skipped[0].reason,
+        ApplySkipReason::VaultCapacityUnavailable
+    );
+    assert!(p.steps.is_empty());
+}
+#[test]
+fn general_bucket_capacity_comes_from_bucket_item_count() {
+    use destiny_core::armor_catalog::{
+        InventoryBucketDefinition, VAULT_VENDOR_HASH, VaultAcceptedItem, VaultVendorDefinition,
+    };
+    let bucket = |hash: i64, item_count| InventoryBucketDefinition {
+        hash: u32::try_from(hash).unwrap(),
+        item_count,
+    };
+    let vendor = VaultVendorDefinition {
+        hash: VAULT_VENDOR_HASH,
+        accepted_items: vec![VaultAcceptedItem {
+            accepted_bucket: u32::try_from(GHOST_BUCKET).unwrap(),
+            destination_bucket: 138197802,
+        }],
+    };
+    // Vehicle has no bucket definition: its capacity stays unknown.
+    let evidence = VaultEvidence::from_catalogs(
+        &vendor,
+        &[
+            bucket(138197802, 1300),
+            bucket(1498876634, 10),
+            bucket(SHIP_BUCKET, 10),
+            bucket(EMBLEM_BUCKET, 10),
+            bucket(GHOST_BUCKET, 10),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        evidence.general,
+        [GHOST_BUCKET, EMBLEM_BUCKET, SHIP_BUCKET].map(|b| (BucketHash::new(b), 10))
+    );
 }

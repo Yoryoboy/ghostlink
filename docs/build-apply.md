@@ -320,9 +320,17 @@ Ghostlink adaptations:
 - Ghost, Emblems, Ships and Vehicle (sparrow) are equip-only buckets too (BE-010f),
   sorted after Subclass and Artifacts in DIM's General order
   (`d2-bucket-categories.ts:21-30`). One already equipped on the target is
-  already there; one elsewhere still reports `unsupported_bucket`, because moving it
-  needs character capacity the audited policy does not cover (DIM moves it). An
-  equipped snapshot therefore applies without a partial result from these buckets.
+  already there. An equipped snapshot therefore applies without a partial result
+  from these buckets.
+- Ghost, Emblems, Ships and Vehicle also move, as DIM moves them. Their character
+  capacity is the synced bucket definition's `itemCount` (DIM `capacity:
+  def.itemCount`, `d2-buckets.ts:47`), because the audited equipment capacity
+  policy covers only weapons and armor. A full bucket makes space like any other
+  bucket. Without that bucket definition the item still reports
+  `unsupported_bucket`. Live, the Vault accepts Ghost, Ships and Vehicle into its
+  General bucket but has no Emblems bucket, and emblems are non-transferable, so an
+  emblem on another character is skipped (`not_transferable`). Subclass and
+  Artifacts still only equip in place.
 
 ## Fashion (BE-007b3)
 
