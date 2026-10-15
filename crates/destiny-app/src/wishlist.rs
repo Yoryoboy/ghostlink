@@ -121,6 +121,12 @@ fn sync_source<G: WishlistGateway, R: WishlistRepository>(
                 return Ok(unchanged(record));
             }
             let document = parse_wishlist(&text);
+            // Voltron always has rolls: an empty parse is a broken body (an
+            // error page or a truncated download), never a curator decision.
+            // Storing it would also store its ETag and pin the empty list.
+            if *source == WishlistSource::Voltron && document.rolls.is_empty() {
+                return Err(AppError::new(ErrorCategory::ProviderUnavailable));
+            }
             repository.publish_wishlist(
                 key,
                 &document,

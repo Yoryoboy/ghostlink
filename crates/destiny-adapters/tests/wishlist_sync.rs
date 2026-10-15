@@ -280,3 +280,52 @@ fn without_a_gateway_every_source_reports_its_stored_rolls() {
     );
     assert_eq!(records(&store), before);
 }
+
+#[test]
+fn an_empty_voltron_body_never_replaces_stored_rolls() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut gateway = gateway();
+    sync_wishlists(&mut gateway, &mut store, &sources(), Timestamp::new(1));
+    let before = records(&store);
+    gateway.voltron_etag = Some("\"truncated\"".into());
+    gateway
+        .texts
+        .insert("voltron".into(), "<html>rate limited</html>\n".into());
+    let report = sync_wishlists(&mut gateway, &mut store, &sources(), Timestamp::new(2));
+    assert_eq!(
+        report,
+        WishlistSyncReport {
+            status: "partial",
+            sources: vec![
+                source("voltron", "unavailable", 1, 1),
+                source(MINE, "unchanged", 1, 0)
+            ],
+        }
+    );
+    assert_eq!(records(&store)[0], before[0]);
+    assert_eq!(store.wishlist_rolls(10).unwrap().len(), 2);
+
+    // A first sync must not store an empty voltron whose ETag would then
+    // answer 304 until upstream changes.
+    let mut fresh = SqliteStore::open_in_memory().unwrap();
+    let report = sync_wishlists(
+        &mut gateway,
+        &mut fresh,
+        &[WishlistSource::Voltron],
+        Timestamp::new(3),
+    );
+    assert_eq!(report.sources, vec![source("voltron", "unavailable", 0, 0)]);
+    assert!(records(&fresh).is_empty());
+}
+
+#[test]
+fn an_emptied_local_list_is_published_as_the_user_left_it() {
+    let mut store = SqliteStore::open_in_memory().unwrap();
+    let mut gateway = gateway();
+    sync_wishlists(&mut gateway, &mut store, &sources(), Timestamp::new(1));
+    gateway.texts.insert(MINE.into(), String::new());
+    let report = sync_wishlists(&mut gateway, &mut store, &sources(), Timestamp::new(2));
+    assert_eq!(report.sources[1], source(MINE, "updated", 0, 0));
+    assert_eq!(report.status, "ok");
+    assert_eq!(records(&store)[1].rolls, 0);
+}
