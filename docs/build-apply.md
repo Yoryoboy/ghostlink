@@ -317,6 +317,12 @@ Ghostlink adaptations:
   projection, like other equips. The single-item `equip` command still rejects them.
 - Builds with a subclass no longer report `unsupported_bucket`, so a build whose other
   steps succeed is `applied`.
+- Ghost, Emblems, Ships and Vehicle (sparrow) are equip-only buckets too (BE-010f),
+  sorted after Subclass and Artifacts in DIM's General order
+  (`d2-bucket-categories.ts:21-30`). One already equipped on the target is
+  already there; one elsewhere still reports `unsupported_bucket`, because moving it
+  needs character capacity the audited policy does not cover (DIM moves it). An
+  equipped snapshot therefore applies without a partial result from these buckets.
 
 ## Fashion (BE-007b3)
 

@@ -401,7 +401,7 @@ impl Planner<'_> {
         self.equip(vec![replacement], owner)
     }
     fn free(&self, target: &ItemLocation, bucket: BucketHash) -> Result<usize, ApplySkipReason> {
-        // Subclass and artifact capacity is not audited, so nothing is moved into or
+        // Equip-only bucket capacity is not audited, so nothing is moved into or
         // out of those buckets; they are only equipped where they already are.
         if self.policy.capacity(bucket).is_none() {
             return Err(ApplySkipReason::UnsupportedBucket);
@@ -635,9 +635,14 @@ impl Planner<'_> {
     }
 }
 const WEAPON_BUCKETS: [i64; 3] = [1498876634, 2465295065, 953998645];
-/// DIM's bucket order: weapons, armor, then Subclass and Artifacts
-/// (`d2-bucket-categories.ts:5-26`, `loadout-apply.ts:118-129`).
-const BUCKETS: [i64; 10] = [
+const GHOST_BUCKET: i64 = 4023194814;
+const EMBLEM_BUCKET: i64 = 4274335291;
+const SHIP_BUCKET: i64 = 284967655;
+const SPARROW_BUCKET: i64 = 2025709351;
+/// DIM's bucket order: weapons, armor, then the General category's Subclass,
+/// Artifacts, Ghost, Emblems, Ships and Vehicle (`d2-bucket-categories.ts:5-30`,
+/// `loadout-apply.ts:118-129`).
+const BUCKETS: [i64; 14] = [
     1498876634,
     2465295065,
     953998645,
@@ -648,11 +653,15 @@ const BUCKETS: [i64; 10] = [
     1585787867,
     SUBCLASS_BUCKET_HASH.value(),
     ARTIFACT_BUCKET_HASH.value(),
+    GHOST_BUCKET,
+    EMBLEM_BUCKET,
+    SHIP_BUCKET,
+    SPARROW_BUCKET,
 ];
 /// Equippable buckets outside the audited capacity policy (DIM treats them as
 /// ordinary items; Ghostlink only equips them in place, never moves them).
-fn is_equip_only_bucket(bucket: BucketHash) -> bool {
-    bucket == SUBCLASS_BUCKET_HASH || bucket == ARTIFACT_BUCKET_HASH
+pub fn is_equip_only_bucket(bucket: BucketHash) -> bool {
+    BUCKETS[8..].contains(&bucket.value())
 }
 impl Planner<'_> {
     /// Equip with DIM's one-exotic handling: dequip conflicting labels first.

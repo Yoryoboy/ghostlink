@@ -885,3 +885,21 @@ coverage (`domain.rs:123-126`).
       the apply line names subclass, artifact, mod and fashion plugs. RED
       `build_help_describes_apply_with_sockets_mods_and_fashion` before the
       edit; `ghostlink` package tests, clippy all-features and fmt clean.
+      Commit 82f48f5.
+    - BE-010f: ghost, emblem, ship and sparrow are equip-only planner buckets
+      like the subclass (`build_apply::is_equip_only_bucket`, now public),
+      sorted in DIM's General order (`d2-bucket-categories.ts:21-30`). In
+      place they are already there or equipped; elsewhere they still skip as
+      `unsupported_bucket` (the audited capacity policy does not cover them;
+      DIM moves them). The executor's local projection
+      (`mutation.rs` `equip_effect_in`) uses the same predicate; without it a
+      ghost equip acknowledged by Bungie left local state `failed` (exit 42).
+      RED before each edit: core
+      `ghost_emblem_ship_and_sparrow_equip_in_place_in_dim_general_order`,
+      `equipped_ghost_on_the_target_is_already_there_and_one_elsewhere_stays_unsupported`;
+      adapters `ghost_equip_is_acknowledged_and_projected_like_any_equip`.
+      Docs: `build-apply.md`.
+      Live (revision 43): Hunter snapshot dry-run 14 already there, 0
+      skipped, 0 steps (was 10 + 4 `unsupported_bucket`); the real apply is
+      `no_op`, nothing dispatched, local state unchanged, exit 0 (was 41).
+      Workspace 2473 passed / 0 failed; clippy both modes, fmt, diff-check.

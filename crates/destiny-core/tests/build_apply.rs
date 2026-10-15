@@ -915,3 +915,60 @@ fn clear_space_ignores_subclass_and_artifact_build_items() {
     assert!(p.steps.is_empty());
     assert!(p.clear_skipped.is_empty());
 }
+const GHOST_BUCKET: i64 = 4023194814;
+const EMBLEM_BUCKET: i64 = 4274335291;
+const SHIP_BUCKET: i64 = 284967655;
+const SPARROW_BUCKET: i64 = 2025709351;
+#[test]
+fn ghost_emblem_ship_and_sparrow_equip_in_place_in_dim_general_order() {
+    // DIM's General category: Subclass, Artifacts, Ghost, Emblems, Ships, Vehicle
+    // (`d2-bucket-categories.ts:21-30`); DIM equips them like any item.
+    let defs = [
+        def(70, SPARROW_BUCKET, ""),
+        def(71, SHIP_BUCKET, ""),
+        def(72, EMBLEM_BUCKET, ""),
+        def(73, GHOST_BUCKET, ""),
+        nontransferable(def(60, SUBCLASS_BUCKET, "")),
+        def(74, GHOST_BUCKET, ""),
+    ];
+    let items = [
+        item("70", 70, at("1"), false),
+        item("71", 71, at("1"), false),
+        item("72", 72, at("1"), false),
+        item("73", 73, at("1"), false),
+        item("60", 60, at("1"), false),
+        item("74", 74, at("1"), true),
+    ];
+    let selection: Vec<_> = items[..5].iter().map(|i| selected(Some(i), true)).collect();
+    let p = plan(&selection, &items, &defs, Some(5), 10);
+    assert!(p.skipped.is_empty(), "{:?}", p.skipped);
+    assert_eq!(describe(&p), ["equip: equip 60,73,72,71,70 on 1"]);
+}
+#[test]
+fn equipped_ghost_on_the_target_is_already_there_and_one_elsewhere_stays_unsupported() {
+    let defs = [def(73, GHOST_BUCKET, ""), def(74, GHOST_BUCKET, "")];
+    let items = [
+        item("73", 73, at("1"), true),
+        item("74", 74, ItemLocation::Vault, false),
+    ];
+    let p = plan(
+        &[selected(Some(&items[0]), true)],
+        &items,
+        &defs,
+        Some(5),
+        10,
+    );
+    assert!(p.skipped.is_empty(), "{:?}", p.skipped);
+    assert_eq!(p.already_there, [0]);
+    assert!(p.steps.is_empty());
+    // Moving one would need character capacity the audited policy lacks.
+    let p = plan(
+        &[selected(Some(&items[1]), true)],
+        &items,
+        &defs,
+        Some(5),
+        10,
+    );
+    assert_eq!(p.skipped[0].reason, ApplySkipReason::UnsupportedBucket);
+    assert!(p.steps.is_empty());
+}

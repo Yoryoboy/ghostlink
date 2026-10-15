@@ -71,6 +71,7 @@ fn store() -> (SqliteStore, SyncRevision) {
                     definition(200, ENERGY),
                     definition(201, ENERGY),
                     definition(300, SUBCLASS),
+                    definition(400, GHOST),
                 ],
             },
             checked_at: Timestamp::new(100),
@@ -103,6 +104,8 @@ fn store() -> (SqliteStore, SyncRevision) {
             instance("5", 100, ItemLocation::Postmaster(c("1")), false),
             instance("6", 300, on("1"), true),
             instance("7", 300, on("1"), false),
+            instance("8", 400, on("1"), true),
+            instance("9", 400, on("1"), false),
         ],
         profile_currencies_coverage: ProfileCurrenciesCoverage::NotObserved,
         stacks: vec![],
@@ -878,6 +881,33 @@ fn subclass_equip_is_acknowledged_and_projected_like_any_equip() {
     assert!(!find(&repository, "6").equipped);
     assert!(
         find(&repository, "4").equipped,
+        "other buckets stay equipped"
+    );
+}
+
+const GHOST: i64 = 4023194814;
+#[test]
+fn ghost_equip_is_acknowledged_and_projected_like_any_equip() {
+    // Ghost, Emblems, Ships and Vehicle are equip-only planner buckets like the
+    // subclass; a planned equip must update the local projection (not exit 42).
+    let (mut repository, revision) = store();
+    let script = Script {
+        equip: [Ok(EquipOutcome::Equipped)].into(),
+        ..Default::default()
+    };
+    let (execution, calls) = run(
+        &mut repository,
+        revision,
+        &plan(vec![equip(&["9"], "1")]),
+        script,
+    );
+    assert_eq!(calls, ["equip 9 on 1"]);
+    assert_eq!(execution.status, ApplyStatus::Applied);
+    assert_eq!(execution.local_state, ApplyLocalState::Updated);
+    assert!(find(&repository, "9").equipped);
+    assert!(!find(&repository, "8").equipped);
+    assert!(
+        find(&repository, "6").equipped,
         "other buckets stay equipped"
     );
 }

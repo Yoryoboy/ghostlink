@@ -1735,10 +1735,9 @@ fn equip_effect_in<R: destiny_core::DefinitionRepository>(
     let target = lookup(item.item_hash)?;
     let slot = target.slot.filter(|slot| is_equipment_slot(*slot));
     let bucket_equip = bucket_equips
-        && matches!(
-            target.bucket_hash,
-            Some(destiny_core::SUBCLASS_BUCKET_HASH | destiny_core::ARTIFACT_BUCKET_HASH)
-        );
+        && target
+            .bucket_hash
+            .is_some_and(destiny_core::build_apply::is_equip_only_bucket);
     if slot.is_none() && !bucket_equip {
         return Err(MutationError::NotEquippable);
     }
