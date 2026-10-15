@@ -183,6 +183,20 @@ fn every_wish_perk_must_be_offered_and_enhanced_options_match_by_name() {
     assert!(unknown.matches.is_empty());
 }
 
+/// An unnamed option (no definition) matches only its exact hash: two blank
+/// names are not the same perk.
+#[test]
+fn unnamed_options_never_match_by_name() {
+    let list = parse_wishlist("dimwishlist:item=10&perks=9\n");
+    let unnamed = [PlugOption::new(5, "")];
+    let result = evaluate_wishlist(10, list.rolls.iter(), &unnamed, |_| Some(String::new()));
+    assert_eq!(result.verdict, WishlistVerdict::None);
+
+    let exact = [PlugOption::new(9, "")];
+    let result = evaluate_wishlist(10, list.rolls.iter(), &exact, |_| None);
+    assert_eq!(result.verdict, WishlistVerdict::Wishlist);
+}
+
 #[test]
 fn rolls_for_other_items_never_match() {
     let list = parse_wishlist(VOLTRON_SAMPLE);

@@ -178,6 +178,7 @@ pub fn notes_tags(notes: &str) -> Vec<String> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlugOption {
     pub hash: u32,
+    /// Empty when the plug has no definition; it then matches by hash only.
     pub name: String,
 }
 
@@ -245,7 +246,9 @@ fn evaluate_keyed<'a, T: ?Sized + 'a>(
 ) -> (WishlistVerdict, Vec<&'a T>, usize) {
     let offered = |perk: u32| {
         options.iter().any(|option| option.hash == perk)
-            || perk_name(perk).is_some_and(|name| options.iter().any(|option| option.name == name))
+            || perk_name(perk).is_some_and(|name| {
+                !name.is_empty() && options.iter().any(|option| option.name == name)
+            })
     };
     let mut verdict = WishlistVerdict::None;
     let mut groups: Vec<(Option<&str>, Option<&str>, Option<&str>)> = Vec::new();

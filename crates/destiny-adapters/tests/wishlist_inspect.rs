@@ -68,7 +68,8 @@ fn instance(id: &str, item: i64, plugs: &[i64], available: &[i64]) -> ItemInstan
 }
 
 /// A gun with Outlaw socketed and an enhanced Rampage (its own hash, same name)
-/// selectable; the wish list names the base Rampage hash.
+/// selectable; the wish list names the base Rampage hash. Plug 77 is selectable
+/// but has no definition, as with a perk newer than the stored Manifest.
 fn store() -> SqliteStore {
     let mut store = SqliteStore::open_in_memory().unwrap();
     store
@@ -99,7 +100,7 @@ fn store() -> SqliteStore {
             source: SourceMarker::Profile,
             characters: vec![],
             items: vec![
-                instance("gun", GUN, &[1], &[21]),
+                instance("gun", GUN, &[1], &[21, 77]),
                 instance("helmet", HELMET, &[], &[]),
             ],
         })
@@ -191,6 +192,24 @@ fn a_matching_weapon_cites_every_list_with_enhanced_perks_matched_by_name() {
         ),
         "{human}"
     );
+}
+
+/// A plug without a definition still matches its exact hash; its name stays
+/// numeric because nothing names it.
+#[test]
+fn a_plug_without_a_definition_matches_by_hash() {
+    let mut store = store();
+    publish(&mut store, "voltron", "dimwishlist:item=10&perks=1,77\n");
+    let (json, mcp, _) = views(&inspect(store, "gun"));
+    let expected = serde_json::json!({
+        "verdict": "wishlist",
+        "matches_total": 1,
+        "matches": [
+            {"source": "voltron", "section": null, "perks": ["Outlaw", "77"], "notes": null, "tags": []}
+        ]
+    });
+    assert_eq!(json["wishlist"], expected);
+    assert_eq!(mcp["wishlist"], expected);
 }
 
 #[test]
