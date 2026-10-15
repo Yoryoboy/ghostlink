@@ -60,8 +60,9 @@ agents can answer "should I keep this drop?" with cited community opinion.
 - [x] T2 (S1-S4) storage, voltron/local acquisition, sync seam, config key,
       sync output. Route: inline. Commits: 71bb55d, 8383086, 9dce82b,
       1cd892a (+ style fixup).
-- [ ] T3 (S5) inspect `wishlist` field (core/app/CLI/MCP) and
-      `is:wishlist`/`is:trashlist`. Route: inline. Commit: —
+- [x] T3a (S5) inspect `wishlist` field (core/app/CLI/MCP). Route: inline.
+      Commit: f311348.
+- [ ] T3b (S5) `is:wishlist`/`is:trashlist`. Route: inline. Commit: —
 - [ ] T4 (S4-S5) docs (cli, mcp, configuration), skill rule, README Credits.
       Route: inline. Commit: —
 
