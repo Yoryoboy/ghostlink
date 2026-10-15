@@ -3,6 +3,9 @@
 //! Format: <https://github.com/DestinyItemManager/DIM/wiki/Creating-Wish-Lists>.
 //! Text is kept verbatim; invalid roll lines are skipped whole and counted.
 
+use crate::{AppError, Timestamp};
+use std::path::PathBuf;
+
 /// DIM's any-item wildcard (`item=-69420`); it is never a trash roll.
 pub const WILDCARD_ITEM: i64 = -69420;
 /// Lines longer than this are skipped whole, never truncated.
@@ -126,15 +129,20 @@ fn parse_number(text: &str) -> Option<i64> {
     text.parse().ok()
 }
 
-/// Notes without the trailing `|tags:` list.
+/// Start of the tag list: the last `tags:`, which may lack DIM's `|` prefix.
+fn tags_start(notes: &str) -> Option<usize> {
+    notes.rfind("tags:")
+}
+
+/// Notes without the trailing tag list and its optional `|` separator.
 pub fn notes_text(notes: &str) -> &str {
-    notes.rfind("|tags:").map_or(notes, |at| &notes[..at])
+    tags_start(notes).map_or(notes, |at| notes[..at].trim_end_matches('|').trim_end())
 }
 
 /// Lower-cased, de-duplicated tags from the last `tags:` list, with DIM
 /// community spelling variants folded (`god-pve` → `pve-god`, `m+kb` → `mkb`).
 pub fn notes_tags(notes: &str) -> Vec<String> {
-    let Some(at) = notes.rfind("tags:") else {
+    let Some(at) = tags_start(notes) else {
         return Vec::new();
     };
     let mut tags: Vec<String> = Vec::new();
@@ -240,4 +248,129 @@ pub fn evaluate_wishlist<'a>(
         matches,
         total: groups.len(),
     }
+}
+
+/// The built-in community list: 48klocs/dim-wish-list-sources (MIT), fetched
+/// at run time and never embedded.
+pub const VOLTRON_URL: &str =
+    "https://raw.githubusercontent.com/48klocs/dim-wish-list-sources/master/voltron.txt";
+const VOLTRON_KEY: &str = "voltron";
+const DISABLED: &str = "none";
+
+/// One configured wish list, applied in configured order.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WishlistSource {
+    Voltron,
+    /// An absolute path to a DIM-format file of the user's own.
+    Local(PathBuf),
+}
+
+impl WishlistSource {
+    /// The stable storage key: `voltron` or the local path.
+    pub fn key(&self) -> String {
+        match self {
+            Self::Voltron => VOLTRON_KEY.to_owned(),
+            Self::Local(path) => path.to_string_lossy().into_owned(),
+        }
+    }
+
+    /// Parses a comma-separated `GHOSTLINK_WISHLISTS` value. Unset or blank
+    /// means voltron, `none` alone disables wish lists, and every other entry
+    /// must be an absolute local path; remote URLs are never accepted.
+    pub fn parse_list(value: Option<&str>) -> Result<Vec<Self>, AppError> {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(vec![Self::Voltron]);
+        };
+        if value == DISABLED {
+            return Ok(Vec::new());
+        }
+        let mut sources: Vec<Self> = Vec::new();
+        for entry in value.split(',').map(str::trim) {
+            let source = match entry {
+                VOLTRON_KEY => Self::Voltron,
+                _ if std::path::Path::new(entry).is_absolute() => Self::Local(PathBuf::from(entry)),
+                _ => return Err(AppError::configuration()),
+            };
+            if sources.contains(&source) {
+                return Err(AppError::configuration());
+            }
+            sources.push(source);
+        }
+        Ok(sources)
+    }
+}
+
+/// A change-detection fingerprint (FNV-1a 64 plus byte length). It only
+/// avoids re-publishing unchanged content and is not a security digest.
+pub fn wishlist_fingerprint(bytes: &[u8]) -> String {
+    let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    format!("fnv1a64:{hash:016x}:{}", bytes.len())
+}
+
+/// What one source fetch returned.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WishlistFetch {
+    /// The stored ETag still matches; the stored rolls stay current.
+    NotModified,
+    Content {
+        text: String,
+        etag: Option<String>,
+    },
+}
+
+pub trait WishlistGateway {
+    /// `etag` is the stored validator for a conditional request, if any.
+    fn fetch(
+        &mut self,
+        source: &WishlistSource,
+        etag: Option<&str>,
+    ) -> Result<WishlistFetch, AppError>;
+}
+
+/// Stored metadata of one published source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WishlistSourceRecord {
+    pub key: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub etag: Option<String>,
+    pub fingerprint: String,
+    pub checked_at: Timestamp,
+    pub updated_at: Timestamp,
+    pub rolls: usize,
+    pub skipped: usize,
+}
+
+/// A stored roll with the key of the source it came from.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourcedWishlistRoll {
+    pub source: String,
+    pub roll: WishlistRoll,
+}
+
+pub trait WishlistRepository {
+    /// Stored sources in configured order.
+    fn wishlist_sources(&self) -> Result<Vec<WishlistSourceRecord>, AppError>;
+    /// Replaces one source's rolls and metadata atomically.
+    fn publish_wishlist(
+        &mut self,
+        key: &str,
+        document: &WishlistDocument,
+        etag: Option<&str>,
+        fingerprint: &str,
+        checked_at: Timestamp,
+    ) -> Result<(), AppError>;
+    /// Records a check that found unchanged content; rolls are kept.
+    fn mark_wishlist_checked(
+        &mut self,
+        key: &str,
+        etag: Option<&str>,
+        checked_at: Timestamp,
+    ) -> Result<(), AppError>;
+    /// Deletes every source not listed and orders the rest as listed.
+    fn retain_wishlist_sources(&mut self, keys: &[String]) -> Result<(), AppError>;
+    /// The item's rolls plus wildcard rolls, in source order, then file order.
+    fn wishlist_rolls(&self, item_hash: u32) -> Result<Vec<SourcedWishlistRoll>, AppError>;
 }

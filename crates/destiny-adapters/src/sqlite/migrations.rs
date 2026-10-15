@@ -43,7 +43,7 @@ use destiny_core::{AppError, ErrorCategory};
 use rusqlite::Connection;
 
 /// Highest schema version defined by this build.
-pub(crate) const LATEST_VERSION: u32 = 36;
+pub(crate) const LATEST_VERSION: u32 = 37;
 
 /// One explicit migration step with an up and a down direction.
 struct Migration {
@@ -53,7 +53,7 @@ struct Migration {
 }
 
 /// Ordered, monotonic migration descriptors. Versions must be contiguous from 1.
-const MIGRATIONS: [Migration; 36] = [
+const MIGRATIONS: [Migration; 37] = [
     Migration {
         version: 1,
         up: SCHEMA_V1_UP,
@@ -234,7 +234,46 @@ const MIGRATIONS: [Migration; 36] = [
         up: SCHEMA_V36_UP,
         down: SCHEMA_V36_DOWN,
     },
+    Migration {
+        version: 37,
+        up: SCHEMA_V37_UP,
+        down: SCHEMA_V37_DOWN,
+    },
 ];
+/// Wish lists are re-downloadable community data, so a downgrade drops them.
+const SCHEMA_V37_UP: &str = r#"
+CREATE TABLE wishlist_sources (
+    key TEXT PRIMARY KEY CHECK (length(key) BETWEEN 1 AND 4096),
+    position INTEGER NOT NULL CHECK (position >= 0),
+    title TEXT,
+    description TEXT,
+    etag TEXT,
+    fingerprint TEXT NOT NULL,
+    checked_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    skipped INTEGER NOT NULL CHECK (skipped >= 0)
+) STRICT;
+CREATE TABLE wishlist_texts (
+    id INTEGER PRIMARY KEY,
+    text TEXT NOT NULL UNIQUE
+) STRICT;
+CREATE TABLE wishlist_rolls (
+    source TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal BETWEEN 0 AND 4294967295),
+    item_hash INTEGER CHECK (item_hash BETWEEN 0 AND 4294967295),
+    trash INTEGER NOT NULL CHECK (trash IN (0,1)),
+    perks TEXT NOT NULL,
+    notes_id INTEGER,
+    section_id INTEGER,
+    PRIMARY KEY (source, ordinal)
+) STRICT;
+CREATE INDEX wishlist_rolls_item ON wishlist_rolls(item_hash);
+"#;
+const SCHEMA_V37_DOWN: &str = r#"
+DROP TABLE wishlist_rolls;
+DROP TABLE wishlist_texts;
+DROP TABLE wishlist_sources;
+"#;
 const SCHEMA_V36_UP: &str = r#"
 CREATE TABLE definition_stat_plugs (
     hash INTEGER PRIMARY KEY CHECK (hash BETWEEN 0 AND 4294967295),

@@ -1,6 +1,9 @@
 use destiny_core::wishlist::{
-    PlugOption, WishlistVerdict, evaluate_wishlist, notes_tags, notes_text, parse_wishlist,
+    PlugOption, WishlistSource, WishlistVerdict, evaluate_wishlist, notes_tags, notes_text,
+    parse_wishlist, wishlist_fingerprint,
 };
+use destiny_core::{AppError, ErrorCategory};
+use std::path::PathBuf;
 
 const VOLTRON_SAMPLE: &str = "title:This is a compiled collection of god/recommended rolls.\r
 description:Thanks to the curators.\r
@@ -237,4 +240,79 @@ fn matches_are_grouped_by_section_and_notes_and_bounded_to_three() {
             .collect::<Vec<_>>(),
         vec!["group 0", "group 1", "group 2"]
     );
+}
+
+#[test]
+fn notes_text_and_tags_split_at_the_same_bare_tags_marker() {
+    // Voltron has 442 lines whose tag list has no `|` before `tags:`.
+    let notes = "Chevy's S18 Super Pog PVE List - MW Reload tags:pve, M+KB";
+    assert_eq!(
+        notes_text(notes),
+        "Chevy's S18 Super Pog PVE List - MW Reload"
+    );
+    assert_eq!(notes_tags(notes), vec!["pve", "mkb"]);
+    assert_eq!(notes_text("foo tags:pve"), "foo");
+    assert_eq!(notes_text("tags:pve"), "");
+    assert_eq!(
+        notes_text("x (tags: controller,god-pvp)|tags:controller,god-pvp,pvp"),
+        "x (tags: controller,god-pvp)"
+    );
+}
+
+fn configuration_error(value: &str) -> AppError {
+    WishlistSource::parse_list(Some(value)).unwrap_err()
+}
+
+#[test]
+fn source_list_defaults_to_voltron_and_accepts_local_absolute_paths() {
+    assert_eq!(
+        WishlistSource::parse_list(None).unwrap(),
+        vec![WishlistSource::Voltron]
+    );
+    assert_eq!(
+        WishlistSource::parse_list(Some("  ")).unwrap(),
+        vec![WishlistSource::Voltron]
+    );
+    assert_eq!(WishlistSource::parse_list(Some(" none ")).unwrap(), vec![]);
+    let local = if cfg!(windows) {
+        r"C:\lists\mine.txt"
+    } else {
+        "/lists/mine.txt"
+    };
+    let sources = WishlistSource::parse_list(Some(&format!("{local} , voltron"))).unwrap();
+    assert_eq!(
+        sources,
+        vec![
+            WishlistSource::Local(PathBuf::from(local)),
+            WishlistSource::Voltron
+        ]
+    );
+    assert_eq!(sources[0].key(), local);
+    assert_eq!(sources[1].key(), "voltron");
+}
+
+#[test]
+fn source_list_rejects_relative_empty_duplicate_and_mixed_none_entries() {
+    for value in [
+        "lists/mine.txt",
+        "voltron,,voltron",
+        "voltron,",
+        "voltron,voltron",
+        "none,voltron",
+        "https://example.test/list.txt",
+        "choosy_voltron",
+    ] {
+        assert_eq!(
+            configuration_error(value).category(),
+            ErrorCategory::ConfigurationError,
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn fingerprint_is_stable_and_detects_changes() {
+    assert_eq!(wishlist_fingerprint(b""), "fnv1a64:cbf29ce484222325:0");
+    assert_eq!(wishlist_fingerprint(b"a"), "fnv1a64:af63dc4c8601ec8c:1");
+    assert_ne!(wishlist_fingerprint(b"ab"), wishlist_fingerprint(b"ba"));
 }
