@@ -1,4 +1,4 @@
-# Ghostlink Build Engine (Phase 4) — IN PROGRESS
+# Ghostlink Build Engine (Phase 4) — DONE
 
 Roadmap: `Destiny AI Companion — Objetivo, alcance y arquitectura.md` §17 and §23
 (build requirements, inventory matching, missing items, substitutions,
@@ -654,6 +654,15 @@ coverage (`domain.rs:123-126`).
     both modes, fmt. Follow-ups: tie-heavy inventories cannot prune under
     `>=` (budget bounds it; consider a cheaper tie pre-check); port
     seeding if real inventories converge slowly.
+    RDD review of 1be3760 (`review-c155a5f7dce2fe31`, resilience and
+    reliability): CRITICAL R4-parallel-budget-bypass, slices smaller than
+    the 100k cadence never checked the budget and a finished slice flushed
+    through `Progress::add`, so 12 threads on 12-item buckets ignored
+    `max_combos` and a zero time limit. Fixed by e11ed15: each of N slices
+    reports every `PROGRESS_CADENCE / N` and the final flush goes through
+    `report`. RED `budgets_hold_when_every_parallel_slice_is_smaller_than_the_cadence`;
+    destiny-core 453/0, clippy, fmt. Validator approved, acknowledged.
+    Advisory R3-zero-capacity (`set_tracker.rs:65-66`, WARNING).
   - [x] **BE-008d — Analyzer wiring.** BetterStatsAvailable and full
     ItemsDoNotMatchSearchQuery in `build check` / `analyze_build`. A first
     worker ended without a report; its partial (`optimizer/analyzer.rs`,
@@ -677,6 +686,12 @@ coverage (`domain.rs:123-126`).
     real-vault timing. Follow-up: apply DIM's All+artifice exotic ->
     ArtificeExotic (`analysis.ts:211-217`) to the existing stats and mod
     findings too.
+    RDD review of 628c41c (`review-b0b53c2626c16c7a`, readability and
+    reliability) approved and acknowledged; advisories R2-candidate-tuning-flag
+    (`build_optimizer.rs:408-420`), R2-redundant-ignored-guards
+    (`optimizer/mod.rs:88-89`), R2-unexplained-constants
+    (`build_optimizer.rs:14-16`), R3-auto-mod-adapter-coverage
+    (`build_optimizer.rs:231`).
   - [x] **BE-008e — Substitutes command.** `ghostlink build substitutes`
     and MCP tool `build_substitutes`; D3: never alters check or apply
     resolution (`check` runs the analyzer, `substitutes`/`plan_apply` do
@@ -695,7 +710,7 @@ coverage (`domain.rs:123-126`).
 - [x] **BE-009 — dim.gg import.** Dropped by owner decision D4 (won't do).
   Remaining check: the `dim.gg` typed error guides users to the full DIM
   link/JSON (with follow-up `dim_loadout.rs:333`); verify in BE-010.
-- [ ] **BE-010 — Live validation.** Isolated DB copy
+- [x] **BE-010 — Live validation.** Isolated DB copy
   (`~/.cache/ghostlink-be010/destiny.db`, `DESTINY_DATABASE_PATH`; the
   real `~/.local/share/ghostlink/destiny.db` is schema 19 and must not be
   migrated by branch binaries), release binary in
@@ -848,7 +863,7 @@ coverage (`domain.rs:123-126`).
     yet three syncs over ~80 s still show both weapons equipped on the
     Hunter (profile revision 18 stable). No further mutation until the
     owner confirms the in-game state.
-  - [ ] **BE-010c — Live re-run.** check, substitutes timing, apply
+  - [x] **BE-010c — Live re-run.** check, substitutes timing, apply
     dry-run; then live apply and EquipLoadout U4b/U4c.
   - 2026-10-15 resume:
     - The U4b/U4c inconsistency was Bungie lag, not a Ghostlink bug. A fresh
