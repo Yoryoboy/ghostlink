@@ -142,3 +142,16 @@ Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
   index (dedup stays in Rust per publication). WITHOUT ROWID rolls saved
   ~2 MB more but broke the `bridge_rows` test convention that every table
   has a rowid, so it was reverted.
+- L11 (review, 2026-10-15): hook-required review review-9bd540ce1f588b49
+  (full branch, lenses risk/resilience/reliability) approved and
+  acknowledged with three advisory WARNINGs. User: "Vayamos con tu
+  recomendación" (fix them before T3).
+- L12 (follow-up evidence): R4 an empty voltron parse is refused as
+  `unavailable` (RED: it replaced stored rolls); it is refused even on a first
+  sync, since storing it with its ETag would pin the empty list behind 304s.
+  An emptied local list still publishes empty (user intent). R3 a missing
+  voltron HTTP client no longer blocks local lists (RED: the local list was
+  `unavailable`; runtime now falls back to `UnavailableVoltron`). R1 notes and
+  sections are shared `Arc<str>` (RED: `Arc::ptr_eq`); measured 204 MB of
+  per-roll copies for 4.8 MB of distinct text, and a differential run of the
+  real voltron sync went from 322 MB to 102 MB peak RSS (2f8cc0a vs new).
