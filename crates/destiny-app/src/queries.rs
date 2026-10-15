@@ -189,7 +189,7 @@ impl InstanceEnrichment {
     /// Matches loaded wish lists against every socketed and selectable plug.
     /// Wish-list perk hashes resolve to names so enhanced variants, which have
     /// their own hashes, still match their base perk.
-    fn inspect_wishlist(
+    fn wishlist_inspection(
         &mut self,
         repository: &impl destiny_core::ports::WorldDefinitionRepository,
         hit: &InventorySearchHit,
@@ -1031,7 +1031,7 @@ where
             &hit.definition,
             &hit.instance,
         )?;
-        let wishlist = enrichment.inspect_wishlist(self.repository(), &hit)?;
+        let wishlist = enrichment.wishlist_inspection(self.repository(), &hit)?;
         Ok(Resolution::Unique(ItemInspection {
             wishlist,
             fragment_capacity,

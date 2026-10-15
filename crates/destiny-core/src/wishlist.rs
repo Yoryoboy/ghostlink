@@ -11,8 +11,10 @@ use std::sync::Arc;
 pub const WILDCARD_ITEM: i64 = -69420;
 /// Lines longer than this are skipped whole, never truncated.
 pub const MAX_LINE_CHARS: usize = 16 * 1024;
-/// Distinct section/notes groups reported per instance.
+/// Distinct source/section/notes groups reported per instance.
 pub const MAX_REPORTED_MATCHES: usize = 3;
+/// `u32::MAX` has 10 digits, so a longer number can never be a hash.
+const MAX_NUMBER_DIGITS: usize = 10;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WishlistRoll {
@@ -72,14 +74,17 @@ pub fn parse_wishlist(text: &str) -> WishlistDocument {
             continue;
         }
         block_notes = None;
-        if let Some(title) = line
-            .strip_prefix("title:")
-            .or_else(|| line.strip_prefix("@title:"))
-        {
-            if document.title.is_none() && line.starts_with("title:") && document.rolls.is_empty() {
+        let list_title = line.strip_prefix("title:");
+        if let Some(heading) = list_title.or_else(|| line.strip_prefix("@title:")) {
+            // Both forms open a section; only a `title:` before any roll also
+            // names the whole list.
+            if let Some(title) = list_title
+                && document.title.is_none()
+                && document.rolls.is_empty()
+            {
                 document.title = Some(title.to_owned());
             }
-            section = Some(Arc::from(title));
+            section = Some(Arc::from(heading));
         } else if let Some(description) = line.strip_prefix("description:")
             && document.description.is_none()
             && document.rolls.is_empty()
@@ -125,7 +130,10 @@ fn parse_roll(text: &str) -> Option<ParsedRoll> {
 }
 
 fn parse_number(text: &str) -> Option<i64> {
-    if text.is_empty() || text.len() > 10 || !text.bytes().all(|b| b.is_ascii_digit()) {
+    if text.is_empty()
+        || text.len() > MAX_NUMBER_DIGITS
+        || !text.bytes().all(|b| b.is_ascii_digit())
+    {
         return None;
     }
     text.parse().ok()
@@ -217,14 +225,33 @@ pub fn evaluate_wishlist<'a>(
     options: &[PlugOption],
     perk_name: impl Fn(u32) -> Option<String>,
 ) -> WishlistEvaluation<'a> {
+    let (verdict, matches, total) =
+        evaluate_keyed(item_hash, rolls, |roll| (roll, None), options, perk_name);
+    WishlistEvaluation {
+        verdict,
+        matches,
+        total,
+    }
+}
+
+/// The shared evaluation over any roll carrier. Matches group by source,
+/// section and notes, so two lists citing the same text stay two opinions.
+fn evaluate_keyed<'a, T: ?Sized + 'a>(
+    item_hash: u32,
+    items: impl IntoIterator<Item = &'a T>,
+    parts: impl Fn(&'a T) -> (&'a WishlistRoll, Option<&'a str>),
+    options: &[PlugOption],
+    perk_name: impl Fn(u32) -> Option<String>,
+) -> (WishlistVerdict, Vec<&'a T>, usize) {
     let offered = |perk: u32| {
         options.iter().any(|option| option.hash == perk)
             || perk_name(perk).is_some_and(|name| options.iter().any(|option| option.name == name))
     };
     let mut verdict = WishlistVerdict::None;
-    let mut groups: Vec<(Option<&str>, Option<&str>)> = Vec::new();
+    let mut groups: Vec<(Option<&str>, Option<&str>, Option<&str>)> = Vec::new();
     let mut matches = Vec::new();
-    for roll in rolls {
+    for item in items {
+        let (roll, source) = parts(item);
         if roll.item_hash.is_some_and(|hash| hash != item_hash)
             || !roll.perks.iter().all(|perk| offered(*perk))
         {
@@ -237,19 +264,15 @@ pub fn evaluate_wishlist<'a>(
                 WishlistVerdict::Wishlist
             };
         }
-        let group = (roll.section.as_deref(), roll.notes.as_deref());
+        let group = (source, roll.section.as_deref(), roll.notes.as_deref());
         if !groups.contains(&group) {
             groups.push(group);
             if matches.len() < MAX_REPORTED_MATCHES {
-                matches.push(roll);
+                matches.push(item);
             }
         }
     }
-    WishlistEvaluation {
-        verdict,
-        matches,
-        total: groups.len(),
-    }
+    (verdict, matches, groups.len())
 }
 
 /// The built-in community list: 48klocs/dim-wish-list-sources (MIT), fetched
@@ -410,42 +433,35 @@ pub fn inspect_wishlist(
     if !crate::query::is_weapon_slot(slot) {
         return None;
     }
-    let evaluation = evaluate_wishlist(
+    let (verdict, matched, matches_total) = evaluate_keyed(
         item_hash,
-        rolls.iter().map(|sourced| &sourced.roll),
+        rolls,
+        |sourced| (&sourced.roll, Some(sourced.source.as_str())),
         options,
         &perk_name,
     );
-    let matches = evaluation
-        .matches
-        .iter()
-        .map(|roll| {
-            // `evaluate_wishlist` returns references into `rolls`.
-            let source = rolls
+    let matches = matched
+        .into_iter()
+        .map(|SourcedWishlistRoll { source, roll }| WishlistMatch {
+            source: source.clone(),
+            section: roll.section.as_deref().map(str::to_owned),
+            perks: roll
+                .perks
                 .iter()
-                .find(|sourced| std::ptr::eq(&sourced.roll, *roll))
-                .map_or_else(String::new, |sourced| sourced.source.clone());
-            WishlistMatch {
-                source,
-                section: roll.section.as_deref().map(str::to_owned),
-                perks: roll
-                    .perks
-                    .iter()
-                    .map(|perk| perk_name(*perk).unwrap_or_else(|| perk.to_string()))
-                    .collect(),
-                notes: roll
-                    .notes
-                    .as_deref()
-                    .map(notes_text)
-                    .filter(|text| !text.is_empty())
-                    .map(str::to_owned),
-                tags: roll.notes.as_deref().map(notes_tags).unwrap_or_default(),
-            }
+                .map(|perk| perk_name(*perk).unwrap_or_else(|| perk.to_string()))
+                .collect(),
+            notes: roll
+                .notes
+                .as_deref()
+                .map(notes_text)
+                .filter(|text| !text.is_empty())
+                .map(str::to_owned),
+            tags: roll.notes.as_deref().map(notes_tags).unwrap_or_default(),
         })
         .collect();
     Some(WishlistInspection {
-        verdict: evaluation.verdict,
+        verdict,
         matches,
-        matches_total: evaluation.total,
+        matches_total,
     })
 }

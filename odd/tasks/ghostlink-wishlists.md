@@ -187,3 +187,16 @@ Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
   Nothing was mutated. Retry the same bound slots after the reset; never
   replay the failed capture from memory. The lineage stays `reviewing`, so the
   candidate is frozen at tree 7cdb1eff for T3a.
+- L16 (review, 2026-10-15): review-4d850975733946c8 approved but could not be
+  acknowledged because the doc commit 88b7c1b moved the candidate; a fresh
+  lineage review-b9d1ecf0d85e870e (tree f8c18321) approved and was burned
+  with 6 advisory findings. Never commit between a review START and its
+  acknowledgement.
+- L17 (T3a follow-ups): two lists sharing a section and notes collapsed into
+  one cited source (RED: `lists_sharing_section_and_notes_are_cited_separately`
+  cited only `/mine.txt`). Matches now group by source, section and notes, and
+  the source travels with the roll through a shared `evaluate_keyed`, so the
+  `std::ptr::eq` lookup is gone. Suggestions applied: `MAX_NUMBER_DIGITS`,
+  a clearer `title:`/`@title:` branch, the sync JSON is built on a
+  `serde_json::Value` instead of re-parsing rendered text, and the app method
+  is `wishlist_inspection` so it no longer shadows core's `inspect_wishlist`.
