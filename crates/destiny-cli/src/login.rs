@@ -84,7 +84,7 @@ use crate::command::{CallbackMode, CliError};
 /// pending state behind. The shared service enforces it; this constant only
 /// supplies the bound. A paste that arrives after the bound is rejected as an
 /// expired authorization before the code is ever exchanged.
-const AUTHORIZATION_TTL_SECONDS: u64 = 300;
+pub(crate) const AUTHORIZATION_TTL_SECONDS: u64 = 300;
 
 /// The operator instruction one interactive login produces.
 ///
@@ -202,7 +202,9 @@ where
 /// composition root read that instruction after `begin` without adding an
 /// accessor to the service or duplicating the adapter.
 #[derive(Clone)]
-struct SharedManualBrowser(Rc<RefCell<ManualPasteBrowserAuthorization<SystemCommandLauncher>>>);
+pub(crate) struct SharedManualBrowser(
+    pub(crate) Rc<RefCell<ManualPasteBrowserAuthorization<SystemCommandLauncher>>>,
+);
 
 impl BrowserAuthorization for SharedManualBrowser {
     fn open(&mut self, request: AuthorizationRequest) -> Result<(), AppError> {
@@ -376,7 +378,7 @@ fn apply_termios(fd: std::os::fd::RawFd, attributes: &libc::termios) -> bool {
 /// another one still holds that state fails closed before changing anything, and
 /// the declined control can still succeed on a later attempt once the first one has
 /// restored and released.
-struct SystemTerminalEcho {
+pub(crate) struct SystemTerminalEcho {
     #[cfg(unix)]
     fd: std::os::fd::RawFd,
     #[cfg(unix)]
@@ -394,7 +396,7 @@ struct SystemTerminalEcho {
 impl SystemTerminalEcho {
     /// The echo control for the process's standard input.
     #[cfg(unix)]
-    fn stdin() -> Self {
+    pub(crate) fn stdin() -> Self {
         Self {
             fd: libc::STDIN_FILENO,
             saved: None,
@@ -422,7 +424,7 @@ impl SystemTerminalEcho {
 
     /// The echo control for the process's standard input.
     #[cfg(windows)]
-    fn stdin() -> Self {
+    pub(crate) fn stdin() -> Self {
         Self {
             handle: windows_console::stdin_handle(),
             saved_mode: None,
@@ -431,7 +433,7 @@ impl SystemTerminalEcho {
 
     /// The echo control for the process's standard input.
     #[cfg(not(any(unix, windows)))]
-    fn stdin() -> Self {
+    pub(crate) fn stdin() -> Self {
         Self {
             unsupported: core::marker::PhantomData,
         }
@@ -1185,10 +1187,10 @@ impl TerminalEcho for SystemTerminalEcho {
 /// Each composition builds its callback receiver before these adapters, so a
 /// configuration whose callback cannot be the registered product callback fails
 /// here, before the token transport or the credential store is constructed.
-struct LoginAdapters {
-    exchange: BungieTokenExchange<HttpTokenTransport, SystemClock>,
-    store: FileCredentialStore,
-    clock: SystemClock,
+pub(crate) struct LoginAdapters {
+    pub(crate) exchange: BungieTokenExchange<HttpTokenTransport, SystemClock>,
+    pub(crate) store: FileCredentialStore,
+    pub(crate) clock: SystemClock,
 }
 
 /// Selects secret > broker > public exchange from validated configuration.
@@ -1222,7 +1224,7 @@ fn configured_exchange<T: destiny_adapters::token::TokenTransport, C: destiny_ap
 }
 
 /// Builds the shared adapters over the validated configuration.
-fn login_adapters(config: &LoginRuntimeConfig) -> Result<LoginAdapters, CliError> {
+pub(crate) fn login_adapters(config: &LoginRuntimeConfig) -> Result<LoginAdapters, CliError> {
     let transport = match config.auth_mode() {
         destiny_app::ClientAuthMode::Broker(base) => HttpTokenTransport::brokered(base),
         _ => HttpTokenTransport::new(),

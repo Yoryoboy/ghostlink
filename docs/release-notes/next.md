@@ -12,6 +12,21 @@ Draft for the next release candidate. Live checks remain on the
   [credential file](../configuration.md#credential-file) notes. Keyring tokens
   from earlier releases are not migrated: run `ghostlink login` once. CLI and MCP
   now renew one at a time and adopt a token the other already rotated.
+- **Headless two-step login.** `ghostlink login start` prints the authorization
+  URL without a browser or terminal prompt; approve on any device, then finish
+  on the server with `ghostlink login complete` (callback address on stdin or as
+  the argument), or discard it with `ghostlink login cancel`. The pending login
+  expires after 5 minutes and is single use. The callback address carries a
+  one-use code, so move it over a private channel; see the
+  [headless login](../cli.md#headless-two-step-login) notes. Plain
+  `ghostlink login` is unchanged.
+- **Breaking: new official callback.** The official Bungie application now
+  redirects to an HTTPS callback page on the token broker, which shows the
+  callback address with a Copy button and an "Open in Ghostlink" link for the
+  desktop handler (one click). Earlier releases (rc1–rc3) can no longer complete
+  a login with the official application: update first. Stored sessions keep
+  renewing. A self-hosted `config.env` with `ghostlink://oauth/callback` keeps
+  working against an application registered with that redirect.
 - Search owned inventory with DIM-style queries in CLI and MCP, ANDed with
   structured filters. Unsupported filters fail explicitly instead of being
   silently ignored. `ghostlink search-inventory --filters` lists the registry's

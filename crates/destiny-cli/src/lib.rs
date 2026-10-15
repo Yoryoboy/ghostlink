@@ -17,6 +17,7 @@ pub mod command;
 pub mod equip;
 pub mod equip_output;
 pub mod handler;
+pub mod headless_login;
 pub mod installation;
 pub mod lock;
 pub mod lock_output;

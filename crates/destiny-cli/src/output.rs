@@ -915,6 +915,43 @@ pub fn render_login_instruction(mode: OutputMode, instruction: &LoginInstruction
     }
 }
 
+/// Renders the pending login `login start` persisted.
+///
+/// The authorization URL carries the CSRF state the provider sends to the
+/// browser anyway; nothing else about the pending login is rendered.
+pub fn render_login_pending(
+    mode: OutputMode,
+    start: &crate::headless_login::HeadlessStart,
+) -> String {
+    match mode {
+        OutputMode::Human => format!(
+            "login pending\nopen this url on any device and approve:\n  {}\nexpires_at: {}\nthen copy the full callback address shown after approval (the Ghostlink callback page has a Copy button) and run:\n  ghostlink login complete\nand paste it when asked, or pass it as the argument",
+            sanitize(&start.authorization_url),
+            start.expires_at.seconds(),
+        ),
+        OutputMode::Json => json!({
+            "authorization_url": start.authorization_url,
+            "expires_at": start.expires_at.seconds(),
+            "kind": "login",
+            "status": "pending",
+        })
+        .to_string(),
+    }
+}
+
+/// Renders `login cancel`: whether a pending login was discarded.
+pub fn render_login_cancelled(mode: OutputMode, removed: bool) -> String {
+    match (mode, removed) {
+        (OutputMode::Human, true) => "pending login cancelled".to_owned(),
+        (OutputMode::Human, false) => "no pending login".to_owned(),
+        (OutputMode::Json, removed) => json!({
+            "kind": "login",
+            "status": if removed { "cancelled" } else { "none" },
+        })
+        .to_string(),
+    }
+}
+
 /// Renders one completed authorization.
 ///
 /// Access-only compatibility output. Credential material never reaches the renderer.

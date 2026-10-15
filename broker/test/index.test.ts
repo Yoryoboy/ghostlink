@@ -5,7 +5,7 @@ const endpoint = "https://www.bungie.net/platform/app/oauth/token/";
 const env: Env = {
   BUNGIE_CLIENT_ID: "id :/+%&é",
   BUNGIE_CLIENT_SECRET: "secret :/+%&é",
-  ALLOWED_REDIRECT_URI: "ghostlink://oauth/callback",
+  ALLOWED_REDIRECT_URIS: "https://ghostlink-token-broker.93jads.workers.dev/callback,ghostlink://oauth/callback",
   BUNGIE_TOKEN_ENDPOINT: endpoint,
 };
 const refresh = "grant_type=refresh_token&refresh_token=refresh%2Bvalue";
@@ -129,7 +129,7 @@ describe("bounded and strict input", () => {
 });
 
 describe("configuration and rate limiting", () => {
-  it.each(["BUNGIE_CLIENT_ID", "BUNGIE_CLIENT_SECRET", "ALLOWED_REDIRECT_URI"] as const)("requires %s", async (key) => {
+  it.each(["BUNGIE_CLIENT_ID", "BUNGIE_CLIENT_SECRET", "ALLOWED_REDIRECT_URIS"] as const)("requires %s", async (key) => {
     for (const value of [undefined, ""]) {
       const configured = { ...env };
       if (value === undefined) delete configured[key];

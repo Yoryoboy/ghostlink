@@ -239,6 +239,58 @@ available. Callback delivery defaults to `--callback auto`; use
 `--callback paste` for terminal paste or `--callback handler` to require the
 installed Linux handler explicitly.
 
+### Headless two-step login
+
+For a machine with no browser or desktop, such as a home server reached over
+SSH, split the login into two commands that need no interactive terminal:
+
+```sh
+ghostlink login start                  # prints the authorization URL and its expiry
+# open the URL on any device, approve, copy the address the callback page shows
+ghostlink login complete               # paste that address on stdin (or pipe it)
+ghostlink login complete 'https://ghostlink-token-broker.93jads.workers.dev/callback?code=...&state=...'
+ghostlink login cancel                 # discard a pending login
+```
+
+- `start` opens no browser, installs no handler and asks nothing. It saves the
+  pending login as `pending-login.json` beside the
+  [credential file](configuration.md#credential-file) (`0600`, replacing any
+  earlier one) and prints the URL. It expires after 5 minutes. With `--json` it
+  prints `{"authorization_url":…,"expires_at":…,"kind":"login","status":"pending"}`.
+- After approving, the browser lands on the Ghostlink callback page
+  (`https://ghostlink-token-broker.93jads.workers.dev/callback?…`). It shows the
+  full address with a **Copy** button; copy it exactly as shown. The page never
+  sends the code anywhere. Its "Open in Ghostlink" link
+  (`ghostlink://oauth/callback?…`, same query) is for a desktop with the
+  handler; `complete` accepts either form of the address.
+- With a configured `ghostlink://oauth/callback` callback (an older
+  `config.env`), the browser is redirected straight to that address; on a device
+  without Ghostlink it opens nothing, so copy it from the address bar.
+- `complete` takes that address as its argument, or reads one line from standard
+  input when the argument is absent or `-`. Prefer standard input: an argument
+  is visible in shell history and the process list. A terminal gets a prompt
+  and shows the pasted line, so you can check it before pressing Enter; clear
+  the screen afterwards if others can see it. It prints the same `authorized` result as
+  `ghostlink login` and syncs missing Manifest definitions.
+- The pending login is single use. A malformed address is rejected and the
+  pending login is kept, so you can paste again. Otherwise the pending login is
+  removed before the code is exchanged: a rejected state, an expired login,
+  a denial or a failed exchange needs a new `ghostlink login start`. Without a
+  pending login, `complete` fails with `authorization_required` / exit 10.
+- `cancel` removes the pending login and succeeds when there is none
+  (`status` `cancelled` or `none` with `--json`).
+- The flags `--mode` and `--callback` belong to the interactive `ghostlink login`
+  only and are rejected with the subcommands.
+
+The address carries a one-use authorization code. Whatever channel you use to
+move it from the browser device to the server (a chat message, a note, a
+clipboard sync) can read it. Ghostlink's state check protects the server's
+login from a foreign callback, but it cannot stop someone who copies the code
+from exchanging it first with the provider and obtaining access to your
+account. This is an accepted trade-off of the headless flow: prefer a private
+channel, complete immediately, and run `ghostlink login start` again if the
+address may have been seen by anyone else.
+
 ### Callback handler
 
 ```sh

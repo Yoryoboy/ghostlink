@@ -668,6 +668,18 @@ where
         );
     }
     if let Command::Login(arguments) = &cli.command {
+        if let Some(action) = &arguments.action {
+            let mut output = crate::headless_login::run_production(action, mode);
+            if output.exit_code == 0
+                && matches!(action, crate::command::LoginAction::Complete(_))
+                && ensure_definitions(manifest_factory).is_err()
+            {
+                output.stderr.push_str(
+                    "Manifest sync failed; run ghostlink sync-manifest before reading data.\n",
+                );
+            }
+            return output;
+        }
         let mut login = match login_factory.build_with_output(
             arguments.mode.authorization_mode(),
             arguments.callback,
@@ -1084,7 +1096,7 @@ fn callback_delivery(callback_uri: &str) -> Result<(), destiny_app::AppError> {
 /// window fails as the callback timing out, and a failed or rejected exchange
 /// fails as reauthorization being required. No arm can render provider text, a
 /// code, a state, or a credential.
-fn login_result(mode: OutputMode, outcome: AuthorizationOutcome) -> ProcessOutput {
+pub(crate) fn login_result(mode: OutputMode, outcome: AuthorizationOutcome) -> ProcessOutput {
     match outcome {
         AuthorizationOutcome::AuthorizedSession {
             access,

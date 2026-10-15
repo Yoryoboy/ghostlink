@@ -3,7 +3,8 @@ import type { RateLimit } from "@cloudflare/workers-types";
 export interface Env {
   BUNGIE_CLIENT_ID?: string;
   BUNGIE_CLIENT_SECRET?: string;
-  ALLOWED_REDIRECT_URI?: string;
+  /** Comma-separated exact redirect URIs accepted for authorization_code grants. */
+  ALLOWED_REDIRECT_URIS?: string;
   BUNGIE_TOKEN_ENDPOINT?: string;
   RATE_LIMITER?: RateLimit;
 }
@@ -23,8 +24,102 @@ const RESPONSE_HEADERS = {
   "Cache-Control": "no-store",
   Pragma: "no-cache",
 };
+const CALLBACK_PATH = "/callback";
+const GHOSTLINK_CALLBACK = "ghostlink://oauth/callback";
 
 class BodyTooLarge extends Error {}
+
+function createNonce(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// The page is a static template: request code/state are read by the browser
+// from location.href and never reach the server-side HTML or logs.
+function callbackPage(nonce: string): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghostlink authorization</title>
+<style nonce="${nonce}">
+:root { color-scheme: light dark; }
+body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem; line-height: 1.5; }
+main { max-width: 42rem; margin: 0 auto; }
+h1 { font-size: 1.4rem; }
+label { display: block; margin: 1rem 0 .25rem; font-weight: 600; }
+input { width: 100%; box-sizing: border-box; padding: .6rem; font: inherit; }
+button, a.button { display: inline-block; margin-top: .75rem; padding: .6rem .9rem; font: inherit; }
+#status { font-weight: 600; }
+code { word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+<h1>Ghostlink authorization</h1>
+<p id="status" role="status"></p>
+<label for="callback-url">Callback URL</label>
+<input id="callback-url" type="text" readonly autocomplete="off" spellcheck="false">
+<button id="copy" type="button">Copy</button>
+<p>Paste this URL into <code>ghostlink login complete</code> on the machine where <code>ghostlink login start</code> ran.</p>
+<a id="open" class="button" href="${GHOSTLINK_CALLBACK}">Open in Ghostlink on this computer</a>
+</main>
+<script nonce="${nonce}">
+(function () {
+  "use strict";
+  var status = document.getElementById("status");
+  var field = document.getElementById("callback-url");
+  var search = window.location.search;
+  var params = new URLSearchParams(search);
+  if (params.has("error")) {
+    status.textContent = "The authorization was not approved. Copy the callback URL below; the CLI will report the denial.";
+  } else if (params.has("code")) {
+    status.textContent = "Authorization received. Copy the callback URL below and paste it into the CLI.";
+  } else {
+    status.textContent = "No authorization result is present in this callback URL.";
+  }
+  field.value = window.location.href;
+  document.getElementById("open").href = "${GHOSTLINK_CALLBACK}" + search;
+  document.getElementById("copy").addEventListener("click", function () {
+    field.select();
+    field.setSelectionRange(0, field.value.length);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(field.value);
+    } else {
+      document.execCommand("copy");
+    }
+  });
+})();
+</script>
+</body>
+</html>
+`;
+}
+
+// A static, credential-free page needs no budget from the token-exchange
+// limiter; it must keep working even while exchanges are being throttled.
+function callbackResponse(request: Request): Response {
+  const nonce = createNonce();
+  const headers = {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store",
+    Pragma: "no-cache",
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
+  };
+  return new Response(request.method === "HEAD" ? null : callbackPage(nonce), { headers });
+}
+
+function allowedRedirectUris(env: Env): string[] {
+  return (env.ALLOWED_REDIRECT_URIS ?? "")
+    .split(",")
+    .map((uri) => uri.trim())
+    .filter((uri) => uri.length > 0);
+}
 
 function error(status: number, name = "invalid_request", extra: Record<string, string> = {}): Response {
   return new Response(JSON.stringify({ error: name }), {
@@ -109,7 +204,14 @@ function formEncode(value: string): string {
 }
 
 export async function handleRequest(request: Request, env: Env, deps: Dependencies): Promise<Response> {
-  if (new URL(request.url).pathname !== "/token") return error(404);
+  const { pathname } = new URL(request.url);
+  if (pathname === CALLBACK_PATH) {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return error(405, "invalid_request", { Allow: "GET, HEAD" });
+    }
+    return callbackResponse(request);
+  }
+  if (pathname !== "/token") return error(404);
   if (request.method !== "POST") return error(405, "invalid_request", { Allow: "POST" });
 
   if (env.RATE_LIMITER) {
@@ -143,7 +245,8 @@ export async function handleRequest(request: Request, env: Env, deps: Dependenci
 
   const clientId = env.BUNGIE_CLIENT_ID;
   const secret = env.BUNGIE_CLIENT_SECRET;
-  if (!clientId || !secret || !env.ALLOWED_REDIRECT_URI) return error(500, "server_misconfigured");
+  const redirectUris = allowedRedirectUris(env);
+  if (!clientId || !secret || redirectUris.length === 0) return error(500, "server_misconfigured");
   const endpoint = env.BUNGIE_TOKEN_ENDPOINT ?? DEFAULT_ENDPOINT;
   try {
     const url = new URL(endpoint);
@@ -153,8 +256,9 @@ export async function handleRequest(request: Request, env: Env, deps: Dependenci
   } catch {
     return error(500, "server_misconfigured");
   }
-  if (grant === "authorization_code" && fields.get("redirect_uri") !== env.ALLOWED_REDIRECT_URI) {
-    return error(400);
+  if (grant === "authorization_code") {
+    const redirect = fields.get("redirect_uri");
+    if (redirect === null || !redirectUris.includes(redirect)) return error(400);
   }
 
   const controller = new AbortController();

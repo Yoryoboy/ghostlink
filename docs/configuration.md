@@ -62,8 +62,14 @@ values (API key, public client ID, callback URI, broker URL) are safe to commit
 and are extractable from release binaries. Their single owner-maintained block
 is `crates/destiny-app/src/defaults.rs`; every value remains overridable.
 
-Callbacks default to `ghostlink://oauth/callback` and freshness TTL to `900`
-seconds. API key, public client ID, and broker URL currently have `None` defaults
+Callbacks default to the broker callback page
+`https://ghostlink-token-broker.93jads.workers.dev/callback` and freshness TTL to
+`900` seconds. `BUNGIE_CALLBACK_URI` and `BUNGIE_REGISTERED_CALLBACK_URI` accept
+exactly `ghostlink://oauth/callback` or a plain `https://` URL with a host and no
+userinfo, query or fragment; HTTP is refused. Set both to the redirect URL
+registered in your Bungie application. With an HTTPS callback, a pasted callback
+is accepted on that URL or on `ghostlink://oauth/callback`, which the callback
+page offers to the desktop handler. API key, public client ID, and broker URL currently have `None` defaults
 pending owner provisioning; absent required values still produce the same
 sanitized configuration error. Thus this checkout is not yet fully zero-config.
 The database path defaults to the OS location below. The definition version is
@@ -158,6 +164,11 @@ The file is separate from `config.env` and from the inventory database.
   whose token another process already rotated adopts the new one.
 - **Never rendered.** Tokens never appear in logs, errors, MCP output or agent
   prompts.
+- **Pending headless login.** `ghostlink login start` saves the login it began
+  as `pending-login.json` in the same directory (`0600`, same refusal rules). It
+  holds only the authorization state and its expiry, never a token, and is
+  removed by `login complete` or `login cancel`. See the
+  [headless two-step login](cli.md#headless-two-step-login).
 
 Earlier releases kept tokens in the OS keyring. Those entries are not read or
 migrated: run `ghostlink login` once after upgrading. Deleting

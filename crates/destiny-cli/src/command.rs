@@ -333,10 +333,14 @@ pub enum Command {
     ///
     /// The human owns the Bungie application registration and the browser
     /// authorization. This command prints the authorization URL, opens the
-    /// browser when the mode allows it, and then reads the custom-scheme callback
-    /// URI through the desktop handler or terminal paste. Auto offers handler
+    /// browser when the mode allows it, and then reads the callback address the
+    /// Ghostlink callback page shows: pasted in the terminal, or delivered by the
+    /// desktop handler when you follow the page's "Open in Ghostlink" link. Auto offers handler
     /// installation only with terminal consent. It never asks for, reads, or
     /// prints a password, a client secret, or a token value.
+    ///
+    /// On a machine without a browser, use `login start` and then
+    /// `login complete` instead; neither waits on a terminal.
     #[command(name = "login")]
     Login(LoginArgs),
 
@@ -400,18 +404,62 @@ impl LoginMode {
 
 /// Arguments for `login`.
 ///
-/// The mode controls whether the authorization URL opens in a local browser.
-/// Auto callback delivery detects the desktop handler and offers installation
-/// with terminal consent; explicit paste and handler bypass that policy.
+/// Without a subcommand this is the interactive login: the mode controls
+/// whether the authorization URL opens in a local browser, and auto callback
+/// delivery detects the desktop handler and offers installation with terminal
+/// consent; explicit paste and handler bypass that policy. The `start`,
+/// `complete` and `cancel` subcommands are the non-interactive two-step login
+/// for a headless machine and take none of these flags.
 #[derive(Debug, Args)]
+#[command(args_conflicts_with_subcommands = true)]
 pub struct LoginArgs {
+    /// Two-step headless login; omit it for the interactive login.
+    #[command(subcommand)]
+    pub action: Option<LoginAction>,
+
     /// Whether to open the authorization URL in the local system browser.
     #[arg(long, value_enum, default_value = "auto", value_name = "MODE")]
     pub mode: LoginMode,
 
-    /// How the custom-scheme callback reaches this process.
+    /// How the callback reaches this process: terminal paste or desktop handler.
     #[arg(long, value_enum, default_value = "auto", value_name = "CALLBACK")]
     pub callback: CallbackMode,
+}
+
+/// The non-interactive two-step login for a machine without a browser.
+#[derive(Debug, Subcommand)]
+pub enum LoginAction {
+    /// Begin a headless login and print the authorization URL.
+    ///
+    /// Opens no browser, installs no handler and asks nothing on the terminal.
+    /// The pending login is saved as `pending-login.json` beside the credential
+    /// file, replacing any earlier one, and expires after five minutes. Open the
+    /// authorization URL on any device, approve, copy the full callback address
+    /// the Ghostlink callback page shows, and finish with
+    /// `ghostlink login complete`.
+    Start,
+    /// Finish the pending headless login with the callback address.
+    ///
+    /// The callback address is the one the Ghostlink callback page shows after
+    /// approval (`https://...callback?...` or `ghostlink://oauth/callback?...`).
+    /// Omit it, or pass `-`, to read one line from standard
+    /// input instead, which keeps the one-use code out of shell history and the
+    /// process list. The pending login is single use: it is removed before the
+    /// code is exchanged, so a failed or repeated completion needs a new
+    /// `ghostlink login start`.
+    Complete(LoginCompleteArgs),
+    /// Discard the pending headless login.
+    ///
+    /// Succeeds when there is no pending login too.
+    Cancel,
+}
+
+/// Arguments for `login complete`.
+#[derive(Debug, Args)]
+pub struct LoginCompleteArgs {
+    /// The callback address, or `-` (the default) for standard input.
+    #[arg(value_name = "CALLBACK_URI")]
+    pub callback_uri: Option<String>,
 }
 
 /// Arguments for desktop handler management.
@@ -450,7 +498,7 @@ pub struct CallbackArgs {
     pub callback_uri: String,
 }
 
-/// How the custom-scheme callback reaches the waiting login process.
+/// How the callback reaches the waiting login process.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum CallbackMode {
     /// Detect the handler and offer installation when interactive (default).
@@ -1941,6 +1989,113 @@ mod tests {
         }
         assert_eq!(CallbackMode::Paste.as_str(), "paste");
         assert_eq!(CallbackMode::Handler.as_str(), "handler");
+    }
+
+    #[test]
+    fn plain_login_keeps_parsing_to_the_interactive_path_with_its_defaults() {
+        match parse(["login"]).command {
+            Command::Login(arguments) => {
+                assert!(arguments.action.is_none());
+                assert_eq!(arguments.mode, super::LoginMode::Auto);
+                assert_eq!(arguments.callback, CallbackMode::Auto);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+        match parse(["login", "--mode", "headless", "--callback", "paste"]).command {
+            Command::Login(arguments) => {
+                assert!(arguments.action.is_none());
+                assert_eq!(arguments.mode, super::LoginMode::Headless);
+                assert_eq!(arguments.callback, CallbackMode::Paste);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_headless_login_subcommands_parse() {
+        use super::LoginAction;
+        let action = |arguments: &[&str]| match parse(arguments.iter().copied()).command {
+            Command::Login(arguments) => arguments.action.expect("a subcommand"),
+            other => panic!("unexpected command: {other:?}"),
+        };
+        assert!(matches!(action(&["login", "start"]), LoginAction::Start));
+        assert!(matches!(action(&["login", "cancel"]), LoginAction::Cancel));
+        match action(&["login", "complete"]) {
+            LoginAction::Complete(arguments) => assert_eq!(arguments.callback_uri, None),
+            other => panic!("unexpected action: {other:?}"),
+        }
+        match action(&["login", "complete", "-"]) {
+            LoginAction::Complete(arguments) => {
+                assert_eq!(arguments.callback_uri.as_deref(), Some("-"))
+            }
+            other => panic!("unexpected action: {other:?}"),
+        }
+        match action(&[
+            "login",
+            "complete",
+            "ghostlink://oauth/callback?code=c&state=s",
+        ]) {
+            LoginAction::Complete(arguments) => assert_eq!(
+                arguments.callback_uri.as_deref(),
+                Some("ghostlink://oauth/callback?code=c&state=s")
+            ),
+            other => panic!("unexpected action: {other:?}"),
+        }
+        assert_eq!(
+            parse(["--json", "login", "start"]).output_mode(),
+            OutputMode::Json
+        );
+    }
+
+    #[test]
+    fn login_flags_conflict_with_the_headless_subcommands() {
+        for arguments in [
+            ["login", "--mode", "headless", "start"].as_slice(),
+            ["login", "--callback", "paste", "complete"].as_slice(),
+            ["login", "start", "--mode", "headless"].as_slice(),
+            ["login", "cancel", "--callback", "paste"].as_slice(),
+            ["login", "start", "extra"].as_slice(),
+            ["login", "cancel", "extra"].as_slice(),
+            ["login", "complete", "a", "b"].as_slice(),
+        ] {
+            let argv = std::iter::once("ghostlink").chain(arguments.iter().copied());
+            assert!(Cli::try_parse_from(argv).is_err(), "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn the_headless_login_help_describes_the_two_step_flow() {
+        let help = |arguments: &[&str]| {
+            let argv = std::iter::once("ghostlink").chain(arguments.iter().copied());
+            let error = Cli::try_parse_from(argv).unwrap_err();
+            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+            error.to_string()
+        };
+        let login = help(&["login", "--help"]);
+        for needle in ["start", "complete", "cancel", "--mode", "--callback"] {
+            assert!(login.contains(needle), "login help lacks {needle}");
+        }
+        let start = help(&["login", "start", "--help"]);
+        for needle in [
+            "authorization URL",
+            "no browser",
+            "login complete",
+            "expires",
+        ] {
+            assert!(start.contains(needle), "start help lacks {needle}");
+        }
+        let complete = help(&["login", "complete", "--help"]);
+        for needle in [
+            "ghostlink://oauth/callback?",
+            "standard input",
+            "shell history",
+            "single use",
+        ] {
+            assert!(complete.contains(needle), "complete help lacks {needle}");
+        }
+        let cancel = help(&["login", "cancel", "--help"]);
+        assert!(cancel.contains("pending"));
+        assert!(cancel.contains("no pending"));
     }
 
     #[test]
