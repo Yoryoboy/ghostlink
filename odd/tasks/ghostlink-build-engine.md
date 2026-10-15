@@ -903,3 +903,10 @@ coverage (`domain.rs:123-126`).
       skipped, 0 steps (was 10 + 4 `unsupported_bucket`); the real apply is
       `no_op`, nothing dispatched, local state unchanged, exit 0 (was 41).
       Workspace 2473 passed / 0 failed; clippy both modes, fmt, diff-check.
+      Commit caf974e; RDD assess 82f48f5..caf974e medium, not due.
+    - The 2026-10-13 `move` of the equipped Ace reporting `uncertain` is live
+      finding F8, fixed on main by 7872a5d (PR #88): Bungie sends refusals
+      such as 1656 Equipped with HTTP 500, and this branch predates that
+      fix. Closed by the rebase onto main; no branch change.
+    - Follow-up (not BE-010): ghost/emblem/ship/sparrow elsewhere still
+      skip as `unsupported_bucket`; moving them needs audited capacity.
