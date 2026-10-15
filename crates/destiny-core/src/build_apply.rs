@@ -656,6 +656,9 @@ fn is_equip_only_bucket(bucket: BucketHash) -> bool {
 }
 impl Planner<'_> {
     /// Equip with DIM's one-exotic handling: dequip conflicting labels first.
+    /// Deviation from DIM's bucket order: Bungie EquipItems applies the list in
+    /// order, so labeled (exotic) items go last, after the items that replace an
+    /// equipped exotic; otherwise they fail with 1641 ExoticLimit (BE-010c live).
     fn equip_resolving(
         &mut self,
         mut ids: Vec<ItemInstanceId>,
@@ -686,6 +689,7 @@ impl Planner<'_> {
                 ids.push(replacement);
             }
         }
+        ids.sort_by_key(|id| self.label(&self.item(id)).is_some());
         self.equip(ids, target)
     }
     /// DIM clearSpaceAfterLoadout/clearItemsOffCharacter (loadout-apply.ts:822-955).

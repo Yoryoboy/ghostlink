@@ -18,6 +18,11 @@ batch equip and in-game apply-loadout commands are unchanged.
   `ghostlink sync-manifest` after upgrading.
 - Unique conflicts use the **label**, not Exotic rarity. DIM compares the same
   label on equipped items in different buckets (`item-move-service.ts:535-546`).
+- Grouped equips put labeled (exotic) items last, after any item that replaces
+  an equipped exotic. This deviates from DIM's bucket order
+  (`loadout-apply.ts:261-267`): Bungie EquipItems applies the list in order, and
+  live BE-010c showed an exotic ahead of its label's replacement failing with
+  1641 ExoticLimit, while the same pair with the exotic last succeeded.
 - `destiny_core::build_apply::plan_build_items` consumes resolved build items,
   inventory, definitions, characters and explicit capacity inputs. Resolution
   remains `build_analysis`'s responsibility; no same-hash replacements of build

@@ -161,7 +161,7 @@ fn source_dequip_precedes_vault_transfers_and_grouped_equips() {
     // A lone source dequip is handled inline with the move (loadout-apply.ts:461).
     assert_eq!(p.steps[0].phase, ApplyPhase::Move);
     assert!(
-        matches!(&p.steps[4].action, BuildAction::Equip { items, character } if items == &[ItemInstanceId::new("10"),ItemInstanceId::new("20")] && character.as_str()=="1")
+        matches!(&p.steps[4].action, BuildAction::Equip { items, character } if items == &[ItemInstanceId::new("20"),ItemInstanceId::new("10")] && character.as_str()=="1")
     );
     assert_eq!(items, before);
 }
@@ -220,7 +220,52 @@ fn unique_labels_not_rarity_drive_conflict_replacement() {
     let p = plan(&[selected(Some(&items[0]), true)], &items, &defs, None, 10);
     assert!(p.skipped.is_empty());
     assert!(
-        matches!(&p.steps[0].action,BuildAction::Equip { items, .. } if items==&[ItemInstanceId::new("10"),ItemInstanceId::new("21")])
+        matches!(&p.steps[0].action,BuildAction::Equip { items, .. } if items==&[ItemInstanceId::new("21"),ItemInstanceId::new("10")])
+    );
+}
+#[test]
+fn labeled_equips_go_last_so_a_replaced_exotic_frees_its_label_first() {
+    // Bungie EquipItems applies the list in order: an exotic ahead of the item that
+    // replaces the equipped exotic fails with 1641 ExoticLimit (BE-010c live).
+    let defs = [
+        def(10, 1498876634, "exotic_weapon"),
+        def(20, 2465295065, "exotic_weapon"),
+        def(21, 2465295065, ""),
+    ];
+    let items = [
+        item(
+            "10",
+            10,
+            ItemLocation::Character(CharacterId::new("1")),
+            false,
+        ),
+        item(
+            "20",
+            20,
+            ItemLocation::Character(CharacterId::new("1")),
+            true,
+        ),
+        item(
+            "21",
+            21,
+            ItemLocation::Character(CharacterId::new("1")),
+            false,
+        ),
+    ];
+    let p = plan(
+        &[
+            selected(Some(&items[0]), true),
+            selected(Some(&items[2]), true),
+        ],
+        &items,
+        &defs,
+        None,
+        10,
+    );
+    assert!(p.skipped.is_empty());
+    assert_eq!(p.steps.len(), 1);
+    assert!(
+        matches!(&p.steps[0].action, BuildAction::Equip { items, .. } if items == &[ItemInstanceId::new("21"), ItemInstanceId::new("10")])
     );
 }
 #[test]
