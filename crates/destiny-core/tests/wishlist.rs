@@ -414,6 +414,25 @@ mod inspection {
         );
     }
 
+    /// Two lists that share a section and notes are still two opinions, each
+    /// cited with its own source.
+    #[test]
+    fn lists_sharing_section_and_notes_are_cited_separately() {
+        let text = "title:Guns\ndimwishlist:item=10&perks=1#notes:Great.\n";
+        let mut rolls = sourced("/mine.txt", text);
+        rolls.extend(sourced("voltron", text));
+        let options = [PlugOption::new(1, "Outlaw")];
+        let inspection = inspect_wishlist(Some(ItemSlot::Kinetic), 10, &rolls, &options, perk_name)
+            .expect("weapon");
+        let sources: Vec<&str> = inspection
+            .matches
+            .iter()
+            .map(|found| found.source.as_str())
+            .collect();
+        assert_eq!(sources, ["/mine.txt", "voltron"]);
+        assert_eq!(inspection.matches_total, 2);
+    }
+
     #[test]
     fn unmatched_weapons_report_no_opinion_and_non_weapons_nothing() {
         assert_eq!(
