@@ -92,6 +92,15 @@ impl WorldDefinitionRepository for SqliteStore {
     ) -> Result<Vec<destiny_core::ClarityInsight>, AppError> {
         destiny_core::ClarityRepository::clarity_by_name(self, name)
     }
+    fn lookup_wishlist_rolls(
+        &self,
+        item_hash: u32,
+    ) -> Result<Option<Vec<destiny_core::wishlist::SourcedWishlistRoll>>, AppError> {
+        if !super::wishlists::wishlists_loaded(self)? {
+            return Ok(None);
+        }
+        destiny_core::wishlist::WishlistRepository::wishlist_rolls(self, item_hash).map(Some)
+    }
     fn lookup_item_description(&self, hash: ItemHash) -> Result<Option<String>, AppError> {
         let text: Option<String> = self
             .connection()

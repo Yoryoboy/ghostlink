@@ -50,6 +50,9 @@
 
 use super::{SqliteStore, storage_failure};
 use destiny_core::query::instance_matches_with_definition;
+use destiny_core::wishlist::{
+    PlugOption, SourcedWishlistRoll, WishlistRepository, WishlistVerdict, wishlist_verdict,
+};
 use destiny_core::{
     AppError, DefinitionRepository, DefinitionSearchQuery, InstanceSearchQuery, ItemDefinition,
     ItemHash, ItemHashFilter, ItemInstance, ItemInstanceId, ItemLocation, MAX_SEARCH_OFFSET,
@@ -88,6 +91,9 @@ type RawInstance = (
 );
 
 impl SearchRepository for SqliteStore {
+    fn wishlists_loaded(&self) -> Result<bool, AppError> {
+        super::wishlists::wishlists_loaded(self)
+    }
     fn name_catalog(
         &self,
         kind: &str,
@@ -200,6 +206,7 @@ impl SearchRepository for SqliteStore {
         let typed_definition = execution.is_some_and(|q| q.needs_definition());
         let typed_plugs = execution.is_some_and(|q| q.needs_plugs());
         let typed_available = execution.is_some_and(|q| q.needs_available_plugs());
+        let typed_wishlist = execution.is_some_and(|q| q.needs_wishlist());
 
         let mut sql = String::from(
             "SELECT instance_id, item_hash, location_kind, location_character_id, \
@@ -262,6 +269,7 @@ impl SearchRepository for SqliteStore {
         // Rust applies the Unicode-aware exact match before truncation.
         let mut plug_definitions = std::collections::HashMap::new();
         let mut base_definitions = std::collections::HashMap::new();
+        let mut wishlist_rolls = std::collections::HashMap::new();
         {
             let mut statement = self
                 .connection()
@@ -359,15 +367,30 @@ impl SearchRepository for SqliteStore {
                         && destiny_core::query::instance_matches_available_names(
                             query, &plugs, &available,
                         )
-                        && execution.is_none_or(|execution| {
-                            execution.matches(
-                                &instance,
-                                definition,
-                                &plugs,
-                                &available,
-                                query.include_available,
-                            )
-                        })
+                        && match execution {
+                            None => true,
+                            Some(execution) => {
+                                let wishlist = if typed_wishlist {
+                                    Some(candidate_wishlist_verdict(
+                                        self,
+                                        &instance,
+                                        definition,
+                                        &mut wishlist_rolls,
+                                        &mut plug_definitions,
+                                    )?)
+                                } else {
+                                    None
+                                };
+                                execution.matches(
+                                    &instance,
+                                    definition,
+                                    &plugs,
+                                    &available,
+                                    query.include_available,
+                                    wishlist,
+                                )
+                            }
+                        }
                     {
                         if query.sort.is_some() {
                             // Keep at most k matches, ordered by the shared comparator.
@@ -560,6 +583,74 @@ fn decode_optional_u16(value: Option<i64>) -> Result<Option<u16>, AppError> {
         Some(raw) => u16::try_from(raw).map(Some).map_err(|_| storage_failure()),
         None => Ok(None),
     }
+}
+
+/// One candidate's wish-list verdict under the inspect rules: every socketed
+/// and selectable plug hash is an option, named when its definition exists, so
+/// enhanced perks match by name and undefined plugs still match by hash. Rolls
+/// and plug definitions are cached across candidates of one scan.
+fn candidate_wishlist_verdict(
+    store: &SqliteStore,
+    instance: &ItemInstance,
+    definition: Option<&ItemDefinition>,
+    rolls: &mut std::collections::HashMap<ItemHash, Vec<SourcedWishlistRoll>>,
+    plug_definitions: &mut std::collections::HashMap<ItemHash, Option<ItemDefinition>>,
+) -> Result<WishlistVerdict, AppError> {
+    let (Some(definition), Ok(item_hash)) = (definition, u32::try_from(instance.item_hash.value()))
+    else {
+        return Ok(WishlistVerdict::None);
+    };
+    if !destiny_core::query::is_weapon_slot(definition.slot) {
+        return Ok(WishlistVerdict::None);
+    }
+    let rolls = match rolls.entry(instance.item_hash) {
+        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+        std::collections::hash_map::Entry::Vacant(entry) => {
+            entry.insert(WishlistRepository::wishlist_rolls(store, item_hash)?)
+        }
+    };
+    if rolls.is_empty() {
+        return Ok(WishlistVerdict::None);
+    }
+    let mut name = |hash: ItemHash| -> Result<Option<String>, AppError> {
+        if let std::collections::hash_map::Entry::Vacant(entry) = plug_definitions.entry(hash) {
+            entry.insert(match store.lookup_definition(hash)? {
+                Resolution::Unique(definition) => Some(definition),
+                Resolution::Missing => None,
+                Resolution::Ambiguous(_) => return Err(storage_failure()),
+            });
+        }
+        Ok(plug_definitions[&hash]
+            .as_ref()
+            .map(|plug| plug.name.clone()))
+    };
+    let mut options = Vec::new();
+    for hash in instance
+        .plugs
+        .iter()
+        .map(|plug| plug.plug_hash)
+        .chain(instance.available_plugs.iter().map(|plug| plug.plug_hash))
+    {
+        if let Ok(value) = u32::try_from(hash.value()) {
+            options.push(PlugOption::new(value, name(hash)?.unwrap_or_default()));
+        }
+    }
+    let mut perk_names = std::collections::HashMap::new();
+    for perk in rolls
+        .iter()
+        .flat_map(|sourced| sourced.roll.perks.iter().copied())
+    {
+        if let std::collections::hash_map::Entry::Vacant(entry) = perk_names.entry(perk) {
+            entry.insert(name(ItemHash::new(i64::from(perk)))?);
+        }
+    }
+    Ok(wishlist_verdict(
+        definition.slot,
+        item_hash,
+        rolls,
+        &options,
+        |perk| perk_names.get(&perk).cloned().flatten(),
+    ))
 }
 
 #[cfg(test)]

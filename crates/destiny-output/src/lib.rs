@@ -12,6 +12,7 @@ pub mod lock;
 pub mod move_item;
 pub mod search;
 pub mod stack_pull;
+pub mod wishlist;
 
 /// Actionable text for stable, sanitized provider rejection reasons.
 pub fn rejection_message(reason: &str) -> Option<&'static str> {

@@ -1004,11 +1004,7 @@ pub fn run_manifest<M: crate::runtime::ManifestFactory>(
     mode: OutputMode,
 ) -> ProcessOutput {
     match factory.sync_with_clarity() {
-        Ok(report) => ProcessOutput::success(crate::output::render_manifest_with_clarity(
-            mode,
-            &report.manifest,
-            &report.clarity,
-        )),
+        Ok(report) => ProcessOutput::success(crate::output::render_manifest_sync(mode, &report)),
         Err(error) => ProcessOutput::failure(mode, error),
     }
 }
@@ -1879,6 +1875,7 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            wishlist: None,
             fragment_capacity: None,
             armor_model: None,
             plug_details: Vec::new(),

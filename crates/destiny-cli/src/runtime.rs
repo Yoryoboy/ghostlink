@@ -402,7 +402,17 @@ pub trait ManifestFoundations {
     type Repository: destiny_app::DefinitionCatalogRepository
         + destiny_app::WorldDefinitionRepository
         + destiny_app::StatDefinitionRepository
-        + destiny_app::ClarityRepository;
+        + destiny_app::ClarityRepository
+        + destiny_app::wishlist::WishlistRepository;
+
+    /// Injectable, credential-free voltron acquisition; legacy fixtures stay offline.
+    fn voltron_transport(
+        &mut self,
+    ) -> Result<Box<dyn destiny_adapters::wishlist::VoltronTransport>, AppError> {
+        Err(AppError::new(
+            destiny_app::ErrorCategory::ProviderUnavailable,
+        ))
+    }
 
     /// Injectable, credential-free acquisition; legacy fixtures remain offline.
     fn clarity_transport(
@@ -428,6 +438,13 @@ impl ManifestFoundations for ProductionFoundations {
     ) -> Result<Box<dyn destiny_adapters::clarity::ClarityTransport>, AppError> {
         Ok(Box::new(
             destiny_adapters::clarity::HttpClarityTransport::new()?,
+        ))
+    }
+    fn voltron_transport(
+        &mut self,
+    ) -> Result<Box<dyn destiny_adapters::wishlist::VoltronTransport>, AppError> {
+        Ok(Box::new(
+            destiny_adapters::wishlist::HttpVoltronTransport::new()?,
         ))
     }
 
@@ -457,6 +474,7 @@ pub trait ManifestFactory {
         Ok(destiny_app::ManifestAndClarityReport {
             manifest: self.sync()?,
             clarity: destiny_app::ClaritySyncReport::unavailable(),
+            wishlists: destiny_app::wishlist::WishlistSyncReport::unavailable(),
         })
     }
 
@@ -499,6 +517,7 @@ impl<F: ManifestFoundations> ManifestFactory for ComposingManifestFactory<F> {
     fn sync(&mut self) -> Result<destiny_app::ManifestSyncReport, CliError> {
         let report = self.sync_with_clarity()?;
         eprintln!("clarity: {}", report.clarity.status);
+        eprintln!("wishlists: {}", report.wishlists.status);
         Ok(report.manifest)
     }
 
@@ -513,16 +532,28 @@ impl<F: ManifestFoundations> ManifestFactory for ComposingManifestFactory<F> {
         let gateway =
             destiny_adapters::manifest::BungieManifestGateway::new(api_key, transport, clock);
         let repository = foundations.store(&config)?;
-        destiny_app::clarity::sync_manifest_and_clarity(
-            &mut destiny_app::ManifestService::new(gateway, repository),
+        let mut service = destiny_app::ManifestService::new(gateway, repository);
+        let mut report = destiny_app::clarity::sync_manifest_and_clarity(
+            &mut service,
             || {
                 foundations
                     .clarity_transport()
                     .map(destiny_adapters::clarity::ClarityAdapter)
             },
             checked_at,
-        )
-        .map_err(CliError::from)
+        )?;
+        report.wishlists = destiny_app::wishlist::sync_wishlists_after(
+            config.wishlist_sources(),
+            || {
+                let voltron = foundations
+                    .voltron_transport()
+                    .unwrap_or_else(|_| Box::new(destiny_adapters::wishlist::UnavailableVoltron));
+                Ok(destiny_adapters::wishlist::WishlistAdapter(voltron))
+            },
+            service.repository_mut(),
+            checked_at,
+        );
+        Ok(report)
     }
 }
 
@@ -2237,6 +2268,11 @@ mod tests {
                     );
                     actual.as_object_mut().unwrap().remove("clarity");
                     assert_eq!(
+                        actual["wishlists"],
+                        serde_json::json!({"status":"unavailable","sources":[{"source":"voltron","status":"unavailable","rolls":0,"skipped":0}]})
+                    );
+                    actual.as_object_mut().unwrap().remove("wishlists");
+                    assert_eq!(
                         actual,
                         serde_json::from_str::<serde_json::Value>(expected).unwrap()
                     );
@@ -2244,7 +2280,7 @@ mod tests {
                     assert_eq!(
                         output.stdout,
                         format!(
-                            "{expected}clarity: unavailable\nclarity_version: unavailable\nclarity_entries_stored: 0\nclarity_entries_skipped: 0\n"
+                            "{expected}clarity: unavailable\nclarity_version: unavailable\nclarity_entries_stored: 0\nclarity_entries_skipped: 0\nwishlists: unavailable\nwishlist voltron: unavailable, 0 rolls, 0 skipped\n"
                         )
                     );
                 }
@@ -2254,6 +2290,111 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn composed_sync_reports_default_voltron_unavailable_without_a_transport() {
+        use super::ManifestFactory;
+        use destiny_app::wishlist::{
+            WishlistSourceReport, WishlistSourceStatus, WishlistSyncReport, WishlistSyncStatus,
+        };
+        let mut factory = super::ComposingManifestFactory::new(FakeManifestFoundations {
+            log: log(),
+            store: Some(SqliteStore::open_in_memory().unwrap()),
+        });
+        let report = factory.sync_with_clarity().unwrap();
+        assert_eq!(report.clarity.status, "unavailable");
+        assert_eq!(
+            report.wishlists,
+            WishlistSyncReport {
+                status: WishlistSyncStatus::Unavailable,
+                sources: vec![WishlistSourceReport {
+                    source: "voltron".into(),
+                    status: WishlistSourceStatus::Unavailable,
+                    rolls: 0,
+                    skipped: 0,
+                }],
+            }
+        );
+    }
+
+    #[test]
+    fn local_wishlists_sync_without_a_voltron_transport() {
+        use super::ManifestFactory;
+        use destiny_app::wishlist::{
+            WishlistSourceReport, WishlistSourceStatus, WishlistSyncReport, WishlistSyncStatus,
+        };
+
+        /// Fake foundations whose configuration also lists a local wish list.
+        struct WithLocalList {
+            inner: FakeManifestFoundations,
+            wishlists: String,
+        }
+        impl super::ManifestFoundations for WithLocalList {
+            type Transport = ManifestTransport;
+            type Clock = ScriptedClock;
+            type Repository = SqliteStore;
+            fn config(&mut self) -> Result<ReadRuntimeConfig, AppError> {
+                let mut values = HashMap::from([
+                    ("BUNGIE_API_KEY".to_string(), API_KEY_SENTINEL.to_string()),
+                    (
+                        "DESTINY_DATABASE_PATH".to_string(),
+                        DATABASE_SENTINEL.to_string(),
+                    ),
+                    (
+                        "DESTINY_FRESHNESS_TTL_SECONDS".to_string(),
+                        TTL_SECONDS.to_string(),
+                    ),
+                ]);
+                values.insert("GHOSTLINK_WISHLISTS".into(), self.wishlists.clone());
+                ReadRuntimeConfig::from_values(&values)
+            }
+            fn clock(&mut self) -> Result<Self::Clock, AppError> {
+                self.inner.clock()
+            }
+            fn transport(&mut self) -> Result<Self::Transport, AppError> {
+                self.inner.transport()
+            }
+            fn store(&mut self, config: &ReadRuntimeConfig) -> Result<Self::Repository, AppError> {
+                self.inner.store(config)
+            }
+        }
+
+        let list = std::env::temp_dir().join(format!(
+            "ghostlink-runtime-wishlist-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&list, "dimwishlist:item=-7\n").unwrap();
+        let key = list.to_string_lossy().into_owned();
+        let mut factory = super::ComposingManifestFactory::new(WithLocalList {
+            inner: FakeManifestFoundations {
+                log: log(),
+                store: Some(SqliteStore::open_in_memory().unwrap()),
+            },
+            wishlists: format!("voltron,{key}"),
+        });
+        let report = factory.sync_with_clarity();
+        std::fs::remove_file(&list).unwrap();
+        assert_eq!(
+            report.unwrap().wishlists,
+            WishlistSyncReport {
+                status: WishlistSyncStatus::Partial,
+                sources: vec![
+                    WishlistSourceReport {
+                        source: "voltron".into(),
+                        status: WishlistSourceStatus::Unavailable,
+                        rolls: 0,
+                        skipped: 0,
+                    },
+                    WishlistSourceReport {
+                        source: key,
+                        status: WishlistSourceStatus::Updated,
+                        rolls: 1,
+                        skipped: 0,
+                    },
+                ],
+            }
+        );
     }
 
     #[test]

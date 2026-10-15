@@ -572,70 +572,135 @@ mod profile_sync_tests {
     }
 }
 
+/// Renders a full sync: Manifest and Clarity, then each wish-list source.
+pub fn render_manifest_sync(
+    mode: OutputMode,
+    report: &destiny_app::ManifestAndClarityReport,
+) -> String {
+    let wishlists = &report.wishlists;
+    match mode {
+        OutputMode::Human => {
+            let text = render_manifest_with_clarity(mode, &report.manifest, &report.clarity);
+            let mut text = format!("{text}\nwishlists: {}", wishlists.status);
+            for source in &wishlists.sources {
+                text.push_str(&format!(
+                    "\nwishlist {}: {}, {} rolls, {} skipped",
+                    sanitize(&source.source),
+                    source.status,
+                    source.rolls,
+                    source.skipped
+                ));
+            }
+            text
+        }
+        OutputMode::Json => {
+            let mut value = manifest_with_clarity_value(&report.manifest, &report.clarity);
+            let sources: Vec<_> = wishlists
+                .sources
+                .iter()
+                .map(|source| {
+                    json!({"source": source.source, "status": source.status.as_str(), "rolls": source.rolls, "skipped": source.skipped})
+                })
+                .collect();
+            value["wishlists"] = json!({"status": wishlists.status.as_str(), "sources": sources});
+            value.to_string()
+        }
+    }
+}
+
 /// Renders the public version label and counts, never definition payloads.
 pub fn render_manifest_with_clarity(
     mode: OutputMode,
     report: &destiny_app::ManifestSyncReport,
     clarity: &destiny_app::ClaritySyncReport,
 ) -> String {
-    let manifest = render_manifest(mode, report);
     match mode {
         OutputMode::Human => format!(
-            "{manifest}\nclarity: {}\nclarity_version: {}\nclarity_entries_stored: {}\nclarity_entries_skipped: {}",
+            "{}\nclarity: {}\nclarity_version: {}\nclarity_entries_stored: {}\nclarity_entries_skipped: {}",
+            render_manifest(mode, report),
             clarity.status,
             sanitize(clarity.version.as_deref().unwrap_or("unavailable")),
             clarity.entries_stored,
             clarity.entries_skipped
         ),
-        OutputMode::Json => {
-            let mut value: serde_json::Value =
-                serde_json::from_str(&manifest).expect("Manifest renderer emits JSON");
-            value["clarity"] = json!({"status": clarity.status, "version": clarity.version, "entries_stored": clarity.entries_stored, "entries_skipped": clarity.entries_skipped});
-            value.to_string()
-        }
+        OutputMode::Json => manifest_with_clarity_value(report, clarity).to_string(),
+    }
+}
+
+fn manifest_with_clarity_value(
+    report: &destiny_app::ManifestSyncReport,
+    clarity: &destiny_app::ClaritySyncReport,
+) -> serde_json::Value {
+    let mut value = manifest_value(report);
+    value["clarity"] = json!({"status": clarity.status, "version": clarity.version, "entries_stored": clarity.entries_stored, "entries_skipped": clarity.entries_skipped});
+    value
+}
+
+/// Status, version, definitions, skipped, world counts and skips, stat
+/// definitions and skips; skips exist only for an update.
+type ManifestFields<'a> = (
+    &'static str,
+    &'a destiny_app::DefinitionVersion,
+    usize,
+    Option<usize>,
+    &'a [usize; 5],
+    Option<&'a [usize; 5]>,
+    usize,
+    Option<usize>,
+);
+
+fn manifest_fields(report: &destiny_app::ManifestSyncReport) -> ManifestFields<'_> {
+    use destiny_app::ManifestSyncReport;
+    match report {
+        ManifestSyncReport::Updated {
+            version,
+            record_count,
+            skipped,
+            world_counts,
+            world_skipped,
+            stat_count,
+            stat_skipped,
+        } => (
+            "updated",
+            version,
+            *record_count,
+            Some(*skipped),
+            world_counts,
+            Some(world_skipped),
+            *stat_count,
+            Some(*stat_skipped),
+        ),
+        ManifestSyncReport::Unchanged {
+            version,
+            record_count,
+            world_counts,
+            stat_count,
+        } => (
+            "unchanged",
+            version,
+            *record_count,
+            None,
+            world_counts,
+            None,
+            *stat_count,
+            None,
+        ),
     }
 }
 
 pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncReport) -> String {
-    use destiny_app::ManifestSyncReport;
-    let (status, version, count, skipped, world_counts, world_skipped, stat_count, stat_skipped) =
-        match report {
-            ManifestSyncReport::Updated {
+    match mode {
+        OutputMode::Human => {
+            let (
+                status,
                 version,
-                record_count,
+                count,
                 skipped,
                 world_counts,
                 world_skipped,
                 stat_count,
                 stat_skipped,
-            } => (
-                "updated",
-                version,
-                *record_count,
-                Some(*skipped),
-                world_counts,
-                Some(world_skipped),
-                *stat_count,
-                Some(*stat_skipped),
-            ),
-            ManifestSyncReport::Unchanged {
-                version,
-                record_count,
-                world_counts,
-                stat_count,
-            } => (
-                "unchanged",
-                version,
-                *record_count,
-                None,
-                world_counts,
-                None,
-                *stat_count,
-                None,
-            ),
-        };
-    match mode {
-        OutputMode::Human => {
+            ) = manifest_fields(report);
             let mut text = format!(
                 "manifest: {status}\nversion: {}\ndefinitions: {count}",
                 sanitize(version.as_str())
@@ -664,33 +729,37 @@ pub fn render_manifest(mode: OutputMode, report: &destiny_app::ManifestSyncRepor
             }
             text
         }
-        OutputMode::Json => {
-            let mut value = json!({"kind": "sync_manifest", "status": status, "version": version.as_str(), "definitions": count});
-            if let Some(skipped) = skipped {
-                value["skipped"] = json!(skipped);
-            }
-            for (index, label) in [
-                "milestones",
-                "activities",
-                "activity_modifiers",
-                "objectives",
-                "activity_types",
-            ]
-            .iter()
-            .enumerate()
-            {
-                value[*label] = json!(world_counts[index]);
-                if let Some(skipped) = world_skipped {
-                    value[format!("{label}_skipped")] = json!(skipped[index]);
-                }
-            }
-            value["stat_definitions"] = json!(stat_count);
-            if let Some(skipped) = stat_skipped {
-                value["stat_definitions_skipped"] = json!(skipped);
-            }
-            value.to_string()
+        OutputMode::Json => manifest_value(report).to_string(),
+    }
+}
+
+fn manifest_value(report: &destiny_app::ManifestSyncReport) -> serde_json::Value {
+    let (status, version, count, skipped, world_counts, world_skipped, stat_count, stat_skipped) =
+        manifest_fields(report);
+    let mut value = json!({"kind": "sync_manifest", "status": status, "version": version.as_str(), "definitions": count});
+    if let Some(skipped) = skipped {
+        value["skipped"] = json!(skipped);
+    }
+    for (index, label) in [
+        "milestones",
+        "activities",
+        "activity_modifiers",
+        "objectives",
+        "activity_types",
+    ]
+    .iter()
+    .enumerate()
+    {
+        value[*label] = json!(world_counts[index]);
+        if let Some(skipped) = world_skipped {
+            value[format!("{label}_skipped")] = json!(skipped[index]);
         }
     }
+    value["stat_definitions"] = json!(stat_count);
+    if let Some(skipped) = stat_skipped {
+        value["stat_definitions_skipped"] = json!(skipped);
+    }
+    value
 }
 
 /// Renders the resolved public reset; unknown hashes stay explicitly unresolved.
@@ -1159,6 +1228,9 @@ fn inspection_human(inspection: &ItemInspection) -> String {
     if let Some(model) = &inspection.fragment_capacity {
         lines.push(destiny_output::armor_model::fragment_capacity_text(model));
     }
+    if let Some(wishlist) = &inspection.wishlist {
+        lines.extend(destiny_output::wishlist::wishlist_text(wishlist));
+    }
     lines.push(metadata_text(&inspection.metadata));
     lines.join("\n")
 }
@@ -1250,6 +1322,9 @@ fn inspection_json(inspection: &ItemInspection) -> String {
     }
     if let Some(model) = &inspection.fragment_capacity {
         value["fragment_capacity"] = destiny_output::armor_model::fragment_capacity_json(model);
+    }
+    if let Some(wishlist) = &inspection.wishlist {
+        value["wishlist"] = destiny_output::wishlist::wishlist_json(wishlist);
     }
     if !inspection.plug_details.is_empty() {
         value["plug_details"] = json!(inspection.plug_details.iter().map(|plug| with_insights(
@@ -2000,6 +2075,7 @@ mod tests {
 
     fn inspection() -> ItemInspection {
         ItemInspection {
+            wishlist: None,
             fragment_capacity: None,
             armor_model: None,
             plug_details: Vec::new(),

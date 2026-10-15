@@ -527,8 +527,14 @@ Definition candidates are unaffected.
 Invalid queries return MCP error `invalid_query` with `kind`, byte `span`
 (`start`, `end`) and `message`; `supported_filters` is included only for
 `unknown_filter`. Query text is not echoed. For example, an unknown key returns
-`kind: "unknown_filter"`; unsupported DIM notes/wishlists/crafting/loadout
-membership or stat arithmetic return explicit errors instead of relaxed results.
+`kind: "unknown_filter"`; unsupported DIM notes, `wishlist:` expressions,
+crafting, loadout membership or stat arithmetic return explicit errors instead
+of relaxed results.
+
+`is:wishlist` and `is:trashlist` filter weapons by the same verdict as the
+inspect `wishlist` field below: the first matching roll decides. With no stored
+list they return the `definitions_unavailable` error rather than an empty
+result; run `ghostlink sync-manifest` (wish lists sync with the Manifest).
 
 `inspect_item` requires exactly one of `instance_id` or `name`, enforced at
 runtime without top-level schema combinators. `name` uses normalized exact owned
@@ -673,6 +679,15 @@ socket order, the first archetype, and available entries in socket order.
 Missing descriptions and an empty `plug_details` list are omitted. Existing
 name arrays are unchanged. `search_inventory` hits do not include descriptions;
 call `inspect_item` for that detail.
+
+Weapon `inspect_item` results add `wishlist` when at least one wish list is
+stored (absent for non-weapons and with no list loaded): `verdict`
+(`wishlist`, `trash` or `none`), up to three distinct `matches` in list order
+(`source`, `section`, `perks`, `notes`, `tags`) and `matches_total`. The shape
+and matching rules are the [CLI wish-list opinion](cli.md#wish-list-opinion),
+identical to `ghostlink --json inspect-item`. `none` means no list has an
+opinion, never that the roll is bad; cite the source and section when quoting
+notes. Lists are configured with [`GHOSTLINK_WISHLISTS`](configuration.md#wish-lists).
 
 ## Weekly reset
 

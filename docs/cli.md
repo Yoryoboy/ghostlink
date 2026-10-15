@@ -663,9 +663,17 @@ Supported `is:` values: `locked`, `equipped`, `invault`,
 `ininventory`, `inpostmaster`, `weapon`, `armor`, `kineticslot`, `energy`, `power`,
 `helmet`, `gauntlets`, `chest`, `leg`, `classitem`, `kinetic`, `arc`, `solar`,
 `void`, `stasis`, `strand`, `common`, `rare`, `legendary`, `exotic`, `hunter`,
-`titan`, `warlock`. `is:kinetic` means damage; `is:kineticslot` means slot.
+`titan`, `warlock`, `wishlist`, `trashlist`. `is:kinetic` means damage;
+`is:kineticslot` means slot.
 
-Unsupported DIM filters (notes, wishlists, crafting/patterns, duplicates, kill
+`is:wishlist` and `is:trashlist` use the same verdict as the inspect
+[`wishlist` field](#wish-list-opinion): the first matching roll decides, so a
+weapon is wish-listed, trashed, or neither (no list has an opinion). They need
+at least one stored list; without one they fail with `definitions_unavailable`
+(exit 33) instead of reporting that nothing is wish-listed. The bare `wishlist:` key stays
+unsupported.
+
+Unsupported DIM filters (notes, wishlist expressions, crafting/patterns, duplicates, kill
 trackers, loadout membership, base stats and stat arithmetic) fail explicitly;
 unknown keys/values and unbalanced groups are errors, even in an OR branch.
 Sorting stays in `--sort`, not `sort:` or `sortby:`. Queries are bounded to
@@ -857,6 +865,14 @@ ghostlink sync-manifest          # or: ghostlink --json sync-manifest
   `entries_stored`, `entries_skipped`). Clarity failures leave both the published
   Manifest and previous insights intact and never change the Manifest exit code.
   Automatic CLI sync reports Clarity status on stderr.
+- Then it syncs the weapon wish lists selected by
+  [`GHOSTLINK_WISHLISTS`](configuration.md#wish-lists) (voltron by default).
+  The report adds `wishlists: ok|partial|unavailable|disabled|invalid_config`
+  and one `wishlist <source>: updated|unchanged|unavailable, N rolls, M skipped`
+  line per source (JSON: a `wishlists` object with `status` and `sources`
+  entries of `source`, `status`, `rolls`, `skipped`). `rolls` counts what is
+  stored now, so an unavailable source keeps its previous rolls. Like Clarity,
+  wish-list failures never roll back the Manifest or change its exit code.
 - Opening the database applies supported schema migrations automatically;
   older binaries can refuse a newer database. After an upgrade that adds catalog
   attributes, run `sync-manifest` to populate them even if the version is unchanged.
@@ -1121,6 +1137,28 @@ in human output. Intrinsics appear on an `intrinsic:` line; a single plug's
 description is indented directly beneath it without repeating its name.
 Search hits stay compact and do not include descriptions:
 inspect an item for detail.
+
+#### Wish-list opinion
+
+Weapon inspection adds `wishlist` when at least one wish list is stored; it is
+absent for armor and other non-weapons, and when no list is loaded. It has:
+
+- `verdict`: `wishlist`, `trash` or `none`, decided by the first matching roll
+  in list order. `none` means no list has an opinion, never that the roll is bad.
+- `matches`: up to three distinct opinions in list order, each with `source`
+  (`voltron` or the local file path), `section` (the list's title heading, or
+  null), `perks` (perk names; an undefined hash stays numeric), `notes` (the
+  curator's text without the tag list, or null) and `tags` (lower-cased;
+  `god-pve` becomes `pve-god`, `god-pvp` becomes `pvp-god`, `m+kb` becomes `mkb`).
+- `matches_total`: how many distinct opinions match in total.
+
+A roll matches when every listed perk is socketed or selectable on the
+instance. Enhanced perks match their base perk by name, and a plug without a
+definition still matches its exact hash. Human output adds a
+`wishlist: <verdict> (N matching)` line and one
+`wishlist match: <source> | <section> | perks: ... | notes: ... | tags: ...`
+line per match, omitting empty parts. Notes are the curator's own words: cite
+the source and section rather than presenting them as fact.
 
 ### Weekly reset
 

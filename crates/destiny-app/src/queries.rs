@@ -186,6 +186,66 @@ impl InstanceEnrichment {
         Ok(details)
     }
 
+    /// Matches loaded wish lists against every socketed and selectable plug.
+    /// Wish-list perk hashes resolve to names so enhanced variants, which have
+    /// their own hashes, still match their base perk.
+    fn wishlist_inspection(
+        &mut self,
+        repository: &impl destiny_core::ports::WorldDefinitionRepository,
+        hit: &InventorySearchHit,
+    ) -> Result<Option<destiny_core::wishlist::WishlistInspection>, AppError> {
+        use destiny_core::wishlist::{PlugOption, inspect_wishlist};
+        let Ok(item_hash) = u32::try_from(hit.definition.hash.value()) else {
+            return Ok(None);
+        };
+        if !destiny_core::query::is_weapon_slot(hit.definition.slot) {
+            return Ok(None);
+        }
+        let Some(rolls) = repository.lookup_wishlist_rolls(item_hash)? else {
+            return Ok(None);
+        };
+        let perks: std::collections::BTreeSet<u32> = rolls
+            .iter()
+            .flat_map(|sourced| sourced.roll.perks.iter().copied())
+            .collect();
+        let names: std::collections::HashMap<u32, String> = self
+            .resolve_plugs(
+                repository,
+                perks.iter().map(|perk| ItemHash::new(i64::from(*perk))),
+            )?
+            .into_iter()
+            .filter_map(|plug| Some((u32::try_from(plug.hash.value()).ok()?, plug.name)))
+            .collect();
+        let options: Vec<PlugOption> = hit
+            .instance
+            .plugs
+            .iter()
+            .map(|plug| plug.plug_hash)
+            .chain(
+                hit.instance
+                    .available_plugs
+                    .iter()
+                    .map(|plug| plug.plug_hash),
+            )
+            // A plug without a definition still matches its exact hash.
+            .filter_map(|hash| {
+                let name = self
+                    .plugs
+                    .get(&hash)
+                    .and_then(Option::as_ref)
+                    .map_or_else(String::new, |plug| plug.name.clone());
+                Some(PlugOption::new(u32::try_from(hash.value()).ok()?, name))
+            })
+            .collect();
+        Ok(inspect_wishlist(
+            hit.definition.slot,
+            item_hash,
+            &rolls,
+            &options,
+            |perk| names.get(&perk).cloned(),
+        ))
+    }
+
     fn resolve(
         &mut self,
         repository: &(impl DefinitionRepository + destiny_core::StatDefinitionRepository),
@@ -814,6 +874,11 @@ where
             let execution = execution
                 .as_mut()
                 .expect("typed query has execution context");
+            // Like stat filters without stat definitions: no loaded list
+            // fails closed instead of reporting that nothing is wish-listed.
+            if execution.needs_wishlist() && !self.repository().wishlists_loaded()? {
+                return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+            }
             for name in destiny_core::search_query::referenced_stats(typed) {
                 if self.repository().stat_definition_count()? == 0 {
                     return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
@@ -973,7 +1038,9 @@ where
             &hit.definition,
             &hit.instance,
         )?;
+        let wishlist = enrichment.wishlist_inspection(self.repository(), &hit)?;
         Ok(Resolution::Unique(ItemInspection {
+            wishlist,
             fragment_capacity,
             armor_model,
             plug_details,

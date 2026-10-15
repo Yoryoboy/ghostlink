@@ -2560,6 +2560,7 @@ mod tests {
     #[test]
     fn unique_inspection_is_returned_unchanged() {
         let inspection = ItemInspection {
+            wishlist: None,
             fragment_capacity: None,
             armor_model: None,
             plug_details: Vec::new(),

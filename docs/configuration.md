@@ -175,6 +175,32 @@ migrated: run `ghostlink login` once after upgrading. Deleting
 `credentials.json` signs out new processes; a running MCP server keeps its
 cached token until it next needs to renew, so restart the MCP host.
 
+## Wish lists
+
+`GHOSTLINK_WISHLISTS` selects the DIM-format weapon wish lists that
+`sync-manifest` loads after the Manifest and Clarity. It is read from the
+process environment or the configuration file like every other key.
+
+| Value | Meaning |
+| --- | --- |
+| unset or empty | Same as `voltron` |
+| `voltron` | The built-in community list, downloaded at sync time |
+| an absolute file path | Your own DIM-format list, re-read on every sync |
+| `none` | No wish lists; stored lists are removed on the next sync |
+
+The built-in list is `voltron.txt` from
+[48klocs/dim-wish-list-sources](https://github.com/48klocs/dim-wish-list-sources).
+
+Combine entries with commas, for example
+`GHOSTLINK_WISHLISTS=voltron,/home/me/lists/mine.txt`. Lists apply in this
+order: the first matching roll across all lists decides the verdict. Arbitrary
+remote URLs are not accepted; a relative path, an empty entry or a duplicate
+makes the whole value invalid. The value is validated only by the sync, so a
+typo never blocks reads: the sync reports `invalid_config` and keeps the stored
+lists unchanged. Lists larger than 64 MiB are refused.
+
+Voltron uses a conditional request, so an unchanged list costs one small
+request. List data is never embedded in the binary.
 
 ## Runtime configuration and authorization
 

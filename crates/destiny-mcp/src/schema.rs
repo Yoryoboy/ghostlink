@@ -1751,6 +1751,11 @@ pub struct InspectionPlugView {
 pub struct FoundInspection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fragment_capacity: Option<serde_json::Value>,
+    /// Community wish-list opinion on a weapon; absent with no list loaded.
+    /// `verdict` is `wishlist`, `trash` or `none`, where `none` means no list
+    /// has an opinion, never that the roll is bad.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wishlist: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub armor_model: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

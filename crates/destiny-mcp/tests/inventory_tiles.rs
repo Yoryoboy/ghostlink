@@ -155,6 +155,7 @@ impl QueryOperations for Reads {
                             include_available: query.include_available,
                             stats: &Default::default(),
                             characters: &Default::default(),
+                            wishlist: None,
                         },
                     )
                 })
@@ -184,6 +185,7 @@ impl QueryOperations for Reads {
             return Ok(Resolution::Missing);
         };
         Ok(Resolution::Unique(ItemInspection {
+            wishlist: None,
             fragment_capacity: None,
             armor_model: None,
             definition: hit.definition.clone(),

@@ -40,6 +40,7 @@ mod search;
 mod socket_catalogs;
 mod stat_plug_catalogs;
 mod vault_catalogs;
+mod wishlists;
 mod world;
 
 #[cfg(test)]

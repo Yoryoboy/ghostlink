@@ -10,7 +10,7 @@ use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const EXPECTED_TABLE_NAMES: [&str; 60] = [
+const EXPECTED_TABLE_NAMES: [&str; 63] = [
     "active_profile",
     "activity_definitions",
     "activity_modifier_definitions",
@@ -71,21 +71,25 @@ const EXPECTED_TABLE_NAMES: [&str; 60] = [
     "sync_metadata",
     "vault_accepted_items",
     "vault_vendors",
+    "wishlist_rolls",
+    "wishlist_sources",
+    "wishlist_texts",
 ];
 
-const EXPECTED_INDEX_NAMES: [&str; 5] = [
+const EXPECTED_INDEX_NAMES: [&str; 6] = [
     "builds_class",
     "builds_name",
     "clarity_insights_name",
     "items_definition_hash_idx",
     "items_location_idx",
+    "wishlist_rolls_item",
 ];
 
 /// Expected `(table, column, declared type)` triples in declaration order.
 ///
 /// A flat triple keeps the fixture free of nested slice references; the test
 /// regroups it per table when it compares `PRAGMA table_info` output.
-const EXPECTED_COLUMNS: [(&str, &str, &str); 281] = [
+const EXPECTED_COLUMNS: [(&str, &str, &str); 299] = [
     ("definition_stat_plugs", "hash", "INTEGER"),
     ("definition_stat_plugs", "definition_version", "TEXT"),
     ("definition_stat_plugs", "plug_category_hash", "INTEGER"),
@@ -387,6 +391,24 @@ const EXPECTED_COLUMNS: [(&str, &str, &str); 281] = [
     ("sync_metadata", "definition_version", "TEXT"),
     ("sync_metadata", "invalidated", "INTEGER"),
     ("sync_metadata", "profile_minted_at", "TEXT"),
+    ("wishlist_sources", "key", "TEXT"),
+    ("wishlist_sources", "position", "INTEGER"),
+    ("wishlist_sources", "title", "TEXT"),
+    ("wishlist_sources", "description", "TEXT"),
+    ("wishlist_sources", "etag", "TEXT"),
+    ("wishlist_sources", "fingerprint", "TEXT"),
+    ("wishlist_sources", "checked_at", "TEXT"),
+    ("wishlist_sources", "updated_at", "TEXT"),
+    ("wishlist_sources", "skipped", "INTEGER"),
+    ("wishlist_texts", "id", "INTEGER"),
+    ("wishlist_texts", "text", "TEXT"),
+    ("wishlist_rolls", "source", "TEXT"),
+    ("wishlist_rolls", "ordinal", "INTEGER"),
+    ("wishlist_rolls", "item_hash", "INTEGER"),
+    ("wishlist_rolls", "trash", "INTEGER"),
+    ("wishlist_rolls", "perks", "TEXT"),
+    ("wishlist_rolls", "notes_id", "INTEGER"),
+    ("wishlist_rolls", "section_id", "INTEGER"),
 ];
 
 /// Vocabulary that must never appear in the schema, so the projection can never
@@ -1056,7 +1078,7 @@ fn v16_downgrade_refuses_information_loss_without_mutation() {
 fn empty_database_migrates_to_latest_version_with_exact_schema() {
     let store = SqliteStore::open_in_memory().expect("open in-memory store");
 
-    assert_eq!(LATEST_SCHEMA_VERSION, 36);
+    assert_eq!(LATEST_SCHEMA_VERSION, 37);
     assert_eq!(
         store.schema_version().expect("read schema version"),
         LATEST_SCHEMA_VERSION
