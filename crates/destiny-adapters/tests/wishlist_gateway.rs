@@ -54,7 +54,9 @@ fn voltron_goes_through_the_transport_with_the_stored_etag() {
         }
     );
     assert_eq!(
-        gateway.fetch(&WishlistSource::Voltron, Some("\"v1\"")).unwrap(),
+        gateway
+            .fetch(&WishlistSource::Voltron, Some("\"v1\""))
+            .unwrap(),
         WishlistFetch::NotModified
     );
     assert_eq!(gateway.0.requested, vec![None, Some("\"v1\"".into())]);

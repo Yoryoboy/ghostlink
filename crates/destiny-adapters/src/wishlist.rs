@@ -146,7 +146,11 @@ impl<T: VoltronTransport> WishlistGateway for WishlistAdapter<T> {
 mod tests {
     use super::*;
 
-    fn respond(status: u16, conditional: bool, etag: Option<&str>) -> Result<WishlistFetch, AppError> {
+    fn respond(
+        status: u16,
+        conditional: bool,
+        etag: Option<&str>,
+    ) -> Result<WishlistFetch, AppError> {
         voltron_response(
             status,
             conditional,
@@ -159,7 +163,10 @@ mod tests {
 
     #[test]
     fn not_modified_is_accepted_only_for_conditional_requests() {
-        assert_eq!(respond(304, true, None).unwrap(), WishlistFetch::NotModified);
+        assert_eq!(
+            respond(304, true, None).unwrap(),
+            WishlistFetch::NotModified
+        );
         assert!(respond(304, false, None).is_err());
         for status in [301, 404, 500] {
             assert!(respond(status, true, Some("\"x\"")).is_err());
@@ -174,14 +181,15 @@ mod tests {
         };
         assert_eq!(
             content(Some("W/\"abc\"")),
-            ("dimwishlist:item=1\n".to_owned(), Some("W/\"abc\"".to_owned()))
+            (
+                "dimwishlist:item=1\n".to_owned(),
+                Some("W/\"abc\"".to_owned())
+            )
         );
         let long = "x".repeat(MAX_ETAG_CHARS + 1);
         for bad in ["", "has space", long.as_str()] {
             assert_eq!(content(Some(bad)).1, None, "{bad}");
         }
-        assert!(
-            voltron_response(200, false, None, Some("text/html"), None, &b"x"[..]).is_err()
-        );
+        assert!(voltron_response(200, false, None, Some("text/html"), None, &b"x"[..]).is_err());
     }
 }
