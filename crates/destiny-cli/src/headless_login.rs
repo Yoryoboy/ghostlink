@@ -3,7 +3,7 @@
 //! `ghostlink login start` begins an authorization, persists it as the pending
 //! login beside the credential file and prints the authorization URL; it opens no
 //! browser, installs no handler and reads nothing from the terminal. The human
-//! approves on any device and copies the callback address the browser ends on.
+//! approves on any device and copies the callback address the callback page shows.
 //! `ghostlink login complete` then runs in a later process: it reads that address
 //! from its argument or one bounded line of standard input, claims the pending
 //! login exactly once, re-enters the shared service in `Authorizing` with the

@@ -433,13 +433,15 @@ pub enum LoginAction {
     /// Opens no browser, installs no handler and asks nothing on the terminal.
     /// The pending login is saved as `pending-login.json` beside the credential
     /// file, replacing any earlier one, and expires after five minutes. Open the
-    /// authorization URL on any device, approve, copy the full address the
-    /// browser ends on, and finish with `ghostlink login complete`.
+    /// authorization URL on any device, approve, copy the full callback address
+    /// the Ghostlink callback page shows, and finish with
+    /// `ghostlink login complete`.
     Start,
     /// Finish the pending headless login with the callback address.
     ///
-    /// The callback address is the `ghostlink://oauth/callback?...` address the
-    /// browser ends on. Omit it, or pass `-`, to read one line from standard
+    /// The callback address is the one the Ghostlink callback page shows after
+    /// approval (`https://...callback?...` or `ghostlink://oauth/callback?...`).
+    /// Omit it, or pass `-`, to read one line from standard
     /// input instead, which keeps the one-use code out of shell history and the
     /// process list. The pending login is single use: it is removed before the
     /// code is exchanged, so a failed or repeated completion needs a new

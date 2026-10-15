@@ -456,3 +456,26 @@ fn https_config_validation_preserves_pending_on_rejection() {
     }
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[test]
+fn human_start_points_at_the_callback_page_not_the_custom_scheme() {
+    let home = home("human-start");
+    let out = ghostlink_defaults(&home, &["login", "start"], None);
+    assert_eq!(out.status.code(), Some(0));
+    let text = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines[0], "login pending");
+    assert_eq!(lines[1], "open this url on any device and approve:");
+    assert!(lines[2].starts_with("  https://www.bungie.net/en/oauth/authorize?"));
+    assert!(lines[3].starts_with("expires_at: "));
+    assert_eq!(
+        &lines[4..],
+        [
+            "then copy the full callback address shown after approval (the Ghostlink callback page has a Copy button) and run:",
+            "  ghostlink login complete",
+            "and paste it when asked, or pass it as the argument",
+        ]
+    );
+    assert!(!text.contains("ghostlink://"));
+    std::fs::remove_dir_all(&home).unwrap();
+}

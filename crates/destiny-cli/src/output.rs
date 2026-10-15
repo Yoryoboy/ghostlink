@@ -925,7 +925,7 @@ pub fn render_login_pending(
 ) -> String {
     match mode {
         OutputMode::Human => format!(
-            "login pending\nopen this url on any device and approve:\n  {}\nexpires_at: {}\nthen copy the full address the browser ends on (ghostlink://oauth/callback?...) and run:\n  ghostlink login complete\nand paste it when asked, or pass it as the argument",
+            "login pending\nopen this url on any device and approve:\n  {}\nexpires_at: {}\nthen copy the full callback address shown after approval (the Ghostlink callback page has a Copy button) and run:\n  ghostlink login complete\nand paste it when asked, or pass it as the argument",
             sanitize(&start.authorization_url),
             start.expires_at.seconds(),
         ),
