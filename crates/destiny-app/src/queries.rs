@@ -227,12 +227,14 @@ impl InstanceEnrichment {
                     .iter()
                     .map(|plug| plug.plug_hash),
             )
-            .filter_map(|hash| self.plugs.get(&hash).and_then(Option::as_ref))
-            .filter_map(|plug| {
-                Some(PlugOption::new(
-                    u32::try_from(plug.hash.value()).ok()?,
-                    plug.name.clone(),
-                ))
+            // A plug without a definition still matches its exact hash.
+            .filter_map(|hash| {
+                let name = self
+                    .plugs
+                    .get(&hash)
+                    .and_then(Option::as_ref)
+                    .map_or_else(String::new, |plug| plug.name.clone());
+                Some(PlugOption::new(u32::try_from(hash.value()).ok()?, name))
             })
             .collect();
         Ok(inspect_wishlist(

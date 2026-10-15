@@ -61,7 +61,7 @@ agents can answer "should I keep this drop?" with cited community opinion.
       sync output. Route: inline. Commits: 71bb55d, 8383086, 9dce82b,
       1cd892a (+ style fixup).
 - [x] T3a (S5) inspect `wishlist` field (core/app/CLI/MCP). Route: inline.
-      Commit: f311348.
+      Commit: f311348; review follow-ups 98c3494 and the R3 fix below.
 - [ ] T3b (S5) `is:wishlist`/`is:trashlist`. Route: inline. Commit: —
 - [ ] T4 (S4-S5) docs (cli, mcp, configuration), skill rule, README Credits.
       Route: inline. Commit: —
@@ -200,3 +200,16 @@ Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
   a clearer `title:`/`@title:` branch, the sync JSON is built on a
   `serde_json::Value` instead of re-parsing rendered text, and the app method
   is `wishlist_inspection` so it no longer shadows core's `inspect_wishlist`.
+- L18 (review, 2026-10-15): hook-required review review-2ada6f23a10638d6
+  (base 59a651e, HEAD 98c3494, readability + reliability) approved and
+  acknowledged with four advisory findings: R3 WARNING the inspect options
+  kept only plugs with a definition (`crates/destiny-app/src/queries.rs:231`);
+  R2-001 WARNING the raw last `tags:` split (`wishlist.rs:142-149`); R2-002
+  stringly sync statuses (`crates/destiny-app/src/wishlist.rs:15-24`); R2-003
+  sign parsing (`wishlist.rs:111-112`). User chose "Arreglar el WARNING de
+  reliability y despues T3b"; R2-001..R2-003 stay deferred.
+- L19 (R3 evidence): RED `a_plug_without_a_definition_matches_by_hash`
+  (`wishlist_inspect`) reported `none` for a list naming an undefined plug
+  the gun can select. Options now keep every socketed and selectable hash,
+  with an empty name when no definition exists; name matching ignores empty
+  names (RED `unnamed_options_never_match_by_name` matched two blank names).
