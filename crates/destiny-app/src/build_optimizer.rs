@@ -394,7 +394,7 @@ pub(crate) fn prepare<
                 };
                 let selected = plugs(&mut item.plugs.iter().map(|p| p.plug_hash));
                 let available = plugs(&mut item.available_plugs.iter().map(|p| p.plug_hash));
-                execution.matches(item, Some(definition), &selected, &available, true)
+                execution.matches(item, Some(definition), &selected, &available, true, None)
             })
             .map(|(id, _)| id.clone())
             .collect(),

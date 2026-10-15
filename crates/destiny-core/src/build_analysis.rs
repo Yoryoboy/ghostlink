@@ -449,6 +449,10 @@ pub fn analyze_build(
                 {
                     unavailable = true;
                 }
+                // Build analysis reads no wish lists, so it cannot judge them.
+                if execution.needs_wishlist() {
+                    unavailable = true;
+                }
                 if unavailable {
                     nonmatching = skipped(
                         FindingKind::ItemsDoNotMatchSearchQuery,
@@ -473,7 +477,7 @@ pub fn analyze_build(
                                     .iter()
                                     .filter_map(|p| definition(defs, p.plug_hash).cloned())
                                     .collect();
-                                !execution.matches(i, Some(d), &selected, &available, true)
+                                !execution.matches(i, Some(d), &selected, &available, true, None)
                             }),
                     );
                     item_filter = ItemFilter::Query(Box::new(execution));

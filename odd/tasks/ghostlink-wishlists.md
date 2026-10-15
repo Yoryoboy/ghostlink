@@ -62,7 +62,7 @@ agents can answer "should I keep this drop?" with cited community opinion.
       1cd892a (+ style fixup).
 - [x] T3a (S5) inspect `wishlist` field (core/app/CLI/MCP). Route: inline.
       Commit: f311348; review follow-ups 98c3494 and the R3 fix below.
-- [ ] T3b (S5) `is:wishlist`/`is:trashlist`. Route: inline. Commit: —
+- [x] T3b (S5) `is:wishlist`/`is:trashlist`. Route: inline. Commit: see L20.
 - [ ] T4 (S4-S5) docs (cli, mcp, configuration), skill rule, README Credits.
       Route: inline. Commit: —
 
@@ -213,3 +213,27 @@ Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
   the gun can select. Options now keep every socketed and selectable hash,
   with an empty name when no definition exists; name matching ignores empty
   names (RED `unnamed_options_never_match_by_name` matched two blank names).
+- L20 (T3b decisions): the filters read the inspect verdict (first matching
+  roll decides; `is:wishlist` = wishlist, `is:trashlist` = trash, no opinion
+  is neither). Core stays pure: `ItemView.wishlist` carries a caller-supplied
+  `Option<WishlistVerdict>` (`None` = not evaluated, satisfies neither) and
+  `ResolvedQuery::needs_wishlist` tells the SQLite scan to compute it per
+  candidate through core's `wishlist_verdict`, caching rolls per item hash and
+  plug definitions, with the same option rules as inspect (enhanced perks by
+  name, undefined plugs by hash). With no stored list the search fails closed
+  with `DefinitionsUnavailable`, like stat filters without stat definitions,
+  instead of answering "nothing is wish-listed"; the new defaulted
+  `SearchRepository::wishlists_loaded` is `false` for fakes. Build analysis
+  reads no wish lists, so such a query is `query_context_unavailable` there.
+  The bare `wishlist:` key stays unsupported.
+- L21 (T3b evidence): RED: `search_filters_follow_the_inspect_verdict` and
+  `wishlist_filters_need_a_loaded_list` (`wishlist_inspect`) failed with
+  `unsupported_filter`; the core tests (`search_eval`, `search_registry`)
+  did not compile before the leaves existed. Found and fixed a T3a defect: the
+  MCP server's `SharedRepository` (`crates/destiny-mcp/src/main.rs`)
+  forwarded neither `lookup_wishlist_rolls` nor the new `wishlists_loaded`,
+  so the real MCP server never showed `wishlist` on inspect (the T3a parity
+  test used `SqliteStore` directly). RED
+  `shared_repository_forwards_wish_list_reads` reported no lists over a store
+  that had one. GREEN: `wishlist_inspect` 6/6, `search_eval` 5/5,
+  `search_registry` 7/7, the MCP forwarding test.

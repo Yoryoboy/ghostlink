@@ -1031,6 +1031,7 @@ impl SearchRepository for InMemorySearchRepository {
                             &plugs,
                             &available,
                             query.include_available,
+                            None,
                         )
                     })
             })

@@ -42,8 +42,15 @@ pub enum Leaf {
     Hash(u32),
     PerkHash(u32),
     Power(Comparison),
-    Stat { name: String, cmp: Comparison },
+    Stat {
+        name: String,
+        cmp: Comparison,
+    },
     Character(String),
+    /// The first matching wish-list roll wishes the weapon.
+    Wishlist,
+    /// The first matching wish-list roll is a trash roll.
+    Trashlist,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -150,12 +157,13 @@ static FILTERS: &[FilterSpec] = &[
     spec!("is:stasis", Simple, "Stasis damage", "is:stasis", ValueKind::Fixed(Leaf::Element(DamageType::Stasis))),
     spec!("is:strand", Simple, "Strand damage", "is:strand", ValueKind::Fixed(Leaf::Element(DamageType::Strand))),
     spec!("is:titan", Simple, "Titan class restriction", "is:titan", ValueKind::Fixed(Leaf::Class(ClassType::Titan))),
+    spec!("is:trashlist", Simple, "Weapon whose first matching wish-list roll is trash", "is:trashlist", ValueKind::Fixed(Leaf::Trashlist)),
     spec!("is:uncommon", Simple, "Uncommon tier", "is:uncommon", ValueKind::Fixed(Leaf::Tier("uncommon"))),
     spec!("is:unlocked", Simple, "Unlocked item", "is:unlocked", ValueKind::Fixed(Leaf::Unlocked)),
     spec!("is:void", Simple, "Void damage", "is:void", ValueKind::Fixed(Leaf::Element(DamageType::Void))),
     spec!("is:warlock", Simple, "Warlock class restriction", "is:warlock", ValueKind::Fixed(Leaf::Class(ClassType::Warlock))),
     spec!("is:weapon", Simple, "Weapon equipment", "is:weapon", ValueKind::Fixed(Leaf::Weapon)),
-    spec!("is:wishlist", Unsupported, "Unsupported: wishlists are not stored", "is:wishlist", ValueKind::Unsupported),
+    spec!("is:wishlist", Simple, "Weapon whose first matching wish-list roll wishes it", "is:wishlist", ValueKind::Fixed(Leaf::Wishlist)),
     spec!("keyword", Keyword, "Bare words or quoted phrases, normalized text", "\"Sun Shot\"", ValueKind::Text(Leaf::Keyword)),
     spec!("kills", Unsupported, "Unsupported: kill trackers are not stored", "kills:3", ValueKind::Unsupported),
     spec!("mod", Freeform, "Armor mod name", "mod:resilience", ValueKind::Text(Leaf::Mod)),

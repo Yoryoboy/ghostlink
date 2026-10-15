@@ -155,6 +155,7 @@ impl QueryOperations for Reads {
                             include_available: query.include_available,
                             stats: &Default::default(),
                             characters: &Default::default(),
+                            wishlist: None,
                         },
                     )
                 })

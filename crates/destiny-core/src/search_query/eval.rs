@@ -8,6 +8,7 @@ use crate::query::{
     self, DefinitionSearchQuery, InstanceSearchQuery, ItemHashFilter, LocationFilter, SearchTerm,
     StatCondition, StatOp,
 };
+use crate::wishlist::WishlistVerdict;
 
 /// Borrowed execution data. Plug definitions must come from this instance's
 /// selected/available plugs. Their hashes and categories remain available for
@@ -26,6 +27,9 @@ pub struct ItemView<'a> {
     pub include_available: bool,
     pub stats: &'a BTreeMap<String, Vec<i32>>,
     pub characters: &'a BTreeMap<String, CharacterId>,
+    /// The caller's wish-list verdict, when the query needs one. `None` means
+    /// not evaluated and satisfies neither wish-list filter.
+    pub wishlist: Option<WishlistVerdict>,
 }
 
 /// Request-local catalog resolution shared by repository candidate scans.
@@ -97,6 +101,13 @@ impl ResolvedQuery {
         })
     }
 
+    /// The caller must evaluate wish lists for each candidate.
+    pub fn needs_wishlist(&self) -> bool {
+        self.predicate
+            .as_ref()
+            .is_some_and(|q| any_leaf(q, |leaf| matches!(leaf, Leaf::Wishlist | Leaf::Trashlist)))
+    }
+
     pub fn needs_available_plugs(&self) -> bool {
         self.predicate.as_ref().is_some_and(|q| {
             any_leaf(q, |leaf| {
@@ -115,6 +126,7 @@ impl ResolvedQuery {
         socketed: &[ItemDefinition],
         available: &[ItemDefinition],
         include_available: bool,
+        wishlist: Option<WishlistVerdict>,
     ) -> bool {
         if !query::instance_matches_with_definition(&self.prefilter, instance, definition)
             || !query::instance_matches_stats(&self.prefilter, instance, &self.stats)
@@ -144,6 +156,7 @@ impl ResolvedQuery {
                 include_available,
                 stats: &stats,
                 characters: &self.characters,
+                wishlist,
             },
         )
     }
@@ -217,6 +230,8 @@ fn matches_leaf(leaf: &Leaf, view: &ItemView<'_>) -> bool {
         Leaf::Locked => item.locked,
         Leaf::Unlocked => !item.locked,
         Leaf::Postmaster => matches!(item.location, ItemLocation::Postmaster(_)),
+        Leaf::Wishlist => view.wishlist == Some(WishlistVerdict::Wishlist),
+        Leaf::Trashlist => view.wishlist == Some(WishlistVerdict::Trash),
         Leaf::Weapon => definition.is_some_and(|d| query::is_weapon_slot(d.slot)),
         Leaf::Armor => definition.is_some_and(|d| query::is_armor_slot(d.slot)),
         Leaf::ExactName(term) => {

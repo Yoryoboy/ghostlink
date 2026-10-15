@@ -1,10 +1,10 @@
 //! Wish-list synchronization after Manifest and Clarity; never fatal to them.
-use destiny_core::wishlist::{
-    WishlistFetch, WishlistGateway, WishlistSource, WishlistSourceRecord, parse_wishlist,
-    wishlist_fingerprint,
-};
 pub use destiny_core::wishlist::{
-    WishlistInspection, WishlistMatch, WishlistRepository, WishlistVerdict,
+    SourcedWishlistRoll, WishlistInspection, WishlistMatch, WishlistRepository, WishlistVerdict,
+    parse_wishlist,
+};
+use destiny_core::wishlist::{
+    WishlistFetch, WishlistGateway, WishlistSource, WishlistSourceRecord, wishlist_fingerprint,
 };
 use destiny_core::{AppError, ErrorCategory, Timestamp};
 

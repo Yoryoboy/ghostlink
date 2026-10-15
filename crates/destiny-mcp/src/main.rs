@@ -869,6 +869,9 @@ impl InventoryRepository for SharedRepository {
 }
 
 impl SearchRepository for SharedRepository {
+    fn wishlists_loaded(&self) -> Result<bool, AppError> {
+        self.lock()?.wishlists_loaded()
+    }
     fn name_catalog(
         &self,
         kind: &str,
@@ -943,6 +946,12 @@ impl destiny_app::WorldDefinitionRepository for SharedRepository {
         name: &str,
     ) -> Result<Vec<destiny_app::ClarityInsight>, AppError> {
         self.lock()?.lookup_clarity_by_name(name)
+    }
+    fn lookup_wishlist_rolls(
+        &self,
+        item_hash: u32,
+    ) -> Result<Option<Vec<destiny_app::wishlist::SourcedWishlistRoll>>, AppError> {
+        self.lock()?.lookup_wishlist_rolls(item_hash)
     }
     fn lookup_item_description(
         &self,
@@ -1442,6 +1451,33 @@ mod tests {
                 .all(|row| row.bucket_hash() == destiny_app::BucketHash::new(1498876634))
         );
         pair
+    }
+
+    /// The server reads wish lists through this wrapper for inspect and the
+    /// `is:wishlist`/`is:trashlist` filters, so both seams must reach SQLite.
+    #[test]
+    fn shared_repository_forwards_wish_list_reads() {
+        use destiny_app::wishlist::{WishlistRepository, parse_wishlist};
+        use destiny_app::{SearchRepository, WorldDefinitionRepository};
+        let empty = super::SharedRepository::new(super::SqliteStore::open_in_memory().unwrap());
+        assert!(!empty.wishlists_loaded().unwrap());
+        assert_eq!(empty.lookup_wishlist_rolls(10).unwrap(), None);
+
+        let mut store = super::SqliteStore::open_in_memory().unwrap();
+        store
+            .publish_wishlist(
+                "voltron",
+                &parse_wishlist("dimwishlist:item=10&perks=1\n"),
+                None,
+                "fp",
+                Timestamp::new(1),
+            )
+            .unwrap();
+        let shared = super::SharedRepository::new(store);
+        assert!(shared.wishlists_loaded().unwrap());
+        let rolls = shared.lookup_wishlist_rolls(10).unwrap().expect("loaded");
+        assert_eq!(rolls.len(), 1);
+        assert_eq!(rolls[0].source, "voltron");
     }
 
     #[test]

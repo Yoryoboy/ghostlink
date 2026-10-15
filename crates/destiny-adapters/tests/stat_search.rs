@@ -997,6 +997,7 @@ fn typed_residual_reference_paging_sort_and_fake_app_parity() {
                                         include_available,
                                         stats: &stats,
                                         characters: &characters,
+                                        wishlist: None,
                                     },
                                 )
                         })
