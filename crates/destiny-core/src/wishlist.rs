@@ -5,6 +5,7 @@
 
 use crate::{AppError, Timestamp};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// DIM's any-item wildcard (`item=-69420`); it is never a trash roll.
 pub const WILDCARD_ITEM: i64 = -69420;
@@ -22,10 +23,11 @@ pub struct WishlistRoll {
     pub trash: bool,
     /// Every perk must be offered by the instance; empty matches any roll.
     pub perks: Vec<u32>,
-    /// Verbatim notes, including any `|tags:` suffix.
-    pub notes: Option<String>,
-    /// The most recent `title:`/`@title:` line before the roll.
-    pub section: Option<String>,
+    /// Verbatim notes, including any `|tags:` suffix; rolls under one block
+    /// note share it.
+    pub notes: Option<Arc<str>>,
+    /// The most recent `title:`/`@title:` line before the roll, shared.
+    pub section: Option<Arc<str>>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -38,8 +40,8 @@ pub struct WishlistDocument {
 
 pub fn parse_wishlist(text: &str) -> WishlistDocument {
     let mut document = WishlistDocument::default();
-    let mut section: Option<String> = None;
-    let mut block_notes: Option<String> = None;
+    let mut section: Option<Arc<str>> = None;
+    let mut block_notes: Option<Arc<str>> = None;
     for line in text.lines() {
         let line = line.trim_end_matches('\r');
         if line.chars().count() > MAX_LINE_CHARS {
@@ -50,7 +52,7 @@ pub fn parse_wishlist(text: &str) -> WishlistDocument {
             continue;
         }
         if let Some(notes) = line.strip_prefix("//notes:") {
-            block_notes = Some(notes.to_owned());
+            block_notes = Some(Arc::from(notes));
             continue;
         }
         if let Some(roll) = line.strip_prefix("dimwishlist:") {
@@ -61,7 +63,7 @@ pub fn parse_wishlist(text: &str) -> WishlistDocument {
                         item_hash,
                         trash,
                         perks,
-                        notes: line_notes.or_else(|| block_notes.clone()),
+                        notes: line_notes.map(Arc::from).or_else(|| block_notes.clone()),
                         section: section.clone(),
                     });
                 }
@@ -77,7 +79,7 @@ pub fn parse_wishlist(text: &str) -> WishlistDocument {
             if document.title.is_none() && line.starts_with("title:") && document.rolls.is_empty() {
                 document.title = Some(title.to_owned());
             }
-            section = Some(title.to_owned());
+            section = Some(Arc::from(title));
         } else if let Some(description) = line.strip_prefix("description:")
             && document.description.is_none()
             && document.rolls.is_empty()
@@ -220,7 +222,7 @@ pub fn evaluate_wishlist<'a>(
             || perk_name(perk).is_some_and(|name| options.iter().any(|option| option.name == name))
     };
     let mut verdict = WishlistVerdict::None;
-    let mut groups: Vec<(&Option<String>, &Option<String>)> = Vec::new();
+    let mut groups: Vec<(Option<&str>, Option<&str>)> = Vec::new();
     let mut matches = Vec::new();
     for roll in rolls {
         if roll.item_hash.is_some_and(|hash| hash != item_hash)
@@ -235,7 +237,7 @@ pub fn evaluate_wishlist<'a>(
                 WishlistVerdict::Wishlist
             };
         }
-        let group = (&roll.section, &roll.notes);
+        let group = (roll.section.as_deref(), roll.notes.as_deref());
         if !groups.contains(&group) {
             groups.push(group);
             if matches.len() < MAX_REPORTED_MATCHES {

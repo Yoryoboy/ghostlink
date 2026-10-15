@@ -22,8 +22,8 @@ fn roll(ordinal: u32, item: Option<u32>, perks: &[u32], notes: &str) -> Wishlist
         item_hash: item,
         trash: false,
         perks: perks.to_vec(),
-        notes: Some(notes.to_owned()),
-        section: Some("Machine Guns".to_owned()),
+        notes: Some(notes.into()),
+        section: Some("Machine Guns".into()),
     }
 }
 

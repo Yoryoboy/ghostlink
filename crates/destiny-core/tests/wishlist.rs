@@ -316,3 +316,24 @@ fn fingerprint_is_stable_and_detects_changes() {
     assert_eq!(wishlist_fingerprint(b"a"), "fnv1a64:af63dc4c8601ec8c:1");
     assert_ne!(wishlist_fingerprint(b"ab"), wishlist_fingerprint(b"ba"));
 }
+
+#[test]
+fn rolls_share_one_allocation_per_block_note_and_section() {
+    // Voltron repeats 4.8 MB of distinct notes over 274,677 rolls; copying
+    // them per roll cost about 204 MB while parsing.
+    let document = parse_wishlist(
+        "title:Guns\n//notes:Shared.|tags:pve\ndimwishlist:item=1&perks=2\ndimwishlist:item=1&perks=3\n",
+    );
+    let [first, second] = &document.rolls[..] else {
+        panic!("expected two rolls");
+    };
+    assert_eq!(first.notes.as_deref(), Some("Shared.|tags:pve"));
+    assert!(std::sync::Arc::ptr_eq(
+        first.notes.as_ref().unwrap(),
+        second.notes.as_ref().unwrap()
+    ));
+    assert!(std::sync::Arc::ptr_eq(
+        first.section.as_ref().unwrap(),
+        second.section.as_ref().unwrap()
+    ));
+}
