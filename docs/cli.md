@@ -269,7 +269,8 @@ ghostlink login cancel                 # discard a pending login
 - `complete` takes that address as its argument, or reads one line from standard
   input when the argument is absent or `-`. Prefer standard input: an argument
   is visible in shell history and the process list. A terminal gets a prompt
-  and the pasted line is not echoed. It prints the same `authorized` result as
+  and shows the pasted line, so you can check it before pressing Enter; clear
+  the screen afterwards if others can see it. It prints the same `authorized` result as
   `ghostlink login` and syncs missing Manifest definitions.
 - The pending login is single use. A malformed address is rejected and the
   pending login is kept, so you can paste again. Otherwise the pending login is

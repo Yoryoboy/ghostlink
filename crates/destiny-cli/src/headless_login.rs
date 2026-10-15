@@ -27,9 +27,7 @@ use std::cell::RefCell;
 use std::io::{BufRead, IsTerminal};
 use std::rc::Rc;
 
-use destiny_adapters::oauth::{
-    ManualPasteBrowserAuthorization, ManualPasteCallbackReceiver, NoEchoReader,
-};
+use destiny_adapters::oauth::{ManualPasteBrowserAuthorization, ManualPasteCallbackReceiver};
 use destiny_adapters::{
     PendingLogin, PendingLoginStore, SystemCommandLauncher, SystemSecureRandom,
 };
@@ -40,7 +38,7 @@ use destiny_app::{
 };
 
 use crate::command::{CliError, LoginAction};
-use crate::login::{AUTHORIZATION_TTL_SECONDS, SharedManualBrowser, SystemTerminalEcho};
+use crate::login::{AUTHORIZATION_TTL_SECONDS, SharedManualBrowser};
 use crate::output::{OutputMode, render_login_cancelled, render_login_pending};
 use crate::runner::{ProcessOutput, login_result};
 
@@ -217,7 +215,8 @@ fn production_login() -> Result<Box<dyn HeadlessLoginOperations>, CliError> {
 ///
 /// `complete` reads the callback from its argument, or one bounded line of
 /// standard input when the argument is absent or `-`. A terminal gets a prompt
-/// on standard error and has echo turned off for the read; a pipe is read as is.
+/// on standard error and shows the pasted line, so the human can see what was
+/// pasted; a pipe is read as is.
 pub fn run_production(action: &LoginAction, mode: OutputMode) -> ProcessOutput {
     match action {
         LoginAction::Cancel => match production_pending() {
@@ -243,7 +242,7 @@ pub fn run_production(action: &LoginAction, mode: OutputMode) -> ProcessOutput {
                     if stdin.is_terminal() && mode == OutputMode::Human {
                         eprintln!("paste the callback url and press enter:");
                     }
-                    let mut input = NoEchoReader::new(stdin.lock(), SystemTerminalEcho::stdin());
+                    let mut input = stdin.lock();
                     run_login_complete(login.as_mut(), &mut input, mode)
                 }
             }

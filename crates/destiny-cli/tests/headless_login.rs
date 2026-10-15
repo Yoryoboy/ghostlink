@@ -520,3 +520,96 @@ fn callback_page_help_and_json_contract() {
     assert_eq!(value["status"], "pending");
     std::fs::remove_dir_all(home).unwrap();
 }
+
+/// Opens a pseudo-terminal pair, or `None` when the host has none.
+fn open_pty() -> Option<(std::fs::File, std::fs::File)> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: every return value is checked before use, and each adopted
+    // descriptor is owned by a `File` immediately.
+    unsafe {
+        let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+        if master < 0 {
+            return None;
+        }
+        if libc::grantpt(master) != 0 || libc::unlockpt(master) != 0 {
+            libc::close(master);
+            return None;
+        }
+        let name = libc::ptsname(master);
+        if name.is_null() {
+            libc::close(master);
+            return None;
+        }
+        let slave = libc::open(name, libc::O_RDWR | libc::O_NOCTTY);
+        if slave < 0 {
+            libc::close(master);
+            return None;
+        }
+        Some((
+            std::fs::File::from_raw_fd(master),
+            std::fs::File::from_raw_fd(slave),
+        ))
+    }
+}
+
+#[test]
+fn complete_shows_the_pasted_callback_on_a_terminal() {
+    use std::io::{BufRead, BufReader, Read};
+    use std::os::fd::AsRawFd;
+    let Some((mut master, slave)) = open_pty() else {
+        return;
+    };
+    let home = home("visible-paste");
+    start_defaults(&home);
+    let keep_open = slave.try_clone().unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ghostlink"))
+        .args(["login", "complete"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("DESTINY_DATABASE_PATH", home.join("db"))
+        .env(
+            "GHOSTLINK_CREDENTIALS_FILE",
+            home.join("ghostlink/credentials.json"),
+        )
+        .stdin(Stdio::from(slave))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    let mut prompt = String::new();
+    stderr.read_line(&mut prompt).unwrap();
+    assert_eq!(prompt, "paste the callback url and press enter:\n");
+    // Let the child reach its read before the paste arrives.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let pasted = format!("{HTTPS_CALLBACK}?state=foreign&code=VISIBLE");
+    master.write_all(format!("{pasted}\n").as_bytes()).unwrap();
+    let status = child.wait().unwrap();
+    let mut rest = String::new();
+    stderr.read_to_string(&mut rest).unwrap();
+    assert_eq!(status.code(), Some(10), "{rest}");
+
+    // Whatever the terminal echoed back is readable on the master side.
+    // SAFETY: the descriptor is valid and owned by `master` for this call.
+    unsafe {
+        let flags = libc::fcntl(master.as_raw_fd(), libc::F_GETFL);
+        libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+    }
+    let mut echoed = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    while let Ok(read) = master.read(&mut buffer) {
+        if read == 0 {
+            break;
+        }
+        echoed.extend_from_slice(&buffer[..read]);
+    }
+    drop(keep_open);
+    let echoed = String::from_utf8_lossy(&echoed);
+    assert!(
+        echoed.contains(&pasted),
+        "the pasted callback is shown: {echoed:?}"
+    );
+    std::fs::remove_dir_all(&home).unwrap();
+}
