@@ -57,8 +57,9 @@ agents can answer "should I keep this drop?" with cited community opinion.
 - [x] T1 (S5) core: parser + matcher, pure, fixtures. Route: inline. Commit: 38b9b2a
       Native review review-b47ca34247689872 (base 2efa39b): approved,
       acknowledged; 4 readability SUGGESTIONs, no blockers.
-- [ ] T2 (S1-S4) storage, voltron/local acquisition, sync seam, config key,
-      sync output. Route: inline. Commit: —
+- [x] T2 (S1-S4) storage, voltron/local acquisition, sync seam, config key,
+      sync output. Route: inline. Commits: 71bb55d, 8383086, 9dce82b,
+      1cd892a (+ style fixup).
 - [ ] T3 (S5) inspect `wishlist` field (core/app/CLI/MCP) and
       `is:wishlist`/`is:trashlist`. Route: inline. Commit: —
 - [ ] T4 (S4-S5) docs (cli, mcp, configuration), skill rule, README Credits.
@@ -111,3 +112,33 @@ Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
   simplify sign parsing, name the 10-digit cap. Fix in T2: `notes_text`
   cuts at the last `|tags:` while `notes_tags` reads from the last bare
   `tags:`, so `foo tags:pve` disagrees between them.
+- L7 (review, 2026-10-15): hook-required review review-f1fc94cb27f88830 of
+  the full branch (base 59a651e, HEAD 49fc64d) approved and acknowledged;
+  both lenses repeat the notes/tags delimiter WARNING (wishlist.rs:131-140).
+- L8 (user): "dale empcemos con T2".
+- L9 (T2 decisions, parent): the content fingerprint is FNV-1a 64 plus byte
+  length in core, not SHA-256, to avoid a new dependency (high-risk item 5);
+  it only detects change and voltron's ETag stays the first gate. Notes/tags
+  fix: voltron has 442 lines with a bare ` tags:` (no `|`), so `notes_text`
+  now cuts at the same last `tags:` that `notes_tags` reads.
+  `GHOSTLINK_WISHLISTS` is validated only by the sync (`invalid_config`
+  report, stored lists untouched), never by `ReadRuntimeConfig::from_values`,
+  so a typo cannot block reads. Sync statuses: overall
+  `ok|partial|unavailable|disabled|invalid_config`; per source
+  `updated|unchanged|unavailable`, with the rolls still stored. A failing
+  source keeps its rolls; unconfigured sources are deleted even offline.
+- L10 (T2 evidence): RED then GREEN per unit: core 15/15
+  (`--test wishlist`), storage 4/4 (`wishlist_store`), gateway 3/3 + 2 unit,
+  sync 8/8 (`wishlist_sync`), config 1 new, CLI output 2/2
+  (`wishlist_output`) + 1 runtime composition test; the exact-output test
+  `manifest_foundations_render_both_outcomes_without_credentials` now pins
+  the wish-list section. Isolated end-to-end (copy of the real database in
+  `mktemp -d`, real GitHub voltron): first sync `updated` 274,677 rolls,
+  0 skipped, 5,482 texts (~21 s including a Manifest refresh); second sync
+  `unchanged` in 0.9 s via ETag; local list added `updated`; relative path
+  `invalid_config` with stored lists intact, exit 0; missing local file +
+  reorder `partial`; `none` `disabled` with 0 rows and 0 texts left. Storage
+  measured with dbstat: 47.6 MB, cut to 36.7 MB by dropping the UNIQUE text
+  index (dedup stays in Rust per publication). WITHOUT ROWID rolls saved
+  ~2 MB more but broke the `bridge_rows` test convention that every table
+  has a rowid, so it was reverted.
