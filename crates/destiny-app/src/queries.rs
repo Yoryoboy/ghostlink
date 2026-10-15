@@ -874,6 +874,11 @@ where
             let execution = execution
                 .as_mut()
                 .expect("typed query has execution context");
+            // Like stat filters without stat definitions: no loaded list
+            // fails closed instead of reporting that nothing is wish-listed.
+            if execution.needs_wishlist() && !self.repository().wishlists_loaded()? {
+                return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+            }
             for name in destiny_core::search_query::referenced_stats(typed) {
                 if self.repository().stat_definition_count()? == 0 {
                     return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));

@@ -47,6 +47,8 @@ fn simple_values_have_the_expected_types() {
         ("hunter", Class(ClassType::Hunter)),
         ("titan", Class(ClassType::Titan)),
         ("warlock", Class(ClassType::Warlock)),
+        ("wishlist", Wishlist),
+        ("trashlist", Trashlist),
     ] {
         assert_eq!(leaf(&format!("IS:{}", value.to_uppercase())), expected);
         for input in [format!("not:{value}"), format!("-is:{value}")] {
@@ -161,7 +163,6 @@ fn invalid_values_are_spanned_and_sanitized_even_inside_or() {
 #[test]
 fn unsupported_filters_are_named_without_echoing_values() {
     for input in [
-        "is:wishlist",
         "wishlist:secret",
         "notes:secret",
         "is:crafted",

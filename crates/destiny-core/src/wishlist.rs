@@ -424,6 +424,28 @@ pub struct WishlistInspection {
     pub matches_total: usize,
 }
 
+/// The verdict alone, for search filters, under the same rules as
+/// [`inspect_wishlist`]; a non-weapon has no opinion.
+pub fn wishlist_verdict(
+    slot: Option<crate::domain::ItemSlot>,
+    item_hash: u32,
+    rolls: &[SourcedWishlistRoll],
+    options: &[PlugOption],
+    perk_name: impl Fn(u32) -> Option<String>,
+) -> WishlistVerdict {
+    if !crate::query::is_weapon_slot(slot) {
+        return WishlistVerdict::None;
+    }
+    evaluate_keyed(
+        item_hash,
+        rolls,
+        |sourced| (&sourced.roll, Some(sourced.source.as_str())),
+        options,
+        perk_name,
+    )
+    .0
+}
+
 /// Evaluates loaded rolls (in source, then file order) for a weapon instance.
 /// Wish lists cover weapons only, so any other slot yields `None`.
 pub fn inspect_wishlist(

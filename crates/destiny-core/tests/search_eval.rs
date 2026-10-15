@@ -3,7 +3,9 @@ use destiny_core::domain::{ClassType, DamageType, PerkSummary, StatSummary};
 use destiny_core::query::{
     self, DefinitionSearchQuery, InstanceSearchQuery, ItemHashFilter, LocationFilter, SearchTerm,
 };
-use destiny_core::search_query::{ItemView, Lowering, compile, lower, matches, referenced_stats};
+use destiny_core::search_query::{
+    ItemView, Lowering, ResolvedQuery, compile, lower, matches, referenced_stats,
+};
 use destiny_core::{CharacterId, PerkHash, StatDefinition};
 use destiny_core::{
     DefinitionVersion, ItemDefinition, ItemHash, ItemInstance, ItemInstanceId, ItemLocation,
@@ -175,6 +177,7 @@ fn leaf_parity_and_prefilter_superset_matrix() {
                         include_available,
                         stats: &stats,
                         characters: &characters,
+                        wishlist: None,
                     };
                     let paired = definition.filter(|d| d.hash == item.item_hash);
                     let mut cases: Vec<(&str, InstanceSearchQuery)> = vec![];
@@ -342,6 +345,7 @@ fn boolean_missing_data_and_referenced_stats() {
             include_available: false,
             stats: &stats,
             characters: &characters,
+            wishlist: None,
         };
         for (text, expected) in [
             ("", true),
@@ -385,6 +389,7 @@ fn comparisons_and_lowering_bounds() {
                 include_available: false,
                 stats: &stats,
                 characters: &characters,
+                wishlist: None,
             };
             for (op, stat_expected, power_expected) in [
                 (">=", value >= 30, power.is_some_and(|v| v >= 30)),
@@ -435,6 +440,53 @@ fn comparisons_and_lowering_bounds() {
     };
     assert_eq!(empty, base_query());
 }
+/// The caller supplies the wish-list verdict; an unevaluated item (`None`)
+/// satisfies neither filter, and NOT stays plain negation.
+#[test]
+fn wishlist_filters_read_the_supplied_verdict() {
+    use destiny_core::wishlist::WishlistVerdict;
+    let def = definition();
+    let item = instance();
+    let stats = BTreeMap::new();
+    let characters = BTreeMap::new();
+    for (verdict, wished, trashed) in [
+        (Some(WishlistVerdict::Wishlist), true, false),
+        (Some(WishlistVerdict::Trash), false, true),
+        (Some(WishlistVerdict::None), false, false),
+        (None, false, false),
+    ] {
+        let view = ItemView {
+            instance: &item,
+            definition: Some(&def),
+            socketed: &[],
+            available: &[],
+            include_available: false,
+            stats: &stats,
+            characters: &characters,
+            wishlist: verdict,
+        };
+        assert_eq!(
+            matches(&compile("is:wishlist").unwrap(), &view),
+            wished,
+            "{verdict:?}"
+        );
+        assert_eq!(
+            matches(&compile("is:trashlist").unwrap(), &view),
+            trashed,
+            "{verdict:?}"
+        );
+        assert_eq!(
+            matches(&compile("-is:wishlist").unwrap(), &view),
+            !wished,
+            "{verdict:?}"
+        );
+    }
+    let typed = compile("is:wishlist").unwrap();
+    let execution = ResolvedQuery::new(&typed);
+    assert!(execution.needs_wishlist());
+    assert!(!ResolvedQuery::new(&compile("is:weapon").unwrap()).needs_wishlist());
+}
+
 #[test]
 fn lowering_full_and_safe_residual() {
     let def = definition();
@@ -449,6 +501,7 @@ fn lowering_full_and_safe_residual() {
         include_available: false,
         stats: &stats,
         characters: &characters,
+        wishlist: None,
     };
     let typed = compile("name:sun type:\"hand cannon\" tag:favorite is:invault hash:1").unwrap();
     let Lowering::Full(query) = lower(&typed) else {

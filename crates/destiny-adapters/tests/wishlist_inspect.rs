@@ -1,4 +1,5 @@
-//! Inspect `wishlist` through the real application service, CLI and MCP views.
+//! Inspect `wishlist` through the real application service, CLI and MCP views,
+//! and the `is:wishlist`/`is:trashlist` search filters that share its verdict.
 use destiny_adapters::sqlite::SqliteStore;
 use destiny_app::test_support::QueuedProfileGateway;
 use destiny_app::{ProfileSyncService, QueryService};
@@ -8,6 +9,7 @@ use destiny_core::*;
 
 const GUN: i64 = 10;
 const HELMET: i64 = 20;
+const OTHER_GUN: i64 = 11;
 
 fn definition(hash: i64, name: &str, slot: Option<ItemSlot>) -> ItemDefinition {
     ItemDefinition {
@@ -79,6 +81,7 @@ fn store() -> SqliteStore {
                 definitions: vec![
                     definition(GUN, "Gun", Some(ItemSlot::Kinetic)),
                     definition(HELMET, "Helmet", Some(ItemSlot::Helmet)),
+                    definition(OTHER_GUN, "Other Gun", Some(ItemSlot::Energy)),
                     definition(1, "Outlaw", None),
                     definition(2, "Rampage", None),
                     definition(21, "Rampage", None),
@@ -102,6 +105,7 @@ fn store() -> SqliteStore {
             items: vec![
                 instance("gun", GUN, &[1], &[21, 77]),
                 instance("helmet", HELMET, &[], &[]),
+                instance("other", OTHER_GUN, &[2], &[]),
             ],
         })
         .unwrap();
@@ -237,4 +241,89 @@ fn the_field_is_absent_without_lists_and_for_armor() {
     assert!(json.get("wishlist").is_none());
     assert!(mcp.get("wishlist").is_none());
     assert!(!human.contains("wishlist"), "{human}");
+}
+
+fn search(store: SqliteStore, input: &str) -> Result<Vec<String>, AppError> {
+    let mut app = QueryService::new(ProfileSyncService::new(QueuedProfileGateway::new(), store));
+    let instances = InstanceSearchQuery {
+        offset: 0,
+        sort: None,
+        include_available: false,
+        item_hashes: ItemHashFilter::Any,
+        perk_hash: None,
+        perk_name: None,
+        mod_name: None,
+        archetype: None,
+        character_id: None,
+        location: None,
+        equipped: None,
+        definitions: None,
+        min_power: None,
+        stats: vec![],
+        limit: 10,
+    };
+    let definitions = DefinitionSearchQuery {
+        text: None,
+        item_type: None,
+        tier: None,
+        tags: vec![],
+        element: None,
+        slot: None,
+        class_type: None,
+        limit: 10,
+    };
+    let request = destiny_app::SearchInventoryRequest::new(definitions, Some(instances))
+        .with_query(input)
+        .unwrap();
+    let result = app.search_inventory(
+        &request,
+        FreshnessPolicy { ttl_seconds: 300 },
+        Timestamp::new(1),
+    )?;
+    let mut ids: Vec<String> = result
+        .hits
+        .iter()
+        .map(|hit| hit.instance.instance_id.as_str().to_owned())
+        .collect();
+    ids.sort();
+    Ok(ids)
+}
+
+/// The filters use the inspect verdict: the first matching roll decides, the
+/// enhanced Rampage matches the base hash by name, and the gun voltron has no
+/// opinion on is neither wished nor trashed.
+#[test]
+fn search_filters_follow_the_inspect_verdict() {
+    let lists = || {
+        let mut store = store();
+        publish(&mut store, "voltron", "dimwishlist:item=10&perks=1,2\n");
+        publish(&mut store, "/lists/mine.txt", "dimwishlist:item=-11\n");
+        store
+            .retain_wishlist_sources(&["voltron".into(), "/lists/mine.txt".into()])
+            .unwrap();
+        store
+    };
+    for (input, expected) in [
+        ("is:wishlist", vec!["gun"]),
+        ("is:trashlist", vec!["other"]),
+        ("is:wishlist or is:trashlist", vec!["gun", "other"]),
+        ("is:weapon -is:trashlist", vec!["gun"]),
+        ("-is:wishlist", vec!["helmet", "other"]),
+    ] {
+        assert_eq!(search(lists(), input).unwrap(), expected, "{input}");
+    }
+}
+
+/// With no list loaded the filters fail closed, like stat filters without stat
+/// definitions, instead of reporting that nothing is wish-listed.
+#[test]
+fn wishlist_filters_need_a_loaded_list() {
+    for input in ["is:wishlist", "is:trashlist", "-is:wishlist"] {
+        assert_eq!(
+            search(store(), input).unwrap_err().category(),
+            ErrorCategory::DefinitionsUnavailable,
+            "{input}"
+        );
+    }
+    assert_eq!(search(store(), "is:weapon").unwrap(), vec!["gun", "other"]);
 }

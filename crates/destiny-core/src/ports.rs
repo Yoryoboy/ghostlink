@@ -612,6 +612,11 @@ pub trait InventoryRepository {
 /// [`PerkHash`]: crate::ids::PerkHash
 /// [`ItemInstanceId`]: crate::ids::ItemInstanceId
 pub trait SearchRepository {
+    /// Whether any wish list is stored; wish-list filters fail closed without
+    /// one. Wrappers must forward this seam.
+    fn wishlists_loaded(&self) -> Result<bool, AppError> {
+        Ok(false)
+    }
     /// Complete display-name catalog for a filter kind, not truncated search hits.
     fn name_catalog(&self, _kind: &str) -> Result<crate::name_matching::NameCatalog, AppError> {
         Err(AppError::new(crate::ErrorCategory::UnsupportedOperation))
