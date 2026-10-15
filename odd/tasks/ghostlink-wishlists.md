@@ -178,3 +178,12 @@ Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
   Evidence: core 18/18 (`--test wishlist`, includes `Arc::ptr_eq`,
   inspection matching and the weapon-only rule), inspect integration 3/3
   (`wishlist_inspect`, incl. CLI/MCP JSON parity and field absence).
+- L15 (review, 2026-10-15 14:24): the RDD hook asked for a review of the T3a
+  candidate (whole branch since 59a651e; assess said reviewDue false,
+  under_budget, medium). Started review-4d850975733946c8 with the
+  readability and reliability lenses; its two reviewer slots are still
+  offered and unconsumed because the reviewer run failed on the provider
+  quota (Claude five-hour limit, resets 17:40 America/Argentina/Buenos_Aires).
+  Nothing was mutated. Retry the same bound slots after the reset; never
+  replay the failed capture from memory. The lineage stays `reviewing`, so the
+  candidate is frozen at tree 7cdb1eff for T3a.
