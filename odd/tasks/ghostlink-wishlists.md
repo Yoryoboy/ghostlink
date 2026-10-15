@@ -54,8 +54,8 @@ agents can answer "should I keep this drop?" with cited community opinion.
 
 ## Tasks
 
-- [x] T1 (S5) core: parser + matcher, pure, fixtures. Route: inline. Commit: pending
-      delivery choice.
+- [x] T1 (S5) core: parser + matcher, pure, fixtures. Route: inline. Commit: 38b9b2a
+      (RDD assess: medium, not due; deferred to slice A close).
 - [ ] T2 (S1-S4) storage, voltron/local acquisition, sync seam, config key,
       sync output. Route: inline. Commit: —
 - [ ] T3 (S5) inspect `wishlist` field (core/app/CLI/MCP) and
@@ -89,3 +89,14 @@ Delivery: ask-on-risk; user chose chain_strategy=feature-branch-chain
   clean. Scratch parse of the real files (release): voltron 274,677 rolls,
   0 skipped, 5,207 distinct notes, 275 sections, ~200 ms; choosy 51 trash
   after accepting DIM's bare `#notes` marker (2 lines).
+- L5 (user, 2026-10-15): "cuanod termines t1, avisame antes de empezar t2";
+  then "lo hacemos en la procima sesion, guarda el progreso hasta ahora".
+  T2 not started (read-only exploration only). Resume notes for T2: schema
+  LATEST_VERSION is 36 (`crates/destiny-adapters/src/sqlite/migrations.rs:46`)
+  so wish lists take v37; follow Clarity seams: transport/decode
+  `crates/destiny-adapters/src/clarity.rs`, storage
+  `crates/destiny-adapters/src/sqlite/clarity.rs`, sync orchestration
+  `crates/destiny-app/src/clarity.rs` (`sync_manifest_and_clarity`), CLI
+  composition `crates/destiny-cli/src/runtime.rs:456-525`, sync output
+  `crates/destiny-cli/src/output.rs:576` (`render_manifest_with_clarity`),
+  config keys and defaults `crates/destiny-app/src/config.rs:16-33,433-466`.
