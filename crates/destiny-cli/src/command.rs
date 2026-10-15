@@ -233,7 +233,7 @@ pub enum BuildCommand {
     /// Rank armor sets from your Vault and characters for a build, as DIM's Loadout
     /// Optimizer does with its saved stat ranges; never applies gear.
     Substitutes(BuildSubstitutesArgs),
-    /// Move and equip a build's items (sockets and mods are not applied yet).
+    /// Move and equip a build's items, then insert its subclass, artifact, mod and fashion plugs.
     /// With --dry-run it prints the plan and dispatches nothing.
     Apply(BuildApplyArgs),
     /// Delete a local build; ID deletion is idempotent.

@@ -395,3 +395,20 @@ fn local_state_persistence_failure_exits_42_after_bungie_acknowledged() {
             .ends_with("local state could not be updated after the action\nLocal state: failed")
     );
 }
+
+#[test]
+fn build_help_describes_apply_with_sockets_mods_and_fashion() {
+    let help = destiny_cli::parse_process(["ghostlink", "build", "--help"]).unwrap_err();
+    assert_eq!(help.exit_code, 0);
+    assert!(help.stderr.is_empty());
+    let apply = help
+        .stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("apply "))
+        .expect("apply line");
+    assert!(!apply.contains("not applied yet"), "{apply}");
+    assert!(
+        apply.contains("subclass, artifact, mod and fashion plugs"),
+        "{apply}"
+    );
+}

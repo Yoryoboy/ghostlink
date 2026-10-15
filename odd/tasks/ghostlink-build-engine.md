@@ -881,3 +881,7 @@ coverage (`domain.rs:123-126`).
       - DIM after F5 shows Ace + Sorrow's Verse + Corrective Measure on the
         Hunter.
       - Workspace 2469 passed / 0 failed; clippy all-features and fmt clean.
+    - BE-010e: `build --help` no longer says sockets and mods are not applied;
+      the apply line names subclass, artifact, mod and fashion plugs. RED
+      `build_help_describes_apply_with_sockets_mods_and_fashion` before the
+      edit; `ghostlink` package tests, clippy all-features and fmt clean.
