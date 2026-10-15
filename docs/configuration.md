@@ -175,7 +175,6 @@ migrated: run `ghostlink login` once after upgrading. Deleting
 `credentials.json` signs out new processes; a running MCP server keeps its
 cached token until it next needs to renew, so restart the MCP host.
 
-
 ## Wish lists
 
 `GHOSTLINK_WISHLISTS` selects the DIM-format weapon wish lists that
@@ -184,10 +183,13 @@ process environment or the configuration file like every other key.
 
 | Value | Meaning |
 | --- | --- |
-| unset or empty | `voltron` |
-| `voltron` | The community list [48klocs/dim-wish-list-sources](https://github.com/48klocs/dim-wish-list-sources) `voltron.txt`, downloaded at sync time |
-| an absolute file path | A local DIM-format list of your own, re-read on every sync |
-| `none` | Disable wish lists; stored lists are removed on the next sync |
+| unset or empty | Same as `voltron` |
+| `voltron` | The built-in community list, downloaded at sync time |
+| an absolute file path | Your own DIM-format list, re-read on every sync |
+| `none` | No wish lists; stored lists are removed on the next sync |
+
+The built-in list is `voltron.txt` from
+[48klocs/dim-wish-list-sources](https://github.com/48klocs/dim-wish-list-sources).
 
 Combine entries with commas, for example
 `GHOSTLINK_WISHLISTS=voltron,/home/me/lists/mine.txt`. Lists apply in this

@@ -8,20 +8,74 @@ use destiny_core::wishlist::{
 };
 use destiny_core::{AppError, ErrorCategory, Timestamp};
 
+/// What a sync did with one source.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WishlistSourceStatus {
+    Updated,
+    Unchanged,
+    /// The fetch or store failed; the previously stored rolls remain.
+    Unavailable,
+}
+
+impl WishlistSourceStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Updated => "updated",
+            Self::Unchanged => "unchanged",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+impl std::fmt::Display for WishlistSourceStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// The overall outcome of one wish-list sync.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WishlistSyncStatus {
+    Ok,
+    /// Some sources failed and others did not.
+    Partial,
+    Unavailable,
+    /// No source is configured (`none`).
+    Disabled,
+    /// `GHOSTLINK_WISHLISTS` did not parse.
+    InvalidConfig,
+}
+
+impl WishlistSyncStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Partial => "partial",
+            Self::Unavailable => "unavailable",
+            Self::Disabled => "disabled",
+            Self::InvalidConfig => "invalid_config",
+        }
+    }
+}
+
+impl std::fmt::Display for WishlistSyncStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 /// One configured source after a sync; `rolls` counts what is now stored.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WishlistSourceReport {
     pub source: String,
-    /// `updated`, `unchanged` or `unavailable`.
-    pub status: &'static str,
+    pub status: WishlistSourceStatus,
     pub rolls: usize,
     pub skipped: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WishlistSyncReport {
-    /// `ok`, `partial`, `unavailable`, `disabled` or `invalid_config`.
-    pub status: &'static str,
+    pub status: WishlistSyncStatus,
     pub sources: Vec<WishlistSourceReport>,
 }
 
@@ -29,7 +83,7 @@ impl WishlistSyncReport {
     /// Nothing was fetched or stored, for example without a gateway.
     pub fn unavailable() -> Self {
         Self {
-            status: "unavailable",
+            status: WishlistSyncStatus::Unavailable,
             sources: Vec::new(),
         }
     }
@@ -37,7 +91,7 @@ impl WishlistSyncReport {
     /// `GHOSTLINK_WISHLISTS` did not parse; stored lists were left as they were.
     pub fn invalid_config() -> Self {
         Self {
-            status: "invalid_config",
+            status: WishlistSyncStatus::InvalidConfig,
             sources: Vec::new(),
         }
     }
@@ -46,7 +100,7 @@ impl WishlistSyncReport {
 fn unavailable_source(key: String, stored: Option<&WishlistSourceRecord>) -> WishlistSourceReport {
     WishlistSourceReport {
         source: key,
-        status: "unavailable",
+        status: WishlistSourceStatus::Unavailable,
         rolls: stored.map_or(0, |record| record.rolls),
         skipped: stored.map_or(0, |record| record.skipped),
     }
@@ -75,19 +129,19 @@ pub fn sync_wishlists<G: WishlistGateway, R: WishlistRepository>(
     let keys: Vec<String> = sources.iter().map(WishlistSource::key).collect();
     if repository.retain_wishlist_sources(&keys).is_err() {
         return WishlistSyncReport {
-            status: "unavailable",
+            status: WishlistSyncStatus::Unavailable,
             sources: reports,
         };
     }
     let failed = reports
         .iter()
-        .filter(|report| report.status == "unavailable")
+        .filter(|report| report.status == WishlistSourceStatus::Unavailable)
         .count();
     let status = match failed {
-        _ if sources.is_empty() => "disabled",
-        0 => "ok",
-        failed if failed == reports.len() => "unavailable",
-        _ => "partial",
+        _ if sources.is_empty() => WishlistSyncStatus::Disabled,
+        0 => WishlistSyncStatus::Ok,
+        failed if failed == reports.len() => WishlistSyncStatus::Unavailable,
+        _ => WishlistSyncStatus::Partial,
     };
     WishlistSyncReport {
         status,
@@ -105,7 +159,7 @@ fn sync_source<G: WishlistGateway, R: WishlistRepository>(
 ) -> Result<WishlistSourceReport, AppError> {
     let unchanged = |record: &WishlistSourceRecord| WishlistSourceReport {
         source: key.to_owned(),
-        status: "unchanged",
+        status: WishlistSourceStatus::Unchanged,
         rolls: record.rolls,
         skipped: record.skipped,
     };
@@ -138,7 +192,7 @@ fn sync_source<G: WishlistGateway, R: WishlistRepository>(
             )?;
             Ok(WishlistSourceReport {
                 source: key.to_owned(),
-                status: "updated",
+                status: WishlistSourceStatus::Updated,
                 rolls: document.rolls.len(),
                 skipped: document.skipped,
             })

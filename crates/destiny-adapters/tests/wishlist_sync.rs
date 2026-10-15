@@ -1,5 +1,8 @@
 use destiny_adapters::sqlite::SqliteStore;
-use destiny_app::wishlist::{WishlistSourceReport, WishlistSyncReport, sync_wishlists};
+use destiny_app::wishlist::{
+    WishlistSourceReport, WishlistSourceStatus, WishlistSyncReport, WishlistSyncStatus,
+    sync_wishlists,
+};
 use destiny_core::wishlist::{
     WishlistFetch, WishlistGateway, WishlistRepository, WishlistSource, WishlistSourceRecord,
 };
@@ -61,12 +64,13 @@ fn gateway() -> Gateway {
     }
 }
 
-fn source(
-    source: &str,
-    status: &'static str,
-    rolls: usize,
-    skipped: usize,
-) -> WishlistSourceReport {
+fn source(source: &str, status: &str, rolls: usize, skipped: usize) -> WishlistSourceReport {
+    let status = match status {
+        "updated" => WishlistSourceStatus::Updated,
+        "unchanged" => WishlistSourceStatus::Unchanged,
+        "unavailable" => WishlistSourceStatus::Unavailable,
+        other => panic!("unknown source status {other}"),
+    };
     WishlistSourceReport {
         source: source.into(),
         status,
@@ -87,7 +91,7 @@ fn first_sync_publishes_every_source_in_configured_order() {
     assert_eq!(
         report,
         WishlistSyncReport {
-            status: "ok",
+            status: WishlistSyncStatus::Ok,
             sources: vec![
                 source("voltron", "updated", 1, 1),
                 source(MINE, "updated", 1, 0)
@@ -130,7 +134,7 @@ fn unchanged_sources_are_checked_without_republishing() {
             source(MINE, "unchanged", 1, 0)
         ]
     );
-    assert_eq!(report.status, "ok");
+    assert_eq!(report.status, WishlistSyncStatus::Ok);
     assert_eq!(
         gateway.fetches,
         vec![
@@ -168,7 +172,7 @@ fn a_failing_source_keeps_its_rolls_and_only_degrades_the_status() {
     assert_eq!(
         report,
         WishlistSyncReport {
-            status: "partial",
+            status: WishlistSyncStatus::Partial,
             sources: vec![
                 source("voltron", "unavailable", 1, 1),
                 source(MINE, "unchanged", 1, 0)
@@ -178,7 +182,7 @@ fn a_failing_source_keeps_its_rolls_and_only_degrades_the_status() {
     assert_eq!(records(&store)[0], before[0]);
     gateway.failing = vec!["voltron".into(), MINE.into()];
     let report = sync_wishlists(&mut gateway, &mut store, &sources(), Timestamp::new(3));
-    assert_eq!(report.status, "unavailable");
+    assert_eq!(report.status, WishlistSyncStatus::Unavailable);
     assert_eq!(store.wishlist_rolls(10).unwrap().len(), 2);
 }
 
@@ -211,7 +215,7 @@ fn removed_sources_are_dropped_and_none_disables_every_list() {
     assert_eq!(
         report,
         WishlistSyncReport {
-            status: "disabled",
+            status: WishlistSyncStatus::Disabled,
             sources: vec![],
         }
     );
@@ -227,7 +231,7 @@ fn reordering_sources_changes_the_stored_order_without_refetching_content() {
     sync_wishlists(&mut gateway, &mut store, &sources(), Timestamp::new(1));
     let reversed: Vec<_> = sources().into_iter().rev().collect();
     let report = sync_wishlists(&mut gateway, &mut store, &reversed, Timestamp::new(2));
-    assert_eq!(report.status, "ok");
+    assert_eq!(report.status, WishlistSyncStatus::Ok);
     let keys: Vec<_> = records(&store)
         .into_iter()
         .map(|record| record.key)
@@ -271,7 +275,7 @@ fn without_a_gateway_every_source_reports_its_stored_rolls() {
     assert_eq!(
         report,
         WishlistSyncReport {
-            status: "unavailable",
+            status: WishlistSyncStatus::Unavailable,
             sources: vec![
                 source("voltron", "unavailable", 1, 1),
                 source(MINE, "unavailable", 1, 0)
@@ -295,7 +299,7 @@ fn an_empty_voltron_body_never_replaces_stored_rolls() {
     assert_eq!(
         report,
         WishlistSyncReport {
-            status: "partial",
+            status: WishlistSyncStatus::Partial,
             sources: vec![
                 source("voltron", "unavailable", 1, 1),
                 source(MINE, "unchanged", 1, 0)
@@ -326,6 +330,6 @@ fn an_emptied_local_list_is_published_as_the_user_left_it() {
     gateway.texts.insert(MINE.into(), String::new());
     let report = sync_wishlists(&mut gateway, &mut store, &sources(), Timestamp::new(2));
     assert_eq!(report.sources[1], source(MINE, "updated", 0, 0));
-    assert_eq!(report.status, "ok");
+    assert_eq!(report.status, WishlistSyncStatus::Ok);
     assert_eq!(records(&store)[1].rolls, 0);
 }

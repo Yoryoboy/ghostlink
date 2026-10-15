@@ -2295,7 +2295,9 @@ mod tests {
     #[test]
     fn composed_sync_reports_default_voltron_unavailable_without_a_transport() {
         use super::ManifestFactory;
-        use destiny_app::wishlist::{WishlistSourceReport, WishlistSyncReport};
+        use destiny_app::wishlist::{
+            WishlistSourceReport, WishlistSourceStatus, WishlistSyncReport, WishlistSyncStatus,
+        };
         let mut factory = super::ComposingManifestFactory::new(FakeManifestFoundations {
             log: log(),
             store: Some(SqliteStore::open_in_memory().unwrap()),
@@ -2305,10 +2307,10 @@ mod tests {
         assert_eq!(
             report.wishlists,
             WishlistSyncReport {
-                status: "unavailable",
+                status: WishlistSyncStatus::Unavailable,
                 sources: vec![WishlistSourceReport {
                     source: "voltron".into(),
-                    status: "unavailable",
+                    status: WishlistSourceStatus::Unavailable,
                     rolls: 0,
                     skipped: 0,
                 }],
@@ -2319,7 +2321,9 @@ mod tests {
     #[test]
     fn local_wishlists_sync_without_a_voltron_transport() {
         use super::ManifestFactory;
-        use destiny_app::wishlist::{WishlistSourceReport, WishlistSyncReport};
+        use destiny_app::wishlist::{
+            WishlistSourceReport, WishlistSourceStatus, WishlistSyncReport, WishlistSyncStatus,
+        };
 
         /// Fake foundations whose configuration also lists a local wish list.
         struct WithLocalList {
@@ -2374,17 +2378,17 @@ mod tests {
         assert_eq!(
             report.unwrap().wishlists,
             WishlistSyncReport {
-                status: "partial",
+                status: WishlistSyncStatus::Partial,
                 sources: vec![
                     WishlistSourceReport {
                         source: "voltron".into(),
-                        status: "unavailable",
+                        status: WishlistSourceStatus::Unavailable,
                         rolls: 0,
                         skipped: 0,
                     },
                     WishlistSourceReport {
                         source: key,
-                        status: "updated",
+                        status: WishlistSourceStatus::Updated,
                         rolls: 1,
                         skipped: 0,
                     },
