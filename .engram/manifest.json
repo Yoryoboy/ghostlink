@@ -120,6 +120,14 @@
       "sessions": 4,
       "memories": 4,
       "prompts": 17
+    },
+    {
+      "id": "9ab46cb1",
+      "created_by": "yoryo",
+      "created_at": "2026-10-16T00:42:32.676823821Z",
+      "sessions": 48,
+      "memories": 37,
+      "prompts": 88
     }
   ]
 }
