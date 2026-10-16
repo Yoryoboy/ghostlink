@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "destiny-adapters"
-version = "0.1.0-rc.3"
+version = "0.2.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "destiny-app"
-version = "0.1.0-rc.3"
+version = "0.2.0-rc.1"
 dependencies = [
  "destiny-core",
  "url",
@@ -383,11 +383,11 @@ dependencies = [
 
 [[package]]
 name = "destiny-core"
-version = "0.1.0-rc.3"
+version = "0.2.0-rc.1"
 
 [[package]]
 name = "destiny-mcp"
-version = "0.1.0-rc.3"
+version = "0.2.0-rc.1"
 dependencies = [
  "clap",
  "destiny-adapters",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "destiny-output"
-version = "0.1.0-rc.3"
+version = "0.2.0-rc.1"
 dependencies = [
  "destiny-app",
  "serde_json",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "ghostlink"
-version = "0.1.0-rc.3"
+version = "0.2.0-rc.1"
 dependencies = [
  "chrono",
  "clap",
