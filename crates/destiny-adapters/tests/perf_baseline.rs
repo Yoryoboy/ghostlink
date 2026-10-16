@@ -458,8 +458,9 @@ fn sqlite_read_and_publication_baseline() {
         .filter(|item| item.locked || item.location == ItemLocation::Vault)
         .cloned()
         .collect();
-    expected
-        .sort_by(|a, b| query::compare_instances(sorted.sort.as_ref(), a, b, &stat_definitions));
+    expected.sort_by(|a, b| {
+        query::compare_sorted_instances(sorted.sort.as_ref(), a, b, &stat_definitions)
+    });
     expected.truncate(sorted.limit);
     median("owned residual OR (stat sort 5)", || {
         sample(

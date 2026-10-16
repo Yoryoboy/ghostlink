@@ -1004,7 +1004,7 @@ fn typed_residual_reference_paging_sort_and_fake_app_parity() {
                         .cloned()
                         .collect();
                     reference.sort_by(|a, b| {
-                        query::compare_instances(flags.sort.as_ref(), a, b, &catalog())
+                        query::compare_sorted_instances(flags.sort.as_ref(), a, b, &catalog())
                     });
                     let mut observed = Vec::new();
                     let mut offset = 0;

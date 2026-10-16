@@ -81,6 +81,8 @@ when missing after login or on a CLI read.
 ghostlink list-characters
 ghostlink postmaster --character hunter --json
 ghostlink search-inventory 'is:weapon (is:solar or is:arc) -is:locked' --sort Range
+# Newest items first (approximate acquisition order by instance ID):
+ghostlink search-inventory --sort recent --limit 20
 ghostlink search-inventory --filters
 ghostlink search-inventory 'type:"Hand Cannon"' --detail --json
 ghostlink search-inventory '' --limit 5 --offset 5

@@ -1770,9 +1770,16 @@ impl SearchInventoryArgs {
         let sort = self
             .sort
             .as_deref()
-            .map(str::parse)
+            .map(str::parse::<destiny_app::InstanceSort>)
             .transpose()
             .map_err(McpError::from)?;
+        let sort = match (self.after.as_deref(), sort) {
+            (None, sort) => sort,
+            (Some(_), None | Some(destiny_app::InstanceSort::Stat(_))) => {
+                return Err(AppError::invalid_argument("after", "requires sort \"recent\"").into());
+            }
+            (Some(after), Some(sort)) => Some(sort.with_after(after).map_err(McpError::from)?),
+        };
         let stats = self
             .stats
             .iter()
@@ -3324,6 +3331,7 @@ mod tests {
             equipped: None,
             include_available: false,
             sort: None,
+            after: None,
             text: text.map(str::to_owned),
             perk_names: Vec::new(),
             mod_names: Vec::new(),
@@ -3373,6 +3381,7 @@ mod tests {
             offset: 0,
             detail: false,
             sort: None,
+            after: None,
             tier: None,
             location: None,
             equipped: None,
@@ -3666,6 +3675,7 @@ mod tests {
             equipped: None,
             include_available: false,
             sort: None,
+            after: None,
             text: Some("gjallar".into()),
             perk_names: Vec::new(),
             mod_names: Vec::new(),
@@ -3922,6 +3932,7 @@ mod tests {
             location: None,
             equipped: None,
             sort: None,
+            after: None,
             offset: 0,
             query: None,
         };
@@ -3977,6 +3988,7 @@ mod tests {
             location: None,
             equipped: None,
             sort: None,
+            after: None,
             offset: 0,
             query: None,
         };

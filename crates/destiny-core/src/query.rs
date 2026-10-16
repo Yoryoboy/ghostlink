@@ -398,6 +398,93 @@ impl StatSort {
     }
 }
 
+/// Display label reported in `resolved.sort` for [`InstanceSort::Recent`].
+pub const RECENT_SORT_LABEL: &str = "acquisition recency (instance ID, approximate)";
+
+/// Ordering for instance hits: by one stat, or newest first by instance ID.
+///
+/// Bungie exposes no acquisition timestamp; instance IDs are allocated
+/// increasingly, so a higher ID approximates a later acquisition. `after` keeps
+/// only instances whose ID is higher than the given canonical numeric ID.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InstanceSort {
+    Stat(StatSort),
+    Recent { after: Option<String> },
+}
+
+impl std::str::FromStr for InstanceSort {
+    type Err = AppError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let name = input.rsplit_once(':').map_or(input, |(name, _)| name);
+        if !name.trim().eq_ignore_ascii_case("recent") {
+            return input.parse().map(Self::Stat);
+        }
+        if name.len() != input.len() {
+            return Err(AppError::invalid_argument(
+                "sort",
+                "recent always sorts newest first and takes no direction",
+            ));
+        }
+        Ok(Self::Recent { after: None })
+    }
+}
+
+impl InstanceSort {
+    /// Restrict a recent sort to instances newer than `after`.
+    ///
+    /// `after` must be a numeric item instance ID; it is stored canonically.
+    pub fn with_after(self, after: &str) -> Result<Self, AppError> {
+        let Self::Recent { .. } = self else {
+            return Err(AppError::invalid_argument("after", "requires sort recent"));
+        };
+        let value: u64 = after.trim().parse().map_err(|_| {
+            AppError::invalid_argument("after", "expected a numeric item instance ID")
+        })?;
+        Ok(Self::Recent {
+            after: Some(value.to_string()),
+        })
+    }
+
+    pub fn stat(&self) -> Option<&StatSort> {
+        match self {
+            Self::Stat(sort) => Some(sort),
+            Self::Recent { .. } => None,
+        }
+    }
+
+    /// True when `instance` passes the recent sort's `after` bound.
+    pub fn admits(&self, instance: &ItemInstance) -> bool {
+        match self {
+            Self::Recent { after: Some(after) } => {
+                compare_instance_ids(instance.instance_id.as_str(), after).is_gt()
+            }
+            _ => true,
+        }
+    }
+}
+
+/// Numeric order for canonical decimal IDs: longer is larger, then digit order.
+pub fn compare_instance_ids(left: &str, right: &str) -> std::cmp::Ordering {
+    left.len().cmp(&right.len()).then_with(|| left.cmp(right))
+}
+
+/// Shared total ordering for any [`InstanceSort`]; `None` orders by ID ascending.
+pub fn compare_sorted_instances(
+    sort: Option<&InstanceSort>,
+    left: &ItemInstance,
+    right: &ItemInstance,
+    definitions: &[crate::StatDefinition],
+) -> std::cmp::Ordering {
+    match sort {
+        Some(InstanceSort::Recent { .. }) => {
+            compare_instance_ids(right.instance_id.as_str(), left.instance_id.as_str())
+        }
+        Some(InstanceSort::Stat(sort)) => compare_instances(Some(sort), left, right, definitions),
+        None => compare_instances(None, left, right, definitions),
+    }
+}
+
 /// Shared total ordering: stat value, missing last in either direction, then ID.
 pub fn compare_instances(
     sort: Option<&StatSort>,
@@ -466,7 +553,7 @@ pub const MAX_NAME_TERMS: usize = 8;
 pub struct InstanceSearchQuery {
     /// Number of ordered owned matches to skip, bounded to [`MAX_SEARCH_OFFSET`].
     pub offset: usize,
-    pub sort: Option<StatSort>,
+    pub sort: Option<InstanceSort>,
     pub include_available: bool,
     pub item_hashes: ItemHashFilter,
     pub perk_hash: Option<PerkHash>,
@@ -513,10 +600,29 @@ impl InstanceSearchQuery {
                 format!("at most {MAX_STAT_CONDITIONS} conditions are allowed"),
             ));
         }
-        if let Some(sort) = &self.sort {
-            crate::normalize_stat_name(sort.name.as_str()).map_err(|_| {
-                AppError::invalid_argument("sort", "stat name must satisfy Manifest name bounds")
-            })?;
+        match &self.sort {
+            Some(InstanceSort::Stat(sort)) => {
+                crate::normalize_stat_name(sort.name.as_str()).map_err(|_| {
+                    AppError::invalid_argument(
+                        "sort",
+                        "stat name must satisfy Manifest name bounds",
+                    )
+                })?;
+            }
+            Some(InstanceSort::Recent { after: Some(after) })
+                if after
+                    .parse::<u64>()
+                    .ok()
+                    .map(|value| value.to_string())
+                    .as_ref()
+                    != Some(after) =>
+            {
+                return Err(AppError::invalid_argument(
+                    "after",
+                    "expected a numeric item instance ID",
+                ));
+            }
+            _ => {}
         }
         for condition in &self.stats {
             crate::normalize_stat_name(condition.name.as_str()).map_err(|_| {
@@ -609,6 +715,13 @@ pub fn definition_matches(query: &DefinitionSearchQuery, definition: &ItemDefini
 /// independent of the `active` and `visible` flags: a visible or inactive perk
 /// still satisfies the filter, and a duplicated perk hash is harmless.
 pub fn instance_matches(query: &InstanceSearchQuery, instance: &ItemInstance) -> bool {
+    if query
+        .sort
+        .as_ref()
+        .is_some_and(|sort| !sort.admits(instance))
+    {
+        return false;
+    }
     if query
         .min_power
         .is_some_and(|minimum| instance.power.is_none_or(|power| power < minimum))
@@ -1087,6 +1200,92 @@ mod tests {
     use crate::domain::{ItemDefinition, ItemInstance, ItemLocation, PerkSummary};
     use crate::error::{AppError, ErrorCategory};
     use crate::ids::{CharacterId, DefinitionVersion, ItemHash, PerkHash};
+
+    #[test]
+    fn recent_sort_parses_orders_numerically_and_bounds_after() {
+        use super::InstanceSort;
+        for input in ["recent", "RECENT", " Recent "] {
+            assert_eq!(
+                input.parse::<InstanceSort>().unwrap(),
+                InstanceSort::Recent { after: None }
+            );
+        }
+        for input in ["recent:asc", "recent:desc"] {
+            let error = input.parse::<InstanceSort>().unwrap_err().to_string();
+            assert_eq!(
+                error,
+                "invalid sort: recent always sorts newest first and takes no direction"
+            );
+        }
+        assert!(matches!(
+            "Range:asc".parse::<InstanceSort>().unwrap(),
+            InstanceSort::Stat(sort) if sort.ascending
+        ));
+        assert!("Range:up".parse::<InstanceSort>().is_err());
+
+        let recent: InstanceSort = "recent".parse().unwrap();
+        assert_eq!(
+            recent.clone().with_after("007").unwrap(),
+            InstanceSort::Recent {
+                after: Some("7".into())
+            }
+        );
+        for invalid in ["abc", "-1", "", "18446744073709551616"] {
+            assert_eq!(
+                recent.clone().with_after(invalid).unwrap_err().to_string(),
+                "invalid after: expected a numeric item instance ID",
+                "{invalid}"
+            );
+        }
+        let stat: InstanceSort = "Range".parse().unwrap();
+        assert_eq!(
+            stat.with_after("1").unwrap_err().to_string(),
+            "invalid after: requires sort recent"
+        );
+
+        let ids = [
+            "9",
+            "6917529000000000002",
+            "100",
+            "10",
+            "6917529000000000010",
+        ];
+        let mut items: Vec<_> = ids.iter().map(|id| instance(id, 1)).collect();
+        items.sort_by(|a, b| super::compare_sorted_instances(Some(&recent), a, b, &[]));
+        assert_eq!(
+            items
+                .iter()
+                .map(|i| i.instance_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "6917529000000000010",
+                "6917529000000000002",
+                "100",
+                "10",
+                "9"
+            ]
+        );
+        let newer = recent.with_after("10").unwrap();
+        let kept: Vec<_> = items
+            .iter()
+            .filter(|item| newer.admits(item))
+            .map(|i| i.instance_id.as_str())
+            .collect();
+        assert_eq!(kept, ["6917529000000000010", "6917529000000000002", "100"]);
+
+        let mut q = instance_query(ItemHashFilter::Any, None);
+        q.sort = Some(InstanceSort::Recent {
+            after: Some("07".into()),
+        });
+        assert_eq!(
+            q.validate().unwrap_err().to_string(),
+            "invalid after: expected a numeric item instance ID"
+        );
+        q.sort = Some(newer);
+        assert!(q.validate().is_ok());
+        assert!(!instance_matches(&q, &instance("9", 1)));
+        assert!(instance_matches(&q, &instance("11", 1)));
+    }
 
     #[test]
     fn stat_sort_missing_last_ties_and_resolution() {

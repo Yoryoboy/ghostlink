@@ -1054,10 +1054,18 @@ pub struct SearchInventoryArgs {
     #[schemars(length(max = destiny_app::MAX_STAT_CONDITIONS), inner(length(min = 1, max = 288)))]
     pub stats: Vec<String>,
 
-    /// Sort owned hits by one resolved stat: Stat[:asc|desc], descending by default.
+    /// Sort owned hits by one resolved stat: Stat[:asc|desc], descending by default;
+    /// or `recent` for newest first by item instance ID. Bungie exposes no
+    /// acquisition date, so `recent` is an approximate acquisition order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(length(min = 1, max = 261))]
     pub sort: Option<String>,
+
+    /// With `sort: "recent"`, keep only items newer than this numeric item
+    /// instance ID (for example the newest ID seen last time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(min = 1, max = 20))]
+    pub after: Option<String>,
 
     /// Minimum owned instance power (0..65535); items without power do not match.
     #[serde(default, skip_serializing_if = "Option::is_none")]

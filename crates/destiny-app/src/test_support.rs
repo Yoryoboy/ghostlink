@@ -1038,7 +1038,7 @@ impl SearchRepository for InMemorySearchRepository {
             .cloned()
             .collect();
         matches.sort_by(|left, right| {
-            destiny_core::query::compare_instances(
+            destiny_core::query::compare_sorted_instances(
                 query.sort.as_ref(),
                 left,
                 right,

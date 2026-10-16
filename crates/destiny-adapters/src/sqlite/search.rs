@@ -54,9 +54,9 @@ use destiny_core::wishlist::{
     PlugOption, SourcedWishlistRoll, WishlistRepository, WishlistVerdict, wishlist_verdict,
 };
 use destiny_core::{
-    AppError, DefinitionRepository, DefinitionSearchQuery, InstanceSearchQuery, ItemDefinition,
-    ItemHash, ItemHashFilter, ItemInstance, ItemInstanceId, ItemLocation, MAX_SEARCH_OFFSET,
-    PerkSummary, Resolution, SearchRepository, definition_matches,
+    AppError, DefinitionRepository, DefinitionSearchQuery, InstanceSearchQuery, InstanceSort,
+    ItemDefinition, ItemHash, ItemHashFilter, ItemInstance, ItemInstanceId, ItemLocation,
+    MAX_SEARCH_OFFSET, PerkSummary, Resolution, SearchRepository, definition_matches,
 };
 use rusqlite::types::Value;
 use rusqlite::{Connection, Error as SqlError, params_from_iter};
@@ -253,10 +253,27 @@ impl SearchRepository for SqliteStore {
                 parameters.push(Value::Text(character_id.as_str().to_owned()));
             }
         }
+        let stat_sort = matches!(query.sort, Some(InstanceSort::Stat(_)));
+        let recent = matches!(query.sort, Some(InstanceSort::Recent { .. }));
+        if let Some(InstanceSort::Recent { after: Some(after) }) = &query.sort {
+            // Numeric `instance_id > after` for canonical decimal IDs.
+            sql.push_str(
+                " AND (length(instance_id) > ? OR (length(instance_id) = ? AND instance_id > ?))",
+            );
+            let length = i64::try_from(after.len()).map_err(|_| storage_failure())?;
+            parameters.push(Value::Integer(length));
+            parameters.push(Value::Integer(length));
+            parameters.push(Value::Text(after.clone()));
+        }
         // Never truncate SQL candidates before shared definition/power matching.
-        sql.push_str(" ORDER BY instance_id");
+        if recent {
+            // Newest first: the numeric order of canonical decimal IDs.
+            sql.push_str(" ORDER BY length(instance_id) DESC, instance_id DESC");
+        } else {
+            sql.push_str(" ORDER BY instance_id");
+        }
 
-        let stat_definitions = if query.stats.is_empty() && query.sort.is_none() {
+        let stat_definitions = if query.stats.is_empty() && !stat_sort {
             Vec::new()
         } else {
             super::world::read_stats(self.connection())?
@@ -280,7 +297,7 @@ impl SearchRepository for SqliteStore {
                 .map_err(|_| storage_failure())?;
 
             let mut candidates = rows;
-            let batch_size = if query.sort.is_some() { 500 } else { 64 };
+            let batch_size = if stat_sort { 500 } else { 64 };
             'batches: loop {
                 let mut batch = candidates
                     .by_ref()
@@ -392,11 +409,11 @@ impl SearchRepository for SqliteStore {
                             }
                         }
                     {
-                        if query.sort.is_some() {
+                        if stat_sort {
                             // Keep at most k matches, ordered by the shared comparator.
                             // Insert after equal records, exactly like the old stable sort.
                             let position = instances.partition_point(|existing| {
-                                destiny_core::query::compare_instances(
+                                destiny_core::query::compare_sorted_instances(
                                     query.sort.as_ref(),
                                     existing,
                                     &instance,
@@ -931,7 +948,7 @@ mod tests {
         for limit in [1, 5, 24, 100] {
             let q = instance_query(ItemHashFilter::Any, None, None, limit);
             queries.push(q.clone());
-            for sort in ["power", "power:asc", "Missing", "Missing:asc"] {
+            for sort in ["power", "power:asc", "Missing", "Missing:asc", "recent"] {
                 let mut q = q.clone();
                 q.sort = Some(sort.parse().unwrap());
                 queries.push(q);
@@ -969,6 +986,90 @@ mod tests {
                 "{q:?}"
             );
         }
+    }
+
+    #[test]
+    fn recent_sort_orders_ids_numerically_and_after_keeps_newer_items() {
+        use destiny_core::InstanceSort;
+        let mut store = SqliteStore::open_in_memory().unwrap();
+        let definitions = vec![
+            definition(1, "Weapon", None, &[]),
+            definition(2, "Armor", None, &[]),
+        ];
+        seed_definitions(&mut store, &definitions);
+        let items = vec![
+            instance("9", 1, ItemLocation::Vault, &[]),
+            instance("6917529000000000010", 2, ItemLocation::Vault, &[]),
+            instance("100", 1, ItemLocation::Character(CHARACTER_ID.into()), &[]),
+            instance(
+                "6917529000000000002",
+                1,
+                ItemLocation::Postmaster(CHARACTER_ID.into()),
+                &[],
+            ),
+            instance("10", 2, ItemLocation::Vault, &[]),
+        ];
+        let committed = store.replace_current(snapshot(items)).unwrap();
+        let fake = InMemorySearchRepository::with_projection(definitions, &committed);
+        let recent = |after: Option<&str>, limit: usize, offset: usize| {
+            let mut q = instance_query(ItemHashFilter::Any, None, None, limit);
+            let sort: InstanceSort = "recent".parse().unwrap();
+            q.sort = Some(match after {
+                Some(after) => sort.with_after(after).unwrap(),
+                None => sort,
+            });
+            q.offset = offset;
+            q
+        };
+        let cases = [
+            (
+                recent(None, 10, 0),
+                vec![
+                    "6917529000000000010",
+                    "6917529000000000002",
+                    "100",
+                    "10",
+                    "9",
+                ],
+                false,
+            ),
+            (
+                recent(None, 2, 0),
+                vec!["6917529000000000010", "6917529000000000002"],
+                true,
+            ),
+            (recent(None, 2, 2), vec!["100", "10"], true),
+            (
+                recent(Some("10"), 10, 0),
+                vec!["6917529000000000010", "6917529000000000002", "100"],
+                false,
+            ),
+            (
+                recent(Some("6917529000000000002"), 10, 0),
+                vec!["6917529000000000010"],
+                false,
+            ),
+            (recent(Some("6917529000000000010"), 10, 0), vec![], false),
+        ];
+        for (q, expected, more) in cases {
+            let (hits, has_more) = store.search_instance_page(&q).unwrap();
+            assert_eq!(names(&hits), expected, "{q:?}");
+            assert_eq!(has_more, more, "{q:?}");
+            assert_eq!(
+                fake.search_instance_page(&q).unwrap(),
+                (hits, has_more),
+                "{q:?}"
+            );
+        }
+        // Recent composes with existing instance filters.
+        let mut weapons = recent(None, 10, 0);
+        weapons.item_hashes = ItemHashFilter::AnyOf(vec![ItemHash::new(1)]);
+        let hits = store.search_instances(&weapons).unwrap();
+        assert_eq!(names(&hits), ["6917529000000000002", "100", "9"]);
+        let mut vault = recent(Some("9"), 10, 0);
+        vault.location = Some(destiny_core::LocationFilter::Vault);
+        let hits = store.search_instances(&vault).unwrap();
+        assert_eq!(names(&hits), ["6917529000000000010", "10"]);
     }
 
     #[test]

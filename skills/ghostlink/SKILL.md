@@ -138,8 +138,14 @@ Fallback:
 ```sh
 ghostlink search-inventory 'type:"Hand Cannon" -is:locked' --location vault --json
 ghostlink search-inventory 'stat:Range:>=30 power:>=440' --sort Range --json
+ghostlink search-inventory 'is:weapon' --sort recent --limit 10 --json
 ghostlink search-inventory --filters
 ```
+
+For "what dropped recently?", use `--sort recent` / MCP `sort: "recent"`: newest
+first by instance ID. It is an approximate acquisition order, never a drop date
+or activity; say so. `--after <ID>` / MCP `after` keeps only items newer than a
+previously seen instance ID.
 
 Quote the whole query to protect spaces/comparisons; leading `-` is accepted.
 Queries AND with structured flags. Explicit `and` > `or` > whitespace AND;
