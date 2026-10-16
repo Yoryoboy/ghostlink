@@ -835,6 +835,76 @@ fn sort_and_limit_cli_mcp_parity() {
 }
 
 #[test]
+fn recent_sort_and_after_cli_mcp_parity() {
+    use clap::Parser;
+    let parse_cli = |flags: &[&str]| {
+        let mut argv = vec!["ghostlink", "search-inventory"];
+        argv.extend_from_slice(flags);
+        cli_command::Cli::try_parse_from(argv)
+            .unwrap()
+            .into_read_request()
+    };
+    let parse_mcp = |args: serde_json::Value| {
+        serde_json::from_value::<destiny_mcp::schema::SearchInventoryArgs>(args)
+            .unwrap()
+            .into_request()
+    };
+    for (flags, args, after) in [
+        (
+            vec!["--sort", "recent"],
+            serde_json::json!({"sort": "recent"}),
+            None,
+        ),
+        (
+            vec!["--sort", "recent", "--after", "0042"],
+            serde_json::json!({"sort": "recent", "after": "0042"}),
+            Some("42"),
+        ),
+    ] {
+        let cli_command::ReadRequest::SearchInventory(cli) = parse_cli(&flags).unwrap() else {
+            panic!("search")
+        };
+        let sort = cli.instances.as_ref().and_then(|q| q.sort.clone());
+        assert_eq!(
+            sort,
+            Some(destiny_app::InstanceSort::Recent {
+                after: after.map(Into::into)
+            })
+        );
+        assert_eq!(cli, parse_mcp(args).unwrap());
+    }
+    for (flags, cli_error, args, mcp_error) in [
+        (
+            vec!["--after", "42"],
+            "invalid --after: requires --sort recent",
+            serde_json::json!({"after": "42"}),
+            "invalid after: requires sort \"recent\"",
+        ),
+        (
+            vec!["--sort", "Range", "--after", "42"],
+            "invalid --after: requires --sort recent",
+            serde_json::json!({"sort": "Range", "after": "42"}),
+            "invalid after: requires sort \"recent\"",
+        ),
+        (
+            vec!["--sort", "recent", "--after", "abc"],
+            "invalid --after: expected a numeric item instance ID",
+            serde_json::json!({"sort": "recent", "after": "abc"}),
+            "invalid after: expected a numeric item instance ID",
+        ),
+        (
+            vec!["--sort", "recent:asc"],
+            "invalid --sort: recent always sorts newest first and takes no direction",
+            serde_json::json!({"sort": "recent:asc"}),
+            "invalid sort: recent always sorts newest first and takes no direction",
+        ),
+    ] {
+        assert_eq!(parse_cli(&flags).unwrap_err().to_string(), cli_error);
+        assert_eq!(parse_mcp(args).unwrap_err().to_string(), mcp_error);
+    }
+}
+
+#[test]
 fn tier_location_equipped_cli_mcp_parity() {
     use clap::Parser;
     for (flags, args) in [

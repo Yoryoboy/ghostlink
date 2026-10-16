@@ -15,7 +15,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use destiny_app::auth_ux::AuthorizationMode;
 use destiny_app::{
     AppError, CharacterId, DefinitionSearchQuery, ErrorCategory, InspectItemRequest,
-    InstanceSearchQuery, ItemHash, ItemHashFilter, ItemInspection, ItemInstanceId,
+    InstanceSearchQuery, InstanceSort, ItemHash, ItemHashFilter, ItemInspection, ItemInstanceId,
     MAX_SEARCH_LIMIT, MAX_SEARCH_OFFSET, PerkHash, Resolution, SearchInventoryRequest, SearchTerm,
 };
 
@@ -715,9 +715,14 @@ pub struct SearchInventoryArgs {
     #[arg(long = "stat", value_name = "COND")]
     pub stat: Vec<String>,
 
-    /// Sort owned hits by stat, descending by default; append :asc for ascending.
-    #[arg(long, value_name = "STAT[:asc|desc]")]
+    /// Sort owned hits by stat (descending by default; append :asc for ascending), or
+    /// `recent` for newest first by item instance ID (approximate acquisition order).
+    #[arg(long, value_name = "STAT[:asc|desc]|recent")]
     pub sort: Option<String>,
+
+    /// With --sort recent, keep only items newer than this item instance ID.
+    #[arg(long, value_name = "INSTANCE_ID")]
+    pub after: Option<String>,
 
     /// Minimum instance power; items without power do not match.
     #[arg(long, value_name = "N")]
@@ -814,6 +819,27 @@ impl SearchInventoryArgs {
         }
     }
 
+    /// Parses `--sort`, applying `--after` to a recent sort.
+    fn sort(&self) -> Result<Option<InstanceSort>, CliError> {
+        let sort = self
+            .sort
+            .as_deref()
+            .map(str::parse::<InstanceSort>)
+            .transpose()
+            .map_err(CliError::query_validation)?;
+        match (&self.after, sort) {
+            (None, sort) => Ok(sort),
+            (Some(_), None | Some(InstanceSort::Stat(_))) => Err(CliError::invalid_argument(
+                "--after",
+                "requires --sort recent",
+            )),
+            (Some(after), Some(sort)) => sort
+                .with_after(after)
+                .map(Some)
+                .map_err(CliError::query_validation),
+        }
+    }
+
     /// Builds an owned search when any definition or instance filter is supplied.
     fn instance_query(
         &self,
@@ -823,6 +849,7 @@ impl SearchInventoryArgs {
             && !self.include_available
             && self.stat.is_empty()
             && self.sort.is_none()
+            && self.after.is_none()
             && self.item_hash.is_empty()
             && self.perk_hash.is_none()
             && self.perk.is_empty()
@@ -849,12 +876,7 @@ impl SearchInventoryArgs {
         };
         let query = InstanceSearchQuery {
             offset: self.offset,
-            sort: self
-                .sort
-                .as_deref()
-                .map(str::parse)
-                .transpose()
-                .map_err(CliError::query_validation)?,
+            sort: self.sort()?,
             include_available: self.include_available,
             item_hashes,
             perk_hash: self.perk_hash.map(PerkHash::new),
@@ -1618,6 +1640,7 @@ impl CliError {
             ("tag", "--tag"),
             ("stat", "--stat"),
             ("sort", "--sort"),
+            ("after", "--after"),
             ("item-hash", "--item-hash"),
         ] {
             if let Some(reason) = message.strip_prefix(&format!("invalid {name}: ")) {

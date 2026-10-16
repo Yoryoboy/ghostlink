@@ -551,7 +551,10 @@ with AND, including the singular field, with a shared cap of eight terms per
 kind. Each term resolves independently; any resolved name within it matches.
 It also accepts `tier` (exact stored tier, case-insensitive), `location`
 (`"vault"` or `"character"`), `equipped` (boolean), and `sort`
-(`"Stat[:asc|desc]"`, descending by default). Sorting and name resolution follow
+(`"Stat[:asc|desc]"`, descending by default, or `"recent"` for newest first by
+item instance ID). With `sort: "recent"`, optional `after` (numeric instance ID)
+keeps only newer items; see [recently acquired items](cli.md#recently-acquired-items)
+for its limits. Sorting and name resolution follow
 the [CLI rules](cli.md#name-matching-rules). Both `limit` and `instances.limit` default to 100 and
 accept 1–1000. Search output includes `resolved.perk_terms`,
 `resolved.mod_terms` and, when sorting, `resolved.sort`.

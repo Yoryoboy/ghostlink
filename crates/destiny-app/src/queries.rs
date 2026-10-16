@@ -847,12 +847,21 @@ where
                 resolved.archetype =
                     term.resolve(&self.repository().name_catalog("archetype")?, "archetype")?;
             }
-            if let Some(sort) = &mut query.sort {
-                if self.repository().stat_definition_count()? == 0 {
-                    return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+            match &mut query.sort {
+                Some(destiny_core::InstanceSort::Stat(sort)) => {
+                    if self.repository().stat_definition_count()? == 0 {
+                        return Err(AppError::new(ErrorCategory::DefinitionsUnavailable));
+                    }
+                    let name = sort.resolve(&self.repository().name_catalog("stat")?)?;
+                    resolved.sort = Some((name, sort.order().to_owned()));
                 }
-                let name = sort.resolve(&self.repository().name_catalog("stat")?)?;
-                resolved.sort = Some((name, sort.order().to_owned()));
+                Some(destiny_core::InstanceSort::Recent { .. }) => {
+                    resolved.sort = Some((
+                        destiny_core::RECENT_SORT_LABEL.to_owned(),
+                        "desc".to_owned(),
+                    ));
+                }
+                None => {}
             }
             if !query.stats.is_empty() {
                 if self.repository().stat_definition_count()? == 0 {

@@ -706,6 +706,8 @@ Names are case-insensitive:
 | `--offset <N>` | 0–10000; skip ordered owned hits only |
 | `--detail` | Restore full instance hits instead of compact tiles |
 | `--sort <Stat>[:asc\|desc]` | Sort owned hits by stat; descending by default |
+| `--sort recent` | Newest owned hits first, by item instance ID (approximate acquisition order) |
+| `--after <INSTANCE_ID>` | With `--sort recent`, keep only items newer than this instance ID |
 
 `--text`, `--type`, `--tag`, and the new definition filters also constrain owned
 hits. Without a query or filters, search returns definition candidates only.
@@ -739,6 +741,27 @@ ghostlink search-inventory --equipped true
 
 Sorting happens before the limit. Items missing the stat sort last in either
 direction; ties use instance identifier order. Ambiguous stat names are rejected.
+
+### Recently acquired items
+
+Bungie exposes no acquisition date for inventory items. Item instance IDs are
+allocated in increasing order, so `--sort recent` lists owned instanced items
+newest first by numeric instance ID. This is an approximate acquisition order,
+not a drop time: no dates are shown, items dismantled before the search never
+appear, and anonymous stacks (materials, consumables) are excluded. It combines
+with every query and filter, `--limit` and `--offset`; `resolved.sort` reports
+`acquisition recency (instance ID, approximate)`.
+
+`--after <INSTANCE_ID>` keeps only items with a higher instance ID, for example
+the newest ID from your last check. Ghostlink stores nothing: keep that ID
+yourself. It requires `--sort recent` and a numeric ID; `recent` takes no
+`:asc`/`:desc` direction.
+
+```sh
+ghostlink search-inventory --sort recent --limit 20
+ghostlink search-inventory 'is:weapon' --sort recent --limit 10 --json
+ghostlink search-inventory --sort recent --after 6917529000000000002
+```
 
 MCP `search_inventory` accepts `element`, `slot`, `class_type`, and `min_power`
 at the top level. Its optional `instances` object also accepts `min_power`;
